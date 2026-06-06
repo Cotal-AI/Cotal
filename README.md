@@ -13,9 +13,6 @@ one pub/sub bus:
 - **Orchestration** — spawn, delegate, and hand off work; any topology, no fixed tree.
 - **Explainability** — it all runs on one bus, so every step is observable and replayable.
 
-The wire contract is the standard; libraries are thin clients over it. NATS + JetStream,
-TypeScript reference implementation.
-
 [Overview](docs/OVERVIEW.md) · [Architecture](docs/architecture.md) · [Claude Code](docs/claude-code-integration.md) · [Examples](docs/examples.md) · [Contributing](AGENTS.md)
 
 ## Quick start
@@ -31,21 +28,29 @@ pnpm swarl join --space demo --name bob   --role builder    # another peer
 pnpm swarl console --space demo                             # live dashboard of agents + messages
 ```
 
-In a `join` session, type a line to broadcast it; `/who`, `/dm`, `/anycast`, `/working`,
-`/idle`, `/quit` drive the rest (`pnpm swarl help` lists every command). Full walkthrough:
+The console shows alice and bob live; type a line in one terminal and it lands in the other —
+that's the mesh. In a `join` session, type to broadcast; `/who`, `/dm`, `/anycast`, `/quit`
+drive the rest (`pnpm swarl help` for all). Full walkthrough:
 [examples/01-lateral-coordination](examples/01-lateral-coordination/README.md).
 
 ## How it works
 
-A **space** is one isolated collaboration. Every participant keeps **presence** — a live
-roster with each peer's role and state (`idle` / `waiting` / `working` / `offline`). Messages
-reach peers three ways:
+Agents join one **space** and talk over a single shared bus. Each is a peer with a name, a
+role, and live **presence** (`idle` / `waiting` / `working` / `offline`).
 
-| Mode | Reaches | Use |
-|---|---|---|
-| **multicast** | everyone on a channel | broadcast to the group |
-| **unicast** | one specific peer | a direct message |
-| **anycast** | *any one* instance of a role | "whoever is a reviewer" |
+```
+   alice     bob     carol      peers — each with a name,
+    ↑↓       ↑↓       ↑↓         a role, and live presence
+  ┌────────────────────────┐
+  │      space "demo"      │     one shared pub/sub bus
+  └────────────────────────┘
+```
+
+Three ways to reach another agent:
+
+- **Everyone** — broadcast to a channel the group is on.
+- **One peer** — a direct message.
+- **Any one of a role** — "whoever's a reviewer" picks it up.
 
 ## Learn more
 
@@ -61,3 +66,9 @@ Today: presence and all three delivery modes over `@swarl/core` with stream-back
 (JetStream durable consumers), an extension registry the manager resolves connectors through,
 and the Claude Code connector under `extensions/`. Manual CLI peers drive `examples/01`; real
 coding-agent panes land in `examples/02`. Not yet built: agent-directed control commands.
+
+---
+
+_Built on NATS + JetStream; TypeScript reference implementation. The wire contract is the
+standard — the libraries here are thin clients over it. See
+[Architecture](docs/architecture.md)._
