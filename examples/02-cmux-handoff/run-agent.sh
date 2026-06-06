@@ -52,6 +52,13 @@ JSON
 # --- launch claude in the role's repo, wired to the mesh --------------------
 cd "$HERE/$role"
 
+# The orchestrator greets the operator on boot (workers start silent — the orchestrator
+# drives them). Passed as claude's initial interactive prompt; it onboards, then waits.
+init=()
+if [[ "$role" == orchestrator ]]; then
+  init=("Before anything else, onboard me (the operator) in <=6 short lines: what this demo is, that I drive it by giving you ONE goal, and that you then spawn todo-api/todo-web/todo-docs into their own tabs and auto-route the api->web handoff. Show me the example goal to paste (from your CLAUDE.md). Then STOP and wait for my goal — do NOT spawn yet.")
+fi
+
 # Claude shows a blocking "load development channels" confirmation at startup (the
 # --dangerously-… flag below) and waits for Enter. Autonomous worker tabs have no human, so
 # auto-confirm by injecting Enter into this cmux surface for a few seconds. Skip the orchestrator
@@ -64,7 +71,8 @@ fi
 exec env \
   SWARL_SPACE=todo SWARL_NAME="$role" SWARL_ROLE="$role" SWARL_CHANNEL=1 \
   claude \
-    --strict-mcp-config \
+    --dangerously-load-development-channels server:swarl \
     --mcp-config "$CFG/mcp.json" \
     --settings "$CFG/settings.json" \
-    --dangerously-load-development-channels server:swarl
+    --strict-mcp-config \
+    ${init[@]+"${init[@]}"}

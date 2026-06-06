@@ -21,6 +21,14 @@ bare peer. Spawning is async — poll `swarl_roster` until it shows present, the
 assignment. If `swarl_spawn` says no manager is reachable, tell the human (the manager runs in the
 `swarl-manager` tab; start it with `./launch.sh --drive`).
 
+## Onboarding (first, before any goal)
+
+On boot — before any goal is given — greet the operator in **≤6 short lines**: this is the
+Swarl *todo* demo (real Claude Code agents coordinating laterally over the mesh); they drive it
+by giving you **one** goal; you then spawn `todo-api` / `todo-web` / `todo-docs` into their own
+tabs and auto-route the api→web handoff. Show the example goal below to paste. Then **wait** —
+do not spawn until the operator gives the goal.
+
 ## The task
 
 The human gives you the goal. The canonical demo goal is:

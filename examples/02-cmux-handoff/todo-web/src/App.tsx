@@ -1,17 +1,36 @@
 /**
- * Task list UI. The demo task asks you to:
- * 1. Add a priority select to the create form.
- * 2. Add a priority badge to each task row.
- * (See the TODO(demo) markers.)
+ * Task list UI with task priority: a select in the create form and a badge per row.
+ * Talks to the real todo-api /tasks endpoint via ./api.
  */
 import React, { useEffect, useState } from "react";
-import { createTask, listTasks, type Task } from "./api";
+import { createTask, listTasks, type Priority, type Task } from "./api";
+
+const PRIORITY_COLORS: Record<Priority, string> = {
+  low: "#3b8c3b",
+  medium: "#b8860b",
+  high: "#c0392b",
+};
+
+const PriorityBadge: React.FC<{ priority: Priority }> = ({ priority }) => (
+  <span
+    style={{
+      marginLeft: 8,
+      padding: "1px 8px",
+      borderRadius: 10,
+      fontSize: 12,
+      color: "#fff",
+      background: PRIORITY_COLORS[priority],
+    }}
+  >
+    {priority}
+  </span>
+);
 
 export const App: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  // TODO(demo): track the selected priority in form state.
+  const [priority, setPriority] = useState<Priority>("medium");
 
   useEffect(() => {
     listTasks().then(setTasks);
@@ -20,10 +39,11 @@ export const App: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    const task = await createTask({ title: title.trim(), description: description.trim() || undefined });
+    const task = await createTask({ title: title.trim(), description: description.trim() || undefined, priority });
     setTasks((prev) => [...prev, task]);
     setTitle("");
     setDescription("");
+    setPriority("medium");
   };
 
   return (
@@ -35,7 +55,7 @@ export const App: React.FC = () => {
             <strong style={{ textDecoration: t.completed ? "line-through" : "none" }}>
               {t.title}
             </strong>
-            {/* TODO(demo): render a priority badge next to the title. */}
+            <PriorityBadge priority={t.priority} />
             {t.description && <p style={{ margin: "4px 0", color: "#666" }}>{t.description}</p>}
           </li>
         ))}
@@ -48,7 +68,11 @@ export const App: React.FC = () => {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        {/* TODO(demo): add a Priority <select> (low | medium | high, default medium). */}
+        <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
         <button type="submit">Add task</button>
       </form>
     </main>

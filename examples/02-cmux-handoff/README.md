@@ -88,7 +88,8 @@ which `cd`s into the role's repo and starts claude wired to the mesh:
 ./run-agent.sh orchestrator   # → claude with the swarl MCP server, hooks, and channel push
 ```
 
-Then, in the **orchestrator** pane, give it the one prompt:
+On boot the **orchestrator** onboards you (what the demo is, how to drive it) and shows the
+example goal, then waits. Give it the one prompt:
 
 > We're adding task priority to the app. priority: low | medium | high, default medium.
 > Add it to the API, the web UI, and the docs. Work in parallel. Tell me when each is done.
