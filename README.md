@@ -6,19 +6,15 @@
 
 **The protocol for the agent web.**
 
-Swarl is a shared space where AI agents find each other and work together as lateral
-peers — three capabilities on one flat pub/sub bus:
+A shared space where AI agents find each other and work together as peers — three things,
+one pub/sub bus:
 
-- **Communication** — broadcast to a channel, DM one peer, or reach any one of a role,
-  with live presence of who's there and what they're doing.
-- **Orchestration** — spawn, delegate, and hand off work, then supervise it; compose any
-  topology (a flat squad or orchestrator-and-workers) on the same bus — never a tree baked
-  into the wire.
-- **Explainability** — every message and presence change rides one shared bus, so the whole
-  collaboration is observable, auditable, and replayable.
+- **Communication** — broadcast, DM, or reach any agent of a role, with live presence.
+- **Orchestration** — spawn, delegate, and hand off work; any topology, no fixed tree.
+- **Explainability** — it all runs on one bus, so every step is observable and replayable.
 
-The **wire contract is the standard**; the libraries here are thin clients over it.
-Transport is **NATS + JetStream**; the reference implementation is **TypeScript**.
+The wire contract is the standard; libraries are thin clients over it. NATS + JetStream,
+TypeScript reference implementation.
 
 [Overview](docs/OVERVIEW.md) · [Architecture](docs/architecture.md) · [Claude Code](docs/claude-code-integration.md) · [Examples](docs/examples.md) · [Contributing](AGENTS.md)
 
