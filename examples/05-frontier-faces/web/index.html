@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cotal-face — parametrized avatar demo</title>
+<style>
+  body { background:#06000f; color:#53ebe4; font-family:ui-monospace,Menlo,Consolas,monospace; margin:0; padding:28px; }
+  h1 { font-size:16px; font-weight:600; opacity:.85; }
+  p.lede { font-size:13px; opacity:.6; max-width:60ch; }
+  .row { display:flex; flex-wrap:wrap; gap:28px; margin-top:18px; }
+  .cell { display:flex; flex-direction:column; gap:10px; --cf-width:300px; }
+  .ctl { display:flex; flex-wrap:wrap; gap:6px; max-width:300px; }
+  button { background:transparent; color:#53ebe4; border:1px solid rgba(83,235,228,.4); border-radius:6px;
+           padding:5px 10px; font-family:inherit; font-size:12px; cursor:pointer; }
+  button:hover { background:rgba(83,235,228,.12); }
+  button.go { border-color:#e13a6a; color:#f1a5bd; }
+  .note { font-size:11px; opacity:.5; }
+</style>
+</head>
+<body>
+  <h1>&#10095; cotal-face — one engine, swappable personas, external control API</h1>
+  <p class="lede">Each avatar below is a single <code>&lt;cotal-face&gt;</code> custom element. The buttons drive it
+    through the same API a coding-agent session would use: <code>setActivity()</code>, <code>speak()</code>,
+    <code>pushTokens()</code>. Drop the element into any DOM (e.g. OpenCode's web UI) and feed it live events.</p>
+
+  <div class="row" id="row"></div>
+
+  <p class="note">simulate-session = idle → thinking → speaking (lip-synced) → waiting, the loop a live agent would drive.</p>
+
+<script src="cotal-face.js"></script>
+<script>
+  const personas = ['ray', 'david', 'neon'];
+  const exprs = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
+  const row = document.getElementById('row');
+
+  for (const name of personas) {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+
+    const face = document.createElement('cotal-face');
+    face.setAttribute('persona', name);
+    cell.appendChild(face);
+
+    const ctl = document.createElement('div');
+    ctl.className = 'ctl';
+    for (const e of exprs) {
+      const b = document.createElement('button');
+      b.textContent = e;
+      b.onclick = () => { face.expr = e; };
+      ctl.appendChild(b);
+    }
+    const speak = document.createElement('button');
+    speak.textContent = '▶ speak';
+    speak.onclick = () => face.speakLine();
+    ctl.appendChild(speak);
+
+    const crt = document.createElement('button');
+    crt.textContent = 'CRT';
+    crt.onclick = () => face.setAttribute('crt', face.state.crt ? 'off' : 'on');
+    ctl.appendChild(crt);
+
+    const sim = document.createElement('button');
+    sim.className = 'go';
+    sim.textContent = '⚡ simulate session';
+    sim.onclick = async () => {
+      sim.disabled = true;
+      face.setActivity('idle');
+      await wait(500);
+      face.setActivity('thinking');
+      await wait(1600);
+      face.setActivity('working', 'edit cotal-face.js');
+      await wait(1200);
+      face.setActivity('speaking');
+      await face.speak('done — wired the avatar into the session event stream.');
+      face.setActivity('waiting');
+      sim.disabled = false;
+    };
+    ctl.appendChild(sim);
+
+    cell.appendChild(ctl);
+    row.appendChild(cell);
+  }
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+</script>
+</body>
+</html>
