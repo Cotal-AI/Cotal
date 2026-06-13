@@ -28,9 +28,11 @@
 
   <p class="note">simulate-session = idle → thinking → speaking (lip-synced) → waiting, the loop a live agent would drive.</p>
 
-<script src="cotal-face.js"></script>
-<script>
-  const personas = ['ray', 'david', 'neon'];
+<script type="module">
+  import './cotal-face.js';
+  import { PERSONAS } from '../personas.mjs';
+
+  const personas = Object.keys(PERSONAS); // every persona, straight from personas.mjs
   const exprs = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
   const row = document.getElementById('row');
 

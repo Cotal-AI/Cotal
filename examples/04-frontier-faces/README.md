@@ -1,4 +1,4 @@
-# Demo 5 — Frontier Tower faces
+# Demo 4 — Frontier Tower faces
 
 Animated pixel-art avatars for agents, built for the Frontier Tower demo: each persona is
 an OpenCode-hosted agent with a 32×32 truecolor face that thinks, lip-syncs its streamed
@@ -15,8 +15,10 @@ reply, and steers its own expression with hidden `[[face:X]]` tags.
   to emit face tags. The `face:` frontmatter maps an agent to its persona key where the
   names differ (steve→jobs, elon→musk, rayan→ray).
 - **`research/`** — the public-record research the agent files are distilled from.
-- **`web/`** — the same engine as a `<cotal-face>` custom element, plus a userscript that
-  overlays it on OpenCode's web UI (its CSP blocks plain script injection).
+- **`web/`** — the same engine as a `<cotal-face>` custom element (`cotal-face.js`, drawing
+  its personas straight from `personas.mjs`), a live `wall.html` (a browser twin of the tmux
+  wall), and a userscript that overlays a face on OpenCode's web UI (its CSP blocks plain
+  script injection).
 - **`tools/`** — persona authoring: `img2rows.mjs` roughs a reference image into rows+palette,
   `render-png.mjs` renders a contact sheet for review. `preview.html` shows every persona
   straight from `personas.mjs`.
@@ -28,14 +30,17 @@ Requirements: Node ≥ 20, a recent OpenCode (the bun build, ≥1.17), tmux for 
 ```sh
 # one face, one live agent
 opencode serve --port 4096
-node examples/05-frontier-faces/face-term.mjs --persona sven
+node examples/04-frontier-faces/face-term.mjs --persona sven
 
 # no server? scripted preview
-node examples/05-frontier-faces/face-term.mjs --demo
+node examples/04-frontier-faces/face-term.mjs --demo
 
-# a wall of them (one shared server, one session per pane)
-./examples/05-frontier-faces/face-wall.sh            # every persona, capped at 9
-./examples/05-frontier-faces/face-wall.sh ray sven garry
+# a wall of them in the terminal (one shared server, one session per pane)
+./examples/04-frontier-faces/face-wall.sh            # every persona, capped at 9
+./examples/04-frontier-faces/face-wall.sh ray sven garry
+
+# the same wall in the browser (serves web/ + proxies the opencode API, no CORS)
+node examples/04-frontier-faces/tools/serve-wall.mjs   # then open the printed URL
 ```
 
 `face-term.mjs` flags: `--persona <key>` (`--list` prints all), `--server`, `--model
@@ -44,11 +49,13 @@ node examples/05-frontier-faces/face-term.mjs --demo
 
 To put the personas on a Cotal mesh, run each as an OpenCode agent (drop `agents/*.md`
 into the project's `.opencode/agent/`) with `@cotal-ai/connector-opencode` loaded — the
-faces then voice real peer traffic, not just direct chat.
+faces then voice real peer traffic, not just direct chat. Each face titles its session
+`face-term:<persona>`, so the connector's `COTAL_OPENCODE_ADOPT=face-term:<persona>` adopts
+the right session per persona.
 
 ## Adding a persona
 
 Append an entry to `personas.mjs` (rows, colors, glow, mouths, expr, eyes, lines) — it's
-immediately available to `--persona`, `--list`, and the wall. Use `tools/img2rows.mjs` to
+immediately available everywhere: `--persona`, `--list`, the terminal wall, and the browser
+(`web/cotal-face.js` imports `personas.mjs`, so no manual sync). Use `tools/img2rows.mjs` to
 rough in the pixel art from a reference image and `tools/render-png.mjs` to review it.
-The browser engine in `web/cotal-face.js` keeps its own persona packs; sync it manually.

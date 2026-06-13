@@ -34,15 +34,15 @@ fi
 [ "${#PERSONAS[@]}" -gt 0 ] || { echo "face-wall: no personas" >&2; exit 1; }
 
 # ensure an opencode server is up (start it if not)
-if ! curl -fsS -o /dev/null "${SERVER}/api/health" 2>/dev/null; then
+if ! curl -fsS -o /dev/null "${SERVER}/session" 2>/dev/null; then
   echo "face-wall: starting opencode server on :${PORT} ..." >&2
   [ -x "$OPENCODE_BIN" ] || { echo "face-wall: no opencode at $OPENCODE_BIN (set OPENCODE_BIN)" >&2; exit 1; }
   "$OPENCODE_BIN" serve --port "$PORT" >/tmp/face-wall-opencode.log 2>&1 &
   for _ in $(seq 1 40); do
-    curl -fsS -o /dev/null "${SERVER}/api/health" 2>/dev/null && break
+    curl -fsS -o /dev/null "${SERVER}/session" 2>/dev/null && break
     sleep 0.5
   done
-  curl -fsS -o /dev/null "${SERVER}/api/health" 2>/dev/null || { echo "face-wall: server never came up (see /tmp/face-wall-opencode.log)" >&2; exit 1; }
+  curl -fsS -o /dev/null "${SERVER}/session" 2>/dev/null || { echo "face-wall: server never came up (see /tmp/face-wall-opencode.log)" >&2; exit 1; }
 fi
 
 cmd_for() { printf '%s %q --persona %q --server %q --model %q' "$RUNNER" "$DIR/face-term.mjs" "$1" "$SERVER" "$MODEL"; }

@@ -174,7 +174,7 @@ importers:
         specifier: ^4.22.4
         version: 4.22.4
 
-  examples/05-frontier-faces: {}
+  examples/04-frontier-faces: {}
 
   extensions/cmux:
     dependencies:

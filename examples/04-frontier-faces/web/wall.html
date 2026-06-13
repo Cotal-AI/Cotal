@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cotal-face — live wall</title>
+<style>
+  body { background:#06000f; color:#53ebe4; font-family:ui-monospace,Menlo,Consolas,monospace; margin:0; padding:22px; }
+  h1 { font-size:15px; font-weight:600; opacity:.85; margin:0 0 4px; }
+  p.lede { font-size:12px; opacity:.55; margin:0 0 16px; max-width:70ch; }
+  code { color:#f1a5bd; }
+  .bcast { display:flex; gap:8px; margin-bottom:20px; max-width:680px; }
+  input { background:#0b0420; color:#53ebe4; border:1px solid rgba(83,235,228,.35); border-radius:6px;
+          padding:7px 10px; font-family:inherit; font-size:13px; flex:1; outline:none; }
+  input:focus { border-color:rgba(83,235,228,.7); }
+  button { background:transparent; color:#f1a5bd; border:1px solid rgba(225,58,106,.5); border-radius:6px;
+           padding:7px 14px; font-family:inherit; font-size:12px; cursor:pointer; }
+  button:hover { background:rgba(225,58,106,.14); }
+  .grid { display:grid; gap:22px; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); }
+  .tile { display:flex; flex-direction:column; gap:8px; --cf-width:100%; max-width:360px; }
+  .tile .who { font-size:12px; opacity:.7; }
+  .tile input { font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>&#10095; cotal-face — live wall</h1>
+  <p class="lede">One <code>&lt;cotal-face&gt;</code> per persona, each driven by its own live OpenCode
+    session — the browser twin of <code>face-wall.sh</code>. Type to one face, or broadcast a prompt to
+    all of them. Serve via <code>tools/serve-wall.mjs</code> so the API is same-origin (no CORS).</p>
+
+  <div class="bcast">
+    <input id="bcast" placeholder="broadcast a prompt to every face… (Enter)">
+    <button id="bcast-go">broadcast</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+<script type="module">
+  import './cotal-face.js';
+  import { PERSONAS } from '../personas.mjs';
+  import { driveFace } from './cotal-opencode.js';
+
+  const params = new URLSearchParams(location.search);
+  const server = params.get('server') || '';                 // '' = same origin (serve-wall.mjs proxies)
+  const model = params.get('model') || 'opencode-go/glm-5.1';
+  const password = params.get('password') || '';
+  const want = (params.get('personas') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const MAX = 9;                                              // match the tmux wall's cap
+  const personas = (want.length ? want : Object.keys(PERSONAS)).slice(0, MAX);
+
+  const grid = document.getElementById('grid');
+  const drivers = [];
+
+  for (const name of personas) {
+    if (!PERSONAS[name]) { console.warn('unknown persona', name); continue; }
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+
+    const face = document.createElement('cotal-face');
+    face.setAttribute('persona', name);
+    face.setAttribute('chrome', 'off'); // compact tile — hide the window chrome bar
+    tile.appendChild(face);
+
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = `${PERSONAS[name].label} · ${name}`;
+    tile.appendChild(who);
+
+    const inp = document.createElement('input');
+    inp.placeholder = `talk to ${name}… (Enter)`;
+    tile.appendChild(inp);
+
+    grid.appendChild(tile);
+
+    const drv = driveFace(face, { server, persona: name, model, password });
+    drivers.push(drv);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !inp.value.trim()) return;
+      drv.send(inp.value);
+      inp.value = '';
+    });
+  }
+
+  const bcast = document.getElementById('bcast');
+  const fire = () => {
+    const t = bcast.value.trim();
+    if (!t) return;
+    drivers.forEach((d) => d.send(t));
+    bcast.value = '';
+  };
+  document.getElementById('bcast-go').addEventListener('click', fire);
+  bcast.addEventListener('keydown', (e) => { if (e.key === 'Enter') fire(); });
+</script>
+</body>
+</html>
