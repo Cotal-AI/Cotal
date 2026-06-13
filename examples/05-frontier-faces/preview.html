@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>persona preview — review tool</title>
+<style>
+  body { background:#06000f; color:#53ebe4; font-family:ui-monospace,Menlo,Consolas,monospace; margin:0; padding:20px; }
+  h1 { font-size:15px; font-weight:600; opacity:.85; margin:0 0 4px; }
+  .sub { font-size:12px; opacity:.55; margin-bottom:14px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:16px; }
+  .tabs a { color:#53ebe4; border:1px solid rgba(83,235,228,.35); border-radius:6px; padding:4px 10px;
+            font-size:12px; text-decoration:none; }
+  .tabs a.on { background:rgba(83,235,228,.15); border-color:#53ebe4; }
+  .row { display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; }
+  .cell { text-align:center; }
+  .cell .lbl { font-size:11px; opacity:.6; margin-top:6px; }
+  canvas { background:#0b001b; border-radius:8px; image-rendering:pixelated; display:block; }
+  .big { margin-bottom:20px; }
+  .grid-note { font-size:11px; opacity:.4; margin-top:16px; max-width:70ch; }
+</style>
+</head>
+<body>
+  <h1 id="title">persona preview</h1>
+  <div class="sub">live = animated (blink + bob + talking loop) · statics = each expression, eyes open, no bob</div>
+  <div class="tabs" id="tabs"></div>
+  <div class="row big" id="bigrow"></div>
+  <div class="row" id="staticrow"></div>
+  <p class="grid-note">Review tool: renders straight from <code>personas.mjs</code> (the terminal source of truth).
+  Pick a persona above; reload after editing the file (served no-cache).</p>
+
+<script type="module">
+import { PERSONAS } from './personas.mjs';
+
+const GRID = 32, BG = '#0b001b';
+const params = new URLSearchParams(location.search);
+const name = params.get('p') && PERSONAS[params.get('p')] ? params.get('p') : Object.keys(PERSONAS)[0];
+const p = PERSONAS[name];
+document.getElementById('title').textContent = `persona preview — ${name}`;
+
+const tabs = document.getElementById('tabs');
+for (const k of Object.keys(PERSONAS)) {
+  const a = document.createElement('a');
+  a.href = '?p=' + k; a.textContent = k; if (k === name) a.className = 'on';
+  tabs.appendChild(a);
+}
+
+function compose(expr, { blink = false, viseme = null, bob = 0 } = {}) {
+  const g = Array.from({ length: GRID }, () => new Array(GRID).fill(null));
+  const put = ([r, c, k]) => { const rr = r + bob; if (rr >= 0 && rr < GRID && c >= 0 && c < GRID) g[rr][c] = k; };
+  for (let r = 0; r < GRID; r++) {
+    const row = (p.rows[r] || '').padEnd(GRID, '.');
+    for (let c = 0; c < GRID; c++) if (row[c] !== '.' && row[c]) put([r, c, row[c]]);
+  }
+  const e = p.expr[expr] || p.expr.neutral;
+  const mouth = viseme ? p.mouths[viseme] : p.mouths[e.mouth];
+  [...e.brows, ...mouth, ...p.eyes(e.eyes, blink)].forEach(put);
+  return g;
+}
+
+function draw(cv, g, sz) {
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = BG; ctx.fillRect(0, 0, cv.width, cv.height);
+  const glow = p.glow || {};
+  const solid = [], emissive = [];
+  for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
+    const k = g[r][c]; if (!k) continue; (glow[k] ? emissive : solid).push([r, c, k]);
+  }
+  solid.forEach(([r, c, k]) => { ctx.fillStyle = p.colors[k]; ctx.fillRect(c * sz, r * sz, sz, sz); });
+  ctx.save();
+  emissive.forEach(([r, c, k]) => { ctx.fillStyle = p.colors[k]; ctx.shadowColor = p.colors[k]; ctx.shadowBlur = glow[k]; ctx.fillRect(c * sz, r * sz, sz, sz); });
+  ctx.restore();
+}
+
+function cell(parent, label, sz) {
+  const d = document.createElement('div'); d.className = 'cell';
+  const cv = document.createElement('canvas'); cv.width = GRID * sz; cv.height = GRID * sz;
+  const l = document.createElement('div'); l.className = 'lbl'; l.textContent = label;
+  d.append(cv, l); parent.appendChild(d);
+  return cv;
+}
+
+// big live one (animated: blink, bob, talk loop)
+const live = cell(document.getElementById('bigrow'), 'live', 13);
+const VISEMES = ['A', 'B', 'C', 'D', 'E', 'F', null, 'B', 'C', null];
+let vi = 0, blink = false;
+setInterval(() => { blink = true; setTimeout(() => (blink = false), 140); }, 2600);
+setInterval(() => {
+  const bob = Math.sin(Date.now() / 950) > 0.55 ? 1 : 0;
+  const talking = Math.floor(Date.now() / 4000) % 2 === 0; // alternate talk/idle
+  const viseme = talking ? VISEMES[vi++ % VISEMES.length] : null;
+  draw(live, compose('neutral', { blink, viseme, bob }), 13);
+}, 110);
+
+// statics: all expressions + one open-mouth viseme
+const sr = document.getElementById('staticrow');
+for (const ex of Object.keys(p.expr)) draw(cell(sr, ex, 7), compose(ex), 7);
+draw(cell(sr, 'viseme D (talk)', 7), compose('neutral', { viseme: 'D' }), 7);
+draw(cell(sr, 'blink', 7), compose('neutral', { blink: true }), 7);
+</script>
+</body>
+</html>

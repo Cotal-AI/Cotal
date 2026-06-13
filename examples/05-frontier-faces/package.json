@@ -1,0 +1,11 @@
+{
+  "name": "@cotal-ai/example-05-frontier-faces",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "face": "node face-term.mjs",
+    "wall": "./face-wall.sh"
+  }
+}
