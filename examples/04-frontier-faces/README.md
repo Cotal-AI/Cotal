@@ -20,8 +20,8 @@ reply, and steers its own expression with hidden `[[face:X]]` tags.
   wall), and a userscript that overlays a face on OpenCode's web UI (its CSP blocks plain
   script injection).
 - **`tools/`** — persona authoring: `img2rows.mjs` roughs a reference image into rows+palette,
-  `render-png.mjs` renders a contact sheet for review. `preview.html` shows every persona
-  straight from `personas.mjs`.
+  `render-png.mjs` renders a contact sheet for review, `face-template.mjs` is the copy-me
+  reference face. `preview.html` shows every persona straight from `personas.mjs`.
 
 ## Run it
 
@@ -57,5 +57,6 @@ the right session per persona.
 
 Append an entry to `personas.mjs` (rows, colors, glow, mouths, expr, eyes, lines) — it's
 immediately available everywhere: `--persona`, `--list`, the terminal wall, and the browser
-(`web/cotal-face.js` imports `personas.mjs`, so no manual sync). Use `tools/img2rows.mjs` to
-rough in the pixel art from a reference image and `tools/render-png.mjs` to review it.
+(`web/cotal-face.js` imports `personas.mjs`, so no manual sync). Copy `tools/face-template.mjs`
+to start from a known-good face; **[FACE-DESIGN.md](FACE-DESIGN.md)** documents the grid zones,
+the color keys, the eye recipe, and the expression/viseme conventions.

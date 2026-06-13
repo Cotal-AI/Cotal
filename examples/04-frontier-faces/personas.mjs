@@ -29,12 +29,12 @@ export const PERSONAS = {
       happy: { brows: [...rng(12, 10, 12, 'K'), ...rng(12, 18, 20, 'K')], eyes: 'open', mouth: 'smile' },
       sad: { brows: [[12, 12, 'K'], [13, 10, 'K'], [13, 11, 'K'], [12, 18, 'K'], [13, 19, 'K'], [13, 20, 'K']], eyes: 'open', mouth: 'frown' },
       angry: { brows: [[12, 10, 'K'], [12, 11, 'K'], [13, 12, 'K'], [13, 18, 'K'], [12, 19, 'K'], [12, 20, 'K']], eyes: 'narrow', mouth: 'grit' },
-      surprised: { brows: [...rng(11, 10, 12, 'K'), ...rng(11, 18, 20, 'K')], eyes: 'wide', mouth: 'E' },
+      surprised: { brows: [...rng(11, 10, 12, 'K'), ...rng(11, 18, 20, 'K')], eyes: 'open', mouth: 'E' },
     },
     eyes(style, blink) {
       const cols = [11, 12, 18, 19], out = [];
       if (blink) { cols.forEach((c) => out.push([15, c, 'D'])); return out; }
-      const rs = style === 'narrow' ? [15] : style === 'wide' ? [13, 14, 15] : [14, 15];
+      const rs = style === 'narrow' ? [15] : [14, 15];
       rs.forEach((r) => cols.forEach((c) => out.push([r, c, 'N']))); return out;
     },
     lines: ['booting cortex... all 1024 pixels nominal.', 'neon looks better at 32 by 32.', 'two pixels per eye. i see everything.'],
@@ -56,16 +56,15 @@ export const PERSONAS = {
       grit: [...rng(19, 12, 18, 'R'), ...rng(20, 12, 18, 'W'), ...rng(21, 12, 18, 'R')],
     },
     expr: {
-      neutral: { brows: [...rng(12, 10, 13, 'K'), ...rng(12, 17, 20, 'K')], eyes: 'open', mouth: 'X' },
-      happy: { brows: [...rng(12, 10, 13, 'K'), ...rng(12, 17, 20, 'K')], eyes: 'open', mouth: 'smile' },
+      neutral: { brows: [...rng(11, 10, 13, 'K'), ...rng(11, 17, 20, 'K')], eyes: 'open', mouth: 'X' },
+      happy: { brows: [...rng(11, 10, 13, 'K'), ...rng(11, 17, 20, 'K')], eyes: 'open', mouth: 'smile' },
       sad: { brows: [[11, 13, 'K'], [12, 10, 'K'], [12, 11, 'K'], [12, 12, 'K'], [11, 17, 'K'], [12, 18, 'K'], [12, 19, 'K'], [12, 20, 'K']], eyes: 'open', mouth: 'frown' },
       angry: { brows: [[11, 10, 'K'], [11, 11, 'K'], [11, 12, 'K'], [12, 13, 'K'], [12, 17, 'K'], [11, 18, 'K'], [11, 19, 'K'], [11, 20, 'K']], eyes: 'open', mouth: 'grit' },
-      surprised: { brows: [...rng(11, 10, 13, 'K'), ...rng(11, 17, 20, 'K')], eyes: 'wide', mouth: 'E' },
+      surprised: { brows: [...rng(10, 10, 13, 'K'), ...rng(10, 17, 20, 'K')], eyes: 'open', mouth: 'E' },
     },
-    eyes(style, blink) {
+    eyes(_style, blink) {
       if (blink) return [[14, 11, 's'], [14, 12, 's'], [14, 18, 's'], [14, 19, 's']];
-      // shaped: 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
-      if (style === 'wide') return [[12, 11, 'E'], [12, 12, 'E'], [13, 11, 'E'], [13, 12, 'E'], [14, 11, 'W'], [14, 12, 's'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 's'], [14, 19, 'W']];
+      // 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
       return [[13, 11, 'E'], [13, 12, 'E'], [14, 11, 'W'], [14, 12, 's'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 's'], [14, 19, 'W']];
     },
     lines: ['serious face, serious pixels.', 'wavy hair, square pixels. deal with it.', 'the lips get five whole pixels of pink.'],
@@ -91,12 +90,12 @@ export const PERSONAS = {
       happy: { brows: [...rng(12, 10, 12, 'K'), ...rng(12, 18, 20, 'K')], eyes: 'open', mouth: 'grin' },
       sad: { brows: [[11, 12, 'K'], [12, 10, 'K'], [12, 11, 'K'], [11, 18, 'K'], [12, 19, 'K'], [12, 20, 'K']], eyes: 'open', mouth: 'frown' },
       angry: { brows: [[11, 10, 'K'], [11, 11, 'K'], [12, 12, 'K'], [12, 18, 'K'], [11, 19, 'K'], [11, 20, 'K']], eyes: 'open', mouth: 'grit' },
-      surprised: { brows: [...rng(11, 10, 12, 'K'), ...rng(11, 18, 20, 'K')], eyes: 'wide', mouth: 'E' },
+      surprised: { brows: [...rng(11, 10, 12, 'K'), ...rng(11, 18, 20, 'K')], eyes: 'open', mouth: 'E' },
     },
-    eyes(style, blink) {
+    eyes(_style, blink) {
       if (blink) return [[14, 12, 's'], [14, 18, 's']];
-      if (style === 'wide') return [[14, 11, 'E'], [14, 12, 'E'], [14, 18, 'E'], [14, 19, 'E']];
-      return [[14, 12, 'E'], [14, 18, 'E']];
+      // 2px-tall pupil reads as a full eye behind the tinted goggle; baked W catchlight sits beside it
+      return [[13, 12, 'E'], [14, 12, 'E'], [13, 18, 'E'], [14, 18, 'E']];
     },
     lines: ['bridge welded, curls online.', 'every curl is a hand-placed highlight.', 'one hundred percent blue pixels.'],
   },
@@ -121,12 +120,11 @@ export const PERSONAS = {
       happy: { brows: [...rng(11, 10, 12, 'h'), ...rng(11, 18, 20, 'h')], eyes: 'open', mouth: 'smile' },
       sad: { brows: [[10, 12, 'h'], [11, 10, 'h'], [11, 11, 'h'], [10, 18, 'h'], [11, 19, 'h'], [11, 20, 'h']], eyes: 'open', mouth: 'frown' },
       angry: { brows: [[10, 10, 'h'], [10, 11, 'h'], [11, 12, 'h'], [11, 18, 'h'], [10, 19, 'h'], [10, 20, 'h']], eyes: 'open', mouth: 'grit' },
-      surprised: { brows: [...rng(10, 10, 12, 'h'), ...rng(10, 18, 20, 'h')], eyes: 'wide', mouth: 'E' },
+      surprised: { brows: [...rng(9, 10, 12, 'h'), ...rng(9, 18, 20, 'h')], eyes: 'open', mouth: 'E' },
     },
-    eyes(style, blink) {
+    eyes(_style, blink) {
       if (blink) return [[13, 11, 's'], [13, 19, 's']];
       // round glasses give the outline; soft inner catchlight beside each (green) pupil
-      if (style === 'wide') return [[13, 10, 'E'], [13, 11, 'E'], [13, 12, 'w'], [13, 18, 'w'], [13, 19, 'E'], [13, 20, 'E']];
       return [[13, 11, 'E'], [13, 12, 'w'], [13, 18, 'w'], [13, 19, 'E']];
     },
     lines: ['olive cap, cream stitch, locked in.', 'my lenses are perfect circles. almost.', 'smiling in five pixels or less.'],
@@ -152,10 +150,10 @@ export const PERSONAS = {
         happy: { brows: [...rng(11, 10, 12, 'K'), ...rng(11, 18, 20, 'K')], eyes: 'open', mouth: 'smile' },
         sad: { brows: [[10, 12, 'K'], [11, 10, 'K'], [11, 11, 'K'], [10, 18, 'K'], [11, 19, 'K'], [11, 20, 'K']], eyes: 'open', mouth: 'frown' },
         angry: { brows: [[10, 10, 'K'], [10, 11, 'K'], [11, 12, 'K'], [11, 18, 'K'], [10, 19, 'K'], [10, 20, 'K']], eyes: 'open', mouth: 'grit' },
-        surprised: { brows: [...rng(10, 10, 12, 'K'), ...rng(10, 18, 20, 'K')], eyes: 'wide', mouth: 'E' },
+        surprised: { brows: [...rng(9, 10, 12, 'K'), ...rng(9, 18, 20, 'K')], eyes: 'open', mouth: 'E' },
       },
-      eyes(style, blink) {
-        // opaque shades — no eyes to show; a diagonal glint reads as light glancing off the lenses
+      eyes() {
+        // opaque shades — no eyes; a steady diagonal glint reads as light glancing off the lenses
         return [[13, 11, 'W'], [14, 12, 'W'], [13, 19, 'W'], [14, 18, 'W']];
       },
       lines: ['just ship it. the pixels can iterate.', 'optimism compounds.', 'build something people want. start with a smile.'],
@@ -182,11 +180,10 @@ export const PERSONAS = {
         happy: { brows: [...rng(11, 10, 12, 'b'), ...rng(11, 18, 20, 'b')], eyes: 'open', mouth: 'smile' },
         sad: { brows: [[10, 12, 'b'], [11, 10, 'b'], [11, 11, 'b'], [10, 18, 'b'], [11, 19, 'b'], [11, 20, 'b']], eyes: 'open', mouth: 'frown' },
         angry: { brows: [[10, 10, 'b'], [10, 11, 'b'], [11, 12, 'b'], [11, 18, 'b'], [10, 19, 'b'], [10, 20, 'b']], eyes: 'open', mouth: 'grit' },
-        surprised: { brows: [...rng(10, 10, 12, 'b'), ...rng(10, 18, 20, 'b')], eyes: 'wide', mouth: 'E' },
+        surprised: { brows: [...rng(10, 10, 12, 'b'), ...rng(10, 18, 20, 'b')], eyes: 'open', mouth: 'E' },
       },
-      eyes(style, blink) {
+      eyes(_style, blink) {
         if (blink) return [[13, 12, 's'], [13, 19, 's']];
-        if (style === 'wide') return [[13, 11, 'E'], [13, 12, 'E'], [13, 19, 'E'], [13, 20, 'E']];
         return [[13, 12, 'E'], [13, 19, 'E']];
       },
       lines: ['one more thing.', 'it just works.', 'simplicity is the ultimate sophistication.'],
@@ -212,12 +209,11 @@ export const PERSONAS = {
         happy: { brows: [...rng(11, 10, 13, 'K'), ...rng(11, 17, 20, 'K')], eyes: 'open', mouth: 'smile' },
         sad: { brows: [[10, 13, 'K'], [11, 10, 'K'], [11, 11, 'K'], [11, 12, 'K'], [10, 17, 'K'], [11, 18, 'K'], [11, 19, 'K'], [11, 20, 'K']], eyes: 'open', mouth: 'frown' },
         angry: { brows: [[10, 10, 'K'], [10, 11, 'K'], [10, 12, 'K'], [11, 13, 'K'], [11, 17, 'K'], [10, 18, 'K'], [10, 19, 'K'], [10, 20, 'K']], eyes: 'open', mouth: 'grit' },
-        surprised: { brows: [...rng(10, 10, 13, 'K'), ...rng(10, 17, 20, 'K')], eyes: 'wide', mouth: 'E' },
+        surprised: { brows: [...rng(9, 10, 13, 'K'), ...rng(9, 17, 20, 'K')], eyes: 'open', mouth: 'E' },
       },
-      eyes(style, blink) {
+      eyes(_style, blink) {
         if (blink) return [[13, 11, 's'], [13, 12, 's'], [13, 18, 's'], [13, 19, 's']];
-        // shaped: 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
-        if (style === 'wide') return [[11, 11, 'E'], [11, 12, 'E'], [12, 11, 'E'], [12, 12, 'E'], [13, 11, 'W'], [13, 12, 's'], [11, 18, 'E'], [11, 19, 'E'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'W']];
+        // 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
         return [[12, 11, 'E'], [12, 12, 'E'], [13, 11, 'W'], [13, 12, 's'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'W']];
       },
       lines: ['mars is just one launch window away.', 'the best part is no part.', 'we land boosters before breakfast.'],
@@ -289,12 +285,11 @@ export const PERSONAS = {
         happy: { brows: [...rng(11, 10, 12, 'H'), ...rng(11, 18, 20, 'H')], eyes: 'open', mouth: 'smile' },
         sad: { brows: [[10, 12, 'H'], [11, 10, 'H'], [11, 11, 'H'], [10, 18, 'H'], [11, 19, 'H'], [11, 20, 'H']], eyes: 'open', mouth: 'frown' },
         angry: { brows: [[10, 10, 'H'], [10, 11, 'H'], [11, 12, 'H'], [11, 18, 'H'], [10, 19, 'H'], [10, 20, 'H']], eyes: 'open', mouth: 'grit' },
-        surprised: { brows: [...rng(10, 10, 12, 'H'), ...rng(10, 18, 20, 'H')], eyes: 'wide', mouth: 'E' },
+        surprised: { brows: [...rng(9, 10, 12, 'H'), ...rng(9, 18, 20, 'H')], eyes: 'open', mouth: 'E' },
       },
-      eyes(style, blink) {
+      eyes(_style, blink) {
         if (blink) return [[14, 11, 's'], [14, 12, 's'], [14, 18, 's'], [14, 19, 's']];
-        // same block as the bare faces: 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
-        if (style === 'wide') return [[12, 11, 'E'], [12, 12, 'E'], [13, 11, 'E'], [13, 12, 'E'], [14, 11, 'W'], [14, 12, 's'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 's'], [14, 19, 'W']];
+        // 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
         return [[13, 11, 'E'], [13, 12, 'E'], [14, 11, 'W'], [14, 12, 's'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 's'], [14, 19, 'W']];
       },
       lines: ['scaling laws apply to smiles too.', 'optimistic about the upside, careful about the rest.', 'the curls are doing most of the compute.'],
@@ -359,12 +354,11 @@ export const PERSONAS = {
           happy: { brows: [[10, 12, 'H'], [10, 13, 'H'], [11, 11, 'H'], [11, 14, 'H'], [10, 18, 'H'], [10, 19, 'H'], [11, 17, 'H'], [11, 20, 'H']], eyes: 'open', mouth: 'smile' },
           sad: { brows: [[10, 14, 'H'], [11, 11, 'H'], [11, 12, 'H'], [11, 13, 'H'], [10, 17, 'H'], [11, 18, 'H'], [11, 19, 'H'], [11, 20, 'H']], eyes: 'open', mouth: 'frown' },
           angry: { brows: [[10, 11, 'H'], [10, 12, 'H'], [11, 13, 'H'], [11, 14, 'H'], [11, 17, 'H'], [11, 18, 'H'], [10, 19, 'H'], [10, 20, 'H']], eyes: 'open', mouth: 'grit' },
-          surprised: { brows: [[9, 12, 'H'], [9, 13, 'H'], [10, 11, 'H'], [10, 14, 'H'], [9, 18, 'H'], [9, 19, 'H'], [10, 17, 'H'], [10, 20, 'H']], eyes: 'wide', mouth: 'E' },
+          surprised: { brows: [[8, 12, 'H'], [8, 13, 'H'], [9, 11, 'H'], [9, 14, 'H'], [8, 18, 'H'], [8, 19, 'H'], [9, 17, 'H'], [9, 20, 'H']], eyes: 'open', mouth: 'E' },
         },
-        eyes(style, blink) {
+        eyes(_style, blink) {
           if (blink) return [[13, 12, 's'], [13, 13, 's'], [13, 18, 's'], [13, 19, 's']];
-          // shaped: 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
-          if (style === 'wide') return [[11, 12, 'E'], [11, 13, 'E'], [12, 12, 'E'], [12, 13, 'E'], [13, 12, 'W'], [13, 13, 's'], [11, 18, 'E'], [11, 19, 'E'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'W']];
+          // 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
           return [[12, 12, 'E'], [12, 13, 'E'], [13, 12, 'W'], [13, 13, 's'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'W']];
         },
         lines: ['calm is a strategy.', 'the future arrives quietly. be ready.', 'good judgment scales further than compute.'],
@@ -383,11 +377,11 @@ export const PERSONAS = {
           '....GWWWWPPPPPPPPPPSSSsWWWGg',
           '...gWWWWGPPPSSSSPSSSSSsWWWGg',
           '....gWWWGPPPPPPPPPPSSSsWWWGg',
-          '.....WWWGPPPPPPPPPPSSSsWWGg.g',
-          '.....gWWGPFFFFFPSFFFFFsWWGg',
+          '.....WWWGPFFFFFPPFFFFFsWWGg.g',
+          '.....gWWGPFPPSFPSFPPSFsWWGg',
           '......WWGPFPPSFFFFPPSFsWGg',
-          '......WGgPFPPSFFFFPPSFsGg',
-          '.......GgPFFFFFSsFFFFFsg',
+          '......WGgPFFFFFSsFFFFFsGg',
+          '.......GgPSsPPSSsSSSsSsg',
           '........gSSSPSsSsSSSSSs',
           '.........SSSsPSSSSsSSSs',
           '..........sSSSSSSSSSSs',
@@ -424,13 +418,12 @@ export const PERSONAS = {
           happy: { brows: [...rng(10, 10, 13, 'g'), ...rng(10, 18, 21, 'g')], eyes: 'open', mouth: 'smile' },
           sad: { brows: [[9, 12, 'g'], [9, 13, 'g'], [10, 10, 'g'], [10, 11, 'g'], [9, 18, 'g'], [9, 19, 'g'], [10, 20, 'g'], [10, 21, 'g']], eyes: 'open', mouth: 'frown' },
           angry: { brows: [[10, 10, 'g'], [10, 11, 'g'], [11, 12, 'g'], [11, 13, 'g'], [11, 15, 's'], [11, 16, 's'], [11, 18, 'g'], [11, 19, 'g'], [10, 20, 'g'], [10, 21, 'g']], eyes: 'open', mouth: 'grit' },
-          surprised: { brows: [...rng(9, 10, 13, 'g'), ...rng(9, 18, 21, 'g')], eyes: 'wide', mouth: 'D' },
+          surprised: { brows: [...rng(8, 10, 13, 'g'), ...rng(8, 18, 21, 'g')], eyes: 'open', mouth: 'D' },
         },
-        eyes(style, blink) {
-          if (blink) return [[13, 12, 's'], [13, 13, 's'], [13, 18, 's'], [13, 19, 's']];
-          // same block as the bare faces: 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
-          if (style === 'wide') return [[13, 12, 'E'], [13, 13, 'E'], [14, 12, 'E'], [14, 13, 'E'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 'E'], [14, 19, 'E']];
-          return [[13, 12, 'E'], [13, 13, 'E'], [14, 12, 'W'], [14, 13, 's'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 's'], [14, 19, 'W']];
+        eyes(_style, blink) {
+          if (blink) return [[12, 12, 's'], [12, 13, 's'], [12, 18, 's'], [12, 19, 's']];
+          // 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
+          return [[12, 12, 'E'], [12, 13, 'E'], [13, 12, 'W'], [13, 13, 's'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'W']];
         },
         lines: ['I have been saying this since the very first commit.', 'the top one percent of functions own ninety percent of the bugs!', 'we need a revolution in this codebase. today.'],
   },
@@ -495,13 +488,12 @@ export const PERSONAS = {
           happy: { brows: [[10, 12, 'K'], [10, 13, 'K'], [11, 11, 'K'], [11, 14, 'K'], [10, 18, 'K'], [10, 19, 'K'], [11, 17, 'K'], [11, 20, 'K']], eyes: 'joy', mouth: 'beam' },
           sad: { brows: [[10, 14, 'K'], [11, 11, 'K'], [11, 12, 'K'], [11, 13, 'K'], [10, 17, 'K'], [11, 18, 'K'], [11, 19, 'K'], [11, 20, 'K']], eyes: 'open', mouth: 'frown' },
           angry: { brows: [[10, 11, 'K'], [10, 12, 'K'], [11, 13, 'K'], [11, 14, 'K'], [11, 17, 'K'], [11, 18, 'K'], [10, 19, 'K'], [10, 20, 'K']], eyes: 'open', mouth: 'grit' },
-          surprised: { brows: [[9, 12, 'K'], [9, 13, 'K'], [10, 11, 'K'], [10, 14, 'K'], [9, 18, 'K'], [9, 19, 'K'], [10, 17, 'K'], [10, 20, 'K']], eyes: 'wide', mouth: 'E' },
+          surprised: { brows: [[9, 12, 'K'], [9, 13, 'K'], [10, 11, 'K'], [10, 14, 'K'], [9, 18, 'K'], [9, 19, 'K'], [10, 17, 'K'], [10, 20, 'K']], eyes: 'open', mouth: 'E' },
         },
         eyes(style, blink) {
           if (blink) return [[13, 12, 's'], [13, 13, 's'], [13, 18, 's'], [13, 19, 's']];
           if (style === 'joy') return [[12, 12, 'E'], [12, 13, 'E'], [12, 18, 'E'], [12, 19, 'E'], [13, 12, 's'], [13, 13, 's'], [13, 18, 's'], [13, 19, 's']];
-          // shaped: 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
-          if (style === 'wide') return [[11, 12, 'E'], [11, 13, 'E'], [12, 12, 'E'], [12, 13, 'E'], [13, 12, 'w'], [13, 13, 's'], [11, 18, 'E'], [11, 19, 'E'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'w']];
+          // 2px dark iris on top, catchlight (outer) + lid-shadow (inner) below
           return [[12, 12, 'E'], [12, 13, 'E'], [13, 12, 'w'], [13, 13, 's'], [12, 18, 'E'], [12, 19, 'E'], [13, 18, 's'], [13, 19, 'w']];
         },
         lines: ['hope travels farther than fear.', 'every door you open, hold it for the next one through.', 'your story is your strength — tell it.'],
