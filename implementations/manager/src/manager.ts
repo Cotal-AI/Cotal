@@ -210,6 +210,7 @@ export class Manager {
         creds: credsPath,
         servers: this.servers,
         configPath,
+        resume: args.resume ? String(args.resume) : undefined,
       });
       handle = this.runtime.spawn(name, spec, this.workspaceRoot);
     } catch (e) {

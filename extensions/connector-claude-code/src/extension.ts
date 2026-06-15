@@ -35,6 +35,11 @@ export const claudeConnector: Connector = {
 
     const args = ["--dangerously-load-development-channels", CHANNEL_REF];
 
+    // Resume a prior conversation into the mesh. `--fork-session` makes claude mint a
+    // fresh session id from the resumed history, so the original session this id points
+    // at keeps running untouched (we adopt its context, not its identity).
+    if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+
     // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus
     // persona + model, which can only be applied to a `claude` session at launch.
     if (opts.configPath) {

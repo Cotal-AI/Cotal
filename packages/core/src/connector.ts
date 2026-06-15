@@ -17,6 +17,11 @@ export interface LaunchOpts {
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
    *  card from it, and applies the file's persona/model at launch. */
   configPath?: string;
+  /** Resume a prior session of this agent type instead of starting fresh — the
+   *  connector-specific session id to reattach (claude-code: a `--resume` id,
+   *  forked so the original session isn't hijacked). Connectors that can't resume
+   *  ignore it. */
+  resume?: string;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
