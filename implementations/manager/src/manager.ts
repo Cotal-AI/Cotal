@@ -265,11 +265,15 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    if (this.runtime.kind !== "pty") {
-      return {
-        ok: false,
-        error: `attach needs the pty runtime; under tmux run \`tmux attach -t cotal-${this.space}:${name}\``,
-      };
+    // Only pty streams over the WS attach endpoint. tmux/cmux are watched natively, and
+    // each handle's attach() throws with the right per-runtime guidance (tmux attach … /
+    // switch to the cmux tab) — surface that instead of assuming tmux.
+    if (a.handle.kind !== "pty") {
+      try {
+        a.handle.attach();
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
     }
     return { ok: true, data: { ws: this.attach.url(name) } };
   }
