@@ -55,6 +55,13 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{"command":"node
   stays inert and never joins — so an operator's own sessions in the repo don't appear as stray peers.
 - **Hands-free spawn.** The dev-channels flag prints a one-time "Enter to confirm" prompt; the PTY
   runtime auto-clears it via `LaunchSpec.confirm`, so a supervised launch needs no keypress.
+- **Resume an existing session.** `cotal spawn <name> --resume <session-id>` (and the manager's
+  `cotal start … --resume <id>`) pulls a session you're already working in into the mesh instead of
+  starting cold: `buildLaunch` adds `--resume <id> --fork-session`, so claude replays that transcript
+  into a fresh, cotal-equipped process and **forks** a new session id — your original session keeps
+  its identity and runs untouched. It composes with the MCP isolation above (the forked process still
+  loads only cotal) and skips the auto-submitted greeting (the session already has its context).
+  Resume is claude-only; the codex/opencode connectors reject `--resume`.
 
 ## Agent files (persona + identity)
 

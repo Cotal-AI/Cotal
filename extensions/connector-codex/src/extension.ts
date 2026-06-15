@@ -22,6 +22,9 @@ export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Resume is claude-only (it forks a prior claude transcript). Fail closed rather than
+    // silently dropping the flag, so `--resume` against the wrong agent is an explicit error.
+    if (opts.resume) throw new Error("--resume is only supported by the claude connector");
     const env: Record<string, string> = { COTAL_SPACE: opts.space, COTAL_NAME: opts.name };
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;

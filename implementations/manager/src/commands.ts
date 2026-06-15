@@ -39,6 +39,7 @@ function parse(argv: string[]): Values {
       agent: { type: "string" },
       config: { type: "string" },
       creds: { type: "string" },
+      resume: { type: "string" },
       "console-port": { type: "string" },
       drive: { type: "boolean" },
       spawn: { type: "string" }, // comma-separated agent names to pre-spawn at startup
@@ -108,6 +109,7 @@ async function start(argv: string[]): Promise<void> {
     role: v.role,
     agent: v.agent,
     config: v.config,
+    resume: v.resume,
   }, v.creds);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
@@ -378,7 +380,7 @@ const managerCommands: Command[] = [
     name: "start",
     group: "Control plane",
     summary:
-      "ask the manager to spawn an agent — --name <n> [--role <r>] [--agent <a>] [--config <file>] (auto-discovers .cotal/agents/<n>.md)",
+      "ask the manager to spawn an agent — --name <n> [--role <r>] [--agent <a>] [--config <file>] [--resume <id>] (auto-discovers .cotal/agents/<n>.md)",
     run: start,
   },
   {

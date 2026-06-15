@@ -45,11 +45,18 @@ export const claudeConnector: Connector = {
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
 
-    // A leading positional is claude's first message, auto-submitted on start —
-    // so a driving session can greet the operator the moment it joins.
-    const args = opts.prompt
+    // A leading positional is claude's first message, auto-submitted on start — so a driving
+    // session can greet the operator the moment it joins. A resumed session already carries its
+    // own context, so skip the greeting and reattach the prior conversation instead.
+    const args = opts.prompt && !opts.resume
       ? [opts.prompt, "--dangerously-load-development-channels", CHANNEL_REF]
       : ["--dangerously-load-development-channels", CHANNEL_REF];
+
+    // Resume a prior conversation into the mesh. --fork-session makes claude mint a fresh session
+    // id from the resumed history, so the original session this id points at keeps running
+    // untouched (we adopt its context, not its identity). Composes with the strict-MCP isolation
+    // below — the forked process still loads only the cotal server.
+    if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)
     // can look something up under `npx` (no repo on disk) without prompting the operator

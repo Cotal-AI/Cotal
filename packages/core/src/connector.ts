@@ -21,6 +21,11 @@ export interface LaunchOpts {
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */
   prompt?: string;
+  /** Resume a prior session of this agent type instead of starting fresh — the
+   *  connector-specific session id to reattach. The Claude connector forks it
+   *  (`--resume <id> --fork-session`) so the original session keeps its identity;
+   *  connectors that can't resume throw (fail-closed, not a silent no-op). */
+  resume?: string;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */

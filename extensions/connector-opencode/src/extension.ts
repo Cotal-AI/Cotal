@@ -30,6 +30,9 @@ export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Resume is claude-only (it forks a prior claude transcript). Fail closed rather than
+    // silently dropping the flag, so `--resume` against the wrong agent is an explicit error.
+    if (opts.resume) throw new Error("--resume is only supported by the claude connector");
     // Identity rides the process env: the plugin runs in the opencode process and inherits it
     // (unlike the Codex/Claude MCP servers, which get none of the parent env).
     const env: Record<string, string> = { COTAL_SPACE: opts.space, COTAL_NAME: opts.name };
