@@ -27,7 +27,8 @@
     "smoke:attention:auth": "tsx extensions/connector-core/attention-auth.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/feedback.smoke.ts",
     "smoke:attach": "tsx implementations/manager/attach.smoke.ts",
-    "smoke:install": "tsx implementations/cli/install.smoke.ts"
+    "smoke:install": "tsx implementations/cli/install.smoke.ts",
+    "smoke:resume": "tsx resume.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "workspace:*",
