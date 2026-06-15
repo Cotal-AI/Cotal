@@ -55,13 +55,20 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{"command":"node
   stays inert and never joins — so an operator's own sessions in the repo don't appear as stray peers.
 - **Hands-free spawn.** The dev-channels flag prints a one-time "Enter to confirm" prompt; the PTY
   runtime auto-clears it via `LaunchSpec.confirm`, so a supervised launch needs no keypress.
-- **Resume an existing session.** `cotal spawn <name> --resume <session-id>` (and the manager's
-  `cotal start … --resume <id>`) pulls a session you're already working in into the mesh instead of
-  starting cold: `buildLaunch` adds `--resume <id> --fork-session`, so claude replays that transcript
-  into a fresh, cotal-equipped process and **forks** a new session id — your original session keeps
-  its identity and runs untouched. It composes with the MCP isolation above (the forked process still
-  loads only cotal) and skips the auto-submitted greeting (the session already has its context).
-  Resume is claude-only; the codex/opencode connectors reject `--resume`.
+- **Late-join an existing session.** A live `claude` can't be hot-attached (MCP/hooks/channel are
+  launch-bound), so late-join means relaunching a session's history wired to the mesh. `cotal resume`
+  does it with no agent file, from any directory: it discovers the newest session for `--cwd` (default
+  cwd) — `~/.claude/projects/<encoded-cwd>/<id>.jsonl`, where the filename is the id — and launches
+  `claude` there. Two modes, via `buildLaunch`'s `fork` option:
+  - **fork (default)** — `--resume <id> --fork-session`: claude replays the transcript into a fresh,
+    cotal-equipped process under a **new** id, so the original keeps its identity and runs untouched
+    (the mesh peer is a copy that diverges from the fork point).
+  - **`--in-place`** — plain `--resume <id>`: the **same** id/transcript continues, now mesh-wired.
+    Exit the original first (two live processes writing one transcript corrupts it).
+
+  Both skip the auto-submitted greeting (the session already has context) and compose with the MCP
+  isolation above. The same `--resume <id>` flag also exists on `cotal spawn`/`cotal start` (always
+  fork). Resume is claude-only; the codex/opencode connectors reject `--resume`.
 
 ## Agent files (persona + identity)
 
