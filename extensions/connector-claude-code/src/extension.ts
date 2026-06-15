@@ -52,11 +52,16 @@ export const claudeConnector: Connector = {
       ? [opts.prompt, "--dangerously-load-development-channels", CHANNEL_REF]
       : ["--dangerously-load-development-channels", CHANNEL_REF];
 
-    // Resume a prior conversation into the mesh. --fork-session makes claude mint a fresh session
-    // id from the resumed history, so the original session this id points at keeps running
-    // untouched (we adopt its context, not its identity). Composes with the strict-MCP isolation
-    // below — the forked process still loads only the cotal server.
-    if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+    // Resume a prior conversation into the mesh. By default --fork-session makes claude mint a
+    // fresh session id from the resumed history, so the original session this id points at keeps
+    // running untouched (we adopt its context, not its identity) — the safe choice when it may
+    // still be alive. With fork === false (an in-place late-join, original already exited) we omit
+    // it so the *same* session id continues. Composes with the strict-MCP isolation below — either
+    // way the process still loads only the cotal server.
+    if (opts.resume) {
+      args.push("--resume", opts.resume);
+      if (opts.fork !== false) args.push("--fork-session");
+    }
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)
     // can look something up under `npx` (no repo on disk) without prompting the operator

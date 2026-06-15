@@ -26,6 +26,12 @@ export interface LaunchOpts {
    *  (`--resume <id> --fork-session`) so the original session keeps its identity;
    *  connectors that can't resume throw (fail-closed, not a silent no-op). */
   resume?: string;
+  /** When resuming, whether to fork the session into a fresh id (`--fork-session`) so the
+   *  original keeps running untouched, vs. continue the *same* session in place. Defaults
+   *  to forking — the safe choice when the original may still be alive (two live processes
+   *  must never share one transcript). `cotal resume --in-place` sets it false to continue
+   *  the same id after the original has exited. Ignored unless `resume` is set. */
+  fork?: boolean;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
