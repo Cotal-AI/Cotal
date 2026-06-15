@@ -6,9 +6,13 @@
  * Run: pnpm smoke:resume
  */
 import { strict as assert } from "node:assert";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { codexConnector } from "@cotal-ai/connector-codex";
 import { opencodeConnector } from "@cotal-ai/connector-opencode";
+import { findClaudeSession } from "./implementations/cli/src/lib/session.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -45,6 +49,29 @@ assert.throws(
   /only supported by the claude connector/,
 );
 check("opencode throws on resume", true);
+
+// fork toggle: `cotal resume --in-place` (fork:false) continues the SAME id — keeps --resume,
+// drops --fork-session — while the default (fork undefined) still forks. Powers the late-join modes.
+const inPlace = claudeConnector.buildLaunch({ ...base, resume: "sess-123", fork: false });
+check("in-place resume keeps --resume", inPlace.args.includes("--resume"), inPlace.args);
+check("in-place resume omits --fork-session (same id continues)", !inPlace.args.includes("--fork-session"), inPlace.args);
+check("default resume still forks when fork is unset", spec.args.includes("--fork-session"), spec.args);
+
+// session discovery: newest-by-mtime, with the cwd → `~/.claude/projects/<encoded>` mapping.
+const home = mkdtempSync(join(tmpdir(), "cotal-resume-"));
+process.env.HOME = home; // os.homedir() honors $HOME on POSIX
+const projectCwd = "/tmp/My Proj.dir";
+const dir = join(home, ".claude", "projects", projectCwd.replace(/[^a-zA-Z0-9]/g, "-"));
+mkdirSync(dir, { recursive: true });
+const older = join(dir, "older-session.jsonl");
+const newer = join(dir, "newer-session.jsonl");
+writeFileSync(older, "{}\n");
+writeFileSync(newer, "{}\n");
+utimesSync(older, 1000, 1000);
+utimesSync(newer, 2000, 2000);
+const found = findClaudeSession(projectCwd);
+check("findClaudeSession returns the newest session by mtime", found?.id === "newer-session", found);
+check("findClaudeSession is empty for an unknown cwd", findClaudeSession("/no/such/project") === undefined);
 
 console.log(`\nresume smoke: ${pass} checks passed`);
 process.exit(0);
