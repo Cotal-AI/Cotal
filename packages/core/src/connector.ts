@@ -24,10 +24,11 @@ export interface LaunchSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
-  /** Auto-clear a one-time spawn prompt: when this text appears in the agent's
-   *  early output, the runtime presses Enter once so a supervised launch stays
-   *  non-interactive. Matched after stripping ANSI + whitespace (TUIs position
-   *  text with cursor moves, not spaces). */
+  /** Auto-clear startup confirm prompts: while this text is on screen during the agent's
+   *  first seconds, the runtime presses Enter to accept it, so a supervised launch stays
+   *  non-interactive. Fires once per prompt (Claude can show several back-to-back — workspace
+   *  trust, then the dev-channels warning). Matched after stripping ANSI + whitespace (TUIs
+   *  position text with cursor moves, not spaces). */
   confirm?: string;
 }
 

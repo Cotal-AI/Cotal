@@ -5,8 +5,12 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
 /** How much terminal output to retain for late-attach scrollback replay. */
 const SCROLLBACK_BYTES = 256 * 1024;
-/** Stop watching for a spawn-confirm prompt after this long (it appears at startup). */
+/** Stop watching for spawn-confirm prompts after this long (they appear at startup). */
 const CONFIRM_WINDOW_MS = 20_000;
+/** Min gap between auto-confirm keypresses, so one rendered prompt isn't pressed twice. */
+const CONFIRM_COOLDOWN_MS = 700;
+/** Safety cap on auto-confirm presses — startup shows a small fixed set of prompts, never a loop. */
+const MAX_CONFIRMS = 6;
 /** Grace window for a clean exit before a graceful stop escalates to SIGKILL. */
 const GRACE_MS = 3_000;
 
@@ -46,12 +50,38 @@ export class PtyRuntime implements Runtime {
     let cols = DEFAULT_COLS;
     let rows = DEFAULT_ROWS;
 
-    // Auto-clear a one-time spawn prompt (e.g. Claude's dev-channel confirmation):
-    // watch early output for `spec.confirm` and press Enter once when it appears.
+    // Auto-clear one-time spawn prompts. Claude shows up to two back-to-back "Enter to confirm"
+    // screens on a fresh workspace (the trust-folder prompt, then the dev-channels warning), each
+    // waiting for input. So matching can't be one-shot (it would clear only the first and hang on
+    // the second), nor purely output-driven (a prompt renders then goes quiet — no data to react
+    // to). Instead poll on a timer within the startup window: when `spec.confirm` is on screen and
+    // the cooldown has elapsed, press Enter and clear the buffer so the SAME screen isn't pressed
+    // twice; the next prompt re-populates it. Capped, so it can never become an Enter loop.
     const confirmTarget = spec.confirm ? normalizeForMatch(spec.confirm) : "";
-    let confirmArmed = Boolean(confirmTarget);
     let confirmBuf = "";
-    if (confirmArmed) setTimeout(() => (confirmArmed = false), CONFIRM_WINDOW_MS);
+    let confirmPresses = 0;
+    let lastConfirmAt = 0;
+    let confirmTimer: ReturnType<typeof setInterval> | undefined;
+    const stopConfirm = () => {
+      confirmBuf = "";
+      if (confirmTimer) {
+        clearInterval(confirmTimer);
+        confirmTimer = undefined;
+      }
+    };
+    const tryConfirm = () => {
+      if (!alive || !confirmTimer) return;
+      if (Date.now() - lastConfirmAt < CONFIRM_COOLDOWN_MS) return;
+      if (!normalizeForMatch(confirmBuf).includes(confirmTarget)) return;
+      lastConfirmAt = Date.now();
+      confirmBuf = "";
+      proc.write("\r");
+      if (++confirmPresses >= MAX_CONFIRMS) stopConfirm();
+    };
+    if (confirmTarget) {
+      confirmTimer = setInterval(tryConfirm, 250);
+      setTimeout(stopConfirm, CONFIRM_WINDOW_MS);
+    }
 
     proc.onData((d) => {
       const b = Buffer.from(d, "utf8");
@@ -60,19 +90,15 @@ export class PtyRuntime implements Runtime {
       while (ringBytes > SCROLLBACK_BYTES && ring.length > 1) {
         ringBytes -= ring.shift()!.length;
       }
-      if (confirmArmed) {
+      if (confirmTimer) {
         confirmBuf = (confirmBuf + d).slice(-8192);
-        if (normalizeForMatch(confirmBuf).includes(confirmTarget)) {
-          confirmArmed = false;
-          // Let the TUI finish wiring up its raw-mode input loop (it may flush
-          // stdin on init) before pressing Enter, or the keypress is dropped.
-          setTimeout(() => alive && proc.write("\r"), 500);
-        }
+        tryConfirm();
       }
       for (const fn of dataSubs) fn(b);
     });
     proc.onExit(() => {
       alive = false;
+      stopConfirm();
       for (const fn of exitSubs) fn();
     });
 
