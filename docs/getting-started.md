@@ -68,7 +68,7 @@ feedback). Prefer commands?
 cotal go                             # open or resume your session (reuses what's up)
 cotal spawn me                       # the session you drive (consults david/sven)
 cotal spawn david                    # ask the engineer (or sven, the guide)
-cotal resume                         # late-join the session you're already in onto the mesh
+cotal spawn me --resume <id>         # late-join an existing Claude session onto the mesh
 cotal console --space main           # live mesh view in the terminal (TUI)
 cotal web --space main               # (re)open the browser dashboard
 cotal down                           # stop the background mesh + dashboard + manager

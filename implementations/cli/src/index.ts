@@ -8,7 +8,6 @@ import { console_ } from "./commands/console.js";
 import { demo } from "./commands/demo.js";
 import { web } from "./commands/web.js";
 import { spawn } from "./commands/spawn.js";
-import { resume } from "./commands/resume.js";
 import { mint } from "./commands/mint.js";
 import { channels } from "./commands/channels.js";
 import { history } from "./commands/history.js";
@@ -87,16 +86,8 @@ const baseCommands: Command[] = [
     name: "spawn",
     group: "Agents",
     summary:
-      "launch an agent in this terminal from a file — spawn <name-or-path> | --name <n> --config <path> [--agent <a>] [--role <r>]",
+      "launch an agent in this terminal from a file — spawn <name-or-path> | --name <n> --config <path> [--agent <a>] [--role <r>] [--resume <id>] [--in-place]",
     run: spawn,
-  },
-  {
-    kind: "command",
-    name: "resume",
-    group: "Agents",
-    summary:
-      "late-join an existing Claude Code session onto the mesh (no agent file, any dir) — resume [--resume <id>] [--cwd <dir>] [--in-place] [--space <s>] [--server <url>] [--name <n>]",
-    run: resume,
   },
   {
     kind: "command",

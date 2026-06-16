@@ -44,7 +44,8 @@ export async function spawn(argv: string[]): Promise<void> {
       agent: { type: "string" },
       role: { type: "string" },
       prompt: { type: "string" },
-      resume: { type: "string" },
+      resume: { type: "string" }, // resume a prior Claude session id (claude-only; others ignore)
+      "in-place": { type: "boolean" }, // continue the same id instead of forking a fresh one
     },
   });
 
@@ -53,7 +54,7 @@ export async function spawn(argv: string[]): Promise<void> {
   const ref = values.config ?? positionals[0] ?? values.name;
   if (!ref) {
     console.error(
-      "usage: cotal spawn <name-or-path> | --config <path> | --name <n>  [--agent <a>] [--role <r>] [--resume <id>] [--space <s>] [--server <url>] [--prompt <text>]",
+      "usage: cotal spawn <name-or-path> | --config <path> | --name <n>  [--agent <a>] [--role <r>] [--resume <id>] [--in-place] [--space <s>] [--server <url>] [--prompt <text>]",
     );
     process.exit(1);
   }
@@ -117,6 +118,8 @@ export async function spawn(argv: string[]): Promise<void> {
     configPath: path,
     prompt: values.prompt,
     resume: values.resume,
+    // Fork by default (safe — original session untouched); --in-place continues the same id.
+    fork: values["in-place"] ? false : undefined,
   });
 
   console.error(

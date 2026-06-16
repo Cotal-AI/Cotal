@@ -56,19 +56,17 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{"command":"node
 - **Hands-free spawn.** The dev-channels flag prints a one-time "Enter to confirm" prompt; the PTY
   runtime auto-clears it via `LaunchSpec.confirm`, so a supervised launch needs no keypress.
 - **Late-join an existing session.** A live `claude` can't be hot-attached (MCP/hooks/channel are
-  launch-bound), so late-join means relaunching a session's history wired to the mesh. `cotal resume`
-  does it with no agent file, from any directory: it discovers the newest session for `--cwd` (default
-  cwd) — `~/.claude/projects/<encoded-cwd>/<id>.jsonl`, where the filename is the id — and launches
-  `claude` there. Two modes, via `buildLaunch`'s `fork` option:
+  launch-bound), so late-join means relaunching a session's history wired to the mesh — a `--resume
+  <id>` pass-through on `cotal spawn <name>` (and `cotal start`), where `<id>` is the transcript
+  filename under `~/.claude/projects/<encoded-cwd>/<id>.jsonl`. Two modes:
   - **fork (default)** — `--resume <id> --fork-session`: claude replays the transcript into a fresh,
     cotal-equipped process under a **new** id, so the original keeps its identity and runs untouched
     (the mesh peer is a copy that diverges from the fork point).
-  - **`--in-place`** — plain `--resume <id>`: the **same** id/transcript continues, now mesh-wired.
-    Exit the original first (two live processes writing one transcript corrupts it).
+  - **`--in-place`** (spawn only) — plain `--resume <id>`: the **same** id/transcript continues, now
+    mesh-wired. Exit the original first (two live processes writing one transcript corrupts it).
 
   Both skip the auto-submitted greeting (the session already has context) and compose with the MCP
-  isolation above. The same `--resume <id>` flag also exists on `cotal spawn`/`cotal start` (always
-  fork). Resume is claude-only; the codex/opencode connectors reject `--resume`.
+  isolation above. Resume is claude-only; the other connectors ignore the flag (like `prompt`).
 
 ## Agent files (persona + identity)
 
