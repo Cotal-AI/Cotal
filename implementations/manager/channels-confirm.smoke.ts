@@ -7,7 +7,7 @@
  * fresh (untrusted) workspace so both prompts appear, and asserts the session gets past them to
  * the live UI instead of stalling on the channels warning.
  *
- * Run: COTAL_TEST_CLAUDE_BIN=/path/to/claude-2.1.178 pnpm smoke:channels
+ * Run: COTAL_TEST_CLAUDE_BIN=/path/to/claude-2.1.178 pnpm smoke:confirm
  * Skips cleanly if no claude binary is available (e.g. CI without auth).
  */
 import { spawnSync } from "node:child_process";
