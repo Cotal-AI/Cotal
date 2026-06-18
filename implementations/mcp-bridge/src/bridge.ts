@@ -1,16 +1,10 @@
 import { CotalEndpoint } from "@cotal-ai/core";
 import type { ControlReply, ControlRequest } from "@cotal-ai/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { buildClientTransport, isStdioSpec, type McpServerSpec } from "./transport.js";
+import { daemonOAuthProvider } from "./oauth.js";
 
-/** One external MCP server to bridge onto the mesh (a stdio child process). */
-export interface McpServerSpec {
-  /** Logical name — namespaces tools as `<name>.<tool>` when more than one server is bridged. */
-  name: string;
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
+export type { McpServerSpec } from "./transport.js";
 
 export interface McpBridgeOptions {
   space: string;
@@ -40,7 +34,6 @@ interface BridgedTool {
 interface Backend {
   spec: McpServerSpec;
   client: Client;
-  transport: StdioClientTransport;
 }
 
 /** Flatten an MCP tool result's content into plain text. */
@@ -93,14 +86,14 @@ export class McpBridge {
     // server config never shows up as an empty, half-working bridge peer.
     const multi = this.opts.mcp.length > 1;
     for (const spec of this.opts.mcp) {
-      const transport = new StdioClientTransport({
-        command: spec.command,
-        args: spec.args,
-        env: spec.env,
-      });
+      // Remote OAuth servers authenticate from tokens cached by `cotal mcp-bridge login`; the
+      // daemon never opens a browser — it throws an actionable error if no token is cached.
+      const authProvider =
+        !isStdioSpec(spec) && spec.oauth ? daemonOAuthProvider(spec.name, spec.url) : undefined;
+      const transport = buildClientTransport(spec, authProvider);
       const client = new Client({ name: "cotal-mcp-bridge", version: "0.3.1" });
       await client.connect(transport);
-      this.backends.push({ spec, client, transport });
+      this.backends.push({ spec, client });
       const { tools } = await client.listTools();
       for (const t of tools) {
         const name = multi ? `${spec.name}.${t.name}` : t.name;

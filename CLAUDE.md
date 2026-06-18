@@ -28,6 +28,7 @@ pnpm + TypeScript ESM monorepo — four dependency tiers, one-way deps, Node ≥
 - **`implementations/*` — opinionated surfaces** over core (self-contained; never import each other).
   - **@cotal-ai/cli** — mesh CLI: `up`, `join`, `watch`, `console` (thin NATS clients) plus `spawn` — a foreground agent launch reusing the connector's launch recipe.
   - **@cotal-ai/manager** — agent supervisor: a mesh endpoint that spawns/manages nodes via a pluggable `Runtime` (`pty` default / `tmux` / `cmux`), plus its own control-plane commands (`start`/`stop`/`ps`/`attach`) and a WS attach endpoint.
+  - **@cotal-ai/mcp-bridge** — a mesh endpoint that connects to an MCP server (stdio or remote HTTP/SSE, with static-token or OAuth auth) and serves its tools to the whole space over the control plane (`list`/`call` on the `mcp` service); the `mcp-bridge` command + a `login` sub-verb for OAuth. Agents opt into the `cotal_tools`/`cotal_tool` consumer tools via `COTAL_MCP_BRIDGE=1`.
 - **`bin/cotal.ts` — composition root** for the `cotal` binary: imports the implementations it wants (which self-register their commands) and runs them.
 - **`examples/*` — use-cases** (composition roots; private, never published).
 

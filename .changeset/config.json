@@ -8,6 +8,7 @@
       "@cotal-ai/core",
       "@cotal-ai/cli",
       "@cotal-ai/manager",
+      "@cotal-ai/mcp-bridge",
       "@cotal-ai/cmux",
       "@cotal-ai/connector-core",
       "@cotal-ai/connector-claude-code",

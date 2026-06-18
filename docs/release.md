@@ -11,7 +11,7 @@ OIDC tokens issued by GitHub Actions. Each published package must be
 configured once on npmjs.com.
 
 For **every** published package (`@cotal-ai/core`, `@cotal-ai/cli`,
-`@cotal-ai/manager`, `@cotal-ai/connector-core`,
+`@cotal-ai/manager`, `@cotal-ai/mcp-bridge`, `@cotal-ai/connector-core`,
 `@cotal-ai/connector-claude-code`, `@cotal-ai/connector-opencode`,
 `@cotal-ai/cmux`):
 
