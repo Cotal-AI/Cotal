@@ -8,6 +8,7 @@
  */
 import { runCli } from "@cotal-ai/cli"; // self-registers up / down / join / watch / spawn / console / setup
 import "@cotal-ai/manager"; // self-registers supervise / cmux / start / stop / ps / attach
+import "@cotal-ai/mcp-bridge"; // self-registers mcp-bridge (external MCP tools as a shared mesh service)
 import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
 import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
 import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)

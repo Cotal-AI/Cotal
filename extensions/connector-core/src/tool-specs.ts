@@ -112,7 +112,7 @@ export function channelMeta(i: InboxItem): Record<string, string> {
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. */
 export function cotalToolSpecs(config: AgentConfig, source = "connector"): CotalToolSpec[] {
-  return [
+  const specs: CotalToolSpec[] = [
     {
       name: "cotal_roster",
       title: "Cotal: who's present",
@@ -508,6 +508,60 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           return err(
             `Couldn't define ${name}: no manager reachable (${(e as Error).message}). Is the manager running?`,
           );
+        }
+      },
+    },
+  ];
+  if (config.mcpBridge) specs.push(...mcpBridgeToolSpecs());
+  return specs;
+}
+
+/** Tools for calling external MCP tools shared on the mesh by an mcp-bridge peer. Added to the
+ *  surface only when `config.mcpBridge` is set. They reach the bridge over the "mcp" control
+ *  service: `cotal_tools` lists the catalog, `cotal_tool` invokes one — so a peer uses the whole
+ *  catalog through one shared connection instead of wiring up its own MCP servers. */
+function mcpBridgeToolSpecs(): CotalToolSpec[] {
+  return [
+    {
+      name: "cotal_tools",
+      title: "Cotal: list shared MCP tools",
+      description:
+        "List the external MCP tools shared on the mesh by an mcp-bridge peer, with each tool's input shape. Call one with cotal_tool.",
+      async run(agent) {
+        if (!agent.connected) return ok("Not connected to the mesh yet.");
+        try {
+          const tools = await agent.listRemoteTools();
+          if (!tools.length) return ok("No shared MCP tools available (no mcp-bridge present).");
+          const lines = tools.map(
+            (t) =>
+              `• ${t.name}${t.description ? ` — ${t.description}` : ""}\n  input: ${JSON.stringify(t.inputSchema ?? {})}`,
+          );
+          return ok(`Shared MCP tools (call with cotal_tool):\n${lines.join("\n")}`);
+        } catch (e) {
+          return err(`Couldn't list shared tools: ${(e as Error).message}`);
+        }
+      },
+    },
+    {
+      name: "cotal_tool",
+      title: "Cotal: call a shared MCP tool",
+      description:
+        "Invoke an external MCP tool shared on the mesh (discover names + input shapes with cotal_tools). The call runs on the mcp-bridge peer and the result comes back over the mesh.",
+      schema: {
+        tool: z.string().describe("The tool name, as listed by cotal_tools."),
+        arguments: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("Arguments object matching the tool's input schema (omit for no-argument tools)."),
+      },
+      async run(agent, _config, { tool, arguments: a }: { tool: string; arguments?: Record<string, unknown> }) {
+        try {
+          const reply = await agent.callRemoteTool(tool, a ?? {});
+          if (!reply.ok) return err(`Tool ${tool} failed: ${reply.error ?? "error"}`);
+          const d = reply.data as { text?: string } | undefined;
+          return ok(d?.text || "(no output)");
+        } catch (e) {
+          return err(`Couldn't call ${tool}: ${(e as Error).message}`);
         }
       },
     },

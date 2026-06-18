@@ -382,6 +382,27 @@ export class MeshAgent extends EventEmitter {
     return reply;
   }
 
+  // ---- shared MCP tools (mcp-bridge) ---------------------------------------
+
+  /** List external MCP tools shared on the mesh by an mcp-bridge peer (its `list` op on the
+   *  "mcp" control service). Throws if no bridge answers. */
+  async listRemoteTools(): Promise<
+    { name: string; description?: string; inputSchema?: unknown }[]
+  > {
+    this.assertConnected();
+    const reply = await this.ep.requestControl("mcp", { op: "list" }, 10_000);
+    if (!reply.ok) throw new Error(reply.error ?? "mcp-bridge refused");
+    return (reply.data as { tools?: { name: string; description?: string; inputSchema?: unknown }[] })
+      ?.tools ?? [];
+  }
+
+  /** Call a shared MCP tool through the bridge (its `call` op). A longer timeout than the
+   *  control-plane default — bridged tools can be slow. */
+  async callRemoteTool(tool: string, args: Record<string, unknown>): Promise<ControlReply> {
+    this.assertConnected();
+    return this.ep.requestControl("mcp", { op: "call", args: { tool, arguments: args } }, 60_000);
+  }
+
   // ---- presence ------------------------------------------------------------
 
   /** The full roster, including ourselves. */

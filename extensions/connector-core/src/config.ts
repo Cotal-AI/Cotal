@@ -40,6 +40,9 @@ export interface AgentConfig {
   feedbackKey?: string;
   /** Optional intake URL override (`COTAL_FEEDBACK_URL`) for self-hosted intakes. */
   feedbackUrl?: string;
+  /** When set (`COTAL_MCP_BRIDGE=1`), surface the `cotal_tools` / `cotal_tool` tools so this
+   *  agent can discover and call external MCP tools shared on the mesh by an mcp-bridge peer. */
+  mcpBridge?: boolean;
 }
 
 function splitList(v: string | undefined): string[] {
@@ -94,6 +97,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     tls: env.COTAL_TLS?.trim() === "1" || link?.tls || false,
     feedbackKey: env.COTAL_FEEDBACK_KEY?.trim() || undefined,
     feedbackUrl: env.COTAL_FEEDBACK_URL?.trim() || undefined,
+    mcpBridge: env.COTAL_MCP_BRIDGE?.trim() === "1",
   };
 }
 

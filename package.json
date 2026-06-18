@@ -32,6 +32,7 @@
     "smoke:attention:auth": "tsx extensions/connector-core/attention-auth.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/feedback.smoke.ts",
     "smoke:attach": "tsx implementations/manager/attach.smoke.ts",
+    "smoke:mcp-bridge": "tsx implementations/mcp-bridge/mcp-bridge.smoke.ts",
     "smoke:install": "tsx implementations/cli/install.smoke.ts",
     "smoke:send": "tsx implementations/cli/send.smoke.ts"
   },
@@ -42,7 +43,8 @@
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/core": "workspace:*",
-    "@cotal-ai/manager": "workspace:*"
+    "@cotal-ai/manager": "workspace:*",
+    "@cotal-ai/mcp-bridge": "workspace:*"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

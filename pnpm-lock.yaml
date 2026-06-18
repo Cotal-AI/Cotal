@@ -29,6 +29,9 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:implementations/manager
+      '@cotal-ai/mcp-bridge':
+        specifier: workspace:*
+        version: link:implementations/mcp-bridge
     devDependencies:
       '@changesets/cli':
         specifier: ^2.31.0
@@ -69,6 +72,9 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
+      '@cotal-ai/mcp-bridge':
+        specifier: workspace:*
+        version: link:../implementations/mcp-bridge
 
   examples/01-lateral-coordination:
     dependencies:
@@ -310,6 +316,15 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+
+  implementations/mcp-bridge:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
 
   packages/core:
     dependencies:

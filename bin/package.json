@@ -37,7 +37,8 @@
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/core": "workspace:*",
-    "@cotal-ai/manager": "workspace:*"
+    "@cotal-ai/manager": "workspace:*",
+    "@cotal-ai/mcp-bridge": "workspace:*"
   },
   "files": [
     "dist",
