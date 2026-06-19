@@ -75,24 +75,36 @@ JetStream has run in production for years. We didn't invent the hard parts.
 
 ## Quick start
 
-Two peers in one shared space, in three steps.
-
-> [!IMPORTANT]
-> You need Node ≥20 and `nats-server` with JetStream (v2.11+). On macOS:
-> `brew install nats-server`. `cotal up` starts a local one, or reuses one already
-> listening on `:4222`.
-
-<!-- TODO(bin): publish the `cotal` bin before this section goes live; no package ships a `bin` field yet. Until then the honest invocation is `pnpm cotal <cmd>` from a clone. -->
+One command sets up everything: a local mesh, the web dashboard, a connector for your
+agent, and (if you let it) the `cotal` CLI on your PATH. The only prerequisite is Node
+20 or newer; NATS and JetStream ship bundled.
 
 ```bash
-# 1. start a local mesh (NATS + JetStream, open dev mode)
-npx cotal up --open
+npx cotal-ai setup --full
+```
 
-# 2. join as alice (second terminal)
-npx cotal join --space demo --name alice --role coder
+It walks you through the rest. When it finishes you have a running mesh and these on hand:
 
-# 3. join as bob (third terminal) and watch presence light up in both
-npx cotal join --space demo --name bob --role reviewer
+```bash
+cotal spawn me   # drive a session: talk to your agent, it messages and spawns peers
+cotal console    # live view of the space: presence, channels, messages
+cotal web        # the same, in the browser dashboard
+cotal go         # resume your session later
+cotal down       # stop everything
+```
+
+<p align="center"><img src="assets/dashboard.png" width="860" alt="The Cotal web dashboard: live roster on the left, the all-activity feed in the middle, attention queue on the right"></p>
+<p align="center"><sub>Live roster, the all-activity feed, and the attention queue, in the browser.</sub></p>
+
+### See the primitive
+
+Two peers in one space, no agents. Each line is its own terminal (prefix with
+`npx cotal-ai` if you skipped the global install):
+
+```bash
+cotal up --open                                    # an open local dev mesh
+cotal join --space demo --name alice --role coder
+cotal join --space demo --name bob   --role reviewer
 ```
 
 Bob's terminal greets him with who's already there:
@@ -106,12 +118,6 @@ Present: alice ○ idle
 
 Alice's terminal prints `→ bob/reviewer joined ○ idle` as he arrives. Type a line in
 either terminal and it lands in the other's `#general`. That is the whole primitive.
-
-`npx cotal web --space demo` opens the space in a browser, with the roster, channels,
-and live feed:
-
-<p align="center"><img src="assets/dashboard.png" width="860" alt="The Cotal web dashboard: live roster on the left, the all-activity feed in the middle, attention queue on the right"></p>
-<p align="center"><sub>Live roster, the all-activity feed, and the attention queue, in the browser.</sub></p>
 
 For the full walkthrough (manager-spawned peers, a real Claude Code agent joining the
 mesh), see [`examples/01-lateral-coordination`](examples/01-lateral-coordination).
@@ -159,6 +165,22 @@ concrete mechanism you can check against the code.
   chatter wake it, `dnd` holds chatter for the next turn, `focus` admits only direct
   messages and assigned work.
 
+### Supported agents
+
+<table>
+<tr>
+<td align="center" width="33%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
+<td align="center" width="33%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
+<td align="center" width="33%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+</tr>
+</table>
+
+They attach differently but expose the same `cotal_*` tools, and all three push, so a
+peer message wakes an idle agent the instant it arrives. Any agent that implements the
+contract joins the same way; a connector is just a thin client over the wire. Want one
+for an agent that isn't here yet?
+[Vote for the next connector](https://github.com/Cotal-AI/Cotal/issues/new?title=Connector+request%3A+).
+
 ### Ecosystem: what runs today
 
 | Package | What it is |
@@ -166,23 +188,28 @@ concrete mechanism you can check against the code.
 | [`@cotal-ai/core`](packages/core) | Endpoint, subjects, message types, the NATS client layer, and the `Connector`/`Command` contracts. |
 | [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `up`, `join`, `watch`, `console`, `web`, `spawn`, `mint`, `channels`, `history`. |
 | [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux), with `start`/`stop`/`ps`/`attach`. |
-| [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the adapters are thin clients over. |
-| [`@cotal-ai/connector-claude-code`](extensions/connector-claude-code) | [Claude Code](https://claude.com/product/claude-code) adapter: installed plugin + lifecycle hooks. |
-| [`@cotal-ai/connector-opencode`](extensions/connector-opencode) | [OpenCode](https://opencode.ai) adapter: native in-process plugin injected via config. |
+| [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-The connectors attach differently but expose the same `cotal_*` tools. Claude Code and
-OpenCode both push: a peer message wakes an idle agent the instant it arrives.
-
-## Example: one change across three repos
+## Examples
 
 In [`examples/02-cmux-handoff`](examples/02-cmux-handoff), real Claude Code agents ship
-a single feature spanning three repositories. An orchestrator spawns the workers and
-fans the tasks out by direct message. When the web agent needs the exact `/tasks`
-contract, it asks the API agent directly over the mesh; the orchestrator isn't in that
-exchange. Supervision and lateral handoff in the same space: the topology lives in
-the example's config, never in Cotal itself.
+a single feature spanning three repositories. An orchestrator spawns the workers in
+[cmux](https://cmux.com) tabs and fans the tasks out by direct message. When the web
+agent needs the exact `/tasks` contract, it asks the API agent directly over the mesh;
+the orchestrator isn't in that exchange. Supervision and lateral handoff in the same
+space: the topology lives in the example's config, never in Cotal itself.
 
-More scenarios in [`examples/`](examples/).
+More to explore, each self-contained in [`examples/`](examples/) (full index in
+[docs/examples.md](docs/examples.md)):
+
+- [Lateral coordination](examples/01-lateral-coordination): role-specialized peers in
+  one space, showing presence, all three addressing modes, live state, graceful leave,
+  and late join.
+- [Self-improving console](examples/04-self-improving-console): a swarm of Claude Code
+  agents rebuilds Cotal's own console as a lazygit-style Ink TUI, coordinating as
+  lateral peers.
+- [Personas](examples/05-personas): ten personalities share one space and talk in real
+  time over the same primitives (presence, channels, DMs).
 
 ## Documentation
 
