@@ -490,9 +490,12 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      if (!admin && def.owner !== caller)
-        return { ok: false, error: `not authorized to redefine ${name}: owned by ${def.owner ?? "(none)"} (admin tier required)` };
-      def.model = model;
+      if (!admin && def.owner !== caller) {
+        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file — no agent owner)";
+        return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
+      }
+      // PATCH content: overwrite model only when provided, so a persona-only redefine can't wipe an existing model.
+      if (model !== undefined) def.model = model;
       def.persona = persona;
     } else {
       // Fresh name: create with content + owner = caller. The privileged tier suffices (creating a

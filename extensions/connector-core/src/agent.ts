@@ -404,13 +404,13 @@ export class MeshAgent extends EventEmitter {
   async definePersona(def: {
     name: string;
     prompt: string;
-    role?: string;
     model?: string;
   }): Promise<ControlReply> {
     this.assertConnected();
     const reply = await this.ep.requestControl(CONTROL_PRIVILEGED, {
       op: "definePersona",
-      args: { name: def.name, role: def.role, model: def.model, persona: def.prompt },
+      // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
+      args: { name: def.name, model: def.model, persona: def.prompt },
     });
     if (reply.ok) await this.send(`persona \`${def.name}\` is now available — spawn it to bring it online`);
     return reply;
