@@ -108,6 +108,15 @@ endpoint methods; those go into `core`, generalized.
 - **Look at the relevant docs**, make sure `.internal` is current, and follow its guidelines
   when making changes.
 
+## Git and public messages
+
+- **No tool or AI attribution, anywhere.** Commit messages and PRs use plain Conventional
+  Commits: no `Co-Authored-By: Claude`, no "Generated with Claude Code", no agent or tool
+  footer or trailer.
+- **Never self-advertise in a public message.** Commits, PRs, issues, and mesh channel posts
+  should read as a human contributor wrote them. Do not name or promote the agent or tool that
+  produced them.
+
 ## Research and web tools
 
 - **Research online first.** Before implementing a feature (NATS/JetStream APIs, MCP SDK,
