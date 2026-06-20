@@ -29,6 +29,7 @@
     "smoke:channels": "tsx packages/core/channels.smoke.ts",
     "smoke:channels:auth": "tsx packages/core/channels-auth.smoke.ts",
     "smoke:read-acl:auth": "tsx packages/core/read-acl-auth.smoke.ts",
+    "smoke:e2e:acl": "tsx packages/core/e2e-acl.smoke.ts",
     "smoke:control-auth": "tsx packages/core/control-auth.smoke.ts",
     "smoke:attention": "tsx extensions/connector-core/attention.smoke.ts",
     "smoke:attention:auth": "tsx extensions/connector-core/attention-auth.smoke.ts",
