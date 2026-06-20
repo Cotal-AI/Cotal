@@ -2,12 +2,14 @@ import type { Command, Registry } from "@cotal-ai/core";
 import { c } from "./ui.js";
 
 function help(commands: Command[]): void {
+  // `__`-prefixed commands are internal (e.g. `__complete`, the completion dispatcher) — hide them.
+  const visible = commands.filter((cmd) => !cmd.name.startsWith("__"));
   const groups = new Map<string, Command[]>();
-  for (const cmd of commands) {
+  for (const cmd of visible) {
     const g = cmd.group ?? "Commands";
     (groups.get(g) ?? groups.set(g, []).get(g)!).push(cmd);
   }
-  const pad = Math.max(...commands.map((c) => c.name.length));
+  const pad = Math.max(...visible.map((c) => c.name.length));
   let out = `${c.bold("cotal")} — lateral agent coordination over NATS\n`;
   for (const [group, cmds] of groups) {
     out += `\n${c.bold(group)}\n`;

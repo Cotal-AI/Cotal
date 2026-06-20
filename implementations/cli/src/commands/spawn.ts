@@ -19,11 +19,21 @@ import {
   registry,
   CotalEndpoint,
   type AgentDef,
+  type CompletionResult,
   type Connector,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { cotalRoot } from "../lib/paths.js";
+import { listPersonaNames } from "../lib/personas.js";
 import { resolveSpace } from "../lib/status.js";
+
+/** Completion for `cotal spawn <name>` — the first positional is a persona; the rest are flags
+ *  we leave to the shell. Filesystem-only (the persona catalog), so it never opens the mesh. */
+export function spawnComplete(argv: string[]): CompletionResult {
+  if (argv.length <= 1)
+    return { items: listPersonaNames().map((value) => ({ value })), directive: "nofiles" };
+  return { items: [], directive: "nofiles" };
+}
 
 /**
  * `cotal spawn <name-or-path>` — launch an agent in the FOREGROUND of this

@@ -134,6 +134,23 @@ teammate's persona on the fly and bring it online with no hand-written file. (Ro
 spawn, since `cotal_spawn` takes a role; it is not set here, because role is policy, not
 persona content.)
 
+**Manage the catalog from the CLI.** `cotal personas` is the operator-side counterpart to the
+runtime `cotal_persona` tool. It reads and writes the same `.cotal/agents/*.md` files
+**directly** — instant, offline, no mesh — where the tool path goes over the wire with the
+manager's ownership checks; two trust contexts, kept separate. `cotal personas` (or `list`)
+shows the catalog, `show <name>` prints a card, `new <name> (--prompt <text> | --from
+<file|->) [--role <r>] [--model <m>] [--force]` writes one, and `rm <name> --force` deletes
+it.
+
+**Tab completion.** `cotal completion <bash|zsh|fish|powershell>` prints a shell stub to
+stdout and writes nothing else. Install it once; each `<TAB>` then forwards to a hidden
+`cotal __complete`, so completion sees live data — `cotal spawn <TAB>` lists your actual
+personas. Enable it for the current shell with `source <(cotal completion zsh)` (fish: `cotal
+completion fish | source`; PowerShell: `cotal completion powershell | Out-String |
+Invoke-Expression`), or save the stub into the shell's completion directory to persist it. A
+command provides its candidates through the optional `complete()` on the
+[`Command`](../packages/core/src/command.ts) contract, the same way it owns `run()`.
+
 ## One-link join
 
 A single **join link** carries server, auth, and space, so a peer joins by pasting one

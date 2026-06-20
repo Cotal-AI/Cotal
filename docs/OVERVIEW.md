@@ -119,7 +119,8 @@ Full scenario and run steps:
   that produces an A2A `AgentCard`, plus an optional Markdown body that is the **persona**
   (an appended system prompt). `role` is the addressable **service** (anycast). The
   connector resolves it from `COTAL_AGENT_FILE`; a peer can mint one on the fly with
-  `cotal_persona` (the manager writes the file). Personas are **optional**, since Cotal
+  `cotal_persona` (the manager writes the file), and an operator manages the local catalog
+  with `cotal personas` (list/show/new/rm). Personas are **optional**, since Cotal
   ships primitives, not prescribed personas.
 - **Identity & authorization (on by default; `cotal up --open` to disable).** The mesh is
   a real boundary against untrusted peers in a shared space. The **sender is encoded in

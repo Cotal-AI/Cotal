@@ -7,7 +7,9 @@ import { watch } from "./commands/watch.js";
 import { console_ } from "./commands/console.js";
 import { demo } from "./commands/demo.js";
 import { web } from "./commands/web.js";
-import { spawn } from "./commands/spawn.js";
+import { spawn, spawnComplete } from "./commands/spawn.js";
+import { personas, personasComplete } from "./commands/personas.js";
+import { completion, completionComplete, complete } from "./commands/completion.js";
 import { mint } from "./commands/mint.js";
 import { signer } from "./commands/signer.js";
 import { channels } from "./commands/channels.js";
@@ -114,6 +116,31 @@ const baseCommands: Command[] = [
     summary:
       "launch an agent in this terminal from a file — spawn <name-or-path> | --name <n> --config <path> [--agent <a>] [--role <r>]",
     run: spawn,
+    complete: spawnComplete,
+  },
+  {
+    kind: "command",
+    name: "personas",
+    group: "Agents",
+    summary:
+      "list/manage local personas (.cotal/agents) — personas <list [-v] | show <name> | new <name> (--prompt <t>|--from <f>) [--role <r>] [--model <m>] | rm <name> --force>",
+    run: personas,
+    complete: personasComplete,
+  },
+  {
+    kind: "command",
+    name: "completion",
+    group: "Agents",
+    summary: "print a shell-completion script — completion <bash|zsh|fish|powershell>",
+    run: completion,
+    complete: completionComplete,
+  },
+  {
+    kind: "command",
+    name: "__complete",
+    group: "Agents",
+    summary: "(internal) emit completion candidates for the current command line",
+    run: complete,
   },
   {
     kind: "command",
