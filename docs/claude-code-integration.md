@@ -166,14 +166,15 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{"command":"node
 # env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_SERVERS, COTAL_CHANNEL=1
 ```
 
-- **MCP isolation.** A spawned agent runs with **only** the cotal MCP server.
+- **MCP isolation.** By default a spawned agent runs with **only** the cotal MCP server.
   `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
   `~/.claude.json` servers. A meshed teammate needs none of them, and several spawns each
   booting a Chromium/DB/etc. helper would starve memory and kill the sessions before they
-  register presence. `--mcp-config` re-supplies cotal. Because the plugin's own MCP server is
-  suppressed, the channel ref is the manually-configured server tagged `server:cotal` (not
-  `plugin:cotal@cotal-mesh`); the plugin stays installed for its hooks (message delivery),
-  independent of the wake nudge.
+  register presence. `--mcp-config` re-supplies cotal (plus any servers the operator opted to
+  share — see [Sharing personal MCP servers](#sharing-personal-mcp-servers)). Because the
+  plugin's own MCP server is suppressed, the channel ref is the manually-configured server
+  tagged `server:cotal` (not `plugin:cotal@cotal-mesh`); the plugin stays installed for its
+  hooks (message delivery), independent of the wake nudge.
 - **Installed, not `--plugin-dir`.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`). Its hooks bind only to an *installed* plugin, so
   `--plugin-dir` (which loads but does not "install") is not enough. Local scope keeps it to
@@ -201,6 +202,53 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{"command":"node
 - **Hands-free spawn.** The dev-channels flag prints a one-time "Enter to confirm" prompt.
   The PTY runtime auto-clears it via `LaunchSpec.confirm`, so a supervised launch needs no
   keypress.
+
+## Sharing personal MCP servers
+
+Isolation is the default, but sometimes a meshed teammate genuinely needs one of your own tools
+(say web search). The **cotal config file** is the opt-in. It's per-connector — MCP passthrough
+isn't a portable agent concept (OpenCode inherits the operator's servers via its merge layer;
+Hermes has no MCP), so it lives in connector settings, not the
+[agent file](#agent-files-persona-and-identity).
+
+```jsonc
+// ~/.config/cotal/config.json   (operator-level, every space)
+// or  <root>/.cotal/config.json (space-local, layered on top — same shape)
+{
+  "connectors": {
+    "claude": {
+      "mcpServers": {
+        "tavily": {
+          "command": "npx",
+          "args": ["-y", "tavily-mcp"],
+          "env": { "TAVILY_API_KEY": "${TAVILY_API_KEY}" }
+        }
+      }
+    }
+  }
+}
+```
+
+- **Where it lives.** Two layers, merged by server name (more specific wins):
+  `~/.config/cotal/config.json` (or `$XDG_CONFIG_HOME/cotal/config.json`) as the operator-level
+  base, and a space-local `.cotal/config.json` on top. Personal servers are an operator concern,
+  so the global file is the usual home; the space file is for project-specific overrides.
+- **How servers are written.** Each entry is the de-facto `.mcp.json` shape, so you can copy one
+  straight out of your own Claude / VS Code / Cursor config. Spelled out in full (command/args/env)
+  — not referenced by name — because the heaviest servers (e.g. a plugin/npx-sourced Chromium) are
+  invisible to a by-name lookup of `~/.claude.json`.
+- **Secrets stay references.** Write keys as `${VAR}` / `${VAR:-default}`, never literals — the
+  config file is safe to keep in `~/.config` or a gitignored `.cotal/`. At launch the connector
+  forwards *only* the named vars the chosen servers declare (from the operator's env, by name —
+  never the whole environment, preserving the P3 env allow-list) and passes the merged config as a
+  `0600` file so Claude expands the references itself; the secret never lands on disk or the command
+  line. `--strict-mcp-config` stays on, so only cotal + the explicitly-shared servers ever load.
+- **Per-spawn override.** `cotal spawn <name> --share-tools tavily,figma` shares only those
+  (they must be declared); `--share-tools none` shares nothing. Absent, all declared servers are
+  shared. Manager-spawned agents (`cotal start`) use the config as-is. Default — no config file —
+  is unchanged: a spawned agent gets only cotal.
+- **Mind the memory.** Sharing re-opens the cost isolation guards: a heavy server booted once per
+  spawn multiplies across a team. Share lean servers; keep the Chromium-class ones out.
 
 ## Message delivery (stream-backed)
 

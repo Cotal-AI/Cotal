@@ -31,6 +31,15 @@ export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Tool-sharing isn't wired for opencode: its OPENCODE_CONFIG_CONTENT is a merge layer, so an
+    // opencode agent already INHERITS the operator's MCP servers (the opposite default to Claude's
+    // strict isolation). A `connectors.opencode.mcpServers` entry would need inverse (opt-OUT)
+    // semantics that don't exist yet — throw rather than silently ignore it (no fallbacks).
+    if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
+      throw new Error(
+        "opencode connector: tool-sharing (connectors.opencode.mcpServers) is not implemented — " +
+          "opencode agents already inherit the operator's MCP servers via OPENCODE_CONFIG_CONTENT.",
+      );
     // Identity rides the process env: the plugin runs in the opencode process and inherits it
     // (unlike the Claude Code MCP server, which gets none of the parent env). The OS allow-list +
     // the named model-provider key (opencode's hosted models read OPENCODE_API_KEY; other

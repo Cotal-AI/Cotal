@@ -6,12 +6,15 @@ import {
   DEFAULT_SERVER,
   agentFilePath,
   authDir,
+  connectorServers,
   firstFreeName,
   isReachable,
   loadAgentFile,
+  loadCotalConfig,
   loadSpaceAuth,
   mintCreds,
   newIdentity,
+  parseShareSelection,
   provisionAgent,
   registry,
   CotalEndpoint,
@@ -96,6 +99,7 @@ export async function spawn(argv: string[]): Promise<void> {
       prompt: { type: "string" },
       transcript: { type: "boolean" },
       "no-transcript": { type: "boolean" },
+      "share-tools": { type: "string" },
     },
   });
   // Transcript mirroring to `tr-<name>` is OFF by default; `--transcript` opts in
@@ -107,7 +111,7 @@ export async function spawn(argv: string[]): Promise<void> {
   const ref = values.config ?? positionals[0] ?? values.name;
   if (!ref) {
     console.error(
-      "usage: cotal spawn <name-or-path> | --config <path> | --name <n>  [--agent <a>] [--role <r>] [--space <s>] [--server <url>] [--prompt <text>] [--transcript]",
+      "usage: cotal spawn <name-or-path> | --config <path> | --name <n>  [--agent <a>] [--role <r>] [--space <s>] [--server <url>] [--prompt <text>] [--transcript] [--share-tools <names|none>]",
     );
     process.exit(1);
   }
@@ -168,7 +172,17 @@ export async function spawn(argv: string[]): Promise<void> {
     console.error(`minted creds for ${name} (auth mode) → ${credsPath}`);
   }
 
-  const connector = registry.resolve<Connector>("connector", values.agent ?? "claude");
+  // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
+  // config (global ~/.config/cotal + space-local .cotal), narrowed by an optional --share-tools
+  // selection. Default (no config) is none — the connector launches isolated.
+  const agentType = values.agent ?? "claude";
+  const mcpServers = connectorServers(
+    loadCotalConfig(cotalRoot()),
+    agentType,
+    parseShareSelection(values["share-tools"]),
+  );
+
+  const connector = registry.resolve<Connector>("connector", agentType);
   const spec = connector.buildLaunch({
     space,
     name,
@@ -179,6 +193,7 @@ export async function spawn(argv: string[]): Promise<void> {
     configPath: path,
     prompt: values.prompt,
     transcript,
+    mcpServers,
   });
 
   console.error(

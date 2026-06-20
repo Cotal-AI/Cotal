@@ -14,6 +14,7 @@
  * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
+import type { McpServerSpec } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -64,18 +65,43 @@ export const MODEL_PROVIDER_KEYS = [
   "NOUS_API_KEY",
 ] as const;
 
-/** Build the base env a spawned agent runs with: the OS allow-list plus any named model-provider
- *  keys the connector declares the agent needs (`providerKeys`). Entries are copied from the
- *  manager's env BY NAME and only when present — never required, never spread wholesale. */
-export function launchEnv(opts: { providerKeys?: readonly string[] } = {}): Record<string, string> {
+/** Build the base env a spawned agent runs with: the OS allow-list plus any named keys the
+ *  connector declares the agent needs — `providerKeys` (the model-provider key) and `mcpKeys`
+ *  (the `${VAR}` secrets a shared MCP server references, see {@link mcpServerEnvKeys}). Every
+ *  entry is copied from the manager's env BY NAME and only when present — never required, never
+ *  spread wholesale, so the operator's unrelated secrets don't bleed into the child (P3). */
+export function launchEnv(
+  opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[] } = {},
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const k of OS_ENV_ALLOW) {
     const v = process.env[k];
     if (v !== undefined) env[k] = v;
   }
-  for (const k of opts.providerKeys ?? []) {
+  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? [])]) {
     const v = process.env[k];
     if (v !== undefined) env[k] = v;
   }
   return env;
+}
+
+/** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /
+ *  `${VAR:-default}` (in command/args/env/url/headers). The single source of which operator vars
+ *  a shared server needs: forwarded BY NAME through {@link launchEnv} (`mcpKeys`), never
+ *  `...process.env`, so secret keys keep living in the operator's env (and the `.mcp.json`-style
+ *  config stays a `${VAR}` reference, not a plaintext secret). */
+export function mcpServerEnvKeys(servers: Record<string, McpServerSpec>): string[] {
+  const names = new Set<string>();
+  const scan = (s: string | undefined): void => {
+    if (!s) return;
+    for (const m of s.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g)) names.add(m[1]);
+  };
+  for (const spec of Object.values(servers)) {
+    scan(spec.command);
+    spec.args?.forEach(scan);
+    if (spec.env) for (const v of Object.values(spec.env)) scan(v);
+    scan(spec.url);
+    if (spec.headers) for (const v of Object.values(spec.headers)) scan(v);
+  }
+  return [...names];
 }

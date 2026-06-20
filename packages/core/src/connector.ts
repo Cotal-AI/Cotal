@@ -1,4 +1,5 @@
 import type { Extension } from "./registry.js";
+import type { McpServerSpec } from "./connector-config.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -25,6 +26,12 @@ export interface LaunchOpts {
    *  the agent actually did (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to
    *  opt in — surfaced as the `--transcript` flag on `cotal spawn` / `cotal start`. */
   transcript?: boolean;
+  /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
+   *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
+   *  secret refs intact. A connector renders them into its own host format; the default is none
+   *  (Claude launches isolated with `--strict-mcp-config`). Connectors that don't support sharing
+   *  throw on a non-empty map rather than silently dropping it. */
+  mcpServers?: Record<string, McpServerSpec>;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */

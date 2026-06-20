@@ -6,9 +6,11 @@ import {
   agentFilePath,
   authDir,
   clearSpaceHistory,
+  connectorServers,
   findCotalRoot,
   firstFreeName,
   loadAgentFile,
+  loadCotalConfig,
   loadSpaceAuth,
   mintCreds,
   newIdentity,
@@ -389,6 +391,9 @@ export class Manager {
           mkdirSync(dirname(credsPath), { recursive: true });
           writeFileSync(credsPath, creds, { mode: 0o600 });
         }
+        // Personal MCP servers the operator opted to share with manager-spawned agents of this
+        // type (cotal config; default none → isolated, the memory-safe default this guards).
+        const mcpServers = connectorServers(loadCotalConfig(this.workspaceRoot), agent);
         const spec = connector.buildLaunch({
           space: this.space,
           name,
@@ -398,6 +403,7 @@ export class Manager {
           servers: this.servers,
           configPath,
           transcript: opts.transcript,
+          mcpServers,
         });
         handle = this.runtime.spawn(name, spec, this.workspaceRoot);
       } catch (e) {

@@ -693,7 +693,8 @@ later).
   Runtime-agnostic exit-reaping (cmux liveness → sweep-at-gate) is a tracked follow-up.
 - **Spawned children get a declared env, not the manager's.** Runtimes pass only an explicit
   allow-list (`launchEnv()`: PATH / HOME / locale / TERM, plus the one model key the connector
-  needs), never `process.env`, so the operator's *unrelated* secrets (cloud creds, tokens) stop
+  needs, plus the named `${VAR}` secrets any opted-in shared MCP server declares — all forwarded
+  *by name*), never `process.env`, so the operator's *unrelated* secrets (cloud creds, tokens) stop
   bleeding into every agent. Honest scope: this closes **env-var** bleed only. It does **not**
   close model-key exfil (the agent holds the key in-process to do inference, which needs per-agent
   model auth) or filesystem reads (`HOME` is forwarded, so a child can still read `~/.aws` /

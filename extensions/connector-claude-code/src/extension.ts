@@ -1,7 +1,9 @@
-import { resolve } from "node:path";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { launchEnv } from "@cotal-ai/connector-core";
+import { launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -31,11 +33,14 @@ export const claudeConnector: Connector = {
   name: "claude",
   pluginRoot: PLUGIN_ROOT,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
+    const shared = opts.mcpServers ?? {};
     // claude auths via macOS Keychain / an OAuth token, not an env key → forward NO provider key.
-    // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env; the
-    // operator's unrelated secrets don't reach the child (P3).
+    // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
+    // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
+    // by name). The operator's unrelated secrets don't reach the child (P3).
     const env: Record<string, string> = {
-      ...launchEnv(),
+      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
@@ -62,17 +67,28 @@ export const claudeConnector: Connector = {
     // mid-demo. Additive under the default permission mode — leaves other tools as-is.
     args.push("--allowedTools", "WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com)");
 
-    // Isolate the spawned session's MCP to ONLY the cotal server. --strict-mcp-config drops every
-    // other MCP source — including the operator's personal ~/.claude.json servers (e.g. a headless
-    // Chromium, a DB server) that a meshed teammate never needs and that, multiplied across several
-    // spawns on a busy machine, starve memory and kill the session before it registers presence —
-    // and --mcp-config re-supplies cotal so its tools + presence still load. The plugin itself stays
-    // enabled (its hooks + the dev-channels wake path are unaffected; only MCP config is scoped).
-    args.push(
-      "--strict-mcp-config",
-      "--mcp-config",
-      JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } } }),
-    );
+    // Isolate the spawned session's MCP. --strict-mcp-config drops every ambient MCP source —
+    // including the operator's personal ~/.claude.json servers (e.g. a headless Chromium, a DB
+    // server) that a meshed teammate never needs and that, multiplied across several spawns on a
+    // busy machine, starve memory and kill the session before it registers presence — so the ONLY
+    // servers that load are the ones we name in --mcp-config: cotal (always, for its tools +
+    // presence) plus any the operator explicitly opted to share (`shared`, from the cotal config).
+    // The plugin itself stays enabled (its hooks + the dev-channels wake path are unaffected).
+    // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
+    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
+    // Default (no shared servers): pass the config inline, unchanged. With shared servers we write
+    // it to a 0600 file instead and pass the path: a shared spec carries `${VAR}` secret refs, and
+    // Claude only expands those in an --mcp-config *file* (not an inline string), so the file form
+    // keeps secrets as references (never resolved onto disk or the command line) while still loading.
+    let mcpConfig: string;
+    if (Object.keys(shared).length === 0) {
+      mcpConfig = JSON.stringify({ mcpServers });
+    } else {
+      const safe = `${opts.space}-${opts.name}`.replace(/[^A-Za-z0-9._-]/g, "_");
+      mcpConfig = join(tmpdir(), `cotal-mcp-${safe}.json`);
+      writeFileSync(mcpConfig, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
+    }
+    args.push("--strict-mcp-config", "--mcp-config", mcpConfig);
 
     // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus
     // persona + model, which can only be applied to a `claude` session at launch.
