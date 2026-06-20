@@ -5,6 +5,7 @@ import {
   DEFAULT_SERVER,
   agentFilePath,
   authDir,
+  channelInAllow,
   clearSpaceHistory,
   connectorServers,
   findCotalRoot,
@@ -77,6 +78,9 @@ interface ManagedAgent {
   spawner: string;
   startedAt: number;
   handle: AgentHandle;
+  /** The agent's read ACL (its `allowSubscribe`, defaulted), retained so the mediated join/leave
+   *  control op can validate `channel ∈ allowSubscribe` before moving its bind-only chat filter. */
+  allowSubscribe: string[];
 }
 
 /**
@@ -188,8 +192,10 @@ export class Manager {
     // subject; this gates WHAT each subject will honor, fail-closed. A privileged op arriving on
     // the self-service subject (publishable by all) must be rejected or the split does nothing.
     if (tier === CONTROL_SELF_SERVICE) {
-      // Self-service honors ONLY a no-name stop (self-despawn). Any other op — including a named
-      // stop (belongs on privileged/admin) — is a misroute and rejected.
+      // Self-service honors self-ops only: a no-name stop (self-despawn) and setChannels (mediated
+      // join/leave — the caller moving its OWN chat read within its allowSubscribe). Anything else —
+      // including a named stop (belongs on privileged/admin) — is a misroute and rejected.
+      if (req.op === "setChannels") return this.opSetChannels(caller, args);
       if (req.op !== "stop") return { ok: false, error: `op "${req.op}" not allowed on self-service control subject` };
       if (name) return { ok: false, error: "named stop not allowed on self-service subject; send it on the privileged subject" };
       return this.opStopSelf(caller, args);
@@ -247,6 +253,28 @@ export class Manager {
     target.handle.stop({ graceful });
     this.freeSlot(target, true); // self-despawn is rate-floored (recycle churn)
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
+  }
+
+  /** Mediated join/leave (P-read-ACL): move the caller's OWN bind-only chat durable to a new channel
+   *  set, validated against its `allowSubscribe`. The caller is the authenticated id (non-forgeable
+   *  in auth mode), so this can only ever resolve to its own managed entry — and the durable filter
+   *  is moved with the manager's privileged creds, the only path that can (the agent has no UPDATE
+   *  grant). An unmanaged caller (a `cotal spawn` standalone agent, or any peer this manager didn't
+   *  start) gets a loud error, not a silent no-op — its read stays at its boot subscribe set. */
+  private async opSetChannels(callerId: string, args: Record<string, unknown>): Promise<ControlReply> {
+    const target = [...this.agents.values()].find((a) => a.id === callerId);
+    if (!target) return { ok: false, error: `setChannels: caller ${callerId} is not an agent this manager spawned` };
+    const channels = Array.isArray(args.channels) ? args.channels.map(String).filter(Boolean) : [];
+    if (!channels.length) return { ok: false, error: "setChannels: a non-empty channels list is required" };
+    for (const ch of channels)
+      if (!channelInAllow(target.allowSubscribe, ch))
+        return { ok: false, error: `channel "${ch}" is not within allowSubscribe [${target.allowSubscribe.join(", ")}]` };
+    try {
+      await this.ep.setChatFilterFor(callerId, channels);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    return { ok: true, data: { channels } };
   }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
@@ -372,21 +400,27 @@ export class Manager {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id
       // (threaded via COTAL_ID); the seed is retained to mint matching creds later.
       const identity = newIdentity();
+      // The agent's read ACL, defaulted the same way the loader/provisioner do — retained on the
+      // managed record so the mediated join/leave op can validate channels ⊆ allowSubscribe.
+      let allowSubscribe: string[] = ["general"];
       let handle: AgentHandle;
       try {
         const connector = registry.resolve<Connector>("connector", agent);
         const def = configPath ? loadAgentFile(configPath) : undefined;
         if (!role) role = def?.role;
-        // In auth mode, mint the agent's creds from the space signing key and write them
-        // where the spawned session reads them (COTAL_CREDS path). Open mesh → no creds.
-        // The publish allow-list is the file's `publish:`, falling back to `channels:`.
+        allowSubscribe = def?.allowSubscribe ?? def?.subscribe ?? ["general"];
+        // In auth mode, mint the agent's creds from the space signing key and write them where the
+        // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Read scope = the
+        // file's subscribe/allowSubscribe; post scope = its allowPublish (default-deny).
         let credsPath: string | undefined;
         if (this.auth) {
-          // Pre-create the agent's bind-only DM (+ role TASK) durables and mint its scoped
+          // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped
           // creds — the shared onboarding step (provisionAgent), the manager just supplies its
           // own connected endpoint as the privileged provisioner.
           const creds = await provisionAgent(this.ep, this.auth, identity, {
-            channels: def?.publish ?? def?.channels,
+            subscribe: def?.subscribe,
+            allowSubscribe,
+            allowPublish: def?.allowPublish,
             role,
             capabilities: def?.capabilities,
           });
@@ -423,6 +457,7 @@ export class Manager {
         spawner: spawner ?? this.ep.ref().id,
         startedAt: Date.now(),
         handle,
+        allowSubscribe,
       };
       this.agents.set(name, managed);
       // Wire the runtime exit signal so a natural exit (crash / /exit / finished) frees the slot

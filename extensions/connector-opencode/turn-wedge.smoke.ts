@@ -40,7 +40,7 @@ Object.assign(process.env, {
   COTAL_NAME: "Otto",
   COTAL_SPACE: space,
   COTAL_SERVERS: servers,
-  COTAL_CHANNELS: "team",
+  COTAL_SUBSCRIBE: "team",
   COTAL_ROLE: "generalist",
 });
 

@@ -104,7 +104,7 @@ export class MeshAgent extends EventEmitter {
       pass: config.pass,
       creds: config.creds,
       tls: config.tls,
-      channels: config.channels,
+      channels: config.subscribe, // the endpoint's live filter = the active read set
       card: {
         id: config.id,
         name: config.name,
@@ -147,7 +147,7 @@ export class MeshAgent extends EventEmitter {
         await this.ep.start();
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
         this.log(
-          `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.channels.join(", #")}`,
+          `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
         );
       } catch (e) {
         this.log(`mesh unreachable (${(e as Error).message}); retrying in ${retryMs}ms`);

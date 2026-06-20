@@ -96,7 +96,7 @@ try {
 
   // An agent: provision its bind-only durables, mint scoped creds, join #general.
   const agentId = newIdentity();
-  const agentCreds = await provisionAgent(mgr, auth, agentId, { channels: ["general"], role: "worker" });
+  const agentCreds = await provisionAgent(mgr, auth, agentId, { subscribe: ["general"], allowPublish: ["general"], role: "worker" });
   const agent = new CotalEndpoint({
     space,
     servers: SERVERS,
@@ -119,7 +119,7 @@ try {
   check("manager CAN list CHAT consumers", (await canList(mgrCreds)) === true);
   check("observer CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "observer"))) === false);
   check("admin CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "admin"))) === false);
-  check("agent CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "agent", { channels: ["general"] }))) === false);
+  check("agent CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "agent", { allowSubscribe: ["general"] }))) === false);
 
   await agent.stop();
   await mgr.stop();

@@ -43,8 +43,14 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
 - **Space containment:** account boundaries keep one space's subjects, streams, and KV buckets
   isolated from another; a client in one account cannot reach another's subjects unless
   explicitly exported and imported.
-- **Channel publish scope:** agent credentials allow chat publish only as self and only to
-  declared channel patterns (a default-deny allow-list).
+- **Channel publish scope:** agent credentials allow chat publish only as self and only to its
+  declared `allowPublish` channel patterns — a default-deny allow-list (no channel is granted
+  unless declared).
+- **Channel read scope:** agent reads are bounded to the `allowSubscribe` ACL. The multi-channel
+  live-tail durable is bind-only (the agent can't widen its own filter; runtime join/leave is
+  mediated and validated against `allowSubscribe`), and history reads ride single-filter consumer
+  creates with one grant per `allowSubscribe` channel — the server pins each create's filter to the
+  request body, so no other channel is reachable. There is no unfiltered Direct Get grant.
 - **DM/TASK peer confidentiality:** delivery uses per-identity inbox prefixes, and DM/TASK
   consumers are provisioner-created bind-only durables, so an agent cannot create a consumer
   filtered to someone else's inbox or another role's work queue.

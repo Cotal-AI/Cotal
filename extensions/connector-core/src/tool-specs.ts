@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 
@@ -203,7 +203,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            `Channel to send on (default: ${config.channels.find(isConcreteChannel) ?? "general"}). Concrete only — not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (default: ${config.subscribe.find(isConcreteChannel) ?? "general"}). Concrete only — not a wildcard like team.>; reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -337,11 +337,17 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_join",
       title: "Cotal: join a channel",
       description:
-        "Subscribe to a channel mid-session. Returns its registry info; if the channel replays, recent history is delivered to your inbox marked as catch-up (it pre-dates your join — don't treat it as live). Idempotent.",
+        "Subscribe to a channel mid-session. Returns its registry info; if the channel replays, recent history is delivered to your inbox marked as catch-up (it pre-dates your join — don't treat it as live). Idempotent. Bounded by your read ACL: a channel outside it is refused.",
       schema: {
         channel: z.string().describe("The channel to join (e.g. incident)."),
       },
       async run(agent, _config, { channel }: { channel: string }) {
+        // Bound by the read ACL before touching the mesh — a clear refusal beats a broker/manager
+        // rejection. (Auth mode also enforces this server-side; this is the friendly client gate.)
+        if (!channelInAllow(config.allowSubscribe, channel))
+          return err(
+            `Can't join #${channel}: it's outside your read ACL (allowSubscribe: ${config.allowSubscribe.map((c) => `#${c}`).join(", ")}).`,
+          );
         try {
           const r = await agent.joinChannel(channel);
           if (!r.joined) return ok(`Already on #${channel}.`);

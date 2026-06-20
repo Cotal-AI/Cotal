@@ -54,7 +54,8 @@ cat > team/agents/scout.md <<'MD'
 ---
 name: scout
 role: researcher
-channels: [general]
+subscribe: [general]
+allowPublish: [general]
 ---
 You are Scout, a research agent on the team.
 MD
@@ -174,7 +175,8 @@ agents:
 - `agent`: the connector (`claude` or `opencode`), required, no default.
 - `role`, `config`: optional.
 - **Persona and model** come from `.cotal/agents/<name>.md` (mounted read-only): the Markdown
-  body is the system prompt, `model:` the model override, `channels:` the subscriptions.
+  body is the system prompt, `model:` the model override, `subscribe:` the active read set,
+  `allowSubscribe:` the read ACL, `allowPublish:` the post ACL (default-deny).
 
 Reshape a team by editing `roster.yaml` and the agent files, never the image.
 

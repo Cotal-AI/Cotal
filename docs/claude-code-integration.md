@@ -70,8 +70,9 @@ name: dave              # → COTAL_NAME / card.name
 role: builder           # → COTAL_ROLE / card.role (presence + anycast)
 description: …          # → card.description (A2A-style)
 tags: [edit, test]      # → card.tags ("what it can do")
-channels: [general, team.>]   # → COTAL_CHANNELS; channels it reads (hierarchical, subscribe a subtree)
-publish: [general, team.backend]  # channels it may post to (auth → pub-ACL); omit = same as channels
+subscribe: [general, team.backend]  # → COTAL_SUBSCRIBE; channels it reads at boot (hierarchical)
+allowSubscribe: [general, team.>]   # read ACL: channels it MAY read (omit = same as subscribe)
+allowPublish: [general, team.backend]  # post ACL → pub-ACL; omit = none (default-deny)
 model: opus             # optional → claude --model
 ---
 You are a builder on a shared mesh of peer agents…   ← the body is the persona
@@ -413,8 +414,8 @@ Create `.cotal/agents/feedback-intake.md` before minting so the creds can publis
 name: feedback-intake
 kind: endpoint
 role: feedback
-channels: [feedback]
-publish: [feedback]
+subscribe: [feedback]
+allowPublish: [feedback]
 ---
 Authenticated beta feedback intake.
 ```

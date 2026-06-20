@@ -3,13 +3,14 @@
  *
  *   .cotal/agents/<name>.md
  *   ---
- *   name: builder          # AgentCard-shaped identity in the frontmatter
+ *   name: builder              # AgentCard-shaped identity in the frontmatter
  *   role: builder
  *   description: …
  *   tags: [edit, test]
- *   channels: [general]    # channels this agent subscribes to (read)
- *   publish: [general]     # channels this agent may post to (write); omit = same as channels
- *   model: opus            # optional CLI/model override
+ *   subscribe: [general]       # channels this agent actively reads at boot (the live set)
+ *   allowSubscribe: [general]  # read ACL — channels it MAY read; omit ⇒ same as `subscribe`
+ *   allowPublish: [general]    # post ACL — channels it may publish to; omit ⇒ DENY (default-deny)
+ *   model: opus                # optional CLI/model override
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
  *   face: sven             # any unmodelled key is kept verbatim in AgentDef.meta — e.g. the
  *                          #   OpenCode connector reads meta.face for its avatar viewer
@@ -25,6 +26,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
+import { channelInAllow } from "./subjects.js";
 
 export interface AgentDef {
   name: string;
@@ -32,11 +34,18 @@ export interface AgentDef {
   kind?: EndpointKind;
   description?: string;
   tags?: string[];
-  channels?: string[];
-  /** Channels this agent is allowed to publish to (auth mode → minted into pub-allow ACLs).
-   *  Entries may be wildcard subtrees (`team.>`), symmetric with `channels`. Omitted means
-   *  no explicit restriction beyond identity (the provisioner falls back to `channels`). */
-  publish?: string[];
+  /** The *active* read set: channels this agent subscribes to at boot (the live chat-durable
+   *  filter; mutable at runtime via join/leave). Must be ⊆ {@link allowSubscribe}. Default `[general]`. */
+  subscribe?: string[];
+  /** The read **ACL**: channels this agent *may* read (auth mode → minted as per-channel
+   *  history-consumer create grants; the live durable's filter is also held within it). Entries
+   *  may be wildcard subtrees (`team.>`). Omitted ⇒ defaults to {@link subscribe} — it can read
+   *  exactly what it subscribes to. */
+  allowSubscribe?: string[];
+  /** The post **ACL**: channels this agent may publish to (auth mode → minted into pub-allow
+   *  ACLs). Entries may be wildcard subtrees (`team.>`). Omitted ⇒ **deny** (default-deny):
+   *  publishing is the dangerous capability, so it must be declared explicitly. */
+  allowPublish?: string[];
   /** Model override handed to the agent CLI (e.g. `claude --model`). */
   model?: string;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
@@ -117,9 +126,30 @@ export function loadAgentFile(path: string): AgentDef {
   if (kind && kind !== "agent" && kind !== "endpoint")
     throw new Error(`agent file ${path}: "kind" must be "agent" or "endpoint"`);
 
+  // The pre-ACL field names were renamed (channels→subscribe, publish→allowPublish, +allowSubscribe).
+  // Fail loud on the old names rather than silently sweeping them into meta and ignoring them —
+  // an unmigrated file would otherwise lose its read/post scope without warning (no silent degrade).
+  for (const old of ["channels", "publish"])
+    if (old in fm)
+      throw new Error(
+        `agent file ${path}: "${old}" was renamed — use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
+      );
+
+  const subscribe = list("subscribe");
+  const allowSubscribe = list("allowSubscribe");
+  // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
+  // subscribe ⇒ [general]; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
+  const effSubscribe = subscribe?.length ? subscribe : ["general"];
+  const effAllow = allowSubscribe?.length ? allowSubscribe : effSubscribe;
+  for (const ch of effSubscribe)
+    if (!channelInAllow(effAllow, ch))
+      throw new Error(
+        `agent file ${path}: subscribe channel "${ch}" is not within allowSubscribe [${effAllow.join(", ")}]`,
+      );
+
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector hints
   // (face, etc.) ride here so core stays ignorant of surface-specific keys.
-  const known = new Set(["name", "role", "kind", "description", "tags", "channels", "publish", "model", "capabilities", "owner"]);
+  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "model", "capabilities", "owner"]);
   const meta: Record<string, string> = {};
   for (const [k, v] of Object.entries(fm)) if (!known.has(k) && typeof v === "string") meta[k] = v;
 
@@ -129,8 +159,9 @@ export function loadAgentFile(path: string): AgentDef {
     kind: kind as EndpointKind | undefined,
     description: str("description"),
     tags: list("tags"),
-    channels: list("channels"),
-    publish: list("publish"),
+    subscribe,
+    allowSubscribe,
+    allowPublish: list("allowPublish"),
     model: str("model"),
     capabilities: list("capabilities"),
     owner: str("owner"),
@@ -151,8 +182,9 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.kind) lines.push(`kind: ${fmScalar(def.kind)}`);
   if (def.description) lines.push(`description: ${fmScalar(def.description)}`);
   if (def.tags?.length) lines.push(`tags: [${def.tags.map(fmItem).join(", ")}]`);
-  if (def.channels?.length) lines.push(`channels: [${def.channels.map(fmItem).join(", ")}]`);
-  if (def.publish?.length) lines.push(`publish: [${def.publish.map(fmItem).join(", ")}]`);
+  if (def.subscribe?.length) lines.push(`subscribe: [${def.subscribe.map(fmItem).join(", ")}]`);
+  if (def.allowSubscribe?.length) lines.push(`allowSubscribe: [${def.allowSubscribe.map(fmItem).join(", ")}]`);
+  if (def.allowPublish?.length) lines.push(`allowPublish: [${def.allowPublish.map(fmItem).join(", ")}]`);
   if (def.model) lines.push(`model: ${fmScalar(def.model)}`);
   if (def.capabilities?.length) lines.push(`capabilities: [${def.capabilities.map(fmItem).join(", ")}]`);
   if (def.owner) lines.push(`owner: ${fmScalar(def.owner)}`);

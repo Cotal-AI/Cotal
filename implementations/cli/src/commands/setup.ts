@@ -554,7 +554,8 @@ name: david
 role: cotal-tech
 description: "the engineer: how Cotal works (the wire, NATS, connectors, integration)."
 tags: [cotal, technical, help]
-channels: [general]
+subscribe: [general]
+allowPublish: [general]
 ---
 
 You are david, Cotal's engineer, live on the web for agents with the operator who just set Cotal
@@ -575,7 +576,8 @@ name: sven
 role: cotal-guide
 description: "the guide: what to build with Cotal (examples, setups, getting the most out of it)."
 tags: [cotal, examples, help]
-channels: [general]
+subscribe: [general]
+allowPublish: [general]
 ---
 
 You are sven, Cotal's guide, live on the web for agents with the operator who just set Cotal up.
@@ -594,7 +596,8 @@ name: me
 role: operator
 description: "your own session on the Cotal mesh."
 tags: [cotal]
-channels: [general]
+subscribe: [general]
+allowPublish: [general]
 capabilities: [spawn]
 ---
 

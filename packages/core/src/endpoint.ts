@@ -12,7 +12,7 @@ import {
 } from "@nats-io/transport-node";
 import { idFromCreds } from "./identity.js";
 import { assertValidName } from "./resolve.js";
-import { createSpaceStreams, dmDurableConfig, taskDurableConfig, MAX_MSGS_PER_SUBJECT } from "./streams.js";
+import { createSpaceStreams, chatDurableConfig, dmDurableConfig, taskDurableConfig, MAX_MSGS_PER_SUBJECT } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -22,6 +22,7 @@ import {
   type JetStreamManager,
   type ConsumerMessages,
   type ConsumerInfo,
+  type JsMsg,
 } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 
@@ -52,9 +53,11 @@ import {
   CHANNEL_DEFAULTS_KEY,
   chatStream,
   chatDurable,
+  chatHistDurable,
   chatSubject,
   collapseFilterSubjects,
   controlServiceSubject,
+  CONTROL_SELF_SERVICE,
   dmStream,
   dmDurable,
   isConcreteChannel,
@@ -692,16 +695,16 @@ export class CotalEndpoint extends EventEmitter {
   async joinChannel(channel: string): Promise<{ joined: boolean; backfilled: number }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (this.channels.includes(channel)) return { joined: false, backfilled: 0 };
-    const next = collapseFilterSubjects(
-      [...this.channels, channel].map((ch) => chatSubject(this.space, "*", ch)),
-    );
     // Arm the watermark BEFORE the filter flip (single-delivery: a tail message on the new
     // channel is then either ≤ frontier → backfill-only or > frontier → tail-only, never both),
     // and filter BEFORE backfill (gap-safe: backfill-first leaves a window in neither stream).
     const armed = await this.armJoin([channel]);
-    await this.jsm.consumers.update(chatStream(this.space), chatDurable(this.card.id), {
-      filter_subjects: next,
-    });
+    try {
+      await this.setChatFilter([...this.channels, channel]);
+    } catch (e) {
+      this.joinSeq.delete(channel); // the flip was rejected (e.g. outside allowSubscribe) — undo the arm
+      throw e;
+    }
     this.channels.push(channel);
     const backfilled = await this.backfillArmed(armed);
     return { joined: true, backfilled };
@@ -717,12 +720,39 @@ export class CotalEndpoint extends EventEmitter {
     if (this.channels.length === 1)
       throw new Error(`cannot leave "${channel}" — it is your only channel (an empty filter would subscribe to all)`);
     const remaining = this.channels.filter((c) => c !== channel);
-    await this.jsm.consumers.update(chatStream(this.space), chatDurable(this.card.id), {
-      filter_subjects: collapseFilterSubjects(remaining.map((ch) => chatSubject(this.space, "*", ch))),
-    });
+    await this.setChatFilter(remaining);
     this.channels.splice(i, 1);
     this.joinSeq.delete(channel);
     return { left: true };
+  }
+
+  /** Move the chat live-tail durable to a new channel set. OPEN mode self-serves the
+   *  `consumers.update` (the agent owns its durable). AUTH mode is bind-only — the agent has no
+   *  UPDATE grant — so it sends a mediated control request to the manager, which validates the set
+   *  ⊆ its `allowSubscribe` before moving the filter. Throws clearly when no privileged responder is
+   *  present: a manager-less standalone auth session is fixed to its boot subscribe set — a
+   *  documented limitation, not a silent degrade. */
+  private async setChatFilter(channels: string[]): Promise<void> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    if (!this.creds) {
+      await this.jsm.consumers.update(chatStream(this.space), chatDurable(this.card.id), {
+        filter_subjects: collapseFilterSubjects(channels.map((ch) => chatSubject(this.space, "*", ch))),
+      });
+      return;
+    }
+    let reply: ControlReply;
+    try {
+      reply = await this.requestControl(CONTROL_SELF_SERVICE, { op: "setChannels", args: { channels } });
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (/no responders/i.test(msg))
+        throw new Error(
+          "cannot change channels at runtime: no privileged provisioner (manager) is serving the mesh — " +
+            "this session is fixed to its boot subscribe set",
+        );
+      throw e;
+    }
+    if (!reply.ok) throw new Error(reply.error ?? "channel change rejected");
   }
 
   /** One coherent channel model for dashboards: every channel that has messages OR a registry
@@ -929,6 +959,31 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
+   * Privileged: pre-create an agent's bind-only chat live-tail durable (auth mode), filtered to its
+   * `subscribe` set, so the agent can BIND it without holding CONSUMER.CREATE/UPDATE on CHAT — its
+   * live read can't be self-widened past `allowSubscribe`. The creator sets the filter; the agent
+   * never does (mirrors {@link provisionDmInbox}). Idempotent. The caller must be permissive on CHAT.
+   */
+  async provisionChatDurable(targetId: string, subscribe: string[]): Promise<void> {
+    const jsm = await this.manager();
+    await jsm.consumers.add(chatStream(this.space), chatDurableConfig(this.space, targetId, subscribe));
+  }
+
+  /**
+   * Privileged: move an agent's bind-only chat durable to a new channel set — the write half of the
+   * mediated join/leave. The manager calls this AFTER validating the set ⊆ the agent's
+   * `allowSubscribe`; the agent itself has no UPDATE grant, so this trusted path is the only way its
+   * live filter moves. The filter is rebuilt from channel names here (not from agent-supplied
+   * subjects) so a caller can't smuggle a hand-built filter.
+   */
+  async setChatFilterFor(targetId: string, channels: string[]): Promise<void> {
+    const jsm = await this.manager();
+    await jsm.consumers.update(chatStream(this.space), chatDurable(targetId), {
+      filter_subjects: collapseFilterSubjects(channels.map((ch) => chatSubject(this.space, "*", ch))),
+    });
+  }
+
+  /**
    * Privileged: pre-create an agent's DM inbox durable (auth mode), so the agent can BIND
    * it without holding CONSUMER.CREATE on DM_<space>. The creator sets the filter to
    * inst.<targetId>.* — the agent never gets to choose it, which is what stops a peer from
@@ -963,8 +1018,6 @@ export class CotalEndpoint extends EventEmitter {
   private async startConsumers(): Promise<void> {
     if (!this.jsm) throw new Error("endpoint not started");
     const id = this.card.id;
-    const ack_wait = nanos(this.ackWaitMs);
-    const inactive_threshold = nanos(this.inactiveThresholdMs);
 
     // Unicast: this instance's private DM inbox. Open mode self-creates; auth mode BINDS a
     // durable the provisioner pre-created (agents are denied CONSUMER.CREATE on DM_<space>,
@@ -986,39 +1039,60 @@ export class CotalEndpoint extends EventEmitter {
     if (this.channels.length) {
       const durable = chatDurable(id);
       const want = collapseFilterSubjects(this.channels.map((ch) => chatSubject(this.space, "*", ch)));
+      // Auth mode: the chat live-tail durable is pre-created BIND-ONLY by the provisioner (the agent
+      // is denied CONSUMER.CREATE/UPDATE on CHAT — its filter is the read boundary). Open mode: the
+      // agent owns it and self-creates. Either way it is a DeliverPolicy.New tail; per-channel
+      // history is the explicit backfill below (the only shape that honors per-channel replay
+      // policy given deliver_policy is consumer-wide).
       const info = await this.consumerInfo(chatStream(this.space), durable);
       if (!info) {
-        // Fresh durable: a New tail (history is the explicit backfill below — the only shape
-        // that honors per-channel policy given deliver_policy is consumer-wide).
-        await this.jsm.consumers.add(chatStream(this.space), {
-          durable_name: durable,
-          filter_subjects: want,
-          ack_policy: AckPolicy.Explicit,
-          ack_wait,
-          deliver_policy: DeliverPolicy.New,
-          inactive_threshold,
-        });
+        if (this.creds)
+          throw new Error(
+            `chat durable ${durable} not pre-created — a launcher must call provisionChatDurable ` +
+              `(auth mode binds the durable, it never self-creates)`,
+          );
+        await this.jsm.consumers.add(
+          chatStream(this.space),
+          chatDurableConfig(this.space, id, this.channels, {
+            ackWaitMs: this.ackWaitMs,
+            inactiveThresholdMs: this.inactiveThresholdMs,
+          }),
+        );
+      }
+      // First bind to this durable (open self-create, or an auth pre-create never consumed) ⇒
+      // backfill the full subscribe set. A later reconnect (the consumed cursor has advanced)
+      // backfills only channels the config GAINED — un-acked live messages auto-redeliver, so a full
+      // re-backfill would double up. With pre-create, `info` always exists under auth, so the
+      // consumed cursor — not the durable's existence — is what tells first-bind from reconnect.
+      //
+      // Caveat (best-effort, by design): `consumer_seq > 0` proves the durable has delivered at
+      // least once, NOT that the initial backfill completed. A crash between the first delivery and
+      // backfillArmed() makes the next bind take the reconnect path and skip the full pre-bind
+      // backfill. This is unchanged from the prior self-create path (which keyed on durable
+      // existence and had the same gap — and was actually weaker: a crash before any delivery left
+      // the durable existing, so it never re-backfilled; consumer_seq still 0 here re-backfills).
+      // Reliable FORWARD delivery is the durable's job (un-acked redelivery); pre-bind history is
+      // opportunistic. A backfill-completion marker would make it reliable — a deferred follow-up.
+      const consumed = (info?.delivered?.consumer_seq ?? 0) > 0;
+      if (!consumed) {
         // Arm the tail-drop watermarks BEFORE pump starts, so the tail can never deliver a
-        // just-created channel's message un-watermarked (which would double-emit: live + backfill).
+        // just-bound channel's message un-watermarked (which would double-emit: live + backfill).
         const armed = await this.armJoin(this.channels);
         await this.pump(chatStream(this.space), durable);
         await this.backfillArmed(armed);
       } else {
-        // Rebind: reconcile the durable's filter to the CURRENT config (a config that changed
-        // between restarts is honored). Channels the config GAINED are backfilled like a fresh
-        // join; channels it LOST are dropped from the filter. An unchanged config = pure resume,
-        // empty diff, no re-replay.
+        // Reconnect: resume the tail, then backfill any channels the config GAINED since.
         await this.pump(chatStream(this.space), durable);
         const haveFilters =
-          info.config.filter_subjects ?? (info.config.filter_subject ? [info.config.filter_subject] : []);
-        // Channels the config gained = those not already covered by the durable's filters (a
-        // wildcard already covers its sub-channels). Backfill only those.
+          info!.config.filter_subjects ?? (info!.config.filter_subject ? [info!.config.filter_subject] : []);
         const gained = this.channels.filter(
           (c) => !haveFilters.some((f) => subjectMatches(f, chatSubject(this.space, "*", c))),
         );
-        // Arm watermarks for the gained channels BEFORE the filter reconcile flips them on.
         const armed = gained.length ? await this.armJoin(gained) : undefined;
-        if (!sameSet(haveFilters, want))
+        // Reconcile the durable's filter to the CURRENT config — OPEN MODE ONLY. Auth mode is
+        // bind-only (no UPDATE grant): the durable's filter is authoritative, moved solely by the
+        // mediated join/leave control op, so the agent never self-reconciles it.
+        if (!this.creds && !sameSet(haveFilters, want))
           await this.jsm.consumers.update(chatStream(this.space), durable, { filter_subjects: want });
         if (armed) await this.backfillArmed(armed);
       }
@@ -1165,61 +1239,92 @@ export class CotalEndpoint extends EventEmitter {
     return { replay: effectiveReplay(cfg, defaults), windowMs: effectiveReplayWindowMs(cfg, defaults) };
   }
 
-  /** Read a channel's retained history up to `upToSeq` via JetStream **Direct Get** (a read
-   *  verb — no consumer create, so it rides a read-only grant) and emit each message as a
-   *  `historical` "message" event. `sinceMs` bounds how far back via a native Direct-Get
-   *  `start_time` (now − window); unset ⇒ the full retained window. New messages (`seq > upToSeq`)
-   *  are skipped — the live tail owns them. Pages the batch API; the ack handle is a no-op. */
-  private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number): Promise<number> {
-    if (!this.jsm) throw new Error("endpoint not started");
-    const subject = chatSubject(this.space, "*", channel);
-    const collected: { msg: CotalMessage; seq: number }[] = [];
-    // First page starts by time when a window is set (native), else from seq 1; after that we
-    // always page by sequence.
-    const startTime = sinceMs === undefined ? undefined : new Date(Date.now() - sinceMs);
-    let startSeq = 1;
-    let first = true;
-    pages: for (;;) {
-      let last = 0;
-      let got = 0;
-      try {
-        const query =
-          first && startTime !== undefined
-            ? { start_time: startTime, next_by_subj: subject, batch: 256 }
-            : { seq: startSeq, next_by_subj: subject, batch: 256 };
-        first = false;
-        const iter = await this.jsm.direct.getBatch(chatStream(this.space), query);
-        for await (const sm of iter) {
+  /**
+   * Read retained chat history on ONE channel subject through a name-scoped, single-filter
+   * EPHEMERAL pull consumer — the broker-contained replacement for the removed Direct Get. The
+   * create rides `$JS.API.CONSUMER.CREATE.<CHAT>.<chathist_id>.<subject>`, whose trailing filter
+   * token nats-server pins to the request body (JSConsumerCreateFilterSubjectMismatchErr, code
+   * 10131) — so an agent can only ever replay a channel its `allowSubscribe` grants. Single filter
+   * only (plural isn't ACL-constrainable); `AckPolicy.None` + `mem_storage` so it leaves no durable
+   * state, and it is deleted right after. Returns raw messages in stream order from `start`,
+   * stopping once past `untilSeq` (exclusive of it) or after `limit`. The per-instance name means
+   * calls must be serial — every reader here awaits to completion, so they are.
+   */
+  private async collectHistory(
+    subject: string,
+    start: { seq: number } | { time: Date },
+    opts: { untilSeq?: number; limit?: number } = {},
+  ): Promise<JsMsg[]> {
+    if (!this.jsm || !this.js) throw new Error("endpoint not started");
+    const stream = chatStream(this.space);
+    const name = chatHistDurable(this.card.id);
+    const out: JsMsg[] = [];
+    // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
+    // single filter (the read ACL is enforced at create — see the doc above).
+    try { await this.jsm.consumers.delete(stream, name); } catch { /* none — fine */ }
+    await this.jsm.consumers.add(stream, {
+      name,
+      filter_subject: subject,
+      ack_policy: AckPolicy.None,
+      mem_storage: true,
+      inactive_threshold: nanos(30_000),
+      ...("time" in start
+        ? { deliver_policy: DeliverPolicy.StartTime, opt_start_time: start.time.toISOString() }
+        : { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: start.seq }),
+    });
+    try {
+      const consumer = await this.js.consumers.get(stream, name);
+      let pending = (await consumer.info()).num_pending;
+      while (pending > 0) {
+        const want = Math.min(pending, 256);
+        const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
+        let got = 0;
+        for await (const m of iter) {
           got++;
-          if (sm.seq > upToSeq) break pages; // crossed the frontier — the tail owns the rest
-          last = sm.seq;
-          let msg: CotalMessage;
-          try {
-            msg = sm.json<CotalMessage>();
-          } catch {
-            continue; // skip undecodable
-          }
-          // Same authenticity guard as the tail; skip our own echoes in history.
-          const parsed = parseSubject(sm.subject);
-          if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
-          collected.push({ msg, seq: sm.seq });
+          if (opts.untilSeq !== undefined && m.seq > opts.untilSeq) return out; // crossed the frontier
+          out.push(m);
+          if (opts.limit !== undefined && out.length >= opts.limit) return out;
         }
-      } catch (e) {
-        // Batch Direct Get raises a 404 ("message not found") when no message matches from
-        // `start` — the normal "no more history" signal (empty channel or last page), not a
-        // fault. Anything else is real.
-        if ((e as { code?: number }).code === 404) break;
-        this.emit("error", e as Error);
-        break;
+        if (got < want) break; // drained early
+        pending -= got;
       }
-      if (got === 0 || last === 0) break; // drained
-      startSeq = last + 1;
+    } finally {
+      try { await this.jsm.consumers.delete(stream, name); } catch { /* already gone */ }
+    }
+    return out;
+  }
+
+  /** Read a channel's retained history up to `upToSeq` (the join frontier) and emit each message
+   *  as a `historical` "message" event. `sinceMs` bounds how far back via a native consumer
+   *  `start_time` (now − window); unset ⇒ the full retained window. New messages (`seq > upToSeq`)
+   *  are skipped — the live tail owns them. Reads through the contained {@link collectHistory}. */
+  private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number): Promise<number> {
+    const subject = chatSubject(this.space, "*", channel);
+    const start = sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
+    let msgs: JsMsg[];
+    try {
+      msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });
+    } catch (e) {
+      this.emit("error", e as Error);
+      return 0;
     }
     const noop: Delivery = { ack: () => {}, nak: () => {} };
-    for (const { msg } of collected)
-      // Backfill only ever pages the chat stream, so the authenticated class is always "channel".
+    let n = 0;
+    for (const sm of msgs) {
+      let msg: CotalMessage;
+      try {
+        msg = sm.json<CotalMessage>();
+      } catch {
+        continue; // skip undecodable
+      }
+      // Same authenticity guard as the tail; skip our own echoes in history.
+      const parsed = parseSubject(sm.subject);
+      if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
+      // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
       this.emit("message", msg, noop, { historical: true, kind: "channel" } satisfies MessageMeta);
-    return collected.length;
+      n++;
+    }
+    return n;
   }
 
   /**
@@ -1231,8 +1336,8 @@ export class CotalEndpoint extends EventEmitter {
    *
    * Honors the **same** per-channel replay gate as join-backfill ({@link joinPolicyFresh}): a
    * `replay=off` channel returns nothing, so `focus` can't become a history bypass for a channel
-   * that denies replay to everyone else (chat is `allow_direct` with no broker-level ACL, so this
-   * app gate is the entire boundary).
+   * that denies replay to everyone else (the read ACL bounds *which* channels recall can touch; this
+   * app gate bounds *whether* a permitted channel replays).
    */
   async recallChannel(
     channel: string,
@@ -1243,38 +1348,25 @@ export class CotalEndpoint extends EventEmitter {
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], dropped: false };
     const subject = chatSubject(this.space, "*", channel);
+    let raw: JsMsg[];
+    try {
+      raw = await this.collectHistory(subject, { seq: sinceSeq + 1 });
+    } catch (e) {
+      this.emit("error", e as Error);
+      raw = [];
+    }
     const collected: CotalMessage[] = [];
-    let startSeq = sinceSeq + 1;
-    pages: for (;;) {
-      let last = 0;
-      let got = 0;
+    for (const sm of raw) {
+      let msg: CotalMessage;
       try {
-        const iter = await this.jsm.direct.getBatch(chatStream(this.space), {
-          seq: startSeq,
-          next_by_subj: subject,
-          batch: 256,
-        });
-        for await (const sm of iter) {
-          got++;
-          last = sm.seq;
-          let msg: CotalMessage;
-          try {
-            msg = sm.json<CotalMessage>();
-          } catch {
-            continue; // skip undecodable
-          }
-          // Same authenticity guard as the tail/backfill; skip our own echoes.
-          const parsed = parseSubject(sm.subject);
-          if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
-          collected.push(msg);
-        }
-      } catch (e) {
-        if ((e as { code?: number }).code === 404) break; // no more history (empty or last page)
-        this.emit("error", e as Error);
-        break;
+        msg = sm.json<CotalMessage>();
+      } catch {
+        continue; // skip undecodable
       }
-      if (got === 0 || last === 0) break;
-      startSeq = last + 1;
+      // Same authenticity guard as the tail/backfill; skip our own echoes.
+      const parsed = parseSubject(sm.subject);
+      if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
+      collected.push(msg);
     }
     const dropped = await this.channelDropped(subject, sinceSeq);
     return { messages: collected, dropped };
@@ -1304,20 +1396,16 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Sequence of the earliest message still retained on a channel subject (any sender), or
-   *  undefined if nothing is retained. One 1-message Direct Get — used for the recall drop marker. */
+   *  undefined if nothing is retained. One message through the contained {@link collectHistory} —
+   *  used for the recall drop marker. */
   private async channelOldestSeq(subject: string): Promise<number | undefined> {
     if (!this.jsm) return undefined;
     try {
-      const iter = await this.jsm.direct.getBatch(chatStream(this.space), {
-        seq: 1,
-        next_by_subj: subject,
-        batch: 1,
-      });
-      for await (const sm of iter) return sm.seq;
-      return undefined;
+      const [first] = await this.collectHistory(subject, { seq: 1 }, { limit: 1 });
+      return first?.seq;
     } catch (e) {
-      if ((e as { code?: number }).code !== 404) this.emit("error", e as Error);
-      return undefined; // 404 = nothing retained on this subject (normal)
+      this.emit("error", e as Error);
+      return undefined;
     }
   }
 

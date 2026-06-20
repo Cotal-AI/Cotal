@@ -72,9 +72,11 @@ fit lateral pub/sub.
   (never system-prompt text).
 - **Replay mechanism (tail + backfill).** `deliver_policy` is consumer-wide, so it cannot
   honor per-channel replay. Instead the chat durable is a `DeliverPolicy.New` **tail** ("from
-  now on") and history is an explicit **per-channel backfill on join** via JetStream Direct Get
-  (a read verb, no consumer create), gated by the channel's replay policy. A per-channel join
-  watermark (the stream frontier at join) lets the tail ack-drop pre-join messages, so a
+  now on") and history is an explicit **per-channel backfill on join** through a short-lived
+  single-filter consumer scoped to that one channel (so the read stays within the agent's read
+  ACL — see the read-containment note below), gated by the channel's replay policy. A
+  per-channel join watermark (the stream frontier at join) lets the tail ack-drop pre-join
+  messages, so a
   no-replay channel starts clean and a replay backfill never double-delivers. **How far back**
   is the registry's `replayWindow` (`"24h"`), realized natively as a Direct-Get `start_time`,
   not a client-side count.
@@ -486,7 +488,8 @@ skills:
   - id: diff-review
     name: Diff review
     tags: [review, correctness, security]
-channels: [general, reviews]         # auto-subscribe on join
+subscribe: [general, reviews]        # active read set (auto-subscribe on boot)
+allowPublish: [general, reviews]     # post ACL (default-deny if omitted)
 inbound: push-on-dm                  # buffer/policy default
 model: sonnet                        # optional
 ---
@@ -632,8 +635,9 @@ mesh binds **loopback** (`127.0.0.1`) by default in both modes; `--host 0.0.0.0`
 independently of auth, so "network-reachable" never silently means "unauthenticated" (an open
 network mesh takes `--open --host 0.0.0.0`, explicitly). Auth mode makes the mesh a real boundary
 against untrusted peers *within* a shared space: an agent can only emit messages **as itself**,
-only to its **declared channels**, and can only read **its own DMs**, enforced by the NATS
-server, not by agent goodwill. It is containment plus authenticity for a single trusted broker
+only to its **declared `allowPublish` channels** (default-deny), and can only read **its own DMs**
+and **chat within its `allowSubscribe`**, enforced by the NATS server, not by agent goodwill. It
+is containment plus authenticity for a single trusted broker
 (not non-repudiation; it does not survive an untrusted relay, which needs signed envelopes,
 later).
 
@@ -655,13 +659,18 @@ later).
   (asserting any explicitly-set id matches, else publishes would silently deny).
 - **Profiles** (a default-deny allow-list each, built from the shared subject/stream/durable
   builders so the ACLs cannot drift from the wire layout):
-  - **agent:** publish only `chat.<ownId>.<declared-channel>` (the `publish:` list in the agent
-    file, falling back to `channels:`; wildcard subtrees like `team.>` flow through), plus
-    `inst.*.<ownId>` / `svc.*.<ownId>`, and `ctl.self.<ownId>` (self-service control, every
-    agent). The privileged `ctl.manager.<ownId>` is granted **only** when the agent file declares
-    `capabilities: [spawn]` (default-deny otherwise). Presence PUT is scoped to its own key.
-    `$JS.API` is scoped to its own chat/task/DM durables (chat and task self-created
-    name-scoped; **DM and TASK bind-only**, create denied). `sub.allow = [_INBOX_<ownId>.>]`.
+  - **agent:** publish only `chat.<ownId>.<ch>` for each `allowPublish` channel (the post ACL —
+    **default-deny**, declared in the agent file; wildcard subtrees like `team.>` flow through),
+    plus `inst.*.<ownId>` / `svc.*.<ownId>`, and `ctl.self.<ownId>` (self-service control, every
+    agent — also carries the mediated join/leave op). The privileged `ctl.manager.<ownId>` is
+    granted **only** when the agent file declares `capabilities: [spawn]` (default-deny otherwise).
+    Presence PUT is scoped to its own key. **Reads are bounded by the read ACL (`allowSubscribe`):**
+    the multi-channel live-tail durable `chat_<ownId>` is **bind-only** (pre-created by the
+    provisioner, filter moved only by the mediated join/leave op — the agent can't self-widen),
+    and history reads go through a single-filter `chathist_<ownId>` consumer with one create grant
+    per `allowSubscribe` channel (the server pins the filter to the body, so no other channel is
+    reachable; **no unfiltered Direct Get**). **DM and TASK are bind-only**, create denied.
+    `sub.allow = [_INBOX_<ownId>.>]`.
   - **observer:** read-only. `sub.allow = [chat.>, _INBOX_<ownId>.>]`, pub = CHAT plus presence
     read verbs only. No chat/inst/svc publish (cannot post); DM streams are never named (DMs
     invisible). `cotal watch/console/web` run `consume:false` and narrow their tap to `chat.>`.

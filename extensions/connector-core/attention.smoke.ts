@@ -37,8 +37,9 @@ const cfg: AgentConfig = {
   name: "Otto",
   role: "generalist",
   servers,
-  channels: ["open-ch", "quiet-ch"], // open-ch: replay=on; quiet-ch: replay=off
-  publish: ["open-ch", "quiet-ch"],
+  subscribe: ["open-ch", "quiet-ch"], // open-ch: replay=on; quiet-ch: replay=off
+  allowSubscribe: ["open-ch", "quiet-ch"],
+  allowPublish: ["open-ch", "quiet-ch"],
   kind: "agent",
   tls: false,
   id: "otto_agent",

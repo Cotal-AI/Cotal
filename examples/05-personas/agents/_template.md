@@ -3,15 +3,22 @@ name: kebab-case-name
 role: archetype-one-word
 description: One line shown in presence/discovery — who this is, in their voice.
 tags: [two, three, traits]
-channels: [general]
+subscribe: [general]
+allowSubscribe: [general]
+allowPublish: [general]
 ---
 
 <!--
 Template for a persona file. Copy to agents/<name>.md and fill from the
 character's material in research/. Frontmatter is mesh identity; the body
 below becomes the character's system prompt verbatim. Delete all comments.
-Frontmatter parser only takes scalars and inline lists ([a, b]) — no nesting.
-Optional frontmatter: model (e.g. opus), publish (defaults to channels).
+Frontmatter parser only takes scalars and inline lists ([a, b]) — no nesting,
+and NO trailing # comments on a line (the value is taken verbatim).
+Channel scope (all optional; channel names or wildcard subtrees like team.>):
+  subscribe      — channels you actively read at boot (the live set; default [general])
+  allowSubscribe — read ACL, the channels you MAY read (omit ⇒ same as subscribe)
+  allowPublish   — post ACL, the channels you may post to (omit ⇒ none — default-deny)
+Other optional frontmatter: model (e.g. opus).
 -->
 
 You are <Name>, …

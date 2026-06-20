@@ -19,13 +19,19 @@ export async function mint(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { profile: { type: "string" }, out: { type: "string" } },
+    options: {
+      profile: { type: "string" },
+      out: { type: "string" },
+      "allow-subscribe": { type: "string" }, // read ACL override (comma-separated)
+      "allow-publish": { type: "string" }, // post ACL override (comma-separated)
+    },
   });
   const name = positionals[0];
   if (!name) {
-    console.error(c.red("usage: cotal mint <name> --profile <agent|observer|admin> [--out <path>]"));
+    console.error(c.red("usage: cotal mint <name> --profile <agent|observer|admin> [--allow-subscribe a,b] [--allow-publish a,b] [--out <path>]"));
     process.exit(1);
   }
+  const splitList = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
   const profile = (values.profile ?? "agent") as Profile;
   if (profile !== "agent" && profile !== "observer" && profile !== "admin") {
     console.error(c.red(`unknown profile "${profile}" — expected agent, observer, or admin`));
@@ -37,21 +43,23 @@ export async function mint(argv: string[]): Promise<void> {
     console.error(c.red("no space auth found here — run `cotal up` first"));
     process.exit(1);
   }
-  // For agents, derive the publish allow-list AND role from the agent file if one exists
-  // (publish: ?? channels: for channels; role scopes the TASK-queue consumer to svc_<role>).
-  // observers/managers ignore both.
-  let channels: string[] | undefined;
+  // For agents, derive the read/post ACLs AND role from the agent file if one exists (flags
+  // override): allowSubscribe (read; defaults to subscribe) and allowPublish (post; default-deny);
+  // role scopes the TASK-queue consumer to svc_<role>. observers/managers ignore all three.
+  // NOTE: this mints CREDS only — the bind-only chat/DM/TASK durables are pre-created separately by
+  // a privileged provisioner (`cotal up` / manager / `cotal spawn`), as for DM/TASK already.
+  let allowSubscribe: string[] | undefined;
+  let allowPublish: string[] | undefined;
   let role: string | undefined;
   if (profile === "agent") {
     const f = agentFilePath(cotalRoot(), name);
-    if (existsSync(f)) {
-      const def = loadAgentFile(f);
-      channels = def.publish ?? def.channels;
-      role = def.role;
-    }
+    const def = existsSync(f) ? loadAgentFile(f) : undefined;
+    allowSubscribe = splitList(values["allow-subscribe"]) ?? def?.allowSubscribe ?? def?.subscribe;
+    allowPublish = splitList(values["allow-publish"]) ?? def?.allowPublish;
+    role = def?.role;
   }
   const identity = newIdentity();
-  const creds = await mintCreds(auth, identity, profile, { channels, role });
+  const creds = await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role });
   const out = resolve(values.out ?? join(dir, "creds", `${name}.creds`));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, creds, { mode: 0o600 });

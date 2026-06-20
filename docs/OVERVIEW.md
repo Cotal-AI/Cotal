@@ -124,9 +124,10 @@ Full scenario and run steps:
 - **Identity & authorization (on by default; `cotal up --open` to disable).** The mesh is
   a real boundary against untrusted peers in a shared space. The **sender is encoded in
   the subject** (server-policed, not self-asserted), so an agent can only emit **as
-  itself**. Per-agent JWT ACLs scope publishing to its **declared channels**. DMs are
-  confidential on both leak paths (a scoped per-identity inbox plus provisioner-pre-created
-  bind-only durables). Account = space, user = agent, minted by a **provisioner** (the
+  itself**. Per-agent JWT ACLs scope **posting** to its declared channels (default-deny) and
+  **reading** to its read ACL (`allowSubscribe`) — both broker-enforced. DMs are confidential
+  on both leak paths (a scoped per-identity inbox plus provisioner-pre-created bind-only
+  durables). Account = space, user = agent, minted by a **provisioner** (the
   signer capability, not something manager-special). Open mode stays the default for local
   dev. Full model and limitations in [architecture.md](architecture.md).
 

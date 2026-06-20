@@ -76,8 +76,9 @@ try {
 
   const ottoId = newIdentity();
   const pubbyId = newIdentity();
-  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { channels: ["open-ch", "quiet-ch"], role: "generalist" });
-  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { channels: ["open-ch", "quiet-ch"] });
+  const chACL = { subscribe: ["open-ch", "quiet-ch"], allowSubscribe: ["open-ch", "quiet-ch"], allowPublish: ["open-ch", "quiet-ch"] };
+  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist" });
+  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL });
 
   const cfg: AgentConfig = {
     space,
@@ -85,8 +86,9 @@ try {
     role: "generalist",
     servers,
     creds: ottoCreds,
-    channels: ["open-ch", "quiet-ch"], // open-ch: replay=on; quiet-ch: replay=off
-    publish: ["open-ch", "quiet-ch"],
+    subscribe: ["open-ch", "quiet-ch"], // open-ch: replay=on; quiet-ch: replay=off
+    allowSubscribe: ["open-ch", "quiet-ch"],
+    allowPublish: ["open-ch", "quiet-ch"],
     kind: "agent",
     tls: false,
     id: ottoId.id,

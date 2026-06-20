@@ -78,9 +78,10 @@ try {
   const aliceId = newIdentity();
   const bobId = newIdentity();
   const carolId = newIdentity();
-  const aliceCreds = await provisionAgent(mgr, auth, aliceId, { channels: ["general"], role: "planner" });
-  const bobCreds = await provisionAgent(mgr, auth, bobId, { channels: ["general"], role: "builder" });
-  const carolCreds = await provisionAgent(mgr, auth, carolId, { channels: ["general"], role: "tester" });
+  const acl = { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] };
+  const aliceCreds = await provisionAgent(mgr, auth, aliceId, { ...acl, role: "planner" });
+  const bobCreds = await provisionAgent(mgr, auth, bobId, { ...acl, role: "builder" });
+  const carolCreds = await provisionAgent(mgr, auth, carolId, { ...acl, role: "tester" });
 
   const a = new CotalEndpoint({
     space,

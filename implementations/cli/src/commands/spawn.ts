@@ -100,8 +100,12 @@ export async function spawn(argv: string[]): Promise<void> {
       transcript: { type: "boolean" },
       "no-transcript": { type: "boolean" },
       "share-tools": { type: "string" },
+      subscribe: { type: "string" }, // read set override (comma-separated)
+      "allow-subscribe": { type: "string" }, // read ACL override
+      "allow-publish": { type: "string" }, // post ACL override
     },
   });
+  const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
   // Transcript mirroring to `tr-<name>` is OFF by default; `--transcript` opts in
   // (`--no-transcript` is accepted too, to be explicit about the default).
   const transcript = values.transcript ? true : values["no-transcript"] ? false : false;
@@ -159,8 +163,11 @@ export async function spawn(argv: string[]): Promise<void> {
     });
     prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
     await prov.start();
+    const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
     const creds = await provisionAgent(prov, auth, identity, {
-      channels: def.publish ?? def.channels,
+      subscribe,
+      allowSubscribe: splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe,
+      allowPublish: splitFlag(values["allow-publish"]) ?? def.allowPublish,
       role,
       capabilities: def.capabilities,
     });

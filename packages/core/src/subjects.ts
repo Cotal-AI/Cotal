@@ -89,6 +89,15 @@ export function subjectMatches(pattern: string, subject: string): boolean {
   return p.length === s.length;
 }
 
+/** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
+ *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
+ *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by
+ *  the load-time invariant (`subscribe ⊆ allowSubscribe`), the connector subset check, and the
+ *  manager's mediated-join validation (`channel ∈ allowSubscribe`) so they can't drift. */
+export function channelInAllow(allow: string[], channel: string): boolean {
+  return allow.some((a) => subjectMatches(a, channel));
+}
+
 /** Drop exact duplicates and any subject subsumed by a more-general one — JetStream
  *  rejects a consumer whose `filter_subjects` overlap, so `[team.>, team.backend]`
  *  must collapse to `[team.>]` before binding the chat consumer. A parent and its subtree
@@ -230,9 +239,17 @@ export function taskStream(space: string): string {
   return `TASK_${token(space)}`;
 }
 
-/** Durable consumer name for an instance's view of the chat stream. */
+/** Durable consumer name for an instance's view of the chat stream — its live tail. */
 export function chatDurable(instance: string): string {
   return `chat_${token(instance)}`;
+}
+
+/** Consumer name for an instance's short-lived chat **history** reads (join-backfill, focus-recall,
+ *  drop-marker). A single per-instance name (not the live `chat_<id>`) so its create/info/fetch/
+ *  delete grants are name-scoped to the agent's own id — a peer can never bind it — while the
+ *  per-read single `filter_subject` is what the create-time ACL pins to `allowSubscribe`. */
+export function chatHistDurable(instance: string): string {
+  return `chathist_${token(instance)}`;
 }
 
 /** Durable consumer name for an instance's private DM inbox. */

@@ -242,28 +242,33 @@ token.
 Space-wide defaults (`ChannelDefaults`: `replay?`, `replayWindow?`) live under the reserved
 key `=defaults`. Effective replay is `channel.replay ?? defaults.replay ?? true`.
 
-Join adds the channel to the instance's multicast subscription. Leave removes it. A client
-MUST NOT publish to wildcard channels. A client MUST NOT update its chat durable to an empty
-filter that would accidentally subscribe to all chat subjects; it must refuse the leave,
-stop the consumer, or use an explicit non-matching filter.
+Join adds the channel to the instance's multicast subscription; leave removes it. A join
+target MUST be within the instance's read ACL (`allowSubscribe`, §9); a join outside it MUST
+be refused. A client MUST NOT publish to wildcard channels. The active read set MUST NOT
+become an empty filter that would accidentally subscribe to all chat subjects; a leave of the
+last channel MUST be refused. In auth mode an agent has no grant to create or update its own
+chat durable, so a join/leave is a mediated control op: a privileged service validates the
+target set against `allowSubscribe` and moves the durable's `filter_subjects`. In open mode
+the client updates its own durable directly.
 
 Replay on join is channel-global, not per-subscriber:
 
 1. Capture the CHAT stream frontier before enabling the new channel filter.
-2. Add the channel subject to the chat durable's `filter_subjects`.
-3. If effective replay is on, Direct Get retained messages for that channel up to the
-   frontier, optionally bounded by `replayWindow`.
+2. Move the chat durable's `filter_subjects` to include the channel subject (mediated in auth
+   mode; self-served in open mode).
+3. If effective replay is on, read retained messages for that channel up to the frontier —
+   through a consumer scoped to a single channel filter, optionally bounded by `replayWindow`.
 4. Surface backfilled messages with `MessageMeta.historical = true`.
 5. Ack-drop live-tail messages at or below the join watermark so backfill and tail do not
    double-deliver.
 
-`replay=false` is noise control, not confidentiality. CHAT history is readable through the
-CHAT read grants in §9; confidential content MUST use DM or anycast.
+`replay=false` is noise control, not confidentiality. CHAT history is readable only within an
+instance's read ACL (`allowSubscribe`, §9); confidential content MUST use DM or anycast.
 
 Channel membership is broker-known, not self-reported. In the NATS binding, membership is
-the set of `chat_<id>` consumers and their `filter_subjects`, joined with presence for
-liveness. Membership is observability data and MUST NOT be used as a send authorization
-gate.
+the set of `chat_<id>` live-tail consumers and their `filter_subjects`, joined with presence
+for liveness; the transient `chathist_<id>` history consumers are NOT membership. Membership
+is observability data and MUST NOT be used as a send authorization gate.
 
 ---
 
@@ -282,7 +287,8 @@ Durable consumers:
 
 | Durable | Stream | Filter | Policy |
 | --- | --- | --- | --- |
-| `chat_<id>` | CHAT | current channel filters as `cotal.<space>.chat.*.<channel>` | self-created; `DeliverPolicy.New`; `AckExplicit`; `ack_wait=60000ms`; `inactive_threshold=600000ms` |
+| `chat_<id>` | CHAT | active read set as `cotal.<space>.chat.*.<channel>` (⊆ `allowSubscribe`) | provisioner-created bind-only in auth mode (filter moved only by the mediated join/leave op); self-created in open mode; `DeliverPolicy.New`; `AckExplicit`; `ack_wait=60000ms`; `inactive_threshold=600000ms` (open mode only) |
+| `chathist_<id>` | CHAT | one `cotal.<space>.chat.*.<channel>` per read | transient single-filter consumer for history reads (join-backfill / focus-recall); created per read scoped to one channel in `allowSubscribe`, then deleted; `AckNone` |
 | `dm_<id>` | DM | `cotal.<space>.inst.<id>.*` | provisioner-created in auth mode; bind only; `DeliverPolicy.All`; `AckExplicit`; `ack_wait=60000ms` |
 | `svc_<role>` | TASK | `cotal.<space>.svc.<role>.*` | provisioner-created in auth mode; bind only; `AckExplicit`; `ack_wait=60000ms` |
 
@@ -314,26 +320,40 @@ dev mode is available but out of scope for the security claims here.
   the account; an account signing key mints per-agent user JWTs.
 - **Profiles are default-deny allow-lists.** Subject, stream, durable, and KV names are built
   from the same builders as §3 and §8. Exact profile shapes are in Appendix B.
+- **An agent's channel scope is three concepts**, each a list of channel names or wildcard
+  subtrees (`team.>`): `subscribe` — the active read set, the channels it actually subscribes
+  to at boot (the `chat_<id>` filter; mutable at runtime via the mediated join/leave); it MUST
+  be a subset of `allowSubscribe`. `allowSubscribe` — the read **ACL**, the channels it MAY read
+  (default = `subscribe`), enforced as the per-channel history-consumer create grants above.
+  `allowPublish` — the post **ACL**, the channels it may publish to; **default-deny** (a chat
+  publish grant is minted only for a declared channel).
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<id>.<declared-channel>`, `inst.*.<id>`, `svc.*.<id>`, `ctl.<manager>.<id>`; own presence key | own `_INBOX_<id>.>`; CHAT via own durable + Direct Get; own `dm_<id>` and `svc_<role>` bind-only | DM/TASK create denied |
+| `agent` | own `chat.<id>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.<id>`, `svc.*.<id>`, `ctl.<manager>.<id>`; own presence key | own `_INBOX_<id>.>`; CHAT live tail via bind-only `chat_<id>` (no create/update); CHAT history via single-filter `chathist_<id>` creates, one per `allowSubscribe` channel; own `dm_<id>` and `svc_<role>` bind-only | read bounded by `allowSubscribe`; no Direct Get; DM/TASK create denied |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `manager` | broad | broad | provisioner host; SHOULD be scoped in a future version |
 
-DM and TASK confidentiality close two leak paths:
+DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
 
 1. Delivery rides a per-identity inbox prefix, `_INBOX_<id>.>`, and `sub.allow` permits only
    that prefix.
-2. Consumer create-time `filter_subject` is not ACL-constrainable, so the provisioner
-   pre-creates `dm_<id>` and `svc_<role>` and agents bind only. All create forms on
-   `DM_<space>` and `TASK_<space>` are denied to agents.
+2. A consumer create on the bare/multi-filter subject is not ACL-constrainable, so the
+   provisioner pre-creates `dm_<id>`, `svc_<role>`, and the multi-channel `chat_<id>` live tail,
+   and agents bind only. All such create forms on `DM_<space>`, `TASK_<space>`, and `CHAT_<space>`
+   are denied to agents.
+3. CHAT reads are bounded to `allowSubscribe`: a consumer create on the extended subject
+   `$JS.API.CONSUMER.CREATE.<stream>.<name>.<filter>` carries a single filter the
+   server pins to the request body, so an agent is granted exactly one such create-subject per
+   `allowSubscribe` channel and can read history of no other channel. The unfiltered Direct Get
+   grant is not given to agents.
 
 This binding provides containment and authenticity under a single trusted broker: an agent
-can emit only as itself, only to its declared channels, and read only its own DMs, enforced
-by the server. It does not provide non-repudiation, does not survive an untrusted relay, and
-DMs are plaintext to the broker and to `admin`. See [docs/security.md](docs/security.md).
+can emit only as itself and only to its declared `allowPublish` channels, and read only its own
+DMs and chat within `allowSubscribe`, enforced by the server. It does not provide
+non-repudiation, does not survive an untrusted relay, and DMs are plaintext to the broker and
+to `admin`. See [docs/security.md](docs/security.md).
 
 ---
 
@@ -498,7 +518,7 @@ This appendix is normative for the NATS binding. Names below use these placehold
 - `CHKV = KV_cotal_channels_<space>`
 - `id = authenticated instance id`
 - `role = authenticated agent role`
-- `chatD = chat_<id>`, `dmD = dm_<id>`, `svcD = svc_<role>`
+- `chatD = chat_<id>`, `chatHistD = chathist_<id>`, `dmD = dm_<id>`, `svcD = svc_<role>`
 - `inbox = _INBOX_<id>.>`
 
 Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per listed token.
@@ -511,19 +531,19 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 
 `pub.allow`:
 
-- `P.chat.<id>.<declared-channel>` for every declared publish channel
+- `P.chat.<id>.<ch>` for every `allowPublish` channel (post ACL; none by default)
 - `P.inst.*.<id>`
 - `P.svc.*.<id>`
 - `P.ctl.<manager>.<id>`
 - `$JS.API.INFO`
 - `$JS.API.STREAM.INFO.<CHAT|DM|TASK|KV|CHKV>`
-- `$JS.API.CONSUMER.DURABLE.CREATE.<CHAT>.<chatD>`
-- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatD>`
-- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatD>.>`
-- `$JS.API.CONSUMER.INFO.<CHAT>.<chatD>`
+- `$JS.API.CONSUMER.INFO.<CHAT>.<chatD>` (live tail; bind only — no create/update)
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.<chatD>`
 - `$JS.ACK.<CHAT>.<chatD>.>`
-- `$JS.API.DIRECT.GET.<CHAT>`
+- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body)
+- `$JS.API.CONSUMER.INFO.<CHAT>.<chatHistD>`
+- `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.<chatHistD>`
+- `$JS.API.CONSUMER.DELETE.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.INFO.<DM>.<dmD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.<dmD>`
 - `$JS.ACK.<DM>.<dmD>.>`

@@ -36,7 +36,7 @@ transport.
 | 2 | **Durable delivery and history** | At-least-once store-and-forward so an offline or mid-turn agent misses nothing: per-instance bookmarks for multicast/unicast, per-role queued work for anycast, explicit ack plus redelivery, duplicate tolerance by message id, and bounded late-join replay. |
 | 3 | **Presence and registry state** | A small per-space key/value store: own-key presence writes keyed by instance id, TTL/stale/delete-derived `offline`, and durable channel config. |
 | 4 | **Identity** | A stable per-instance id the transport can bind delivery and authenticity to. |
-| 5 | **Authorization and isolation** | A per-space boundary: an agent emits only as itself, only to its declared channels, and reads only its own DMs; plus cross-space isolation. |
+| 5 | **Authorization and isolation** | A per-space boundary: an agent emits only as itself and only to its declared `allowPublish` channels (default-deny), and reads only its own DMs and chat within its `allowSubscribe` ACL; plus cross-space isolation. |
 
 Capabilities 1, 4, and 5 are transport-shaped: routing, identity, and authorization are
 properties of the pipe. Capabilities 2 and 3 are state. A live-only pipe does not provide them,

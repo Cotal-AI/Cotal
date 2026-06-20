@@ -27,6 +27,7 @@ import {
   token,
   spacePrefix,
   chatSubject,
+  channelInAllow,
   unicastSubject,
   anycastSubject,
   controlServiceSubject,
@@ -36,6 +37,7 @@ import {
   dmStream,
   taskStream,
   chatDurable,
+  chatHistDurable,
   dmDurable,
   taskDurable,
   presenceBucket,
@@ -125,10 +127,18 @@ export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
 
 /** Options shaping a minted user's permissions. */
 export interface MintOpts {
-  /** Channels an "agent" may publish to (the agent file's `publish:` allow-list, already
-   *  resolved by the caller). Each is run through the chat-subject builder so a wildcard
-   *  subtree like `team.>` becomes `chat.<id>.team.>`. Defaults to `["general"]`. */
-  channels?: string[];
+  /** Read ACL — channels an "agent" MAY read (the agent file's `allowSubscribe`, already resolved
+   *  by the caller). Minted as per-channel single-filter history-consumer create grants
+   *  (`CONSUMER.CREATE.<CHAT>.<chathist_id>.<chat.*.ch>`) — the broker boundary on chat **history**
+   *  reads (join-backfill / focus-recall). Each is run through the chat-subject builder so a
+   *  wildcard subtree `team.>` becomes `chat.*.team.>`. Defaults to `["general"]`. The live tail's
+   *  filter (the active `subscribe` set) is pinned separately by the privileged
+   *  {@link DurableProvisioner.provisionChatDurable} pre-create, never here. */
+  allowSubscribe?: string[];
+  /** Post ACL — channels an "agent" may publish to (the agent file's `allowPublish`, already
+   *  resolved by the caller). Each becomes a `chat.<id>.<ch>` publish grant. **Default-deny**:
+   *  omitted/empty ⇒ no chat publish grant at all — publishing must be declared. */
+  allowPublish?: string[];
   /** The agent's role — scopes its TASK-queue consumer to svc_<role>. */
   role?: string;
   /** Control service the agent may address. Defaults to `"manager"`. */
@@ -140,33 +150,54 @@ export interface MintOpts {
   capabilities?: string[];
 }
 
+/** Options for {@link provisionAgent} — {@link MintOpts} plus the active read set. */
+export interface ProvisionOpts extends MintOpts {
+  /** The active read set: pre-created as the live chat durable's `filter_subjects` (the channels
+   *  the agent actually subscribes to at boot). Must be ⊆ `allowSubscribe`. Defaults to `["general"]`. */
+  subscribe?: string[];
+}
+
 /** The privileged onboarding ops a launcher needs — implemented by a connected, permissive
  *  endpoint (the manager, or a short-lived provisioner that `cotal spawn` opens). */
 export interface DurableProvisioner {
+  /** Pre-create the agent's bind-only chat live-tail durable, filtered to `subscribe`. */
+  provisionChatDurable(id: string, subscribe: string[]): Promise<void>;
   provisionDmInbox(id: string): Promise<void>;
   provisionTaskQueue(role: string): Promise<void>;
 }
 
-/** Onboard an agent for launch (auth mode): pre-create its bind-only DM (+ role TASK) durables
- *  and mint its scoped creds. The single shared step so every launcher — the manager and
+/** Onboard an agent for launch (auth mode): pre-create its bind-only chat (+ DM + role TASK)
+ *  durables and mint its scoped creds. The single shared step so every launcher — the manager and
  *  `cotal spawn` alike — provisions identically (manager not special). */
 export async function provisionAgent(
   provisioner: DurableProvisioner,
   auth: SpaceAuth,
   identity: Identity,
-  opts: MintOpts = {},
+  opts: ProvisionOpts = {},
 ): Promise<string> {
+  const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
+  const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
+  // Re-assert the load-time invariant at the trust boundary (defense in depth): the pre-created
+  // live filter (subscribe) must sit within the read ACL (allowSubscribe), or the provisioner
+  // would hand the agent live delivery it isn't permitted to read.
+  for (const ch of subscribe)
+    if (!channelInAllow(allowSubscribe, ch))
+      throw new Error(
+        `provisionAgent: subscribe "${ch}" is not within allowSubscribe [${allowSubscribe.join(", ")}]`,
+      );
+  await provisioner.provisionChatDurable(identity.id, subscribe);
   await provisioner.provisionDmInbox(identity.id);
   if (opts.role) await provisioner.provisionTaskQueue(opts.role);
-  return mintCreds(auth, identity, "agent", opts);
+  return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
 }
 
 /** Mint a user creds file for an agent {@link Identity} (its stable id+seed from
  *  {@link newIdentity}). The account signing key signs over ONLY the public key
  *  (`fromPublic`) — the agent seed is never part of the signature, it's only folded into
- *  the resulting creds file. The "agent" profile is scoped to publish only as itself and
- *  only to its declared channels (the channel-restriction enforcement); "manager" and
- *  "observer" stay permissive here and are scoped in steps 6–7. */
+ *  the resulting creds file. The "agent" profile is scoped to publish only as itself and only to
+ *  its declared `allowPublish` channels (post ACL, default-deny), and to read only within
+ *  `allowSubscribe` (live tail bind-only + per-channel history grants); "manager" and "observer"
+ *  stay permissive here and are scoped in steps 6–7. */
 export async function mintCreds(
   auth: SpaceAuth,
   identity: Identity,
@@ -256,34 +287,42 @@ function permissionsFor(
   }
 
   // ---- agent ----
-  const channels = opts.channels?.length ? opts.channels : ["general"];
+  const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
+  const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
   const manager = opts.manager ?? CONTROL_PRIVILEGED;
-  const chatD = chatDurable(id), dmD = dmDurable(id);
+  const chatD = chatDurable(id), chatHistD = chatHistDurable(id), dmD = dmDurable(id);
   const svcD = opts.role ? taskDurable(opts.role) : undefined;
   const pubAllow = [
-    // peer subjects — identity + channel scope (step 5), built from the real builders.
-    ...channels.map((ch) => chatSubject(space, id, ch)),
+    // peer publish — identity + channel scope, built from the real builders. Default-deny: ONLY the
+    // declared allowPublish channels (none by default) get a chat-publish grant.
+    ...allowPublish.map((ch) => chatSubject(space, id, ch)),
     unicastSubject(space, "*", id), //  inst.*.<id>   — DM any instance, as me
     anycastSubject(space, "*", id), //  svc.*.<id>    — anycast any role, as me
-    controlServiceSubject(space, CONTROL_SELF_SERVICE, id), // ctl.self.<id> — self stop/despawn, granted to all
+    controlServiceSubject(space, CONTROL_SELF_SERVICE, id), // ctl.self.<id> — self stop/despawn + mediated join/leave, granted to all
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
     `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${DM}`, `$JS.API.STREAM.INFO.${TASK}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,
-    // CHAT consumer: self-create + self-update (join/leave mutate filter_subjects). Chat is
-    // world-readable, so name-scope is enough — but PIN to the own concrete chat_<id>, never a
-    // pattern: `update` clobbers, so a wildcard grant would let an agent repoint a peer's filter
-    // (silent channel-kick). Both API forms: old DURABLE.CREATE + new CONSUMER.CREATE.<name>
-    // (the multi-filter create/update subject), each scoped to this durable.
-    `$JS.API.CONSUMER.DURABLE.CREATE.${CHAT}.${chatD}`,
-    `$JS.API.CONSUMER.CREATE.${CHAT}.${chatD}`,
-    `$JS.API.CONSUMER.CREATE.${CHAT}.${chatD}.>`,
+    // CHAT live tail: BIND ONLY its own pre-created chat_<id> durable — info / fetch / ack, NO
+    // create or update. The durable's `filter_subjects` is the read boundary; it is set only by the
+    // privileged provisioner (subscribe ⊆ allowSubscribe) and moved only via the mediated
+    // join/leave control op. With no create/update path the agent can never widen its own live
+    // read. (The multi-filter durable rides the filter-less create subject, so it is not
+    // ACL-pinnable by subject anyway — bind-only + trusted creator is the enforcement, as DM/TASK.)
     `$JS.API.CONSUMER.INFO.${CHAT}.${chatD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.${chatD}`,
     `$JS.ACK.${CHAT}.${chatD}.>`,
-    // History backfill on join via Direct Get — a read verb (no consumer create/clobber surface).
-    // CHAT only, never DM/TASK (direct-get bypasses the consumer-create deny that is DM's
-    // confidentiality boundary). Requires allow_direct on the CHAT stream (set in streams.ts).
-    `$JS.API.DIRECT.GET.${CHAT}`,
+    // CHAT history reads (join-backfill, focus-recall, drop-marker) — single-filter EPHEMERAL
+    // consumers named chathist_<id>. The create rides the extended subject
+    // CONSUMER.CREATE.<CHAT>.<chathist_id>.<filter>, whose trailing filter token nats-server pins to
+    // the request body (JSConsumerCreateFilterSubjectMismatchErr, code 10131) — so one create grant
+    // per allowSubscribe channel makes history reads broker-bounded to the read ACL. Replaces the
+    // old unfiltered DIRECT.GET.<CHAT> (which could fetch ANY message regardless of channel). The
+    // name is the agent's own, so info/fetch/delete can't reach a peer's consumer. NO broad
+    // CONSUMER.CREATE.<CHAT> / .> deny here: NATS deny beats allow, which would also kill these.
+    ...allowSubscribe.map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", ch)}`),
+    `$JS.API.CONSUMER.INFO.${CHAT}.${chatHistD}`,
+    `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.${chatHistD}`,
+    `$JS.API.CONSUMER.DELETE.${CHAT}.${chatHistD}`,
     // DM consumer: BIND ONLY — info/fetch/ack its own pre-created durable, never create.
     `$JS.API.CONSUMER.INFO.${DM}.${dmD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmD}`,
