@@ -32,6 +32,7 @@
     "smoke:attention": "tsx extensions/connector-core/attention.smoke.ts",
     "smoke:attention:auth": "tsx extensions/connector-core/attention-auth.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/feedback.smoke.ts",
+    "smoke:opencode": "tsx extensions/connector-opencode/turn-wedge.smoke.ts",
     "smoke:attach": "tsx implementations/manager/attach.smoke.ts",
     "smoke:env-isolate": "tsx implementations/manager/env-isolate.smoke.ts",
     "smoke:install": "tsx implementations/cli/install.smoke.ts",

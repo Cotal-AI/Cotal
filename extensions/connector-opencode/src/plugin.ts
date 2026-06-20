@@ -76,7 +76,8 @@ export const cotal: Plugin = async ({ client }) => {
   // replacement top-level session. We adopt that as a context reset while keeping the same MeshAgent
   // and creds alive. Used to match our turn-end (idle) vs subagent idles.
   let sessionID: string | undefined;
-  let busy = false; // a turn is running → don't prompt: opencode would COALESCE onto it (no reject)
+  let busy = false; // a turn is running (ours via drive(), OR the human's via session.status) → don't
+  // prompt: opencode would COALESCE onto it (no reject). Released at EVERY turn end (completeTurn).
   let driving = false; // re-entrancy guard around an in-flight promptAsync
   let primed = false; // persona is prepended to the first turn's text once
   let briefed = false; // the boot channel briefing is prepended once, on the first turn
@@ -198,14 +199,20 @@ export const cotal: Plugin = async ({ client }) => {
     surfaced = [];
   }
 
-  /** A turn ended (the sole ack site). Ignore a stray/duplicate idle that isn't our turn's end. Ack
-   *  what the turn consumed, then drive the next batch — mode-aware, so bare ambient (dnd/focus)
-   *  doesn't self-wake a turn (it rides the next directed turn or a human turn). */
+  /** A turn ended — ANY turn, ours (a driven inbox batch) OR the human's (typing into the attached
+   *  TUI, a `/reconnect`, etc). Clear `busy` regardless of who drove it: it's the COALESCE guard, so
+   *  a turn the connector didn't drive must still release it or every later push wedges behind a
+   *  finished turn. Ack only what WE surfaced (gated on awaitingTurnEnd — a human turn surfaced
+   *  nothing), then flush the next buffered batch — mode-aware, so bare ambient (dnd/focus) doesn't
+   *  self-wake (it rides the next directed/human turn). A truly stray idle (nothing was running and
+   *  we drove nothing) is ignored, so it can't mis-ack or empty-drive. */
   function completeTurn(): void {
-    if (!awaitingTurnEnd) return;
-    awaitingTurnEnd = false;
+    if (!busy && !awaitingTurnEnd) return; // stray/duplicate idle — no turn to close
     busy = false;
-    ackSurfaced();
+    if (awaitingTurnEnd) {
+      awaitingTurnEnd = false;
+      ackSurfaced(); // our driven turn: ack the surfaced batch (the sole ack site)
+    }
     if (pendingForWake() > 0) void drive();
   }
 
@@ -273,15 +280,17 @@ export const cotal: Plugin = async ({ client }) => {
         }
         case "session.error":
           // session.error's sessionID is OPTIONAL; skip only a DIFFERENT session's error — a
-          // session-less one (id undefined) during our in-flight turn must still complete it, else
-          // the surfaced batch is never acked and `busy` stays stuck.
+          // session-less one (id undefined) during an in-flight turn must still close it, else
+          // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
-          if (!awaitingTurnEnd) return; // no in-flight turn to fail
-          awaitingTurnEnd = false;
+          if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
           busy = false;
-          ackSurfaced(); // turn surfaced the batch but failed — ack (don't retry-loop) and move on
+          if (awaitingTurnEnd) {
+            awaitingTurnEnd = false;
+            ackSurfaced(); // our turn surfaced the batch but failed — ack (don't retry-loop) and move on
+          }
           await safeStatus("idle");
-          void drive();
+          if (pendingForWake() > 0) void drive();
           break;
         case "session.deleted":
           if (!ours(event.properties.info.id)) return;
