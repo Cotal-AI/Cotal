@@ -76,10 +76,15 @@ export const claudeConnector: Connector = {
     // The plugin itself stays enabled (its hooks + the dev-channels wake path are unaffected).
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
     const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
-    // Default (no shared servers): pass the config inline, unchanged. With shared servers we write
-    // it to a file instead and pass the path: a shared spec carries `${VAR}` secret refs, and Claude
-    // only expands those in an --mcp-config *file* (not an inline string), so the file form keeps
-    // secrets as references (never resolved onto disk or the command line) while still loading.
+    // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
+    // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
+    // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved
+    // value, so nothing secret reaches disk or argv. We prefer the file when sharing because env
+    // expansion is only *documented* for --mcp-config files (inline expansion does work today, but
+    // isn't contracted), and a file keeps a potentially multi-server config off the process argv.
+    // Verified end-to-end on claude 2.1.183: ${VAR} expands in the --mcp-config file and the value
+    // is handed to the shared server. This is host-version behavior — if a future claude stops
+    // expanding here, a shared server would receive a literal `${VAR}`; re-check on host upgrades.
     let mcpConfig: string;
     if (Object.keys(shared).length === 0) {
       mcpConfig = JSON.stringify({ mcpServers });

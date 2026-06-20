@@ -241,9 +241,9 @@ Hermes has no MCP), so it lives in connector settings, not the
   config file is safe to keep in `~/.config` or a gitignored `.cotal/`. At launch the connector
   forwards *only* the named vars the chosen servers declare (from the operator's env, by name —
   never the whole environment, preserving the P3 env allow-list) and passes the merged config as a
-  `0600` file (in a private `0700` temp dir) so Claude expands the references itself; the secret
-  never lands on disk or the command line. `--strict-mcp-config` stays on, so only cotal + the
-  explicitly-shared servers ever load.
+  `0600` file (in a private `0700` temp dir); Claude expands the references from that env at launch,
+  so the secret never lands on disk or the command line. `--strict-mcp-config` stays on, so only
+  cotal + the explicitly-shared servers ever load.
 - **Sharing a server grants its credential to the agent.** The forwarded var lives in the *Claude
   process's* environment (that's how Claude expands the `${VAR}` and the server reads it), so an
   agent with shell/tool access can read it directly — not only through the server's tools. Keeping
