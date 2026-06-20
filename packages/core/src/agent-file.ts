@@ -26,7 +26,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
-import { channelInAllow } from "./subjects.js";
+import { assertValidChannel, channelInAllow } from "./subjects.js";
 
 export interface AgentDef {
   name: string;
@@ -137,6 +137,15 @@ export function loadAgentFile(path: string): AgentDef {
 
   const subscribe = list("subscribe");
   const allowSubscribe = list("allowSubscribe");
+  const allowPublish = list("allowPublish");
+  // Reject channel names the wire layer would silently rewrite — a policy name must equal its wire
+  // token, or the ACL aliases (see assertValidChannel). Covers all three scope fields.
+  for (const ch of [...(subscribe ?? []), ...(allowSubscribe ?? []), ...(allowPublish ?? [])])
+    try {
+      assertValidChannel(ch);
+    } catch (e) {
+      throw new Error(`agent file ${path}: ${(e as Error).message}`);
+    }
   // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
   // subscribe ⇒ [general]; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
   const effSubscribe = subscribe?.length ? subscribe : ["general"];
@@ -161,7 +170,7 @@ export function loadAgentFile(path: string): AgentDef {
     tags: list("tags"),
     subscribe,
     allowSubscribe,
-    allowPublish: list("allowPublish"),
+    allowPublish,
     model: str("model"),
     capabilities: list("capabilities"),
     owner: str("owner"),

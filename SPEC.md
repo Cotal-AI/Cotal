@@ -351,9 +351,13 @@ DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
 
 This binding provides containment and authenticity under a single trusted broker: an agent
 can emit only as itself and only to its declared `allowPublish` channels, and read only its own
-DMs and chat within `allowSubscribe`, enforced by the server. It does not provide
+DMs and chat *content* within `allowSubscribe`, enforced by the server. It does not provide
 non-repudiation, does not survive an untrusted relay, and DMs are plaintext to the broker and
-to `admin`. See [docs/security.md](docs/security.md).
+to `admin`. The read bound is on **content**, not metadata: agents hold `STREAM.INFO` on CHAT
+(for the join watermark, the recall drop-marker, and channel-list counts), so a `subjects_filter`
+query leaks chat subject *metadata* — channel names, sender ids, and per-subject counts — for
+channels outside `allowSubscribe` (channel names are already public via the registry). Hiding
+that metadata is deferred strict-containment work. See [docs/security.md](docs/security.md).
 
 ---
 

@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import { readFileSync } from "node:fs";
-import { DEFAULT_SERVER, channelInAllow, loadAgentFile, parseJoinLink, type AgentDef, type EndpointKind } from "@cotal-ai/core";
+import { DEFAULT_SERVER, assertValidChannel, channelInAllow, loadAgentFile, parseJoinLink, type AgentDef, type EndpointKind } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -87,6 +87,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     if (!channelInAllow(resolvedAllowSub, ch))
       throw new Error(`COTAL config: subscribe channel "${ch}" is not within allowSubscribe [${resolvedAllowSub.join(", ")}]`);
   const allowPub = splitList(env.COTAL_ALLOW_PUBLISH);
+  const resolvedAllowPub = allowPub.length ? allowPub : (def?.allowPublish ?? []);
+  // Reject channel names the wire layer would rewrite (env overrides bypass the file loader's check).
+  for (const ch of [...resolvedSubscribe, ...resolvedAllowSub, ...resolvedAllowPub]) assertValidChannel(ch);
   const credsPath = env.COTAL_CREDS?.trim();
   return {
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
@@ -101,7 +104,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     allowSubscribe: resolvedAllowSub,
     // Post ACL is default-DENY: only what's explicitly declared (env > agent-file). The broker
     // enforces it under auth; in open mode posting is unrestricted regardless (see laneLine).
-    allowPublish: allowPub.length ? allowPub : (def?.allowPublish ?? []),
+    allowPublish: resolvedAllowPub,
     kind: (env.COTAL_KIND?.trim() as EndpointKind) || def?.kind || "agent",
     token: env.COTAL_TOKEN?.trim() || link?.token,
     user: link?.user,

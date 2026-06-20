@@ -27,6 +27,7 @@ import {
   token,
   spacePrefix,
   chatSubject,
+  assertValidChannel,
   channelInAllow,
   unicastSubject,
   anycastSubject,
@@ -177,6 +178,8 @@ export async function provisionAgent(
 ): Promise<string> {
   const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
+  // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
+  for (const ch of [...subscribe, ...allowSubscribe]) assertValidChannel(ch);
   // Re-assert the load-time invariant at the trust boundary (defense in depth): the pre-created
   // live filter (subscribe) must sit within the read ACL (allowSubscribe), or the provisioner
   // would hand the agent live delivery it isn't permitted to read.
@@ -289,6 +292,9 @@ function permissionsFor(
   // ---- agent ----
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
+  // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
+  // channel must equal its wire token, or the minted grant would alias the logical ACL.
+  for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);
   const manager = opts.manager ?? CONTROL_PRIVILEGED;
   const chatD = chatDurable(id), chatHistD = chatHistDurable(id), dmD = dmDurable(id);
   const svcD = opts.role ? taskDurable(opts.role) : undefined;
@@ -301,7 +307,11 @@ function permissionsFor(
     controlServiceSubject(space, CONTROL_SELF_SERVICE, id), // ctl.self.<id> — self stop/despawn + mediated join/leave, granted to all
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
-    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${DM}`, `$JS.API.STREAM.INFO.${TASK}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,
+    // STREAM.INFO: CHAT (join watermark, recall drop-marker, channel-list counts — a documented
+    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs. NOT DM/TASK: agents
+    // bind their dm_<id>/svc_<role> by name and never inspect those streams, so granting INFO there
+    // would only leak DM-inbox / task subject metadata across peers for no functional gain.
+    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,
     // CHAT live tail: BIND ONLY its own pre-created chat_<id> durable — info / fetch / ack, NO
     // create or update. The durable's `filter_subjects` is the read boundary; it is set only by the
     // privileged provisioner (subscribe ⊆ allowSubscribe) and moved only via the mediated

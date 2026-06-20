@@ -31,6 +31,8 @@ import {
   newIdentity,
   setupSpaceStreams,
   chatStream,
+  dmStream,
+  taskStream,
   chatSubject,
   chatDurable,
   chatHistDurable,
@@ -139,6 +141,28 @@ try {
     action: "create",
   });
   check("F: self-create/update of the live chat_<id> durable is blocked (bind-only)", f.kind === "blocked", f);
+
+  // G — STREAM.INFO on DM/TASK is NOT granted (agents bind by name; granting it would leak DM-inbox
+  // and task subject metadata across peers). CHAT STREAM.INFO IS granted (documented metadata surface).
+  const gdm = await jsApi(ag, `$JS.API.STREAM.INFO.${dmStream(space)}`, {});
+  check("G1: STREAM.INFO on DM is blocked (no DM metadata leak)", gdm.kind === "blocked", gdm);
+  const gtask = await jsApi(ag, `$JS.API.STREAM.INFO.${taskStream(space)}`, {});
+  check("G2: STREAM.INFO on TASK is blocked", gtask.kind === "blocked", gtask);
+
+  // H — direct message-body read on CHAT (STREAM.MSG.GET) is NOT granted: history must ride the
+  // ACL-bounded ephemeral consumers, never a raw per-seq fetch.
+  const h = await jsApi(ag, `$JS.API.STREAM.MSG.GET.${CHAT}`, { seq: 1 });
+  check("H: STREAM.MSG.GET on CHAT is blocked (no raw message read)", h.kind === "blocked", h);
+
+  // I — channel-token aliasing is rejected before any grant is minted: a policy channel the wire
+  // layer would rewrite (foo/bar → foo_bar) must fail loud, or the grant would alias the ACL.
+  let aliasRejected = false;
+  try {
+    await provisionAgent(noop, auth, newIdentity(), { subscribe: ["foo/bar"], allowSubscribe: ["foo/bar"] });
+  } catch {
+    aliasRejected = true;
+  }
+  check("I: non-NATS-safe channel (foo/bar) is rejected at provision (no ACL alias)", aliasRejected);
 
   await ag.drain().catch(() => {});
   await mgr.drain().catch(() => {});

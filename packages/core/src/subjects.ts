@@ -89,6 +89,36 @@ export function subjectMatches(pattern: string, subject: string): boolean {
   return p.length === s.length;
 }
 
+/** Validate a channel name/pattern used as **policy** (an agent file's `subscribe`/`allowSubscribe`/
+ *  `allowPublish` entry, a CLI flag, or a join target). Each dotted segment must be a NATS-safe
+ *  token (exactly what {@link token} leaves unchanged: `[A-Za-z0-9_-]`), or `*` (one level), or `>`
+ *  (final segment only). Rejects — fail-loud — anything {@link token} would silently rewrite.
+ *
+ *  This closes an ACL-aliasing gap: containment is validated against the RAW policy string
+ *  (`channelInAllow`), but the minted wire grant is built through `token()` (`chatSubject`). Without
+ *  this, `allowSubscribe:[foo/bar]` would validate as the channel `foo/bar` yet mint a read grant for
+ *  the wire subject `chat.*.foo_bar` — letting the agent read `#foo_bar`, a channel the operator
+ *  never named (and two distinct policy strings could collide on one token). Returns the channel
+ *  unchanged when valid so callers can use it inline. */
+export function assertValidChannel(channel: string): string {
+  const segs = channel.split(".");
+  if (!channel.length || segs.some((s) => s.length === 0))
+    throw new Error(`invalid channel "${channel}": empty segment (no leading/trailing/double dots)`);
+  segs.forEach((s, i) => {
+    if (s === ">") {
+      if (i !== segs.length - 1) throw new Error(`invalid channel "${channel}": '>' is only valid as the last segment`);
+      return;
+    }
+    if (s === "*") return;
+    if (!/^[A-Za-z0-9_-]+$/.test(s))
+      throw new Error(
+        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' — ` +
+          `policy channel names can't contain characters the wire layer would rewrite`,
+      );
+  });
+  return channel;
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by

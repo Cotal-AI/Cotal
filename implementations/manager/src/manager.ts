@@ -4,6 +4,7 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   agentFilePath,
+  assertValidChannel,
   authDir,
   channelInAllow,
   clearSpaceHistory,
@@ -264,11 +265,24 @@ export class Manager {
   private async opSetChannels(callerId: string, args: Record<string, unknown>): Promise<ControlReply> {
     const target = [...this.agents.values()].find((a) => a.id === callerId);
     if (!target) return { ok: false, error: `setChannels: caller ${callerId} is not an agent this manager spawned` };
-    const channels = Array.isArray(args.channels) ? args.channels.map(String).filter(Boolean) : [];
-    if (!channels.length) return { ok: false, error: "setChannels: a non-empty channels list is required" };
-    for (const ch of channels)
+    // Normalize defensively — this is a security boundary: accept only real strings, trimmed and
+    // non-empty, reject anything coerced or blank, and cap the list so a request can't bloat the
+    // control plane or the durable filter.
+    const raw = Array.isArray(args.channels) ? args.channels : [];
+    const channels = raw.filter((c): c is string => typeof c === "string").map((c) => c.trim()).filter(Boolean);
+    if (!channels.length || channels.length !== raw.length)
+      return { ok: false, error: "setChannels: channels must be a non-empty list of non-blank strings" };
+    if (channels.length > 64)
+      return { ok: false, error: "setChannels: too many channels (max 64)" };
+    for (const ch of channels) {
+      try {
+        assertValidChannel(ch); // reject names the wire layer would rewrite, before any ACL check
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
       if (!channelInAllow(target.allowSubscribe, ch))
         return { ok: false, error: `channel "${ch}" is not within allowSubscribe [${target.allowSubscribe.join(", ")}]` };
+    }
     try {
       await this.ep.setChatFilterFor(callerId, channels);
     } catch (e) {

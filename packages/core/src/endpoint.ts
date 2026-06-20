@@ -167,6 +167,9 @@ export class CotalEndpoint extends EventEmitter {
    *  a lagging joiner + dedups the backfill overlap). Keyed by the subscription pattern (may be
    *  wildcard), so the drop matches every concrete channel the pattern subsumes. */
   private readonly joinSeq = new Map<string, number>();
+  /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance
+   *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
+  private histLock: Promise<unknown> = Promise.resolve();
   private readonly subs: Subscription[] = [];
   private readonly streamMsgs: ConsumerMessages[] = [];
   private heartbeatTimer?: ReturnType<typeof setInterval>;
@@ -1255,6 +1258,19 @@ export class CotalEndpoint extends EventEmitter {
     start: { seq: number } | { time: Date },
     opts: { untilSeq?: number; limit?: number } = {},
   ): Promise<JsMsg[]> {
+    // Serialize on the per-instance lock: the fixed `chathist_<id>` name means two concurrent reads
+    // (recall + join-backfill + drop-marker can race in-process) would delete/recreate the consumer
+    // under each other and cross-feed results. The chain makes the "serial callers" assumption true.
+    const run = this.histLock.then(() => this.collectHistoryInner(subject, start, opts));
+    this.histLock = run.catch(() => {}); // keep the chain alive on error
+    return run;
+  }
+
+  private async collectHistoryInner(
+    subject: string,
+    start: { seq: number } | { time: Date },
+    opts: { untilSeq?: number; limit?: number } = {},
+  ): Promise<JsMsg[]> {
     if (!this.jsm || !this.js) throw new Error("endpoint not started");
     const stream = chatStream(this.space);
     const name = chatHistDurable(this.card.id);
@@ -1282,6 +1298,9 @@ export class CotalEndpoint extends EventEmitter {
         for await (const m of iter) {
           got++;
           if (opts.untilSeq !== undefined && m.seq > opts.untilSeq) return out; // crossed the frontier
+          // Belt-and-suspenders over the lock: only keep messages on the requested channel subject
+          // (the consumer's filter already bounds this; guards against any stale-consumer edge).
+          if (!subjectMatches(subject, m.subject)) continue;
           out.push(m);
           if (opts.limit !== undefined && out.length >= opts.limit) return out;
         }

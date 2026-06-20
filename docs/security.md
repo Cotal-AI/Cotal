@@ -51,6 +51,13 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   mediated and validated against `allowSubscribe`), and history reads ride single-filter consumer
   creates with one grant per `allowSubscribe` channel — the server pins each create's filter to the
   request body, so no other channel is reachable. There is no unfiltered Direct Get grant.
+  - **Known metadata leak (not content):** agents hold `STREAM.INFO` on the CHAT stream (needed for
+    the join watermark, the focus-recall drop-marker, and channel-list counts). A `subjects_filter`
+    query over it enumerates retained chat *subjects* — channel names, sender ids, and per-subject
+    message counts — across the whole stream, including channels outside `allowSubscribe`. This is
+    **metadata, never message content**, and channel *names* are already public (the channel
+    registry is world-readable). Hiding even the existence/volume of other channels requires the
+    channel-major / per-channel-stream model and is part of the deferred strict-containment work.
 - **DM/TASK peer confidentiality:** delivery uses per-identity inbox prefixes, and DM/TASK
   consumers are provisioner-created bind-only durables, so an agent cannot create a consumer
   filtered to someone else's inbox or another role's work queue.
