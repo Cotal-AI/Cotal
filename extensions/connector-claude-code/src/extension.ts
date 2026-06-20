@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,15 +77,20 @@ export const claudeConnector: Connector = {
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
     const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
     // Default (no shared servers): pass the config inline, unchanged. With shared servers we write
-    // it to a 0600 file instead and pass the path: a shared spec carries `${VAR}` secret refs, and
-    // Claude only expands those in an --mcp-config *file* (not an inline string), so the file form
-    // keeps secrets as references (never resolved onto disk or the command line) while still loading.
+    // it to a file instead and pass the path: a shared spec carries `${VAR}` secret refs, and Claude
+    // only expands those in an --mcp-config *file* (not an inline string), so the file form keeps
+    // secrets as references (never resolved onto disk or the command line) while still loading.
     let mcpConfig: string;
     if (Object.keys(shared).length === 0) {
       mcpConfig = JSON.stringify({ mcpServers });
     } else {
-      const safe = `${opts.space}-${opts.name}`.replace(/[^A-Za-z0-9._-]/g, "_");
-      mcpConfig = join(tmpdir(), `cotal-mcp-${safe}.json`);
+      // A private 0700 temp dir (unique per spawn) holds the 0600 config. mkdtemp can't be raced
+      // by a pre-created or symlinked path the way a predictable name in the world-writable tmpdir
+      // could, and a fresh file guarantees the 0600 mode applies on creation (mode is ignored on an
+      // overwrite). Left for the OS to reap: the file must outlive this call (Claude reads it at
+      // startup and on /mcp reconnect), and buildLaunch doesn't own the child's lifecycle.
+      const dir = mkdtempSync(join(tmpdir(), "cotal-mcp-"));
+      mcpConfig = join(dir, "mcp.json");
       writeFileSync(mcpConfig, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
     }
     args.push("--strict-mcp-config", "--mcp-config", mcpConfig);

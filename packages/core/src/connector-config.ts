@@ -27,8 +27,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** One MCP server, in the de-facto `.mcp.json` shape. Secrets belong in `env` (or `headers`) as
- *  `${VAR}` references, resolved from the operator's environment at launch. Remote-transport
- *  fields (`type`/`url`/`headers`) are carried verbatim for connectors that support them. */
+ *  `${VAR}` references, resolved from the operator's environment at launch. Remote-transport fields
+ *  (`type`/`url`/`headers`) are carried verbatim for connectors that support them. Any other
+ *  `.mcp.json` key an operator copies in (e.g. `timeout`) passes through to the rendered config
+ *  unchanged but gets NO `${VAR}` expansion — Claude only expands command/args/env/url/headers,
+ *  which is exactly the set {@link mcpServerEnvKeys} scans for secret names to forward. */
 export interface McpServerSpec {
   command?: string;
   args?: string[];
@@ -36,6 +39,8 @@ export interface McpServerSpec {
   type?: string;
   url?: string;
   headers?: Record<string, string>;
+  /** Pass-through for any other `.mcp.json` key (carried verbatim, no env expansion). */
+  [key: string]: unknown;
 }
 
 /** Per-connector settings. `mcpServers` are the operator servers SHARED with agents this connector
