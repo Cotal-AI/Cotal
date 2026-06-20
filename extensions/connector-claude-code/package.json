@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-claude-code",
   "description": "Cotal connector for Claude Code: an installed plugin that joins a session to the mesh.",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

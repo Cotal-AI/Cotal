@@ -1,5 +1,22 @@
 # @cotal-ai/connector-opencode
 
+## 0.4.0
+
+### Minor Changes
+
+- 878f406: Context reset, local auth reuse, and reconnect for spawned OpenCode agents
+
+  - `/new` is adopted as a context reset that keeps operator logins.
+  - Spawned agents reuse local auth.
+  - The busy guard releases on any turn end, so channel push survives human turns.
+  - A `/reconnect` slash command (injected via `OPENCODE_CONFIG_CONTENT`) drives manual mesh
+    recovery.
+
+### Patch Changes
+
+- Updated dependencies [878f406]
+  - @cotal-ai/connector-core@0.4.0
+
 ## 0.3.2
 
 ### Patch Changes

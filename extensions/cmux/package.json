@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cmux",
   "description": "Cotal cmux integration: a cmux Runtime and TerminalLayout provider for spawning agents into cmux tabs.",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
