@@ -96,6 +96,11 @@
         font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
         white-space: nowrap; background: var(--tag-amber); color: var(--amber);
       }
+      /* A peer row is a click-through into its Agent Detail card. */
+      .peer.nav { cursor: pointer; }
+      .peer.nav:hover { background: #ffffff06; }
+      .peer.nav.sel { background: var(--sel); }
+      .peer.nav:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 
       /* ── Channels ── */
       .chan {
@@ -263,12 +268,51 @@
       .detail .d-age { margin-left: auto; font-size: 11px; color: var(--faint); }
       .detail .d-who { font-size: 20px; font-weight: 700; color: var(--fg); display: flex; align-items: baseline; }
       .detail .d-who .crole { font-size: 12px; font-weight: 500; color: var(--faint); margin-left: 8px; }
-      .detail .d-id { font-size: 11px; color: var(--faint); font-family: ui-monospace, monospace; margin-top: -7px; }
       .detail .d-label { font-size: 10.5px; font-weight: 600; letter-spacing: .4px; color: var(--faint); text-transform: uppercase; }
       .detail .d-block { font-size: 13px; color: var(--fg); line-height: 1.5; padding: 12px 14px; border-radius: 8px;
         background: var(--tile); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
       .detail.amber .d-block { border-color: var(--amber); background: var(--tint-amber); }
       .detail .d-block.muted { color: var(--dim); }
+      .detail .d-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -6px; }
+      .detail .d-badge {
+        font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 5px;
+        background: var(--tile); border: 1px solid var(--line); color: var(--dim);
+      }
+      .detail .d-badge.model { font-family: ui-monospace, monospace; color: var(--fg); letter-spacing: -.2px; }
+      /* Harness (host connector) badge — brand-coloured via --hc; used in the detail view (pill
+         with label) and the roster row (bare icon). */
+      .harness-badge {
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 11px; font-weight: 600; padding: 3px 10px 3px 8px; border-radius: 999px;
+        color: var(--hc); border: 1px solid color-mix(in srgb, var(--hc) 45%, transparent);
+        background: color-mix(in srgb, var(--hc) 15%, transparent);
+      }
+      .harness-ico { display: inline-flex; align-items: center; flex: none; }
+      .harness-badge svg, .harness-ico svg { width: 13px; height: 13px; display: block; }
+      .detail .d-desc { font-size: 13px; color: var(--fg); line-height: 1.5; }
+      .detail .d-sec { display: flex; flex-direction: column; gap: 7px; }
+      .detail .d-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .detail .d-chip {
+        font-size: 11px; padding: 2px 9px; border-radius: 12px;
+        background: var(--tile); border: 1px solid var(--line); color: var(--dim);
+      }
+      .detail .d-skills { display: flex; flex-direction: column; gap: 8px; }
+      .detail .d-skill {
+        display: flex; flex-direction: column; gap: 1px; padding: 8px 12px;
+        border-radius: 8px; background: var(--tile); border: 1px solid var(--line);
+      }
+      .detail .d-skill .nm { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+      .detail .d-skill .dsc { font-size: 11.5px; color: var(--dim); }
+      .detail .d-kv { display: flex; flex-direction: column; gap: 4px; }
+      .detail .d-kv .row { display: flex; gap: 10px; font-size: 12px; }
+      .detail .d-kv .k { color: var(--faint); min-width: 90px; flex: none; }
+      .detail .d-kv .v { color: var(--fg); word-break: break-word; }
+      .detail .d-foot {
+        display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 4px;
+        padding-top: 11px; border-top: 1px solid var(--line);
+      }
+      .detail .d-foot-item { font-size: 10.5px; color: var(--faint); }
+      .detail .d-foot-item.id { font-family: ui-monospace, monospace; word-break: break-all; }
     </style>
   </head>
   <body>

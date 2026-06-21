@@ -41,6 +41,42 @@ function ago(ts) {
 const agoShort = (ts) => (ago(ts) === "just now" ? "now" : ago(ts));
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+// ── Harness (host connector) branding ─────────────────────────────────────────
+// A brand colour + logo (drawn in currentColor) per connector, keyed by the card's meta.connector.
+// Claude and OpenCode use their official marks (public-domain SVG data from Simple Icons, CC0);
+// Hermes/Nous Research has no clean official mark, so it gets a custom messenger glyph. Unknown
+// connectors degrade to a neutral badge with the raw name (the compact roster form omits the icon).
+// Icons are inline SVG — no network, no extra files.
+const HARNESS = {
+  claude: {
+    label: "Claude Code",
+    color: "#d97757", // official Claude clay
+    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>`,
+  },
+  opencode: {
+    label: "OpenCode",
+    color: "#cdd6e0", // OpenCode is monochrome by brand; rendered light on the dark UI
+    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 24H2V0h20zM17 4.8H7v14.4h10z"/></svg>`,
+  },
+  hermes: {
+    label: "Hermes",
+    color: "#a78bfa", // no official mark — custom messenger glyph, violet
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 3 10.5l7 2.5 2.5 7L21 3Z"/><path d="M21 3 10 13"/></svg>`,
+  },
+};
+// Render the harness badge: a branded pill (icon + label) by default, or `{compact:true}` for a
+// bare colour icon (the roster row). The inline style only ever takes a value from HARNESS, never
+// raw card input, so meta.connector can't inject CSS.
+function harnessBadge(connector, opts = {}) {
+  if (!connector) return "";
+  const h = HARNESS[connector];
+  const color = h ? h.color : "var(--dim)";
+  const text = h ? h.label : connector;
+  if (opts.compact)
+    return h ? `<span class="harness-ico" style="color:${color}" title="harness · ${esc(text)}">${h.icon}</span>` : "";
+  return `<span class="harness-badge" style="--hc:${color}" title="agent harness · ${esc(text)}">${h ? h.icon : ""}<span class="hl">${esc(text)}</span></span>`;
+}
+
 function setConn(live) {
   const el = $("conn");
   el.className = "pill" + (live ? "" : " down");
@@ -68,11 +104,15 @@ function renderTiles(counts, oldest) {
 
 // ── Sidebar: roster ───────────────────────────────────────────────────────────
 function peerRow(p) {
-  return `<div class="peer ${p.status}">
+  // A peer with an id is a click-through into its Agent Detail card; demo rows have no id.
+  const nav = p.id ? ` nav${p.id === agentSel ? " sel" : ""}` : "";
+  const attrs = p.id ? ` data-agent="${esc(p.id)}" tabindex="0" role="button"` : "";
+  return `<div class="peer ${p.status}${nav}"${attrs}>
     <span class="dot ${p.status}">${GLYPH[p.status] ?? "○"}</span>
     <div class="c">
       <div class="l1">
         <span class="name">${esc(p.name)}</span>
+        ${p.harness ? harnessBadge(p.harness, { compact: true }) : ""}
         ${p.role ? `<span class="role">${esc(p.role)}</span>` : ""}
         ${p.tag ? `<span class="tag">${esc(p.tag)}</span>` : ""}
       </div>
@@ -84,6 +124,33 @@ function renderRoster(list) {
   $("roster").innerHTML = list.length
     ? list.map(peerRow).join("")
     : `<div class="empty">no peers</div>`;
+  for (const el of $("roster").querySelectorAll(".peer[data-agent]")) {
+    el.onclick = () => selectAgent(el.dataset.agent);
+    el.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") (e.preventDefault(), selectAgent(el.dataset.agent));
+    };
+  }
+}
+// The online roster, shaped for the sidebar: offline peers drop out (their count still rides the
+// header tiles), live peers sort by status then name. Re-rendered on its own when a selection
+// changes so the row highlight tracks the open Agent Detail.
+function rosterRows() {
+  return [...roster]
+    .filter((p) => p.status !== "offline")
+    .sort(
+      (a, b) =>
+        STATUS.indexOf(a.status) - STATUS.indexOf(b.status) ||
+        a.card.name.localeCompare(b.card.name),
+    )
+    .map((p) => ({
+      id: p.card.id,
+      name: p.card.name,
+      role: p.card.role,
+      status: p.status,
+      act: p.activity,
+      harness: p.card.meta?.connector,
+      tag: p.status === "waiting" ? "needs input" : null,
+    }));
 }
 
 // ── Sidebar: channels ─────────────────────────────────────────────────────────
@@ -122,21 +189,31 @@ function rosterStatus(name) {
   const r = roster.find((x) => x.card?.name === name);
   return r ? r.status : "offline";
 }
+// id→name resolution shared by the DM lens and the all-activity feed. `from` carries a full
+// card (id+name), but a unicast `to` is the bare recipient identity id (a pubkey) — without this
+// it renders raw. Sources: live roster cards, DM senders, and feed senders we've seen.
+function nameIndex() {
+  const idName = new Map();
+  for (const p of roster) if (p.card?.id) idName.set(p.card.id, p.card.name);
+  for (const m of dms) if (m.from?.id && m.from?.name) idName.set(m.from.id, m.from.name);
+  for (const e of activity) if (e.msg?.from?.id && e.msg.from.name) idName.set(e.msg.from.id, e.msg.from.name);
+  return idName;
+}
+// Resolve an EndpointRef object or a bare id to a display name; an unknown id shrinks to a short
+// prefix, and a string that isn't an identity (already a name) passes through unchanged.
+function displayNameOf(x, idx) {
+  if (!x) return "?";
+  if (typeof x === "object") return x.name || displayNameOf(x.id, idx);
+  if (idx.has(x)) return idx.get(x);
+  return /^[A-Z2-7]{32,}$/.test(x) ? x.slice(0, 6) + "…" : x; // unknown identity → short id
+}
+
 // Group raw DMs into per-peer rows; each peer lists its counterparties (conversations).
 // O(peers-with-DMs), never the n² pair cross-product — only pairs that actually talked.
 function dmPeers() {
   if (isDemo) return DEMO.dmPeers;
-  // `from` is a full card (has a name); `to` is the recipient's identity id. Build an
-  // id→name map from cards we've seen so recipients show a name, not a pubkey.
-  const idName = new Map();
-  for (const p of roster) if (p.card?.id) idName.set(p.card.id, p.card.name);
-  for (const m of dms) if (m.from?.id && m.from?.name) idName.set(m.from.id, m.from.name);
-  const nameOf = (x) => {
-    if (!x) return "?";
-    if (typeof x === "object") return x.name || nameOf(x.id);
-    if (idName.has(x)) return idName.get(x);
-    return /^[A-Z2-7]{32,}$/.test(x) ? x.slice(0, 6) + "…" : x; // unknown identity → short id
-  };
+  const idx = nameIndex();
+  const nameOf = (x) => displayNameOf(x, idx);
   const conv = new Map();
   for (const m of dms) {
     const a = nameOf(m.from),
@@ -242,12 +319,12 @@ function rowHTML(e) {
     </div>
   </div>`;
 }
-function liveEntry(mode, msg) {
+function liveEntry(mode, msg, idx) {
   const target =
     mode === "chat"
       ? `#${msg.channel ?? ""}`
       : mode === "unicast"
-        ? `→ ${msg.to ?? ""}`
+        ? `→ ${displayNameOf(msg.to, idx)}`
         : `→ @${msg.toService ?? ""}`;
   return {
     type: "msg",
@@ -264,7 +341,8 @@ function renderAllActivity() {
   const center = $("center");
   const prev = center.querySelector(".feed");
   const atBottom = prev ? prev.scrollHeight - prev.scrollTop - prev.clientHeight < 40 : true;
-  const rows = (isDemo ? DEMO.activity : activity.map((e) => liveEntry(e.mode, e.msg))).filter(
+  const idx = nameIndex();
+  const rows = (isDemo ? DEMO.activity : activity.map((e) => liveEntry(e.mode, e.msg, idx))).filter(
     (e) => !e.mode || modes.has(e.mode),
   );
   const sub = isDemo ? "112 recent · live" : `${rows.length} recent · live`;
@@ -449,27 +527,58 @@ function renderRail() {
     el.onclick = () => selectAgent(el.dataset.agent);
 }
 
-// ── Agent Detail drill-down (centre) — the forward-looking per-agent frame (docs/web.md) ──
+// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/web.md) ──
 function selectAgent(id) {
   agentSel = id;
   dmSel = null;
   selected = null;
   renderSidebarNav();
+  renderRoster(rosterRows()); // light up the clicked peer (only reached live — demo rows have no id)
   renderCenter();
   renderRail();
 }
 function renderAgentDetail() {
   const p = roster.find((x) => x.card.id === agentSel);
   if (!p) {
-    $("center").innerHTML = `<div class="detail"><div class="empty">agent no longer present — pick another from NEEDS YOU.</div></div>`;
+    $("center").innerHTML = `<div class="detail"><div class="empty">agent no longer present — pick another from the roster or NEEDS YOU.</div></div>`;
     return;
   }
+  // The AgentCard is the legibility contract: who, in what role, what it can do, on what harness.
+  // Render only fields the card actually carries (skills/protocolVersion aren't populated yet).
+  const card = p.card;
+  const meta = card.meta || {};
   const waiting = p.status === "waiting";
-  const who = p.card.role ? `${esc(p.card.name)}<span class="crole">${esc(p.card.role)}</span>` : esc(p.card.name);
+  const who = card.role ? `${esc(card.name)}<span class="crole">${esc(card.role)}</span>` : esc(card.name);
   const since = waiting ? `waiting ${esc(ago(p.ts))}` : `${esc(p.status)} · ${esc(ago(p.ts))}`;
+
+  const badges = [
+    card.kind ? `<span class="d-badge">${esc(card.kind)}</span>` : "",
+    harnessBadge(meta.connector),
+    meta.model ? `<span class="d-badge model" title="model">${esc(meta.model)}</span>` : "",
+  ].join("");
+  const desc = card.description ? `<div class="d-desc">${esc(card.description)}</div>` : "";
   const blocked = waiting
     ? `<div class="d-label">Blocked on</div><div class="d-block">${esc(p.activity || "waiting for input")}</div>`
-    : `<div class="d-block muted">${esc(p.activity || "no current activity")}</div>`;
+    : `<div class="d-label">Activity</div><div class="d-block muted">${esc(p.activity || "no current activity")}</div>`;
+
+  const sec = (label, body) => (body ? `<div class="d-sec"><div class="d-label">${esc(label)}</div>${body}</div>` : "");
+  const tags = (card.tags || []).length
+    ? `<div class="d-chips">${card.tags.map((t) => `<span class="d-chip">${esc(t)}</span>`).join("")}</div>`
+    : "";
+  const skills = (card.skills || []).length
+    ? `<div class="d-skills">${card.skills
+        .map((s) => `<div class="d-skill"><span class="nm">${esc(s.name || s.id)}</span>${s.description ? `<span class="dsc">${esc(s.description)}</span>` : ""}</div>`)
+        .join("")}</div>`
+    : "";
+  // Any other meta beyond the harness badge, generically rendered (escaped, key-sorted).
+  const extra = Object.entries(meta).filter(([k]) => k !== "connector").sort(([a], [b]) => a.localeCompare(b));
+  const metaKv = extra.length
+    ? `<div class="d-kv">${extra
+        .map(([k, v]) => `<div class="row"><span class="k">${esc(k)}</span><span class="v">${esc(typeof v === "string" ? v : JSON.stringify(v))}</span></div>`)
+        .join("")}</div>`
+    : "";
+  const proto = card.protocolVersion ? `<span class="d-foot-item">protocol ${esc(card.protocolVersion)}</span>` : "";
+
   $("center").innerHTML = `
     <div class="detail${waiting ? " amber" : ""}">
       <div class="d-head">
@@ -478,8 +587,13 @@ function renderAgentDetail() {
         <span class="d-age">${since}</span>
       </div>
       <div class="d-who">${who}</div>
-      <div class="d-id">${esc(p.card.id.slice(0, 8))}…</div>
+      ${badges ? `<div class="d-badges">${badges}</div>` : ""}
+      ${desc}
       ${blocked}
+      ${sec("Tags", tags)}
+      ${sec("Skills", skills)}
+      ${sec("Metadata", metaKv)}
+      <div class="d-foot"><span class="d-foot-item id">${esc(card.id)}</span>${proto}</div>
     </div>`;
 }
 
@@ -498,24 +612,7 @@ function refreshDerived() {
   const oldest = waiting.length ? agoShort(Math.min(...waiting.map((p) => p.ts))) : "—";
   renderTiles(counts, oldest);
   $("online-c").textContent = roster.filter((p) => p.status !== "offline").length;
-  // The roster sidebar is the ONLINE list — offline peers drop out (their count still rides
-  // in the header tiles). They reappear here the moment presence flips them back on.
-  renderRoster(
-    [...roster]
-      .filter((p) => p.status !== "offline")
-      .sort(
-        (a, b) =>
-          STATUS.indexOf(a.status) - STATUS.indexOf(b.status) ||
-          a.card.name.localeCompare(b.card.name),
-      )
-      .map((p) => ({
-        name: p.card.name,
-        role: p.card.role,
-        status: p.status,
-        act: p.activity,
-        tag: p.status === "waiting" ? "needs input" : null,
-      })),
-  );
+  renderRoster(rosterRows()); // online list; offline peers drop out but still ride the header tiles
   renderDMs(); // peer statuses may have changed
   renderRail();
   if (agentSel) renderCenter(); // keep an open Agent Detail live as the peer's status/activity changes
@@ -528,6 +625,7 @@ async function select(key) {
   selected = key;
   if (key !== "*") unread.set(key, 0);
   renderSidebarNav();
+  if (!isDemo) renderRoster(rosterRows()); // clear any stale Agent Detail highlight
   if (isDemo) return (renderCenter(), renderRail());
   if (key !== "*") {
     const seq = ++loadSeq;
@@ -546,6 +644,7 @@ function selectDM(peer, w) {
   dmSel = { peer, with: w || (pe && pe.conversations[0] ? pe.conversations[0].with : null) };
   selected = null;
   renderSidebarNav();
+  if (!isDemo) renderRoster(rosterRows()); // clear any stale Agent Detail highlight
   renderCenter();
   renderRail();
 }
@@ -624,12 +723,12 @@ const bd = [
 const lm = [{ ts: "10:15", who: "maya", status: "idle", body: "sent the NATS v3 notes your way" }];
 const DEMO = {
   roster: [
-    { name: "alice", role: "planner", status: "waiting", tag: "needs input", act: "blocked — needs OPENAI_API_KEY" },
-    { name: "linus", role: "reviewer", status: "working", act: "reviewing PR #42 · auth guards" },
-    { name: "bob", role: "builder", status: "working", act: "writing tests · channels.ts" },
-    { name: "dave", role: "builder", status: "working", act: "refactoring endpoint.ts" },
-    { name: "maya", role: "researcher", status: "idle", act: "—" },
-    { name: "scout", role: "observer", status: "idle", act: "watching #team.>" },
+    { name: "alice", role: "planner", status: "waiting", tag: "needs input", act: "blocked — needs OPENAI_API_KEY", harness: "claude" },
+    { name: "linus", role: "reviewer", status: "working", act: "reviewing PR #42 · auth guards", harness: "opencode" },
+    { name: "bob", role: "builder", status: "working", act: "writing tests · channels.ts", harness: "claude" },
+    { name: "dave", role: "builder", status: "working", act: "refactoring endpoint.ts", harness: "hermes" },
+    { name: "maya", role: "researcher", status: "idle", act: "—", harness: "opencode" },
+    { name: "scout", role: "observer", status: "idle", act: "watching #team.>", harness: "claude" },
   ],
   activity: [
     { type: "sys", text: "— scout joined · observer —" },

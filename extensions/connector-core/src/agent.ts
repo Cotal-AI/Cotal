@@ -16,6 +16,15 @@ import {
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 
+/** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
+ *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
+function buildMeta(config: AgentConfig): Record<string, string> | undefined {
+  const meta: Record<string, string> = { ...(config.meta ?? {}) };
+  if (config.model) meta.model = config.model;
+  if (config.connector) meta.connector = config.connector;
+  return Object.keys(meta).length ? meta : undefined;
+}
+
 /** A message that has arrived for us, normalized for the agent to read. */
 export interface InboxItem {
   id: string;
@@ -112,6 +121,9 @@ export class MeshAgent extends EventEmitter {
         kind: config.kind,
         description: config.description,
         tags: config.tags,
+        // Display-only discovery metadata so observers can show which harness an agent runs on
+        // and (when pinned) which model. Each is omitted when unset rather than faked.
+        meta: buildMeta(config),
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));

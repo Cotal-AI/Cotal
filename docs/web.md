@@ -51,15 +51,23 @@ The skeleton is the same on every view: **left** is navigation (roster, channels
 - **Header:** brand, space, a `live` pill, and golden-signal tiles (working / waiting / idle
   / offline / oldest-unattended). `waiting` is emphasized because it is the count that needs a
   human.
-- **Roster:** status as shape *and* colour (`● ◐ ○ ⊘`, never colour alone), role, and a
-  one-line activity. Waiting peers are highlighted, tagged, and accent-bordered.
+- **Roster:** status as shape *and* colour (`● ◐ ○ ⊘`, never colour alone), role, a one-line
+  activity, and a small brand-coloured **harness** logo (claude / opencode / hermes). Waiting
+  peers are highlighted, tagged, and accent-bordered. Click a peer (or press Enter/Space on it)
+  to open its **Agent Detail** card in the centre.
 - **Channels:** flat dotted names with an unread/mention pill and a dimmed total; click one to
   open the **Channel view** (its message list; members fold into the header).
 - **Direct messages:** a per-peer roll-up (one row per peer, *not* the n² pair list). Expand a
   peer to its conversations, click one for the thread in the centre. Recipients resolve to
   names where known (a short identity id otherwise).
 - **Feed (Monitor):** two-line messages (meta plus body) with a delivery-mode badge, filter
-  chips per mode, and pause (freeze auto-scroll).
+  chips per mode, and pause (freeze auto-scroll). Unicast targets resolve to the recipient's
+  name (a short identity id only when it's unknown), not the raw instance id.
+- **Agent Detail:** a per-agent drill-down (from the roster or a NEEDS YOU card) rendering the
+  peer's AgentCard — name, role, kind, the **harness** it runs on (`meta.connector`, shown as a
+  brand logo pill: claude / opencode / hermes), the **model** when the operator pinned one
+  (`meta.model`), description, capability tags, current activity / what it's blocked on, and its
+  full instance id. Fields absent from the card are simply omitted.
 - **Needs you:** agents currently blocked or waiting, newest first. **Persistent on the
   right** across every view, so the attention lane never disappears on drill-in.
 
@@ -67,9 +75,9 @@ The skeleton is the same on every view: **left** is navigation (roster, channels
 
 The visuals come from a Penpot file, page **"Cotal — Monitor"**. The dashboard implements the
 *Monitor* and *Channel View* frames faithfully (Work Sans, the exact palette, spacing, and
-components) plus a *DM View* frame for the Direct-messages lens. The *Agent Detail* frame
-(per-agent drill-down) is still forward-looking. Every view keeps NEEDS YOU on the right (the
-needs-you lane is non-negotiable).
+components) plus a *DM View* frame for the Direct-messages lens and an *Agent Detail* frame (the
+per-agent drill-down, rendered live from the peer's AgentCard). Every view keeps NEEDS YOU on
+the right (the needs-you lane is non-negotiable).
 
 **`?demo`, the reference scene.** Append `?demo` (`http://127.0.0.1:7799/?demo`) to render
 the Penpot frames' exact mock content as a static showcase, with no mesh needed. Click a

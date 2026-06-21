@@ -124,6 +124,7 @@ async function main(): Promise<void> {
     return;
   }
   const config = configFromEnv();
+  config.connector = "claude"; // advertise the host harness on our AgentCard (meta.connector)
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks tool serving
 

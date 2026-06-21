@@ -40,6 +40,7 @@ function need(name: string): string {
  *  Reads `COTAL_CONTROL_SOCKET`, `COTAL_BRIDGE_SOCKET`, and `COTAL_TOOLS_FILE` from the env. */
 export function startSidecar(): Sidecar {
   const config = configFromEnv();
+  config.connector = "hermes"; // advertise the host harness on our AgentCard (meta.connector)
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry
 

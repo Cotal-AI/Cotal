@@ -24,6 +24,9 @@ export interface AgentConfig {
   role?: string;
   description?: string;
   tags?: string[];
+  /** Display-only metadata from unmodelled agent-file frontmatter keys (for example `face`).
+   *  Connector-owned keys such as `connector` and `model` are overlaid later and cannot be spoofed here. */
+  meta?: Record<string, string>;
   servers: string;
   /** The *active* read set — channels this agent actually subscribes to (read). May include
    *  wildcard subtrees (`team.>`). Maps to the endpoint's live filter. ⊆ {@link allowSubscribe}. */
@@ -36,6 +39,14 @@ export interface AgentConfig {
    *  enforces it under auth. */
   allowPublish: string[];
   kind: EndpointKind;
+  /** The host connector this session runs under (`claude` / `opencode` / `hermes`). Set by the
+   *  connector itself, never from user config — it rides the {@link AgentCard.meta}.connector on
+   *  the wire as display-only discovery metadata (which harness an agent uses). */
+  connector?: string;
+  /** Model the host runs this agent on (e.g. `claude-opus-4`), from the agent file's `model:` or
+   *  `COTAL_MODEL`. Rides {@link AgentCard.meta}.model as display-only discovery metadata; omitted
+   *  when the operator didn't pin one (the harness default isn't knowable from here). */
+  model?: string;
   token?: string;
   user?: string;
   pass?: string;
@@ -99,6 +110,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     role: env.COTAL_ROLE?.trim() || def?.role || undefined,
     description: def?.description,
     tags: def?.tags,
+    meta: def?.meta,
+    model: env.COTAL_MODEL?.trim() || def?.model || undefined,
     servers: env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,
     allowSubscribe: resolvedAllowSub,

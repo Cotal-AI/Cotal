@@ -48,6 +48,7 @@ export const cotal: Plugin = async ({ client }) => {
   }
   if (guard.__cotalOpencodeHooks) return guard.__cotalOpencodeHooks; // one agent; reuse the hooks
   const config = configFromEnv();
+  config.connector = "opencode"; // advertise the host harness on our AgentCard (meta.connector)
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks startup
 
