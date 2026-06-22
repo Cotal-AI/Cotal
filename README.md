@@ -90,8 +90,9 @@ session: **david** the engineer, **sven** the guide, and **me**, the one you dri
 then offers a Claude-driven demo with david and sven helping. If a step fails, it hands
 you to an interactive Claude with the failure context, then retries.
 
-The mesh is **open** by default (no auth, loopback-only); add `cotal setup --auth` for a
-JWT-authed mesh when you share it or go cross-machine.
+The mesh is **JWT-authed** by default (sender authenticity + per-agent ACLs, with the
+server-side delivery daemon for the durable backstop); pass `cotal setup --open` for a
+frictionless open, loopback-only, live-only mesh (no auth, no daemon).
 
 Or start it manually.
 

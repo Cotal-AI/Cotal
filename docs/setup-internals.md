@@ -13,8 +13,10 @@ is two-tier, gated on a machine marker.
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs
 `runFirstRun(yes, open)`:
 
-- The mesh runs **open** (no auth) by default; `--auth` flips it to a JWT-authed mesh. Open
-  means no `.cotal/auth`, so every read/control CLI connects bare. This matches `cotal go`.
+- The mesh runs **JWT-authed** by default; `--open` flips it to an open (no-auth) mesh. Open
+  means no `.cotal/auth`, so every read/control CLI connects bare and there is no durable
+  backstop. Auth mode also brings up the **delivery daemon** with the broker (`cotal up` starts
+  it; `cotal down` stops it). This matches `cotal go`.
 - Then: splash → intro → core steps (Node, NATS, start the mesh) → start the **web dashboard**
   in the background → **connector picker** → write the two default experts (david/sven) →
   **offer a global install** (`offerGlobalInstall`) → marker → demo finale (`offerDemo`).

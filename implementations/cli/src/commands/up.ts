@@ -30,6 +30,7 @@ import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
+import { ensureDelivery, stopDelivery, stopOldHostingManagerIfPresent } from "../lib/delivery-proc.js";
 
 export async function up(argv: string[]): Promise<void> {
   const { values } = parseArgs({
@@ -87,15 +88,32 @@ export async function up(argv: string[]): Promise<void> {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     process.exit(1);
   });
-  const stop = () => child.kill("SIGTERM");
+  // The delivery daemon is coupled to the broker: stop it when this `up` stops (Ctrl-C), so the daemon
+  // never outlives the broker it serves.
+  const stop = () => { stopDelivery(); child.kill("SIGTERM"); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  child.on("exit", (code) => process.exit(code ?? 0));
+  child.on("exit", (code) => { stopDelivery(); process.exit(code ?? 0); });
 
   if (await waitReady(server, setup?.creds)) {
     await postStart(server, space, setup, seedFile);
+    // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
+    // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
+    await startDeliveryWithBroker(space, server);
   }
   await new Promise<void>(() => {});
+}
+
+/** Start the server-side delivery daemon alongside the broker (auth mode only): old-manager preflight
+ *  first (so an old hosting manager can't double-bind), then the auth-gated daemon (a no-op in open
+ *  mode). Coupled to the broker by the daemon's own broker-gone watchdog + the `up`/`down` teardown. */
+async function startDeliveryWithBroker(space: string, server: string): Promise<void> {
+  try {
+    stopOldHostingManagerIfPresent();
+    await ensureDelivery({ space, server });
+  } catch {
+    /* non-fatal — durable delivery degrades, live delivery is unaffected */
+  }
 }
 
 export interface DetachOpts {
@@ -147,6 +165,8 @@ export async function startMeshDetached(opts: DetachOpts = {}): Promise<{ server
   }
   writeFileSync(cotalPath("nats.pid"), String(child.pid));
   await postStart(server, space, setup, seedFile);
+  // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
+  await startDeliveryWithBroker(space, server);
   return { server, pid: child.pid ?? 0, source };
 }
 

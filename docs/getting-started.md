@@ -27,10 +27,11 @@ Requirements:
 
 1. **Checks.** Verifies Node and locates NATS.
 2. **Starts the web for agents.** A local NATS + JetStream server you own, running in the
-   background (you watch it boot live). It is an **open** local mesh (no auth,
-   loopback-only), so everything works with no credentials. Pass `cotal setup --auth` for a
-   JWT-authed mesh (sender authenticity plus per-agent ACLs) when you share it or go
-   cross-machine.
+   background (you watch it boot live). By default it is a **JWT-authed** mesh (sender
+   authenticity + per-agent ACLs), and the **server-side delivery daemon** comes up with it to
+   provide the durable backstop. Pass `cotal setup --open` for a frictionless **open** local
+   mesh (no auth, loopback-only, live-only — no daemon) when you just want zero-setup local
+   poking.
 3. **Picks connectors.** Choose which agents join your web (Claude or OpenCode; detected
    ones are pre-selected). Claude installs a plugin, because its wake channel needs one.
    OpenCode needs no install; it auto-wires when you `cotal spawn` it.

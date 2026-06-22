@@ -128,11 +128,15 @@ export async function runDelivery(argv: string[]): Promise<void> {
     if (stopping) return;
     stopping = true;
     clearInterval(renew);
-    void ep
-      .releaseDeliveryLease(shard)
-      .catch(() => {})
-      .then(() => ep.stop())
-      .then(() => process.exit(code));
+    clearInterval(brokerWatch);
+    // Hard-exit fallback: a graceful release/stop talks to the broker, which may be DEAD (the broker-gone
+    // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.
+    setTimeout(() => process.exit(code), 2000);
+    void (async () => {
+      try { await ep.releaseDeliveryLease(shard); } catch { /* broker may be gone */ }
+      try { await ep.stop(); } catch { /* broker may be gone */ }
+      process.exit(code);
+    })();
   };
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts; losing the CAS means
   // another daemon took over (we exit rather than double-deliver).
@@ -144,6 +148,25 @@ export async function runDelivery(argv: string[]): Promise<void> {
         shutdown(1);
       });
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
+
+  // Coupled to the broker: POLL its reachability. Survive brief blips (the endpoint reconnects on its
+  // own), but EXIT if the broker has been gone for BROKER_GONE_MS — the endpoint would otherwise retry
+  // reconnect forever (its terminal-close never fires), so this is what stops the daemon outliving the
+  // server it serves. (`cotal up`/`down` teardown stops it too.) The window is env-overridable for tests.
+  const BROKER_GONE_MS = Number(process.env.COTAL_DELIVERY_BROKER_GONE_MS) || 15_000;
+  let lastReachable = Date.now();
+  const brokerWatch = setInterval(() => {
+    if (stopping) return;
+    void isReachable(server, { creds })
+      .then((ok) => {
+        if (ok) { lastReachable = Date.now(); return; }
+        if (Date.now() - lastReachable > BROKER_GONE_MS) {
+          console.error(`✗ delivery: broker unreachable for >${BROKER_GONE_MS / 1000}s — exiting (coupled to the broker)`);
+          shutdown(1);
+        }
+      })
+      .catch(() => {});
+  }, 2000);
 
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));

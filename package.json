@@ -58,7 +58,8 @@
     "smoke:delivery-lease:auth": "tsx packages/core/smoke/delivery-lease.smoke.ts",
     "smoke:delivery-boot-retry:auth": "tsx packages/core/smoke/delivery-boot-retry.smoke.ts",
     "smoke:delivery-old-manager": "tsx implementations/cli/smoke/delivery-old-manager-preflight.smoke.ts",
-    "smoke:delivery-reconnect:auth": "tsx packages/core/smoke/delivery-reconnect.smoke.ts"
+    "smoke:delivery-reconnect:auth": "tsx packages/core/smoke/delivery-reconnect.smoke.ts",
+    "smoke:delivery-broker-coupling": "tsx implementations/delivery/smoke/delivery-broker-coupling.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "workspace:*",
