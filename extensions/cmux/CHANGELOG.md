@@ -1,5 +1,12 @@
 # @cotal-ai/cmux
 
+## 0.6.0
+
+### Patch Changes
+
+- Updated dependencies [a910ddb]
+  - @cotal-ai/core@0.6.0
+
 ## 0.5.0
 
 ### Patch Changes

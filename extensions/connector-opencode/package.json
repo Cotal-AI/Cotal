@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-opencode",
   "description": "Cotal connector for OpenCode: a native in-process plugin that joins a session to the mesh.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
