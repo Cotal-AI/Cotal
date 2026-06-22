@@ -48,12 +48,14 @@ export async function setup(argv: string[]): Promise<void> {
     options: {
       full: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
-      auth: { type: "boolean" }, // opt into an authed mesh (JWT/ACLs); default is an open local mesh
+      auth: { type: "boolean" }, // (now the DEFAULT; kept for back-compat / explicitness)
+      open: { type: "boolean" }, // opt OUT of auth — a frictionless loopback-only open mesh (no JWT/ACLs, no durable backstop)
     },
   });
-  // `--yes` (agents/CI) always runs the full flow non-interactively. The local mesh is open by
-  // default (frictionless, loopback-only); `--auth` opts into JWT auth for shared/cross-machine use.
-  if (!isOnboarded() || values.full || values.yes) await runFirstRun(Boolean(values.yes), !values.auth);
+  // `--yes` (agents/CI) always runs the full flow non-interactively. The mesh is AUTHED by default
+  // (JWT/ACLs — the trust-first default, and what the server-side delivery daemon needs to run); `--open`
+  // opts out to a frictionless loopback-only open mesh with no auth (and so no durable backstop).
+  if (!isOnboarded() || values.full || values.yes) await runFirstRun(Boolean(values.yes), Boolean(values.open));
   else await runEnsure();
 }
 
@@ -64,8 +66,9 @@ export async function go(argv: string[]): Promise<void> {
   return setup(argv);
 }
 
-/** The full, narrated first-run experience. `yes` = non-interactive accept-all; `open` = run the
- *  mesh without auth (the frictionless local default; `--auth` flips it off). */
+/** The full, narrated first-run experience. `yes` = non-interactive accept-all; `open` = run the mesh
+ *  WITHOUT auth (the `--open` opt-out; auth is the default). Auth mode also brings up the server-side
+ *  delivery daemon (durable backstop); open mode is live-only. */
 async function runFirstRun(yes: boolean, open: boolean): Promise<void> {
   splash();
   p.intro(brandBold("Welcome to Cotal"));
