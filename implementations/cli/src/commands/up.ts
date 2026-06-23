@@ -20,6 +20,7 @@ import {
   saveSpaceAuth,
   serverConfig,
   mintCreds,
+  mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
   seedChannelRegistry,
@@ -247,11 +248,36 @@ async function authSetup(
   let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
   if (!auth) {
     auth = await createSpaceAuth(space);
-    saveSpaceAuth(dir, auth);
+    saveSpaceAuth(dir, auth); // strips the $SYS seed on disk, but leaves the in-memory `auth` intact …
+    await provisionMembershipCreds(auth); // … so the observer can still be minted here (fresh-space only)
   }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
   writeFileSync(confPath, serverConfig(auth, { port, storeDir, host }));
   const creds = await mintCreds(auth, newIdentity(), "manager"); // privileged, ephemeral
   return { confPath, creds };
+}
+
+/** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
+ *  membership), at the FRESH `cotal up` while the in-memory `$SYS` signing seed still exists:
+ *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it can be minted: the
+ *     `$SYS` seed is never persisted).
+ *   - `membership-rw.creds` — DATA-account members-read + feed-write.
+ *   - `membership.json` — the DATA account id (the CONNZ/event subjects pin it; non-secret, but kept
+ *     0600 alongside the creds).
+ *  All 0600. Best-effort: a failure logs and leaves the feed disabled (the graph degrades to traffic-
+ *  only, delivery is untouched). Runs only on a FRESH space (the `if (!auth)` branch); a normal down/up
+ *  keeps `.cotal/auth` + these creds and reuses them. A space provisioned before this feature has no
+ *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
+ *  — a documented migration property, not a silent no-op. */
+async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
+  try {
+    const observer = await mintMembershipObserverCreds(auth, newIdentity());
+    const rw = await mintCreds(auth, newIdentity(), "membership-rw");
+    writeFileSync(cotalPath("membership-observer.creds"), observer, { mode: 0o600 });
+    writeFileSync(cotalPath("membership-rw.creds"), rw, { mode: 0o600 });
+    writeFileSync(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+  } catch (e) {
+    console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));
+  }
 }

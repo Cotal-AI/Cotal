@@ -102,6 +102,20 @@ export async function web(argv: string[]): Promise<void> {
 
   // Presence changes → push the whole roster; the client just re-renders it.
   ep.on("presence", () => broadcast("roster", ep.getRoster()));
+
+  // Broker-sourced channel membership (the authoritative graph spokes): push a `membership` SSE event
+  // on every feed change (debounced; the client re-reads the snapshot). Best-effort — a space without the
+  // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
+  // degrades to traffic-only. The admin cred carries the read grant; agents never do.
+  let membershipWatch: { stop(): void } | undefined;
+  const pushMembership = debounce(() => {
+    void ep.readMembership().then((m) => broadcast("membership", m)).catch(() => {});
+  }, 150);
+  try {
+    membershipWatch = await ep.watchMembership(pushMembership);
+  } catch (e) {
+    console.error(c.dim(`• membership feed unavailable — graph shows traffic only (${(e as Error).message})`));
+  }
   // Every comm on the mesh (chat / unicast / anycast) → push to the live feed. The admin cred
   // allows the whole space, so the observer taps everything — DMs + anycast included.
   const tapSubject = spaceWildcard(space);
@@ -126,11 +140,20 @@ export async function web(argv: string[]): Promise<void> {
       });
       clients.add(res);
       send(res, "roster", ep.getRoster());
+      // Seed this client's graph with the current membership snapshot (the live tap only carries
+      // post-connect traffic; membership is state, so a fresh client needs it explicitly).
+      void ep.readMembership().then((m) => { if (!res.writableEnded) send(res, "membership", m); }).catch(() => {});
       req.on("close", () => clients.delete(res));
       return;
     }
     if (path === "/api/meta") return json(res, { space });
     if (path === "/api/roster") return json(res, ep.getRoster());
+    if (path === "/api/membership") {
+      // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
+      // An unavailable feed returns an empty snapshot so the graph cleanly degrades to traffic-only.
+      try { return json(res, await ep.readMembership()); }
+      catch { return json(res, { asOf: undefined, members: [] }); }
+    }
     if (path === "/api/channels") return json(res, await ep.listChannels());
     if (path === "/api/activity") {
       // Backfill the all-activity feed: merge recent channel history with DM history (the live
@@ -210,6 +233,7 @@ export async function web(argv: string[]): Promise<void> {
 
   const shutdown = async () => {
     clearInterval(ping);
+    membershipWatch?.stop();
     for (const res of clients) res.end();
     httpServer.close();
     await ep.stop();
@@ -223,6 +247,15 @@ export async function web(argv: string[]): Promise<void> {
 function json(res: ServerResponse, data: unknown): void {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify(data));
+}
+
+/** Trailing-edge debounce — coalesces a burst of membership-feed deltas into one push. */
+function debounce(fn: () => void, ms: number): () => void {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return () => {
+    if (t) clearTimeout(t);
+    t = setTimeout(fn, ms);
+  };
 }
 
 /** True if something is already listening on the dashboard port (loopback). */

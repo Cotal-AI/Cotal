@@ -73,11 +73,6 @@ export interface Presence {
    *  concrete channel names. Advisory: lets a peer see "locally muted #deploys → DM to reach me". NOT
    *  access control — the broker still authorizes and delivers; this is a receive-side presentation. */
   channelModes?: Record<string, ChannelMode>;
-  /** Concrete channels this instance is currently subscribed to (its live read set — `this.channels`).
-   *  Self-reported, advisory observability: lets a peer or dashboard see "who reads #general" without a
-   *  privileged members read, and works on `live` channels that keep no enumerable roster. NOT access
-   *  control (the broker authorizes reads via the ACL); a presentation hint, scrubbed when offline. */
-  channels?: string[];
   /** Epoch ms of the last heartbeat. */
   ts: number;
 }
@@ -207,6 +202,44 @@ export interface Plane3Entry {
   reason: "durable-channel" | "live-mention";
   /** The owner's membership generation at fan-out (idempotency-key component + diagnostics). */
   generation: number;
+}
+
+/**
+ * One agent's derived channel-membership record (the broker-authoritative graph feed, stored per-agent
+ * in `cotal_membership_<space>` under {@link membershipKey}; privileged-write, admin/observer-read).
+ * The UNION of the two halves the broker can prove: `live` core-subscriptions (from CONNZ) and `durable`
+ * memberships (from the Plane-3 members registry). NOT self-reported — sourced from the broker, so it
+ * shows silent readers and covers `live` channels that keep no enumerable roster. **Display-only**: it
+ * MUST never be an input to any delivery / ACL / authorization decision (that bounds the writer's blast
+ * radius to dashboard integrity).
+ */
+export interface ChannelMembership {
+  /** Channel-subscription patterns from the broker's live connection view (CONNZ), **wildcards kept**
+   *  (e.g. `team.>`) — expanded to concrete channels only by the consumer at read time, so a channel
+   *  *creation* never rewrites a wildcard-subscriber's record. Empty when the agent has no live connection. */
+  live: string[];
+  /** Concrete durable channels from the privileged members registry (authoritative for the durable arm,
+   *  incl. reconnect-grace) — a member here whose presence is offline is "member, currently offline". */
+  durable: string[];
+  /** Epoch ms this record was last (re)written — a per-agent "last changed" caption. Feed-wide freshness
+   *  is the separate {@link MEMBERSHIP_FEED_KEY} heartbeat (refreshed every poll); ordering is the native
+   *  KV revision. */
+  observedAt: number;
+}
+
+/** One agent's membership record keyed by its id — a {@link ChannelMembership} with the agent id folded
+ *  in (the KV key), for the dashboard snapshot/SSE. */
+export interface MembershipEntry extends ChannelMembership {
+  /** The agent nkey (`card.id`) — resolve to name/role/status via presence at the dashboard. */
+  id: string;
+}
+
+/** The broker-sourced membership feed as the dashboard consumes it. */
+export interface MembershipSnapshot {
+  /** Feed freshness — epoch ms of the daemon's last successful poll (the heartbeat key). Undefined when
+   *  the feed has never been written (no daemon / pre-feature space → the graph degrades to traffic-only). */
+  asOf?: number;
+  members: MembershipEntry[];
 }
 
 /** Reverse-DNS extension part kind, e.g. `com.acme.snapshot`.

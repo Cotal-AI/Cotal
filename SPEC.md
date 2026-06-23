@@ -240,7 +240,6 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `activity` | string | MAY | freeform current activity |
 | `attention` | `AttentionMode` | MAY | global attention mode: `open` \| `dnd` \| `focus`. Advisory observability; `open`/absent ⇒ receives everything. Reset: `open` published on `SessionStart`, removed on the offline sweep |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory — **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
-| `channels` | string[] | MAY | concrete channels this instance is currently subscribed to (its live read set). Self-reported discovery — lets a peer/observer see "who reads #x" without a privileged members read, and covers `live` channels that keep no enumerable roster (§7). Advisory — **not** access control; scrubbed when `offline` |
 | `ts` | number | MUST | epoch ms of last heartbeat |
 
 `AgentCard`:
@@ -439,6 +438,18 @@ KV buckets are also streams and are pre-created:
 | --- | --- | --- |
 | `cotal_presence_<space>` | presence (§6) | 6000 ms |
 | `cotal_channels_<space>` | channel registry (§7) | none |
+| `cotal_membership_<space>` | derived channel-membership feed (below) | none |
+
+**Derived channel-membership feed (observability).** `cotal_membership_<space>` is a per-agent
+(key = `card.id`) derived view of who is subscribed to each channel — the **union** of an agent's
+`live` core-subscriptions (read by a privileged daemon from the broker's connection view) and its
+`durable` memberships (the members registry), each value `{ live: string[], durable: string[],
+observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
+It exists so an observer can show silent readers and `live`-channel membership without a broker-admin
+credential in the dashboard tier; it is written by a scoped privileged daemon and read by the
+admin/observer profile only. It is **DISPLAY-ONLY and broker-derived**: it MUST NOT be an input to any
+delivery, ACL, or authorization decision (authority for those stays the broker's `sub.allow` and the
+members registry), and it is not part of the normative wire contract a client must implement.
 
 ---
 

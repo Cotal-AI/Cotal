@@ -1,0 +1,152 @@
+/**
+ * membership-feed smoke (the broker-sourced graph membership, end-to-end). Proves the derived feed is
+ * AUTHORITATIVE and broker-sourced — it surfaces SILENT subscribers (zero traffic), the UNION across an
+ * agent's connections, the merge of `live` (CONNZ) ∪ `durable` (members registry), excludes god-view
+ * taps, and prunes a live subscriber when it disconnects while keeping its durable arm.
+ *
+ * Spins up a real auth broker, mints the two scoped membership creds, connects silent subscribers + an
+ * admin god-tap, seeds a durable member, runs the core feed, and reads the derived bucket back.
+ *
+ * Run: pnpm smoke:membership-feed:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
+ */
+import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
+import {
+  isReachable,
+  createSpaceAuth,
+  mintCreds,
+  mintMembershipObserverCreds,
+  provisionAgent,
+  serverConfig,
+  newIdentity,
+  setupSpaceStreams,
+  startMembershipFeed,
+  openMembersRegistry,
+  commitMember,
+  chatSubject,
+  spaceWildcard,
+  membershipBucket,
+  membershipKey,
+  MEMBERSHIP_FEED_KEY,
+} from "../src/index.js";
+import type { ChannelMembership, MembershipRecord } from "../src/index.js";
+
+const PORT = 20000 + Math.floor(Math.random() * 40000);
+const SERVERS = `nats://127.0.0.1:${PORT}`;
+const enc = (s: string) => new TextEncoder().encode(s);
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const eq = (a: string[] = [], b: string[]) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+let pass = 0, fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+
+const space = `membership-${randomUUID().slice(0, 8)}`;
+const auth = await createSpaceAuth(space); // sys.signingSeed lives in-memory here — mint the observer below
+const dir = mkdtempSync(join(tmpdir(), "cotal-membership-"));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+
+const conns: Array<Awaited<ReturnType<typeof connect>>> = [];
+let feed: Awaited<ReturnType<typeof startMembershipFeed>> | undefined;
+try {
+  let up = false;
+  for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
+  if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
+
+  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds }); // creates the membership bucket
+  const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
+  const rwCreds = await mintCreds(auth, newIdentity(), "membership-rw");
+
+  // --- alice: a SILENT live subscriber, subs split across TWO connections (union test) ---
+  const alice = newIdentity();
+  const aliceCreds = await provisionAgent(noop, auth, alice, { subscribe: ["general"], allowSubscribe: ["general", "review.>", "logs"] });
+  const a1 = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(aliceCreds)), name: "cotal:alice" });
+  conns.push(a1);
+  a1.subscribe(chatSubject(space, "*", "general"));
+  a1.subscribe(chatSubject(space, "*", "review.>")); // wildcard pattern preserved
+  await a1.flush();
+  const a1b = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(aliceCreds)), name: "cotal:alice" });
+  conns.push(a1b);
+  a1b.subscribe(chatSubject(space, "*", "logs")); // a second conn for the SAME nkey
+  await a1b.flush();
+
+  // --- bob: a durable member of #deploys (no live conn), written straight to the members registry ---
+  const bob = newIdentity();
+  const mgrNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(mgrCreds)) });
+  conns.push(mgrNc);
+  const members = await openMembersRegistry(mgrNc, space);
+  const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
+  await commitMember(members, rec("deploys", bob.id));
+  await commitMember(members, rec("general", alice.id)); // alice is ALSO a durable member of #general (live ∪ durable union)
+
+  // --- a god-view tap (the web dashboard / a core tap) — must be EXCLUDED from membership ---
+  const adminId = newIdentity();
+  const adminCreds = await mintCreds(auth, adminId, "admin");
+  // The admin cred's inbox grant is `_INBOX_<id>.>`, so its connection must use that prefix (as the real
+  // CotalEndpoint does) for KV reads / ordered-consumer delivery to be allowed.
+  const adminConn = () => connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(adminCreds)), inboxPrefix: `_INBOX_${adminId.id}`, name: "cotal:web" });
+  const webNc = await adminConn();
+  conns.push(webNc);
+  webNc.subscribe(spaceWildcard(space)); // the whole-space god tap
+  await webNc.flush();
+
+  // --- run the feed and force a reconcile ---
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds, intervalMs: 60_000 });
+  await feed.poll();
+  await wait(400);
+
+  const readNc = await adminConn();
+  conns.push(readNc);
+  const readFeed = async () => {
+    const kv = await new Kvm(readNc).open(membershipBucket(space));
+    const out = new Map<string, ChannelMembership>();
+    let asOf: number | undefined;
+    for await (const k of await kv.keys()) {
+      const e = await kv.get(k); if (!e) continue;
+      if (k === MEMBERSHIP_FEED_KEY) { asOf = e.json<{ observedAt: number }>().observedAt; continue; }
+      out.set(k, e.json<ChannelMembership>());
+    }
+    return { out, asOf };
+  };
+
+  let { out, asOf } = await readFeed();
+  const aliceRec = out.get(membershipKey(alice.id));
+  const bobRec = out.get(membershipKey(bob.id));
+
+  check("silent live subscriber appears (zero traffic)", !!aliceRec);
+  check("live patterns unioned across an agent's connections (wildcards kept)", !!aliceRec && eq(aliceRec.live, ["general", "review.>", "logs"]), aliceRec?.live);
+  check("alice's durable arm merged in (live ∪ durable)", !!aliceRec && eq(aliceRec.durable, ["general"]), aliceRec?.durable);
+  check("durable-only member (no live conn) appears", !!bobRec && eq(bobRec.durable, ["deploys"]) && eq(bobRec.live, []), bobRec);
+  check("god-view tap (whole-space sub) is NOT a member of everything", ![...out.values()].some((r) => r.live.includes(">")), [...out.values()].map((r) => r.live));
+  check("only the two real agents have records (no infra conns)", out.size === 2, [...out.keys()]);
+  check("feed freshness heartbeat is stamped", typeof asOf === "number");
+
+  // --- prune: alice's live connections drop; durable arm persists (the key reframe) ---
+  await a1.drain(); await a1b.drain();
+  await wait(300);
+  await feed.poll();
+  await wait(300);
+  ({ out } = await readFeed());
+  const aliceAfter = out.get(membershipKey(alice.id));
+  check("a disconnected live subscriber keeps its durable membership", !!aliceAfter && eq(aliceAfter.durable, ["general"]), aliceAfter);
+  check("a disconnected live subscriber's live set is pruned to empty", !!aliceAfter && eq(aliceAfter.live, []), aliceAfter?.live);
+
+  console.log(`\nMEMBERSHIP-FEED SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+  if (fail) process.exitCode = 1;
+} catch (e) {
+  fail++;
+  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  process.exitCode = 1;
+} finally {
+  try { await feed?.stop(); } catch { /* gone */ }
+  for (const c of conns) { try { await c.drain(); } catch { /* already drained */ } }
+  srv.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
+}

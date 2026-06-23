@@ -1,15 +1,19 @@
 /* Cotal — live mesh graph. Channels and agents are nodes in a force-directed constellation:
- * channel "spokes" pull an agent toward the channels it's communicating on (so an agent active on
- * two channels floats between both hubs), DM springs pull peers together, and charge spreads
- * everything out. A wire glows + fires a comet when a message flows. Fed by the same /feed SSE +
- * REST the Monitor uses.
+ * channel "spokes" pull an agent toward the channels it's subscribed to (so an agent on two channels
+ * floats between both hubs), DM springs pull peers together, and charge spreads everything out. A wire
+ * glows + fires a comet when a message flows. Fed by the same /feed SSE + REST the Monitor uses.
  *
- * Stability: messages drive *glow*, not layout. The simulation cools to a rest state (alpha decay)
- * and only gently re-heats when the node/edge SET changes — so nodes don't wander on every message.
- * What's drawn is membership + traffic: registry channels are hubs, an agent links to every channel it
- * reports subscribing to (presence self-report — works on `live` channels that keep no enumerable
- * roster) and that spoke glows when a message flows; a post from a non-subscriber also draws a spoke.
- * DM wires show pairs that have messaged. Ids are per-session, so only present agents are linked. */
+ * Membership is AUTHORITATIVE and broker-sourced (not self-reported): the delivery daemon reads the
+ * broker's connection view (CONNZ) ∪ the durable members registry and publishes a derived feed; the
+ * observer serves it at /api/membership + a `membership` SSE event. So a spoke is drawn for every channel
+ * an agent is actually subscribed to — including SILENT readers and `live` channels that keep no
+ * enumerable roster. A `live` (connected) member draws solid-faint; a member that's only durable while its
+ * presence is offline draws dashed-dim ("member, currently offline"). Traffic glow rides on top: a post
+ * sends a comet to the hub, the hub blooms, then fans out to every other member. If the feed is absent
+ * (no daemon / a space provisioned before this feature), the graph degrades to traffic-only and says so.
+ *
+ * Stability: messages drive *glow*, not layout. The simulation cools to a rest state (alpha decay) and
+ * only gently re-heats when the node/edge SET changes — so nodes don't wander on every message. */
 (() => {
   const $ = (id) => document.getElementById(id);
   const canvas = $("graph");
@@ -18,16 +22,20 @@
   // ── palette ──
   const MODE = { chat: "#58a6ff", unicast: "#d29922", anycast: "#3fb950" };
   const STAT = { working: "#46d35e", waiting: "#e9bf52", idle: "#9aa6b5", offline: "#5a6472" };
-  const STRUCT_MEM = 180000; // ms a channel spoke lingers after the last message, then it's pruned
+  const MEM_LIVE = "#8493a8"; // a live (connected) membership spoke
+  const MEM_OFF = "#5a6472"; // a durable member whose presence is offline ("member, currently offline")
+  const TRAFFIC_COLD = 0.02; // heat below which a NON-member (traffic-only) spoke is pruned
+  const FEED_STALE_MS = 45000; // membership feed older than this reads "stale" (daemon polls ~15s)
 
   // ── state ──
   const hubs = new Map(); // channel -> hub node
   const agents = new Map(); // id -> agent node
-  const edges = new Map(); // `${agentId}|${chan}` -> { a, chan, last, heat }
+  const edges = new Map(); // `${agentId}|${chan}` -> { a, chan, last, heat, mem, durableOnly }
   const dms = new Map(); // `${idA}|${idB}` (sorted) -> { a, b, last, heat }
   const particles = [];
   const blooms = [];
   const recent = [];
+  const feed = { asOf: undefined, available: false }; // membership-feed freshness
   const cam = { x: 0, y: 0, scale: 1, ready: false, user: false };
   const filter = { chat: true, unicast: true, anycast: true, window: 30, paused: false };
   let W = 0, H = 0, DPR = 1, hover = null, sel = null, lastT = 0, alpha = 1;
@@ -43,12 +51,28 @@
   const now = () => Date.now();
   const reheat = () => { alpha = Math.max(alpha, 0.55); };
 
+  // ── channel-subscription matching (ports core subjectMatches; `live` patterns keep wildcards) ──
+  const isWild = (ch) => ch.split(".").some((s) => s === "*" || s === ">");
+  function patternMatches(pattern, subject) {
+    const p = pattern.split("."), s = subject.split(".");
+    for (let i = 0; i < p.length; i++) { if (p[i] === ">") return i < s.length; if (i >= s.length) return false; if (p[i] === "*") continue; if (p[i] !== s[i]) return false; }
+    return p.length === s.length;
+  }
+  /** Expand an agent's {live patterns, durable channels} → a channel→kind map. Wildcards expand against
+   *  the KNOWN channel set (registry hubs); concrete patterns stand alone. `live` wins over `durable`. */
+  function memberChannels(live, durable, known) {
+    const out = new Map();
+    for (const pat of live || []) { if (isWild(pat)) { for (const ch of known) if (patternMatches(pat, ch)) out.set(ch, "live"); } else out.set(pat, "live"); }
+    for (const ch of durable || []) if (!out.has(ch)) out.set(ch, "durable");
+    return out;
+  }
+
   // ── nodes ──
   function spawn(id, seedR) { const a = (hash(id) % 628) / 100, r = seedR + (Math.abs(hash(id)) % 120); return { x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0 }; }
   function ensureHub(name) {
     if (!name) return null;
     let h = hubs.get(name);
-    if (!h) { h = Object.assign({ kind: "hub", name, r: 14, charge: -560, mass: 3, msgs: 0, desc: "" }, spawn("#" + name, 150)); hubs.set(name, h); reheat(); }
+    if (!h) { h = Object.assign({ kind: "hub", name, r: 14, charge: -560, mass: 3, msgs: 0, desc: "" }, spawn("#" + name, 150)); hubs.set(name, h); reheat(); onNewChannel(name); }
     return h;
   }
   function ensureAgent(ref) {
@@ -56,16 +80,22 @@
     const id = typeof ref === "object" ? ref.id || ref.name : ref;
     if (!id) return null;
     let a = agents.get(id);
-    if (!a) { a = Object.assign({ kind: "agent", id, name: (typeof ref === "object" && ref.name) || shortId(id), role: typeof ref === "object" ? ref.role : undefined, status: "idle", activity: "", harness: undefined, ts: 0, r: 6.5, charge: -190, mass: 1, phase: (hash(id) % 1000) / 1000 * 6.283 }, spawn(id, 70)); agents.set(id, a); reheat(); }
+    if (!a) { a = Object.assign({ kind: "agent", id, name: (typeof ref === "object" && ref.name) || shortId(id), role: typeof ref === "object" ? ref.role : undefined, status: "idle", activity: "", harness: undefined, ts: 0, live: [], durable: [], memberOf: new Map(), r: 6.5, charge: -190, mass: 1, phase: (hash(id) % 1000) / 1000 * 6.283 }, spawn(id, 70)); agents.set(id, a); reheat(); }
     else if (typeof ref === "object" && ref.name) a.name = ref.name;
     return a;
   }
   const edgeKey = (id, chan) => id + "|" + chan;
   const dmKey = (a, b) => [a, b].sort().join("|");
-  function ensureEdge(a, chan) { const k = edgeKey(a.id, chan); let e = edges.get(k); if (!e) { edges.set(k, (e = { a, chan, last: 0, heat: 0, mem: false })); reheat(); } return e; }
+  function ensureEdge(a, chan) { const k = edgeKey(a.id, chan); let e = edges.get(k); if (!e) { edges.set(k, (e = { a, chan, last: 0, heat: 0, mem: false, durableOnly: false })); reheat(); } return e; }
   function chatHit(a, chan, ts) { const e = ensureEdge(a, chan); e.last = Math.max(e.last, ts); return e; }
   function dmHit(a, b, ts) { const k = dmKey(a.id, b.id); let d = dms.get(k); if (!d) { dms.set(k, (d = { a, b, last: 0, heat: 0 })); reheat(); } d.last = Math.max(d.last, ts); return d; }
   function primaryChan(a) { let best = null, bt = 0; for (const e of edges.values()) if (e.a === a && e.last > bt) { bt = e.last; best = e.chan; } return best; }
+
+  // When a channel first appears, retro-link any agent whose live WILDCARD covers it (so a `team.>`
+  // subscriber gains a spoke to a newly-created `team.backend` with no membership-feed round-trip).
+  function onNewChannel(name) {
+    for (const a of agents.values()) for (const pat of a.live || []) if (isWild(pat) && patternMatches(pat, name)) { const e = ensureEdge(a, name); e.mem = true; e.durableOnly = false; a.memberOf.set(name, "live"); }
+  }
 
   // ── force simulation (cooling; re-heated only on structural change) ──
   function link(a, b, len, k) { let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1; const f = (d - len) * k * alpha, fx = (dx / d) * f, fy = (dy / d) * f; a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy; }
@@ -115,8 +145,8 @@
     if (mode === "chat" && msg.channel) {
       const h = ensureHub(msg.channel);
       if (from) chatHit(from, msg.channel, now()).heat = 1;
-      // inbound: sender → hub, then the hub flashes and fans the post back out to every other
-      // agent on the channel (their spokes glow as the wave reaches them) — a real broadcast.
+      // inbound: sender → hub, then the hub flashes and fans the post back out to every other member on
+      // the channel (their spokes glow as the wave reaches them) — a real broadcast.
       if (animate && from && h) particles.push(mk(from, h, MODE.chat, () => {
         blooms.push({ x: h.x, y: h.y, t: 0, dur: 0.95, color: MODE.chat, r0: h.r });
         for (const e of edges.values()) if (e.chan === msg.channel && e.a !== from) { e.heat = 1; particles.push(mk(h, e.a, MODE.chat, null, false)); }
@@ -129,7 +159,7 @@
       toName = "@" + (msg.toService || "");
       if (animate && from) blooms.push({ x: from.x, y: from.y, t: 0, dur: 1.0, color: MODE.anycast, r0: from.r });
     }
-    recent.push({ mode, from: from?.name, to: toName, chan: msg.channel, text: partsText(msg), ts: msg.ts || now() });
+    recent.push({ mode, from: from?.name, fromId: from?.id, to: toName, chan: msg.channel, text: partsText(msg), ts: msg.ts || now() });
     if (recent.length > 80) recent.shift();
     if (sel) renderDetail();
   }
@@ -139,23 +169,47 @@
       if (p.card?.kind === "endpoint") continue;
       const a = ensureAgent({ id: p.card.id, name: p.card.name, role: p.card.role });
       a.status = p.status; a.activity = p.activity || ""; a.role = p.card.role; a.harness = p.card.meta?.connector; a.ts = p.ts;
-      // Membership from the agent's self-reported channel set (presence) — the true "who's subscribed",
-      // works on live channels with no enumerable roster. A spoke per subscribed channel; activity adds glow.
-      if (Array.isArray(p.channels)) { a.subs = p.channels; for (const chan of p.channels) { ensureHub(chan); ensureEdge(a, chan).mem = true; } }
       seen.add(a.id);
     }
-    // a membership spoke drops when the agent stops reporting that channel (it left); activity-only spokes stay
-    for (const [k, e] of edges) if (e.mem && e.a.subs && !e.a.subs.includes(e.chan)) { edges.delete(k); reheat(); }
+    // Drop an agent only when it's offline AND absent from this roster snapshot — membership edges go with
+    // it. (Membership is broker-truth, applied separately; presence no longer carries channels.)
     for (const [id, a] of agents) if (!seen.has(id) && a.status === "offline") { agents.delete(id); for (const k of [...edges.keys()]) if (edges.get(k).a === a) edges.delete(k); for (const k of [...dms.keys()]) { const d = dms.get(k); if (d.a === a || d.b === a) dms.delete(k); } reheat(); if (sel === a) closeDetail(); }
+  }
+
+  // ── membership (authoritative spokes) ──
+  function applyMembership(snap) {
+    if (!snap) return;
+    feed.asOf = snap.asOf;
+    feed.available = snap.asOf !== undefined || (Array.isArray(snap.members) && snap.members.length > 0);
+    setFeed();
+    const known = [...hubs.keys()];
+    const present = new Set();
+    for (const m of snap.members || []) {
+      const a = ensureAgent({ id: m.id });
+      present.add(a.id);
+      a.live = m.live || []; a.durable = m.durable || [];
+      const chans = memberChannels(a.live, a.durable, known);
+      a.memberOf = chans;
+      for (const [ch, kind] of chans) { ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
+      pruneMemberEdges(a, chans);
+    }
+    // An agent that dropped out of the feed entirely is no longer a member of anything.
+    for (const a of agents.values()) if (!present.has(a.id) && a.memberOf && a.memberOf.size) { a.live = []; a.durable = []; const empty = new Map(); pruneMemberEdges(a, empty); a.memberOf = empty; }
+    if (sel) renderDetail();
+  }
+  // Drop this agent's membership edges that are no longer in `keep`; a still-warm one stays as a fading
+  // traffic-only edge (mem:false) and is pruned later when cold, so a comet in flight isn't orphaned.
+  function pruneMemberEdges(a, keep) {
+    for (const [k, e] of edges) if (e.a === a && e.mem && !keep.has(e.chan)) { if (e.heat <= TRAFFIC_COLD) edges.delete(k); else { e.mem = false; e.durableOnly = false; } reheat(); }
   }
 
   // ── render loop ──
   function frame(t) {
     const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
-    const N = now();
-    // Links persist while both endpoints are present (cleaned up on leave, not on a timer): they're
-    // the resting skeleton — faded when quiet, glowing on traffic. STRUCT_MEM only drives the fade.
-    for (const h of hubs.values()) h.empty = ![...edges.values()].some((e) => e.chan === h.name); // dormant = no links
+    // Prune cold traffic-only spokes (a non-member's post that has faded). Membership spokes persist by
+    // membership, never on a timer — they're the resting skeleton, faint at rest, glowing on traffic.
+    for (const [k, e] of edges) if (!e.mem && e.heat <= TRAFFIC_COLD && now() - e.last > 1000) { edges.delete(k); reheat(); }
+    for (const h of hubs.values()) h.empty = ![...edges.values()].some((e) => e.chan === h.name && e.mem); // no members = dormant (silent readers keep it live)
     physics();
     // re-frame only once the sim has cooled, so the camera doesn't chase the re-settle wobble
     if (!cam.user && alpha < 0.12) { const f = fitTarget(); const e = 1 - Math.pow(0.02, dt); cam.x += (f.x - cam.x) * e; cam.y += (f.y - cam.y) * e; cam.scale += (f.scale - cam.scale) * e; }
@@ -165,15 +219,32 @@
     ctx.clearRect(0, 0, W, H);
     drawStarfield(ctx, W, H, cam);
     ctx.translate(cam.x, cam.y); ctx.scale(cam.scale, cam.scale);
-    drawSpokes(N); drawDmEdges(); drawBlooms(dt); drawParticles(dt); drawNodes();
+    drawSpokes(); drawDmEdges(); drawBlooms(dt); drawParticles(dt); drawNodes();
     requestAnimationFrame(frame);
   }
 
-  function drawSpokes(N) {
+  // Hover/select a hub or agent → highlight its membership fan, dim the rest (dandelion mitigation).
+  function fanFocus() { return hover && hover.kind === "hub" ? hover : sel && sel.kind === "hub" ? sel : hover && hover.kind === "agent" ? hover : sel && sel.kind === "agent" ? sel : null; }
+  function inFan(e, f) { if (!f) return true; return f.kind === "hub" ? e.chan === f.name : e.a === f; }
+
+  function drawSpokes() {
     ctx.lineCap = "round";
-    for (const e of edges.values()) { const h = hubs.get(e.chan); if (!h) continue; const age = (N - e.last) / STRUCT_MEM; ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(h.x, h.y); ctx.strokeStyle = rgba("#8493a8", 0.3 + 0.25 * Math.max(0, 1 - age)); ctx.lineWidth = 1.5; ctx.stroke(); }
+    const f = fanFocus();
+    // structure layer: a constant-faint spoke per membership (solid = live, dashed-dim = member-offline)
+    for (const e of edges.values()) {
+      if (!e.mem) continue;
+      const h = hubs.get(e.chan); if (!h) continue;
+      const off = e.durableOnly || e.a.status === "offline";
+      const lit = inFan(e, f);
+      ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(h.x, h.y);
+      ctx.setLineDash(off ? [3, 4] : []);
+      ctx.strokeStyle = rgba(off ? MEM_OFF : MEM_LIVE, (off ? 0.3 : 0.42) * (lit ? 1 : 0.28));
+      ctx.lineWidth = 1.4; ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // activity layer: traffic glow on top (members + transient non-member posts)
     ctx.globalCompositeOperation = "lighter";
-    for (const e of edges.values()) { const h = hubs.get(e.chan); if (!h || e.heat <= 0.02) continue; ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(h.x, h.y); ctx.strokeStyle = rgba(MODE.chat, Math.min(0.55, e.heat * 0.55)); ctx.lineWidth = 1 + e.heat * 1.6; ctx.stroke(); }
+    for (const e of edges.values()) { const h = hubs.get(e.chan); if (!h || e.heat <= 0.02) continue; const lit = inFan(e, f); ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(h.x, h.y); ctx.strokeStyle = rgba(MODE.chat, Math.min(0.55, e.heat * 0.55) * (lit ? 1 : 0.35)); ctx.lineWidth = 1 + e.heat * 1.6; ctx.stroke(); }
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
   }
   function drawDmEdges() {
@@ -265,32 +336,56 @@
   const toWorld = (sx, sy) => ({ x: (sx - cam.x) / cam.scale, y: (sy - cam.y) / cam.scale });
   function pick(sx, sy) { const w = toWorld(sx, sy); let best = null, bd = 1e9; for (const n of [...hubs.values(), ...agents.values()]) { const d = Math.hypot(n.x - w.x, n.y - w.y); if (d < n.r + 8 && d < bd) { bd = d; best = n; } } return best; }
 
+  // ── membership freshness pill ──
+  function setFeed() {
+    const el = $("feed"); if (!el) return;
+    el.hidden = false;
+    let cls, text;
+    if (!feed.available) { cls = "off"; text = "membership: traffic-only"; }
+    else { const age = feed.asOf ? now() - feed.asOf : Infinity; if (age < FEED_STALE_MS) { cls = ""; text = "membership: live"; } else { cls = "stale"; text = "membership: stale"; } }
+    el.className = "pill" + (cls ? " " + cls : "");
+    el.querySelector(".t").textContent = text;
+  }
+
   // ── detail panel ──
   function closeDetail() { sel = null; $("detail").classList.remove("open"); }
+  function recentRows(test) {
+    const ms = recent.filter(test).slice(-6).reverse();
+    return ms.length ? ms.map((m) => `<div class="d-msg" style="border-color:${MODE[m.mode] || "#2a313c"}"><div class="mhead"><span class="m" style="color:${MODE[m.mode] || "#8b949e"}">${m.mode}</span><span class="who">${esc(m.from)}</span>${m.chan ? `<span class="tgt">#${esc(m.chan)}</span>` : m.to ? `<span class="tgt">→ ${esc(m.to)}</span>` : ""}</div><div class="body">${esc(m.text).slice(0, 160) || "—"}</div></div>`).join("") : `<div class="d-msg empty">no recent traffic</div>`;
+  }
   function renderDetail() {
     const el = $("detail"); if (!sel) { el.classList.remove("open"); return; }
-    const ms = recent.filter((m) => (sel.kind === "hub" ? m.chan === sel.name : m.from === sel.name || m.to === sel.name)).slice(-6).reverse();
-    const rows = ms.length ? ms.map((m) => `<div class="d-msg" style="border-color:${MODE[m.mode] || "#2a313c"}"><div class="mhead"><span class="m" style="color:${MODE[m.mode] || "#8b949e"}">${m.mode}</span><span class="who">${esc(m.from)}</span>${m.chan ? `<span class="tgt">#${esc(m.chan)}</span>` : m.to ? `<span class="tgt">→ ${esc(m.to)}</span>` : ""}</div><div class="body">${esc(m.text).slice(0, 160) || "—"}</div></div>`).join("") : `<div class="d-msg empty">no recent traffic</div>`;
     if (sel.kind === "hub") {
-      const n = [...edges.values()].filter((e) => e.chan === sel.name).length;
+      // members from the broker feed (subscribed), split into live vs member-currently-offline; plus a
+      // "recently active" subset (who actually posted here) vs just-subscribed.
+      const mem = [...edges.values()].filter((e) => e.chan === sel.name && e.mem).map((e) => e.a);
+      mem.sort((x, y) => x.name.localeCompare(y.name));
+      const activeIds = new Set(recent.filter((m) => m.chan === sel.name && m.fromId).map((m) => m.fromId));
+      const memberRow = (a) => { const off = a.status === "offline" || (a.memberOf && a.memberOf.get(sel.name) === "durable"); const dotCol = STAT[a.status] || STAT.idle; return `<span class="mtag"><span class="dot" style="background:${off ? MEM_OFF : dotCol}"></span>${esc(a.name)}${activeIds.has(a.id) ? '<span class="act">active</span>' : ""}${off ? '<span class="off">offline</span>' : ""}</span>`; };
+      const memberList = mem.length ? `<div class="d-tags">${mem.map(memberRow).join("")}</div>` : `<div class="d-block muted">no subscribers yet</div>`;
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">channel</div>
         <div class="d-who">#${esc(sel.name)}</div>
         ${sel.desc ? `<div class="d-block">${esc(sel.desc)}</div>` : ""}
         <div class="d-rows">
-          <div class="d-row"><span class="k">subscribers</span><span class="v">${n} agent${n === 1 ? "" : "s"}</span></div>
+          <div class="d-row"><span class="k">subscribers</span><span class="v">${mem.length} agent${mem.length === 1 ? "" : "s"}</span></div>
           <div class="d-row"><span class="k">messages</span><span class="v">${sel.msgs || 0}</span></div>
         </div>
-        <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${rows}</div></div>`;
+        <div class="d-section"><div class="d-label">members</div>${memberList}</div>
+        <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${recentRows((m) => m.chan === sel.name)}</div></div>`;
     } else {
-      const chans = [...new Set([...edges.values()].filter((e) => e.a === sel).map((e) => e.chan))];
+      // an agent's FULL subscription set from the feed: live patterns (wildcards shown literally) + durable.
+      const liveSet = (sel.live || []).map((c) => `<span class="ctag">#${esc(c)}</span>`).join("");
+      const durOnly = (sel.durable || []).filter((c) => !(sel.live || []).includes(c)).map((c) => `<span class="ctag off">#${esc(c)}</span>`).join("");
+      const subs = liveSet || durOnly ? `<div class="d-tags">${liveSet}${durOnly}</div>` : `<div class="d-block muted">no channel subscriptions</div>`;
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
         <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status)}</div>
         <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
-        ${(chans.length || sel.harness) ? `<div class="d-rows">${chans.length ? `<div class="d-row"><span class="k">channels</span><span class="v">${chans.map((c) => "#" + esc(c)).join(", ")}</span></div>` : ""}${sel.harness ? `<div class="d-row"><span class="k">harness</span><span class="v">${esc(sel.harness)}</span></div>` : ""}</div>` : ""}
-        <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${rows}</div></div>`;
+        <div class="d-section"><div class="d-label">subscribes</div>${subs}</div>
+        ${sel.harness ? `<div class="d-rows"><div class="d-row"><span class="k">harness</span><span class="v">${esc(sel.harness)}</span></div></div>` : ""}
+        <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`;
     }
     el.classList.add("open"); $("dx").onclick = closeDetail;
   }
@@ -311,21 +406,24 @@
 
   // ── boot ──
   async function load() {
-    const [meta, roster, chans, activity, dmHist] = await Promise.all([
+    const [meta, roster, chans, membership, activity, dmHist] = await Promise.all([
       fetch("/api/meta").then((r) => r.json()), fetch("/api/roster").then((r) => r.json()), fetch("/api/channels").then((r) => r.json()),
+      fetch("/api/membership").then((r) => r.json()).catch(() => ({ members: [] })),
       fetch("/api/activity?limit=400").then((r) => r.json()).catch(() => []), fetch("/api/dms?limit=400").then((r) => r.json()).catch(() => []),
     ]);
     $("space").textContent = "· " + meta.space;
     for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; }
     updateRoster(roster);
+    applyMembership(membership); // authoritative spokes BEFORE traffic seeding (no skeleton flicker)
     for (const e of activity) { const m = e.msg; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
     alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
     const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
   }
-  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => updateRoster(JSON.parse(e.data))); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
+  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => updateRoster(JSON.parse(e.data))); es.addEventListener("membership", (e) => applyMembership(JSON.parse(e.data))); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
+  setInterval(setFeed, 5000); // age "live" → "stale" even without new events
   load().then(connect).catch((err) => { console.error(err); setConn(false); });
   requestAnimationFrame(frame);
 })();

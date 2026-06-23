@@ -26,6 +26,7 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  membershipBucket,
   deliveryBucket,
   inboxStream,
   dlvStream,
@@ -66,6 +67,12 @@ export const DINBOX_MAX_ACK_PENDING = 1000;
  *  promptly. (The bucket holds ONLY lease keys, so a bucket TTL is exact here; per-key TTL is also
  *  available on this stack — a deliberate simplicity choice, not a capability gap. See {@link deliveryBucket}.) */
 export const LEASE_TTL_MS = 30_000;
+
+/** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
+ *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint
+ *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
+ *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
+export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface ClearSpaceHistoryResult {
   chat: number;
@@ -271,6 +278,11 @@ export async function setupSpaceStreams(opts: {
     // Durable read-ACL registry (Plane-3 keystone): privileged-write, no TTL. The manager records an
     // agent's read ACL here at mint; the delivery daemon re-auths every durable entry against it.
     await kvm.create(aclBucket(opts.space));
+    // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
+    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). `history:1`
+    // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the
+    // scoped writer holds no STREAM.CREATE. Idempotent.
+    await kvm.create(membershipBucket(opts.space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
     // Delivery-daemon single-flight lease + readiness bucket: bucket-level TTL (`max_age`) so a crashed
     // holder's lease auto-expires and a fresh daemon can re-acquire. Holds ONLY lease keys, writable
     // only by the `delivery` cred, world-readable (the non-gating delivery-health surface). Idempotent.
