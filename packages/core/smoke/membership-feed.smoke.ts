@@ -150,6 +150,20 @@ try {
   check("a disconnected live subscriber keeps its durable membership", !!aliceAfter && eq(aliceAfter.durable, ["general"]), aliceAfter);
   check("a disconnected live subscriber's live set is pruned to empty", !!aliceAfter && eq(aliceAfter.live, []), aliceAfter?.live);
 
+  // --- incomplete-sweep guard (review-general): a poll that gets ZERO CONNZ replies must NOT prune the
+  // live half or advance the freshness heartbeat. Simulate deterministically by running a feed with a
+  // MISMATCHED accountId, so the observer's CONNZ publish is denied (not in its pub.allow) → zero replies
+  // → complete:false → reconcile early-returns. The good feed is stopped first so only this one runs. ---
+  await feed.stop();
+  const before = await readFeed();
+  const beforeKeys = [...before.out.keys()].sort().join(",");
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.sys.pub /* wrong acct → CONNZ pub denied */, observerCreds, rwCreds, intervalMs: 60_000, maxWaitMs: 500 });
+  await feed.poll();
+  await wait(300);
+  const afterBad = await readFeed();
+  check("an incomplete CONNZ sweep does NOT prune existing membership", [...afterBad.out.keys()].sort().join(",") === beforeKeys, [...afterBad.out.keys()]);
+  check("an incomplete CONNZ sweep does NOT advance the freshness heartbeat", afterBad.asOf === before.asOf, { before: before.asOf, after: afterBad.asOf });
+
   console.log(`\nMEMBERSHIP-FEED SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
