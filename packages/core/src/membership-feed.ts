@@ -180,8 +180,13 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
         log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) — UNDER-REPORTING; skipping this sweep`);
     }
     // SELF-PRESENCE completeness check (socrates): the data account ALWAYS holds at least conn B, so a
-    // sweep that doesn't even include our own rw connection missed connections (a silent server in a
-    // cluster, a mid-reconnect blip) — treat it as incomplete so reconcile() neither prunes nor restamps.
+    // sweep that doesn't even include our own rw connection missed connections (a mid-reconnect blip, or
+    // the server hosting conn B staying silent) — treat it as incomplete so reconcile() neither prunes nor
+    // restamps. 1-BROKER SCOPE (truthium): this is sufficient at N=1 (canary == full coverage), but only
+    // NECESSARY at cluster scale — conn B is pinned to ONE server, so a DIFFERENT silent server's agents
+    // would still pass this canary. The sufficient multi-server check is `distinct responding server_ids
+    // == expected server count` (expected set discovered via $SYS.REQ.SERVER.PING); deferred with the rest
+    // of multi-broker support — a conscious deferral, not a single-server bake-in.
     if (gotReply && exhausted && !seenSelf)
       log(`CONNZ sweep omitted our own rw connection — treating as incomplete (keeping last membership)`);
     return { live, complete: gotReply && exhausted && seenSelf };
