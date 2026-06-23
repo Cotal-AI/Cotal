@@ -131,8 +131,8 @@ export const PERSONAS = {
   },
   garry: {
       label: 'garry',
-      rows: ['', '........kKKKKKkk.kKk', '.......kKKgKKKKKkKKKKk', '......kKKKKgkgKKKKKKKKk', '......KKKKKKkKgKKKKKKKKk', '.....LKKKKKKkKKgKkKKKKKKM', '.....LKKKKKKkKKKKKkKKKKKM', '.....LKgKKKkkKKKKKKkKKKKM', '......kKKkPSSSkKKkSkKKKk', '.......KkPPPSSSSSkSSsskK', '.......KkPPSSSSSSSSSsskK', '.......KkPSSSSSSSSSSsskK', '.......KkGGGGGGGGGGGGGkK', '........kGWPPGSSSGPPWGk', '........kGGGGGSSsGGGGGk', '.........PPSSSssSSSSss', '.........PSSSsssSSSSss', '.........skkKKKkKKKkks', '.........skkssssssskks', '.........sskKKkgkKKkss', '.........ssKKgkKkKKKss', '..........sKKgKkKKgKs', '...........KkKgKKkKK', '............KKkKKgK', '............ssSSSss', '............sSSSSSs', '..........TTsSSSSSsTT', '.......TTTTTtttttttTTTTTT', '......LTTTTTTTTTTTTTTTTTTM', '.....LTTTTTTTTTTTTTTTTTTTTM', '....LTTTTTTTTTTTTTTTTTTTTTTM', '...LTTTTTTTTTTTTTTTTTTTTTTTTM'],
-      colors: { K: '#1b150f', k: '#362d20', g: '#564a33', L: '#53ebe4', M: '#e13a6a', S: '#d8a374', s: '#a8744e', P: '#f0ca9e', G: '#0d0b08', E: '#2a190f', W: '#f0ead9', R: '#c07c6a', m: '#532f28', T: '#252833', t: '#171a21' },
+      rows: ['', '........kKKKKKkk.kKk', '.......kKKgKKKKKkKKKKk', '......kKKKKgkgKKKKKKKKk', '......KKKKKKkKgKKKKKKKKk', '.....LKKKKKKkKKgKkKKKKKKM', '.....LKKKKKKkKKKKKkKKKKKM', '.....LKgKKKkkKKKKKKkKKKKM', '......kKKkPSSSkKKkSkKKKk', '.......KkPPPSSSSSkSSsskK', '.......KkPPSSSSSSSSSsskK', '.......KkPSSSSSSSSSSsskK', '.......KkKKKKKKsKKKKKKkK', '.......KkKSSSSKsKSSSSKkK', '.......KkKSSSSKsKSSSSKkK', '.........KKKKKKsKKKKKK', '.........PSSSsssSSSSss', '.........sSSuuSSSuuSSs', '.........sSuSSSSSSSuSs', '.........suSSSSSSSSSus', '.........suSuSSSSSuSus', '..........suSuSSSuSus', '...........sSuSSuSs', '............sSuuSs', '............ssSSSss', '............sSSSSSs', '..........TTsSSSSSsTT', '.......TTTTTtttttttTTTTTT', '......LTTTTTTTTTTTTTTTTTTM', '.....LTTTTTTTTTTTTTTTTTTTTM', '....LTTTTTTTTTTTTTTTTTTTTTTM', '...LTTTTTTTTTTTTTTTTTTTTTTTTM'],
+      colors: { K: '#1b150f', k: '#362d20', g: '#564a33', L: '#53ebe4', M: '#e13a6a', S: '#d8a374', s: '#a8744e', P: '#f0ca9e', u: '#8a6a52', E: '#2a190f', W: '#f0ead9', R: '#c07c6a', m: '#532f28', T: '#252833', t: '#171a21' },
       glow: { L: 8, M: 6 },
       mouths: {
         X: [[18, 12, 'm'], ...rng(18, 13, 17, 'R'), [18, 18, 'm']], A: rng(18, 12, 18, 'R'),
@@ -152,9 +152,11 @@ export const PERSONAS = {
         angry: { brows: [[10, 10, 'K'], [10, 11, 'K'], [11, 12, 'K'], [11, 18, 'K'], [10, 19, 'K'], [10, 20, 'K']], eyes: 'open', mouth: 'grit' },
         surprised: { brows: [...rng(9, 10, 12, 'K'), ...rng(9, 18, 20, 'K')], eyes: 'open', mouth: 'E' },
       },
-      eyes() {
-        // opaque shades — no eyes; a steady diagonal glint reads as light glancing off the lenses
-        return [[13, 11, 'W'], [14, 12, 'W'], [13, 19, 'W'], [14, 18, 'W']];
+      eyes(_style, blink) {
+        // clear rectangular glasses — eyes visible through the lenses (frame is in `rows`)
+        if (blink) return [[13, 11, 's'], [13, 12, 's'], [13, 18, 's'], [13, 19, 's']];
+        // 2px dark iris on the iris row, catchlight (outer) + lid-shadow (inner) below
+        return [[13, 11, 'E'], [13, 12, 'E'], [14, 11, 'W'], [14, 12, 's'], [13, 18, 'E'], [13, 19, 'E'], [14, 18, 's'], [14, 19, 'W']];
       },
       lines: ['just ship it. the pixels can iterate.', 'optimism compounds.', 'build something people want. start with a smile.'],
   },
