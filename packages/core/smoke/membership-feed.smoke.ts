@@ -29,7 +29,9 @@ import {
   openMembersRegistry,
   commitMember,
   chatSubject,
+  chatWildcard,
   spaceWildcard,
+  channelFromChatSubscription,
   membershipBucket,
   membershipKey,
   MEMBERSHIP_FEED_KEY,
@@ -97,6 +99,16 @@ try {
   webNc.subscribe(spaceWildcard(space)); // the whole-space god tap — self-excludes (yields no chat channel)
   await webNc.flush();
 
+  // --- a console-style observer: taps chatWildcard (`cotal.<space>.chat.>`) like `cotal console`. Must
+  // ALSO self-exclude, but via a DIFFERENT branch than the web tap (parseSubject's <5-token guard, not the
+  // !startsWith(".chat.") guard) — mitnick flagged that only the web branch was tested; socrates suspected
+  // a phantom reads-all node here. This pins that `cotal console` surfaces NO membership record. ---
+  const consoleId = newIdentity();
+  const consoleNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(await mintCreds(auth, consoleId, "observer"))), inboxPrefix: `_INBOX_${consoleId.id}`, name: "cotal:console" });
+  conns.push(consoleNc);
+  consoleNc.subscribe(chatWildcard(space)); // cotal.<space>.chat.> — the console observer tap
+  await consoleNc.flush();
+
   // --- dave: a legitimate BROAD-READ agent (allowSubscribe [">"]) — e.g. the seeded default persona. Its
   // chat.*.> sub MUST surface as a `>` reader (the source-of-truth goal); it must NOT be dropped as if it
   // were a god-tap (review-general/socrates: shape-based exclusion wrongly erased exactly these). ---
@@ -136,6 +148,8 @@ try {
   check("durable-only member (no live conn) appears", !!bobRec && eq(bobRec.durable, ["deploys"]) && eq(bobRec.live, []), bobRec);
   const daveRec = out.get(membershipKey(dave.id));
   check("the web god-tap (whole-space sub) self-excludes (no membership record)", !out.has(membershipKey(adminId.id)), [...out.keys()]);
+  check("a console-style chat.> tap self-excludes (no phantom reads-all node)", !out.has(membershipKey(consoleId.id)), [...out.keys()]);
+  check("channelFromChatSubscription(chatWildcard) is null — pins the console parseSubject<5 branch", channelFromChatSubscription(space, chatWildcard(space)) === null);
   check("a broad-read agent (allowSubscribe '>') SURFACES as a `>` reader, not dropped", !!daveRec && daveRec.live.includes(">"), daveRec);
   check("only the three real agents have records (infra conns contribute nothing)", out.size === 3, [...out.keys()]);
   check("feed freshness heartbeat is stamped", typeof asOf === "number");

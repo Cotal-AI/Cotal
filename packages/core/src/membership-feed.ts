@@ -114,6 +114,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   let polling = false;
   let rerun = false; // a trigger fired mid-poll → run once more after
   let reqSeq = 0;
+  let clusterWarned = false; // log the multi-server completeness limit at most once (never fires at N=1)
 
   /** One CONNZ round: publish the account request, collect every server's reply within the window. */
   async function connzRound(offset: number): Promise<ConnzReply[]> {
@@ -151,6 +152,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   async function liveFromConnz(): Promise<{ live: Map<string, Set<string>>; complete: boolean }> {
     const live = new Map<string, Set<string>>();
     const serverMore = new Set<string>(); // server ids still reporting a full page this round
+    const serversSeen = new Set<string>(); // distinct responders across the whole sweep
     let gotReply = false, exhausted = false, seenSelf = false;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
@@ -163,6 +165,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       serverMore.clear();
       for (const r of replies) {
         const sid = r.server?.id ?? r.data?.server_id ?? "?";
+        serversSeen.add(sid);
         const conns = r.data?.connections ?? [];
         for (const c of conns) {
           if (c.authorized_user === rwSelfId) seenSelf = true; // our own conn B must be in a complete read
@@ -189,6 +192,13 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
     if (gotReply && exhausted && !seenSelf)
       log(`CONNZ sweep omitted our own rw connection — treating as incomplete (keeping last membership)`);
+    // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
+    // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until
+    // multi-broker responder-accounting ships, surface that limit LOUDLY (once) rather than degrade quietly.
+    if (serversSeen.size > 1 && !clusterWarned) {
+      clusterWarned = true;
+      log(`multi-server cluster detected (${serversSeen.size} responders) — membership completeness uses the conn-B floor only; a silent peer server can under-report (multi-broker accounting deferred, see core-sub-fabric.md)`);
+    }
     return { live, complete: gotReply && exhausted && seenSelf };
   }
 
