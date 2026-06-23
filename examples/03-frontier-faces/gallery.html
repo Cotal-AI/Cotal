@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>faces gallery — review all personas</title>
+<style>
+  body { background:#06000f; color:#53ebe4; font-family:ui-monospace,Menlo,Consolas,monospace; margin:0; padding:22px; }
+  h1 { font-size:15px; font-weight:600; opacity:.85; margin:0 0 4px; }
+  .sub { font-size:12px; opacity:.55; margin-bottom:18px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:30px 18px; }
+  .cell { text-align:center; }
+  .top { display:flex; gap:12px; justify-content:center; align-items:flex-start; }
+  .top .col { display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .top .tag { font-size:10px; opacity:.5; }
+  canvas { background:#0b001b; border-radius:8px; image-rendering:pixelated; display:block; }
+  .ref { width:160px; height:160px; object-fit:cover; border-radius:8px; background:#11021f; display:block; }
+  .ref.missing { display:flex; align-items:center; justify-content:center; font-size:10px; opacity:.4; text-align:center; padding:6px; box-sizing:border-box; }
+  .cell a { color:#53ebe4; text-decoration:none; }
+  .cell .lbl { font-size:13px; opacity:.8; margin-top:10px; font-weight:600; }
+  .cell .expr { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:10px; }
+  .cell .expr .e { display:flex; flex-direction:column; align-items:center; gap:3px; }
+  .cell .expr .e span { font-size:10px; opacity:.55; }
+  .note { font-size:11px; opacity:.45; margin-top:22px; max-width:90ch; line-height:1.5; }
+  code { color:#9b7bff; }
+</style>
+</head>
+<body>
+  <h1>faces gallery</h1>
+  <div class="sub">each persona: original reference (left) vs the live pixel face (right), then all five
+  emotions animated. Click a name for the full per-persona review (<code>preview.html</code>).</div>
+  <div class="grid" id="grid"></div>
+  <p class="note">Review tool — renders straight from <code>personas.mjs</code>, no server-side / no OpenCode.
+  Drop an original next to a face by saving it as <code>assets/&lt;persona&gt;.png</code> (or .jpg/.jpeg/.webp) —
+  e.g. <code>assets/jobs.jpg</code>, <code>assets/musk.jpg</code>; it appears in the "original" slot. The
+  <code>assets/</code> folder is gitignored (local-only). Reload after editing.</p>
+
+<script type="module">
+import { PERSONAS } from './personas.mjs';
+const GRID = 32, BG = '#0b001b';
+const EXTS = ['png', 'jpg', 'jpeg', 'webp'];
+
+function compose(p, expr, { blink = false, viseme = null, bob = 0 } = {}) {
+  const g = Array.from({ length: GRID }, () => new Array(GRID).fill(null));
+  const put = ([r, c, k]) => { const rr = r + bob; if (rr >= 0 && rr < GRID && c >= 0 && c < GRID) g[rr][c] = k; };
+  for (let r = 0; r < GRID; r++) {
+    const row = (p.rows[r] || '').padEnd(GRID, '.');
+    for (let c = 0; c < GRID; c++) if (row[c] !== '.' && row[c]) put([r, c, row[c]]);
+  }
+  const e = p.expr[expr] || p.expr.neutral;
+  const mouth = viseme ? p.mouths[viseme] : p.mouths[e.mouth];
+  [...e.brows, ...mouth, ...p.eyes(e.eyes, blink)].forEach(put);
+  return g;
+}
+
+function draw(p, cv, g, sz) {
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = BG; ctx.fillRect(0, 0, cv.width, cv.height);
+  const glow = p.glow || {}, solid = [], emissive = [];
+  for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
+    const k = g[r][c]; if (!k) continue; (glow[k] ? emissive : solid).push([r, c, k]);
+  }
+  solid.forEach(([r, c, k]) => { ctx.fillStyle = p.colors[k]; ctx.fillRect(c * sz, r * sz, sz, sz); });
+  ctx.save();
+  emissive.forEach(([r, c, k]) => { ctx.fillStyle = p.colors[k]; ctx.shadowColor = p.colors[k]; ctx.shadowBlur = glow[k]; ctx.fillRect(c * sz, r * sz, sz, sz); });
+  ctx.restore();
+}
+
+/** Try assets/<name>.<ext> in order; show the first that loads, else a placeholder. */
+function loadReference(name, img) {
+  let i = 0;
+  img.onerror = () => { if (++i < EXTS.length) img.src = `assets/${name}.${EXTS[i]}`; else showMissing(); };
+  function showMissing() {
+    const ph = document.createElement('div');
+    ph.className = 'ref missing'; ph.textContent = `no original\n(add assets/${name}.png)`;
+    img.replaceWith(ph);
+  }
+  img.src = `assets/${name}.${EXTS[0]}`;
+}
+
+const grid = document.getElementById('grid');
+const VISEMES = ['A', 'B', 'C', 'D', 'E', 'F', null, 'B', 'C', null];
+const anim = []; // { p, cv, expr, sz }
+
+for (const [name, p] of Object.entries(PERSONAS)) {
+  const cell = document.createElement('div'); cell.className = 'cell';
+
+  // original (reference image) vs live pixel face
+  const top = document.createElement('div'); top.className = 'top';
+  const refCol = document.createElement('div'); refCol.className = 'col';
+  const refImg = document.createElement('img'); refImg.className = 'ref'; refImg.alt = name;
+  const refTag = document.createElement('div'); refTag.className = 'tag'; refTag.textContent = 'original';
+  refCol.append(refImg, refTag);
+  const faceCol = document.createElement('div'); faceCol.className = 'col';
+  const big = document.createElement('canvas'); big.width = GRID * 5; big.height = GRID * 5;
+  const faceTag = document.createElement('div'); faceTag.className = 'tag'; faceTag.textContent = 'pixel (live)';
+  faceCol.append(big, faceTag);
+  top.append(refCol, faceCol); cell.appendChild(top);
+  loadReference(name, refImg);
+  anim.push({ p, cv: big, expr: 'neutral', sz: 5 });
+
+  const link = document.createElement('a'); link.href = 'preview.html?p=' + name;
+  const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.textContent = name; link.appendChild(lbl);
+  cell.appendChild(link);
+
+  // every emotion, animated
+  const exprRow = document.createElement('div'); exprRow.className = 'expr';
+  for (const ex of Object.keys(p.expr)) {
+    const e = document.createElement('div'); e.className = 'e';
+    const s = document.createElement('canvas'); s.width = GRID * 3; s.height = GRID * 3;
+    const cap = document.createElement('span'); cap.textContent = ex;
+    e.append(s, cap); exprRow.appendChild(e);
+    anim.push({ p, cv: s, expr: ex, sz: 3 });
+  }
+  cell.appendChild(exprRow);
+  grid.appendChild(cell);
+}
+
+let vi = 0, blink = false;
+setInterval(() => { blink = true; setTimeout(() => (blink = false), 140); }, 2600);
+setInterval(() => {
+  const bob = Math.sin(Date.now() / 950) > 0.55 ? 1 : 0;
+  const talking = Math.floor(Date.now() / 4000) % 2 === 0;
+  const viseme = talking ? VISEMES[vi++ % VISEMES.length] : null;
+  for (const { p, cv, expr, sz } of anim) draw(p, cv, compose(p, expr, { blink, viseme, bob }), sz);
+}, 110);
+</script>
+</body>
+</html>
