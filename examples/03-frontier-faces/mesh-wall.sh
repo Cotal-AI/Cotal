@@ -8,10 +8,12 @@
 #   ./mesh-wall.sh --stop          # tear it all down (faces, console, and the mesh we started)
 #
 # Unlike face-wall.sh (standalone direct chat), every pane here is a real Cotal mesh peer:
-# the faces coordinate as lateral peers in one space, and the console window shows the
+# the faces coordinate as lateral peers in one space, and the console pane (right) shows the
 # live traffic. Persona art is taken from each agent's `face:` frontmatter (else its name).
+# Standard layout: the face grid on the LEFT, the console on the RIGHT, in one tmux window.
 #
 # Env: SPACE (demo) · MODEL (overrides each agent file's model) · SESSION (mesh-faces)
+#      CONSOLE_WIDTH (42%) — right-hand console column width
 # Requires: node, opencode (run `opencode auth login` for opencode-go), tmux.
 set -euo pipefail
 
@@ -23,7 +25,9 @@ PLUGIN="$ROOT/extensions/connector-opencode/dist/plugin.bundle.js"
 PIDFILE="/tmp/cotal-mesh-wall.pids"
 MESHLOG="/tmp/cotal-mesh-wall.log"
 MAX=9
-DEFAULT_ROSTER=(sven david steve elon garry dario)
+# default to a clean 2x2 (faces render at a fixed 32x16, so 4 leaves each pane big enough).
+# names are agent-file basenames; their faces come from `face:` (elon->musk, steve->jobs, rayan->ray).
+DEFAULT_ROSTER=(sven david elon garry)
 
 # --- teardown -----------------------------------------------------------------
 if [ "${1:-}" = "--stop" ]; then
@@ -96,21 +100,27 @@ cmd_for() {  # <index> — serve.js picks a free port; mesh-face derives the per
 # single command string to the user's default-shell, which may be nu/fish and choke on the
 # sh syntax (VAR=val prefixes, &&, exec) below.
 tmux kill-session -t "$SESSION" 2>/dev/null || true
-tmux new-session -d -s "$SESSION" bash -c "$(cmd_for 0)"
+# Build at the REAL terminal size: tmux otherwise creates the detached session at 80x24, and
+# scaling that tiny layout up on attach distorts the panes (uneven faces). Fall back for non-ttys.
+cols=$(tput cols 2>/dev/null || true); lines=$(tput lines 2>/dev/null || true)
+[[ "$cols"  =~ ^[0-9]+$ ]] && (( cols  >= 80 )) || cols=200
+[[ "$lines" =~ ^[0-9]+$ ]] && (( lines >= 24 )) || lines=50
+tmux new-session -d -s "$SESSION" -x "$cols" -y "$lines" bash -c "$(cmd_for 0)"
 for ((i = 1; i < ${#AGENTS[@]}; i++)); do
   tmux split-window -t "$SESSION" bash -c "$(cmd_for "$i")"
   tmux select-layout -t "$SESSION" tiled >/dev/null
 done
-tmux select-layout -t "$SESSION" tiled >/dev/null
+tmux select-layout -t "$SESSION" tiled >/dev/null            # faces fill the window as a grid
+
+# Carve a full-height console column on the RIGHT (faces stay gridded on the left). `-f` spans
+# the whole window height, not just the active pane. This is the real `cotal console` (the
+# lazygit-style dashboard: roster + channels + live feed), not the --plain log stream.
+tmux split-window -h -f -l "${CONSOLE_WIDTH:-42%}" -t "$SESSION" \
+  bash -c "cd $(printf %q "$ROOT") && exec pnpm cotal console --space $(printf %q "$SPACE")"
+tmux select-pane -t "$SESSION".0 >/dev/null                  # land focus on the first face
 tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
 
-# console in its own window — the `--plain` line stream (the lazygit TUI needs an attached
-# client to stay up; the stream is a robust live feed of the same space's traffic).
-tmux new-window -t "$SESSION" -n console \
-  bash -c "cd $(printf %q "$ROOT") && exec pnpm cotal console --space $(printf %q "$SPACE") --plain"
-tmux select-window -t "$SESSION:0" >/dev/null
-
-echo "mesh-wall: ${#AGENTS[@]} faces + console in tmux '$SESSION' (space=$SPACE: ${AGENTS[*]})" >&2
+echo "mesh-wall: ${#AGENTS[@]} faces (left) + console (right) in tmux '$SESSION' (space=$SPACE: ${AGENTS[*]})" >&2
 echo "mesh-wall: teardown -> ./mesh-wall.sh --stop" >&2
 if [ -n "${NO_ATTACH:-}" ] || { [ ! -t 1 ] && [ -z "${TMUX:-}" ]; }; then
   echo "mesh-wall: not attaching — run: tmux attach -t $SESSION" >&2

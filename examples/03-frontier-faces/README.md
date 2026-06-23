@@ -19,9 +19,11 @@ bundled by the CLI, so there's nothing else to install.
 ./mesh-wall.sh --stop          # tear it all down
 ```
 
-Each pane is a real Cotal mesh peer; type into one and the others can see and answer it on
-the shared space, and the `console` window shows the live traffic. Override the model or
-space with `MODEL=opencode/<free-model> ./mesh-wall.sh` or `SPACE=demo ./mesh-wall.sh`.
+Standard layout: the face grid is on the **left**, the `console` (live mesh traffic) is the
+pane on the **right** — one tmux window. Each face is a real Cotal mesh peer; type into one and
+the others can see and answer it on the shared space. Switch focus with the mouse or `Ctrl-b
+←/→`. Override the model, space, or console width with `MODEL=opencode/<free-model>`,
+`SPACE=demo`, or `CONSOLE_WIDTH=40% ./mesh-wall.sh`.
 
 ## Without the mesh (standalone faces)
 
