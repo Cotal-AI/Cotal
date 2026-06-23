@@ -7,7 +7,7 @@
 # Each pane runs face-term.mjs with a different persona against ONE shared opencode server,
 # so the grid = N independent live agents you can talk to side by side.
 #
-# Env: PORT (4096) · MODEL (opencode-go/glm-5.1) · OPENCODE_BIN (~/.bun/bin/opencode)
+# Env: PORT (4096) · MODEL (opencode-go/glm-5.1) · OPENCODE_BIN (auto: found on $PATH)
 #      SESSION (faces) · RUNNER (node)
 # Teardown: tmux kill-session -t "$SESSION"
 set -euo pipefail
@@ -15,7 +15,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-4096}"
 MODEL="${MODEL:-opencode-go/glm-5.1}"
-OPENCODE_BIN="${OPENCODE_BIN:-$HOME/.bun/bin/opencode}"
+OPENCODE_BIN="${OPENCODE_BIN:-$(command -v opencode || true)}"
 SESSION="${SESSION:-faces}"
 RUNNER="${RUNNER:-node}"
 SERVER="http://127.0.0.1:${PORT}"
@@ -36,7 +36,7 @@ fi
 # ensure an opencode server is up (start it if not)
 if ! curl -fsS -o /dev/null "${SERVER}/session" 2>/dev/null; then
   echo "face-wall: starting opencode server on :${PORT} ..." >&2
-  [ -x "$OPENCODE_BIN" ] || { echo "face-wall: no opencode at $OPENCODE_BIN (set OPENCODE_BIN)" >&2; exit 1; }
+  [ -x "$OPENCODE_BIN" ] || { echo "face-wall: opencode not found on \$PATH (install it, or set OPENCODE_BIN)" >&2; exit 1; }
   "$OPENCODE_BIN" serve --port "$PORT" >/tmp/face-wall-opencode.log 2>&1 &
   for _ in $(seq 1 40); do
     curl -fsS -o /dev/null "${SERVER}/session" 2>/dev/null && break

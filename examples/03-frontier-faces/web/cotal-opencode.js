@@ -119,8 +119,8 @@ export function driveFace(faceEl, opts = {}) {
 
   // ---- OpenCode driver ----------------------------------------------------------
   async function createSession() {
-    // Per-persona title so the connector's COTAL_OPENCODE_ADOPT=face-term:<persona> can
-    // single out THIS face's session (same convention as the terminal face).
+    // Per-persona title so this face's session is identifiable in a shared store
+    // (same convention as the terminal face).
     const r = await fetch(`${server}/session`, { method: 'POST', headers: HDR, body: JSON.stringify({ title: `face-term:${persona}` }) });
     if (!r.ok) throw new Error(`create session: HTTP ${r.status}`);
     return (await r.json()).id;

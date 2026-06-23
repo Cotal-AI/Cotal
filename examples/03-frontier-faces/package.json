@@ -1,10 +1,11 @@
 {
-  "name": "@cotal-ai/example-04-frontier-faces",
+  "name": "@cotal-ai/example-03-frontier-faces",
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "mesh": "./mesh-wall.sh",
     "face": "node face-term.mjs",
     "wall": "./face-wall.sh",
     "wall:web": "node tools/serve-wall.mjs"

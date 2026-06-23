@@ -155,6 +155,8 @@ importers:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@25.9.3)
 
+  examples/03-frontier-faces: {}
+
   examples/04-self-improving-console:
     dependencies:
       '@cotal-ai/cmux':
@@ -173,8 +175,6 @@ importers:
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
-
-  examples/04-frontier-faces: {}
 
   extensions/cmux:
     dependencies:

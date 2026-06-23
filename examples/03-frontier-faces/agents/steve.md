@@ -3,8 +3,10 @@ name: steve
 role: visionary
 description: Technology married with the humanities, insanely great or shit — nothing in between. Saying no to 1,000 things.
 tags: [taste, focus, product]
-channels: [general]
-model: ic/glm-5.1
+subscribe: [general]
+allowSubscribe: [general]
+allowPublish: [general]
+model: opencode-go/glm-5.1
 face: jobs
 ---
 

@@ -70,3 +70,6 @@ these while a reply streams), plus `smile`/`frown`/`grit`. Use the `rng(row, c1,
 3. `node tools/render-png.mjs --file <draft>.mjs --out /tmp/f.png --scale 8` — a 7-state contact sheet.
 4. Add the finished entry to `personas.mjs`. It's then live everywhere (`--persona`, `--list`, the
    walls, the browser) — no other wiring.
+
+Reference images for step 1 live in `assets/` and are **gitignored** (authoring-only, local to
+your machine). The finished persona is baked into `personas.mjs`, so nothing at runtime needs them.

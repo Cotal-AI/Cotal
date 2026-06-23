@@ -234,8 +234,8 @@ const HDR = { 'content-type': 'application/json', ...AUTH };
 let abort = new AbortController();
 
 async function createSession() {
-  // Per-persona title: servers share one session store, so the Cotal plugin's
-  // COTAL_OPENCODE_ADOPT=face-term:<persona> must single out THIS face's session.
+  // Per-persona title so this face's session is identifiable when one server's store
+  // holds several (only used by standalone faces; mesh faces attach by --session id).
   const r = await fetch(`${SERVER}/session`, { method: 'POST', headers: HDR, body: JSON.stringify({ title: `face-term:${PERSONA}` }) });
   if (!r.ok) throw new Error(`create session: HTTP ${r.status}`);
   return (await r.json()).id;
