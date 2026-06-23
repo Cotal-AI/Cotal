@@ -8,6 +8,13 @@ It's **configurable, not hardwired**: Cotal provides the primitives (addressabil
 presence, a control plane, data sharing); the *topology* — who's "planner" vs "reviewer",
 who delegates to whom — is just how you set it up.
 
+<p align="center">
+  <img src="../../assets/multicast.webp" width="250" alt="multicast — broadcast to a channel">
+  <img src="../../assets/unicast.webp" width="250" alt="unicast — direct message one peer">
+  <img src="../../assets/anycast.webp" width="250" alt="anycast — reach any one of a role">
+</p>
+<p align="center"><sub><b>multicast</b> broadcast to a channel&nbsp; · &nbsp;<b>unicast</b> DM one peer&nbsp; · &nbsp;<b>anycast</b> reach <i>any one</i> of a role</sub></p>
+
 > **Status:** the **walking skeleton** (manual CLI peers), the **control plane** (manager +
 > `pty` runtime + web console), and the **Claude Code adapter** run today — `cotal start --agent
 > claude` spawns a real Claude session that joins the mesh, flips presence from its lifecycle

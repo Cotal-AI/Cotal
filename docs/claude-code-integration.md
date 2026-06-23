@@ -61,6 +61,16 @@ Under the hood it is the existing pieces, so you can also run them by hand:
 - `cotal spawn <name> --space <s>` (a foreground Claude on the mesh; a bare name with no
   agent file launches a personaless session)
 
+**Spawning from anywhere.** `cotal up` records each running mesh in a machine-local registry
+(`~/.cotal/meshes/<space>.json` — the broker URL, the project root that holds its creds and
+personas, and its mode), so a bare `cotal spawn <persona>` from *any* directory joins the running
+mesh with the right credentials and persona instead of mistaking `~/.cotal` for a space. One mesh
+up → used automatically; inside a project with its own `.cotal/`, that project wins. With several
+up, pick one with `--space <name>` or set a default with `cotal use <name>`; `cotal meshes` lists
+them (a `*` marks the default). `cotal down` removes the entry. The registry stores a *path*, never
+a secret — trust material stays in each project's `.cotal/auth`. If the mesh is down or won't take
+your creds, spawn fails with one sentence, never a raw NATS trace.
+
 cmux is opt-in: the `cotal` binary registers it, and a build without `import "@cotal-ai/cmux"`
 has no `cmux` runtime. To ship to others instead, the plugin path is the same `cotal setup`
 install.
@@ -132,7 +142,7 @@ run`). They differ only in how they *run* the spec:
 | Launcher | How to point at a file |
 |---|---|
 | Manager (supervised PTY) | `cotal start --name dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <path>`; `--model <m>` overrides the file's `model:` for this launch. Detached; view via console / `cotal attach`. |
-| Foreground (`cotal spawn`) | `cotal spawn <name-or-path>`. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). |
+| Foreground (`cotal spawn`) | `cotal spawn <name-or-path>`. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
 
 `.cotal/` is gitignored (user-local, like `.claude/`). The demo ships committed example
 files under
@@ -163,9 +173,10 @@ stdout for a manual or one-shot `source`; `cotal completion install [shell]` ins
 persistently — it caches the stub (`~/.config/cotal/completion.<shell>`, or fish's completions
 dir) and sources that from your shell rc (auto-detects `$SHELL`, idempotent, opt-in — never run
 by `setup`). Each `<TAB>` then forwards
-to a hidden `cotal __complete`, so completion sees real data: `cotal spawn <TAB>` lists your
-personas, `cotal send msg <TAB>` the channels your agent files **declare**, `cotal send ask <TAB>`
-the declared roles. By contract `__complete` reads only local files — never the mesh — so a
+to a hidden `cotal __complete`, so completion sees real data: `cotal spawn <TAB>` lists the
+personas of the mesh that spawn would join (resolved offline from the registry, not the cwd's
+catalog), `cotal spawn --space <TAB>` the running meshes, `cotal send msg <TAB>` the channels your
+agent files **declare**, `cotal send ask <TAB>` the declared roles. By contract `__complete` reads only local files — never the mesh — so a
 keystroke never blocks on the network, and there is **no fallback**: a completer that can't
 produce its authoritative answer (e.g. a malformed agent file) fails the process (nothing
 emitted, non-zero exit) rather than offer a silently-partial set, with the broken file named

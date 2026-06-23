@@ -24,6 +24,14 @@ import {
   newIdentity,
   setupSpaceStreams,
   seedChannelRegistry,
+  clearCurrent,
+  findMesh,
+  getCurrent,
+  loadMeshes,
+  recordMesh,
+  removeMesh,
+  setCurrent,
+  type MeshEntry,
   type SpaceAuth,
   type ChannelRegistryFile,
 } from "@cotal-ai/core";
@@ -50,8 +58,29 @@ export async function up(argv: string[]): Promise<void> {
   const server = values.server ?? DEFAULT_SERVER;
   const host = values.host ?? "127.0.0.1";
   if (await isReachable(server)) {
-    console.log(c.green(`✓ NATS already running at ${server}`));
-    return;
+    const space = values.space ?? resolveSpace(process.cwd());
+    const root = cotalRoot();
+    // A broker is already on this port. Only treat it as a no-op refresh when the registry confirms
+    // it's THIS exact mesh (same server + root + space). Anything else — a different space/root, or a
+    // broker we never recorded — we must NOT adopt: recording our space over it would let a later
+    // `spawn --space <s>` load the wrong root's creds. Today one broker serves one space (auth binds
+    // them), so a different space on this port can't be added to it yet — fail loudly and tell the
+    // user to free the port. (Hosting several spaces on one broker is the planned multi-space work.)
+    const held = loadMeshes().find((m) => m.server === server);
+    if (held && held.root === root && held.space === space) {
+      // A refresh of the SAME already-running mesh — its mode is fixed by how the live broker was
+      // started; preserve `held.mode` rather than relabel it from this invocation's `--open`.
+      recordOurMesh({ space, server, root, mode: held.mode, ts: new Date().toISOString() });
+      console.log(c.green(`✓ NATS already running at ${server}`));
+      return;
+    }
+    const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
+    console.error(
+      c.red(
+        `✗ ${server} is already in use by ${who} — to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+      ),
+    );
+    process.exit(1);
   }
 
   if (values.detach) {
@@ -72,6 +101,8 @@ export async function up(argv: string[]): Promise<void> {
   mkdirSync(storeDir, { recursive: true });
   const useAuth = !values.open;
   const space = values.space ?? resolveSpace(process.cwd());
+  assertAuthMatchesSpace(useAuth, space);
+  await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
   const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
   const port = Number(new URL(server).port) || 4222;
@@ -94,13 +125,27 @@ export async function up(argv: string[]): Promise<void> {
   const stop = () => { stopDelivery(); child.kill("SIGTERM"); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  child.on("exit", (code) => { stopDelivery(); process.exit(code ?? 0); });
+  // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
+  // so a later `cotal spawn` doesn't try to join a dead mesh.
+  child.on("exit", (code) => {
+    stopDelivery();
+    // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
+    // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
+    // record — removing by name would clobber the live winner and hide it from the registry.
+    const mine = findMesh(space);
+    if (mine && mine.server === server && mine.root === cotalRoot()) {
+      removeMesh(space);
+      if (getCurrent() === space) clearCurrent();
+    }
+    process.exit(code ?? 0);
+  });
 
   if (await waitReady(server, setup?.creds)) {
     await postStart(server, space, setup, seedFile);
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     await startDeliveryWithBroker(space, server);
+    recordOurMesh({ space, server, root: cotalRoot(), mode: useAuth ? "auth" : "open", ts: new Date().toISOString() });
   }
   await new Promise<void>(() => {});
 }
@@ -141,6 +186,8 @@ export async function startMeshDetached(opts: DetachOpts = {}): Promise<{ server
   mkdirSync(storeDir, { recursive: true });
   const useAuth = !opts.open;
   const space = opts.space ?? resolveSpace(process.cwd());
+  assertAuthMatchesSpace(useAuth, space);
+  await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
   const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
@@ -168,7 +215,62 @@ export async function startMeshDetached(opts: DetachOpts = {}): Promise<{ server
   await postStart(server, space, setup, seedFile);
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
   await startDeliveryWithBroker(space, server);
+  // Detached: the registry entry outlives this process — `cotal down` removes it.
+  recordOurMesh({ space, server, root: cotalRoot(), mode: useAuth ? "auth" : "open", ts: new Date().toISOString() });
   return { server, pid: child.pid ?? 0, source };
+}
+
+/** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so starting it
+ *  under a *different* explicit `--space` would run that space's name against the other space's trust
+ *  material — the registry would then point a `spawn --space` at mismatched creds. Reject it. (When
+ *  multi-space-per-root lands, this becomes provision-the-new-space instead of an error.) */
+function assertAuthMatchesSpace(useAuth: boolean, space: string): void {
+  if (!useAuth) return;
+  const existing = loadSpaceAuth(authDir(cotalRoot()));
+  if (existing && existing.space !== space) {
+    console.error(
+      c.red(
+        `✗ this root's trust material is for space "${existing.space}", not "${space}" — drop \`--space\` (it defaults to "${existing.space}"), or run "${space}" from its own root`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+/** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
+ *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
+ *  holder is reclaimed. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
+ *  path). NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
+ *  different roots within the same instant can both pass the check before either records; that
+ *  concurrent case is out of scope (a single-operator CLI action), not synchronized with a lock. */
+async function claimSpace(space: string, server: string, root: string): Promise<void> {
+  const existing = findMesh(space);
+  if (!existing || (existing.server === server && existing.root === root)) return;
+  if (await isReachable(existing.server)) {
+    console.error(
+      c.red(
+        `✗ space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) — pick a different \`--space\`, or \`cotal down\` it first`,
+      ),
+    );
+    process.exit(1);
+  }
+  removeMesh(space); // the prior holder's broker is gone — reclaim the name
+}
+
+/** Record this mesh in the registry, and set it as the `current` default when there's no usable one
+ *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
+ *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
+ *  mesh; just say another is the default and how to switch. */
+function recordOurMesh(m: MeshEntry): void {
+  const cur = getCurrent();
+  const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
+  recordMesh(m);
+  if (!usableCurrent) {
+    setCurrent(m.space);
+    return;
+  }
+  if (usableCurrent !== m.space)
+    console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" — \`cotal use ${m.space}\` to switch`));
 }
 
 /** Poll a growing log file and forward newly-appended lines until `stopped()` is true. */

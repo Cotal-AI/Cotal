@@ -28,9 +28,6 @@
   },
   "ignore": [
     "@cotal-ai/example-01-lateral-coordination",
-    "@cotal-ai/example-02-cmux-handoff",
-    "@cotal-ai/example-04-self-improving-console",
-    "todo-api",
-    "todo-web"
+    "@cotal-ai/example-02-self-improving-console"
   ]
 }

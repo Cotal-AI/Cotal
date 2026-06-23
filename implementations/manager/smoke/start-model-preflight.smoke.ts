@@ -11,7 +11,7 @@
  *   3. Model PRECEDENCE — across the three real connectors: flag > agent-file `model:`, the flag
  *      applies with no agent file, and the file is the fallback (the actual bug the fix closes).
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -27,8 +27,13 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
-// A workspace with no `.cotal/` so no agent file / cotal config is discovered for a bare name.
+// A workspace with no cotal *config*. A manager spawn now REQUIRES a discoverable persona (no
+// silent default-ACL fallback), so seed a minimal `.cotal/agents/<name>.md` per spawned name —
+// this test's subject is harness preflight + model threading, not persona/ACL resolution.
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
+const agentsDir = join(workspaceRoot, ".cotal", "agents");
+mkdirSync(agentsDir, { recursive: true });
+for (const n of ["reject1", "rec1", "rec2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
 
 // Inert handle/runtime: the success branch records the built spec but launches nothing; the `ep`

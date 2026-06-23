@@ -252,7 +252,7 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
       `\n  console: ${mgr.consoleUrl}` +
-      c.dim("\n  spawn: cotal start --name <n>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
+      c.dim("\n  spawn: cotal start --name <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
   // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
   // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
@@ -264,7 +264,9 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
   // fix the roster without the supervisor crash-looping.
   for (const entry of roster) {
     const reply = await mgr.startAgent(entry);
-    if (reply.ok) console.log(c.green(`✓ started ${c.bold(entry.name)}`) + c.dim(` (${entry.agent})`));
+    // Log the spawned IDENTITY (the persona's name:), which can differ from entry.name (the file ref).
+    const spawned = (reply.data as { name?: string } | undefined)?.name ?? entry.name;
+    if (reply.ok) console.log(c.green(`✓ started ${c.bold(spawned)}`) + c.dim(` (${entry.agent})`));
     else console.error(c.red(`✗ ${entry.name}: ${reply.error}`));
   }
   // Pre-spawn teammates the manager owns (e.g. the demo's david/sven), so they're despawnable.
@@ -273,16 +275,20 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
   if (v.spawn) {
     const names = v.spawn.split(",").map((s) => s.trim()).filter(Boolean);
     for (let i = 0; i < names.length; i++) {
-      const name = names[i];
-      const reply = await mgr.startByName(name);
+      const ref = names[i];
+      const reply = await mgr.startByName(ref);
       if (!reply.ok) {
-        console.error(c.red(`✗ couldn't spawn ${name}: ${reply.error ?? "unknown error"}`));
+        console.error(c.red(`✗ couldn't spawn ${ref}: ${reply.error ?? "unknown error"}`));
         continue;
       }
-      console.log(c.green(`✓ spawned ${name}`));
+      // The peer joins under its persona's name: (the spawned identity), which may differ from the
+      // ref filename — wait on (and log) THAT, or staggering blocks the full timeout on a name that
+      // never appears (e.g. ref review-critic → identity socrates).
+      const spawned = (reply.data as { name?: string } | undefined)?.name ?? ref;
+      console.log(c.green(`✓ spawned ${spawned}`));
       if (i < names.length - 1) {
-        const joined = await mgr.waitForPresence(name);
-        console.log(c.dim(joined ? `  ${name} joined; starting next` : `  ${name} still starting; continuing`));
+        const joined = await mgr.waitForPresence(spawned);
+        console.log(c.dim(joined ? `  ${spawned} joined; starting next` : `  ${spawned} still starting; continuing`));
       }
     }
   }
@@ -306,7 +312,7 @@ const managerCommands: Command[] = [
     name: "start",
     group: "Control plane",
     summary:
-      "ask the manager to spawn an agent — --name <n> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] (auto-discovers .cotal/agents/<n>.md)",
+      "ask the manager to spawn a persona — --name <persona> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] (loads .cotal/agents/<persona>.md; the peer joins under its name:)",
     run: start,
   },
   {

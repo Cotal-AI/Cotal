@@ -2603,3 +2603,37 @@ export async function isReachable(
     return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
   }
 }
+
+/** What a connect attempt told us about the server — the distinction {@link isReachable} flattens.
+ *  `auth-required` means a server answered but rejected these creds (so it IS up); `unreachable`
+ *  means nothing answered (refused / timeout / a stale registry entry). */
+export type ProbeResult =
+  | { ok: true }
+  | { ok: false; reason: "auth-required" }
+  | { ok: false; reason: "unreachable" };
+
+/** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
+ *  `spawn` needs the difference: auth-required → name the trust dir + next step; unreachable → the
+ *  mesh is down (prune the stale entry, tell the user to `cotal up`). Pass `creds` to confirm a
+ *  specific identity is accepted (`ok`); omit them to probe mere liveness (an auth broker answers
+ *  `auth-required`, which still proves it's up). */
+export async function probeConnect(
+  server: string = DEFAULT_SERVER,
+  opts: AuthOpts & { timeoutMs?: number } = {},
+): Promise<ProbeResult> {
+  try {
+    const nc = await connect({
+      servers: server,
+      timeout: opts.timeoutMs ?? 1000,
+      reconnect: false,
+      maxReconnectAttempts: 0,
+      ...authOpts(opts),
+    });
+    await nc.close();
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError)
+      return { ok: false, reason: "auth-required" };
+    return { ok: false, reason: "unreachable" };
+  }
+}

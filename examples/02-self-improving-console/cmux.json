@@ -1,0 +1,29 @@
+{
+  "commands": [
+    {
+      "name": "Cotal: start mesh",
+      "keywords": ["cotal", "nats", "mesh", "up"],
+      "command": "bash -lc 'cd $(git rev-parse --show-toplevel) && pnpm cotal up'"
+    },
+    {
+      "name": "Cotal: launch orchestrator",
+      "keywords": ["cotal", "orchestrator", "claude"],
+      "command": "bash -lc '$(git rev-parse --show-toplevel)/examples/02-self-improving-console/run-agent.sh orchestrator'"
+    },
+    {
+      "name": "Cotal: launch research",
+      "keywords": ["cotal", "research", "claude"],
+      "command": "bash -lc '$(git rev-parse --show-toplevel)/examples/02-self-improving-console/run-agent.sh research'"
+    },
+    {
+      "name": "Cotal: launch backend",
+      "keywords": ["cotal", "backend", "claude"],
+      "command": "bash -lc '$(git rev-parse --show-toplevel)/examples/02-self-improving-console/run-agent.sh backend'"
+    },
+    {
+      "name": "Cotal: launch tui-designer",
+      "keywords": ["cotal", "tui", "designer", "claude"],
+      "command": "bash -lc '$(git rev-parse --show-toplevel)/examples/02-self-improving-console/run-agent.sh tui-designer'"
+    }
+  ]
+}

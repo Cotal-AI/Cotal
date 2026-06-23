@@ -1,6 +1,8 @@
 import { registry, type Command } from "@cotal-ai/core";
 import { up } from "./commands/up.js";
 import { down } from "./commands/down.js";
+import { use, useComplete } from "./commands/use.js";
+import { meshes } from "./commands/meshes.js";
 import { setup, go } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
@@ -47,6 +49,21 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "stop a background mesh started with `up --detach`",
     run: down,
+  },
+  {
+    kind: "command",
+    name: "meshes",
+    group: "Mesh",
+    summary: "list the running meshes (a `*` marks the `current` default a bare spawn joins)",
+    run: meshes,
+  },
+  {
+    kind: "command",
+    name: "use",
+    group: "Mesh",
+    summary: "set the default mesh for a bare `cotal spawn` when several are running — use <space>",
+    run: use,
+    complete: useComplete,
   },
   {
     kind: "command",

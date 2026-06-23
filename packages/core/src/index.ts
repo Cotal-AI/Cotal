@@ -4,6 +4,8 @@ export * from "./resolve.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./provision.js";
+export * from "./mesh-registry.js";
+export * from "./mesh-target.js";
 export * from "./streams.js";
 export * from "./channels.js";
 export * from "./members.js";

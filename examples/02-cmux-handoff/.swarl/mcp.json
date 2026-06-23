@@ -1,5 +1,0 @@
-{
-  "mcpServers": {
-    "swarl": { "command": "/Users/david/Projects/SWARL/node_modules/.bin/tsx", "args": ["/Users/david/Projects/SWARL/extensions/connector/src/mcp.ts"] }
-  }
-}

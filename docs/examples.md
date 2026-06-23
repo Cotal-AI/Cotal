@@ -10,4 +10,4 @@ one-way: `examples → implementations → packages`, never back.
 | Example | What it shows |
 |---|---|
 | [01: Lateral Coordination](../examples/01-lateral-coordination/README.md) | Role-specialized endpoints join one shared space and coordinate laterally: presence, all three addressing modes, live state, observability, graceful leave, late join. |
-| [02: Orchestrated Handoff (cmux)](../examples/02-cmux-handoff/README.md) | Four real Claude Code agents in cmux tabs ship one change across three repos: one human prompt, then agent-to-agent fan-out and an automatic API→web handoff over the mesh. |
+| [02: Self-improving Console](../examples/02-self-improving-console/README.md) | A swarm of four real Claude Code agents in cmux tabs rebuilds Cotal's own console as a lazygit-style Ink/React TUI, coordinating as lateral peers over the mesh. |

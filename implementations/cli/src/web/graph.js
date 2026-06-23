@@ -179,9 +179,11 @@
       a.status = p.status; a.activity = p.activity || ""; a.role = p.card.role; a.harness = p.card.meta?.connector; a.ts = p.ts;
       seen.add(a.id);
     }
-    // Drop an agent only when it's offline AND absent from this roster snapshot — membership edges go with
-    // it. (Membership is broker-truth, applied separately; presence no longer carries channels.)
-    for (const [id, a] of agents) if (!seen.has(id) && a.status === "offline") { agents.delete(id); for (const k of [...edges.keys()]) if (edges.get(k).a === a) edges.delete(k); for (const k of [...dms.keys()]) { const d = dms.get(k); if (d.a === a || d.b === a) dms.delete(k); } reheat(); if (sel === a) closeDetail(); }
+    // Drop an agent as soon as it goes offline OR leaves the roster (main's ghost fix, c9e9000) — EXCEPT
+    // keep it if it's still a feed member: a durable member whose presence is offline must persist to
+    // render as "member, currently offline" (the feed's durable arm survives offline). Membership is
+    // broker-truth, applied separately; presence no longer carries channels.
+    for (const [id, a] of agents) if ((!seen.has(id) || a.status === "offline") && !(a.wideReader || (a.memberOf && a.memberOf.size))) { agents.delete(id); for (const k of [...edges.keys()]) if (edges.get(k).a === a) edges.delete(k); for (const k of [...dms.keys()]) { const d = dms.get(k); if (d.a === a || d.b === a) dms.delete(k); } reheat(); if (sel === a) closeDetail(); }
   }
 
   // ── membership (authoritative spokes) ──

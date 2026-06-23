@@ -339,7 +339,7 @@ dependency on them). Selectable backends:
   the tab's workspace and surface ids, so `stop` types `/exit` for a clean leave then closes the
   tab (graceful) or closes it outright (hard). The manager must run inside a live cmux surface
   (cmux only authorizes its control socket from a real pane). Drives
-  [`examples/02`](../examples/02-cmux-handoff/README.md). The package also self-registers a
+  [`examples/02`](../examples/02-self-improving-console/README.md). The package also self-registers a
   **`TerminalLayout`** provider (a host-side extension contract, not wire protocol:
   open/close/list editor tabs). The caller hands it a backend-agnostic `Tab` (panes as argv plus
   an optional split), and the provider builds the cmux-native layout, so `cotal setup` resolves

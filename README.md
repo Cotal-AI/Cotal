@@ -1,21 +1,23 @@
 <div align="center">
 
-<!-- TODO(asset): light-mode banner variant via <picture> once one exists -->
-![Cotal: connect them all](assets/header.gif)
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/cotal-wordmark-dark.png">
+<img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
+</picture>
 
 **The open standard for agent coordination.**
 
-One protocol, any topology: peer-to-peer, supervised, hierarchical, hybrid.
+<img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
-<!-- TODO(asset): CI badge: point at the public typecheck+smoke workflow once it's live -->
-[![CI](https://img.shields.io/badge/CI-pending-lightgrey)](https://github.com/Cotal-AI/Cotal/actions)
+<sub>One protocol, any topology: peer-to-peer, supervised, hierarchical, or any mix.</sub>
+
+[![CI](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml/badge.svg)](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cotal-ai/core?label=%40cotal-ai%2Fcore)](https://www.npmjs.com/package/@cotal-ai/core)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/fhPqe3b4qu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
 
 </div>
-
-<!-- TODO(asset): hero animation slot. Current favorite: an orchestration tree (controller, sub-agents reporting up) morphing into a shared space where the same agents talk laterally. ~5-15s seamless loop, one focal point. assets/hero.gif -->
 
 ## What is Cotal
 
@@ -75,12 +77,11 @@ JetStream has run in production for years. We didn't invent the hard parts.
 
 ## Quick start
 
-```bash
-# install globally, then run setup
-npm install -g cotal-ai cotal
+One command brings up a local mesh, the web dashboard, your agent's connector, and a quick
+guided demo:
 
-# ...or set up in one command, no install
-npx cotal-ai setup --full
+```bash
+npx cotal-ai setup --full   # needs Node 20+; NATS ships bundled
 ```
 
 One command, guided setup. The **first run** checks prerequisites, starts a local mesh
@@ -94,41 +95,56 @@ The mesh is **JWT-authed** by default (sender authenticity + per-agent ACLs, wit
 server-side delivery daemon for the durable backstop); pass `cotal setup --open` for a
 frictionless open, loopback-only, live-only mesh (no auth, no daemon).
 
-Or start it manually.
+> [!NOTE]
+> **Want each teammate in its own tab?** Run `setup` inside a **[cmux](https://cmux.com)** pane and Cotal opens a
+> tab per agent. Otherwise they run in the background on the same mesh, watched with `cotal console` or the dashboard.
 
-Two peers in one shared space, in three steps.
+When you're all set up, here are the commands you'll use most:
 
 ```bash
-# 1. start a local mesh (NATS + JetStream, open dev mode)
-npx cotal up --open
-
-# 2. join as alice (second terminal)
-npx cotal join --space demo --name alice --role coder
-
-# 3. join as bob (third terminal) and watch presence light up in both
-npx cotal join --space demo --name bob --role reviewer
+cotal spawn me     # drive a session: talk to your agent; it messages and spawns peers
+cotal spawn david  # bring in an expert teammate (also: sven, the guide)
+cotal console      # watch the mesh live: presence, channels, messages
+cotal web          # the same, in the browser
+cotal go           # resume later
+cotal down         # stop everything
 ```
 
-Bob's terminal greets him with who's already there:
+> [!TIP]
+> **Using a coding agent?** `cotal setup` brings up a **manager**, an endpoint that lets your agent
+> pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
+> on the mesh via `cotal_spawn`. See [docs/claude-code-integration.md](docs/claude-code-integration.md).
 
-<!-- TODO(asset): VHS terminal GIF. assets/quickstart.tape committed, rendered to assets/quickstart.gif; replace this block with the rendered recording so it can't drift from the real CLI. -->
+## Examples
 
-```
-Joined demo as bob/reviewer on #general.
-Present: alice ○ idle
-```
+<table>
+<tr>
+<td width="50%"><img src="assets/quickstart.gif" alt="The cotal console: a live roster of agents and their all-activity feed in a terminal TUI"></td>
+<td width="50%" valign="middle"><b><a href="examples/01-lateral-coordination">Lateral coordination</a></b><br><br>Role-specialized peers in one space: presence, all three addressing modes, live state, graceful leave, and late join, each in its own terminal.<br><br><sub>the raw protocol · plain terminals</sub></td>
+</tr>
+<tr>
+<td width="50%" valign="middle"><b><a href="examples/02-self-improving-console">A swarm rebuilds Cotal's console</a></b><br><br>Four real Claude Code agents join one mesh and coordinate as lateral peers; an orchestrator spawns the workers in cmux tabs and they ship a polished Ink/React TUI for the live console.<br><br><sub>four coding agents · <a href="https://cmux.com">cmux</a> tabs</sub></td>
+<td width="50%"><img src="assets/example-02.gif" alt="Four Claude Code agents (orchestrator, backend, tui-designer, manager) coordinating on the Cotal mesh, with the live cotal console on the left and the agents in cmux tabs on the right"></td>
+</tr>
+</table>
 
-Alice's terminal prints `→ bob/reviewer joined ○ idle` as he arrives. Type a line in
-either terminal and it lands in the other's `#general`. That is the whole primitive.
+Full index: [docs/examples.md](docs/examples.md).
 
-`npx cotal web --space demo` opens the space in a browser, with the roster, channels,
-and live feed:
+## Supported agents
 
-<p align="center"><img src="assets/dashboard.png" width="860" alt="The Cotal web dashboard: live roster on the left, the all-activity feed in the middle, attention queue on the right"></p>
-<p align="center"><sub>Live roster, the all-activity feed, and the attention queue, in the browser.</sub></p>
+<table>
+<tr>
+<td align="center" width="33%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
+<td align="center" width="33%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
+<td align="center" width="33%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+</tr>
+</table>
 
-For the full walkthrough (manager-spawned peers, a real Claude Code agent joining the
-mesh), see [`examples/01-lateral-coordination`](examples/01-lateral-coordination).
+They attach differently but expose the same `cotal_*` tools, and all three push, so a
+peer message wakes an idle agent the instant it arrives. Any agent that implements the
+contract joins the same way; a connector is just a thin client over the wire. Want one
+for an agent that isn't here yet?
+[Vote for the next connector](https://github.com/Cotal-AI/Cotal/discussions/80).
 
 ## What Cotal adds on top of NATS
 
@@ -180,28 +196,14 @@ concrete mechanism you can check against the code.
 | [`@cotal-ai/core`](packages/core) | Endpoint, subjects, message types, the NATS client layer, and the `Connector`/`Command` contracts. |
 | [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `up`, `join`, `watch`, `console`, `web`, `spawn`, `mint`, `channels`, `history`. |
 | [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux), with `start`/`stop`/`ps`/`attach`. |
-| [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the adapters are thin clients over. |
-| [`@cotal-ai/connector-claude-code`](extensions/connector-claude-code) | [Claude Code](https://claude.com/product/claude-code) adapter: installed plugin + lifecycle hooks. |
-| [`@cotal-ai/connector-opencode`](extensions/connector-opencode) | [OpenCode](https://opencode.ai) adapter: native in-process plugin injected via config. |
-| [`@cotal-ai/connector-hermes`](extensions/connector-hermes) | Hermes (Nous Research) adapter: connects the Hermes agent to the mesh. |
-| [`@cotal-ai/cmux`](extensions/cmux) | cmux integration: a `cmux` runtime and terminal-layout provider for spawning agents into cmux tabs. |
+| [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-The connectors attach differently but expose the same `cotal_*` tools. Claude Code and
-OpenCode both push: a peer message wakes an idle agent the instant it arrives.
-
-## Example: one change across three repos
-
-In [`examples/02-cmux-handoff`](examples/02-cmux-handoff), real Claude Code agents ship
-a single feature spanning three repositories. An orchestrator spawns the workers and
-fans the tasks out by direct message. When the web agent needs the exact `/tasks`
-contract, it asks the API agent directly over the mesh; the orchestrator isn't in that
-exchange. Supervision and lateral handoff in the same space: the topology lives in
-the example's config, never in Cotal itself.
-
-More scenarios in [`examples/`](examples/).
+Plus the three agent connectors above and the [`@cotal-ai/cmux`](extensions/cmux)
+integration (agents in cmux tabs); the full package list is in [AGENTS.md](AGENTS.md).
 
 ## Documentation
 
+- [docs/getting-started.md](docs/getting-started.md): install, run, and resume a local mesh.
 - [docs/OVERVIEW.md](docs/OVERVIEW.md): what Cotal does and the core primitives.
 - [docs/architecture.md](docs/architecture.md): how it's built (subjects, streams,
   auth, and the wire contract).
@@ -285,8 +287,8 @@ or open an issue.
 
 <table>
 <tr>
-<td align="center"><img src="https://github.com/davidfarah2003.png" width="120" alt="David Farah"><br><strong>David Farah</strong><br><!-- TODO: one-line role --><br><a href="https://x.com/DavidFarahlb"><img src="https://img.shields.io/badge/-@DavidFarahlb-000?logo=x&logoColor=white" alt="@DavidFarahlb on X"></a> <a href="https://www.linkedin.com/in/david-farah-lb/"><img src="https://img.shields.io/badge/-LinkedIn-0A66C2?logo=linkedin&logoColor=white" alt="David Farah on LinkedIn"></a></td>
-<td align="center"><img src="https://github.com/Lanzelot1.png" width="120" alt="Sven Jonscher"><br><strong>Sven Jonscher</strong><br><!-- TODO: one-line role --><br><a href="https://x.com/svensonj00"><img src="https://img.shields.io/badge/-@svensonj00-000?logo=x&logoColor=white" alt="@svensonj00 on X"></a> <a href="https://www.linkedin.com/in/sven-jonscher-418351247/"><img src="https://img.shields.io/badge/-LinkedIn-0A66C2?logo=linkedin&logoColor=white" alt="Sven Jonscher on LinkedIn"></a></td>
+<td align="center"><img src="https://github.com/davidfarah2003.png" width="120" alt="David Farah"><br><strong>David Farah</strong><br><a href="https://x.com/DavidFarahlb"><img src="https://img.shields.io/badge/-@DavidFarahlb-000?logo=x&logoColor=white" alt="@DavidFarahlb on X"></a> <a href="https://www.linkedin.com/in/david-farah-lb/"><img src="https://img.shields.io/badge/-LinkedIn-0A66C2?logo=linkedin&logoColor=white" alt="David Farah on LinkedIn"></a></td>
+<td align="center"><img src="https://github.com/Lanzelot1.png" width="120" alt="Sven Jonscher"><br><strong>Sven Jonscher</strong><br><a href="https://x.com/svensonj00"><img src="https://img.shields.io/badge/-@svensonj00-000?logo=x&logoColor=white" alt="@svensonj00 on X"></a> <a href="https://www.linkedin.com/in/sven-jonscher-418351247/"><img src="https://img.shields.io/badge/-LinkedIn-0A66C2?logo=linkedin&logoColor=white" alt="Sven Jonscher on LinkedIn"></a></td>
 </tr>
 </table>
 

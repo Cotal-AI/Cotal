@@ -108,6 +108,9 @@ endpoint methods; those go into `core`, generalized.
 - **Track plan status.** `.internal/plans/STATUS.md` is the single source of truth for whether each
   plan is executed — check it before acting on a plan. When you start, advance, finish, block, or
   supersede a plan, update its row there in the same change; add a `planned` row for any new plan.
+  **Commit the plan file and its STATUS row together as their own `.internal` commit** (a
+  `plans: …` message) as you make the change — never leave plan/STATUS edits uncommitted in the
+  shared submodule working tree, where another agent's commit could sweep in your half-done work.
 
 ## Git and public messages
 
