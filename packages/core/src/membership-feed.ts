@@ -18,6 +18,14 @@
  * dashboard, never gates here (a momentarily-lapsed heartbeat must not drop a live core-sub). The feed
  * is **display-only** — never an input to delivery/ACL/authorization. Any failure here logs and degrades
  * the graph only; it shares nothing with Plane-3 delivery.
+ *
+ * Placement note (fowler): every other core connect-site is one-shot (connect → op → drain). This is the
+ * FIRST persistently-connected, timer-driven service in core — a new category, deliberately split:
+ * **core owns the mechanism + connection lifecycle** (the engine, the two conns, the poll loop), and the
+ * **implementation (delivery daemon) owns the DECISION to run it** — creds source, lifetime, N=1, fail-
+ * soft. Don't read "it touches NATS → put it in core" and migrate, say, the Plane-3 writer up here; that
+ * would undo the daemon's least-privilege extraction. The barrel exports {@link startMembershipFeed}, but
+ * the **scoped creds are the real gate**: with no system-account observer cred it simply cannot connect.
  */
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -30,8 +38,6 @@ import {
   accountConnectSubject,
   accountDisconnectSubject,
   channelFromChatSubscription,
-  spaceWildcard,
-  chatWildcard,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
 import { idFromCreds } from "./identity.js";
@@ -88,13 +94,14 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   });
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
+  const rwSelfId = idFromCreds(opts.rwCreds); // conn B's own nkey — the data-account self-presence check below
   const connB = await connect({
     servers: opts.servers,
     authenticator: credsAuthenticator(enc(opts.rwCreds)),
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
-    inboxPrefix: `_INBOX_${idFromCreds(opts.rwCreds)}`,
+    inboxPrefix: `_INBOX_${rwSelfId}`,
     maxReconnectAttempts: -1,
   });
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
@@ -137,30 +144,47 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   }
 
   /** Fan-out + per-server pagination + union-dedupe → nkey → live channel-subscription patterns.
-   *  God-view taps (a connection holding the whole-chat/space wildcard) are excluded entirely. */
-  async function liveFromConnz(): Promise<Map<string, Set<string>>> {
+   *  God-view taps (a connection holding the whole-chat/space wildcard) are excluded entirely. Returns
+   *  `complete:false` for a sweep that didn't fully drain (zero replies = broker unreachable/denied, or a
+   *  MAX_PAGES truncation) so the caller can skip the write — a PARTIAL CONNZ read must never prune real
+   *  members or stamp a fresh heartbeat (truthium). */
+  async function liveFromConnz(): Promise<{ live: Map<string, Set<string>>; complete: boolean }> {
     const live = new Map<string, Set<string>>();
     const serverMore = new Set<string>(); // server ids still reporting a full page this round
+    let gotReply = false, exhausted = false, seenSelf = false;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
       if (replies.length === 0) {
-        if (page === 0) log(`CONNZ returned no replies (offset 0) — broker unreachable or cred denied; membership not refreshed this tick`);
+        if (page === 0) log(`CONNZ returned no replies (offset 0) — broker unreachable or cred denied; keeping last membership this tick`);
         break;
       }
+      gotReply = true;
       serverMore.clear();
       for (const r of replies) {
         const sid = r.server?.id ?? r.data?.server_id ?? "?";
         const conns = r.data?.connections ?? [];
-        for (const c of conns) addConn(space, live, c);
+        for (const c of conns) {
+          if (c.authorized_user === rwSelfId) seenSelf = true; // our own conn B must be in a complete read
+          addConn(space, live, c);
+        }
         const total = r.data?.total ?? conns.length;
-        if (offset + conns.length < total) serverMore.add(sid);
+        // A server has more ONLY if it returned a FULL page that hasn't reached its total. A short page
+        // (len < requested limit) means exhausted regardless of `total` — this is filter-proof: if a
+        // server-side filter_subject is ever added, `total` stays the pre-filter account total and
+        // `offset+len >= total` would never trip, but the short page still terminates the loop (truthium).
+        if (conns.length >= pageLimit && offset + conns.length < total) serverMore.add(sid);
       }
-      if (serverMore.size === 0) break;
+      if (serverMore.size === 0) { exhausted = true; break; }
       if (page === MAX_PAGES - 1)
-        log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) — UNDER-REPORTING membership`);
+        log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) — UNDER-REPORTING; skipping this sweep`);
     }
-    return live;
+    // SELF-PRESENCE completeness check (socrates): the data account ALWAYS holds at least conn B, so a
+    // sweep that doesn't even include our own rw connection missed connections (a silent server in a
+    // cluster, a mid-reconnect blip) — treat it as incomplete so reconcile() neither prunes nor restamps.
+    if (gotReply && exhausted && !seenSelf)
+      log(`CONNZ sweep omitted our own rw connection — treating as incomplete (keeping last membership)`);
+    return { live, complete: gotReply && exhausted && seenSelf };
   }
 
   /** The durable arm: open, activated (non-tombstoned) members from the privileged registry. Mirrors
@@ -175,7 +199,10 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   }
 
   async function reconcile(): Promise<void> {
-    const live = await liveFromConnz();
+    const { live, complete } = await liveFromConnz();
+    // A partial CONNZ sweep (unreachable / truncated) would prune real members and lie about freshness —
+    // keep the last good state untouched and don't stamp the heartbeat. Self-heals on the next full poll.
+    if (!complete) return;
     const durable = await durableFromMembers();
     const observedAt = Date.now();
 
@@ -265,21 +292,24 @@ interface ConnzReply {
 }
 
 /** Fold one CONNZ connection into the live map: keyed by `authorized_user` (the nkey = `card.id`),
- *  unioning its chat-subscription patterns. A connection holding a whole-chat/space god-view wildcard is
- *  an infra tap (the web dashboard, a core tap) — excluded entirely so it never renders as a member of
- *  every channel. The daemon's own conn B + the delivery cred carry no chat sub, so they contribute
- *  nothing on their own. */
+ *  unioning its chat-subscription patterns (wildcards kept, e.g. `team.>` or a whole-chat `>`).
+ *
+ *  Infra taps SELF-EXCLUDE — no shape heuristic needed (review-general, socrates): the web dashboard taps
+ *  `cotal.<space>.>` (spaceWildcard) and `cotal console` taps `cotal.<space>.chat.>` (chatWildcard), both
+ *  of which {@link channelFromChatSubscription} maps to `null` (the former isn't `.chat.`-prefixed; the
+ *  latter has no channel token after `chat.`), so they contribute zero channels here; conn B / the
+ *  delivery cred / the manager hold no chat sub at all. The ONLY subscription that yields the whole-chat
+ *  `>` pattern is an AGENT's own `chat.*.>` (allowSubscribe `[">"]` — e.g. the default persona), which is
+ *  a legitimate broad reader the feed MUST surface (the source-of-truth goal), NOT drop. So no shape-based
+ *  exclusion: a `>` pattern is recorded as-is and the dashboard renders it as a "reads-all" node (a badge,
+ *  not a spoke to every hub) rather than expanding it. */
 function addConn(space: string, live: Map<string, Set<string>>, c: ConnzConnection): void {
   const subs = c.subscriptions_list ?? [];
-  const isGodTap = subs.some(
-    (s) => s === spaceWildcard(space) || s === chatWildcard(space) || channelFromChatSubscription(space, s) === ">",
-  );
-  if (isGodTap) return;
   const id = c.authorized_user;
   if (!id) return; // no authenticated identity (open mode) — best-effort handled at the dashboard, not here
   const patterns = subs
     .map((s) => channelFromChatSubscription(space, s))
-    .filter((x): x is string => x !== null && x !== ">");
+    .filter((x): x is string => x !== null);
   if (patterns.length === 0) return; // connected but subscribed to no channel — member of nothing
   const set = live.get(id) ?? live.set(id, new Set()).get(id)!;
   for (const p of patterns) set.add(p);

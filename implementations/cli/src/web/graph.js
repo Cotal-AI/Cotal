@@ -58,13 +58,21 @@
     for (let i = 0; i < p.length; i++) { if (p[i] === ">") return i < s.length; if (i >= s.length) return false; if (p[i] === "*") continue; if (p[i] !== s[i]) return false; }
     return p.length === s.length;
   }
-  /** Expand an agent's {live patterns, durable channels} → a channel→kind map. Wildcards expand against
-   *  the KNOWN channel set (registry hubs); concrete patterns stand alone. `live` wins over `durable`. */
+  /** Expand an agent's {live patterns, durable channels} → { channels: channel→kind, wide }. Bounded
+   *  wildcards (`team.>`) expand against the KNOWN channel set (registry hubs); concrete patterns stand
+   *  alone; `live` wins over `durable`. A WHOLE-BREADTH pattern (`>` or `*` — e.g. the default persona's
+   *  read-everything grant) is NOT expanded to a spoke per hub (that's a dandelion); it sets `wide`, and
+   *  the agent renders as a "reads-all" node badge instead — truthful without per-channel noise. */
   function memberChannels(live, durable, known) {
     const out = new Map();
-    for (const pat of live || []) { if (isWild(pat)) { for (const ch of known) if (patternMatches(pat, ch)) out.set(ch, "live"); } else out.set(pat, "live"); }
+    let wide = false;
+    for (const pat of live || []) {
+      if (pat === ">" || pat === "*") { wide = true; continue; }
+      if (isWild(pat)) { for (const ch of known) if (patternMatches(pat, ch)) out.set(ch, "live"); }
+      else out.set(pat, "live");
+    }
     for (const ch of durable || []) if (!out.has(ch)) out.set(ch, "durable");
-    return out;
+    return { channels: out, wide };
   }
 
   // ── nodes ──
@@ -94,7 +102,7 @@
   // When a channel first appears, retro-link any agent whose live WILDCARD covers it (so a `team.>`
   // subscriber gains a spoke to a newly-created `team.backend` with no membership-feed round-trip).
   function onNewChannel(name) {
-    for (const a of agents.values()) for (const pat of a.live || []) if (isWild(pat) && patternMatches(pat, name)) { const e = ensureEdge(a, name); e.mem = true; e.durableOnly = false; a.memberOf.set(name, "live"); }
+    for (const a of agents.values()) for (const pat of a.live || []) { if (pat === ">" || pat === "*") continue; if (isWild(pat) && patternMatches(pat, name)) { const e = ensureEdge(a, name); e.mem = true; e.durableOnly = false; a.memberOf.set(name, "live"); } }
   }
 
   // ── force simulation (cooling; re-heated only on structural change) ──
@@ -188,13 +196,14 @@
       const a = ensureAgent({ id: m.id });
       present.add(a.id);
       a.live = m.live || []; a.durable = m.durable || [];
-      const chans = memberChannels(a.live, a.durable, known);
-      a.memberOf = chans;
-      for (const [ch, kind] of chans) { ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
-      pruneMemberEdges(a, chans);
+      const mc = memberChannels(a.live, a.durable, known);
+      a.memberOf = mc.channels; a.wideReader = mc.wide;
+      for (const [ch, kind] of mc.channels) { ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
+      pruneMemberEdges(a, mc.channels);
     }
-    // An agent that dropped out of the feed entirely is no longer a member of anything.
-    for (const a of agents.values()) if (!present.has(a.id) && a.memberOf && a.memberOf.size) { a.live = []; a.durable = []; const empty = new Map(); pruneMemberEdges(a, empty); a.memberOf = empty; }
+    // An agent that dropped out of the feed entirely is no longer a member of anything (incl. a wide reader,
+    // which carries the flag but no concrete edges).
+    for (const a of agents.values()) if (!present.has(a.id) && (a.wideReader || (a.memberOf && a.memberOf.size))) { a.live = []; a.durable = []; a.wideReader = false; const empty = new Map(); pruneMemberEdges(a, empty); a.memberOf = empty; }
     if (sel) renderDetail();
   }
   // Drop this agent's membership edges that are no longer in `keep`; a still-warm one stays as a fading
@@ -272,6 +281,8 @@
       const col = STAT[a.status] || STAT.idle, focus = a === hover || a === sel, off = a.status === "offline";
       const r = a.r + Math.sin(t * 0.8 + a.phase) * 0.4;
       if (a.status === "waiting") { const pulse = 0.5 + 0.5 * Math.sin(t * 1.7); for (const o of [0, 0.5]) { ctx.beginPath(); ctx.arc(a.x, a.y, r + 5 + ((pulse + o) % 1) * 9, 0, 2 * Math.PI); ctx.strokeStyle = rgba(STAT.waiting, (1 - ((pulse + o) % 1)) * 0.45); ctx.lineWidth = 1.6; ctx.stroke(); } }
+      // wide reader (subscribes `>`/`*`): a faint dashed halo — "reads all channels" without a spoke per hub
+      if (a.wideReader) { ctx.save(); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.arc(a.x, a.y, r + 4.5, 0, 2 * Math.PI); ctx.strokeStyle = rgba(MEM_LIVE, off ? 0.3 : 0.6); ctx.lineWidth = 1.2; ctx.stroke(); ctx.restore(); }
       ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = focus ? 20 : off ? 3 : 13;
       const g = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, r); g.addColorStop(0, rgba(col, off ? 0.5 : 1)); g.addColorStop(0.55, rgba(col, off ? 0.2 : 0.55)); g.addColorStop(1, "#141b26");
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, 2 * Math.PI); ctx.fill(); ctx.restore();
@@ -374,10 +385,12 @@
         <div class="d-section"><div class="d-label">members</div>${memberList}</div>
         <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${recentRows((m) => m.chan === sel.name)}</div></div>`;
     } else {
-      // an agent's FULL subscription set from the feed: live patterns (wildcards shown literally) + durable.
-      const liveSet = (sel.live || []).map((c) => `<span class="ctag">#${esc(c)}</span>`).join("");
+      // an agent's FULL subscription set from the feed: live patterns + durable. A whole-breadth `>`/`*`
+      // grant shows as a single "all channels" chip, not literal `#>`; bounded subtrees show literally.
+      const wideChip = sel.wideReader ? `<span class="ctag">all channels</span>` : "";
+      const liveSet = (sel.live || []).filter((c) => c !== ">" && c !== "*").map((c) => `<span class="ctag">#${esc(c)}</span>`).join("");
       const durOnly = (sel.durable || []).filter((c) => !(sel.live || []).includes(c)).map((c) => `<span class="ctag off">#${esc(c)}</span>`).join("");
-      const subs = liveSet || durOnly ? `<div class="d-tags">${liveSet}${durOnly}</div>` : `<div class="d-block muted">no channel subscriptions</div>`;
+      const subs = wideChip || liveSet || durOnly ? `<div class="d-tags">${wideChip}${liveSet}${durOnly}</div>` : `<div class="d-block muted">no channel subscriptions</div>`;
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
@@ -417,6 +430,15 @@
     applyMembership(membership); // authoritative spokes BEFORE traffic seeding (no skeleton flicker)
     for (const e of activity) { const m = e.msg; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
+    // Seed the `recent` buffer from the activity backfill so the channel detail's "recently active" tags +
+    // the "recent" section aren't empty until the first live SSE message arrives (norman).
+    for (const e of activity.slice(-80)) {
+      const m = e.msg; if (!m) continue;
+      const to = e.mode === "unicast" ? (typeof m.to === "string" ? (agents.get(m.to)?.name || shortId(m.to)) : m.to?.name) : e.mode === "anycast" ? "@" + (m.toService || "") : null;
+      recent.push({ mode: e.mode, from: m.from?.name, fromId: m.from?.id, to, chan: m.channel, text: partsText(m), ts: m.ts || now() });
+    }
+    recent.sort((a, b) => a.ts - b.ts);
+    if (recent.length > 80) recent.splice(0, recent.length - 80);
     alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
     const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
   }

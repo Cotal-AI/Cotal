@@ -94,8 +94,18 @@ try {
   const adminConn = () => connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(adminCreds)), inboxPrefix: `_INBOX_${adminId.id}`, name: "cotal:web" });
   const webNc = await adminConn();
   conns.push(webNc);
-  webNc.subscribe(spaceWildcard(space)); // the whole-space god tap
+  webNc.subscribe(spaceWildcard(space)); // the whole-space god tap — self-excludes (yields no chat channel)
   await webNc.flush();
+
+  // --- dave: a legitimate BROAD-READ agent (allowSubscribe [">"]) — e.g. the seeded default persona. Its
+  // chat.*.> sub MUST surface as a `>` reader (the source-of-truth goal); it must NOT be dropped as if it
+  // were a god-tap (review-general/socrates: shape-based exclusion wrongly erased exactly these). ---
+  const dave = newIdentity();
+  const daveCreds = await provisionAgent(noop, auth, dave, { subscribe: ["general"], allowSubscribe: [">"] });
+  const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:dave" });
+  conns.push(dnc);
+  dnc.subscribe(chatSubject(space, "*", ">")); // chat.*.> — reads everything
+  await dnc.flush();
 
   // --- run the feed and force a reconcile ---
   feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds, intervalMs: 60_000 });
@@ -124,8 +134,10 @@ try {
   check("live patterns unioned across an agent's connections (wildcards kept)", !!aliceRec && eq(aliceRec.live, ["general", "review.>", "logs"]), aliceRec?.live);
   check("alice's durable arm merged in (live ∪ durable)", !!aliceRec && eq(aliceRec.durable, ["general"]), aliceRec?.durable);
   check("durable-only member (no live conn) appears", !!bobRec && eq(bobRec.durable, ["deploys"]) && eq(bobRec.live, []), bobRec);
-  check("god-view tap (whole-space sub) is NOT a member of everything", ![...out.values()].some((r) => r.live.includes(">")), [...out.values()].map((r) => r.live));
-  check("only the two real agents have records (no infra conns)", out.size === 2, [...out.keys()]);
+  const daveRec = out.get(membershipKey(dave.id));
+  check("the web god-tap (whole-space sub) self-excludes (no membership record)", !out.has(membershipKey(adminId.id)), [...out.keys()]);
+  check("a broad-read agent (allowSubscribe '>') SURFACES as a `>` reader, not dropped", !!daveRec && daveRec.live.includes(">"), daveRec);
+  check("only the three real agents have records (infra conns contribute nothing)", out.size === 3, [...out.keys()]);
   check("feed freshness heartbeat is stamped", typeof asOf === "number");
 
   // --- prune: alice's live connections drop; durable arm persists (the key reframe) ---

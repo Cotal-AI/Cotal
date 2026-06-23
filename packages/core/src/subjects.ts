@@ -362,7 +362,12 @@ export function accountDisconnectSubject(accountId: string): string {
  *  membership daemon uses to turn a connection's subscription list into its channel-subscription set —
  *  matched against the chat grammar (not a denylist of known plumbing, which rots when a new plumbing
  *  subject is added). Drops `_INBOX`, JetStream API, other-space, and non-chat subjects. The whole-chat
- *  god-view (`chat.*.>` → rest `">"`) IS returned here; the caller excludes such taps separately. */
+ *  god-view (`chat.*.>` → rest `">"`) IS returned here; the caller excludes such taps separately.
+ *
+ *  COUPLING (mitnick): both this extraction AND the membership daemon's god-tap detection ride
+ *  {@link parseSubject}'s sender-at-[3] chat layout. The deferred read-containment grammar reorder
+ *  (sender out of the subject) would move where the channel portion begins and silently break both —
+ *  revisit this + the daemon's exclusion (and their tests) if that grammar ships. */
 export function channelFromChatSubscription(space: string, subject: string): string | null {
   if (!subject.startsWith(`${spacePrefix(space)}.chat.`)) return null;
   const p = parseSubject(subject);
