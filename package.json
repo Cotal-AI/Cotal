@@ -47,6 +47,7 @@
     "smoke:cross-path-dedup": "tsx extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/smoke/feedback.smoke.ts",
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
+    "smoke:codex": "tsx extensions/connector-codex/smoke/host-turn.smoke.ts",
     "smoke:attach": "tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:env-isolate": "tsx implementations/manager/smoke/env-isolate.smoke.ts",
     "smoke:install": "tsx implementations/cli/smoke/install.smoke.ts",

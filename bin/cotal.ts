@@ -11,6 +11,7 @@ import "@cotal-ai/manager"; // self-registers supervise / cmux / start / stop / 
 import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
 import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
 import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)
+import "@cotal-ai/connector-codex"; // registers the `codex-app-server` connector (headless host-mode peer driving codex app-server)
 import "@cotal-ai/cmux"; // opt into the cmux integration — registers the `cmux` runtime + TerminalLayout providers
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { registry } from "@cotal-ai/core";

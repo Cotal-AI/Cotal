@@ -71,6 +71,9 @@ with no silent fallback.
   (native in-process plugin injected via `OPENCODE_CONFIG_CONTENT`).
 - **`@cotal-ai/connector-hermes`** (`extensions/connector-hermes`): the Hermes (Nous Research)
   adapter; includes a Python sidecar.
+- **`@cotal-ai/connector-codex`** (`extensions/connector-codex`): the OpenAI Codex adapter —
+  a headless host-mode peer that drives a `codex app-server` thread over JSON-RPC (wake /
+  steer / interrupt); resolved by agent type `codex-app-server`.
 - **`@cotal-ai/cmux`** (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
   plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 - **`@cotal-ai/cli`** (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,

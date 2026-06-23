@@ -153,10 +153,12 @@ examples ──→ one-or-more implementations ──→ core ←(peer)── ex
 ```
 
 The migration is done: `demos/` use-cases are now `examples/`. The connector is split into
-`@cotal-ai/connector-core` (shared mesh runtime) plus two thin adapters,
-`@cotal-ai/connector-claude-code` (`claudeConnector`) and `@cotal-ai/connector-opencode`
-(`opencodeConnector`). Those are `extensions/` packages that **peer-depend** on core and export
-a `Connector`. `@cotal-ai/cli` and `@cotal-ai/manager` are `implementations/` packages.
+`@cotal-ai/connector-core` (shared mesh runtime) plus thin adapters —
+`@cotal-ai/connector-claude-code` (`claudeConnector`), `@cotal-ai/connector-opencode`
+(`opencodeConnector`), `@cotal-ai/connector-hermes`, and `@cotal-ai/connector-codex`
+(`codexAppServerConnector`, a headless host-mode peer driving `codex app-server` — see
+[codex-integration.md](codex-integration.md)). Those are `extensions/` packages that
+**peer-depend** on core and export a `Connector`. `@cotal-ai/cli` and `@cotal-ai/manager` are `implementations/` packages.
 Assembly lives at the **composition root**: an example (`examples/01/src/manager.ts`) imports
 the manager plus the connectors it wants and hands them to the manager (`new Manager({
 connectors: […] })`), which resolves one by agent type when spawning (unknown throws).
