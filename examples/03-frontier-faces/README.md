@@ -16,6 +16,7 @@ bundled by the CLI, so there's nothing else to install.
 ./mesh-wall.sh                 # curated roster + console
 ./mesh-wall.sh sven david      # pick agents (agent-file basenames)
 ./mesh-wall.sh all             # every agent (capped at 9 panes)
+./mesh-wall.sh --fresh         # wipe the space's chat history first, then start (clean slate)
 ./mesh-wall.sh --stop          # tear it all down
 ```
 

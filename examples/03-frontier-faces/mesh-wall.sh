@@ -5,6 +5,7 @@
 #   ./mesh-wall.sh                 # curated roster + console
 #   ./mesh-wall.sh sven david      # explicit agents (agent-file basenames)
 #   ./mesh-wall.sh all             # every agent (capped at 9 panes)
+#   ./mesh-wall.sh --fresh         # wipe the space's chat history first, then start (clean slate)
 #   ./mesh-wall.sh --stop          # tear it all down (faces, console, and the mesh we started)
 #
 # Unlike face-wall.sh (standalone direct chat), every pane here is a real Cotal mesh peer:
@@ -39,6 +40,10 @@ if [ "${1:-}" = "--stop" ]; then
   fi
   exit 0
 fi
+
+# --- fresh start: wipe chat history + stale per-agent sessions, then start normally ---
+FRESH=
+if [ "${1:-}" = "--fresh" ]; then FRESH=1; shift; fi
 
 # --- preflight ----------------------------------------------------------------
 for bin in node tmux; do
@@ -86,6 +91,14 @@ else
   np="$(grep -m1 -oE '^\[[0-9]+\]' "$MESHLOG" 2>/dev/null | tr -d '[]' || true)"
   [ -n "$np" ] && echo "$np" >>"$PIDFILE"
   echo "mesh-wall: mesh up (log $MESHLOG)" >&2
+fi
+
+# --- fresh: wipe retained chat history so agents start clean (no replayed chatter) ---
+if [ -n "$FRESH" ]; then
+  echo "mesh-wall: fresh start — clearing chat history on space '$SPACE'" >&2
+  ( cd "$ROOT" && pnpm cotal history clear --force --dms --space "$SPACE" ) >&2 \
+    || echo "mesh-wall: (history clear failed — continuing)" >&2
+  rm -rf "$ROOT/.cotal/opencode"/* 2>/dev/null || true   # drop stale per-agent opencode sessions
 fi
 
 # --- build the tmux grid: one mesh-face.sh per agent --------------------------
