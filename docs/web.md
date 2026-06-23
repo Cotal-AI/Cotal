@@ -82,10 +82,12 @@ data source. Channels and agents are both nodes; the wires between them are the 
 
 - **Nodes:** channels are bright **hubs**, agents are smaller orbs coloured by status (working
   / waiting / idle / offline, the same palette as the Monitor). Waiting agents pulse.
-- **Wires + traffic:** a wire is faint at rest and **glows when a message flows** along it. A
-  channel post sends a comet from the sender into the hub, the hub blooms, then the post **fans
-  out** to every other agent on the channel (a real broadcast). A direct message is a curved
-  comet between the two peers; an anycast blooms at the sender.
+- **Wires = membership:** an agent has a spoke to **every channel it's subscribed to**, drawn
+  from its self-reported presence `channels` (so a silent subscriber still shows, on any channel
+  class). A wire is faint at rest and **glows when a message flows** along it. A channel post
+  sends a comet from the sender into the hub, the hub blooms, then the post **fans out** to every
+  other subscriber on the channel (a real broadcast). A direct message is a curved comet between
+  the two peers; an anycast blooms at the sender.
 - **Layout:** the simulation cools to a rest state and only gently **re-heats on a structural
   change** (a node or wire appears/disappears), so the constellation settles and messages drive
   *glow*, not motion. Drag to pan, scroll to zoom, click a node for its detail card; the camera
@@ -93,12 +95,15 @@ data source. Channels and agents are both nodes; the wires between them are the 
 - **Controls:** per-mode filter chips (channel / direct / anycast) and pause, mirroring the
   Monitor feed.
 
-**Wires are activity-derived, by design.** True channel membership is a privileged manager-only
-read and isn't always available to the observer (e.g. when the durable backstop is down), so the
-graph draws what it can *observe*: an agent links to a channel once it communicates there, and a
-DM wire appears once two peers have messaged. Links persist (faded) while both endpoints are
-present and are cleaned up when an agent leaves — never on a timer. Instance ids are per-session,
-so only present agents are linked; stale ids from history are dropped.
+**Membership comes from presence, not a privileged read.** Channels delivered `live` keep no
+enumerable subscriber roster, and the durable members registry is a privileged manager-only read
+the observer can't make — so each agent **self-reports the channels it reads** in its presence
+record (`Presence.channels`, SPEC §6), and the graph draws a spoke per reported channel. This
+works on every channel class and shows silent subscribers, with no special credential. A spoke
+also appears if an agent *posts* to a channel it hasn't reported (a non-subscriber broadcast), and
+a DM wire appears once two peers have messaged. Spokes persist (faded) while both endpoints are
+present, drop when an agent leaves the channel or goes offline — never on a timer. Instance ids
+are per-session, so only present agents are linked; stale ids from history are dropped.
 
 ## Design
 

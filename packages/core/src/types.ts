@@ -73,6 +73,11 @@ export interface Presence {
    *  concrete channel names. Advisory: lets a peer see "locally muted #deploys → DM to reach me". NOT
    *  access control — the broker still authorizes and delivers; this is a receive-side presentation. */
   channelModes?: Record<string, ChannelMode>;
+  /** Concrete channels this instance is currently subscribed to (its live read set — `this.channels`).
+   *  Self-reported, advisory observability: lets a peer or dashboard see "who reads #general" without a
+   *  privileged members read, and works on `live` channels that keep no enumerable roster. NOT access
+   *  control (the broker authorizes reads via the ACL); a presentation hint, scrubbed when offline. */
+  channels?: string[];
   /** Epoch ms of the last heartbeat. */
   ts: number;
 }

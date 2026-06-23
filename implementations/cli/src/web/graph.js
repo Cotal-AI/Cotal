@@ -6,9 +6,10 @@
  *
  * Stability: messages drive *glow*, not layout. The simulation cools to a rest state (alpha decay)
  * and only gently re-heats when the node/edge SET changes — so nodes don't wander on every message.
- * What's drawn is what's observable: registry channels are hubs, an agent links to a channel while
- * it's *recently communicating* there (the link fades + drops when it goes quiet), and DM wires show
- * pairs that have actually messaged. Ids are per-session, so only present agents are linked. */
+ * What's drawn is membership + traffic: registry channels are hubs, an agent links to every channel it
+ * reports subscribing to (presence self-report — works on `live` channels that keep no enumerable
+ * roster) and that spoke glows when a message flows; a post from a non-subscriber also draws a spoke.
+ * DM wires show pairs that have messaged. Ids are per-session, so only present agents are linked. */
 (() => {
   const $ = (id) => document.getElementById(id);
   const canvas = $("graph");
@@ -61,7 +62,8 @@
   }
   const edgeKey = (id, chan) => id + "|" + chan;
   const dmKey = (a, b) => [a, b].sort().join("|");
-  function chatHit(a, chan, ts) { const k = edgeKey(a.id, chan); let e = edges.get(k); if (!e) { edges.set(k, (e = { a, chan, last: 0, heat: 0 })); reheat(); } e.last = Math.max(e.last, ts); return e; }
+  function ensureEdge(a, chan) { const k = edgeKey(a.id, chan); let e = edges.get(k); if (!e) { edges.set(k, (e = { a, chan, last: 0, heat: 0, mem: false })); reheat(); } return e; }
+  function chatHit(a, chan, ts) { const e = ensureEdge(a, chan); e.last = Math.max(e.last, ts); return e; }
   function dmHit(a, b, ts) { const k = dmKey(a.id, b.id); let d = dms.get(k); if (!d) { dms.set(k, (d = { a, b, last: 0, heat: 0 })); reheat(); } d.last = Math.max(d.last, ts); return d; }
   function primaryChan(a) { let best = null, bt = 0; for (const e of edges.values()) if (e.a === a && e.last > bt) { bt = e.last; best = e.chan; } return best; }
 
@@ -137,8 +139,13 @@
       if (p.card?.kind === "endpoint") continue;
       const a = ensureAgent({ id: p.card.id, name: p.card.name, role: p.card.role });
       a.status = p.status; a.activity = p.activity || ""; a.role = p.card.role; a.harness = p.card.meta?.connector; a.ts = p.ts;
+      // Membership from the agent's self-reported channel set (presence) — the true "who's subscribed",
+      // works on live channels with no enumerable roster. A spoke per subscribed channel; activity adds glow.
+      if (Array.isArray(p.channels)) { a.subs = p.channels; for (const chan of p.channels) { ensureHub(chan); ensureEdge(a, chan).mem = true; } }
       seen.add(a.id);
     }
+    // a membership spoke drops when the agent stops reporting that channel (it left); activity-only spokes stay
+    for (const [k, e] of edges) if (e.mem && e.a.subs && !e.a.subs.includes(e.chan)) { edges.delete(k); reheat(); }
     for (const [id, a] of agents) if (!seen.has(id) && a.status === "offline") { agents.delete(id); for (const k of [...edges.keys()]) if (edges.get(k).a === a) edges.delete(k); for (const k of [...dms.keys()]) { const d = dms.get(k); if (d.a === a || d.b === a) dms.delete(k); } reheat(); if (sel === a) closeDetail(); }
   }
 
@@ -265,24 +272,24 @@
     const ms = recent.filter((m) => (sel.kind === "hub" ? m.chan === sel.name : m.from === sel.name || m.to === sel.name)).slice(-6).reverse();
     const rows = ms.length ? ms.map((m) => `<div class="d-msg" style="border-color:${MODE[m.mode] || "#2a313c"}"><div class="mhead"><span class="m" style="color:${MODE[m.mode] || "#8b949e"}">${m.mode}</span><span class="who">${esc(m.from)}</span>${m.chan ? `<span class="tgt">#${esc(m.chan)}</span>` : m.to ? `<span class="tgt">→ ${esc(m.to)}</span>` : ""}</div><div class="body">${esc(m.text).slice(0, 160) || "—"}</div></div>`).join("") : `<div class="d-msg empty">no recent traffic</div>`;
     if (sel.kind === "hub") {
-      const n = [...agents.values()].filter((a) => primaryChan(a) === sel.name).length;
+      const n = [...edges.values()].filter((e) => e.chan === sel.name).length;
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">channel</div>
         <div class="d-who">#${esc(sel.name)}</div>
         ${sel.desc ? `<div class="d-block">${esc(sel.desc)}</div>` : ""}
         <div class="d-rows">
-          <div class="d-row"><span class="k">active here</span><span class="v">${n} agent${n === 1 ? "" : "s"}</span></div>
+          <div class="d-row"><span class="k">subscribers</span><span class="v">${n} agent${n === 1 ? "" : "s"}</span></div>
           <div class="d-row"><span class="k">messages</span><span class="v">${sel.msgs || 0}</span></div>
         </div>
         <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${rows}</div></div>`;
     } else {
-      const c = primaryChan(sel);
+      const chans = [...new Set([...edges.values()].filter((e) => e.a === sel).map((e) => e.chan))];
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
         <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status)}</div>
         <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
-        ${(c || sel.harness) ? `<div class="d-rows">${c ? `<div class="d-row"><span class="k">on channel</span><span class="v">#${esc(c)}</span></div>` : ""}${sel.harness ? `<div class="d-row"><span class="k">harness</span><span class="v">${esc(sel.harness)}</span></div>` : ""}</div>` : ""}
+        ${(chans.length || sel.harness) ? `<div class="d-rows">${chans.length ? `<div class="d-row"><span class="k">channels</span><span class="v">${chans.map((c) => "#" + esc(c)).join(", ")}</span></div>` : ""}${sel.harness ? `<div class="d-row"><span class="k">harness</span><span class="v">${esc(sel.harness)}</span></div>` : ""}</div>` : ""}
         <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${rows}</div></div>`;
     }
     el.classList.add("open"); $("dx").onclick = closeDetail;

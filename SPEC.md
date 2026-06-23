@@ -240,6 +240,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `activity` | string | MAY | freeform current activity |
 | `attention` | `AttentionMode` | MAY | global attention mode: `open` \| `dnd` \| `focus`. Advisory observability; `open`/absent ⇒ receives everything. Reset: `open` published on `SessionStart`, removed on the offline sweep |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory — **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
+| `channels` | string[] | MAY | concrete channels this instance is currently subscribed to (its live read set). Self-reported discovery — lets a peer/observer see "who reads #x" without a privileged members read, and covers `live` channels that keep no enumerable roster (§7). Advisory — **not** access control; scrubbed when `offline` |
 | `ts` | number | MUST | epoch ms of last heartbeat |
 
 `AgentCard`:

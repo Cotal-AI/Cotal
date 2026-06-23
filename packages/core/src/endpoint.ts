@@ -940,6 +940,7 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     const backfilled = await this.backfillArmed(armed);
+    await this.publishPresence(); // refresh the self-reported channel set (no-op off presence)
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 
@@ -972,6 +973,7 @@ export class CotalEndpoint extends EventEmitter {
     const i = this.channels.indexOf(channel);
     if (i >= 0) this.channels.splice(i, 1);
     this.joinSeq.delete(channel);
+    await this.publishPresence(); // refresh the self-reported channel set (no-op off presence)
     return { left: true };
   }
 
@@ -2307,13 +2309,14 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private async publishPresence(): Promise<void> {
-    if (!this.kv) return;
+    if (!this.doRegister || !this.kv) return; // observers watch but never publish their own record
     const p: Presence = {
       card: this.card,
       status: this.status,
       activity: this.activity,
       attention: this.attentionMode,
       channelModes: this.channelModes,
+      channels: this.channels.length ? [...this.channels].sort() : undefined,
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields. Scrub at
@@ -2403,7 +2406,8 @@ export class CotalEndpoint extends EventEmitter {
       prev.status === p.status &&
       prev.activity === p.activity &&
       prev.attention === p.attention &&
-      sameChannelModes(prev.channelModes, p.channelModes)
+      sameChannelModes(prev.channelModes, p.channelModes) &&
+      sameChannels(prev.channels, p.channels)
     ) {
       this.roster.set(id, p);
       return;
@@ -2424,7 +2428,7 @@ export class CotalEndpoint extends EventEmitter {
    *  not show a stale `[focus]` or "locally muted #x" hint — SPEC: attention removed on offline sweep,
    *  channel modes reset on restart. card/activity/ts are kept. */
   private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", attention: undefined, channelModes: undefined };
+    return { ...p, status: "offline", attention: undefined, channelModes: undefined, channels: undefined };
   }
 
   /** Mark a known peer offline (on KV delete/purge), keeping it in the roster. */
@@ -2479,6 +2483,13 @@ function sameChannelModes(
   const bk = b ? Object.keys(b) : [];
   if (ak.length !== bk.length) return false;
   return ak.every((k) => a![k] === b?.[k]);
+}
+
+/** Equal two subscribed-channel lists (presence dedup): a join/leave must re-emit, not be swallowed as
+ *  a quiet heartbeat. Both are publisher-sorted, so compare element-wise; absent and empty compare equal. */
+function sameChannels(a?: string[], b?: string[]): boolean {
+  const al = a ?? [], bl = b ?? [];
+  return al.length === bl.length && al.every((c, i) => c === bl[i]);
 }
 
 /** Auth subset of connect() options, shared by the endpoint and isReachable. */
