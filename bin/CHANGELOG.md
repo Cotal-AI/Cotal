@@ -1,5 +1,19 @@
 # cotal-ai
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [c9e9000]
+  - @cotal-ai/cli@0.6.1
+  - @cotal-ai/core@0.6.1
+  - @cotal-ai/manager@0.6.1
+  - @cotal-ai/delivery@0.6.1
+  - @cotal-ai/cmux@0.6.1
+  - @cotal-ai/connector-claude-code@0.6.1
+  - @cotal-ai/connector-hermes@0.6.1
+  - @cotal-ai/connector-opencode@0.6.1
+
 ## 0.6.0
 
 ### Minor Changes

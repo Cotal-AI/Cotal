@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.6.1
+
+### Patch Changes
+
+- c9e9000: web graph: drop nodes as soon as they go offline. Offline presence records stay
+  in the roster indefinitely, so the previous prune (only when a node left the
+  roster) never fired for them and offline agents accumulated on the graph forever.
+  - @cotal-ai/core@0.6.1
+
 ## 0.6.0
 
 ### Minor Changes
