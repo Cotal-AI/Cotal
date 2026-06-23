@@ -6,7 +6,7 @@
 #   ./mesh-wall.sh sven david      # explicit agents (agent-file basenames)
 #   ./mesh-wall.sh all             # every agent (capped at 9 panes)
 #   ./mesh-wall.sh --fresh         # wipe the space's chat history first, then start (clean slate)
-#   ./mesh-wall.sh --stop          # tear it all down (faces, console, and the mesh we started)
+#   ./mesh-wall.sh --stop          # tear it all down AND wipe the space's chat history (clean restart)
 #
 # Unlike face-wall.sh (standalone direct chat), every pane here is a real Cotal mesh peer:
 # the faces coordinate as lateral peers in one space, and the console pane (right) shows the
@@ -30,14 +30,23 @@ MAX=9
 # names are agent-file basenames; their faces come from `face:` (elon->musk, steve->jobs, rayan->ray).
 DEFAULT_ROSTER=(sven david elon garry)
 
+nats_up() { (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null; }   # mesh reachable on the default port?
+
 # --- teardown -----------------------------------------------------------------
 if [ "${1:-}" = "--stop" ]; then
+  # Wipe the chat history WHILE the mesh is still up (it outlives the tmux session via nohup) so a
+  # later start is clean — the history lives in JetStream's store and would otherwise replay.
+  if nats_up; then
+    echo "mesh-wall: wiping chat history on space '$SPACE'" >&2
+    ( cd "$ROOT" && pnpm cotal history clear --force --dms --space "$SPACE" ) >&2 || true
+  fi
   tmux kill-session -t "$SESSION" 2>/dev/null && echo "mesh-wall: killed tmux '$SESSION'" >&2 || true
   if [ -f "$PIDFILE" ]; then
     while read -r pid; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done <"$PIDFILE"
     rm -f "$PIDFILE"
     echo "mesh-wall: stopped the mesh it started" >&2
   fi
+  rm -rf "$ROOT/.cotal/opencode"/* 2>/dev/null || true   # drop stale per-agent opencode sessions
   exit 0
 fi
 
@@ -76,7 +85,6 @@ for a in "${ROSTER[@]}"; do
 done
 
 # --- start the mesh if it isn't already up ------------------------------------
-nats_up() { (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null; }
 if nats_up; then
   echo "mesh-wall: mesh already up on 127.0.0.1:4222" >&2
 else
