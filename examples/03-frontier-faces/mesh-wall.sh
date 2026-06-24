@@ -31,6 +31,7 @@ MAX=9
 DEFAULT_ROSTER=(sven david elon garry)
 
 nats_up() { (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null; }   # mesh reachable on the default port?
+source "$DIR/tools/tmux-brand.sh"                              # brand_tmux(): shared status-bar branding
 
 # --- teardown -----------------------------------------------------------------
 if [ "${1:-}" = "--stop" ]; then
@@ -126,7 +127,7 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 cols=$(tput cols 2>/dev/null || true); lines=$(tput lines 2>/dev/null || true)
 [[ "$cols"  =~ ^[0-9]+$ ]] && (( cols  >= 80 )) || cols=200
 [[ "$lines" =~ ^[0-9]+$ ]] && (( lines >= 24 )) || lines=50
-tmux new-session -d -s "$SESSION" -x "$cols" -y "$lines" bash -c "$(cmd_for 0)"
+FACE0=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -x "$cols" -y "$lines" bash -c "$(cmd_for 0)")
 for ((i = 1; i < ${#AGENTS[@]}; i++)); do
   tmux split-window -t "$SESSION" bash -c "$(cmd_for "$i")"
   tmux select-layout -t "$SESSION" tiled >/dev/null
@@ -138,7 +139,17 @@ tmux select-layout -t "$SESSION" tiled >/dev/null            # faces fill the wi
 # lazygit-style dashboard: roster + channels + live feed), not the --plain log stream.
 tmux split-window -h -f -l "${CONSOLE_WIDTH:-42%}" -t "$SESSION" \
   bash -c "cd $(printf %q "$ROOT") && exec pnpm cotal console --space $(printf %q "$SPACE")"
-tmux select-pane -t "$SESSION".0 >/dev/null                  # land focus on the first face
+
+# Full-width signage strip across the top: Cotal wordmark + tagline + a scannable QR to cotal.ai,
+# so passers-by can open the site on their phone. `-f -b` spans the whole window width above both
+# columns. NO_BANNER=1 skips it; BANNER_HEIGHT overrides the row count (the QR needs ~16 rows).
+if [ -z "${NO_BANNER:-}" ]; then
+  tmux split-window -v -f -b -l "${BANNER_HEIGHT:-16}" -t "$SESSION" \
+    bash -c "exec node $(printf %q "$DIR/tools/brand-banner.mjs")"
+fi
+
+brand_tmux "$SESSION"                                        # persistent branded status bar (Cotal · cotal.ai)
+tmux select-pane -t "$FACE0" >/dev/null                     # land focus on the first face (stable pane id)
 tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
 
 echo "mesh-wall: ${#AGENTS[@]} faces (left) + console (right) in tmux '$SESSION' (space=$SPACE: ${AGENTS[*]})" >&2

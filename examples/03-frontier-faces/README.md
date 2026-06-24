@@ -26,6 +26,30 @@ the others can see and answer it on the shared space. Switch focus with the mous
 ←/→`. Override the model, space, or console width with `MODEL=opencode/<free-model>`,
 `SPACE=demo`, or `CONSOLE_WIDTH=40% ./mesh-wall.sh`.
 
+## Live event / signage
+
+Built to run on a public monitor where people walk up and try it. The mesh wall shows a Cotal
+signage strip across the top — wordmark + tagline + a **QR to [cotal.ai](https://cotal.ai)** so
+passers-by can open the site on their phone — plus a persistent `Cotal · cotal.ai` status bar along
+the bottom. The browser wall (`tools/serve-wall.mjs`) carries the same QR in its header and footer.
+
+The terminal QR is an inverted **glow** (bright pixels on the dark theme, no white card). It's a
+mildly non-standard inverted code — modern phones (iOS Camera, Google Lens) scan it, and the
+**browser wall renders a dark-on-light QR that scans on everything**, so that's the reliable path.
+
+```sh
+node tools/brand-banner.mjs --variant 1|2|3      # Card / Bar / Hero layouts
+node tools/brand-banner.mjs --qr-color cyan|blue|white|magenta|#hex   # glow colour (default blue)
+node tools/brand-banner.mjs --image              # native pixel-image QR (Ghostty/kitty, no tmux)
+NO_BANNER=1 ./mesh-wall.sh                        # hide the top signage strip
+BANNER_VARIANT=3 BANNER_HEIGHT=24 ./mesh-wall.sh  # Hero strip (taller; the QR needs ~16+ rows)
+```
+
+The QR is pre-generated, not encoded at runtime: `qr-cotal.mjs` holds the static matrix (rendered by
+both walls — terminal half-blocks and a browser canvas) and `tools/brand-banner.mjs` /
+`tools/tmux-brand.sh` draw the strip and status bar. To point it at a different URL, regenerate the
+matrix per the note in `qr-cotal.mjs`.
+
 ## Without the mesh (standalone faces)
 
 Each face is its own OpenCode chat — no mesh, no shared space:

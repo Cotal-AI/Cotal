@@ -46,9 +46,10 @@ async function serveStatic(req, res) {
   if (p === '/') p = '/wall.html';
   const name = decodeURIComponent(p).replace(/^\/+/, '');
   if (name.includes('..')) { res.writeHead(403); res.end('nope'); return; }
-  // pages live in web/; personas.mjs sits one level up (imported as ../personas.mjs, which the
-  // browser collapses to /personas.mjs at the served root).
-  const file = name === 'personas.mjs' ? join(ROOT, 'personas.mjs') : join(ROOT, 'web', name);
+  // pages live in web/; personas.mjs and qr-cotal.mjs sit one level up (imported as ../*.mjs,
+  // which the browser collapses to /<name> at the served root).
+  const file = name === 'personas.mjs' || name === 'qr-cotal.mjs'
+    ? join(ROOT, name) : join(ROOT, 'web', name);
   try {
     const body = await readFile(file);
     res.writeHead(200, { 'content-type': MIME[extname(file)] || 'application/octet-stream' });

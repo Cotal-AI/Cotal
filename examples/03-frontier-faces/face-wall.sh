@@ -54,6 +54,7 @@ for ((i = 1; i < ${#PERSONAS[@]}; i++)); do
   tmux select-layout -t "$SESSION" tiled >/dev/null
 done
 tmux select-layout -t "$SESSION" tiled >/dev/null
+source "$DIR/tools/tmux-brand.sh"; brand_tmux "$SESSION"   # persistent branded status bar (Cotal · cotal.ai)
 tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
 
 echo "face-wall: ${#PERSONAS[@]} faces in tmux session '$SESSION' (${PERSONAS[*]})" >&2
