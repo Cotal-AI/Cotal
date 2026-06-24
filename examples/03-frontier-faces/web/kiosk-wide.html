@@ -599,16 +599,19 @@ async function runEpisode(ep) {
 async function loop() {
   await wait(1400);
   let ep = 0;
+  let consecutiveErrors = 0;
   for (;;) {
     try {
       await runEpisode(EPISODES[ep % EPISODES.length]);
+      consecutiveErrors = 0;
     } catch (err) {
       console.error('episode error:', err);
       for (const [, { tile, faceEl }] of Object.entries(faceTiles)) {
         try { tile.classList.remove('active', 'active-recv', 'active-anycast'); faceEl.setActivity?.('idle'); } catch {}
       }
       clearCaption();
-      touchActivity(); // prevent stall-reload during recovery
+      consecutiveErrors++;
+      if (consecutiveErrors >= 3) window.location.reload();
     }
     ep++;
     await wait(3000);
