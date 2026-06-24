@@ -58,8 +58,9 @@ from errors. Serve with `node tools/serve-wall.mjs` and open the URL in a browse
 
 | Page | Style |
 |---|---|
+| `web/kiosk-console.html` | Terminal console: roster + streaming feed, matches the real `cotal console` aesthetic |
+| `web/kiosk-wide.html` | Panorama: 3×2 pixel-art face grid filling the full screen + large caption bar |
 | `web/kiosk.html` | Command-center: 3×2 face grid + live activity sidebar + stats HUD |
-| `web/kiosk-wide.html` | Panorama: 3×2 face grid filling the full screen + large caption bar |
 
 Neither page requires a running OpenCode server or mesh — the simulation is built in and runs
 entirely in the browser. The faces animate, expressions change per turn, and message packets fly
