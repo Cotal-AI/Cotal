@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-URL="${KIOSK_URL:-http://127.0.0.1:4097/kiosk-wide.html}"
+URL="${KIOSK_URL:-http://127.0.0.1:4097/kiosk-console.html}"
 
 # Prevent display sleep
 caffeinate -d -i &
