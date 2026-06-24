@@ -50,6 +50,27 @@ both walls — terminal half-blocks and a browser canvas) and `tools/brand-banne
 `tools/tmux-brand.sh` draw the strip and status bar. To point it at a different URL, regenerate the
 matrix per the note in `qr-cotal.mjs`.
 
+## Self-running kiosk
+
+Two browser pages designed to run unattended on a monitor — no operator interaction required once
+started. Both loop automatically through scripted multi-agent coordination episodes and self-recover
+from errors. Serve with `node tools/serve-wall.mjs` and open the URL in a browser set to fullscreen.
+
+| Page | Style |
+|---|---|
+| `web/kiosk.html` | Command-center: 3×2 face grid + live activity sidebar + stats HUD |
+| `web/kiosk-wide.html` | Panorama: 3×2 face grid filling the full screen + large caption bar |
+
+Neither page requires a running OpenCode server or mesh — the simulation is built in and runs
+entirely in the browser. The faces animate, expressions change per turn, and message packets fly
+between agents for DMs; broadcast pulses radiate to all.
+
+```sh
+node tools/serve-wall.mjs          # starts on :4097
+# open http://127.0.0.1:4097/kiosk.html      (command-center)
+# open http://127.0.0.1:4097/kiosk-wide.html  (panorama)
+```
+
 ## Without the mesh (standalone faces)
 
 Each face is its own OpenCode chat — no mesh, no shared space:

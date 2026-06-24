@@ -31,6 +31,9 @@ export function driveFace(faceEl, opts = {}) {
   const HDR = { 'content-type': 'application/json', ...AUTH };
   const abort = new AbortController();
 
+  // setActivity + optional report to the wall (per-face status badge); no-op without onActivity.
+  const setAct = (kind, detail) => { faceEl.setActivity(kind, detail); opts.onActivity?.(persona, kind); };
+
   const msgRole = new Map(); // messageID -> role; only assistant text gets lip-synced
   const fedParts = new Set(); // a part emits several `updated` events — feed each mesh send once
   const fedLen = new Map(); // text part id -> chars already fed (parts arrive as growing snapshots)
@@ -69,6 +72,12 @@ export function driveFace(faceEl, opts = {}) {
     fedParts.add(part.id);
     const inp = part.state?.input || {};
     if (!inp.text) return;
+    // Report the real agent→agent edge to the wall (who messaged whom); routing is otherwise discarded.
+    opts.onMeshSend?.({
+      from: persona, tool: part.tool,
+      mode: part.tool === 'cotal_dm' ? 'unicast' : part.tool === 'cotal_anycast' ? 'anycast' : 'chat',
+      to: inp.to, role: inp.role, channel: inp.channel, text: inp.text, ts: Date.now(),
+    });
     const prefix =
       part.tool === 'cotal_dm' ? `(dm → ${inp.to}) `
       : part.tool === 'cotal_anycast' ? `(@${inp.role}) `
@@ -90,29 +99,29 @@ export function driveFace(faceEl, opts = {}) {
           const key = pr.partID || pr.messageID;
           feedText(key, pr.delta);
           fedLen.set(key, (fedLen.get(key) || 0) + pr.delta.length);
-        } else if (pr.field === 'reasoning' && !speaking) faceEl.setActivity('thinking');
+        } else if (pr.field === 'reasoning' && !speaking) setAct('thinking');
         break;
       case 'message.part.updated': {
         const part = pr.part;
         if (!part) break;
         if (part.type === 'tool') {
           if (MESH_SEND_TOOLS.has(part.tool) && part.state?.status === 'completed') feedMeshSend(part);
-          else if (!speaking) faceEl.setActivity('working');
+          else if (!speaking) setAct('working');
         } else if (part.type === 'text' && msgRole.get(part.messageID) === 'assistant') {
           // Snapshot: full text so far — feed only what the delta path hasn't already.
           const prev = fedLen.get(part.id) || 0;
           const text = part.text || '';
           if (text.length > prev) { feedText(part.id, text.slice(prev)); fedLen.set(part.id, text.length); }
-        } else if (part.type === 'reasoning' && !speaking) faceEl.setActivity('thinking');
+        } else if (part.type === 'reasoning' && !speaking) setAct('thinking');
         break;
       }
       case 'session.idle':
         speaking = false;
-        faceEl.setActivity('waiting');
+        setAct('waiting');
         break;
       case 'session.error':
         speaking = false;
-        faceEl.setActivity('error');
+        setAct('error');
         break;
     }
   }
@@ -128,14 +137,14 @@ export function driveFace(faceEl, opts = {}) {
 
   async function sendPrompt(sid, text) {
     speaking = false;
-    faceEl.setActivity('thinking');
+    setAct('thinking');
     faceEl.expr = 'neutral'; // reply tags override
     // Attached sessions keep their own model + system (persona) — only own sessions get ours.
     const body = attach
       ? { parts: [{ type: 'text', text }] }
       : { model: MODEL, system: FACE_SYSTEM, parts: [{ type: 'text', text }] };
     const r = await fetch(`${server}/session/${sid}/message`, { method: 'POST', headers: HDR, body: JSON.stringify(body) });
-    if (!r.ok) faceEl.setActivity('error');
+    if (!r.ok) setAct('error');
   }
 
   async function streamEvents(sid) {
@@ -166,14 +175,14 @@ export function driveFace(faceEl, opts = {}) {
   const getSession = () => (sidPromise ??= attach ? Promise.resolve(attach) : createSession());
 
   (async () => {
-    try { const sid = await getSession(); streamEvents(sid).catch(() => faceEl.setActivity('error')); }
-    catch { faceEl.setActivity('error'); }
+    try { const sid = await getSession(); streamEvents(sid).catch(() => setAct('error')); }
+    catch { setAct('error'); }
   })();
 
   return {
     async send(text) {
       if (!text || !text.trim()) return;
-      let sid; try { sid = await getSession(); } catch { faceEl.setActivity('error'); return; }
+      let sid; try { sid = await getSession(); } catch { setAct('error'); return; }
       sendPrompt(sid, text);
     },
     stop() { abort.abort(); },

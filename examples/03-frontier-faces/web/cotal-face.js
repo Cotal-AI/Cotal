@@ -156,7 +156,7 @@ import { PERSONAS } from '../personas.mjs';
   canvas { width:100%; height:auto; display:block; image-rendering:pixelated; filter:${CRT_FILTER}; }
   .scan { position:absolute; inset:0; pointer-events:none;
           background:repeating-linear-gradient(0deg,rgba(0,0,0,.28) 0 1px,transparent 1px 3px); }
-  .out { padding:6px 14px 12px; font-size:13px; color:#53ebe4; min-height:34px; line-height:1.3; }
+  .out { padding:6px 14px 12px; font-size:var(--cf-caption-size,13px); color:#53ebe4; min-height:34px; line-height:1.3; display:var(--cf-caption-display,block); }
   .cur { animation: blink 1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0; } }
   :host([chrome="off"]) .bar { display:none; }
