@@ -17,7 +17,7 @@
 
   #page { display: flex; flex-direction: column; height: 100vh; }
 
-  /* ── brand bar ────────────────────────────────── */
+  /* ── brand bar ───────────────────────────────── */
   #brand {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 30px; flex: none;
@@ -48,11 +48,11 @@
   .qr-wrap canvas { background: #fff; padding: 6px; border-radius: 8px; display: block; }
   .qr-site { font-size: 13px; color: #58a6ff; font-weight: 600; }
 
-  /* ── face grid ────────────────────────────────── */
+  /* ── face grid ───────────────────────────────── */
   #faces {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 14px 18px;
+    gap: 12px 16px;
     flex: 1;
     padding: 0 20px;
     min-height: 0;
@@ -62,31 +62,49 @@
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     border-radius: 14px; padding: 8px 8px 0;
     border: 2px solid rgba(83,235,228,.05);
-    transition: border-color .4s, box-shadow .4s, background .4s;
+    transition: border-color .35s, box-shadow .35s, background .35s;
     position: relative; overflow: hidden;
   }
 
-  /* ambient gradient per-tile */
+  /* ambient per-tile gradient */
   .face-tile::before {
     content: ''; position: absolute; inset: 0; border-radius: 12px;
     background: radial-gradient(ellipse at 50% 40%, rgba(83,235,228,.04) 0%, transparent 70%);
-    pointer-events: none;
+    pointer-events: none; transition: background .35s;
   }
 
+  /* speaker — teal bloom */
   .face-tile.active {
-    border-color: rgba(83,235,228,.7);
-    box-shadow: 0 0 60px rgba(83,235,228,.22), 0 0 120px rgba(83,235,228,.08), inset 0 0 40px rgba(83,235,228,.06);
-    background: rgba(83,235,228,.025);
+    border-color: rgba(83,235,228,.8);
+    box-shadow:
+      0 0 60px rgba(83,235,228,.28),
+      0 0 120px rgba(83,235,228,.12),
+      inset 0 0 50px rgba(83,235,228,.07);
+    background: rgba(83,235,228,.03);
     z-index: 2;
   }
   .face-tile.active::before {
-    background: radial-gradient(ellipse at 50% 40%, rgba(83,235,228,.12) 0%, transparent 70%);
+    background: radial-gradient(ellipse at 50% 35%, rgba(83,235,228,.18) 0%, transparent 65%);
   }
 
+  /* DM recipient — pink glow */
   .face-tile.active-recv {
-    border-color: rgba(225,58,106,.55);
-    box-shadow: 0 0 40px rgba(225,58,106,.18), inset 0 0 30px rgba(225,58,106,.04);
-    background: rgba(225,58,106,.02);
+    border-color: rgba(225,58,106,.65);
+    box-shadow: 0 0 50px rgba(225,58,106,.22), inset 0 0 35px rgba(225,58,106,.05);
+    background: rgba(225,58,106,.025);
+  }
+  .face-tile.active-recv::before {
+    background: radial-gradient(ellipse at 50% 35%, rgba(225,58,106,.12) 0%, transparent 65%);
+  }
+
+  /* anycast recipient — amber glow */
+  .face-tile.active-anycast {
+    border-color: rgba(255,190,50,.7);
+    box-shadow: 0 0 50px rgba(255,190,50,.25), inset 0 0 35px rgba(255,190,50,.06);
+    background: rgba(255,190,50,.025);
+  }
+  .face-tile.active-anycast::before {
+    background: radial-gradient(ellipse at 50% 35%, rgba(255,190,50,.14) 0%, transparent 65%);
   }
 
   .face-name {
@@ -96,96 +114,135 @@
 
   .face-tile cotal-face {
     --cf-width: 100%;
-    --cf-caption-display: none;  /* captions shown in the global caption bar instead */
+    --cf-caption-display: none;
     width: 100%;
   }
 
-  /* ── global caption bar ───────────────────────── */
+  /* ── global caption bar ──────────────────────── */
   #caption-bar {
     flex: none;
-    min-height: 64px;
-    padding: 10px 30px 14px;
-    display: flex; align-items: flex-start; gap: 14px;
-    background: linear-gradient(0deg, rgba(3,0,10,1) 60%, rgba(3,0,10,0));
+    padding: 8px 30px 18px;
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+    background: linear-gradient(0deg, rgba(3,0,10,1) 55%, rgba(3,0,10,0));
     position: relative; z-index: 10;
+    min-height: 72px;
   }
+
+  #caption-left {
+    display: flex; align-items: baseline; gap: 10px; flex: none;
+    opacity: 0; transition: opacity .3s;
+  }
+  #caption-left.vis { opacity: 1; }
 
   #caption-speaker {
-    font-size: 14px; font-weight: 700; color: #cfeffd;
-    white-space: nowrap; padding-top: 3px; min-width: 68px;
-    opacity: 0; transition: opacity .3s;
+    font-size: 18px; font-weight: 700; color: #cfeffd;
+    white-space: nowrap;
   }
-  #caption-speaker.vis { opacity: 1; }
+
+  /* routing mode pill */
+  #caption-mode {
+    font-size: 11px; font-weight: 600; letter-spacing: .7px;
+    padding: 2px 7px; border-radius: 4px;
+    border: 1px solid rgba(83,235,228,.35); color: #53ebe4;
+    white-space: nowrap; text-transform: uppercase;
+  }
+  #caption-mode.dm      { border-color: rgba(225,58,106,.5); color: #f1a5bd; }
+  #caption-mode.anycast { border-color: rgba(255,190,50,.5); color: #ffc032; }
 
   #caption-sep {
-    width: 1.5px; background: rgba(83,235,228,.25);
-    align-self: stretch; flex: none;
-    opacity: 0; transition: opacity .3s;
+    width: 1.5px; height: 32px; background: rgba(83,235,228,.2); flex: none;
+    opacity: 0; transition: opacity .3s; align-self: center;
   }
   #caption-sep.vis { opacity: 1; }
 
   #caption-text {
-    font-size: 20px; color: rgba(83,235,228,.88);
-    line-height: 1.35; flex: 1;
-    min-height: 1.35em;
+    font-size: 36px; line-height: 1.25; color: rgba(83,235,228,.9);
+    flex: 1; min-width: 0;
   }
 
-  /* ── animated packet ──────────────────────────── */
+  /* ── floating routing label ──────────────────── */
+  .route-label {
+    position: fixed; pointer-events: none; z-index: 310;
+    font-size: 11px; font-weight: 700; letter-spacing: .6px;
+    padding: 2px 8px; border-radius: 4px;
+    text-transform: uppercase; white-space: nowrap;
+    transform: translate(-50%, -50%);
+    animation: label-pop .6s ease forwards;
+  }
+  .route-label.dm      { background: rgba(225,58,106,.85); color: #fff; }
+  .route-label.cast    { background: rgba(83,235,228,.85); color: #03000a; }
+  .route-label.anycast { background: rgba(255,190,50,.9);  color: #1a0c00; }
+
+  @keyframes label-pop {
+    0%   { opacity: 0; transform: translate(-50%, -60%) scale(.7); }
+    20%  { opacity: 1; transform: translate(-50%, -50%) scale(1);  }
+    70%  { opacity: 1; }
+    100% { opacity: 0; transform: translate(-50%, -40%); }
+  }
+
+  /* ── animated packet ─────────────────────────── */
   .msg-packet {
     position: fixed;
-    width: 10px; height: 10px; border-radius: 50%;
-    background: #53ebe4;
-    box-shadow: 0 0 12px 4px rgba(83,235,228,.9);
+    width: 11px; height: 11px; border-radius: 50%;
     pointer-events: none; z-index: 300;
     transform: translate(-50%, -50%);
   }
-  .msg-packet.dm { background: #e13a6a; box-shadow: 0 0 12px 4px rgba(225,58,106,.9); }
+  .msg-packet.cast    { background: #53ebe4; box-shadow: 0 0 14px 5px rgba(83,235,228,.9); }
+  .msg-packet.dm      { background: #e13a6a; box-shadow: 0 0 14px 5px rgba(225,58,106,.9); }
+  .msg-packet.anycast { background: #ffc032; box-shadow: 0 0 14px 5px rgba(255,190,50,.9); }
 
   .bcast-ring {
     position: fixed; border-radius: 50%;
-    border: 2.5px solid rgba(83,235,228,.7);
+    border: 2.5px solid rgba(83,235,228,.65);
     pointer-events: none; z-index: 299;
     transform: translate(-50%, -50%) scale(0);
-    animation: ring-out .7s ease-out forwards;
+    animation: ring-out .75s ease-out forwards;
   }
+  .bcast-ring.anycast-ring { border-color: rgba(255,190,50,.65); }
   @keyframes ring-out {
-    0%   { transform: translate(-50%,-50%) scale(0); opacity: .85; }
-    100% { transform: translate(-50%,-50%) scale(3.5); opacity: 0; }
+    0%   { transform: translate(-50%,-50%) scale(0);   opacity: .85; }
+    100% { transform: translate(-50%,-50%) scale(3.8); opacity: 0;   }
   }
 
-  /* ── episode badge ────────────────────────────── */
+  /* ── simulation badge ────────────────────────── */
+  #sim-badge {
+    position: fixed; top: 18px; right: 115px;
+    font-size: 9px; font-weight: 700; letter-spacing: 1.2px;
+    color: rgba(83,235,228,.35); text-transform: uppercase;
+    border: 1px solid rgba(83,235,228,.15); border-radius: 3px;
+    padding: 2px 6px; pointer-events: none; z-index: 200;
+  }
+
+  /* ── episode badge ───────────────────────────── */
   #ep-badge {
-    position: fixed; bottom: 78px; right: 24px;
+    position: fixed; bottom: 30px; right: 24px;
     font-size: 10px; opacity: 0; text-align: right;
-    transition: opacity .5s;
-    pointer-events: none; z-index: 20;
+    transition: opacity .5s; pointer-events: none; z-index: 20;
   }
   #ep-badge .ep-lbl { opacity: .38; text-transform: uppercase; letter-spacing: .9px; }
   #ep-badge .ep-name { color: #f1a5bd; font-size: 11px; margin-top: 2px; }
   #ep-badge.vis { opacity: 1; }
 
-  /* ── stats row ────────────────────────────────── */
+  /* ── stats bar ───────────────────────────────── */
   #stats-bar {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 6px 30px;
-    background: rgba(3,0,10,.85);
-    border-top: 1px solid rgba(83,235,228,.08);
-    font-size: 11px; opacity: .45;
+    padding: 5px 30px;
+    background: rgba(3,0,10,.88);
+    border-top: 1px solid rgba(83,235,228,.07);
+    font-size: 11px; opacity: .4;
     z-index: 50;
   }
 </style>
 </head>
 <body>
 <div id="page">
-
-  <!-- Brand header -->
   <div id="brand">
     <div class="lockup">
       <span class="live-dot"></span>
       <div>
         <div class="wordmark">Cotal</div>
-        <div class="tagline">the open wire for AI agents · live multi-agent mesh</div>
+        <div class="tagline">the open wire for AI agents · multi-agent coordination protocol</div>
       </div>
     </div>
     <div class="brand-right">
@@ -196,28 +253,28 @@
     </div>
   </div>
 
-  <!-- Face grid (fills the middle) -->
   <div id="faces"></div>
 
-  <!-- Caption bar -->
   <div id="caption-bar">
-    <div id="caption-speaker"></div>
+    <div id="caption-left">
+      <span id="caption-speaker"></span>
+      <span id="caption-mode"></span>
+    </div>
     <div id="caption-sep"></div>
     <div id="caption-text"></div>
   </div>
-
 </div>
 
-<!-- Episode badge (corner) -->
+<div id="sim-badge">Simulated Mesh</div>
+
 <div id="ep-badge">
-  <div class="ep-lbl">topic</div>
+  <div class="ep-lbl">scenario</div>
   <div class="ep-name" id="ep-name"></div>
 </div>
 
-<!-- Stats bar -->
 <div id="stats-bar">
-  <span id="stat-left">6 agents online · 0 messages</span>
-  <span id="stat-right">uptime 0:00 · cotal.ai</span>
+  <span id="stat-left">6 agents · 0 messages</span>
+  <span id="stat-right">uptime 0:00</span>
 </div>
 
 <script type="module">
@@ -225,7 +282,7 @@ import './cotal-face.js';
 import { PERSONAS } from '../personas.mjs';
 import { MATRIX, COTAL_URL } from '../qr-cotal.mjs';
 
-// ── QR ──────────────────────────────────────────────────────────────────────
+// ── QR ─────────────────────────────────────────────────────────────────────
 (function () {
   const c = document.getElementById('qr-canvas');
   const N = MATRIX.length, QZ = 1, S = N + 2 * QZ;
@@ -238,10 +295,10 @@ import { MATRIX, COTAL_URL } from '../qr-cotal.mjs';
   document.getElementById('qr-link').href = COTAL_URL;
 })();
 
-// ── Cast ─────────────────────────────────────────────────────────────────────
+// ── Cast ────────────────────────────────────────────────────────────────────
 const CAST = ['sven', 'david', 'ray', 'garry', 'dario', 'mira'];
 
-// ── Build face grid ──────────────────────────────────────────────────────────
+// ── Face grid ───────────────────────────────────────────────────────────────
 const faceTiles = {};
 const facesEl = document.getElementById('faces');
 
@@ -266,106 +323,163 @@ for (const name of CAST) {
   faceTiles[name] = { tile, faceEl: face };
 }
 
-// ── Episodes ─────────────────────────────────────────────────────────────────
+// ── Episodes ────────────────────────────────────────────────────────────────
+// mode: 'broadcast' → #general multicast
+//       'dm'        → unicast to `to`
+//       'anycast'   → to first eligible peer in `role`; `to` is the responder in the sim
 const EPISODES = [
   {
-    title: 'morning sync',
+    title: 'protocol showcase',
     turns: [
-      { from: 'sven',  mode: 'broadcast', expr: 'neutral', text: 'morning. today: mesh stability pass and the anycast RFC review. who is on what?' },
-      { from: 'garry', to: 'sven', mode: 'dm', expr: 'happy',   text: 'reconnect fix is ready — consumer ack window was too short. pr is up.' },
-      { from: 'mira',  mode: 'broadcast', expr: 'happy',   text: 'sdk tests green on all targets. shipping the 0.9.3 patch this afternoon.' },
-      { from: 'david', to: 'garry', mode: 'dm', expr: 'neutral', text: 'one edge case in the 5-second anycast fallback — left a comment on your pr.' },
-      { from: 'ray',   mode: 'broadcast', expr: 'happy',   text: 'staging metrics clean. p99 latency back under 30ms after the patch.' },
-      { from: 'sven',  mode: 'broadcast', expr: 'happy',   text: 'nice. 3pm release window — posting to #ops when we are green.' },
-    ],
-  },
-  {
-    title: 'protocol design',
-    turns: [
-      { from: 'david', mode: 'broadcast', expr: 'neutral',  text: 'proposal: anycast should time out after 5s if no eligible peer responds.' },
-      { from: 'mira',  to: 'david', mode: 'dm', expr: 'neutral', text: 'good call. fallback — error or silent drop?' },
-      { from: 'david', to: 'mira', mode: 'dm', expr: 'neutral',  text: 'error. no silent failures in the protocol.' },
-      { from: 'garry', mode: 'broadcast', expr: 'happy',   text: 'agree — but make it configurable. some use cases need 30s.' },
-      { from: 'dario', mode: 'broadcast', expr: 'neutral',  text: 'JetStream consumer timeout needs to align — currently 60s, could split-brain.' },
-      { from: 'sven',  mode: 'broadcast', expr: 'neutral',  text: 'draft the spec first. I open the RFC today. no code until reviewed.' },
+      // discovery: presence check via broadcast
+      { from: 'sven',  mode: 'broadcast', expr: 'neutral',
+        text: 'mesh is up. 6 agents in the space — I can see everyone in the presence feed.' },
+      // multicast: open question to all
+      { from: 'sven',  mode: 'broadcast', expr: 'neutral',
+        text: 'spinning up a coordination scenario. anyone taking the infra role?' },
+      // anycast: route to first eligible peer with the infra role
+      { from: 'sven',  mode: 'anycast', to: 'ray', role: '@infra', expr: 'neutral',
+        text: 'anycast to @infra — confirm the nats topology before we proceed.' },
+      // anycast responder replies
+      { from: 'ray',   mode: 'broadcast', expr: 'happy',
+        text: 'anycast picked up. topology clean — 3-node cluster, all consumers healthy.' },
+      // DM: private detail exchange
+      { from: 'david', to: 'ray', mode: 'dm', expr: 'neutral',
+        text: 'quick dm — the JetStream consumer ack window is 20s. needs to be 30s minimum.' },
+      { from: 'ray',   to: 'david', mode: 'dm', expr: 'neutral',
+        text: 'patching now. consumer window widened to 30s across all peers.' },
+      // broadcast: team update
+      { from: 'ray',   mode: 'broadcast', expr: 'happy',
+        text: 'fix deployed. all agents reconnecting with the updated ack window.' },
+      // reconnect / JetStream history recovery
+      { from: 'dario', mode: 'broadcast', expr: 'happy',
+        text: 'was offline briefly — reconnected and caught up from JetStream history. no messages missed.' },
+      // resolution
+      { from: 'sven',  mode: 'broadcast', expr: 'happy',
+        text: 'all systems green. multicast, anycast, unicast, and history recovery all confirmed.' },
     ],
   },
   {
     title: 'incident response',
     turns: [
-      { from: 'ray',   mode: 'broadcast', expr: 'angry',   text: 'staging just lost all heartbeats — broker may be down.' },
-      { from: 'garry', to: 'ray', mode: 'dm', expr: 'neutral', text: 'on it. checking nats-server logs.' },
-      { from: 'sven',  mode: 'broadcast', expr: 'angry',   text: 'incident mode. mira — hold the sdk release, wait for staging to clear.' },
-      { from: 'mira',  to: 'sven', mode: 'dm', expr: 'sad',    text: 'held. pinging you the moment we are clear.' },
-      { from: 'garry', mode: 'broadcast', expr: 'neutral',  text: 'found it — nats-server hit the memory ceiling and got oom-killed. restarting.' },
-      { from: 'ray',   mode: 'broadcast', expr: 'happy',   text: 'back. all 6 agents reconnected and caught up from jetstream. 4 minute gap.' },
-      { from: 'sven',  mode: 'broadcast', expr: 'happy',   text: 'good catch. garry, add a memory limit to the nats config. nice work.' },
+      { from: 'ray',   mode: 'broadcast', expr: 'angry',
+        text: 'staging lost all heartbeats — broker may be down.' },
+      { from: 'sven',  mode: 'broadcast', expr: 'angry',
+        text: 'incident mode. mira — hold the sdk release. garry, check the broker.' },
+      // anycast: find the on-call agent
+      { from: 'sven',  mode: 'anycast', to: 'garry', role: '@oncall', expr: 'neutral',
+        text: 'anycast to @oncall — who has the broker? respond immediately.' },
+      { from: 'garry', to: 'sven', mode: 'dm', expr: 'neutral',
+        text: 'picked up the anycast. I have the broker — checking logs now.' },
+      { from: 'mira',  to: 'sven', mode: 'dm', expr: 'sad',
+        text: 'sdk release held. pinging you when staging is clear.' },
+      { from: 'garry', mode: 'broadcast', expr: 'neutral',
+        text: 'found it — nats-server hit the memory ceiling and got oom-killed. restarting.' },
+      { from: 'ray',   mode: 'broadcast', expr: 'happy',
+        text: 'back online. all 6 agents reconnected, caught up from JetStream. 4 minute gap.' },
+      { from: 'sven',  mode: 'broadcast', expr: 'happy',
+        text: 'incident closed. add a memory limit to the nats config. good work everyone.' },
     ],
   },
   {
     title: 'code review',
     turns: [
-      { from: 'david', mode: 'broadcast', expr: 'neutral',  text: 'anycast TTL implementation is up. ready for review.' },
-      { from: 'ray',   to: 'david', mode: 'dm', expr: 'neutral', text: 'reading it now. consumer timeout alignment looks right.' },
-      { from: 'garry', to: 'david', mode: 'dm', expr: 'neutral', text: 'one nit: error on timeout should include elapsed time for debugging.' },
-      { from: 'david', to: 'garry', mode: 'dm', expr: 'happy',   text: 'pushed: "anycast timeout after 5003ms — no eligible peer".' },
-      { from: 'mira',  mode: 'broadcast', expr: 'happy',   text: 'approved. the consumer alignment is the key change — clean and correct.' },
-      { from: 'sven',  mode: 'broadcast', expr: 'happy',   text: 'merging. clean diff — exactly what the spec called for.' },
+      { from: 'david', mode: 'broadcast', expr: 'neutral',
+        text: 'anycast TTL implementation is up. ready for review.' },
+      // anycast: find a reviewer
+      { from: 'david', mode: 'anycast', to: 'mira', role: '@reviewer', expr: 'neutral',
+        text: 'anycast to @reviewer — anyone free to pick up this pr?' },
+      { from: 'mira',  to: 'david', mode: 'dm', expr: 'happy',
+        text: 'picked up the anycast — I will take the review.' },
+      { from: 'ray',   to: 'david', mode: 'dm', expr: 'neutral',
+        text: 'also reading. consumer timeout alignment looks right.' },
+      { from: 'garry', to: 'david', mode: 'dm', expr: 'neutral',
+        text: 'one nit: error on timeout should include elapsed time — helps debug.' },
+      { from: 'david', to: 'garry', mode: 'dm', expr: 'happy',
+        text: 'pushed: "anycast timeout after 5003ms — no eligible peer".' },
+      { from: 'mira',  mode: 'broadcast', expr: 'happy',
+        text: 'approved. consumer alignment is the key change — clean and correct.' },
+      { from: 'sven',  mode: 'broadcast', expr: 'happy',
+        text: 'merging. clean diff — exactly what the spec called for.' },
     ],
   },
   {
-    title: 'frontier tower demo',
+    title: 'protocol design',
     turns: [
-      { from: 'mira',  mode: 'broadcast', expr: 'neutral',  text: '3 weeks to the tower demo. today: lock the roster and run a live rehearsal.' },
-      { from: 'dario', to: 'mira', mode: 'dm', expr: 'neutral', text: 'live coordination is the hardest part. how many mesh peers in the demo?' },
-      { from: 'mira',  to: 'dario', mode: 'dm', expr: 'happy',   text: '6 agents — each with presence, history, and full channel access.' },
-      { from: 'garry', mode: 'broadcast', expr: 'happy',   text: 'the visual layer is the story. investors watch agents coordinate, not read specs.' },
-      { from: 'ray',   mode: 'broadcast', expr: 'happy',   text: 'latency numbers are strong — sub-10ms anycast routing across 6 agents.' },
-      { from: 'david', mode: 'broadcast', expr: 'neutral',  text: 'the mesh handles the hard parts: routing, delivery, reconnection. show that.' },
-      { from: 'sven',  mode: 'broadcast', expr: 'happy',   text: 'rehearsal tomorrow at noon. I seed a scenario and we run it live. go.' },
+      { from: 'david', mode: 'broadcast', expr: 'neutral',
+        text: 'proposal: anycast should time out after 5s if no eligible peer responds.' },
+      { from: 'mira',  to: 'david', mode: 'dm', expr: 'neutral',
+        text: 'fallback — error or silent drop?' },
+      { from: 'david', to: 'mira', mode: 'dm', expr: 'neutral',
+        text: 'error. no silent failures in the protocol.' },
+      { from: 'garry', mode: 'broadcast', expr: 'happy',
+        text: 'agree — but make it configurable. some use cases need 30s.' },
+      { from: 'dario', mode: 'broadcast', expr: 'neutral',
+        text: 'JetStream consumer timeout needs to align — currently 60s, could cause split-brain.' },
+      // anycast for consensus: find someone to draft the RFC
+      { from: 'sven',  mode: 'anycast', to: 'dario', role: '@spec', expr: 'neutral',
+        text: 'anycast to @spec — who wants to own the RFC draft?' },
+      { from: 'dario', to: 'sven', mode: 'dm', expr: 'happy',
+        text: 'picked it up. I will open the RFC and post a draft to #spec by end of day.' },
+      { from: 'sven',  mode: 'broadcast', expr: 'happy',
+        text: 'perfect. no code until the RFC is reviewed. dario owns the draft.' },
     ],
   },
 ];
 
-// ── Stats ─────────────────────────────────────────────────────────────────────
-let totalMsgs = 0;
-const startTime = Date.now();
-setInterval(() => {
-  const s = Math.floor((Date.now() - startTime) / 1000);
-  const m = Math.floor(s / 60), sec = s % 60;
-  document.getElementById('stat-left').textContent = `6 agents online · ${totalMsgs} messages`;
-  document.getElementById('stat-right').textContent = `uptime ${m}:${String(sec).padStart(2, '0')} · cotal.ai`;
-}, 1000);
-
-// ── Caption bar ───────────────────────────────────────────────────────────────
+// ── Caption bar ─────────────────────────────────────────────────────────────
+const captionLeft    = document.getElementById('caption-left');
 const captionSpeaker = document.getElementById('caption-speaker');
+const captionMode    = document.getElementById('caption-mode');
 const captionSep     = document.getElementById('caption-sep');
 const captionText    = document.getElementById('caption-text');
 
-function setCaptionSpeaker(name) {
-  const label = PERSONAS[name]?.label || name;
-  captionSpeaker.textContent = label;
-  captionSpeaker.classList.add('vis');
+const MODE_LABEL = { broadcast: '#general', dm: 'DM', anycast: 'anycast' };
+
+function setCaptionSpeaker(name, mode, to, role) {
+  captionSpeaker.textContent = PERSONAS[name]?.label || name;
+  captionMode.textContent = mode === 'dm' ? `DM → ${to}`
+    : mode === 'anycast' ? `${role}`
+    : '#general';
+  captionMode.className = mode === 'dm' ? 'dm' : mode === 'anycast' ? 'anycast' : '';
+  captionLeft.classList.add('vis');
   captionSep.classList.add('vis');
 }
 
 function clearCaption() {
   captionText.textContent = '';
-  captionSpeaker.classList.remove('vis');
+  captionLeft.classList.remove('vis');
   captionSep.classList.remove('vis');
 }
 
-// ── Packet animation ──────────────────────────────────────────────────────────
+// ── Stats ───────────────────────────────────────────────────────────────────
+let totalMsgs = 0;
+const startTime = Date.now();
+setInterval(() => {
+  const s = Math.floor((Date.now() - startTime) / 1000);
+  document.getElementById('stat-left').textContent = `6 agents · ${totalMsgs} messages`;
+  document.getElementById('stat-right').textContent =
+    `uptime ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}, 1000);
+
+// ── Watchdog: reload if loop stalls for >45s ─────────────────────────────────
+let lastActivity = Date.now();
+function touchActivity() { lastActivity = Date.now(); }
+setInterval(() => {
+  if (Date.now() - lastActivity > 45_000) window.location.reload();
+}, 5000);
+
+// ── Packet animation ─────────────────────────────────────────────────────────
 function tileCenter(name) {
   const r = faceTiles[name]?.tile.getBoundingClientRect();
   return r ? { x: r.left + r.width / 2, y: r.top + r.height * 0.38 } : null;
 }
 
-function firePacket(fromName, toName, isDm) {
+function firePacket(fromName, toName, cls) {
   const a = tileCenter(fromName), b = tileCenter(toName);
   if (!a || !b) return;
   const p = document.createElement('div');
-  p.className = 'msg-packet' + (isDm ? ' dm' : '');
+  p.className = `msg-packet ${cls}`;
   p.style.cssText = `left:${a.x}px;top:${a.y}px;transition:none;`;
   document.body.appendChild(p);
   requestAnimationFrame(() => {
@@ -375,19 +489,40 @@ function firePacket(fromName, toName, isDm) {
       p.style.top  = b.y + 'px';
     });
   });
-  setTimeout(() => { p.style.opacity = '0'; }, 440);
-  setTimeout(() => p.remove(), 660);
+  setTimeout(() => { p.style.opacity = '0'; }, 430);
+  setTimeout(() => p.remove(), 640);
 }
 
-function animateTurn(from, to, mode) {
+function showRouteLabel(pos, text, cls) {
+  const el = document.createElement('div');
+  el.className = `route-label ${cls}`;
+  el.style.cssText = `left:${pos.x}px;top:${pos.y - 28}px;`;
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 700);
+}
+
+function animateTurn(from, to, mode, role) {
+  const a = tileCenter(from);
+
   if (mode === 'dm' && to) {
-    firePacket(from, to, true);
-  } else {
-    for (const name of CAST) {
-      if (name !== from) firePacket(from, name, false);
-    }
-    const a = tileCenter(from);
+    firePacket(from, to, 'dm');
+    if (a) showRouteLabel(a, `DM → ${to}`, 'dm');
+  } else if (mode === 'anycast' && to) {
+    firePacket(from, to, 'anycast');
     if (a) {
+      showRouteLabel(a, role || '@role', 'anycast');
+      const ring = document.createElement('div');
+      ring.className = 'bcast-ring anycast-ring';
+      ring.style.cssText = `left:${a.x}px;top:${a.y}px;width:50px;height:50px;`;
+      document.body.appendChild(ring);
+      setTimeout(() => ring.remove(), 850);
+    }
+  } else {
+    // broadcast to all
+    for (const name of CAST) if (name !== from) firePacket(from, name, 'cast');
+    if (a) {
+      showRouteLabel(a, '#general', 'cast');
       const ring = document.createElement('div');
       ring.className = 'bcast-ring';
       ring.style.cssText = `left:${a.x}px;top:${a.y}px;width:48px;height:48px;`;
@@ -397,69 +532,68 @@ function animateTurn(from, to, mode) {
   }
 }
 
-// ── Simulation ────────────────────────────────────────────────────────────────
+// ── Simulation ───────────────────────────────────────────────────────────────
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const CPS = 16; // chars/sec for face mouth + caption typing
+const CPS = 12;
 
 async function runTurn(turn) {
-  const { from, to, mode, text, expr } = turn;
+  const { from, to, mode, role, text, expr } = turn;
   const ft = faceTiles[from];
   if (!ft) return;
+  touchActivity();
 
-  // Clear all active states
+  // Reset all faces
   for (const [, { tile, faceEl }] of Object.entries(faceTiles)) {
-    tile.classList.remove('active', 'active-recv');
+    tile.classList.remove('active', 'active-recv', 'active-anycast');
     faceEl.setActivity('idle');
   }
   clearCaption();
 
   ft.tile.classList.add('active');
   ft.faceEl.setActivity('thinking');
-  await wait(500 + Math.random() * 350);
+  await wait(480 + Math.random() * 320);
 
+  // Highlight recipient(s)
   if (mode === 'dm' && to && faceTiles[to]) {
     faceTiles[to].tile.classList.add('active-recv');
+  } else if (mode === 'anycast' && to && faceTiles[to]) {
+    faceTiles[to].tile.classList.add('active-anycast');
   }
 
-  animateTurn(from, to, mode);
-
-  // Show speaker label in caption bar
-  setCaptionSpeaker(from);
+  animateTurn(from, to, mode, role);
+  setCaptionSpeaker(from, mode, to, role);
   captionText.textContent = '';
 
-  // Drive face (speak() handles internal caption + mouth; internal caption is hidden by CSS)
-  if (expr) ft.faceEl.expr = expr; // set before speak so it isn't overridden
+  // Drive face mouth via speak(); caption bar types in parallel
+  if (expr) ft.faceEl.expr = expr;
   const speakDone = ft.faceEl.speak(text, { cps: CPS });
 
-  // Type the visible caption bar in parallel at the same rate
   let ci = 0;
   const capTick = setInterval(() => { captionText.textContent = text.slice(0, ++ci); }, 1000 / CPS);
 
   await speakDone;
   clearInterval(capTick);
-  captionText.textContent = text; // ensure it's complete
+  captionText.textContent = text;
 
   totalMsgs++;
+  touchActivity();
 
   ft.faceEl.setActivity('waiting');
-  await wait(880 + Math.random() * 520);
+  await wait(820 + Math.random() * 480);
 }
 
 async function runEpisode(ep) {
-  const badge = document.getElementById('ep-badge');
-  const epNameEl = document.getElementById('ep-name');
-  epNameEl.textContent = ep.title;
-  badge.classList.add('vis');
+  document.getElementById('ep-name').textContent = ep.title;
+  document.getElementById('ep-badge').classList.add('vis');
 
   for (const turn of ep.turns) await runTurn(turn);
 
-  // cool-down
   for (const [, { tile, faceEl }] of Object.entries(faceTiles)) {
-    tile.classList.remove('active', 'active-recv');
+    tile.classList.remove('active', 'active-recv', 'active-anycast');
     faceEl.setActivity('idle');
   }
   clearCaption();
-  badge.classList.remove('vis');
+  document.getElementById('ep-badge').classList.remove('vis');
 }
 
 async function loop() {
@@ -471,12 +605,13 @@ async function loop() {
     } catch (err) {
       console.error('episode error:', err);
       for (const [, { tile, faceEl }] of Object.entries(faceTiles)) {
-        try { tile.classList.remove('active', 'active-recv'); faceEl.setActivity?.('idle'); } catch {}
+        try { tile.classList.remove('active', 'active-recv', 'active-anycast'); faceEl.setActivity?.('idle'); } catch {}
       }
       clearCaption();
+      touchActivity(); // prevent stall-reload during recovery
     }
     ep++;
-    await wait(3200);
+    await wait(3000);
   }
 }
 
