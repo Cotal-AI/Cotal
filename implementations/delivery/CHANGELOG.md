@@ -1,5 +1,12 @@
 # @cotal-ai/delivery
 
+## 0.8.0
+
+### Patch Changes
+
+- Updated dependencies [edccc7c]
+  - @cotal-ai/core@0.8.0
+
 ## 0.7.0
 
 ### Minor Changes

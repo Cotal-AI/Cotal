@@ -1,5 +1,31 @@
 # @cotal-ai/manager
 
+## 0.8.0
+
+### Minor Changes
+
+- edccc7c: Mesh manifest, part 2: deploy onto a running mesh + ownership-scoped teardown.
+
+  - `cotal spawn -f <cotal.yaml>` deploys a manifest **additively** onto a mesh that's already running (the counterpart to `up -f`, which only ever brings up a fresh one). It classifies each declared channel (brand-new → seeded + owned; already present → `exists-unmanaged`, its card left untouched) and agent (will-create / already-owned / stale), boots agents through the running manager, and records exactly what it created in a creation-only ledger (`.cotal/manifests/<runId>.json`). `--dry-run` previews the plan; a re-declared agent whose policy changed is **stale** and exits non-zero unless `--allow-stale <names>`. Unmanaged actors with access to a declared channel are surfaced as a SECURITY warning (an explicit lower bound — presence + the membership feed, not live-only subscriptions).
+  - `cotal down -f <cotal.yaml>` (or `--run <id>`) tears down **only** what a `spawn -f` run created — its agents and the channels it added — never foreign actors on the shared mesh. The ledger is treated as untrusted input and validated whole before any deletion; an owned agent is stopped only when its recorded name **and** id match the live one; cred paths are derived from the auth root and deleted without following symlinks; an owned channel is removed only when no other members remain. An edited manifest no longer matches its ledger and fails with a `--run` hint rather than guessing. Local-only: same checkout/host that created the run.
+
+  Both verbs share the manifest pipeline and the resolved launch-spec handoff; `spawn -f` boots via a new **operator-only** manager `launch` control op (it reads the run spec by id, never an arbitrary path).
+
+  Known limitation: the manager control commands (`cotal ps`/`start`/`stop`/`attach`) don't yet registry-resolve the broker for `--space` — they default to `nats://127.0.0.1:4222`. When managing a manifest mesh on a non-default port, pass an explicit `--server <url>` to those commands (e.g. `cotal ps --space team --server nats://127.0.0.1:14999`). `up -f`/`spawn -f`/`down -f` and `send`/`channels`/`console`/`web` already resolve the broker from the registry and need no `--server`. A follow-up will route the manager commands through the same resolution.
+
+### Patch Changes
+
+- 7ea4adf: Fix: `cotal ps` / `start` / `stop` / `attach` now resolve their broker from the mesh registry — the
+  same way `send` / `channels` / `console` / `web` and the manifest verbs already do — instead of
+  silently defaulting to `nats://127.0.0.1:4222`. Managing a manifest mesh on a non-default port no
+  longer needs an explicit `--server`: `--space <name>` finds the recorded broker, and `--server`
+  stays an override only. Each command also mints its privileged "manager" cred from the **resolved**
+  mesh's own recorded root, so `--space <other>` loads that mesh's trust material instead of failing
+  against the current folder's. `--creds` remains a raw off-registry escape hatch; the `supervise`
+  daemon is unchanged.
+- Updated dependencies [edccc7c]
+  - @cotal-ai/core@0.8.0
+
 ## 0.7.0
 
 ### Minor Changes
