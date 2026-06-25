@@ -3,7 +3,7 @@ import { join, dirname, delimiter, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
-  LEASE_TTL_MS,
+  MANAGER_LEASE_TTL_MS,
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
@@ -217,7 +217,7 @@ export class Manager {
           : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
       );
     }
-    this.leaseTimer = setInterval(() => { void this.renewLease(); }, LEASE_TTL_MS / 2);
+    this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_TTL_MS / 2);
     this.leaseTimer.unref?.();
     // Serve all three control tiers (P2a): self-service (no-name self stop/despawn), privileged
     // (start / own-child stop-despawn-attach / own definePersona), and admin (purge / cross-agent

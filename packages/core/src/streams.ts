@@ -68,6 +68,12 @@ export const DINBOX_MAX_ACK_PENDING = 1000;
  *  available on this stack — a deliberate simplicity choice, not a capability gap. See {@link deliveryBucket}.) */
 export const LEASE_TTL_MS = 30_000;
 
+/** Manager singleton-lease TTL (ms) — the bucket-level `max_age` on `cotal_manager_<space>`. Shorter
+ *  than the delivery lease so a crashed manager frees the space for a replacement promptly; the holder
+ *  renews at ~half it, leaving a 2× margin so a brief GC/scheduling pause never self-evicts a healthy
+ *  manager. Tune here (independent of the delivery lease above). */
+export const MANAGER_LEASE_TTL_MS = 10_000;
+
 /** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
  *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint
  *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,

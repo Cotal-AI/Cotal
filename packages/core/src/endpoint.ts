@@ -14,7 +14,7 @@ import {
 } from "@nats-io/transport-node";
 import { idFromCreds } from "./identity.js";
 import { assertValidName } from "./resolve.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, LEASE_TTL_MS } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -1356,7 +1356,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.managerLeaseKv) return this.managerLeaseKv;
     const kvm = new Kvm(this.nc);
     try {
-      this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: LEASE_TTL_MS });
+      this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: MANAGER_LEASE_TTL_MS });
     } catch {
       this.managerLeaseKv = await kvm.open(managerBucket(this.space));
     }

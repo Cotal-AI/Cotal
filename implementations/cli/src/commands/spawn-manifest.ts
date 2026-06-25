@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   DEFAULT_SERVER,
-  LEASE_TTL_MS,
+  MANAGER_LEASE_TTL_MS,
   readChannelRegistry,
   seedChannelRegistry,
   type ControlReply,
@@ -47,7 +47,7 @@ export interface SpawnManifestFlags {
 const RUNTIMES = ["pty", "tmux", "cmux"];
 
 /** Short control-plane probe to tell a LIVE lease-holder from a stale lease a crashed manager left
- *  behind (its key lingers until the bucket TTL). Kept well under {@link LEASE_TTL_MS}. */
+ *  behind (its key lingers until the bucket TTL). Kept well under {@link MANAGER_LEASE_TTL_MS}. */
 const MANAGER_PROBE_MS = 3_000;
 
 export async function spawnManifest(file: string, flags: SpawnManifestFlags): Promise<void> {
@@ -161,7 +161,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       writeLaunchSpec(root, buildLaunchSpec(eff, runId), { update: Boolean(prior) });
       // Ensure a manager is SERVING this space, then validate it's ours — the lease is the authoritative
       // owner record. A held lease alone is not proof a manager is alive (a crashed holder's key lingers
-      // until the bucket TTL, LEASE_TTL_MS), so read it (fast) and, when one exists, PROBE control to tell
+      // until the bucket TTL, MANAGER_LEASE_TTL_MS), so read it (fast) and, when one exists, PROBE control to tell
       // a LIVE holder from a stale key. Never trust `.cotal/manager.pid` (blind to a manager started
       // another way — two managers queue-split every control op).
       const held = await ep.readManagerLease();
@@ -171,8 +171,8 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       } else if (!(await waitManagerReady(ep, MANAGER_PROBE_MS))) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
-        console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${held.pid}); waiting up to ${Math.ceil(LEASE_TTL_MS / 1000)}s for it to expire…`));
-        if (!(await waitLeaseGone(ep, LEASE_TTL_MS + 5_000))) {
+        console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${held.pid}); waiting up to ${Math.ceil(MANAGER_LEASE_TTL_MS / 1000)}s for it to expire…`));
+        if (!(await waitLeaseGone(ep, MANAGER_LEASE_TTL_MS + 5_000))) {
           console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${held.pid}) after its TTL — stop it or check .cotal/manager.log`));
           process.exit(1);
         }
