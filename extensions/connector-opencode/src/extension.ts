@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -50,6 +50,7 @@ export const opencodeConnector: Connector = {
     // unrelated secrets don't reach the child (P3).
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
+      ...aclEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -57,6 +58,12 @@ export const opencodeConnector: Connector = {
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
+    // Where serve.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
+    // workspace root so a per-agent launch cwd (which the manager can point at any repo) doesn't
+    // drop `.cotal/opencode/<name>` into the target tree. Standalone `cotal spawn` has no manager
+    // workspace → root it at the launch dir (this process's cwd, which the child inherits), the
+    // prior behavior. serve.ts requires this env (no silent cwd fallback).
+    env.COTAL_OPENCODE_HOME = opts.workspaceRoot ?? process.cwd();
 
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",

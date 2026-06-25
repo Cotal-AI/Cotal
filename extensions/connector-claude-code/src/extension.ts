@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -42,6 +42,7 @@ export const claudeConnector: Connector = {
     // by name). The operator's unrelated secrets don't reach the child (P3).
     const env: Record<string, string> = {
       ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
+      ...aclEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the

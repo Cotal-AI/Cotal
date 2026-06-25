@@ -474,23 +474,29 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       description:
         "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use when the team needs another agent.",
       schema: {
-        name: z.string().describe("Name for the new peer; auto-numbered (e.g. reviewer-2) if taken."),
+        name: z.string().describe("Which persona to spawn — the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken). Fails if no such persona file exists — spawn an existing persona, don't invent a name."),
         role: z
           .string()
           .optional()
-          .describe("Optional role for the new peer (e.g. worker, reviewer)."),
+          .describe("Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role."),
         agent: z
           .string()
           .optional()
-          .describe("Optional harness the new peer runs on — the agent/connector type (claude, opencode, hermes), NOT the peer's display name (that's `name`). Defaults to the manager's default (Claude)."),
+          .describe("Optional harness the new peer runs on — the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's default (Claude)."),
         model: z
           .string()
           .optional()
           .describe("Optional model override (e.g. opus, sonnet) — wins over the persona file's model:."),
+        cwd: z
+          .string()
+          .optional()
+          .describe(
+            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
+          ),
       },
-      async run(agent, _config, { name, role, agent: agentType, model }: { name: string; role?: string; agent?: string; model?: string }) {
+      async run(agent, _config, { name, role, agent: agentType, model, cwd }: { name: string; role?: string; agent?: string; model?: string; cwd?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, cwd });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned

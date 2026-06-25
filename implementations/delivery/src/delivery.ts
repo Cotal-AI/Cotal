@@ -5,13 +5,13 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
-  authDir,
-  findCotalRoot,
   isReachable,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
+  type MembershipFeedHandle,
 } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { startMembership } from "./membership.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -123,6 +123,16 @@ export async function runDelivery(argv: string[]): Promise<void> {
   catch { /* lost the lease between acquire and ready — the renew loop's CAS failure will exit us */ }
   console.log(`✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
 
+  // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
+  // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
+  // logs and the graph degrades to traffic-only; Plane-3 delivery is never affected.
+  let membership: MembershipFeedHandle | undefined;
+  try {
+    membership = await startMembership({ space, server });
+  } catch (e) {
+    console.error(`! membership: failed to start (${(e as Error).message}) — graph membership degraded, delivery unaffected`);
+  }
+
   let stopping = false;
   const shutdown = (code: number): void => {
     if (stopping) return;
@@ -133,6 +143,7 @@ export async function runDelivery(argv: string[]): Promise<void> {
     // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.
     setTimeout(() => process.exit(code), 2000);
     void (async () => {
+      try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await ep.releaseDeliveryLease(shard); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);

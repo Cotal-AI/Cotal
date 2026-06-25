@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import * as readline from "node:readline";
 import {
   CotalEndpoint,
-  isReachable,
   parseJoinLink,
   resolvePeer,
   AmbiguousPeerError,
@@ -15,6 +14,7 @@ import {
   type CotalMessage,
 } from "@cotal-ai/core";
 import { resolveSpace } from "../lib/status.js";
+import { connectOrExit, reachableOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
 
 export async function join(argv: string[]): Promise<void> {
@@ -37,9 +37,7 @@ export async function join(argv: string[]): Promise<void> {
 
   // A join link carries server + auth + space; explicit flags still override it.
   const link = values.link ? parseJoinLink(values.link) : undefined;
-  const space = values.space ?? link?.space ?? resolveSpace(process.cwd());
   const name = values.name ?? userInfo().username;
-  const server = values.server ?? link?.servers ?? DEFAULT_SERVER;
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
   const auth = {
     token: values.token ?? link?.token,
@@ -49,12 +47,23 @@ export async function join(argv: string[]): Promise<void> {
     tls: values.tls ?? link?.tls ?? false,
   };
 
-  if (!(await isReachable(server, auth))) {
-    console.error(c.red(`Can't reach NATS at ${server}.`));
-    console.error(
-      c.dim(link ? "Check the join link and that the host is up." : "Start it in another terminal:  pnpm cotal up"),
-    );
-    process.exit(1);
+  let space: string;
+  let server: string;
+  // An explicit connection (a join link, --token, or --creds) is taken at face value — that's the
+  // escape hatch. Otherwise resolve the running mesh from any directory (server + trust material)
+  // and self-mint, so a bare `cotal join` works outside the project instead of crashing credless.
+  if (link || values.token || values.creds) {
+    space = values.space ?? link?.space ?? resolveSpace(process.cwd());
+    server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
+    // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
+    // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
+    await reachableOrExit(server, auth);
+  } else {
+    const conn = await connectOrExit(values, "manager");
+    space = conn.space;
+    server = conn.server;
+    auth.creds = conn.creds;
   }
 
   const ep = new CotalEndpoint({

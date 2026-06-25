@@ -1,8 +1,8 @@
 # Cotal docs
 
-These describe the **protocol**, the wire contract that *is* Cotal. Each runnable example
-documents itself in its own `examples/*/README.md`. Working build-plans and research live
-in the private `.internal/` submodule, not here.
+These describe the **protocol** — the wire contract that *is* Cotal — and the core CLI surfaces
+over it. Each runnable example documents itself in its own `examples/*/README.md`. Working
+build-plans and research live in the private `.internal/` submodule, not here.
 
 ## New here? Read these three, in order
 
@@ -22,6 +22,7 @@ Read these when you need the detail on one topic.
 | Doc | Answers |
 |---|---|
 | [getting-started.md](getting-started.md) | How do I install and run a local mesh? |
+| [manifest.md](manifest.md) | How do I declare a whole team in one `cotal.yaml` and launch it (`up -f` / `spawn -f` / `down -f`)? |
 | [protocol-view.md](protocol-view.md) | How do the watch/operate surfaces share one model (`MeshView`)? |
 | [transport.md](transport.md) | What is protocol vs transport, and what must a binding provide? |
 | [spaces.md](spaces.md) | What is a space, how does it differ from a channel, and how do spaces connect? |

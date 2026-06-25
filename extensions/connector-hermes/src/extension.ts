@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
 /** The launcher (run via tsx, which loads both) owns the mesh endpoint and supervises the Hermes
  *  gateway as a child — see launch.ts. Resolve `.ts` when this module loads from source (dev) and
@@ -30,6 +30,7 @@ export const hermesConnector: Connector = {
     // don't reach the gateway child (P3).
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
+      ...aclEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

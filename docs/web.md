@@ -33,10 +33,14 @@ whole space. A `node:http` server serves the static page and bridges mesh → br
 - `GET /graph` · `/graph.js`: the Graph view (`src/web/graph.html`, `src/web/graph.js`) — same
   feed, rendered as a live constellation (see [Graph view](#graph-view))
 - `GET /feed`: SSE stream; `roster` events on presence change, `message` events for every
-  comm tapped on the space (chat / unicast / anycast)
+  comm tapped on the space (chat / unicast / anycast), and `membership` events when the
+  broker-sourced membership feed changes
 - `GET /api/meta`: `{ space }`
 - `GET /api/roster`: current presence
 - `GET /api/channels`: channels plus message counts
+- `GET /api/membership`: broker-sourced channel membership — `{ asOf, members: [{ id, live[],
+  durable[], observedAt }] }` (silent readers included); `asOf` is the feed's freshness heartbeat,
+  absent when no feed is available
 - `GET /api/channels/:name/history`: backlog for one channel
 - `GET /api/activity`: recent history (mode-tagged `{mode, msg}`) merged across channels and
   DMs, to **backfill** the all-activity feed (the live tap only carries messages from after a
@@ -82,23 +86,40 @@ data source. Channels and agents are both nodes; the wires between them are the 
 
 - **Nodes:** channels are bright **hubs**, agents are smaller orbs coloured by status (working
   / waiting / idle / offline, the same palette as the Monitor). Waiting agents pulse.
-- **Wires + traffic:** a wire is faint at rest and **glows when a message flows** along it. A
-  channel post sends a comet from the sender into the hub, the hub blooms, then the post **fans
-  out** to every other agent on the channel (a real broadcast). A direct message is a curved
-  comet between the two peers; an anycast blooms at the sender.
+- **Wires = membership:** an agent has a spoke to **every channel it's subscribed to**, drawn from
+  the **broker-sourced membership feed** (`/api/membership`) — so a silent subscriber shows on any
+  channel class. A wire is faint at rest and **glows when a message flows** along it. A live
+  (connected) member draws solid-faint; a member that's only durable while its presence is offline
+  draws dashed-dim ("member, currently offline") — **hidden by default**, revealed with the *hide
+  offline* control (the channel's detail card still lists them either way). A channel post sends a comet from the sender into
+  the hub, the hub blooms, then the post **fans out** to every other member on the channel (a real
+  broadcast). A direct message is a curved comet between the two peers; an anycast blooms at the sender.
 - **Layout:** the simulation cools to a rest state and only gently **re-heats on a structural
   change** (a node or wire appears/disappears), so the constellation settles and messages drive
   *glow*, not motion. Drag to pan, scroll to zoom, click a node for its detail card; the camera
   auto-fits until you take over.
 - **Controls:** per-mode filter chips (channel / direct / anycast) and pause, mirroring the
-  Monitor feed.
+  Monitor feed, plus **hide offline** (on by default) — collapses the dashed-dim "member,
+  currently offline" nodes to keep the constellation to who's actually here; toggle it off to
+  reveal durable members that are away.
 
-**Wires are activity-derived, by design.** True channel membership is a privileged manager-only
-read and isn't always available to the observer (e.g. when the durable backstop is down), so the
-graph draws what it can *observe*: an agent links to a channel once it communicates there, and a
-DM wire appears once two peers have messaged. Links persist (faded) while both endpoints are
-present and are cleaned up when an agent leaves — never on a timer. Instance ids are per-session,
-so only present agents are linked; stale ids from history are dropped.
+**Membership is broker-sourced and authoritative, not self-reported.** Channels delivered `live`
+keep no enumerable subscriber roster, so "who reads #x" can't be read from any one place. A
+privileged **delivery-daemon module** reconstructs it from the broker: the connection view
+(`$SYS` CONNZ — every connection's actual subscriptions, including silent readers) **unioned** with
+the durable members registry, keyed by agent. It publishes a derived, non-`$SYS` feed
+(`cotal_membership_<space>`) that the observer serves at `/api/membership` + a `membership` SSE
+event; the graph draws a spoke per membership. This shows silent subscribers on every channel class
+without putting any broker-admin credential in the browser — the dashboard stays a read-only
+consumer. A spoke also appears if an agent *posts* to a channel it isn't a member of (a fading
+traffic-only spoke), and a DM wire appears once two peers have messaged. Membership spokes persist
+at constant faint alpha while a member, and are pruned when membership drops — never on a timer.
+
+The header carries a **membership** pill: *live* (feed fresh), *stale* (the daemon's heartbeat has
+aged out), or *traffic-only* (no feed — e.g. open mode, or a space provisioned before this feature;
+the graph then degrades to traffic-derived spokes and says so). Broker-sourced membership needs the
+delivery daemon (auth mode), and is provisioned on a fresh `cotal up`; a space created before the
+feature gains it only when its auth is regenerated.
 
 ## Design
 

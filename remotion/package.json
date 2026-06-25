@@ -14,7 +14,20 @@
     "render:full": "remotion render MeshFull out/mesh-full.gif --codec=gif --every-nth-frame=3",
     "render:banner": "remotion render MeshBanner out/mesh-banner.gif --codec=gif --every-nth-frame=3",
     "render:ring": "remotion render MeshRing out/mesh-ring.gif --codec=gif --every-nth-frame=3",
-    "render:new": "pnpm render:frame && pnpm render:full && pnpm render:banner && pnpm render:ring"
+    "render:new": "pnpm render:frame && pnpm render:full && pnpm render:banner && pnpm render:ring",
+    "render:header-morph": "remotion render HeaderMorph out/header-morph.gif --codec=gif --every-nth-frame=3",
+    "render:header-reel": "remotion render HeaderModesReel out/header-reel.gif --codec=gif --every-nth-frame=3",
+    "render:header-assemble": "remotion render HeaderAssemble out/header-assemble.gif --codec=gif --every-nth-frame=3",
+    "render:header-banner": "remotion render HeaderBanner out/header-banner.gif --codec=gif --every-nth-frame=3",
+    "render:headers": "pnpm render:header-morph && pnpm render:header-reel && pnpm render:header-assemble && pnpm render:header-banner",
+    "render:snippets": "remotion render S1Problem out/s1-problem.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render S2Shift out/s2-shift.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render S3Modes out/s3-modes.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render S4CrossVendor out/s4-crossvendor.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render S5Topology out/s5-topology.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render S6Logo out/s6-logo.gif --codec=gif --every-nth-frame=3 --scale=0.5",
+    "render:explainer": "remotion render ExplainerFull out/explainer-full.mp4 && remotion render ExplainerCore out/explainer-core.mp4",
+    "render:header-cut": "remotion render HeaderCut out/header-cut.gif --codec=gif --every-nth-frame=3 --scale=0.5",
+    "render:demo-snippets": "remotion render S0Headline out/s0-headline.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render S7Command out/s7-command.gif --codec=gif --every-nth-frame=3 --scale=0.5",
+    "render:demos": "remotion render DemoLoop out/demo-loop.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoCommand out/demo-command.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoHeadline out/demo-headline.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoShort out/demo-short.gif --codec=gif --every-nth-frame=3 --scale=0.5",
+    "render:demo-codex": "remotion render DemoMergedCodex out/demo-merged-codex.mp4 && remotion render DemoMergedCodex out/demo-merged-codex.gif --codec=gif --every-nth-frame=3 --scale=0.5",
+    "render:mix": "remotion render DemoCodexRotate out/demo-codex-rotate.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoCodexShuffle out/demo-codex-shuffle.gif --codec=gif --every-nth-frame=3 --scale=0.5",
+    "render:readme": "remotion render DemoReadme out/cotal-demo-readme.mp4 --crf=16"
   },
   "dependencies": {
     "@remotion/cli": "4.0.465",

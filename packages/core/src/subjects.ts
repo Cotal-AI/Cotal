@@ -302,6 +302,78 @@ export function aclKey(owner: string): string {
   return token(owner);
 }
 
+// ---- Authoritative channel membership (broker CONNZ → derived feed) ----
+//
+// The graph view needs "who is subscribed to each channel" — incl. silent readers and `live` channels
+// that keep no enumerable roster. That truth lives in the broker's connection view (CONNZ), a
+// system-account service. A privileged daemon reads it on a scoped `$SYS` cred and publishes a derived,
+// non-`$SYS` feed in the data account; the web app consumes that. See graph-membership-connz.md.
+
+/** Name of the KV bucket holding the derived channel-membership feed for a space (data-account, derived
+ *  from CONNZ ∪ the members registry). One entry per AGENT (key = the agent nkey / `card.id`); value is a
+ *  {@link import("./types.js").ChannelMembership}. Per-agent keying (not per-channel) keeps keys dot-free
+ *  and each value tiny — cap-safe under `max_payload`. Privileged-write (the `membership-rw` cred), read
+ *  by the admin/observer dashboard only (exposing the silent-reader set is a trust shift). */
+export function membershipBucket(space: string): string {
+  return `cotal_membership_${token(space)}`;
+}
+
+/** KV key for one agent's membership record: the agent id (an nkey — `[A-Z0-9]`, dot-free, a `token()`
+ *  no-op; keyed like presence/acl, which use the bare id). */
+export function membershipKey(id: string): string {
+  return token(id);
+}
+
+/** Reserved membership-bucket key for the feed's freshness heartbeat — the daemon re-stamps it every
+ *  successful poll (even when no membership changed), so the dashboard can tell "feed is live" from "feed
+ *  is stale/dead" WITHOUT the per-agent diff-before-put suppressing the signal. `=` is a valid KV-key char
+ *  that `token()` can never emit, so it can never collide with an agent nkey (same trick as
+ *  {@link CHANNEL_DEFAULTS_KEY}). */
+export const MEMBERSHIP_FEED_KEY = "=feed";
+
+/** The scoped client inbox prefix the membership observer connects under, so its `$SYS` request/reply
+ *  replies land on a subject its (least-privilege) cred is allowed to subscribe (`<prefix>.>`) — never
+ *  the global `_INBOX.>`. A constant so the cred's `sub.allow` and the connection's `inboxPrefix` can't
+ *  drift. */
+export const MEMBERSHIP_INBOX_PREFIX = "_INBOX.cotal-membership";
+
+/** The account-scoped CONNZ request subject (`$SYS.REQ.ACCOUNT.<accountID>.CONNZ`, nats-server
+ *  `events.go` `accDirectReqSubj`). `accountID` is the DATA account's public key. The request **fans
+ *  out** — every server replies for its local conns — so the caller paginates per-server and unions by
+ *  nkey. Account-scoped (over server-wide `$SYS.REQ.SERVER.PING.CONNZ`) keeps the cred to one account. */
+export function connzRequestSubject(accountId: string): string {
+  return `$SYS.REQ.ACCOUNT.${accountId}.CONNZ`;
+}
+
+/** Account connection-lifecycle event subjects (`$SYS.ACCOUNT.<accountID>.CONNECT|DISCONNECT`). The
+ *  observer subscribes these as **re-poll triggers** only — there is no SUB/UNSUB event, so the periodic
+ *  CONNZ poll is the primary signal (these just shorten join/leave-the-mesh latency). Pinned to the one
+ *  account id, never `$SYS.ACCOUNT.*` (every tenant's events the moment two spaces share a broker). */
+export function accountConnectSubject(accountId: string): string {
+  return `$SYS.ACCOUNT.${accountId}.CONNECT`;
+}
+export function accountDisconnectSubject(accountId: string): string {
+  return `$SYS.ACCOUNT.${accountId}.DISCONNECT`;
+}
+
+/** Extract the channel pattern from a live chat SUBSCRIPTION subject in this space, or `null` if it
+ *  isn't one. A subscription's sender slot is `*` (an agent's `sub.allow` is `chat.*.<channel>`), so the
+ *  channel portion (wildcards preserved, e.g. `team.>`) is everything after. This is the ALLOWLIST the
+ *  membership daemon uses to turn a connection's subscription list into its channel-subscription set —
+ *  matched against the chat grammar (not a denylist of known plumbing, which rots when a new plumbing
+ *  subject is added). Drops `_INBOX`, JetStream API, other-space, and non-chat subjects. The whole-chat
+ *  god-view (`chat.*.>` → rest `">"`) IS returned here; the caller excludes such taps separately.
+ *
+ *  COUPLING (mitnick): both this extraction AND the membership daemon's god-tap detection ride
+ *  {@link parseSubject}'s sender-at-[3] chat layout. The deferred read-containment grammar reorder
+ *  (sender out of the subject) would move where the channel portion begins and silently break both —
+ *  revisit this + the daemon's exclusion (and their tests) if that grammar ships. */
+export function channelFromChatSubscription(space: string, subject: string): string | null {
+  if (!subject.startsWith(`${spacePrefix(space)}.chat.`)) return null;
+  const p = parseSubject(subject);
+  return p && p.kind === "chat" ? p.rest : null;
+}
+
 /** Name of the KV bucket holding the delivery daemon's single-flight lease + readiness signal for a
  *  space. One key per shard ({@link leaseKey}); writable only by the `delivery` cred, world-readable
  *  (an agent reads it for the non-gating delivery-health surface). The bucket holds ONLY lease keys,
@@ -316,6 +388,16 @@ export function deliveryBucket(space: string): string {
 export function leaseKey(shardIndex: number): string {
   return `lease.${shardIndex}`;
 }
+
+/** Name of the KV bucket holding the per-space MANAGER singleton lease — one key
+ *  ({@link MANAGER_LEASE_KEY}), the live manager for the space. Bucket-level TTL (max_age =
+ *  LEASE_TTL_MS) auto-expires a crashed manager's lease so a replacement can acquire. Created by the
+ *  manager (allow-all profile); read by `spawn -f` to reuse the running manager not start a duplicate. */
+export function managerBucket(space: string): string {
+  return `cotal_manager_${token(space)}`;
+}
+/** The single key in {@link managerBucket} — there is exactly one manager per space. */
+export const MANAGER_LEASE_KEY = "lease";
 
 /** Deterministic FNV-1a (32-bit) hash of `key` into `[0, n)` — stable across processes/restarts, so a
  *  shard assignment never moves under a running daemon. The Plane-3 partition seam (sharding):

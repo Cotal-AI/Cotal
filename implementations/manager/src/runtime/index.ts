@@ -2,31 +2,28 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { registry, type Runtime, type RuntimeKind, type RuntimeProvider } from "@cotal-ai/core";
 import { PtyRuntime } from "./pty.js";
-import { TmuxRuntime, tmuxAvailable } from "./tmux.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
-/** How a manager picks its backend. `auto` → tmux iff already inside a tmux
- *  session, else pty (the default). Any other kind (e.g. `cmux`) is resolved from
- *  the registry — contributed by an imported integration. No silent fallback. */
+/** How a manager picks its backend. `auto` is the deterministic default — always `pty`. tmux and
+ *  cmux are never auto-selected; choose them explicitly (`--runtime tmux`/`cmux`), which resolves
+ *  the integration from the registry and fails loud if it isn't imported. No fallbacks. */
 export type RuntimeMode = RuntimeKind | "auto";
 
-/** Build the runtime a manager will spawn through. `pty`/`tmux` ship with the
- *  manager; other kinds are resolved from a registered {@link RuntimeProvider}
- *  (e.g. `@cotal-ai/cmux`). `session` names the tmux session (per space) for tmux. */
+/** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
+ *  resolves to. `tmux` and `cmux` are extensions, selected only by an explicit kind and resolved
+ *  from a registered {@link RuntimeProvider} they self-register on import (`@cotal-ai/tmux`,
+ *  `@cotal-ai/cmux`); an explicit kind whose integration isn't imported — or whose backend isn't
+ *  reachable — throws, never a silent fallback to pty. `session` names the tmux session (per space). */
 export function createRuntime(mode: RuntimeMode, session: string): Runtime {
-  const kind: RuntimeKind = mode === "auto" ? (process.env.TMUX ? "tmux" : "pty") : mode;
+  const kind: RuntimeKind = mode === "auto" ? "pty" : mode;
   if (kind === "pty") return new PtyRuntime();
-  if (kind === "tmux") {
-    if (!tmuxAvailable()) throw new Error("tmux runtime requested but tmux is not installed");
-    return new TmuxRuntime(session);
-  }
   let provider: RuntimeProvider;
   try {
     provider = registry.resolve<RuntimeProvider>("runtime", kind);
   } catch {
     throw new Error(
-      `unknown runtime "${kind}" — is its integration imported? (e.g. import "@cotal-ai/cmux")`,
+      `unknown runtime "${kind}" — is its integration imported? (e.g. import "@cotal-ai/tmux" or "@cotal-ai/cmux")`,
     );
   }
   if (!provider.available())

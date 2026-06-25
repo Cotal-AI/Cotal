@@ -1,8 +1,8 @@
 import type { Extension } from "./registry.js";
 import type { LaunchSpec } from "./connector.js";
 
-/** Which backend a manager spawns through. Open-ended: `pty`/`tmux` ship with the
- *  manager, others (e.g. `cmux`) are contributed by a {@link RuntimeProvider}. */
+/** Which backend a manager spawns through. Open-ended: `pty` ships with the
+ *  manager; `tmux` and `cmux` are extensions contributed by a {@link RuntimeProvider}. */
 export type RuntimeKind = string;
 
 /** A live attach onto a running agent's terminal — the stream `cotal attach`

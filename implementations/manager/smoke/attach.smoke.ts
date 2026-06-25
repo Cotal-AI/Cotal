@@ -10,6 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { createRuntime } from "../src/index.js";
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
+import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
 import type { LaunchSpec } from "@cotal-ai/core";
 
 let failures = 0;
@@ -45,7 +46,19 @@ const cwd = process.cwd();
   h.stop({ graceful: false });
 }
 
-// tmux — watched natively: attach() points you at `tmux attach -t <session>:<name>`.
+// Runtime-selection contract (no fallbacks): `auto` is deterministic pty — even inside $TMUX. tmux
+// and cmux are explicit-only, so being in a tmux session must NOT auto-select tmux.
+{
+  const prevTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  check("auto resolves to pty (no $TMUX)", createRuntime("auto", SESSION).kind === "pty");
+  process.env.TMUX = "/tmp/fake-tmux-socket";
+  check("auto resolves to pty even inside $TMUX (no auto-detect, no fallback)", createRuntime("auto", SESSION).kind === "pty");
+  if (prevTmux === undefined) delete process.env.TMUX;
+  else process.env.TMUX = prevTmux;
+}
+
+// tmux — watched natively: attach() points you at `tmux attach-session -t <session>` + `select-window -t @N`.
 {
   let rt: ReturnType<typeof createRuntime> | null = null;
   try {
@@ -57,8 +70,8 @@ const cwd = process.cwd();
     const h = rt.spawn("smoke-tmux", spec, cwd);
     const err = attachError(() => h.attach());
     check(
-      "tmux: attach() points to `tmux attach -t cotal-smoke:smoke-tmux` (not a stream)",
-      err.includes("tmux attach -t cotal-smoke:smoke-tmux"),
+      "tmux: attach() points at `tmux attach-session` + a select-window-by-id hint (not a stream)",
+      err.includes("tmux attach-session -t cotal-smoke") && err.includes("select-window"),
     );
     check("tmux: hint is tmux-specific, never a cmux tab", !err.includes("cmux tab"));
     h.stop({ graceful: false });

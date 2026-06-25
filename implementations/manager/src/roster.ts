@@ -12,8 +12,10 @@ import type { StartAgentOpts } from "./manager.js";
  *
  * Each entry maps 1:1 to a {@link Manager.startAgent} call — the same spawn path the
  * control-plane `start` op uses. `agent` is required (the connector type; there is no
- * default connector). `role`/`config` are optional; persona/model come from the agent
- * file the manager discovers at `.cotal/agents/<name>.md`.
+ * default connector). `name` is the persona REF (the file `.cotal/agents/<name>.md`, which
+ * must exist); the booted peer presents under that file's own `name:`. `role`/`config`/`cwd` are
+ * optional; persona/model come from the same file, and `cwd` roots the agent at a folder of its
+ * own (default: the manager's workspace root).
  */
 export function loadRoster(path: string): StartAgentOpts[] {
   const doc: unknown = parse(readFileSync(path, "utf8"));
@@ -35,6 +37,6 @@ export function loadRoster(path: string): StartAgentOpts[] {
     if (!name) throw new Error(`${at} missing "name"`);
     const agent = str("agent")?.trim();
     if (!agent) throw new Error(`${at} (${name}) missing "agent" (e.g. claude / opencode)`);
-    return { name, agent, role: str("role"), config: str("config") };
+    return { name, agent, role: str("role"), config: str("config"), cwd: str("cwd") };
   });
 }

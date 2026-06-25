@@ -10,8 +10,9 @@ Trusted publishing replaces the long-lived `NPM_TOKEN` secret with short-lived O
 issued by GitHub Actions. Each published package must be configured once on npmjs.com.
 
 For **every** published package (`@cotal-ai/core`, `@cotal-ai/cli`, `@cotal-ai/manager`,
-`@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`, `@cotal-ai/connector-opencode`,
-`@cotal-ai/cmux`):
+`@cotal-ai/delivery`, `@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`,
+`@cotal-ai/connector-opencode`, `@cotal-ai/connector-hermes`, `@cotal-ai/cmux`, and the
+`cotal-ai` binary):
 
 1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.
    `https://www.npmjs.com/package/@cotal-ai/core/access`).

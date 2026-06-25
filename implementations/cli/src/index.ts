@@ -1,6 +1,8 @@
 import { registry, type Command } from "@cotal-ai/core";
 import { up } from "./commands/up.js";
 import { down } from "./commands/down.js";
+import { use, useComplete } from "./commands/use.js";
+import { meshes } from "./commands/meshes.js";
 import { setup, go } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
@@ -14,6 +16,7 @@ import { channels } from "./commands/channels.js";
 import { history } from "./commands/history.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
+import { topology } from "./commands/topology.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — a
  *  foreground agent launch that reuses the connector's launch recipe. Self-registers
@@ -38,15 +41,30 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "up",
     group: "Mesh",
-    summary: "start a local nats-server (JetStream, JWT auth by default; --open for an unauthenticated dev mesh)",
+    summary: "start a local nats-server (JetStream, JWT auth by default; --open for an unauthenticated dev mesh) — or `-f <cotal.yaml>` to launch a whole mesh from a manifest [--dry-run; --server/--host/--space/--runtime/--open override the file]",
     run: up,
   },
   {
     kind: "command",
     name: "down",
     group: "Mesh",
-    summary: "stop a background mesh started with `up --detach`",
+    summary: "stop a background mesh started with `up --detach` — or `-f <cotal.yaml>` / `--run <id>` for an ownership-scoped teardown of a `spawn -f` deploy [--dry-run] (run from its project — local only)",
     run: down,
+  },
+  {
+    kind: "command",
+    name: "meshes",
+    group: "Mesh",
+    summary: "list the running meshes (a `*` marks the `current` default a bare spawn joins)",
+    run: meshes,
+  },
+  {
+    kind: "command",
+    name: "use",
+    group: "Mesh",
+    summary: "set the default mesh for a bare `cotal spawn` when several are running — use <space>",
+    run: use,
+    complete: useComplete,
   },
   {
     kind: "command",
@@ -128,6 +146,13 @@ const baseCommands: Command[] = [
     summary:
       "mint a creds file for a space (auth mode) — mint <name> --profile <agent|observer> [--out <path>]; --signer emits a stripped account-signing file (no operator key) for a containerized manager",
     run: mint,
+  },
+  {
+    kind: "command",
+    name: "topology",
+    group: "Mesh",
+    summary: "validate + view a mesh manifest's access graph — topology view -f <cotal.yaml> (read-only; mutates nothing)",
+    run: topology,
   },
   {
     kind: "command",

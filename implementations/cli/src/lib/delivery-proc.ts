@@ -2,13 +2,11 @@ import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import {
   DEFAULT_SERVER,
-  authDir,
-  findCotalRoot,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";

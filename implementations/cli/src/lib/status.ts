@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE, authDir, findCotalRoot, isReachable, loadSpaceAuth } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { resolveNatsServer } from "./nats-bin.js";
 
 export interface MeshStatus {

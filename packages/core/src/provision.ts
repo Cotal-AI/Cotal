@@ -14,8 +14,7 @@
  * NOT yet provided (our job, not nsc's): credential revocation and an issuance audit
  * trail. Revocation is deferred past Demo 1; minted creds currently have no TTL.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join } from "node:path";
 import {
   encodeOperator,
   encodeAccount,
@@ -48,7 +47,12 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  membershipBucket,
   deliveryBucket,
+  connzRequestSubject,
+  accountConnectSubject,
+  accountDisconnectSubject,
+  MEMBERSHIP_INBOX_PREFIX,
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
@@ -58,15 +62,19 @@ import type { Identity } from "./identity.js";
  *  scope each one — at which point the manager MUST already hold its own privileged
  *  profile (broad: pre-create others' DM durables, serve ctl), not "agent", or it
  *  silently loses those powers the moment "agent" is tightened. */
-export type Profile = "agent" | "observer" | "admin" | "manager" | "delivery";
+export type Profile = "agent" | "observer" | "admin" | "manager" | "delivery" | "membership-rw";
 
 /** A space's persisted trust material. The `signingSeed` is the sensitive provisioner
- *  secret; everything else is public (JWTs) or recoverable. */
+ *  secret; everything else is public (JWTs) or recoverable. The system-account `signingSeed` is the ONE
+ *  field {@link saveSpaceAuth} never writes to disk — it lives only in memory, just long enough at `cotal
+ *  up` to mint the scoped membership-observer cred (see {@link mintMembershipObserverCreds}). */
 export interface SpaceAuth {
   space: string;
   operator: { seed: string; jwt: string };
   account: { pub: string; seed: string; jwt: string; signingSeed: string; signingPub: string };
-  sys: { pub: string; jwt: string };
+  /** `signingSeed` is in-memory only (a fresh {@link createSpaceAuth}); NEVER persisted — minting a
+   *  system-account user is broker-admin capability, so no standing `$SYS` seed is left on disk. */
+  sys: { pub: string; jwt: string; signingSeed?: string };
 }
 
 // Unlimited account limits — without explicit limits a JWT account defaults to 0 conns
@@ -130,7 +138,9 @@ export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
       signingSeed: dec(askp.getSeed()),
       signingPub: askp.getPublicKey(),
     },
-    sys: { pub: sysPub, jwt: sysJwt },
+    // `signingSeed` carried in-memory ONLY (stripped by saveSpaceAuth) — the single window in which the
+    // scoped membership-observer system-account user can be minted (see mintMembershipObserverCreds).
+    sys: { pub: sysPub, jwt: sysJwt, signingSeed: dec(syskp.getSeed()) },
   };
 }
 
@@ -271,10 +281,12 @@ function permissionsFor(
   opts: MintOpts,
 ): Record<string, unknown> {
   if (profile === "delivery") return deliveryPermissions(space, id); // scoped server-side Plane-3 infra
+  if (profile === "membership-rw") return membershipRwPermissions(space, id); // scoped graph-feed reader/writer
   if (profile === "manager") return {}; // privileged: allow-all defaults
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
+  const MEMKV = `KV_${membershipBucket(space)}`; // derived graph membership feed (read-only — dashboard)
   const DLVKV = `KV_${deliveryBucket(space)}`; // delivery lease/readiness (read-only — Component 6 health)
   const inbox = `_INBOX_${id}.>`;
 
@@ -313,6 +325,14 @@ function permissionsFor(
       `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
       `$JS.API.CONSUMER.INFO.${CHKV}.>`,
       `$JS.API.CONSUMER.DELETE.${CHKV}.>`,  // ephemeral consumer cleanup
+      // Derived graph-membership feed (broker-sourced who-is-subscribed) — watch + direct kv.get. The
+      // silent-reader set is sensitive, so read is admin/observer-only (this elevated profile), never an
+      // agent. Read-only: no `$KV.${membershipBucket}` publish — only the `membership-rw` cred writes it.
+      `$JS.API.STREAM.INFO.${MEMKV}`,
+      `$JS.API.STREAM.MSG.GET.${MEMKV}`,
+      `$JS.API.CONSUMER.CREATE.${MEMKV}.>`,
+      `$JS.API.CONSUMER.INFO.${MEMKV}.>`,
+      `$JS.API.CONSUMER.DELETE.${MEMKV}.>`,
       "$JS.FC.>", // ordered-consumer flow control
     ];
     if (profile === "admin") {
@@ -400,6 +420,11 @@ function permissionsFor(
     // NO write grant — only the `delivery` cred writes it.
     `$JS.API.STREAM.INFO.${DLVKV}`,
     `$JS.API.STREAM.MSG.GET.${DLVKV}`,
+    // Manager singleton lease (`cotal_manager_<space>`): NO grant at all — an agent must never read,
+    // write, or delete it. The manager (allow-all) is its only writer; an agent that could mutate the
+    // lease key could DoS the supervisor (evict it / pre-create the key to block a fresh one). Safety is
+    // by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream + `$KV.cotal_manager_*.>`),
+    // so do NOT add a broad `KV_*` / `$KV.<space>.>` grant that would silently re-open it.
   ];
   if (svcD) {
     // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
@@ -514,6 +539,81 @@ function deliveryPermissions(space: string, id: string): Record<string, unknown>
   return { pub: { allow: pub }, sub: { allow: sub } };
 }
 
+/** The scoped DATA-account `membership-rw` permission set (the graph feed's conn B; NEVER allow-all,
+ *  never minted for an agent — `cotal mint` excludes it, like `manager`/`delivery`). Least-privilege:
+ *  READ the members registry (the durable arm of the merge) + READ/WRITE the one derived membership
+ *  bucket, and nothing else. It holds NO chat/DM/anycast/ctl grant and never touches `$SYS` (account
+ *  isolation keeps the system-account CONNZ read on the SEPARATE conn-A cred). A leaked conn-B cred can
+ *  read durable-membership records and forge the feed — bounded to "dashboard integrity" by the
+ *  display-only invariant; it reads no message bodies and admins nothing. */
+function membershipRwPermissions(space: string, id: string): Record<string, unknown> {
+  const MKV = `KV_${membersBucket(space)}`; // durable arm — read
+  const MEMKV = `KV_${membershipBucket(space)}`; // derived feed — read (diff/prune) + write
+  const kvRead = (bucket: string) => [
+    `$JS.API.STREAM.INFO.${bucket}`,
+    `$JS.API.STREAM.MSG.GET.${bucket}`, // kv.get
+    `$JS.API.CONSUMER.CREATE.${bucket}.>`, // kv.keys()/kv.watch ordered consumer
+    `$JS.API.CONSUMER.INFO.${bucket}.>`,
+    `$JS.API.CONSUMER.DELETE.${bucket}.>`,
+  ];
+  const pub = [
+    "$JS.API.INFO",
+    ...kvRead(MKV),
+    ...kvRead(MEMKV),
+    `$KV.${membershipBucket(space)}.>`, // write derived feed (kv.put + kv.delete)
+    "$JS.FC.>", // ordered-consumer flow control
+  ];
+  return { pub: { allow: pub }, sub: { allow: [`_INBOX_${id}.>`] } };
+}
+
+/** The scoped SYSTEM-account `membership-observer` permission set (the graph feed's conn A). An EXPLICIT
+ *  block is MANDATORY: a system-account user with NO permissions block defaults to ALLOW-ALL = full
+ *  `$SYS` = broker admin (verified — pre-flight spike + docs). Least-privilege allowlist:
+ *   - **pub:** the account-scoped CONNZ request subject ONLY (not server-wide `PING.CONNZ`, not
+ *     `REQ.SERVER.*`/`REQ.CLAIMS.*`).
+ *   - **sub:** the scoped reply inbox (`<MEMBERSHIP_INBOX_PREFIX>.>`) + this ONE account's
+ *     CONNECT/DISCONNECT events (re-poll triggers) — never `$SYS.ACCOUNT.*.…` (cross-tenant) nor
+ *     `$SYS.ACCOUNT.<id>.>` (pulls in SUBSZ/JSZ/purge).
+ *  No `$SYS.>` deny that would shadow the allows (deny-beats-allow). A leaked conn-A cred enumerates THIS
+ *  account's connections (silent readers + nkeys) and can forge the feed; it reads no bodies, touches no
+ *  other account, and admins no server. */
+function membershipObserverPermissions(accountId: string): Record<string, unknown> {
+  return {
+    pub: { allow: [connzRequestSubject(accountId)] },
+    sub: {
+      allow: [
+        `${MEMBERSHIP_INBOX_PREFIX}.>`,
+        accountConnectSubject(accountId),
+        accountDisconnectSubject(accountId),
+      ],
+    },
+  };
+}
+
+/** Mint the scoped `membership-observer` creds — a SYSTEM-account user (conn A of the graph feed),
+ *  signed with the in-memory `auth.sys.signingSeed` from a fresh {@link createSpaceAuth}. THROWS if that
+ *  seed is absent (a re-`up` of an already-provisioned space, whose `$SYS` seed was discarded at its
+ *  original `up`): the observer can only be minted at the (re-)provision that creates the account — a
+ *  documented migration property, not a silent no-op. The CONNZ/event subjects pin the DATA account id
+ *  (`auth.account.pub`). Mirrors {@link mintCreds} but issues into the system account. */
+export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Identity): Promise<string> {
+  if (!auth.sys.signingSeed)
+    throw new Error(
+      "mintMembershipObserverCreds: no in-memory system-account signing seed — the observer can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable broker-sourced membership.",
+    );
+  const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
+  const perms = membershipObserverPermissions(auth.account.pub);
+  const userJwt = await encodeUser(
+    "membership-observer",
+    fromPublic(identity.id),
+    fromPublic(auth.sys.pub),
+    perms,
+    { signer },
+  );
+  const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
+  return new TextDecoder().decode(creds);
+}
+
 /** Render the `nats-server` config that trusts this space's operator and serves its
  *  accounts via the in-config MEMORY resolver. */
 export function serverConfig(auth: SpaceAuth, opts: { port?: number; host?: string; storeDir: string }): string {
@@ -539,38 +639,4 @@ resolver_preload: {
   ${auth.sys.pub}: ${auth.sys.jwt}
 }
 `;
-}
-
-// ---- persistence (.cotal/auth) ------------------------------------------------
-
-const AUTH_FILE = "auth.json";
-
-export function authDir(root: string): string {
-  return join(root, ".cotal", "auth");
-}
-
-/** Find the project's `.cotal/` by walking up from `start` (like git finds `.git`), returning the
- *  directory that *contains* `.cotal/`. Falls back to `start` when none is found up the tree (a
- *  fresh setup creates `.cotal/` there). Lets `cotal` run from any subdirectory of a project. */
-export function findCotalRoot(start: string = process.cwd()): string {
-  let dir = resolve(start);
-  for (;;) {
-    if (existsSync(join(dir, ".cotal"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return resolve(start);
-    dir = parent;
-  }
-}
-
-/** Persist the space trust material. The file holds the signing seed — treat as a secret. */
-export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, AUTH_FILE), JSON.stringify(auth, null, 2), { mode: 0o600 });
-}
-
-/** Load the space trust material, or undefined if auth was never set up here. */
-export function loadSpaceAuth(dir: string): SpaceAuth | undefined {
-  const f = join(dir, AUTH_FILE);
-  if (!existsSync(f)) return undefined;
-  return JSON.parse(readFileSync(f, "utf8")) as SpaceAuth;
 }

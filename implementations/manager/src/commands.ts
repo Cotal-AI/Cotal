@@ -6,20 +6,32 @@ import {
   isReachable,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
-  authDir,
-  findCotalRoot,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   registry,
+  probeConnect,
   CONTROL_PRIVILEGED,
   CONTROL_ADMIN,
   type Command,
   type ControlReply,
   type ControlTier,
 } from "@cotal-ai/core";
+import {
+  authDir,
+  findCotalRoot,
+  loadSpaceAuth,
+  findMesh,
+  isWorkspaceTargetError,
+  resolveMeshTarget,
+  preflightTarget,
+  pruneStaleMeshes,
+  removeMesh,
+  renderWorkspaceError,
+  type MeshTarget,
+} from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { loadRoster } from "./roster.js";
+import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { attachClient } from "./attach-client.js";
 import { c } from "./ui.js";
@@ -30,6 +42,83 @@ type Values = Record<string, string | undefined>;
  *  default — so a manually-run manager matches the folder's mesh instead of assuming the default. */
 function spaceFor(v: Values): string {
   return v.space ?? loadSpaceAuth(authDir(findCotalRoot()))?.space ?? DEFAULT_SPACE;
+}
+
+/** Raw off-registry reachability — one plain sentence, never a registry/stale-entry message and
+ *  never a prune. Used by the `--creds` and `--server`+unregistered-`--space` escape hatches, which
+ *  connect to a broker the operator named, not the registry. The manager's copy of the CLI's
+ *  `reachableOrExit` (an implementation can't import another); the wording lives in `@cotal-ai/workspace`. */
+async function reachableOrExit(server: string, auth: { creds?: string } = {}): Promise<void> {
+  const probe = await probeConnect(server, auth);
+  if (probe.ok) return;
+  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server })));
+  process.exit(1);
+}
+
+/** Confirm a registry-resolved mesh is up + accepts these creds — replacing the raw NATS auth trace
+ *  with one sentence and pruning a stale entry. The manager's copy of the CLI's `preflightOrExit`:
+ *  the probe/classify/render/prune-decision live in `@cotal-ai/workspace` (`preflightTarget`); this owns
+ *  the I/O — it acts on the prune decision, colours, and exits. */
+async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise<void> {
+  const r = await preflightTarget(target, probeCreds);
+  if (r.ok) return;
+  if (r.prune) removeMesh(target.space);
+  console.error(c.red(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned: r.prune })));
+  process.exit(1);
+}
+
+/** Resolve which running mesh a control command (`ps`/`start`/`stop`/`attach`) targets, with the
+ *  same precedence + preflight as the rest of the CLI ({@link resolveMeshTarget} / `connectOrExit`):
+ *    1. explicit `--creds` → a raw off-registry connection (plain reachability, no prune). Space
+ *       defaults to this folder's auth-space via {@link spaceFor} (a deliberate manager-command
+ *       choice — more correct than `DEFAULT_SPACE` for a non-default-space project, and what these
+ *       commands did before — NOT `connectOrExit`'s `DEFAULT_SPACE`).
+ *    2. `--server` + an UNregistered `--space` → a raw OPEN off-registry connection, no creds (the
+ *       same escape hatch `connectOrExit` has; plain reachability, no prune).
+ *    3. otherwise the registry/`current` resolver, with the same stale-prune + friendly preflight —
+ *       so `cotal ps --space <name>` reaches that mesh's RECORDED broker instead of silently assuming
+ *       `DEFAULT_SERVER` (:4222); `--server` overrides. The privileged "manager" cred is minted from
+ *       the RESOLVED mesh's own recorded root (so `--space other` loads other's auth, guarded by
+ *       `targetFromEntry`'s `auth.space === m.space` check), or none for an open mesh.
+ *  Shares `@cotal-ai/workspace`'s `preflightTarget`/`pruneStaleMeshes` with the CLI, so a dead/mismatched entry gets
+ *  the same one-sentence message + stale-prune the rest of the CLI gives — not a raw NATS trace. The
+ *  pre-resolution sweep runs only for bare / `--server`-only resolution; an explicit `--space` is
+ *  resolved + preflighted directly (so a `--server` override can recover a dead-recorded mesh).
+ *  `ask()` can therefore trust the target is reachable + auth-valid. */
+export async function resolveManagerTarget(v: Values): Promise<{ space: string; server: string; creds?: string }> {
+  if (v.creds) {
+    const server = v.server ?? DEFAULT_SERVER;
+    const creds = readFileSync(v.creds, "utf8");
+    await reachableOrExit(server, { creds });
+    return { space: spaceFor(v), server, creds };
+  }
+  // A raw OPEN off-registry mesh: explicit `--server` + a `--space` that isn't registered. Naming
+  // both is as deliberate as `--creds`, but an open broker has no creds to pass — connect bare,
+  // off-registry (no registry lookup, no prune). Mirrors `connectOrExit`'s same-shaped escape hatch;
+  // a registered `--space` still goes through the resolver below (which honors `--server` as override).
+  if (v.server && v.space && !findMesh(v.space)) {
+    await reachableOrExit(v.server, {});
+    return { space: v.space, server: v.server, creds: undefined };
+  }
+  // Sweep dead entries before resolving ONLY when we must CHOOSE one (bare / `--server`-only). An
+  // explicit `--space` names its target, so pre-pruning would erase a dead-recorded mesh that the
+  // operator is recovering with a live `--server` override — resolve it and let preflight verify +
+  // prune-on-dead (with the friendly message), honoring the override. Without `--space`, a dead
+  // entry must not be offered, so the sweep stays.
+  if (!v.space) await pruneStaleMeshes();
+  let target: MeshTarget;
+  try {
+    target = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space });
+  } catch (e) {
+    if (isWorkspaceTargetError(e)) {
+      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      process.exit(1);
+    }
+    throw e;
+  }
+  const creds = target.auth ? await mintCreds(target.auth, newIdentity(), "manager") : undefined;
+  await preflightOrExit(target, creds);
+  return { space: target.space, server: target.server, creds };
 }
 
 function parse(argv: string[]): Values {
@@ -46,12 +135,14 @@ function parse(argv: string[]): Values {
       model: { type: "string" }, // start: model override, wins over the agent file's `model:`
       roster: { type: "string" },
       creds: { type: "string" },
-      runtime: { type: "string" }, // supervise: force pty | tmux | cmux (default auto-detects)
+      runtime: { type: "string" }, // supervise: force pty | tmux | cmux (default pty)
       "console-port": { type: "string" },
       drive: { type: "boolean" },
       transcript: { type: "boolean" },
       "no-transcript": { type: "boolean" },
       spawn: { type: "string" }, // comma-separated agent names to pre-spawn at startup
+      launch: { type: "string" }, // supervise: a resolved mesh-manifest launch spec (cotal up -f / spawn -f)
+      cwd: { type: "string" }, // working directory to root the spawned agent at
     },
   });
   // These commands are flags-only — reject stray positionals instead of silently ignoring them
@@ -65,39 +156,21 @@ function parse(argv: string[]): Values {
   return values as Values;
 }
 
-/** Connect a short-lived client, send one control request to the manager, disconnect. `tier` picks
- *  the control subject: privileged for spawn/ps; admin for the operator's cross-agent ops
- *  (stop/attach/purge), which the manager refuses on the privileged subject for a non-owner. The
- *  CLI mints a "manager" cred (allow-all), so it can reach either subject. */
+/** Connect a short-lived client with the resolved creds, send one control request to the manager,
+ *  disconnect. The target is already reachability- + auth-preflighted by {@link resolveManagerTarget}
+ *  (which prints the friendly message + prunes on failure), so this connects straight through. `tier`
+ *  picks the control subject: privileged for spawn/ps; admin for the operator's cross-agent ops
+ *  (stop/attach/purge), which the manager refuses on the privileged subject for a non-owner. `creds`
+ *  is the privileged "manager" cred resolved by {@link resolveManagerTarget} (allow-all, so it
+ *  reaches either subject), or undefined on an open mesh. */
 async function ask(
   space: string,
   server: string,
   op: string,
   args?: Record<string, unknown>,
-  credsPath?: string,
+  creds?: string,
   tier: ControlTier = CONTROL_PRIVILEGED,
 ): Promise<ControlReply> {
-  // An explicit --creds wins; else self-mint a privileged "manager" cred from .cotal/auth so the
-  // operator's start/stop/ps reach the privileged control subject (P5: only spawn-capable/admin/
-  // manager creds may publish there — an agent cred no longer works); else connect bare on an open
-  // mesh. Mirrors `cotal send`/`spawn`/`history`.
-  let creds = credsPath ? readFileSync(credsPath, "utf8") : undefined;
-  if (!creds) {
-    const auth = loadSpaceAuth(authDir(findCotalRoot()));
-    if (auth) {
-      if (space && space !== auth.space) {
-        console.error(
-          c.red(`Auth here is for space "${auth.space}", not "${space}". Use --space ${auth.space} (or pass --creds).`),
-        );
-        process.exit(1);
-      }
-      creds = await mintCreds(auth, newIdentity(), "manager");
-    }
-  }
-  if (!(await isReachable(server, { creds }))) {
-    console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
-    process.exit(1);
-  }
   const ep = new CotalEndpoint({
     space,
     servers: server,
@@ -132,7 +205,8 @@ async function start(argv: string[]): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
-  const reply = await ask(spaceFor(v), v.server ?? DEFAULT_SERVER, "start", {
+  const t = await resolveManagerTarget(v);
+  const reply = await ask(t.space, t.server, "start", {
     name: v.name,
     role: v.role,
     agent: v.agent,
@@ -140,7 +214,8 @@ async function start(argv: string[]): Promise<void> {
     model: v.model,
     // Opt-in: only sent when `--transcript` is given; absent => the daemon's default (mirror off).
     transcript: v.transcript ? true : undefined,
-  }, v.creds);
+    cwd: v.cwd,
+  }, t.creds);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(
@@ -157,16 +232,18 @@ async function stop(argv: string[]): Promise<void> {
   }
   // Operator stop is a cross-agent (admin) op — the CLI operator isn't the agent's spawner, so the
   // privileged subject would reject it; admin (its allow-all "manager" cred reaches it) is correct.
-  const reply = await ask(spaceFor(v), v.server ?? DEFAULT_SERVER, "stop", {
+  const t = await resolveManagerTarget(v);
+  const reply = await ask(t.space, t.server, "stop", {
     name: v.name,
-  }, v.creds, CONTROL_ADMIN);
+  }, t.creds, CONTROL_ADMIN);
   failIfNotOk(reply);
   console.log(c.dim(`✓ stopped ${v.name}`));
 }
 
 async function ps(argv: string[]): Promise<void> {
   const v = parse(argv);
-  const reply = await ask(spaceFor(v), v.server ?? DEFAULT_SERVER, "ps", undefined, v.creds);
+  const t = await resolveManagerTarget(v);
+  const reply = await ask(t.space, t.server, "ps", undefined, t.creds);
   failIfNotOk(reply);
   const rows =
     (reply.data as Array<{
@@ -207,9 +284,10 @@ async function attach(argv: string[]): Promise<void> {
   }
   // Operator attach is a cross-agent (admin) op — same reasoning as stop (the operator isn't the
   // spawner; admin reaches any agent).
-  const reply = await ask(spaceFor(v), v.server ?? DEFAULT_SERVER, "attach", {
+  const t = await resolveManagerTarget(v);
+  const reply = await ask(t.space, t.server, "attach", {
     name: v.name,
-  }, v.creds, CONTROL_ADMIN);
+  }, t.creds, CONTROL_ADMIN);
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
   console.error(c.dim(`attached to ${v.name} — Ctrl-] to detach`));
@@ -218,10 +296,10 @@ async function attach(argv: string[]): Promise<void> {
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
- *  `pty`/`tmux` ship with the manager; `cmux` needs its integration imported by the
- *  composition root (the `cotal` binary does). Stays alive until SIGINT/SIGTERM. */
+ *  `pty` ships with the manager; `tmux` and `cmux` need their integration imported by
+ *  the composition root (the `cotal` binary does). Stays alive until SIGINT/SIGTERM. */
 // `--runtime` forces the manager runtime; honored only on the `supervise` path (default
-// auto-detect). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
+// pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
 // the cmux-tab manager. The session machinery launches it with `--runtime cmux --space <space>`
 // contiguous, which is what `cmuxManagerRunning` pgreps for.
 const RUNTIME_OVERRIDES: readonly RuntimeMode[] = ["pty", "tmux", "cmux"];
@@ -238,9 +316,10 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
   }
   const space = spaceFor(v);
   const server = v.server ?? DEFAULT_SERVER;
-  // Parse the roster before touching the network — a malformed file should fail fast,
+  // Parse the roster + launch spec before touching the network — a malformed file should fail fast,
   // before the manager comes up or any agent is spawned.
   const roster = v.roster ? loadRoster(v.roster) : [];
+  const launchSpec = v.launch ? loadLaunchSpec(v.launch) : undefined;
   if (!(await isReachable(server))) {
     console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
     process.exit(1);
@@ -252,7 +331,7 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
       `\n  console: ${mgr.consoleUrl}` +
-      c.dim("\n  spawn: cotal start --name <n>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
+      c.dim("\n  spawn: cotal start --name <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
   // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
   // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
@@ -264,7 +343,9 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
   // fix the roster without the supervisor crash-looping.
   for (const entry of roster) {
     const reply = await mgr.startAgent(entry);
-    if (reply.ok) console.log(c.green(`✓ started ${c.bold(entry.name)}`) + c.dim(` (${entry.agent})`));
+    // Log the spawned IDENTITY (the persona's name:), which can differ from entry.name (the file ref).
+    const spawned = (reply.data as { name?: string } | undefined)?.name ?? entry.name;
+    if (reply.ok) console.log(c.green(`✓ started ${c.bold(spawned)}`) + c.dim(` (${entry.agent})`));
     else console.error(c.red(`✗ ${entry.name}: ${reply.error}`));
   }
   // Pre-spawn teammates the manager owns (e.g. the demo's david/sven), so they're despawnable.
@@ -273,16 +354,47 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
   if (v.spawn) {
     const names = v.spawn.split(",").map((s) => s.trim()).filter(Boolean);
     for (let i = 0; i < names.length; i++) {
-      const name = names[i];
-      const reply = await mgr.startByName(name);
+      const ref = names[i];
+      const reply = await mgr.startByName(ref);
       if (!reply.ok) {
-        console.error(c.red(`✗ couldn't spawn ${name}: ${reply.error ?? "unknown error"}`));
+        console.error(c.red(`✗ couldn't spawn ${ref}: ${reply.error ?? "unknown error"}`));
         continue;
       }
-      console.log(c.green(`✓ spawned ${name}`));
+      // The peer joins under its persona's name: (the spawned identity), which may differ from the
+      // ref filename — wait on (and log) THAT, or staggering blocks the full timeout on a name that
+      // never appears (e.g. ref review-critic → identity socrates).
+      const spawned = (reply.data as { name?: string } | undefined)?.name ?? ref;
+      console.log(c.green(`✓ spawned ${spawned}`));
       if (i < names.length - 1) {
-        const joined = await mgr.waitForPresence(name);
-        console.log(c.dim(joined ? `  ${name} joined; starting next` : `  ${name} still starting; continuing`));
+        const joined = await mgr.waitForPresence(spawned);
+        console.log(c.dim(joined ? `  ${spawned} joined; starting next` : `  ${spawned} still starting; continuing`));
+      }
+    }
+  }
+  // Declarative manifest boot (`cotal up -f` / `spawn -f`): materialize each resolved agent's
+  // transient persona, then spawn it with its resolved ACLs/identity. Staggered like `--spawn` so
+  // heavy cold-starts don't pile up. A failed entry is logged, non-fatal — healthy agents stay up.
+  if (launchSpec) {
+    const root = findCotalRoot();
+    for (let i = 0; i < launchSpec.agents.length; i++) {
+      const la = launchSpec.agents[i];
+      let configPath: string;
+      try {
+        configPath = materializePersona(root, launchSpec.runId, la);
+      } catch (e) {
+        console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
+        continue;
+      }
+      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath));
+      if (!reply.ok) {
+        console.error(c.red(`✗ ${la.name}: ${reply.error}`));
+        continue;
+      }
+      const spawned = (reply.data as { name?: string } | undefined)?.name ?? la.name;
+      console.log(c.green(`✓ launched ${spawned}`) + c.dim(` (${la.agent})`));
+      if (i < launchSpec.agents.length - 1) {
+        const joined = await mgr.waitForPresence(spawned);
+        console.log(c.dim(joined ? `  ${spawned} joined; starting next` : `  ${spawned} still starting; continuing`));
       }
     }
   }
@@ -298,7 +410,7 @@ const managerCommands: Command[] = [
     name: "supervise",
     group: "Manager",
     summary:
-      "run a manager — [--runtime <pty|tmux|cmux>] (default auto-detect; cmux gives each teammate its own cmux tab) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>]",
+      "run a manager — [--runtime <pty|tmux|cmux>] (default pty; tmux/cmux are explicit-only, each teammate in its own window/tab) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
     run: (argv) => runManager(argv, "auto"),
   },
   {
@@ -306,7 +418,7 @@ const managerCommands: Command[] = [
     name: "start",
     group: "Control plane",
     summary:
-      "ask the manager to spawn an agent — --name <n> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] (auto-discovers .cotal/agents/<n>.md)",
+      "ask the manager to spawn a persona — --name <persona> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] [--cwd <dir>] (loads .cotal/agents/<persona>.md; the peer joins under its name:)",
     run: start,
   },
   {

@@ -10,8 +10,12 @@
  *   2. Model THREADING — `--model` rides StartAgentOpts → buildLaunch's LaunchOpts verbatim.
  *   3. Model PRECEDENCE — across the three real connectors: flag > agent-file `model:`, the flag
  *      applies with no agent file, and the file is the fallback (the actual bug the fix closes).
+ *   4. ACL THREADING — the resolved read/post set rides StartAgentOpts → LaunchOpts and each
+ *      connector forwards it as COTAL_SUBSCRIBE / COTAL_ALLOW_*. Guards the bug where creds were
+ *      minted from the policy but it never reached the connector, so a manifest-spawned agent (whose
+ *      materialized persona has no access frontmatter) fell back to ["general"] and joined nothing.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -27,8 +31,15 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
-// A workspace with no `.cotal/` so no agent file / cotal config is discovered for a bare name.
+// A workspace with no cotal *config*. A manager spawn now REQUIRES a discoverable persona (no
+// silent default-ACL fallback), so seed a minimal `.cotal/agents/<name>.md` per spawned name —
+// this test's subject is harness preflight + model threading, not persona/ACL resolution.
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
+const agentsDir = join(workspaceRoot, ".cotal", "agents");
+mkdirSync(agentsDir, { recursive: true });
+for (const n of ["reject1", "rec1", "rec2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
+// rec3 carries an explicit access policy — its frontmatter ACL must thread through to LaunchOpts.
+writeFileSync(join(agentsDir, "rec3.md"), `---\nname: rec3\nsubscribe: [team]\nallowSubscribe: [team, team.>]\nallowPublish: [team]\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
 
 // Inert handle/runtime: the success branch records the built spec but launches nothing; the `ep`
@@ -85,6 +96,14 @@ registry.register(recCon);
   lastOpts = undefined;
   await mgr.startAgent({ name: "rec2", agent: "smoke-rec" });
   check("no --model → LaunchOpts.model undefined", lastOpts?.model === undefined, lastOpts?.model);
+
+  // ACL threading: the resolved read/post set must reach the connector via LaunchOpts (the bug —
+  // it was minted into creds but never handed to buildLaunch, so the connector fell back to general).
+  lastOpts = undefined;
+  await mgr.startAgent({ name: "rec3", agent: "smoke-rec" });
+  check("persona subscribe threads into LaunchOpts.subscribe", JSON.stringify(lastOpts?.subscribe) === '["team"]', lastOpts?.subscribe);
+  check("persona allowSubscribe threads into LaunchOpts", JSON.stringify(lastOpts?.allowSubscribe) === '["team","team.>"]', lastOpts?.allowSubscribe);
+  check("persona allowPublish threads into LaunchOpts", JSON.stringify(lastOpts?.allowPublish) === '["team"]', lastOpts?.allowPublish);
 }
 
 // 3 — Model PRECEDENCE across the three real connectors (direct buildLaunch; no PATH/broker need).
@@ -120,6 +139,19 @@ registry.register(recCon);
   check("claude: nothing → no --model", claudeModel(claudeConnector.buildLaunch({ ...base })) === undefined);
   check("opencode: nothing → no config.model", ocModel(opencodeConnector.buildLaunch({ ...base })) === undefined);
   check("hermes: nothing → no HERMES_MODEL", hermesModel(hermesConnector.buildLaunch({ ...base })) === undefined);
+
+  // 4 — ACL ENV emission: each connector forwards the resolved policy so the spawned session's
+  // runtime read/post set matches its minted creds. Wildcard allowSubscribe (team.>) must survive.
+  const acl = { subscribe: ["team"], allowSubscribe: ["team", "team.>"], allowPublish: ["team"] };
+  for (const con of [claudeConnector, opencodeConnector, hermesConnector]) {
+    const env = con.buildLaunch({ ...base, ...acl }).env!;
+    check(`${con.name}: COTAL_SUBSCRIBE forwarded`, env.COTAL_SUBSCRIBE === "team", env.COTAL_SUBSCRIBE);
+    check(`${con.name}: COTAL_ALLOW_SUBSCRIBE forwarded (wildcard kept)`, env.COTAL_ALLOW_SUBSCRIBE === "team,team.>", env.COTAL_ALLOW_SUBSCRIBE);
+    check(`${con.name}: COTAL_ALLOW_PUBLISH forwarded`, env.COTAL_ALLOW_PUBLISH === "team", env.COTAL_ALLOW_PUBLISH);
+    // No policy → no env (persona-spawn / no-channel path unchanged: connector reads the file or
+    // falls back to the general baseline — never silently overridden to empty).
+    check(`${con.name}: no policy → COTAL_SUBSCRIBE absent`, con.buildLaunch({ ...base }).env!.COTAL_SUBSCRIBE === undefined);
+  }
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

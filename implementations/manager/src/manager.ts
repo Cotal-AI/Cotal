@@ -1,17 +1,15 @@
 import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { join, dirname, delimiter, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
+  MANAGER_LEASE_TTL_MS,
   agentFilePath,
-  authDir,
   clearSpaceHistory,
   connectorServers,
-  findCotalRoot,
   firstFreeName,
   loadAgentFile,
   loadCotalConfig,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   provisionAgent,
@@ -22,7 +20,8 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, SpaceAuth } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -30,6 +29,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
+import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
@@ -68,7 +68,7 @@ export interface ManagerOptions {
   space: string;
   servers?: string;
   name?: string;
-  /** Spawn backend. `auto` (default) → pty, or tmux when already inside tmux. */
+  /** Spawn backend. `auto` (default) → pty; tmux/cmux are explicit-only (fail loud if unimported). */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
   /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
@@ -78,17 +78,30 @@ export interface ManagerOptions {
 /** A spawn request, typed. The control-plane `start` op parses one of these out of an
  *  untyped request; roster boot constructs them directly. Both funnel into {@link Manager.startAgent}. */
 export interface StartAgentOpts {
+  /** The persona REF to spawn — a filename in `.cotal/agents` (the unique spawn key), discovered as
+   *  `.cotal/agents/<name>.md`. NOT the mesh identity: the spawned peer presents under the file's
+   *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback). */
   name: string;
   /** Connector / agent type — resolved from the registry. Defaults to `"cotal"`. */
   agent?: string;
   role?: string;
-  /** Explicit agent-file name-or-path; otherwise `.cotal/agents/<name>.md` is discovered if present. */
+  /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
+   *  comes from that file's `name:`). The file must exist. */
   config?: string;
   /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
   model?: string;
   /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
+  /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
+   *  `startAgent` takes identity/role/ACLs/capabilities/model from here — NOT from a persona file —
+   *  and `config` points at the materialized transient persona the connector reads. The persona file
+   *  is never the access authority in this path. */
+  resolved?: MeshLaunchAgent;
+  /** Per-agent working directory to root this agent at, overriding the manager's shared
+   *  workspaceRoot. Lets different agents run in different repos/folders. A relative path is
+   *  resolved against the manager's workspace root. Omitted → the agent uses workspaceRoot. */
+  cwd?: string;
 }
 
 interface ManagedAgent {
@@ -131,6 +144,9 @@ export class Manager {
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
    *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
   private auth?: SpaceAuth;
+  private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
+  private leaseRevision?: number;
+  private leaseTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -187,6 +203,26 @@ export class Manager {
     this.ep.on("error", (e: Error) => console.error(`! manager endpoint: ${e.message}`));
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
+    // Singleton guard: exactly one manager per space. Acquire the lease (atomic CAS create); if a live
+    // manager already holds it, REFUSE to start (fail loud) rather than become a second supervisor that
+    // queue-splits control with the incumbent. A crashed holder's lease auto-expires (bucket TTL).
+    this.leaseInfo = { holder: this.ep.ref().id, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
+    try {
+      this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
+    } catch (e) {
+      // A live holder ⇒ refuse (the singleton point). Anything else (e.g. a KV/JS error) is a real
+      // failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
+      const held = await this.ep.readManagerLease().catch(() => undefined);
+      await this.ep.stop();
+      await this.attach.stop();
+      throw new Error(
+        held
+          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) — stop it first; one manager per space`
+          : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
+      );
+    }
+    this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_TTL_MS / 2);
+    this.leaseTimer.unref?.();
     // Serve all three control tiers (P2a): self-service (no-name self stop/despawn), privileged
     // (start / own-child stop-despawn-attach / own definePersona), and admin (purge / cross-agent
     // stop-despawn-attach / cross-agent definePersona). The cred layer grants self-service to every
@@ -204,8 +240,27 @@ export class Manager {
   }
 
   async stop(): Promise<void> {
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    await this.ep.releaseManagerLease(this.leaseRevision);
     await this.ep.stop();
     await this.attach.stop();
+  }
+
+  /** Refresh the singleton lease before the bucket TTL expires it. On loss (missed the TTL, or another
+   *  manager took over after a gap) FAIL CLOSED: stop serving control at once so we can't double-process
+   *  with the new holder, and exit. We deliberately do NOT re-acquire (a replacement may already be live
+   *  while we'd still be serving) and do NOT release the key — it now belongs to that replacement. */
+  private async renewLease(): Promise<void> {
+    if (!this.leaseInfo || this.leaseRevision === undefined) return;
+    try {
+      this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
+    } catch (e) {
+      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) — shutting down to avoid two managers serving it`);
+      if (this.leaseTimer) clearInterval(this.leaseTimer);
+      try { await this.ep.stop(); } catch { /* best effort */ }
+      try { await this.attach.stop(); } catch { /* best effort */ }
+      process.exit(1);
+    }
   }
 
   private async handle(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {
@@ -234,6 +289,14 @@ export class Manager {
       case "start":
         // Spawn is a privileged-tier op; reaching it via admin is fine (admin ⊇ privileged powers).
         return this.opStart(args, caller);
+      case "launch":
+        // SECURITY: manifest launch is operator-only (admin tier). It is higher-power than `start`
+        // — it boots an operator-authored, coordinated policy set from a run spec and underpins the
+        // ownership ledger — so a merely spawn-capable agent (which CAN publish to the privileged
+        // subject) must not reach it. Gate at the handler like `purge`; the subject alone isn't a
+        // boundary because `spawn` grants privileged-subject publish and dispatch is by op here.
+        if (!admin) return { ok: false, error: "launch is admin-only; not allowed on the privileged subject" };
+        return this.opLaunch(args, caller);
       case "stop": {
         if (!name) return { ok: false, error: "self-stop not allowed on privileged subject; send it on the self-service subject" };
         return this.opStop(args, caller, admin);
@@ -334,8 +397,9 @@ export class Manager {
     return firstFreeName(base, (n) => this.agents.has(n) || this.reserved.has(n));
   }
 
-  /** Spawn a teammate by name (loads `.cotal/agents/<name>.md`), as if a peer asked via the
-   *  control plane. Used to pre-spawn the demo's experts at startup so the manager owns them. */
+  /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
+   *  under that file's own `name:`), as if a peer asked via the control plane. Used to pre-spawn the
+   *  demo's experts at startup so the manager owns them. */
   async startByName(name: string): Promise<ControlReply> {
     return this.startAgent({ name });
   }
@@ -364,9 +428,44 @@ export class Manager {
         config: args.config ? String(args.config) : undefined,
         model: args.model ? String(args.model) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
+        cwd: args.cwd ? String(args.cwd) : undefined,
       },
       caller,
     );
+  }
+
+  /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
+   *  manager. The request carries a `{ runId, name }`, NEVER a path: the manager derives + validates
+   *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
+   *  `loadLaunchSpec`'s untrusted-input + `validateLaunchPolicy` contract), materializes the named
+   *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
+   *  `supervise --launch`. The reply is enriched for the ownership ledger: the SPAWNED
+   *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
+   *  `runId`, and resolved `hash`. */
+  private async opLaunch(args: Record<string, unknown>, caller: string): Promise<ControlReply> {
+    const runId = String(args.runId ?? "").trim();
+    const name = String(args.name ?? "").trim();
+    if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
+    let spec;
+    try {
+      spec = launchSpecForRun(this.workspaceRoot, runId);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    const la = spec.agents.find((a) => a.name === name);
+    if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
+    let configPath: string;
+    try {
+      configPath = materializePersona(this.workspaceRoot, runId, la);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath), caller);
+    if (reply.ok)
+      // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
+      // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
+      reply.data = { ...(reply.data as object), requested: la.name, runId, hash: la.hash, newlyStarted: true };
+    return reply;
   }
 
   /** Spawn and supervise one agent. The single spawn path: both the control-plane
@@ -376,97 +475,151 @@ export class Manager {
    *  defaulting to the manager's own id for roster/pre-spawn — recorded for the spawner
    *  ledger (own-children despawn + reap-on-parent-exit). */
   async startAgent(opts: StartAgentOpts, spawner?: string): Promise<ControlReply> {
-    const base = opts.name.trim();
-    if (!base) return { ok: false, error: "name required" };
-    const nameErr = this.nameError(base);
-    if (nameErr) return { ok: false, error: nameErr };
+    // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
+    // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
+    // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
+    // free-form name (socrates) — the same model `cotal spawn` already uses. You always spawn by
+    // filename (unique on disk); two files can't collide on the key.
+    const ref = opts.name.trim();
+    if (!ref) return { ok: false, error: "name required" };
+    // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
+    // `--config` path is validated by existsSync below instead.
+    if (!opts.config) {
+      const refErr = this.nameError(ref);
+      if (refErr) return { ok: false, error: refErr };
+    }
     const agent = opts.agent ?? "cotal";
 
-    // Synchronous availability gate (P4a/P4c) — the free-name pick and the reserve run in one tick
-    // BEFORE any await, so two concurrent spawns can't land on the same name (no TOCTOU between the
-    // pick and the reserve), and the ceiling can't be overshot by fan-out racing the provision await.
+    // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
+    // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
+    // atomic: the capacity snapshot and the reserve land in one tick (P4a/P4c), and two concurrent
+    // spawns can't overshoot the ceiling or pick the same name.
     const cooling = this.coolingCount(); // prune expired stamps, then count live cooling slots
     if (this.agents.size + this.reserved.size + cooling >= MAX_AGENTS)
       return { ok: false, error: `at capacity (${MAX_AGENTS} agents incl. in-flight + cooling); despawn one or wait` };
-    // A taken name auto-numbers (reviewer → reviewer-2 → reviewer-3…) so callers never collide; the
-    // persona file is still discovered from the requested base name below, so reviewer-2 wears it.
-    // Deliberate semantics: this is create-new, not ensure-exists — a retried/redelivered identical
-    // spawn from the same caller yields a fresh numbered agent, not a no-op. Accepted (MAX_AGENTS
-    // bounds the blast radius). Follow-up: add a short per-(spawner,base,role) idempotency window if
-    // autonomous orchestration ever produces phantom spawns.
-    const name = this.uniqueName(base);
-    this.reserved.add(name);
+
+    // Resolve the persona file (fail loud — NO silent default-ACL fallback). A missing persona used
+    // to mint DEFAULT creds (read `general` only, default-deny publish, no capabilities), so a
+    // typo'd / renamed / spawned-by-display-name agent became live with silently-wrong ACLs — a
+    // behavioral/security bug. Fail loud instead, matching `cotal spawn` (loadAgentFile throws).
+    let configPath: string;
+    if (opts.config) {
+      configPath = agentFilePath(this.workspaceRoot, opts.config);
+      if (!existsSync(configPath)) return { ok: false, error: `agent file not found: ${configPath}` };
+    } else {
+      configPath = agentFilePath(this.workspaceRoot, ref);
+      if (!existsSync(configPath))
+        return { ok: false, error: `no persona "${ref}" — ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
+    }
+
+    // Connector + harness preflight before reserving a slot or minting — a missing connector or a
+    // missing `claude`/`opencode` binary fails here with a clear name, not obscurely at process
+    // spawn. No fallback. All synchronous, so the reserve gate stays atomic.
+    let connector: Connector;
     try {
-      // Resolve an agent file from the manager's own workspace — an explicit
-      // --config must exist; otherwise discover .cotal/agents/<name>.md if present.
-      let configPath: string | undefined;
-      if (opts.config) {
-        configPath = agentFilePath(this.workspaceRoot, opts.config);
-        if (!existsSync(configPath)) return { ok: false, error: `agent file not found: ${configPath}` };
-      } else {
-        const f = agentFilePath(this.workspaceRoot, base);
-        if (existsSync(f)) configPath = f;
-      }
-      // --role overrides the file; the file fills it in for bookkeeping otherwise.
-      let role = opts.role;
-      // A stable nkey identity assigned at spawn: the public key is the agent's card.id
-      // (threaded via COTAL_ID); the seed is retained to mint matching creds later.
-      const identity = newIdentity();
-      // The agent's read ACL, defaulted the same way the loader/provisioner do — retained on the
-      // managed record so the mediated join/leave op can validate channels ⊆ allowSubscribe.
-      let allowSubscribe: string[] = ["general"];
-      let handle: AgentHandle;
+      connector = registry.resolve<Connector>("connector", agent);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    const missing = (connector.requires ?? []).filter((bin) => !binOnPath(bin));
+    if (missing.length)
+      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH — not found` };
+
+    // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
+    // + model. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
+    // is a materialized transient persona — the file is NOT the access authority), or from the
+    // persona file. The number rides the IDENTITY (socrates → socrates-2), not the file ref — a
+    // redelivered identical spawn yields a fresh numbered agent (MAX_AGENTS bounds the blast radius).
+    let identityName: string;
+    let role: string | undefined;
+    let subscribe: string[] | undefined;
+    let allowSubscribe: string[];
+    let allowPublish: string[] | undefined;
+    let capabilities: string[] | undefined;
+    let model = opts.model;
+    if (opts.resolved) {
+      const r = opts.resolved;
+      identityName = r.name;
+      role = opts.role ?? r.role;
+      subscribe = r.subscribe;
+      allowSubscribe = r.allowSubscribe?.length ? r.allowSubscribe : r.subscribe;
+      allowPublish = r.allowPublish;
+      capabilities = r.capabilities;
+      model = opts.model ?? r.model;
+    } else {
+      let def: AgentDef;
       try {
-        const connector = registry.resolve<Connector>("connector", agent);
-        // Preflight the harness binaries this connector invokes (its `requires`) BEFORE minting
-        // creds or building the launch — a missing `claude`/`opencode` should fail here with a
-        // clear name, not obscurely at process spawn. No fallback: throw if it isn't on PATH.
-        const missing = (connector.requires ?? []).filter((bin) => !binOnPath(bin));
-        if (missing.length)
-          throw new Error(`${agent} harness needs ${missing.join(", ")} on PATH — not found`);
-        const def = configPath ? loadAgentFile(configPath) : undefined;
-        if (!role) role = def?.role;
-        allowSubscribe = def?.allowSubscribe ?? def?.subscribe ?? ["general"];
-        // In auth mode, mint the agent's creds from the space signing key and write them where the
-        // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Read scope = the
-        // file's subscribe/allowSubscribe; post scope = its allowPublish (default-deny).
-        let credsPath: string | undefined;
-        if (this.auth) {
-          // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped
-          // creds — the shared onboarding step (provisionAgent), the manager just supplies its
-          // own connected endpoint as the privileged provisioner.
-          const creds = await provisionAgent(this.ep, this.auth, identity, {
-            subscribe: def?.subscribe,
-            allowSubscribe,
-            allowPublish: def?.allowPublish,
-            role,
-            capabilities: def?.capabilities,
-          });
-          credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
-          mkdirSync(dirname(credsPath), { recursive: true });
-          writeFileSync(credsPath, creds, { mode: 0o600 });
-        }
-        // Personal MCP servers the operator opted to share with manager-spawned agents of this
-        // type (cotal config; default none → isolated, the memory-safe default this guards).
-        const mcpServers = connectorServers(loadCotalConfig(this.workspaceRoot), agent);
-        const spec = connector.buildLaunch({
-          space: this.space,
-          name,
-          role,
-          id: identity.id,
-          creds: credsPath,
-          servers: this.servers,
-          configPath,
-          model: opts.model,
-          transcript: opts.transcript,
-          mcpServers,
-        });
-        handle = this.runtime.spawn(name, spec, this.workspaceRoot);
+        def = loadAgentFile(configPath);
       } catch (e) {
-        // Pre-set failure: the slot was never live, so no cold-start was paid — the reserved
-        // rollback (finally) is enough, no cooling stamp.
         return { ok: false, error: (e as Error).message };
       }
+      identityName = def.name;
+      role = opts.role ?? def.role;
+      subscribe = def.subscribe;
+      // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
+      // boundary); runtime durable joins are re-authorized against the committed ACL by the daemon.
+      allowSubscribe = def.allowSubscribe ?? def.subscribe ?? ["general"];
+      allowPublish = def.allowPublish;
+      capabilities = def.capabilities;
+    }
+    const idErr = this.nameError(identityName);
+    if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+
+    const name = this.uniqueName(identityName);
+    this.reserved.add(name);
+    try {
+      // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
+      // COTAL_ID); the seed is retained to mint matching creds later.
+      const identity = newIdentity();
+      // In auth mode, mint the agent's creds from the space signing key and write them where the
+      // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
+      // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
+      let credsPath: string | undefined;
+      if (this.auth) {
+        // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
+        // — the shared onboarding step (provisionAgent); the manager supplies its own connected
+        // endpoint as the privileged provisioner.
+        const creds = await provisionAgent(this.ep, this.auth, identity, {
+          subscribe,
+          allowSubscribe,
+          allowPublish,
+          role,
+          capabilities,
+        });
+        credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
+        mkdirSync(dirname(credsPath), { recursive: true });
+        writeFileSync(credsPath, creds, { mode: 0o600 });
+      }
+      // Personal MCP servers the operator opted to share with manager-spawned agents of this type
+      // (cotal config; default none → isolated, the memory-safe default this guards).
+      const mcpServers = connectorServers(loadCotalConfig(this.workspaceRoot), agent);
+      // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
+      // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
+      // agent shares the workspace root (the prior, unchanged behavior).
+      const cwd = opts.cwd ? resolve(this.workspaceRoot, opts.cwd) : this.workspaceRoot;
+      const spec = connector.buildLaunch({
+        space: this.space,
+        name,
+        role,
+        id: identity.id,
+        creds: credsPath,
+        servers: this.servers,
+        configPath,
+        model,
+        // The SAME access set the creds were minted from (above) — forwarded so the session's
+        // runtime read/post set matches its credentials. Without this a manifest-spawned agent
+        // (materialized persona has no access frontmatter) falls back to `["general"]`, which its
+        // scoped creds deny, and it joins nothing.
+        subscribe,
+        allowSubscribe,
+        allowPublish,
+        transcript: opts.transcript,
+        mcpServers,
+        // So a connector that keeps per-agent local state can root it at the workspace, not the
+        // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
+        workspaceRoot: this.workspaceRoot,
+      });
+      const handle = this.runtime.spawn(name, spec, cwd);
       const managed: ManagedAgent = {
         name,
         role,
@@ -482,6 +635,10 @@ export class Manager {
       // (rate-floored) and reaps any children — keeps the ceiling from ratcheting shut with orphans.
       this.watchExit(managed);
       return { ok: true, data: { name, role, agent, id: identity.id, mode: handle.kind } };
+    } catch (e) {
+      // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
+      // was paid — the reserved rollback (finally) is enough, no cooling stamp.
+      return { ok: false, error: (e as Error).message };
     } finally {
       this.reserved.delete(name);
     }
@@ -612,6 +769,9 @@ export class Manager {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
     return [...this.agents.values()].map((a) => ({
       name: a.name,
+      // The spawned agent's nkey — lets an operator tool (e.g. `cotal down -f`) match a ledger entry
+      // by name AND id before stopping, so it never stops a same-named foreign agent.
+      id: a.id,
       role: a.role,
       agent: a.agent,
       space: this.space,

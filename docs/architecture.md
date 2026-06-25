@@ -9,7 +9,7 @@
 | Section | What it covers |
 |---|---|
 | [Influences: A2A + SLIM](#influences-a2a--slim) | Where the vocabulary and shapes come from. |
-| [Package layout and dependency tiers](#package-layout-and-dependency-tiers) | The four one-way tiers. |
+| [Package layout and dependency tiers](#package-layout-and-dependency-tiers) | The one-way dependency layers (workspace between implementations and core). |
 | [Integration surfaces (Claude Code + OpenCode)](#integration-surfaces-claude-code--opencode) | How a coding agent binds to the mesh. |
 | [Manager (agent supervisor)](#manager-agent-supervisor) | Who spawns and configures agents. |
 | [Hosting and onboarding](#hosting-and-onboarding) | How a session is launched. |
@@ -121,22 +121,28 @@ cryptographically verifiable and decentralized (see [Deferred](#deferred)).
 
 ## Package layout and dependency tiers
 
-Four tiers, one-way dependencies. `packages/` is the standard; everything else builds on it.
-`pnpm-workspace.yaml` globs all four (`packages/*`, `extensions/*`, `implementations/*`,
+One-way dependencies; `packages/` holds the standard, everything else builds on it.
+`pnpm-workspace.yaml` globs them all (`packages/*`, `extensions/*`, `implementations/*`,
 `examples/*`).
 
-- **`packages/*` (core).** The protocol: subjects, schemas, the NATS client, and the shared
-  contracts extensions implement (e.g. `Connector`). Everything depends on it; it depends on
-  nothing in the repo.
+- **`packages/*` (the standard + the workstation layer).** Two one-way layers:
+  - **`@cotal-ai/core`** — the protocol: subjects, schemas, the NATS client, and the shared
+    contracts extensions implement (e.g. `Connector`). It depends on nothing in the repo;
+    everything ultimately depends on it.
+  - **`@cotal-ai/workspace`** — the machine-local **operator/workstation** layer over `~/.cotal`:
+    the mesh registry, target resolution, preflight, the `.cotal/` auth-path helpers, and the
+    command-copy renderer. Depends on core; **not** part of the wire standard, so a third party can
+    embed core to speak the wire without inheriting `~/.cotal` plumbing or CLI copy.
 - **`extensions/*` (pluggable adapters).** A connector (Claude Code, OpenCode, …) is the first
   extension *kind*; transport and auth could follow. Each is its own package that
-  **peer-depends** on core (so it binds to the host's *single* core instance, not a private
-  copy) and exports an object implementing a core contract. They are **picked by explicit
-  wiring** at the composition root: the manager is handed the connectors it may spawn, and an
-  unknown agent type **throws** (no silent fallback).
-- **`implementations/*` (opinionated surfaces).** CLI, web, and so on, each a self-contained
-  package over core. **Implementations never import each other**, which keeps the dependency
-  graph acyclic (no import loops).
+  **peer-depends** on core (so it binds to the host's *single* core instance, not a private copy)
+  and exports an object implementing a core contract — **core-only by default**, never the
+  workstation layer. They are **picked by explicit wiring** at the composition root: the manager
+  is handed the connectors it may spawn, and an unknown agent type **throws** (no silent fallback).
+- **`implementations/*` (opinionated surfaces).** CLI, manager, delivery, and so on — each a
+  self-contained package over core (+ workspace, for the ones that touch the local registry/auth).
+  **Implementations never import each other**, which keeps the dependency graph acyclic (no
+  import loops).
 - **`examples/*` (use cases).** Private (never published) packages: demos, benchmarks. An
   example is the **composition root**. It may depend on *several* implementations and picks
   which extensions to wire in.
@@ -148,8 +154,8 @@ at the same `space`; coordination flows through the mesh. So the CLI package and
 package stay independent, each ignorant of the other, and the example wires them.
 
 ```
-examples ──→ one-or-more implementations ──→ core ←(peer)── extensions
-                      (interoperate at runtime over NATS, not via imports)
+examples ──→ implementations ──→ workspace ──→ core ←(peer)── extensions
+                   (interoperate at runtime over NATS, not via imports)
 ```
 
 The migration is done: `demos/` use-cases are now `examples/`. The connector is split into
@@ -318,7 +324,7 @@ shows up and reports status.
 **Spawn via a pluggable `Runtime` (no tmux dependency).** Starting, stopping, and attaching are
 abstracted behind one interface (`spawn → handle`, `stop`, `status`, `attach`, optional
 `interrupt`), like *pm2 or docker for agent TUIs*. `Runtime` is a **core extension contract**
-like `Connector`/`Command`: `pty`/`tmux` ship with the manager, and other backends self-register
+like `Connector`/`Command`: `pty` ships with the manager; `tmux` and `cmux` are extensions that self-register
 a `RuntimeProvider` on import (the manager resolves them from the registry, with no compile-time
 dependency on them). Selectable backends:
 
@@ -327,9 +333,15 @@ dependency on them). Selectable backends:
   x64/arm64: zero compiler, zero `node-gyp`, ABI-stable). A real native TUI. The human watches
   or types in via `cotal attach <name>` (stream the PTY), and the manager keeps full OS-signal
   control (group-kill, restart). No external software to install.
-- **`tmux` / `iTerm2` (opt-in).** For users already living in a multiplexer who want native
-  panes or persistence; auto-detected (if already inside tmux, use it). You watch it natively,
-  so `cotal attach` points you at `tmux attach -t cotal-<space>:<name>` rather than streaming.
+- **`tmux` (integration).** Each agent gets its own window in a shared per-space tmux session.
+  This is a true plug-in: the runtime lives in **`@cotal-ai/tmux`** and self-registers a
+  `RuntimeProvider` on import (opt in with `import "@cotal-ai/tmux"`, which the `cotal` binary
+  does). You watch it natively (`tmux attach-session -t cotal-<space>`, then `tmux select-window -t
+  @<id>` for the agent's window); `cotal attach` points you there rather than streaming. Env is isolated (`env -i`) so the tmux server's environment
+  doesn't reach agents. Teardown: `stop` types `/exit` for a clean mesh leave then kills the
+  window (graceful) or kills immediately (hard). The package also self-registers a
+  **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session,
+  so `cotal setup` can lay out its tabs without cmux.
 - **`cmux` (integration).** Each agent gets its own [cmux](https://github.com/) tab. This is a
   true plug-in: the `cmux` runtime lives in **`@cotal-ai/cmux`** and self-registers a
   `RuntimeProvider` on import, so the manager spawns into tabs without depending on the package
@@ -339,7 +351,7 @@ dependency on them). Selectable backends:
   the tab's workspace and surface ids, so `stop` types `/exit` for a clean leave then closes the
   tab (graceful) or closes it outright (hard). The manager must run inside a live cmux surface
   (cmux only authorizes its control socket from a real pane). Drives
-  [`examples/02`](../examples/02-cmux-handoff/README.md). The package also self-registers a
+  [`examples/02`](../examples/02-self-improving-console/README.md). The package also self-registers a
   **`TerminalLayout`** provider (a host-side extension contract, not wire protocol:
   open/close/list editor tabs). The caller hands it a backend-agnostic `Tab` (panes as argv plus
   an optional split), and the provider builds the cmux-native layout, so `cotal setup` resolves
@@ -351,9 +363,9 @@ dependency on them). Selectable backends:
 - **`host` (upgrade).** Headless via the Agent SDK for structured control plus true mid-turn
   interrupt; no native TUI (rendered from the event stream), observed via `cotal console --plain`.
 
-**Running one.** `cotal supervise` starts a manager; its runtime auto-detects (pty, or tmux
-inside tmux), and `--runtime cmux` spawns each teammate into its own cmux tab (run it from a cmux
-pane). The `cotal` binary aliases the Claude-Code connector as the default agent, so `cotal_spawn`
+**Running one.** `cotal supervise` starts a manager; it defaults to the `pty` runtime, while
+`--runtime tmux` / `--runtime cmux` put each teammate in its own tmux window / cmux tab (explicit
+only — they throw if the matching extension isn't imported, never silently fall back to pty). The `cotal` binary aliases the Claude-Code connector as the default agent, so `cotal_spawn`
 / `cotal_persona` / `cotal_despawn` work out of the box. For one-command onboarding, `cotal setup`
 (friendly alias `cotal go`) installs the plugin, brings up the mesh, and — inside a cmux pane —
 opens the manager plus console plus a driving session.

@@ -1,7 +1,7 @@
 # @cotal-ai/manager
 
 The agent supervisor: a mesh endpoint that spawns and manages nodes via a pluggable `Runtime`
-(`pty` default, `tmux`, or `cmux`), plus its own control-plane commands
+(`pty` built-in; `tmux` via `@cotal-ai/tmux`; `cmux` via `@cotal-ai/cmux`), plus its own control-plane commands
 (`start`/`stop`/`ps`/`attach`) and a WebSocket attach endpoint.
 
 It owns process lifecycle and config, not the agents' work; agents still coordinate laterally

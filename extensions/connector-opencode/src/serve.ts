@@ -60,7 +60,12 @@ async function main(): Promise<void> {
   // Own SQLite DB per agent: opencode auth/config stay on the operator's normal HOME/XDG roots,
   // while sessions avoid the global DB write lock that stalls concurrent `opencode serve`s.
   const name = process.env.COTAL_NAME?.trim() || "agent";
-  const agentHome = join(process.cwd(), ".cotal", "opencode", name);
+  // Data root the connector pins (the manager's workspace, or the launch dir for standalone spawn) —
+  // NOT process.cwd(), which the manager can point at any repo per-agent. Fail loud if it's missing
+  // rather than silently scattering the DB/pidfile into the launch cwd.
+  const dataRoot = process.env.COTAL_OPENCODE_HOME?.trim();
+  if (!dataRoot) throw new Error("COTAL_OPENCODE_HOME is not set — the connector must pin the agent's data root");
+  const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
 
   // Two serves on one agent DB share the SQLite file and stall each other — refuse up front.

@@ -26,6 +26,18 @@ export interface DeliveryLeaseInfo {
   ready: boolean;
 }
 
+/** A manager singleton-lease record: who holds the space + how it was launched. `runtime`/`root` let
+ *  `spawn -f` fail LOUD on a mismatch instead of silently reusing a wrong-runtime / foreign-checkout
+ *  manager (no fallbacks); `pid` is a diagnostics + targeted-stop hint. Acquired by an ATOMIC CAS
+ *  create — a second manager's create THROWS, a loud refusal-to-bind. */
+export interface ManagerLeaseInfo {
+  holder: string;   // manager endpoint id
+  runtime: string;  // pty | tmux | cmux
+  root: string;     // resolved workspaceRoot (same-checkout check)
+  pid: number;      // OS pid
+  since: number;    // epoch ms
+}
+
 /** Open the delivery lease/readiness bucket (pre-created with a bucket-level TTL at `cotal up`; the
  *  daemon binds, never creates). Read-only for an agent (Component 6 health), write-lease for the daemon. */
 export async function openDeliveryRegistry(

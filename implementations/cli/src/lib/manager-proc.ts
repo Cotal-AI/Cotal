@@ -72,12 +72,28 @@ export function cmuxManagerRunning(space: string): boolean {
     .some((pid) => servesSpace(spawnSync("ps", ["-p", pid, "-o", "args="], { encoding: "utf8" }).stdout));
 }
 
+/** True if a tmux-runtime manager is live for this space. Same matching logic as cmuxManagerRunning. */
+export function tmuxManagerRunning(space: string): boolean {
+  const r = spawnSync("pgrep", ["-f", "--", "--runtime tmux"], { encoding: "utf8" });
+  if (r.status !== 0) return false;
+  const servesSpace = (args: string): boolean => {
+    const tokens = args.split(/\s+/);
+    return tokens.some((t, i) => (t === "--space" && tokens[i + 1] === space) || t === `--space=${space}`);
+  };
+  return r.stdout
+    .split("\n")
+    .filter(Boolean)
+    .some((pid) => servesSpace(spawnSync("ps", ["-p", pid, "-o", "args="], { encoding: "utf8" }).stdout));
+}
+
 /** Start the control-plane manager detached (pid in `.cotal/manager.pid`, output to
  *  `.cotal/manager.log`), stopped by `cotal down`. Re-execs this same CLI's `supervise` — the
  *  composed `cotal` binary registers it; `process.execArgv` carries the tsx loader in dev and is
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
-export function startManagerDetached(o: { space?: string; server?: string; spawn?: string[] } = {}): number {
+export function startManagerDetached(
+  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string } = {},
+): number {
   const fd = openSync(cotalPath("manager.log"), "a");
   const [node, ...self] = selfArgv();
   const args = [
@@ -87,7 +103,10 @@ export function startManagerDetached(o: { space?: string; server?: string; spawn
     o.space ?? resolveSpace(process.cwd()),
     "--server",
     o.server ?? DEFAULT_SERVER,
+    ...(o.runtime ? ["--runtime", o.runtime] : []),
     ...(o.spawn?.length ? ["--spawn", o.spawn.join(",")] : []),
+    // A resolved mesh-manifest launch spec (cotal up -f): the manager materializes + boots each agent.
+    ...(o.launch ? ["--launch", o.launch] : []),
   ];
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);

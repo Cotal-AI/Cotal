@@ -85,6 +85,24 @@ export function launchEnv(
   return env;
 }
 
+/** The agent's resolved access policy as `COTAL_*` env, when present. Forwarded by each connector
+ *  so the spawned session's runtime read/post set matches the creds the manager minted from the
+ *  same policy. Without it a manifest-spawned agent — whose materialized persona carries no access
+ *  frontmatter — falls back to `["general"]`, which its scoped creds deny, so it joins nothing.
+ *  Empty/absent lists are omitted: the connector then defers to the persona file or the `general`
+ *  baseline (the no-channel case), preserving the persona-spawn path unchanged. */
+export function aclEnv(opts: {
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+}): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (opts.subscribe?.length) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
+  if (opts.allowSubscribe?.length) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
+  if (opts.allowPublish?.length) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
+  return env;
+}
+
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /
  *  `${VAR:-default}` (in command/args/env/url/headers). The single source of which operator vars
  *  a shared server needs: forwarded BY NAME through {@link launchEnv} (`mcpKeys`), never

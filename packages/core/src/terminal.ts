@@ -24,9 +24,16 @@ export interface Pane {
 }
 
 /**
- * A tab to open: a single pane, or several panes split along `direction` at `ratio` (the first
- * pane's fraction of the tab). Backend-agnostic — a {@link TerminalLayout} provider maps it to its
- * own native layout, so no backend-specific layout shape leaks into the caller.
+ * A tab to open: a single pane, or several panes split along `direction` at `ratio`.
+ *
+ * Orientation is **normative** so every backend renders the same shape (this is the only thing
+ * that makes layout parity checkable across providers):
+ * - `direction: "vertical"` — a vertical divider, i.e. side-by-side **left/right columns**.
+ * - `direction: "horizontal"` — a horizontal divider, i.e. stacked **top/bottom rows**.
+ * - `ratio` — the **first** pane's fraction of the tab (the second pane gets `1 - ratio`).
+ *
+ * Backend-agnostic — a {@link TerminalLayout} provider maps it to its own native layout, so no
+ * backend-specific layout shape leaks into the caller.
  */
 export interface Tab {
   panes: Pane[];

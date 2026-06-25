@@ -6,10 +6,12 @@
     [
       "cotal-ai",
       "@cotal-ai/core",
+      "@cotal-ai/workspace",
       "@cotal-ai/cli",
       "@cotal-ai/manager",
       "@cotal-ai/delivery",
       "@cotal-ai/cmux",
+      "@cotal-ai/tmux",
       "@cotal-ai/connector-core",
       "@cotal-ai/connector-claude-code",
       "@cotal-ai/connector-hermes",
@@ -28,9 +30,6 @@
   },
   "ignore": [
     "@cotal-ai/example-01-lateral-coordination",
-    "@cotal-ai/example-02-cmux-handoff",
-    "@cotal-ai/example-04-self-improving-console",
-    "todo-api",
-    "todo-web"
+    "@cotal-ai/example-02-self-improving-console"
   ]
 }

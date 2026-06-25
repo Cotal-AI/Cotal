@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cli",
   "description": "Cotal mesh CLI: up, join, watch, console, web, spawn, mint, channels, history.",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,14 +19,18 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx smoke/manifest.smoke.ts",
     "build": "tsc -p tsconfig.json && rm -rf dist/web && cp -R src/web dist/web",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*",
     "@clack/prompts": "^1.0.0",
     "ink": "^6.0.0",
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   },
   "optionalDependencies": {
     "@eplightning/nats-server-darwin-arm64": "^2.14.0",

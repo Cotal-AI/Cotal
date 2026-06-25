@@ -1,15 +1,6 @@
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import {
-  authDir,
-  clearSpaceHistory,
-  DEFAULT_SERVER,
-  loadSpaceAuth,
-  mintCreds,
-  newIdentity,
-} from "@cotal-ai/core";
-import { cotalRoot } from "../lib/paths.js";
-import { resolveSpace } from "../lib/status.js";
+import { clearSpaceHistory } from "@cotal-ai/core";
+import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /** Administrative history operations. Purges JetStream backlog only; live in-process
@@ -34,9 +25,10 @@ export async function history(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const space = values.space ?? resolveSpace(process.cwd());
-  const server = values.server ?? DEFAULT_SERVER;
-  const creds = values.creds ? readFileSync(values.creds, "utf8") : await managerCreds();
+  // Resolve the running mesh (from any dir) + manager creds — `--creds` is a raw off-registry connect.
+  // `history clear` is destructive, so targeting the RIGHT mesh matters: this no longer blindly hits
+  // DEFAULT_SERVER + the cwd space.
+  const { server, space, creds } = await connectOrExit(values, "manager");
   const result = await clearSpaceHistory({
     servers: server,
     space,
@@ -46,12 +38,6 @@ export async function history(argv: string[]): Promise<void> {
 
   const dm = result.dm === undefined ? "" : `, ${result.dm} DM message${result.dm === 1 ? "" : "s"}`;
   console.log(c.green(`✓ cleared ${result.chat} channel message${result.chat === 1 ? "" : "s"}${dm} from "${space}"`));
-}
-
-async function managerCreds(): Promise<string | undefined> {
-  const auth = loadSpaceAuth(authDir(cotalRoot()));
-  if (!auth) return undefined;
-  return mintCreds(auth, newIdentity(), "manager");
 }
 
 function usage(): void {

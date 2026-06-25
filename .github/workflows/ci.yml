@@ -10,7 +10,7 @@ concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
   check:
-    timeout-minutes: 15
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,6 +28,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install nats-server
+        run: |
+          NATS_VERSION=v2.10.22
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
+          tar -xzf /tmp/nats-server.tar.gz -C /tmp
+          sudo install "/tmp/nats-server-${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
+          nats-server --version
+
+      - name: Install tmux
+        run: tmux -V || (sudo apt-get update && sudo apt-get install -y tmux)
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -36,6 +47,24 @@ jobs:
 
       - name: Smoke test
         run: pnpm smoke:view
+
+      - name: Protocol & security smoke tests
+        run: pnpm smoke:ci
+
+      - name: Core boundary, mesh preflight & resolution smoke tests
+        # Core-never-imports-workspace boundary guard (smoke:core-boundary), the broker-free preflight
+        # decision tree incl. the prune-authority rules (smoke:preflight, now in @cotal-ai/workspace),
+        # the live manager target-resolution regression (smoke:server-resolution:live), and the live
+        # spawn-from-anywhere registry/auth-path e2e (smoke:spawn-from-anywhere:live). The last one is
+        # gated here AND in `pnpm check` deliberately: CLI smoke files are outside package typecheck, so
+        # a dynamic `await import()` boundary regression in a live smoke escapes tsc — only running it catches it.
+        # nats-server installed above.
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live
+
+      - name: Runtime smoke tests (tmux)
+        # Exercises the tmux Runtime + TerminalLayout end to end (driver, lifecycle by stable
+        # @window_id/%pane_id, P3 env -i isolation, attach hints). dist is built by Typecheck above.
+        run: pnpm smoke:runtime
 
       - name: Verify Claude connector package
         run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run

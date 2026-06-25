@@ -1,10 +1,5 @@
 import { parseArgs } from "node:util";
 import {
-  authDir,
-  loadSpaceAuth,
-  mintCreds,
-  newIdentity,
-  DEFAULT_SERVER,
   seedChannelRegistry,
   readChannelRegistry,
   effectiveReplay,
@@ -12,14 +7,15 @@ import {
   type ChannelDefaults,
   type ChannelRegistryFile,
 } from "@cotal-ai/core";
-import { cotalRoot } from "../lib/paths.js";
-import { resolveSpace } from "../lib/status.js";
+import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /**
  * `cotal channels` — inspect and mutate the per-space channel registry (replay policy,
- * description, instructions) while the mesh is up. Writes are privileged: in auth mode the
- * command mints ephemeral manager creds from `.cotal/auth`; in open mode it connects plainly.
+ * description, instructions) while the mesh is up. Writes are privileged: on an auth mesh the
+ * command mints ephemeral manager creds from the resolved mesh's `.cotal/auth`; on an open mesh it
+ * connects plainly. Works from any directory (resolves the running mesh); `--creds` is a raw
+ * off-registry connection.
  *
  *   cotal channels list
  *   cotal channels set <name> [--replay|--no-replay] [--desc <s>] [--instructions <s>]
@@ -32,6 +28,7 @@ export async function channels(argv: string[]): Promise<void> {
     options: {
       server: { type: "string" },
       space: { type: "string" },
+      creds: { type: "string" },
       replay: { type: "boolean" },
       "no-replay": { type: "boolean" },
       window: { type: "string" }, // backfill window, e.g. 24h / 30m / 7d
@@ -39,13 +36,16 @@ export async function channels(argv: string[]): Promise<void> {
       instructions: { type: "string" },
     },
   });
-  const server = values.server ?? DEFAULT_SERVER;
-  const space = values.space ?? resolveSpace(process.cwd());
+  // Validate the subcommand BEFORE connecting, so a typo (or a bare `cotal channels`) prints usage,
+  // not "no mesh running" — the same validate-first order as `history`.
+  const sub = positionals[0];
+  if (sub !== "list" && sub !== "set" && sub !== "default") return usage();
+  if (sub === "set" && !positionals[1]) return usage(); // need a channel name before touching the mesh
   // Tri-state replay: --replay → true, --no-replay → false, neither → leave unchanged.
   const replay = values["no-replay"] ? false : values.replay ? true : undefined;
-  const creds = await managerCreds(); // undefined ⇒ open mode
+  const { server, space, creds } = await connectOrExit(values, "manager"); // creds undefined ⇒ open mode
 
-  switch (positionals[0]) {
+  switch (sub) {
     case "list": {
       printRegistry(await readChannelRegistry({ servers: server, space, creds }));
       return;
@@ -83,14 +83,6 @@ export async function channels(argv: string[]): Promise<void> {
   }
 }
 
-/** Privileged creds for a registry write: mint ephemeral manager creds from the space auth
- *  (auth mode), or undefined to connect open. Throws nothing — open mode is the no-auth dev mesh. */
-async function managerCreds(): Promise<string | undefined> {
-  const auth = loadSpaceAuth(authDir(cotalRoot()));
-  if (!auth) return undefined;
-  return mintCreds(auth, newIdentity(), "manager");
-}
-
 function printRegistry(reg: ChannelRegistryFile): void {
   const def = reg.defaults?.replay;
   const dw = reg.defaults?.replayWindow;
@@ -113,7 +105,7 @@ function printRegistry(reg: ChannelRegistryFile): void {
 function usage(): void {
   console.error(
     c.red(
-      "usage: cotal channels <list | set <name> [--replay|--no-replay] [--window <dur>] [--desc <s>] [--instructions <s>] | default [--replay|--no-replay] [--window <dur>]> [--space <s>] [--server <url>]",
+      "usage: cotal channels <list | set <name> [--replay|--no-replay] [--window <dur>] [--desc <s>] [--instructions <s>] | default [--replay|--no-replay] [--window <dur>]> [--space <s>] [--server <url>] [--creds <path>]",
     ),
   );
   process.exit(1);

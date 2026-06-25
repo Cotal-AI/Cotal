@@ -1,22 +1,13 @@
-import { readFileSync } from "node:fs";
-import {
-  CotalEndpoint,
-  isReachable,
-  DEFAULT_SERVER,
-  DEFAULT_SPACE,
-  authDir,
-  loadSpaceAuth,
-  mintCreds,
-  newIdentity,
-} from "@cotal-ai/core";
+import { CotalEndpoint } from "@cotal-ai/core";
 import { c } from "../ui.js";
-import { cotalRoot } from "./paths.js";
+import { connectOrExit } from "./connect.js";
 
 /**
  * A one-shot, write-capable connection for the headless commands that touch the live mesh
- * (`dm`/`msg`/`ask`, and `personas list --running`). Resolve space/server/creds the same way
- * everywhere, open a transient endpoint that never joins the roster, do the one thing, stop.
- * Fail-loud throughout — an unreachable server or a space mismatch exits, never degrades.
+ * (`dm`/`msg`/`ask`, and `personas list --running`). Resolution + creds + reachability all go through
+ * the shared `connectOrExit` (so these work from any directory, and an explicit `--creds` is a raw
+ * off-registry connection). Opens a transient endpoint that never joins the roster, does the one
+ * thing, stops.
  */
 
 export interface ConnectValues {
@@ -25,33 +16,13 @@ export interface ConnectValues {
   creds?: string;
 }
 
-/** Resolve where to connect and with what credentials: an explicit `--creds` wins; else self-mint
- *  from `.cotal/auth` so an AUTH-mode mesh admits us; else connect bare on an open mesh. Exits with
- *  a clear message on a `--space` that contradicts the local auth, or an unreachable server. */
+/** Resolve where to connect + with what credentials (`--creds` → raw off-registry; else the running
+ *  mesh's minted manager creds). Fail-loud — an unresolved registry or an unreachable/auth-mismatched
+ *  broker exits with one sentence, never degrades. */
 export async function resolveConnect(
   values: ConnectValues,
 ): Promise<{ server: string; space: string; creds?: string }> {
-  const server = values.server ?? DEFAULT_SERVER;
-  let creds = values.creds ? readFileSync(values.creds, "utf8") : undefined;
-  let space = values.space;
-  if (!creds) {
-    const auth = loadSpaceAuth(authDir(cotalRoot()));
-    if (auth) {
-      if (space && space !== auth.space) {
-        console.error(
-          c.red(`Auth here is for space "${auth.space}", not "${space}". Use --space ${auth.space} (or pass --creds).`),
-        );
-        process.exit(1);
-      }
-      space = auth.space;
-      creds = await mintCreds(auth, newIdentity(), "manager");
-    }
-  }
-  space = space ?? DEFAULT_SPACE;
-  if (!(await isReachable(server, { creds }))) {
-    console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
-    process.exit(1);
-  }
+  const { server, space, creds } = await connectOrExit(values, "manager");
   return { server, space, creds };
 }
 

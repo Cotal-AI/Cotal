@@ -5,15 +5,14 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import * as p from "@clack/prompts";
 import {
-  authDir,
   DEFAULT_SERVER,
   isReachable,
-  loadSpaceAuth,
   registry,
   type Connector,
   type Pane,
   type TerminalLayout,
 } from "@cotal-ai/core";
+import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { LivePane } from "../lib/live-window.js";
 import { runSteps, type Step } from "../lib/steps.js";
@@ -24,7 +23,7 @@ import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, resolveSpace } from "../lib/status.js";
 import { startMeshDetached, up } from "./up.js";
 import { ensureWeb, webUp, WEB_URL } from "./web.js";
-import { cmuxManagerRunning, managerUp, pgrepMatches, stopManager } from "../lib/manager-proc.js";
+import { cmuxManagerRunning, tmuxManagerRunning, managerUp, pgrepMatches, stopManager } from "../lib/manager-proc.js";
 import { ensureControlPlane } from "../lib/delivery-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
@@ -302,26 +301,51 @@ async function offerDemo(haveClaude: boolean): Promise<void> {
 
   if (haveClaude && haveAgents && isTTY) {
     const cmux = inCmuxSurface();
-    const go = abortIfCancel(
-      await p.confirm({
-        message: cmux
-          ? "Open the cmux demo? A Claude you drive, with david and sven helping in cmux tabs."
-          : "Open the demo? A Claude you drive, with david and sven helping in the background.",
-        initialValue: true,
-      }),
-    );
-    if (go) {
-      if (cmux) {
+    const tmux = inTmuxSurface();
+
+    if (cmux) {
+      const go = abortIfCancel(
+        await p.confirm({
+          message: "Open the cmux demo? A Claude you drive, with david and sven helping in cmux tabs.",
+          initialValue: true,
+        }),
+      );
+      if (go) {
         ensureCmuxSession(cotalRoot());
         p.log.success("Session open: drive the 'cotal-main' pane; david and sven are on the mesh in the background.");
         return;
       }
-      // Non-cmux: a background pty manager pre-spawns david/sven (managed, despawnable), then we
-      // hand this terminal to the driving session. (auth → delivery daemon first, then the manager.)
-      await ensureControlPlane({ space: resolveSpace(process.cwd()), server: DEFAULT_SERVER, spawn: [...DEMO_TEAM] });
-      p.outro(brand("Launching your session... david and sven are warming up in the background."));
-      await spawn(["me", "--prompt", ME_GREETING]);
-      process.exit(0);
+    }
+
+    if (tmux) {
+      const go = abortIfCancel(
+        await p.confirm({
+          message: "Open the tmux demo? A Claude you drive, with david and sven helping in tmux windows.",
+          initialValue: true,
+        }),
+      );
+      if (go) {
+        ensureTmuxSession(cotalRoot());
+        p.log.success("Session open: switch to the 'cotal-main' window; david and sven are warming up in the background.");
+        return;
+      }
+    }
+
+    if (!cmux && !tmux) {
+      const go = abortIfCancel(
+        await p.confirm({
+          message: "Open the demo? A Claude you drive, with david and sven helping in the background.",
+          initialValue: true,
+        }),
+      );
+      if (go) {
+        // Background pty manager pre-spawns david/sven (managed, despawnable), then we hand this
+        // terminal to the driving session. (auth → delivery daemon first, then the manager.)
+        await ensureControlPlane({ space: resolveSpace(process.cwd()), server: DEFAULT_SERVER, spawn: [...DEMO_TEAM] });
+        p.outro(brand("Launching your session... david and sven are warming up in the background."));
+        await spawn(["me", "--prompt", ME_GREETING]);
+        process.exit(0);
+      }
     }
   } else if (isTTY && haveAgents && !haveClaude) {
     p.log.info(`The demo needs Claude Code. Install it (https://claude.com/claude-code), then run \`${displayCmd()} go\`.`);
@@ -348,6 +372,11 @@ const ME_GREETING =
  *  provider's `available()` (which only pings the app) — is the gate for opening it. */
 function inCmuxSurface(): boolean {
   return Boolean(process.env.CMUX_SURFACE_ID);
+}
+
+/** True when we're running inside a tmux session (tmux sets `$TMUX` to the socket path). */
+function inTmuxSurface(): boolean {
+  return Boolean(process.env.TMUX);
 }
 
 /** (Re)open the cmux working session, idempotently. A background cmux-runtime manager pre-spawns
@@ -397,6 +426,45 @@ function ensureCmuxSession(cwd: string): void {
   // persistent tab) so a session you're driving is never disturbed; a dead/closed one gets its stale
   // tab dropped and reopened. The "me" pane sets `confirm` so the provider auto-clears Claude's
   // dev-channels prompt; the greeting rides as a plain argv token (the provider quotes it).
+  if (!pgrepMatches(`spawn me --space ${space}`)) {
+    closeStaleTabs(term, "cotal-main");
+    term.open(
+      "cotal-main",
+      {
+        split: { direction: "vertical", ratio: 0.34 },
+        panes: [
+          run("console", "--space", space),
+          { ...run("spawn", "me", "--space", space, "--prompt", ME_GREETING), confirm: true },
+        ],
+      },
+      { focus: true },
+    );
+  }
+}
+
+/** (Re)open the tmux working session, idempotently. Mirrors ensureCmuxSession using the "tmux"
+ *  terminal provider: a background window runs the tmux-runtime manager (pre-spawning david/sven);
+ *  the focused "cotal-main" window has the console + driving session "me". */
+function ensureTmuxSession(cwd: string): void {
+  const term = registry.resolve<TerminalLayout>("terminal", "tmux");
+
+  stopManager();
+
+  const cotal = selfArgv();
+  const run = (...args: string[]): Pane => ({ command: cotal[0], args: [...cotal.slice(1), ...args], cwd });
+  const space = resolveSpace(cwd);
+  if (!/^[A-Za-z0-9_.-]+$/.test(space))
+    throw new Error(`cotal setup: unsafe space ${JSON.stringify(space)} (allowed: letters, digits, _ . -)`);
+
+  if (!tmuxManagerRunning(space)) {
+    for (const label of ["cotal-manager", ...DEMO_TEAM.map((n) => `cotal-${n}`)]) closeStaleTabs(term, label);
+    term.open(
+      "cotal-manager",
+      { panes: [run("supervise", "--runtime", "tmux", "--space", space, "--spawn", DEMO_TEAM.join(","))] },
+      { focus: false },
+    );
+  }
+
   if (!pgrepMatches(`spawn me --space ${space}`)) {
     closeStaleTabs(term, "cotal-main");
     term.open(

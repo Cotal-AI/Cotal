@@ -178,6 +178,29 @@ export async function seedChannelRegistry(opts: {
   }
 }
 
+/** Connect (privileged/open), delete the given channel-registry keys, disconnect. Used by
+ *  `cotal down -f` to remove ONLY the cards a `spawn -f` run created (ownership-scoped); the caller is
+ *  responsible for the members-present safety check. The bucket must already exist (no create on a
+ *  delete path); a key that's already absent is a no-op. The space-wide defaults key is never a
+ *  channel name, so it can't be removed here. */
+export async function deleteChannels(opts: {
+  servers: string;
+  space: string;
+  creds?: string;
+  channels: string[];
+}): Promise<void> {
+  const nc = await connect({
+    servers: opts.servers,
+    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
+  });
+  try {
+    const kv = await openChannelRegistry(nc, opts.space, { create: false });
+    for (const channel of opts.channels) await kv.delete(channel);
+  } finally {
+    await nc.drain();
+  }
+}
+
 /** Connect, read the whole registry (defaults + every channel entry) into a
  *  {@link ChannelRegistryFile}, disconnect. The read side of {@link seedChannelRegistry},
  *  used by `cotal channels list`. */

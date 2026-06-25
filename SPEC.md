@@ -438,6 +438,18 @@ KV buckets are also streams and are pre-created:
 | --- | --- | --- |
 | `cotal_presence_<space>` | presence (§6) | 6000 ms |
 | `cotal_channels_<space>` | channel registry (§7) | none |
+| `cotal_membership_<space>` | derived channel-membership feed (below) | none |
+
+**Derived channel-membership feed (observability).** `cotal_membership_<space>` is a per-agent
+(key = `card.id`) derived view of who is subscribed to each channel — the **union** of an agent's
+`live` core-subscriptions (read by a privileged daemon from the broker's connection view) and its
+`durable` memberships (the members registry), each value `{ live: string[], durable: string[],
+observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
+It exists so an observer can show silent readers and `live`-channel membership without a broker-admin
+credential in the dashboard tier; it is written by a scoped privileged daemon and read by the
+admin/observer profile only. It is **DISPLAY-ONLY and broker-derived**: it MUST NOT be an input to any
+delivery, ACL, or authorization decision (authority for those stays the broker's `sub.allow` and the
+members registry), and it is not part of the normative wire contract a client must implement.
 
 ---
 
