@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   DEFAULT_SERVER,
+  LEASE_TTL_MS,
   readChannelRegistry,
   seedChannelRegistry,
   type ControlReply,
@@ -25,12 +26,12 @@ import {
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectOrExit } from "../lib/connect.js";
-import { managerUp, startManagerDetached } from "../lib/manager-proc.js";
+import { startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, channelsSeed, genRunId, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { buildLedger, hashManifestSource, listLedgers, writeLedger, type LedgerAgent } from "../lib/manifest/ledger.js";
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "../lib/manifest/spawn-plan.js";
-import { connectProbe, launchAgent, settleRoster, waitManagerReady } from "../lib/manifest/live.js";
+import { connectProbe, launchAgent, settleRoster, waitLeaseGone, waitManagerReady } from "../lib/manifest/live.js";
 import { renderInherited, renderSpawnPlan, renderSpawnSummary, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
 
@@ -44,6 +45,10 @@ export interface SpawnManifestFlags {
 }
 
 const RUNTIMES = ["pty", "tmux", "cmux"];
+
+/** Short control-plane probe to tell a LIVE lease-holder from a stale lease a crashed manager left
+ *  behind (its key lingers until the bucket TTL). Kept well under {@link LEASE_TTL_MS}. */
+const MANAGER_PROBE_MS = 3_000;
 
 export async function spawnManifest(file: string, flags: SpawnManifestFlags): Promise<void> {
   const abs = resolve(file);
@@ -154,9 +159,44 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     if (agentPlan.willCreate.length) {
       // The manager reads the run spec by runId on each `launch`.
       writeLaunchSpec(root, buildLaunchSpec(eff, runId), { update: Boolean(prior) });
-      if (!managerUp()) startManagerDetached({ space, server: connection.server, runtime });
+      // Ensure a manager is SERVING this space, then validate it's ours — the lease is the authoritative
+      // owner record. A held lease alone is not proof a manager is alive (a crashed holder's key lingers
+      // until the bucket TTL, LEASE_TTL_MS), so read it (fast) and, when one exists, PROBE control to tell
+      // a LIVE holder from a stale key. Never trust `.cotal/manager.pid` (blind to a manager started
+      // another way — two managers queue-split every control op).
+      const held = await ep.readManagerLease();
+      if (!held) {
+        // Nobody owns the space — stand up a manager (it acquires the lease on boot).
+        startManagerDetached({ space, server: connection.server, runtime });
+      } else if (!(await waitManagerReady(ep, MANAGER_PROBE_MS))) {
+        // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
+        // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
+        console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${held.pid}); waiting up to ${Math.ceil(LEASE_TTL_MS / 1000)}s for it to expire…`));
+        if (!(await waitLeaseGone(ep, LEASE_TTL_MS + 5_000))) {
+          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${held.pid}) after its TTL — stop it or check .cotal/manager.log`));
+          process.exit(1);
+        }
+        startManagerDetached({ space, server: connection.server, runtime });
+      }
+      // else: a live manager already answered — reuse it. All paths converge here: confirm a manager is
+      // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
+      // `held` snapshot, which can turn over during the probe / a concurrent start — TOCTOU). Fail LOUD if
+      // a foreign-checkout or wrong-runtime manager won the space before we launch into it.
       if (!(await waitManagerReady(ep))) {
         console.error(c.red("✗ manager did not become ready for control — see .cotal/manager.log"));
+        process.exit(1);
+      }
+      const live = await ep.readManagerLease();
+      if (!live) {
+        console.error(c.red(`✗ "${space}" has no manager lease after the manager became ready — re-run \`cotal spawn -f\``));
+        process.exit(1);
+      }
+      if (resolve(live.root) !== resolve(root)) {
+        console.error(c.red(`✗ a manager from a different checkout serves "${space}" (root ${live.root}) — stop it, or run spawn -f from there`));
+        process.exit(1);
+      }
+      if (live.runtime !== runtime) {
+        console.error(c.red(`✗ a ${live.runtime} manager already serves "${space}" but runtime ${runtime} was requested — stop it, or match it with --runtime ${live.runtime}`));
         process.exit(1);
       }
       for (const e of agentPlan.willCreate) {

@@ -389,6 +389,16 @@ export function leaseKey(shardIndex: number): string {
   return `lease.${shardIndex}`;
 }
 
+/** Name of the KV bucket holding the per-space MANAGER singleton lease — one key
+ *  ({@link MANAGER_LEASE_KEY}), the live manager for the space. Bucket-level TTL (max_age =
+ *  LEASE_TTL_MS) auto-expires a crashed manager's lease so a replacement can acquire. Created by the
+ *  manager (allow-all profile); read by `spawn -f` to reuse the running manager not start a duplicate. */
+export function managerBucket(space: string): string {
+  return `cotal_manager_${token(space)}`;
+}
+/** The single key in {@link managerBucket} — there is exactly one manager per space. */
+export const MANAGER_LEASE_KEY = "lease";
+
 /** Deterministic FNV-1a (32-bit) hash of `key` into `[0, n)` — stable across processes/restarts, so a
  *  shard assignment never moves under a running daemon. The Plane-3 partition seam (sharding):
  *  **N=1 is the only operating mode shipped** (`shards > 1` is hard-rejected at the daemon entrypoint)

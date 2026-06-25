@@ -14,7 +14,7 @@ import {
 } from "@nats-io/transport-node";
 import { idFromCreds } from "./identity.js";
 import { assertValidName } from "./resolve.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, LEASE_TTL_MS } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -62,7 +62,7 @@ import {
   StaleMembershipWrite,
 } from "./members.js";
 import { openAclRegistry, readAcl, commitAcl as writeAclRecord } from "./acls.js";
-import { openDeliveryRegistry, type DeliveryLeaseInfo } from "./lease.js";
+import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
 import {
   openChannelRegistry,
   effectiveReplay,
@@ -91,6 +91,8 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
   leaseKey,
+  managerBucket,
+  MANAGER_LEASE_KEY,
   chatWildcard,
   assertValidChannel,
   channelInAllow,
@@ -213,6 +215,7 @@ export class CotalEndpoint extends EventEmitter {
   private membersKv?: KV;
   private aclKv?: KV;
   private deliveryKv?: KV;
+  private managerLeaseKv?: KV;
   private membershipKv?: KV;
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
@@ -1339,6 +1342,62 @@ export class CotalEndpoint extends EventEmitter {
     const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
     if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
     try { return e.json<DeliveryLeaseInfo>(); } catch { return undefined; }
+  }
+
+  /** Ensure + bind the manager singleton-lease bucket. NOTE: `Kvm.open` binds LAZILY — it does NOT
+   *  verify the stream exists or throw when it's missing, so it can't "create if absent" (a fresh bucket
+   *  then fails 'stream not found' on the first write — unlike the delivery bucket, which is pre-created
+   *  at `cotal up`). `create` is the ensure-exists call: it makes the bucket (bucket-level TTL) or, when
+   *  another manager already did, throws — and we bind the now-existing one. Either way the per-KEY CAS
+   *  create stays the only single-flight gate, so a lost bucket-create race never reads as "lease held".
+   *  The manager is allow-all, so it may create. */
+  private async managerLeaseRegistry(): Promise<KV> {
+    if (!this.nc) throw new Error("endpoint not started");
+    if (this.managerLeaseKv) return this.managerLeaseKv;
+    const kvm = new Kvm(this.nc);
+    try {
+      this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: LEASE_TTL_MS });
+    } catch {
+      this.managerLeaseKv = await kvm.open(managerBucket(this.space));
+    }
+    return this.managerLeaseKv;
+  }
+  private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify(info));
+  }
+  /** Acquire the singleton manager lease via ATOMIC CAS create. THROWS if a live lease exists (a loud
+   *  refusal-to-start, never a retry) so two managers never split control. A crashed holder's lease
+   *  auto-expires (bucket TTL). Returns the lease revision (for renew). */
+  async acquireManagerLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
+    return (await this.managerLeaseRegistry()).create(MANAGER_LEASE_KEY, this.encodeManagerLease({ ...info, since: Date.now() }));
+  }
+  /** Renew the held lease (CAS update against `revision`) before the bucket TTL expires it. Throws if the
+   *  revision moved (lost the lease). Returns the new revision. */
+  async renewManagerLease(info: Omit<ManagerLeaseInfo, "since">, revision: number): Promise<number> {
+    return (await this.managerLeaseRegistry()).update(MANAGER_LEASE_KEY, this.encodeManagerLease({ ...info, since: Date.now() }), revision);
+  }
+  /** Release the held lease on clean shutdown so a replacement manager acquires immediately. CAS-guarded
+   *  by `revision`: if we already LOST the lease (renew gap / another manager took over) the stored
+   *  revision has moved, the conditional delete no-ops, and we never delete the replacement's live lease. */
+  async releaseManagerLease(revision?: number): Promise<void> {
+    try {
+      const kv = await this.managerLeaseRegistry();
+      if (revision === undefined) await kv.delete(MANAGER_LEASE_KEY);
+      else await kv.delete(MANAGER_LEASE_KEY, { previousSeq: revision });
+    } catch { /* not ours / already gone */ }
+  }
+  /** Read the live manager lease, or undefined if none (bucket absent / key deleted/expired). Open-only —
+   *  never creates the bucket, so a probe that finds no manager leaves none behind. */
+  async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
+    if (!this.nc) return undefined;
+    try {
+      const kv = await new Kvm(this.nc).open(managerBucket(this.space));
+      const e = await kv.get(MANAGER_LEASE_KEY);
+      if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
+      return e.json<ManagerLeaseInfo>();
+    } catch {
+      return undefined;
+    }
   }
 
   /** Privileged: one owner's NON-TOMBSTONED durable memberships as `{channel, generation, activated}` —

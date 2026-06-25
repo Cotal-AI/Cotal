@@ -60,6 +60,18 @@ export async function waitManagerReady(ep: CotalEndpoint, timeoutMs = 20_000): P
   return false;
 }
 
+/** Poll until the manager lease for this space is GONE (a crashed holder's key lingers until the bucket
+ *  TTL). Returns true once absent, false on timeout. `spawn -f` uses this to wait out a STALE lease
+ *  before standing up a replacement — a held lease alone is not proof a manager is alive. */
+export async function waitLeaseGone(ep: CotalEndpoint, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await ep.readManagerLease())) return true;
+    await sleep(1000);
+  }
+  return !(await ep.readManagerLease());
+}
+
 /** Ask the running manager to launch one resolved agent from the run spec, on the ADMIN tier (the
  *  `launch` op is operator-only — a spawn-capable agent must not reach it). The manager derives
  *  `.cotal/run/<runId>.json` itself; we pass the runId, never a path. */

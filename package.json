@@ -69,6 +69,7 @@
     "smoke:up-manifest:live": "tsx implementations/cli/smoke/up-manifest-live.smoke.ts",
     "smoke:ledger": "tsx implementations/cli/smoke/ledger.smoke.ts",
     "smoke:spawn-manifest:live": "tsx implementations/cli/smoke/spawn-manifest-live.smoke.ts",
+    "smoke:manager-singleton:live": "tsx implementations/cli/smoke/manager-singleton-live.smoke.ts",
     "smoke:connect": "tsx implementations/cli/smoke/connect.smoke.ts",
     "smoke:web-seed:live": "tsx implementations/cli/smoke/web-seed-live.smoke.ts",
     "smoke:delivery-cred:auth": "tsx packages/core/smoke/delivery-cred-confinement.smoke.ts",

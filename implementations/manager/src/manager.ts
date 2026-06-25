@@ -1,8 +1,9 @@
 import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { join, dirname, delimiter, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
+  LEASE_TTL_MS,
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
@@ -20,7 +21,7 @@ import {
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
-import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
+import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -139,6 +140,9 @@ export class Manager {
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
    *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
   private auth?: SpaceAuth;
+  private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
+  private leaseRevision?: number;
+  private leaseTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -195,6 +199,26 @@ export class Manager {
     this.ep.on("error", (e: Error) => console.error(`! manager endpoint: ${e.message}`));
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
+    // Singleton guard: exactly one manager per space. Acquire the lease (atomic CAS create); if a live
+    // manager already holds it, REFUSE to start (fail loud) rather than become a second supervisor that
+    // queue-splits control with the incumbent. A crashed holder's lease auto-expires (bucket TTL).
+    this.leaseInfo = { holder: this.ep.ref().id, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
+    try {
+      this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
+    } catch (e) {
+      // A live holder ⇒ refuse (the singleton point). Anything else (e.g. a KV/JS error) is a real
+      // failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
+      const held = await this.ep.readManagerLease().catch(() => undefined);
+      await this.ep.stop();
+      await this.attach.stop();
+      throw new Error(
+        held
+          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) — stop it first; one manager per space`
+          : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
+      );
+    }
+    this.leaseTimer = setInterval(() => { void this.renewLease(); }, LEASE_TTL_MS / 2);
+    this.leaseTimer.unref?.();
     // Serve all three control tiers (P2a): self-service (no-name self stop/despawn), privileged
     // (start / own-child stop-despawn-attach / own definePersona), and admin (purge / cross-agent
     // stop-despawn-attach / cross-agent definePersona). The cred layer grants self-service to every
@@ -212,8 +236,27 @@ export class Manager {
   }
 
   async stop(): Promise<void> {
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    await this.ep.releaseManagerLease(this.leaseRevision);
     await this.ep.stop();
     await this.attach.stop();
+  }
+
+  /** Refresh the singleton lease before the bucket TTL expires it. On loss (missed the TTL, or another
+   *  manager took over after a gap) FAIL CLOSED: stop serving control at once so we can't double-process
+   *  with the new holder, and exit. We deliberately do NOT re-acquire (a replacement may already be live
+   *  while we'd still be serving) and do NOT release the key — it now belongs to that replacement. */
+  private async renewLease(): Promise<void> {
+    if (!this.leaseInfo || this.leaseRevision === undefined) return;
+    try {
+      this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
+    } catch (e) {
+      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) — shutting down to avoid two managers serving it`);
+      if (this.leaseTimer) clearInterval(this.leaseTimer);
+      try { await this.ep.stop(); } catch { /* best effort */ }
+      try { await this.attach.stop(); } catch { /* best effort */ }
+      process.exit(1);
+    }
   }
 
   private async handle(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {

@@ -420,6 +420,11 @@ function permissionsFor(
     // NO write grant — only the `delivery` cred writes it.
     `$JS.API.STREAM.INFO.${DLVKV}`,
     `$JS.API.STREAM.MSG.GET.${DLVKV}`,
+    // Manager singleton lease (`cotal_manager_<space>`): NO grant at all — an agent must never read,
+    // write, or delete it. The manager (allow-all) is its only writer; an agent that could mutate the
+    // lease key could DoS the supervisor (evict it / pre-create the key to block a fresh one). Safety is
+    // by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream + `$KV.cotal_manager_*.>`),
+    // so do NOT add a broad `KV_*` / `$KV.<space>.>` grant that would silently re-open it.
   ];
   if (svcD) {
     // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
