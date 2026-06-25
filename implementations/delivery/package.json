@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/delivery",
   "description": "Cotal delivery daemon: the server-side Plane-3 durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped least-privilege NATS client co-located with the broker.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
