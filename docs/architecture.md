@@ -782,7 +782,11 @@ later).
   signing key is **rotated** (which re-mints *everyone*, the only per-cred revocation today) or it
   is cut at the network. Despawn is the immediate lever, not full containment of a compromised
   identity; per-cred TTL/rotation is the deferred fix (auth-callout, below).
-- `isReachable` conflates auth-failure with server-down (a misleading "run cotal up").
+- **Credless liveness** (`isReachable`/`pruneStaleMeshes` with no creds) is a silent plaintext
+  TCP+`INFO` probe — it reads the server's pre-auth greeting and closes without authenticating, so
+  it no longer logs a broker auth-error on every check. Limitation: it returns false for a TLS-first
+  (`handshake_first`) listener (that broker config isn't supported by the credless probe yet); the
+  creds path stays a real authenticated connect and is unaffected.
 - The **manager profile is allow-all**, fine for Demo 1, but the most-privileged identity should
   eventually be scoped for the full untrusted-peer claim.
 - **Callout stage (later, additive):** auth-callout (NATS 2.10+) mints creds *at connect* from a

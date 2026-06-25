@@ -14,6 +14,7 @@
  * never pkill, so a co-running broker on :4222 is untouched. Run: pnpm smoke:spawn-from-anywhere:live
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type Server } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,13 +24,14 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-live-home-"));
 process.env.COTAL_HOME = home;
 
-const { probeConnect } = await import("@cotal-ai/core");
+const { probeConnect, isReachable } = await import("@cotal-ai/core");
 const { resolveMeshTarget, recordMesh, loadMeshes, meshesDir } = await import("@cotal-ai/workspace");
 const { pruneStaleMeshes } = await import("../src/lib/meshes.js");
 const { connectOrExit, reachableOrExit } = await import("../src/lib/connect.js");
 
 let pass = 0;
 const kids: ChildProcess[] = [];
+let notNats: Server | undefined;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
   pass++;
@@ -115,12 +117,22 @@ try {
     credless,
   );
 
+  // E: isReachable — the silent TCP+INFO liveness primitive (the fix). A live broker is reachable
+  // WITHOUT a credless connect, so an AUTH broker reports up with no broker-side auth-error log; a
+  // non-NATS listener is NOT reachable (we require a real `INFO {` greeting, not "any open port").
+  ok("E: isReachable(live open broker) → true", (await isReachable(SRV_OPEN)) === true);
+  ok("E: isReachable(live AUTH broker) → true (credless, no auth-error log)", (await isReachable(SRV_AUTH)) === true);
+  notNats = createServer((s) => s.end("hello, not nats\r\n"));
+  await new Promise<void>((res) => notNats!.listen(4457, "127.0.0.1", res));
+  ok("E: isReachable(non-NATS listener) → false (not 'any open port')", (await isReachable("nats://127.0.0.1:4457")) === false);
+
   // C: prune-on-real-death. Kill ONLY our 4455 child, then the entry must prune.
   const opener = kids[0]!;
   opener.kill("SIGTERM");
   for (let i = 0; i < 50 && opener.exitCode === null && opener.signalCode === null; i++) await sleep(100);
   const dead = await probeConnect(SRV_OPEN, { timeoutMs: 800 });
   ok("C: probeConnect to the killed broker → unreachable", !dead.ok && dead.reason === "unreachable", dead);
+  ok("E: isReachable(killed broker) → false", (await isReachable(SRV_OPEN)) === false);
   ok("C: registry still holds alpha before prune", loadMeshes().some((m) => m.space === "alpha"));
   await pruneStaleMeshes();
   ok("C: pruneStaleMeshes drops the dead entry", !loadMeshes().some((m) => m.space === "alpha"), loadMeshes());
@@ -134,6 +146,7 @@ try {
       /* already gone */
     }
   }
+  try { notNats?.close(); } catch { /* already closed */ }
   await sleep(300);
   for (const d of [home, projA]) rmSync(d, { recursive: true, force: true });
 }

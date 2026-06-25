@@ -1,4 +1,4 @@
-import { mintCreds, newIdentity, probeConnect } from "@cotal-ai/core";
+import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { loadMeshes, removeMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
 
@@ -67,16 +67,18 @@ export async function preflightTarget(
 
 /**
  * Drop registry entries whose broker is gone — a `cotal up` that crashed or was `kill -9`'d without
- * `cotal down` leaves a record behind. Probe each in parallel; only `unreachable` (refused/timeout)
- * is stale, an auth broker answering `auth-required` is alive. An EXPLICIT call (never wired into
- * resolution itself), so registry mutation stays opt-in: callers that act on the registry
- * (`spawn`/`use`/`meshes`, the manager control commands) invoke it; `<TAB>` completion must not.
+ * `cotal down` leaves a record behind. This is liveness-only and we hold NO creds for these meshes,
+ * so it uses the silent TCP+INFO {@link isReachable} probe — NOT a credless `probeConnect`, whose
+ * auth-rejection-as-liveness would log a broker auth error on every live AUTH mesh it sweeps.
+ * `isReachable` is true for any live broker (open or auth, since INFO precedes auth); only a truly
+ * dead one (refused/timeout) prunes. An EXPLICIT call (never wired into resolution itself), so
+ * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
+ * manager control commands) invoke it; `<TAB>` completion must not.
  */
 export async function pruneStaleMeshes(): Promise<void> {
   await Promise.all(
     loadMeshes().map(async (m) => {
-      const r = await probeConnect(m.server);
-      if (!r.ok && r.reason === "unreachable") removeMesh(m.space);
+      if (!(await isReachable(m.server))) removeMesh(m.space);
     }),
   );
 }
