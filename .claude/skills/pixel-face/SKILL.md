@@ -1,14 +1,14 @@
 ---
 name: pixel-face
-description: Create or improve a 32×32 pixel-art persona face for the Frontier Faces demo (examples/03-frontier-faces/personas.mjs) — the animated agent avatars rendered by face-term.mjs / the browser <cotal-face> / the gallery. Use when the user asks to add a new persona/face/avatar, improve an existing one (hair, eyes, likeness, expression), make it "look more like" someone, or fix a face that "doesn't read". Drives the example's own tools (img2rows.mjs, render-png.mjs) and follows FACE-DESIGN.md; uses a multi-agent variant loop for likeness.
+description: Create or improve a 32×32 pixel-art persona face for the Frontier Faces demo (examples/04-frontier-faces/personas.mjs) — the animated agent avatars rendered by face-term.mjs / the browser <cotal-face> / the gallery. Use when the user asks to add a new persona/face/avatar, improve an existing one (hair, eyes, likeness, expression), make it "look more like" someone, or fix a face that "doesn't read". Drives the example's own tools (img2rows.mjs, render-png.mjs) and follows FACE-DESIGN.md; uses a multi-agent variant loop for likeness.
 ---
 
 # pixel-face — author & refine the Frontier Faces pixel art
 
-A persona face is pure data in **`examples/03-frontier-faces/personas.mjs`** (one entry per
+A persona face is pure data in **`examples/04-frontier-faces/personas.mjs`** (one entry per
 persona). The same data drives the terminal renderer (`face-term.mjs`), the browser element
 (`web/cotal-face.js`), and the PNG tool — so edit `personas.mjs` once and it's live everywhere.
-**Always work from `examples/03-frontier-faces/`.**
+**Always work from `examples/04-frontier-faces/`.**
 
 ## Where things are
 - `personas.mjs` — the entries (rows, colors, glow, mouths, expr, eyes, lines). Single source of truth.
@@ -48,7 +48,7 @@ node tools/render-png.mjs --file <draft>.mjs --out /tmp/<key>.png --scale 8     
 node tools/render-png.mjs --file personas.mjs --persona <key> --out /tmp/<key>.png --scale 8   # existing
 ```
 A draft module must `export const entry = {…}` and (if it uses `rng` in expr/mouths)
-`import { rng } from '/abs/path/examples/03-frontier-faces/personas.mjs'`.
+`import { rng } from '/abs/path/examples/04-frontier-faces/personas.mjs'`.
 **After every render, Read the PNG and compare it to `assets/<key>.<ext>`.** Iterate.
 
 ## Create a new persona

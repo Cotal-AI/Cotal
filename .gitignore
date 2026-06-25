@@ -9,5 +9,5 @@ remotion/out/
 /.mcp.json
 .runs/
 examples/02-self-improving-console/harness/.*.log
-examples/03-frontier-faces/assets/
+examples/04-frontier-faces/assets/
 product
