@@ -2,15 +2,14 @@ import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { parseArgs } from "node:util";
 import {
-  authDir,
   agentFilePath,
   loadAgentFile,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   stripSpaceAuth,
   type Profile,
 } from "@cotal-ai/core";
+import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 

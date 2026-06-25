@@ -14,16 +14,20 @@ import { parseArgs } from "node:util";
 import {
   isReachable,
   DEFAULT_SERVER,
-  authDir,
   createSpaceAuth,
-  loadSpaceAuth,
-  saveSpaceAuth,
   serverConfig,
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
   seedChannelRegistry,
+  type SpaceAuth,
+  type ChannelRegistryFile,
+} from "@cotal-ai/core";
+import {
+  authDir,
+  loadSpaceAuth,
+  saveSpaceAuth,
   clearCurrent,
   findMesh,
   getCurrent,
@@ -32,9 +36,7 @@ import {
   removeMesh,
   setCurrent,
   type MeshEntry,
-  type SpaceAuth,
-  type ChannelRegistryFile,
-} from "@cotal-ai/core";
+} from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";

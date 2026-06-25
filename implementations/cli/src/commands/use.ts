@@ -1,4 +1,5 @@
-import { findMesh, loadMeshes, setCurrent, type CompletionResult } from "@cotal-ai/core";
+import type { CompletionResult } from "@cotal-ai/core";
+import { findMesh, loadMeshes, setCurrent } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 

@@ -1,12 +1,12 @@
 {
-  "name": "@cotal-ai/manager",
-  "description": "Cotal agent supervisor: spawns and manages mesh nodes via a pluggable runtime (pty/tmux/cmux).",
+  "name": "@cotal-ai/workspace",
+  "description": "Cotal machine-local workstation layer: the ~/.cotal mesh registry, target resolution, preflight, on-disk auth-path I/O, and the command-copy renderer — operator concerns over a local checkout, kept separate from the wire protocol in @cotal-ai/core.",
   "version": "0.7.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Cotal-AI/Cotal.git",
-    "directory": "implementations/manager"
+    "directory": "packages/workspace"
   },
   "type": "module",
   "main": "./dist/index.js",
@@ -20,22 +20,11 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/preflight.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@lydell/node-pty": "1.2.0-beta.12",
-    "@cotal-ai/core": "workspace:*",
-    "@cotal-ai/workspace": "workspace:*",
-    "@xterm/addon-attach": "^0.11.0",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/xterm": "^5.5.0",
-    "ws": "^8.21.0",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "@cotal-ai/connector-core": "workspace:*",
-    "@types/ws": "^8.18.1"
+    "@cotal-ai/core": "workspace:*"
   },
   "files": [
     "dist"

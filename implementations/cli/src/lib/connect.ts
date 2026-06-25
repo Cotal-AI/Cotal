@@ -2,27 +2,29 @@ import { readFileSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
-  findMesh,
-  getCurrent,
   mintCreds,
   newIdentity,
-  preflightMessage,
-  preflightTarget,
   probeConnect,
-  pruneStaleMeshes,
-  reachableMessage,
-  removeMesh,
-  resolveMeshTarget,
-  type MeshTarget,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import {
+  findMesh,
+  getCurrent,
+  isWorkspaceTargetError,
+  preflightTarget,
+  pruneStaleMeshes,
+  removeMesh,
+  renderWorkspaceError,
+  resolveMeshTarget,
+  type MeshTarget,
+} from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 
-// The preflight mechanics (probe → classify → message text + stale-prune) now live in
-// `@cotal-ai/core`, shared with the manager control commands. Re-exported here so existing importers
-// — and `connect.smoke.ts` — keep resolving them from this module unchanged.
-export { classifyPreflightFailure, type PreflightFailure } from "@cotal-ai/core";
+// The workstation mechanics (target resolution, probe → classify → command-copy renderer +
+// stale-prune) live in `@cotal-ai/workspace`, shared with the manager control commands. Re-exported
+// here so existing importers — and `connect.smoke.ts` — keep resolving them from this module unchanged.
+export { classifyPreflightFailure, type PreflightFailure } from "@cotal-ai/workspace";
 
 /**
  * The one way every command that touches a running mesh figures out WHICH mesh + with what creds,
@@ -104,7 +106,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
 export async function reachableOrExit(server: string, auth: RawAuth = {}): Promise<void> {
   const probe = await probeConnect(server, auth);
   if (probe.ok) return;
-  console.error(c.red(reachableMessage(probe.reason, server)));
+  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server })));
   process.exit(1);
 }
 
@@ -123,8 +125,11 @@ export async function resolveTargetOrExit(flags: {
   try {
     target = resolveMeshTarget(process.cwd(), flags);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
-    process.exit(1);
+    if (isWorkspaceTargetError(e)) {
+      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      process.exit(1);
+    }
+    throw e;
   }
   // If a dangling `current` was silently bypassed — it named a mesh that's since gone and we fell
   // back to the only live one — say so. The N>1 case errors loudly; this is the one spot that would
@@ -137,14 +142,14 @@ export async function resolveTargetOrExit(flags: {
 
 /** Confirm the resolved mesh is up and accepts these creds — replaces the raw NATS "Authorization
  *  Violation" trace with one sentence, and prunes the entry if the broker is gone / mismatched.
- *  The probe + classify + message text live in `@cotal-ai/core` (shared with the manager control
- *  commands); this wrapper owns the CLI's I/O — it acts on core's prune decision, colours, and exits.
- *  Probes with `probeCreds` when given (the caller's `--creds`/minted creds); otherwise core mints a
- *  throwaway identity from the target's own trust material. */
+ *  The probe + classify + render live in `@cotal-ai/workspace` (shared with the manager control
+ *  commands); this wrapper owns the CLI's I/O — it acts on the prune decision, colours, and exits.
+ *  Probes with `probeCreds` when given (the caller's `--creds`/minted creds); otherwise workspace mints
+ *  a throwaway identity from the target's own trust material. */
 export async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise<void> {
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
   if (r.prune) removeMesh(target.space);
-  console.error(c.red(preflightMessage(r.kind, target, r.prune)));
+  console.error(c.red(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned: r.prune })));
   process.exit(1);
 }

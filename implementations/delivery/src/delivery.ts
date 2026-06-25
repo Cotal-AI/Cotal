@@ -5,14 +5,12 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
-  authDir,
-  findCotalRoot,
   isReachable,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   type MembershipFeedHandle,
 } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 
 type Values = Record<string, string | undefined>;

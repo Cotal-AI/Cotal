@@ -23,7 +23,8 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@cotal-ai/core": "workspace:*"
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*"
   },
   "files": [
     "dist"

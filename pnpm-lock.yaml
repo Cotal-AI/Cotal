@@ -214,6 +214,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       ink:
         specifier: ^6.0.0
         version: 6.8.0(@types/react@19.2.17)(react@19.2.7)
@@ -255,12 +258,18 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
 
   implementations/manager:
     dependencies:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       '@lydell/node-pty':
         specifier: 1.2.0-beta.12
         version: 1.2.0-beta.12
@@ -307,6 +316,12 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+
+  packages/workspace:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 

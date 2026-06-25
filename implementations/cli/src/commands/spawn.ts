@@ -4,25 +4,23 @@ import { join, dirname } from "node:path";
 import { parseArgs } from "node:util";
 import {
   agentFilePath,
-  authDir,
   connectorServers,
   firstFreeName,
   isReachable,
   loadAgentFile,
   loadCotalConfig,
-  loadMeshes,
   mintCreds,
   newIdentity,
   parseShareSelection,
   provisionAgent,
   registry,
-  resolveMeshTarget,
   CotalEndpoint,
   type AgentDef,
   type CompletionResult,
   type Connector,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { authDir, loadMeshes, resolveMeshTarget } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { listPersonas } from "../lib/personas.js";

@@ -17,7 +17,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, readdirSync, renameSync, lstatSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { z } from "zod";
-import { assertValidChannel, assertValidName, authDir, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink } from "@cotal-ai/core";
+import { assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink } from "@cotal-ai/core";
+import { authDir } from "@cotal-ai/workspace";
 
 export const LEDGER_VERSION = "cotal-ledger/v1";
 

@@ -4,7 +4,7 @@
  * same way the rest of the CLI does — instead of silently assuming `DEFAULT_SERVER` (:4222), the
  * original bug: `ps --space <mesh>` for a mesh on another port hit :4222 and got an auth violation.
  *
- * This is the LIVE counterpart to the now-core preflight unit smoke: since `resolveManagerTarget`
+ * This is the LIVE counterpart to the workspace preflight unit smoke: since `resolveManagerTarget`
  * now PREFLIGHTS (probe + stale-prune, shared with `connectOrExit`), its success paths can only be
  * exercised against REAL brokers — a registered mesh on a dead port would (correctly) be pruned. So
  * the pure decision tree lives in `smoke:preflight` (broker-free); the resolve+preflight wiring is
@@ -17,14 +17,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Sandbox the registry BEFORE importing core — homeCotalDir() reads COTAL_HOME per call.
+// Sandbox the registry BEFORE importing workspace — homeCotalDir() reads COTAL_HOME per call.
 const home = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-home-"));
 const cwd = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-cwd-"));
 const projectRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-root-"));
 process.env.COTAL_HOME = home;
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry
 
-const { recordMesh, loadMeshes, probeConnect, resolveMeshTarget, DEFAULT_SERVER } = await import("@cotal-ai/core");
+const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
+const { recordMesh, loadMeshes, resolveMeshTarget } = await import("@cotal-ai/workspace");
 const { resolveManagerTarget } = await import("../src/commands.js");
 
 let pass = 0;

@@ -1,6 +1,4 @@
-import { mintCreds } from "./provision.js";
-import { newIdentity } from "./identity.js";
-import { probeConnect } from "./endpoint.js";
+import { mintCreds, newIdentity, probeConnect } from "@cotal-ai/core";
 import { loadMeshes, removeMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
 
@@ -8,11 +6,12 @@ import type { MeshTarget } from "./mesh-target.js";
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
  * ("which mesh") that answers "is it actually up, and does the registry still reflect reality".
  *
- * Lives in core (beside the registry, target resolution, and `probeConnect` it builds on) so every
- * surface shares ONE preflight rule instead of re-deriving it: the CLI's `connectOrExit` and the
- * manager's control commands both wrap these helpers. It owns the MECHANICS only — the classify
- * decision, the canonical message text, and the probe — never the I/O: colour and `process.exit`
- * stay at each call site, and pruning is the caller's explicit act, not a side effect of probing.
+ * Lives in `@cotal-ai/workspace` (beside the registry and target resolution, over core's
+ * `probeConnect`) so every surface shares ONE preflight rule instead of re-deriving it: the CLI's
+ * `connectOrExit` and the manager's control commands both wrap these helpers. It owns the MECHANICS
+ * only — the classify decision and the probe — never the I/O or the copy: the canonical `cotal …`
+ * wording is {@link renderWorkspaceError}'s job, colour and `process.exit` stay at each call site,
+ * and pruning is the caller's explicit act, not a side effect of probing.
  */
 
 /** The five distinct ways a preflight fails. Each also carries whether the target OWNS its registry
@@ -48,33 +47,6 @@ export function classifyPreflightFailure(
   if (fromRegistry) return { prune: true, kind: "registry-open-now-auth" };
   if (hasAuth) return { prune: false, kind: "creds-rejected" };
   return { prune: false, kind: "open-wants-auth" };
-}
-
-/** The canonical, surface-agnostic failure sentence for a classified preflight (plain text — the
- *  caller wraps it in colour and exits). `cotal up`/`cotal meshes` wording matches what
- *  `resolveMeshTarget` already throws, so the CLI and the manager speak with one voice. */
-export function preflightMessage(kind: PreflightFailure, t: MeshTarget, pruned: boolean): string {
-  switch (kind) {
-    case "unreachable":
-      return `✗ no mesh running at ${t.server}${pruned ? " (stale registry entry — removed)" : ""} — run \`cotal up\``;
-    case "registry-creds-rejected":
-      return `✗ mesh "${t.space}" at ${t.server} no longer matches its registry entry (credentials rejected — port reused?) — re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
-    case "registry-open-now-auth":
-      return `✗ open mesh "${t.space}" at ${t.server} no longer matches its registry entry (broker now requires auth — port reused?) — re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
-    case "creds-rejected":
-      return `✗ credentials for "${t.space}" were rejected at ${t.server} — a different mesh may be running there. Run \`cotal meshes\` to check, or \`cotal up\` here to start yours`;
-    case "open-wants-auth":
-      return `✗ broker at ${t.server} requires auth, but this mesh is open (no trust material) — use \`--space <name>\` for an auth mesh, or run \`cotal up\` here without \`--open\``;
-  }
-}
-
-/** The plain failure sentence for a RAW (off-registry) reachability probe — the `--creds` /
- *  `--server`+unregistered-`--space` escape hatch, which never touches the registry (no prune, no
- *  stale-entry wording). */
-export function reachableMessage(reason: "auth-required" | "unreachable", server: string): string {
-  return reason === "auth-required"
-    ? `✗ credentials rejected at ${server} — check your creds, or the broker wants different auth`
-    : `✗ can't reach a broker at ${server} — is it running? (\`cotal up\`)`;
 }
 
 /** Probe a resolved target and, on failure, classify it — WITHOUT touching the registry. Returns the

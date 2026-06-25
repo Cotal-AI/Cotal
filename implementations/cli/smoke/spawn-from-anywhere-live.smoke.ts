@@ -23,9 +23,8 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-live-home-"));
 process.env.COTAL_HOME = home;
 
-const { resolveMeshTarget, recordMesh, loadMeshes, probeConnect, meshesDir } = await import(
-  "@cotal-ai/core"
-);
+const { probeConnect } = await import("@cotal-ai/core");
+const { resolveMeshTarget, recordMesh, loadMeshes, meshesDir } = await import("@cotal-ai/workspace");
 const { pruneStaleMeshes } = await import("../src/lib/meshes.js");
 const { connectOrExit, reachableOrExit } = await import("../src/lib/connect.js");
 

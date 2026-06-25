@@ -1,11 +1,11 @@
 /**
- * The preflight mechanics in `@cotal-ai/core` (`preflight.ts`), now shared by the CLI's
+ * The preflight mechanics in `@cotal-ai/workspace` (`preflight.ts`), shared by the CLI's
  * `connectOrExit` and the manager's control commands. All broker-free:
  *
  *  • classifyPreflightFailure — the (source × reason × has-auth) decision tree. The load-bearing
  *    invariant: a NON-registry source (flag-server / local-space, or a raw `--creds`) is NEVER
  *    pruned — only the registry owns its entries, so a bad `--creds` can't delete a good record.
- *  • preflightMessage — one canonical sentence per failure kind (+ the "stale entry — removed" suffix).
+ *  • renderWorkspaceError — one canonical sentence per failure kind (+ the "stale entry — removed" suffix).
  *  • preflightTarget — probe a DEAD port and assert it classifies unreachable + prunes by source,
  *    WITHOUT mutating the registry (it returns the decision; the caller mutates).
  *  • pruneStaleMeshes — a registered entry whose broker is gone is dropped; an explicit call only.
@@ -16,7 +16,7 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MeshTarget } from "@cotal-ai/core"; // erased at runtime — safe before the COTAL_HOME sandbox
+import type { MeshTarget, PreflightFailure } from "@cotal-ai/workspace"; // erased at runtime — safe before the COTAL_HOME sandbox
 
 // Sandbox the registry BEFORE importing core — homeCotalDir() reads COTAL_HOME per call, so the
 // real ~/.cotal is never touched by recordMesh/pruneStaleMeshes below.
@@ -25,13 +25,18 @@ process.env.COTAL_HOME = home;
 
 const {
   classifyPreflightFailure,
-  preflightMessage,
   preflightTarget,
   pruneStaleMeshes,
   resolveMeshTarget,
   recordMesh,
   loadMeshes,
-} = await import("@cotal-ai/core");
+  renderWorkspaceError,
+} = await import("@cotal-ai/workspace");
+
+// The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
+// presentation helper); this shim keeps the message assertions below reading unchanged.
+const preflightMessage = (kind: PreflightFailure, t: MeshTarget, pruned: boolean): string =>
+  renderWorkspaceError({ kind: "preflight", failure: kind, target: t, pruned });
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -144,5 +149,5 @@ await pruneStaleMeshes();
 check("pruneStaleMeshes drops every dead entry", loadMeshes().length === 0, loadMeshes());
 
 rmSync(home, { recursive: true, force: true });
-console.log(`\npreflight (core) smoke: ${pass} checks passed`);
+console.log(`\npreflight (workspace) smoke: ${pass} checks passed`);
 process.exit(0);

@@ -14,8 +14,7 @@
  * NOT yet provided (our job, not nsc's): credential revocation and an issuance audit
  * trail. Revocation is deferred past Demo 1; minted creds currently have no TTL.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join } from "node:path";
 import {
   encodeOperator,
   encodeAccount,
@@ -635,41 +634,4 @@ resolver_preload: {
   ${auth.sys.pub}: ${auth.sys.jwt}
 }
 `;
-}
-
-// ---- persistence (.cotal/auth) ------------------------------------------------
-
-const AUTH_FILE = "auth.json";
-
-export function authDir(root: string): string {
-  return join(root, ".cotal", "auth");
-}
-
-/** Find the project's `.cotal/` by walking up from `start` (like git finds `.git`), returning the
- *  directory that *contains* `.cotal/`. Falls back to `start` when none is found up the tree (a
- *  fresh setup creates `.cotal/` there). Lets `cotal` run from any subdirectory of a project. */
-export function findCotalRoot(start: string = process.cwd()): string {
-  let dir = resolve(start);
-  for (;;) {
-    if (existsSync(join(dir, ".cotal"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return resolve(start);
-    dir = parent;
-  }
-}
-
-/** Persist the space trust material. The file holds the data-account signing seed — treat as a secret.
- *  The system-account `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting capability,
- *  so it never lands on disk (it lives only in the in-memory {@link createSpaceAuth} result). */
-export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
-  mkdirSync(dir, { recursive: true });
-  const onDisk: SpaceAuth = { ...auth, sys: { pub: auth.sys.pub, jwt: auth.sys.jwt } };
-  writeFileSync(join(dir, AUTH_FILE), JSON.stringify(onDisk, null, 2), { mode: 0o600 });
-}
-
-/** Load the space trust material, or undefined if auth was never set up here. */
-export function loadSpaceAuth(dir: string): SpaceAuth | undefined {
-  const f = join(dir, AUTH_FILE);
-  if (!existsSync(f)) return undefined;
-  return JSON.parse(readFileSync(f, "utf8")) as SpaceAuth;
 }

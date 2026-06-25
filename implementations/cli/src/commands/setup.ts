@@ -5,15 +5,14 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import * as p from "@clack/prompts";
 import {
-  authDir,
   DEFAULT_SERVER,
   isReachable,
-  loadSpaceAuth,
   registry,
   type Connector,
   type Pane,
   type TerminalLayout,
 } from "@cotal-ai/core";
+import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { LivePane } from "../lib/live-window.js";
 import { runSteps, type Step } from "../lib/steps.js";

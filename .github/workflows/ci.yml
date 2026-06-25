@@ -51,12 +51,15 @@ jobs:
       - name: Protocol & security smoke tests
         run: pnpm smoke:ci
 
-      - name: Mesh preflight & resolution smoke tests
-        # Broker-free preflight decision tree incl. the prune-authority rules (smoke:preflight), plus
-        # the live manager target-resolution regression — registry-resolve over DEFAULT_SERVER,
-        # --server override, override-never-prunes-recorded, stale-prune (smoke:server-resolution:live).
+      - name: Core boundary, mesh preflight & resolution smoke tests
+        # Core-never-imports-workspace boundary guard (smoke:core-boundary), the broker-free preflight
+        # decision tree incl. the prune-authority rules (smoke:preflight, now in @cotal-ai/workspace),
+        # the live manager target-resolution regression (smoke:server-resolution:live), and the live
+        # spawn-from-anywhere registry/auth-path e2e (smoke:spawn-from-anywhere:live). The last one is
+        # gated here AND in `pnpm check` deliberately: CLI smoke files are outside package typecheck, so
+        # a dynamic `await import()` boundary regression in a live smoke escapes tsc — only running it catches it.
         # nats-server installed above.
-        run: pnpm smoke:preflight && pnpm smoke:server-resolution:live
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live
 
       - name: Runtime smoke tests (tmux)
         # Exercises the tmux Runtime + TerminalLayout end to end (driver, lifecycle by stable

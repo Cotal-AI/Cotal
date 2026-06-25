@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { findCotalRoot, startMembershipFeed, type MembershipFeedHandle } from "@cotal-ai/core";
+import { startMembershipFeed, type MembershipFeedHandle } from "@cotal-ai/core";
+import { findCotalRoot } from "@cotal-ai/workspace";
 
 /**
  * The delivery daemon's thin composition root for the broker-sourced graph-membership feed. It loads the

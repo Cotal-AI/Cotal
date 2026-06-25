@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { findCotalRoot } from "@cotal-ai/core";
+import { findCotalRoot } from "@cotal-ai/workspace";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
  *  command resolves the same `.cotal/` whether you're at the project root or a subdirectory. */

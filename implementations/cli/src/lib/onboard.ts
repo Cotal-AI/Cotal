@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homeCotalDir } from "@cotal-ai/core";
+import { homeCotalDir } from "@cotal-ai/workspace";
 
 /** Machine-level "I've onboarded before" marker. Its presence flips `cotal` from the
  *  full first-run flow to the compact ensure+status run. Lives next to the materialized

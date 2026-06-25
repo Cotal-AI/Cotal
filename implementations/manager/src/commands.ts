@@ -6,27 +6,29 @@ import {
   isReachable,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
-  authDir,
-  findCotalRoot,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   registry,
-  findMesh,
-  resolveMeshTarget,
-  preflightTarget,
-  preflightMessage,
-  reachableMessage,
-  pruneStaleMeshes,
   probeConnect,
-  removeMesh,
   CONTROL_PRIVILEGED,
   CONTROL_ADMIN,
   type Command,
   type ControlReply,
   type ControlTier,
-  type MeshTarget,
 } from "@cotal-ai/core";
+import {
+  authDir,
+  findCotalRoot,
+  loadSpaceAuth,
+  findMesh,
+  isWorkspaceTargetError,
+  resolveMeshTarget,
+  preflightTarget,
+  pruneStaleMeshes,
+  removeMesh,
+  renderWorkspaceError,
+  type MeshTarget,
+} from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
@@ -45,23 +47,23 @@ function spaceFor(v: Values): string {
 /** Raw off-registry reachability — one plain sentence, never a registry/stale-entry message and
  *  never a prune. Used by the `--creds` and `--server`+unregistered-`--space` escape hatches, which
  *  connect to a broker the operator named, not the registry. The manager's copy of the CLI's
- *  `reachableOrExit` (an implementation can't import another); the wording lives in core. */
+ *  `reachableOrExit` (an implementation can't import another); the wording lives in `@cotal-ai/workspace`. */
 async function reachableOrExit(server: string, auth: { creds?: string } = {}): Promise<void> {
   const probe = await probeConnect(server, auth);
   if (probe.ok) return;
-  console.error(c.red(reachableMessage(probe.reason, server)));
+  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server })));
   process.exit(1);
 }
 
 /** Confirm a registry-resolved mesh is up + accepts these creds — replacing the raw NATS auth trace
  *  with one sentence and pruning a stale entry. The manager's copy of the CLI's `preflightOrExit`:
- *  the probe/classify/message/prune-decision live in core (`preflightTarget`); this owns the I/O —
- *  it acts on core's prune decision, colours, and exits. */
+ *  the probe/classify/render/prune-decision live in `@cotal-ai/workspace` (`preflightTarget`); this owns
+ *  the I/O — it acts on the prune decision, colours, and exits. */
 async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise<void> {
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
   if (r.prune) removeMesh(target.space);
-  console.error(c.red(preflightMessage(r.kind, target, r.prune)));
+  console.error(c.red(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned: r.prune })));
   process.exit(1);
 }
 
@@ -78,7 +80,7 @@ async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise
  *       `DEFAULT_SERVER` (:4222); `--server` overrides. The privileged "manager" cred is minted from
  *       the RESOLVED mesh's own recorded root (so `--space other` loads other's auth, guarded by
  *       `targetFromEntry`'s `auth.space === m.space` check), or none for an open mesh.
- *  Shares core's `preflightTarget`/`pruneStaleMeshes` with the CLI, so a dead/mismatched entry gets
+ *  Shares `@cotal-ai/workspace`'s `preflightTarget`/`pruneStaleMeshes` with the CLI, so a dead/mismatched entry gets
  *  the same one-sentence message + stale-prune the rest of the CLI gives — not a raw NATS trace. The
  *  pre-resolution sweep runs only for bare / `--server`-only resolution; an explicit `--space` is
  *  resolved + preflighted directly (so a `--server` override can recover a dead-recorded mesh).
@@ -108,8 +110,11 @@ export async function resolveManagerTarget(v: Values): Promise<{ space: string; 
   try {
     target = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space });
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
-    process.exit(1);
+    if (isWorkspaceTargetError(e)) {
+      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      process.exit(1);
+    }
+    throw e;
   }
   const creds = target.auth ? await mintCreds(target.auth, newIdentity(), "manager") : undefined;
   await preflightOrExit(target, creds);

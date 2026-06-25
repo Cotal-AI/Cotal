@@ -4,14 +4,11 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   agentFilePath,
-  authDir,
   clearSpaceHistory,
   connectorServers,
-  findCotalRoot,
   firstFreeName,
   loadAgentFile,
   loadCotalConfig,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   provisionAgent,
@@ -22,6 +19,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,

@@ -1,4 +1,4 @@
-import { getCurrent, loadMeshes } from "@cotal-ai/core";
+import { getCurrent, loadMeshes } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 

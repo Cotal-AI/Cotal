@@ -41,7 +41,7 @@ ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev
 
 | Path | What it is |
 |---|---|
-| `packages/*` | The protocol (the standard). Generic; depends on nothing else in the repo. |
+| `packages/*` | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core. |
 | `extensions/*` | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import. |
 | `implementations/*` | Opinionated surfaces over core (CLI, manager, delivery daemon). Self-contained; never import each other. |
 | `examples/*` | Use-cases / composition roots. Private, never published. Each self-documents in its README. |
@@ -55,14 +55,18 @@ ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev
 
 ### The packages (one-way dependency tiers)
 
-Dependencies flow one way: `examples → implementations → packages ← (peer) extensions`.
+Dependencies flow one way: `examples → implementations → workspace → core ← (peer) extensions`
+(`packages/*` is core + workspace; extensions peer-depend core only).
 Extensions, connectors, runtimes, and commands **self-register into the core `Registry` on
 import**; a composition root just imports the surfaces it wants. An unknown agent type throws,
 with no silent fallback.
 
 - **`@cotal-ai/core`** (`packages/core`): endpoint, subjects, message types; the NATS client
   layer plus the extension contracts (`Connector`, `Command`, `Runtime`) and the `Registry`
-  they self-register into.
+  they self-register into. The wire standard — depends on nothing else in the repo.
+- **`@cotal-ai/workspace`** (`packages/workspace`): the machine-local operator/workstation layer
+  over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
+  helpers, and the command-copy renderer. Depends on core; not part of the wire standard.
 - **`@cotal-ai/connector-core`** (`extensions/connector-core`): the shared MCP-bridge runtime:
   the mesh agent, the `cotal_*` tool specs (incl. `cotal_spawn` / `cotal_persona` /
   `cotal_despawn`), and the hook relay. The adapters below are thin clients over it.

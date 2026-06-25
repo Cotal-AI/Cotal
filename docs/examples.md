@@ -5,7 +5,7 @@ the protocol (`packages/*`) through one or more implementations and add nothing 
 example only *configures and orchestrates* (roles, config, space name, runbook, optional
 driver) and picks which extensions to register. It never adds new message kinds, subjects,
 or endpoint methods; those belong in `@cotal-ai/core`, generalized. Dependency direction is
-one-way: `examples → implementations → packages`, never back.
+one-way: `examples → implementations → workspace → core`, never back.
 
 | Example | What it shows |
 |---|---|

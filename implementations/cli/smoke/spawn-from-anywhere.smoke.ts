@@ -18,16 +18,17 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-home-"));
 process.env.COTAL_HOME = home;
 
+const { probeConnect } = await import("@cotal-ai/core");
 const {
   clearCurrent,
+  isWorkspaceTargetError,
   loadMeshes,
   meshesDir,
-  probeConnect,
   recordMesh,
   removeMesh,
   resolveMeshTarget,
   setCurrent,
-} = await import("@cotal-ai/core");
+} = await import("@cotal-ai/workspace");
 const { spawnComplete } = await import("../src/commands/spawn.js");
 const { listPersonas } = await import("../src/lib/personas.js");
 const { pruneStaleMeshes } = await import("../src/lib/meshes.js");
@@ -130,7 +131,11 @@ try {
   // Defense in depth (mitnick): an AUTH entry whose recorded space ≠ the root's on-disk auth.space is
   // stale — resolving it throws AND prunes the entry, rather than minting space-Y creds for space X.
   recordMesh({ ...entry("mismatch", projA, SERVER), mode: "auth" }); // projA's auth.json says "alpha"
-  assert.throws(() => resolveMeshTarget(neutral, { space: "mismatch" }), /stale entry removed/);
+  // Throws the TYPED contract (code, not prose — the `cotal …` copy is the renderer's job now).
+  assert.throws(
+    () => resolveMeshTarget(neutral, { space: "mismatch" }),
+    (e: unknown) => isWorkspaceTargetError(e) && e.code === "stale-auth-root",
+  );
   check("auth entry whose space ≠ root's auth.space throws + prunes", !loadMeshes().some((m) => m.space === "mismatch"));
   removeMesh("openmesh");
   removeMesh("alpha");

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { clearCurrent, getCurrent, removeMesh } from "@cotal-ai/core";
+import { clearCurrent, getCurrent, removeMesh } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalPath } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";

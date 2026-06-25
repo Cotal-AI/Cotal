@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE } from "./endpoint.js";
-import { authDir, findCotalRoot, loadSpaceAuth, type SpaceAuth } from "./provision.js";
+import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadSpaceAuth } from "./auth-paths.js";
 import {
   findMesh,
   getCurrent,
@@ -53,6 +53,68 @@ export interface ResolveFlags {
   space?: string;
 }
 
+/** The distinct, command-agnostic reasons {@link resolveMeshTarget} can't pick a single mesh. Each
+ *  maps 1:1 to a former prose-throw; the recovery copy (`cotal up`/`meshes`/`use`) is the renderer's
+ *  job ({@link renderWorkspaceError}), not the protocol's. */
+export type MeshTargetErrorCode =
+  | "no-meshes"
+  | "unknown-space"
+  | "ambiguous-target"
+  | "default-occupied"
+  | "stale-auth-root";
+
+/** Structured context for a {@link MeshTargetError} — enough for any surface to render its own
+ *  recovery affordance (a CLI sentence, a web button, an SDK embed that wants no command at all). */
+export interface MeshTargetErrorDetails {
+  /** The space/mesh the failure concerns. */
+  space?: string;
+  /** A broker URL involved (e.g. the occupant of the default port). */
+  server?: string;
+  /** A checkout root involved. */
+  root?: string;
+  /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
+  available?: string[];
+  /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
+  requested?: string;
+  /** For `stale-auth-root`: the space the on-disk auth now claims, diverging from the record. */
+  found?: string;
+}
+
+const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
+
+/**
+ * A typed mesh-target resolution failure. `message` is **log/dev-safe and command-agnostic** — never
+ * the canonical product copy (that's {@link renderWorkspaceError}'s job; don't let `message` become
+ * an accidental string API). `code` + structured `details` are the surfaces consumers read.
+ */
+export class MeshTargetError extends Error {
+  /** Brand for cross-package-safe detection — see {@link isWorkspaceTargetError}. */
+  readonly brand = WORKSPACE_TARGET_ERROR;
+  readonly code: MeshTargetErrorCode;
+  readonly details: MeshTargetErrorDetails;
+  constructor(
+    code: MeshTargetErrorCode,
+    message: string,
+    details: MeshTargetErrorDetails = {},
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "MeshTargetError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/** Detect a {@link MeshTargetError} across the core/workspace/consumer package boundary without a
+ *  brittle `instanceof` (which breaks if two copies of this package are installed) — a brand check. */
+export function isWorkspaceTargetError(e: unknown): e is MeshTargetError {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    (e as { brand?: unknown }).brand === WORKSPACE_TARGET_ERROR
+  );
+}
+
 function personaRoot(root: string): string {
   return join(root, ".cotal", "agents");
 }
@@ -69,8 +131,10 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
     // against the entry for space B. Prune the stale entry and fail loud rather than connect wrong.
     if (auth && auth.space !== m.space) {
       removeMesh(m.space);
-      throw new Error(
-        `registry entry "${m.space}" points at ${m.root}, whose auth is now for "${auth.space}" — stale entry removed; re-run \`cotal up\` or check \`cotal meshes\``,
+      throw new MeshTargetError(
+        "stale-auth-root",
+        `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${auth.space}"`,
+        { space: m.space, root: m.root, found: auth.space },
       );
     }
   }
@@ -108,7 +172,10 @@ function isGenuineSpace(root: string): boolean {
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
   if (flags.space) {
     const m = findMesh(flags.space);
-    if (!m) throw new Error(`no mesh named "${flags.space}" is running — see \`cotal meshes\``);
+    if (!m)
+      throw new MeshTargetError("unknown-space", `no mesh named "${flags.space}" is running`, {
+        requested: flags.space,
+      });
     // An explicit `--server` that overrides the recorded broker is an operator-supplied endpoint, not
     // the registry's — probing IT must never prune the recorded entry (a dead override would otherwise
     // delete a live registered mesh, and pre-pruning would block a live-override recovery). Mark it so
@@ -139,23 +206,24 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       (m) => m.server === DEFAULT_SERVER && resolve(m.root) !== resolve(root),
     );
     if (onDefault)
-      throw new Error(
-        `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER} — run \`cotal up\` here to start yours, or \`--space ${onDefault.space}\` to join it`,
+      throw new MeshTargetError(
+        "default-occupied",
+        `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
+        { space: onDefault.space, server: DEFAULT_SERVER },
       );
     return localTarget(root, DEFAULT_SERVER, "local-space");
   }
 
   const meshes = loadMeshes();
-  if (meshes.length === 0)
-    throw new Error("no mesh running — run `cotal up` in a project, or pass `--server`");
+  if (meshes.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
   if (meshes.length === 1) return targetFromEntry(meshes[0], meshes[0].server, "registry");
 
   const current = getCurrent();
   const cur = current ? findMesh(current) : undefined;
   if (cur) return targetFromEntry(cur, cur.server, "current");
 
-  const names = meshes.map((m) => `${m.space} (${m.root})`).join(", ");
-  throw new Error(
-    `multiple meshes running — ${names}. Pick one with \`--space <name>\` or set a default with \`cotal use <name>\`.`,
-  );
+  const names = meshes.map((m) => `${m.space} (${m.root})`);
+  throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
+    available: names,
+  });
 }

@@ -18,16 +18,15 @@ import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   CONTROL_ADMIN,
-  authDir,
   deleteChannels,
   isReachable,
-  loadSpaceAuth,
   mintCreds,
   newIdentity,
   realDirNoSymlink,
   subjectMatches,
   unlinkFileNoFollow,
 } from "@cotal-ai/core";
+import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";

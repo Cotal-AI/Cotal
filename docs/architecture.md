@@ -9,7 +9,7 @@
 | Section | What it covers |
 |---|---|
 | [Influences: A2A + SLIM](#influences-a2a--slim) | Where the vocabulary and shapes come from. |
-| [Package layout and dependency tiers](#package-layout-and-dependency-tiers) | The four one-way tiers. |
+| [Package layout and dependency tiers](#package-layout-and-dependency-tiers) | The one-way dependency layers (workspace between implementations and core). |
 | [Integration surfaces (Claude Code + OpenCode)](#integration-surfaces-claude-code--opencode) | How a coding agent binds to the mesh. |
 | [Manager (agent supervisor)](#manager-agent-supervisor) | Who spawns and configures agents. |
 | [Hosting and onboarding](#hosting-and-onboarding) | How a session is launched. |
@@ -121,22 +121,28 @@ cryptographically verifiable and decentralized (see [Deferred](#deferred)).
 
 ## Package layout and dependency tiers
 
-Four tiers, one-way dependencies. `packages/` is the standard; everything else builds on it.
-`pnpm-workspace.yaml` globs all four (`packages/*`, `extensions/*`, `implementations/*`,
+One-way dependencies; `packages/` holds the standard, everything else builds on it.
+`pnpm-workspace.yaml` globs them all (`packages/*`, `extensions/*`, `implementations/*`,
 `examples/*`).
 
-- **`packages/*` (core).** The protocol: subjects, schemas, the NATS client, and the shared
-  contracts extensions implement (e.g. `Connector`). Everything depends on it; it depends on
-  nothing in the repo.
+- **`packages/*` (the standard + the workstation layer).** Two one-way layers:
+  - **`@cotal-ai/core`** — the protocol: subjects, schemas, the NATS client, and the shared
+    contracts extensions implement (e.g. `Connector`). It depends on nothing in the repo;
+    everything ultimately depends on it.
+  - **`@cotal-ai/workspace`** — the machine-local **operator/workstation** layer over `~/.cotal`:
+    the mesh registry, target resolution, preflight, the `.cotal/` auth-path helpers, and the
+    command-copy renderer. Depends on core; **not** part of the wire standard, so a third party can
+    embed core to speak the wire without inheriting `~/.cotal` plumbing or CLI copy.
 - **`extensions/*` (pluggable adapters).** A connector (Claude Code, OpenCode, …) is the first
   extension *kind*; transport and auth could follow. Each is its own package that
-  **peer-depends** on core (so it binds to the host's *single* core instance, not a private
-  copy) and exports an object implementing a core contract. They are **picked by explicit
-  wiring** at the composition root: the manager is handed the connectors it may spawn, and an
-  unknown agent type **throws** (no silent fallback).
-- **`implementations/*` (opinionated surfaces).** CLI, web, and so on, each a self-contained
-  package over core. **Implementations never import each other**, which keeps the dependency
-  graph acyclic (no import loops).
+  **peer-depends** on core (so it binds to the host's *single* core instance, not a private copy)
+  and exports an object implementing a core contract — **core-only by default**, never the
+  workstation layer. They are **picked by explicit wiring** at the composition root: the manager
+  is handed the connectors it may spawn, and an unknown agent type **throws** (no silent fallback).
+- **`implementations/*` (opinionated surfaces).** CLI, manager, delivery, and so on — each a
+  self-contained package over core (+ workspace, for the ones that touch the local registry/auth).
+  **Implementations never import each other**, which keeps the dependency graph acyclic (no
+  import loops).
 - **`examples/*` (use cases).** Private (never published) packages: demos, benchmarks. An
   example is the **composition root**. It may depend on *several* implementations and picks
   which extensions to wire in.
@@ -148,8 +154,8 @@ at the same `space`; coordination flows through the mesh. So the CLI package and
 package stay independent, each ignorant of the other, and the example wires them.
 
 ```
-examples ──→ one-or-more implementations ──→ core ←(peer)── extensions
-                      (interoperate at runtime over NATS, not via imports)
+examples ──→ implementations ──→ workspace ──→ core ←(peer)── extensions
+                   (interoperate at runtime over NATS, not via imports)
 ```
 
 The migration is done: `demos/` use-cases are now `examples/`. The connector is split into
