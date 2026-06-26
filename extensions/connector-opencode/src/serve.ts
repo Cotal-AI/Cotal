@@ -144,6 +144,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Headless mode (COTAL_SERVE_HEADLESS=1): no foreground TUI. Hand the running server back to a
+  // non-terminal host (a web studio, an automated harness) via one machine-readable handshake line
+  // on stdout, then keep the serve alive. The host drives the session over HTTP (basic auth with the
+  // password below) and tails its event stream. `attached` stays false, so the `serve.on("exit")`
+  // handler above still exits us if the server dies; SIGTERM tears the server down for real.
+  if (process.env.COTAL_SERVE_HEADLESS?.trim() === "1") {
+    process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id, password: SECRET })}\n`);
+    for (const sig of ["SIGINT", "SIGTERM"] as const)
+      process.on(sig, () => void killServe(serve).then(() => process.exit(0)));
+    return;
+  }
+
   const tuiEnv: NodeJS.ProcessEnv = {
     ...process.env,
     OPENCODE_SERVER_PASSWORD: SECRET,

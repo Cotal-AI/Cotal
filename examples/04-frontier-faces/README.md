@@ -1,11 +1,51 @@
-# Demo 3 — Frontier Tower faces
+# Example 04 — Frontier Tower faces
 
 Animated pixel-art avatars for agents, built for the Frontier Tower demo: each persona is
 an OpenCode-hosted agent with a 32×32 truecolor face that thinks, lip-syncs its streamed
 reply, and steers its own expression with hidden `[[face:X]]` tags. Run as a mesh, the
 faces coordinate as lateral peers in one Cotal space — you watch them talk to each other.
 
-## Quick start
+There are two front-ends onto the *same* live mesh: a **browser studio** (`tools/studio.mjs`)
+and a **tmux wall** (`mesh-wall.sh`). Both spawn real agents; nothing here is scripted.
+
+## Live studio (browser)
+
+One command brings up the whole thing — the mesh, the agents, and the web UI:
+
+```sh
+node tools/studio.mjs                 # curated roster (sven, david, garry)
+node tools/studio.mjs sven david elon # explicit agents (agent-file basenames)
+SPACE=demo PORT=4097 node tools/studio.mjs
+# then open http://127.0.0.1:4097/
+```
+
+What happens end to end, all real:
+
+1. it ensures a Cotal mesh is up (starts `cotal up --open` if one isn't);
+2. it joins as an operator endpoint — **"you"**, the human seat in the room;
+3. it spawns each roster member as a real headless mesh agent (OpenCode + the cotal plugin);
+4. the page renders each agent's animated face driven by that agent's **live** OpenCode stream,
+   the authoritative **mesh transcript** (what the operator endpoint actually receives on
+   `#general`), and a prompt box.
+
+The bottom box **broadcasts to `#general`** (the whole panel); each face also has its own input to
+**DM that one agent privately** — only it wakes, and it replies straight back to you. Type → the
+operator posts → every (or one) agent's connector turns it into an OpenCode turn → they reply and
+coordinate over the mesh → you watch their faces talk. A face's status dot tracks its real activity
+(thinking / working / speaking); a tile flashes when that agent sends on the mesh. The studio
+fresh-boots the space's history on start, so each run begins clean. Ctrl-C tears it all down.
+
+Requires `opencode` (`opencode auth login`) and a built repo (`pnpm build` at the repo root).
+
+The studio needs an **`--open`** mesh (it joins bare, as the operator). If something is already on
+the default port that rejects it — e.g. an existing **auth** mesh on `:4222` — it stops with a clear
+message; run it on its own free port + space instead:
+
+```sh
+SPACE=frontier COTAL_SERVERS=nats://127.0.0.1:4299 node tools/studio.mjs sven david garry
+```
+
+## Quick start (tmux)
 
 Requirements: Node ≥ 20, [OpenCode](https://opencode.ai) (run `opencode auth login` once —
 the personas default to `opencode-go/glm-5.1`), and `tmux`. The mesh's `nats-server` is
@@ -50,27 +90,11 @@ both walls — terminal half-blocks and a browser canvas) and `tools/brand-banne
 `tools/tmux-brand.sh` draw the strip and status bar. To point it at a different URL, regenerate the
 matrix per the note in `qr-cotal.mjs`.
 
-## Self-running kiosk
+## Unattended signage
 
-Two browser pages designed to run unattended on a monitor — no operator interaction required once
-started. Both loop automatically through scripted multi-agent coordination episodes and self-recover
-from errors. Serve with `node tools/serve-wall.mjs` and open the URL in a browser set to fullscreen.
-
-| Page | Style |
-|---|---|
-| `web/kiosk-console.html` | Terminal console: roster + streaming feed, matches the real `cotal console` aesthetic |
-| `web/kiosk-wide.html` | Panorama: 3×2 pixel-art face grid filling the full screen + large caption bar |
-| `web/kiosk.html` | Command-center: 3×2 face grid + live activity sidebar + stats HUD |
-
-Neither page requires a running OpenCode server or mesh — the simulation is built in and runs
-entirely in the browser. The faces animate, expressions change per turn, and message packets fly
-between agents for DMs; broadcast pulses radiate to all.
-
-```sh
-node tools/serve-wall.mjs          # starts on :4097
-# open http://127.0.0.1:4097/kiosk.html      (command-center)
-# open http://127.0.0.1:4097/kiosk-wide.html  (panorama)
-```
+For a public monitor, run the live studio (above) full-screen — it self-recovers and keeps the
+panel talking. Nudge it occasionally (a question in the prompt box) to keep the conversation moving.
+The studio carries the same Cotal branding as the tmux wall's signage strip.
 
 ## Without the mesh (standalone faces)
 
@@ -98,7 +122,13 @@ node tools/serve-wall.mjs      # then open the printed URL
 
 ## What's here
 
-- **`mesh-wall.sh`** — the one-command launcher: starts the mesh, a tmux grid of mesh faces
+- **`tools/studio.mjs`** — the browser studio: ensures the mesh, joins it as the operator
+  endpoint, spawns the roster as headless mesh agents (the connector's `COTAL_SERVE_HEADLESS`
+  mode), proxies each agent's live OpenCode stream, and serves `web/studio.html`.
+- **`web/studio.html`** — the studio UI: a grid of live `<cotal-face>` tiles + the mesh
+  transcript + a prompt box. Drives each face from its agent's real OpenCode SSE (via
+  `cotal-opencode.js`) and the transcript from the operator endpoint's feed.
+- **`mesh-wall.sh`** — the tmux one-command launcher: starts the mesh, a tmux grid of mesh faces
   (one `mesh-face.sh` per agent), and the console.
 - **`mesh-face.sh`** — one mesh agent: starts an `opencode serve` with the
   `@cotal-ai/connector-opencode` plugin + an agent file, so it joins the mesh and creates a

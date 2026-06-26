@@ -117,7 +117,11 @@ importers:
         specifier: ^4.22.4
         version: 4.22.4
 
-  examples/04-frontier-faces: {}
+  examples/04-frontier-faces:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   extensions/cmux:
     dependencies:

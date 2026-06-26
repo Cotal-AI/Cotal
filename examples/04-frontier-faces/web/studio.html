@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cotal · frontier tower — live mesh studio</title>
+<style>
+  :root {
+    --bg:#06000f; --panel:#0b0420; --panel2:#0d0726; --line:rgba(83,235,228,.14);
+    --cyan:#53ebe4; --pink:#f1a5bd; --rose:#e13a6a; --blue:#58a6ff; --ink:#cfeffd; --dim:#7d7aa6;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(88,166,255,.10), transparent 60%),
+      radial-gradient(900px 500px at -5% 110%, rgba(225,58,106,.10), transparent 55%),
+      var(--bg);
+    color:var(--ink); font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* header */
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line);
+           background:linear-gradient(180deg, rgba(13,7,38,.7), transparent); flex:none; }
+  .lockup { display:flex; align-items:center; gap:11px; }
+  .lockup .dot { width:13px; height:13px; border-radius:50%; background:var(--blue);
+                 box-shadow:0 0 16px var(--blue); flex:none; }
+  .lockup b { font-size:17px; font-weight:700; letter-spacing:.3px; color:var(--ink); }
+  .lockup .sub { font-size:12px; color:var(--dim); }
+  .grow { flex:1; }
+  .chip { font-size:12px; color:var(--cyan); border:1px solid var(--line); border-radius:999px;
+          padding:5px 12px; background:rgba(83,235,228,.05); white-space:nowrap; }
+  .chip b { color:var(--ink); font-weight:600; }
+  .status { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--dim); }
+  .status .live { width:8px; height:8px; border-radius:50%; background:#42d977; box-shadow:0 0 10px #42d977;
+                  animation:pulse 2.4s ease-in-out infinite; }
+  .status.off .live { background:var(--rose); box-shadow:0 0 10px var(--rose); animation:none; }
+  @keyframes pulse { 50% { opacity:.35; } }
+
+  /* main split */
+  main { flex:1; display:grid; grid-template-columns:1fr minmax(360px, 420px); min-height:0; }
+  .stage { padding:22px; overflow-y:auto; }
+  .stage-grid { display:grid; gap:20px; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); align-content:start; }
+
+  /* face tiles */
+  .tile { position:relative; border:1px solid var(--line); border-radius:14px; padding:12px; background:var(--panel);
+          transition:border-color .25s, box-shadow .25s, transform .25s; }
+  .tile.speaking { border-color:rgba(83,235,228,.55); box-shadow:0 0 0 1px rgba(83,235,228,.25), 0 0 28px rgba(83,235,228,.12); }
+  .tile.flash { transform:translateY(-2px); border-color:rgba(241,165,189,.6); box-shadow:0 0 26px rgba(241,165,189,.18); }
+  .tile cotal-face { --cf-width:100%; --cf-caption-size:12px; display:block; }
+  .tile .meta { display:flex; align-items:center; gap:8px; margin-top:10px; }
+  .tile .who { font-size:13px; font-weight:600; color:var(--ink); }
+  .tile .role { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
+  .tile .sdot { width:8px; height:8px; border-radius:50%; background:var(--dim); margin-left:auto; flex:none; transition:background .2s; }
+  .tile .sdot.thinking { background:#e8c34a; box-shadow:0 0 9px #e8c34a; }
+  .tile .sdot.working  { background:var(--blue); box-shadow:0 0 9px var(--blue); }
+  .tile .sdot.speaking { background:var(--cyan); box-shadow:0 0 9px var(--cyan); }
+  .tile .sdot.error    { background:var(--rose); box-shadow:0 0 9px var(--rose); }
+  .tile .tin { width:100%; margin-top:9px; background:var(--bg); color:var(--ink); border:1px solid var(--line);
+               border-radius:8px; padding:7px 9px; font-family:inherit; font-size:11px; outline:none; transition:border-color .2s; }
+  .tile .tin:focus { border-color:rgba(241,165,189,.5); }
+  .tile .tin::placeholder { color:var(--dim); }
+
+  /* feed rail */
+  .rail { border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0;
+          background:linear-gradient(180deg, rgba(13,7,38,.45), transparent); }
+  .rail h2 { font-size:12px; font-weight:600; letter-spacing:.4px; text-transform:uppercase; color:var(--dim);
+             margin:0; padding:14px 18px 10px; display:flex; align-items:center; gap:8px; }
+  .rail h2 .gen { color:var(--cyan); }
+  .roster { display:flex; flex-wrap:wrap; gap:7px; padding:0 16px 12px; border-bottom:1px solid var(--line); }
+  .pres { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim);
+          border:1px solid var(--line); border-radius:999px; padding:3px 9px; }
+  .pres .pd { width:7px; height:7px; border-radius:50%; flex:none; }
+  .feed { flex:1; overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; gap:12px; }
+  .msg { animation:rise .28s ease both; }
+  @keyframes rise { from { opacity:0; transform:translateY(6px); } }
+  .msg .head { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
+  .msg .name { font-size:13px; font-weight:700; }
+  .msg .pill { font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:5px; padding:0 5px; }
+  .msg .t { font-size:11px; color:var(--dim); margin-left:auto; }
+  .msg .body { font-size:13px; line-height:1.45; color:#d9e9f5; white-space:pre-wrap; word-break:break-word; }
+  .msg.you .body { color:var(--pink); }
+  .msg.hist { opacity:.5; }
+  .empty { color:var(--dim); font-size:12px; padding:8px 2px; }
+
+  /* composer */
+  .composer { border-top:1px solid var(--line); padding:12px 14px; display:flex; gap:9px; background:var(--panel2); flex:none; }
+  .composer input { flex:1; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:9px;
+                    padding:11px 13px; font-family:inherit; font-size:13px; outline:none; transition:border-color .2s; }
+  .composer input:focus { border-color:rgba(83,235,228,.55); }
+  .composer button { background:var(--rose); color:#fff; border:0; border-radius:9px; padding:0 18px; font-family:inherit;
+                     font-size:13px; font-weight:600; cursor:pointer; transition:opacity .2s; }
+  .composer button:hover { opacity:.88; }
+  .composer button:disabled { opacity:.4; cursor:default; }
+
+  /* scrollbars */
+  .stage::-webkit-scrollbar, .feed::-webkit-scrollbar { width:9px; }
+  .stage::-webkit-scrollbar-thumb, .feed::-webkit-scrollbar-thumb { background:rgba(83,235,228,.16); border-radius:9px; }
+
+  @media (max-width: 820px) {
+    main { grid-template-columns:1fr; }
+    .rail { border-left:0; border-top:1px solid var(--line); max-height:46vh; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="lockup">
+      <span class="dot"></span>
+      <div><b>Cotal</b> <span class="sub">· frontier tower live mesh</span></div>
+    </div>
+    <div class="grow"></div>
+    <div class="chip">space <b id="space">…</b></div>
+    <div class="chip"><b id="count">0</b> agents</div>
+    <div class="status" id="conn"><span class="live"></span><span id="conn-t">connecting…</span></div>
+  </header>
+
+  <main>
+    <section class="stage"><div class="stage-grid" id="grid"></div></section>
+    <aside class="rail">
+      <h2>mesh feed <span class="gen">#general</span></h2>
+      <div class="roster" id="roster"></div>
+      <div class="feed" id="feed"><div class="empty" id="empty">no messages yet — say something to the panel below.</div></div>
+      <form class="composer" id="composer" autocomplete="off">
+        <input id="say" placeholder="broadcast to the whole panel (#general)…" />
+        <button type="submit" id="send">send</button>
+      </form>
+    </aside>
+  </main>
+
+<script type="module">
+  import './cotal-face.js';
+  import { PERSONAS } from '../personas.mjs';
+  import { driveFace } from './cotal-opencode.js';
+
+  const $ = (id) => document.getElementById(id);
+  // stable color per participant name (feed names + roster dots)
+  const hue = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+  const nameColor = (s) => `hsl(${hue(s)} 70% 70%)`;
+
+  // ---- faces: one tile per agent, driven by that agent's live OpenCode stream --------------
+  const tiles = new Map(); // name -> { el, faceEl, sdot }
+  let flashTimers = new Map();
+
+  function buildTile(a) {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    const persona = PERSONAS[a.persona] ? a.persona : 'neon';
+    const label = PERSONAS[persona]?.label || a.name;
+    tile.innerHTML = `
+      <cotal-face persona="${persona}" chrome="off"></cotal-face>
+      <div class="meta">
+        <span class="who">${label}</span>
+        ${a.role ? `<span class="role">${a.role}</span>` : ''}
+        <span class="sdot" title="idle"></span>
+      </div>
+      <input class="tin" placeholder="message ${label} privately…" />`;
+    $('grid').appendChild(tile);
+    const faceEl = tile.querySelector('cotal-face');
+    const sdot = tile.querySelector('.sdot');
+    const tin = tile.querySelector('.tin');
+    tin.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !tin.value.trim()) return;
+      say(tin.value, a.name); // DM just this agent
+      tin.value = '';
+    });
+    tiles.set(a.name, { el: tile, faceEl, sdot });
+
+    const setDot = (kind) => { sdot.className = 'sdot ' + (kind || ''); sdot.title = kind || 'idle'; };
+    const flash = () => {
+      tile.classList.add('flash');
+      clearTimeout(flashTimers.get(a.name));
+      flashTimers.set(a.name, setTimeout(() => tile.classList.remove('flash'), 700));
+    };
+
+    // attach (read-only) to the agent's real session via the proxy — no prompts sent from here.
+    driveFace(faceEl, {
+      server: `/agent/${a.name}`,
+      session: a.session,
+      persona,
+      onActivity: (_p, kind) => {
+        tile.classList.toggle('speaking', kind === 'speaking');
+        setDot(kind === 'waiting' || kind === 'done' ? '' : kind);
+      },
+      onMeshSend: () => flash(),
+    });
+  }
+
+  // ---- mesh feed (authoritative transcript from the operator endpoint) ----------------------
+  const seen = new Set();
+  function addMsg(m) {
+    if (m.id && seen.has(m.id)) return;
+    if (m.id) seen.add(m.id);
+    $('empty')?.remove();
+    const feed = $('feed');
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+    const row = document.createElement('div');
+    row.className = 'msg' + (m.from === 'you' ? ' you' : '') + (m.historical ? ' hist' : '');
+    const route = m.kind === 'dm' ? (m.from === 'you' ? `dm → ${m.to}` : 'dm') : m.kind === 'anycast' ? `@${m.toService}`
+      : (m.channel && m.channel !== 'general') ? `#${m.channel}` : '';
+    const time = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    row.innerHTML = `
+      <div class="head">
+        <span class="name" style="color:${m.from === 'you' ? 'var(--pink)' : nameColor(m.from)}">${m.from}</span>
+        ${route ? `<span class="pill">${route}</span>` : ''}
+        <span class="t">${time}</span>
+      </div>
+      <div class="body"></div>`;
+    row.querySelector('.body').textContent = m.text;
+    feed.appendChild(row);
+    if (atBottom) feed.scrollTop = feed.scrollHeight;
+  }
+
+  function renderRoster(roster) {
+    const el = $('roster');
+    el.innerHTML = '';
+    for (const p of roster) {
+      const pill = document.createElement('span');
+      pill.className = 'pres';
+      const col = p.name === 'you' ? 'var(--pink)' : nameColor(p.name);
+      pill.innerHTML = `<span class="pd" style="background:${col}"></span>${p.name}`;
+      el.appendChild(pill);
+    }
+  }
+
+  // ---- live feed wire -----------------------------------------------------------------------
+  function connectFeed() {
+    const es = new EventSource('/api/feed');
+    es.onopen = () => setConn(true);
+    es.onerror = () => setConn(false);
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.type === 'msg') addMsg(ev);
+      else if (ev.type === 'roster') renderRoster(ev.roster);
+    };
+  }
+  function setConn(ok) {
+    $('conn').classList.toggle('off', !ok);
+    $('conn-t').textContent = ok ? 'live' : 'reconnecting…';
+  }
+
+  // ---- composer -----------------------------------------------------------------------------
+  // post a turn into the mesh — broadcast to #general, or DM one agent when `to` is set.
+  async function say(text, to) {
+    if (!text || !text.trim()) return;
+    try {
+      await fetch('/api/say', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(to ? { text, to } : { text }),
+      });
+    } catch { /* the feed reflects it if it landed */ }
+  }
+
+  $('composer').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('say');
+    say(input.value);
+    input.value = '';
+  });
+
+  // ---- boot ---------------------------------------------------------------------------------
+  (async () => {
+    const state = await fetch('/api/state').then((r) => r.json());
+    $('space').textContent = state.space;
+    $('count').textContent = state.agents.length;
+    for (const a of state.agents) buildTile(a);
+    connectFeed();
+  })();
+</script>
+</body>
+</html>

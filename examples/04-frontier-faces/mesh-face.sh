@@ -25,9 +25,11 @@ MODEL="${MODEL:-$(grep -m1 '^model:' "$AGENT" | sed 's/model:[[:space:]]*//' || 
 
 # serve.js reads COTAL_FACE_PERSONA + COTAL_FACE_BIN to swap its chat TUI for the face viewer;
 # the plugin reads COTAL_AGENT_FILE for the persona and joins COTAL_SERVERS in COTAL_SPACE.
+# COTAL_OPENCODE_HOME pins the agent's data root (serve.js requires it) — its SQLite DB and
+# pidfile live under "$ROOT/.cotal/opencode/<name>".
 export COTAL_SPACE="${COTAL_SPACE:-demo}" COTAL_NAME="$NAME" \
   COTAL_SERVERS="${COTAL_SERVERS:-nats://127.0.0.1:4222}" \
-  COTAL_AGENT_FILE="$AGENT" \
+  COTAL_AGENT_FILE="$AGENT" COTAL_OPENCODE_HOME="$ROOT" \
   COTAL_FACE_PERSONA="$PERSONA" COTAL_FACE_BIN="$DIR/face-term.mjs" \
   OPENCODE_CONFIG_CONTENT="{\"\$schema\":\"https://opencode.ai/config.json\",\"permission\":\"allow\",\"plugin\":[\"$PLUGIN\"]${MODEL:+,\"model\":\"$MODEL\"}}"
 
