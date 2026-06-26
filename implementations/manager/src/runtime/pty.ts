@@ -1,5 +1,6 @@
 import * as pty from "@lydell/node-pty";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime } from "@cotal-ai/core";
+import { resolveOnPath } from "../bin-path.js";
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
@@ -27,7 +28,12 @@ export class PtyRuntime implements Runtime {
   readonly kind = "pty" as const;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
-    const proc = pty.spawn(spec.command, spec.args, {
+    // node-pty launches the command directly and, unlike a POSIX exec, won't resolve a bare
+    // `claude`/`opencode` to its Windows PATHEXT shim (`claude.cmd`) — resolve it to the on-disk
+    // path first. No-op on POSIX and when the command already resolves (path or has an extension).
+    const command =
+      process.platform === "win32" ? (resolveOnPath(spec.command) ?? spec.command) : spec.command;
+    const proc = pty.spawn(command, spec.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
