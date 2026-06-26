@@ -40,6 +40,7 @@ const SPACE = process.env.SPACE || "demo";
 const SERVERS = process.env.COTAL_SERVERS || "nats://127.0.0.1:4222";
 const PORT = Number(process.env.PORT || 4097);
 const MODEL = process.env.MODEL || ""; // overrides each agent file's model
+const EFFORT = process.env.REASONING_EFFORT || "medium"; // reasoning effort for models that support it
 const MAX = 9;
 const DEFAULT_ROSTER = ["sven", "david", "garry", "elon"];
 // Channels the panel shares (Slack-style). `general` is always present (the default broadcast
@@ -51,6 +52,11 @@ if (!CHANNELS.includes("general")) CHANNELS.unshift("general");
 const ATTRACT = process.env.ATTRACT !== "0";
 const ATTRACT_IDLE_MS = Number(process.env.ATTRACT_IDLE_MS || 120_000); // quiet this long → seed
 const ATTRACT_EVERY_MS = Number(process.env.ATTRACT_EVERY_MS || 180_000); // min gap between seeds
+// Auto fresh-start: after this long unattended, wipe + reset contexts + snap the view to #general,
+// so each new visitor gets a clean panel (no prior stranger's chat/DMs). AUTO_RESET=0 disables it.
+const AUTO_RESET = process.env.AUTO_RESET !== "0";
+const AUTO_RESET_IDLE_MS = Number(process.env.AUTO_RESET_IDLE_MS || 1_200_000); // 20 min unattended → fresh-start
+const MAX_SAY = 500; // hard cap on a single message (kiosk anti-flood, with the client maxlength)
 const SEEDS = [
   "Hot take: is AGI closer to a breakthrough or a wall?",
   "One line each — what will AI agents make obsolete first?",
@@ -64,6 +70,30 @@ const SEEDS = [
 
 const log = (...a) => console.error("\x1b[36m[studio]\x1b[0m", ...a);
 const warn = (...a) => console.error("\x1b[33m[studio]\x1b[0m", ...a);
+
+// The operator's own shell may already be on a mesh (e.g. an MCP Cotal session) and carry COTAL_*
+// env — including COTAL_CREDS/COTAL_ID for a DIFFERENT space. Those must never leak into the broker
+// CLI or the spawned agents (the agents would auth to our open broker with foreign creds and fail).
+// Build every child's env from a COTAL_*-stripped base, then set only what we intend.
+function cleanEnv() {
+  const e = { ...process.env };
+  for (const k of Object.keys(e)) if (k.startsWith("COTAL_")) delete e[k];
+  return e;
+}
+
+/** The OpenCode config each agent boots with: the cotal plugin, the model, and (for models that
+ *  support it) the reasoning effort, set as a provider/model option. */
+function opencodeConfig(model) {
+  const cfg = { $schema: "https://opencode.ai/config.json", permission: "allow", plugin: [PLUGIN] };
+  if (model) {
+    cfg.model = model;
+    if (EFFORT) {
+      const [prov, ...rest] = model.split("/");
+      cfg.provider = { [prov]: { models: { [rest.join("/")]: { options: { reasoningEffort: EFFORT } } } } };
+    }
+  }
+  return cfg;
+}
 
 // ---- roster resolution ----------------------------------------------------------------------
 let roster = process.argv.slice(2).filter((a) => !a.startsWith("-"));
@@ -111,11 +141,19 @@ async function ensureMesh() {
     return { reused: true };
   }
   log(`starting mesh: cotal up --open --space ${SPACE} --server ${SERVERS}`);
+  // stdio MUST be piped+drained, not "ignore": with its output sent to /dev/null `cotal up` exits
+  // non-zero and orphans a half-configured broker (agents then can't bind). Forward it dimmed.
   meshProc = spawn("pnpm", ["cotal", "up", "--open", "--space", SPACE, "--server", SERVERS], {
     cwd: ROOT,
     detached: true, // own process group → teardown can reap nats-server too
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: cleanEnv(),
   });
+  const drainMesh = (d) => {
+    for (const line of d.toString().split("\n")) if (line.trim()) process.stderr.write(`\x1b[90m  mesh | ${line}\x1b[0m\n`);
+  };
+  meshProc.stdout.on("data", drainMesh);
+  meshProc.stderr.on("data", drainMesh);
   meshProc.on("exit", (code) => {
     if (!shuttingDown) warn(`mesh process exited (code ${code})`);
   });
@@ -138,6 +176,7 @@ async function clearHistory(why = "fresh boot") {
     const p = spawn("pnpm", ["cotal", "history", "clear", "--force", "--dms", "--space", SPACE], {
       cwd: ROOT,
       stdio: "ignore",
+      env: cleanEnv(),
     });
     p.on("exit", () => resolve());
     p.on("error", () => resolve());
@@ -145,12 +184,13 @@ async function clearHistory(why = "fresh boot") {
 }
 
 const agents = []; // { name, persona, role, model, child, port, session, password }
+const liveAgentNames = () => agents.filter((a) => !a.dead).map((a) => a.name); // for @mention-to-wake
 
 /** Spawn ONE real mesh agent headlessly and resolve once its OpenCode handshake lands. */
 function spawnAgent(name) {
   const { file, persona, role, model } = agentMeta(name);
   const env = {
-    ...process.env,
+    ...cleanEnv(),
     COTAL_SERVE_HEADLESS: "1",
     COTAL_SPACE: SPACE,
     COTAL_NAME: name,
@@ -161,12 +201,11 @@ function spawnAgent(name) {
     COTAL_SUBSCRIBE: CHANNELS.join(","),
     COTAL_ALLOW_SUBSCRIBE: CHANNELS.join(","),
     COTAL_ALLOW_PUBLISH: CHANNELS.join(","),
-    OPENCODE_CONFIG_CONTENT: JSON.stringify({
-      $schema: "https://opencode.ai/config.json",
-      permission: "allow",
-      plugin: [PLUGIN],
-      ...(model ? { model } : {}),
-    }),
+    // Read every channel but never WAKE on peer chatter — only an @mention or a DM drives a turn.
+    // This stops the runaway "everyone replies to everyone" spiral: the studio @mentions the panel
+    // when YOU post, so they answer you; an agent's reply (no @mention) doesn't wake the others.
+    COTAL_QUIET: CHANNELS.join(","),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(model)),
   };
   const child = spawn(process.execPath, [SERVE], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
 
@@ -249,21 +288,28 @@ function normalizeMsg(msg, meta) {
     id: msg.id,
     kind: meta?.kind || "channel",
     historical: !!meta?.historical,
-    from: msg.from?.name || "?",
+    from: display(msg.from?.name || "?"),
     role: msg.from?.role || "",
     channel: msg.channel,
-    to: msg.to,
+    to: display(msg.to),
     toService: msg.toService,
     text: textOf(msg),
     ts: msg.ts,
   };
 }
 
+// The operator's addressable name on the mesh. NOT "you": an LLM agent reads a peer literally named
+// "you" as a reference to itself, so it can't DM the host back ("you"/"host" never resolve and it
+// gives up to a channel). "host" matches the role and is what agents naturally address. The browser
+// still calls this seat "you" — we map the name back at the feed/roster boundary.
+const HOST = "host";
+const display = (n) => (n === HOST ? "you" : n);
+
 async function startOperator(reused) {
   ep = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
-    card: { name: "you", kind: "endpoint", role: "host" },
+    card: { name: HOST, kind: "endpoint", role: "host" },
     channels: CHANNELS,
     consume: true, // we want every message
     registerPresence: true, // appear in the room as "you"
@@ -277,13 +323,13 @@ async function startOperator(reused) {
   });
   ep.on("roster", (r) => {
     roomRoster = r.map((p) => ({
-      name: p.card.name,
+      name: display(p.card.name),
       role: p.card.role || "",
       kind: p.card.kind,
       status: p.status,
       activity: p.activity || "",
     }));
-    for (const p of r) if (p.card.name !== "you") peerIds.set(p.card.name, p.card.id);
+    for (const p of r) if (p.card.name !== HOST) peerIds.set(p.card.name, p.card.id);
     pushFeed({ type: "roster", roster: roomRoster });
   });
   try {
@@ -400,6 +446,7 @@ function handleSay(req, res) {
       res.end(JSON.stringify({ error: "empty" }));
       return;
     }
+    text = text.trim().slice(0, MAX_SAY); // kiosk anti-flood cap
     lastHuman = Date.now(); // a real person is interacting → hold off the attract loop
     const reply = (code, obj) => {
       res.writeHead(code, { "content-type": "application/json" });
@@ -416,7 +463,8 @@ function handleSay(req, res) {
         return reply(200, { ok: true, id: msg.id });
       }
       const ch = typeof channel === "string" && channel.trim() ? channel.trim() : "general";
-      const msg = await ep.multicast(text.trim(), { channel: ch });
+      // @mention the panel so they wake for YOU (they're quiet on plain channel chatter).
+      const msg = await ep.multicast(text.trim(), { channel: ch, mentions: liveAgentNames() });
       pushFeed(normalizeMsg(msg, { kind: "channel", historical: false }));
       return reply(200, { ok: true, id: msg.id });
     } catch (e) {
@@ -454,33 +502,50 @@ async function resetAgentContexts() {
   );
 }
 
-function handleClear(req, res) {
-  // A full reset: wipe the mesh transcript + the studio's buffer AND reset each agent's OpenCode
-  // context, then tell every open page to clear and re-attach to the new sessions.
-  (async () => {
-    recent.length = 0;
-    await clearHistory("clear requested");
-    await resetAgentContexts();
-    pushFeed({ type: "clear" });
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-  })().catch((e) => {
-    res.writeHead(500, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: e.message }));
-  });
+/** A full reset: wipe the mesh transcript + the studio's buffer AND reset each agent's OpenCode
+ *  context, then tell every open page to clear, re-attach to the new sessions, and snap to #general. */
+async function clearAll(reason) {
+  recent.length = 0;
+  await clearHistory(reason);
+  await resetAgentContexts();
+  pushFeed({ type: "clear" });
 }
 
-// Idle attract loop — keep the panel alive for passers-by when nobody is interacting.
+function handleClear(req, res) {
+  clearAll("clear requested")
+    .then(() => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    })
+    .catch((e) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+    });
+}
+
+// Idle loop — when nobody's interacting, keep the panel alive AND periodically fresh-start it so
+// each new visitor walks up to a clean panel (no prior stranger's chat/DMs).
 let lastAttract = 0;
+let lastReset = Date.now();
 let seedIdx = 0;
 function attractTick() {
   const now = Date.now();
   if (now - lastHuman < ATTRACT_IDLE_MS) return; // someone's interacting — leave it to them
+  // Periodic fresh-start while unattended: wipe + reset contexts + snap every page back to #general.
+  if (AUTO_RESET && now - Math.max(lastHuman, lastReset) > AUTO_RESET_IDLE_MS) {
+    lastReset = now;
+    lastAttract = now; // start clean, let it re-attract after a beat
+    log("auto-reset: unattended fresh-start");
+    clearAll("idle auto-reset").catch((e) => warn("auto-reset failed:", e.message));
+    return;
+  }
+  if (!ATTRACT) return;
   if (now - lastAttract < ATTRACT_EVERY_MS) return; // don't pile seeds on top of each other
   lastAttract = now;
   const seed = SEEDS[seedIdx++ % SEEDS.length];
   log(`attract: seeding #general — "${seed}"`);
-  ep.multicast(seed, { channel: "general" })
+  pushFeed({ type: "focus", channel: "general" }); // bring the panel's talking into view
+  ep.multicast(seed, { channel: "general", mentions: liveAgentNames() })
     .then((m) => pushFeed(normalizeMsg(m, { kind: "channel", historical: false })))
     .catch((e) => warn("attract send failed:", e.message));
 }
@@ -569,8 +634,9 @@ async function main() {
   log(`\x1b[1m\x1b[32mstudio ready → http://127.0.0.1:${PORT}/\x1b[0m  (${ok}/${roster.length} agents · space "${SPACE}")`);
   log("type into the page to talk to the panel · Ctrl-C to stop");
   server.on("error", (e) => warn("http error:", e.message));
-  if (ATTRACT) {
-    log(`attract loop on — seeds #general after ${Math.round(ATTRACT_IDLE_MS / 1000)}s idle`);
+  if (ATTRACT || AUTO_RESET) {
+    if (ATTRACT) log(`attract on — seeds #general after ${Math.round(ATTRACT_IDLE_MS / 1000)}s idle`);
+    if (AUTO_RESET) log(`auto-reset on — fresh-start after ${Math.round(AUTO_RESET_IDLE_MS / 1000)}s idle`);
     setInterval(attractTick, 20_000);
   }
 }

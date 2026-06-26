@@ -8,6 +8,10 @@
 //   import { driveFace } from './cotal-opencode.js';
 //   const drv = driveFace(faceEl, { server: '', persona: 'sven' }); // '' = same origin
 //   drv.send('hey, what are you working on?');
+//
+// Optional hooks: onActivity(persona,kind) · onExpr(persona,expr) · onMeshSend(edge) ·
+// onLog({kind,...}) — the last streams the raw session (reason/say/tool/send/idle/error) for a
+// terminal-style view of what the agent is doing.
 
 const EXPRS = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
 const MESH_SEND_TOOLS = new Set(['cotal_send', 'cotal_dm', 'cotal_anycast']);
@@ -32,16 +36,22 @@ export function driveFace(faceEl, opts = {}) {
   const abort = new AbortController();
 
   // setActivity + optional report to the wall (per-face status badge); no-op without onActivity.
-  const setAct = (kind, detail) => { faceEl.setActivity(kind, detail); opts.onActivity?.(persona, kind); };
+  // setActivity also mutates the face's expression (idle→happy, error→angry, …); surface that through
+  // onExpr too, so a text "emotion" readout always mirrors the face instead of drifting out of sync.
+  const setAct = (kind, detail) => { faceEl.setActivity(kind, detail); opts.onActivity?.(persona, kind); opts.onExpr?.(persona, faceEl.expr); };
+  // expression changes (for a text "emotion" readout) and a structured activity log (for a terminal view).
+  const setExpr = (e) => { faceEl.expr = e; opts.onExpr?.(persona, e); };
+  const emitLog = (kind, extra) => opts.onLog?.({ kind, ...extra });
 
   const msgRole = new Map(); // messageID -> role; only assistant text gets lip-synced
   const fedParts = new Set(); // a part emits several `updated` events — feed each mesh send once
+  const loggedTools = new Set(); // non-mesh tool parts already written to the terminal log
   const fedLen = new Map(); // text part id -> chars already fed (parts arrive as growing snapshots)
   let pendingText = '', pendingMsg = null; // streaming [[face:X]] parser state
   let speaking = false;
 
   // ---- streaming parser (mirrors face-term.feedText) ----------------------------
-  const applyExpr = (e) => { e = e.toLowerCase().trim(); if (EXPRS.includes(e)) faceEl.expr = e; };
+  const applyExpr = (e) => { e = e.toLowerCase().trim(); if (EXPRS.includes(e)) setExpr(e); };
   const emitClean = (text) => { if (text) { speaking = true; faceEl.pushTokens(text); } };
 
   // Pull [[face:X]] tags out before the text reaches the mouth, holding back any trailing
@@ -72,6 +82,7 @@ export function driveFace(faceEl, opts = {}) {
     fedParts.add(part.id);
     const inp = part.state?.input || {};
     if (!inp.text) return;
+    emitLog('send', { tool: part.tool, to: inp.to, role: inp.role, channel: inp.channel, text: inp.text });
     // Report the real agent→agent edge to the wall (who messaged whom); routing is otherwise discarded.
     opts.onMeshSend?.({
       from: persona, tool: part.tool,
@@ -99,29 +110,38 @@ export function driveFace(faceEl, opts = {}) {
           const key = pr.partID || pr.messageID;
           feedText(key, pr.delta);
           fedLen.set(key, (fedLen.get(key) || 0) + pr.delta.length);
-        } else if (pr.field === 'reasoning' && !speaking) setAct('thinking');
+          emitLog('say', { msg: key, text: pr.delta });
+        } else if (pr.field === 'reasoning') {
+          emitLog('reason', { msg: pr.messageID, text: pr.delta });
+          if (!speaking) setAct('thinking');
+        }
         break;
       case 'message.part.updated': {
         const part = pr.part;
         if (!part) break;
         if (part.type === 'tool') {
           if (MESH_SEND_TOOLS.has(part.tool) && part.state?.status === 'completed') feedMeshSend(part);
-          else if (!speaking) setAct('working');
+          else {
+            if (!loggedTools.has(part.id)) { loggedTools.add(part.id); emitLog('tool', { tool: part.tool, msg: part.messageID }); }
+            if (!speaking) setAct('working');
+          }
         } else if (part.type === 'text' && msgRole.get(part.messageID) === 'assistant') {
           // Snapshot: full text so far — feed only what the delta path hasn't already.
           const prev = fedLen.get(part.id) || 0;
           const text = part.text || '';
-          if (text.length > prev) { feedText(part.id, text.slice(prev)); fedLen.set(part.id, text.length); }
+          if (text.length > prev) { feedText(part.id, text.slice(prev)); emitLog('say', { msg: part.id, text: text.slice(prev) }); fedLen.set(part.id, text.length); }
         } else if (part.type === 'reasoning' && !speaking) setAct('thinking');
         break;
       }
       case 'session.idle':
         speaking = false;
         setAct('waiting');
+        emitLog('idle');
         break;
       case 'session.error':
         speaking = false;
         setAct('error');
+        emitLog('error');
         break;
     }
   }
@@ -143,6 +163,7 @@ export function driveFace(faceEl, opts = {}) {
     const body = attach
       ? { parts: [{ type: 'text', text }] }
       : { model: MODEL, system: FACE_SYSTEM, parts: [{ type: 'text', text }] };
+    setExpr('neutral'); // reply tags override
     const r = await fetch(`${server}/session/${sid}/message`, { method: 'POST', headers: HDR, body: JSON.stringify(body) });
     if (!r.ok) setAct('error');
   }
@@ -174,9 +195,17 @@ export function driveFace(faceEl, opts = {}) {
   let sidPromise = null;
   const getSession = () => (sidPromise ??= attach ? Promise.resolve(attach) : createSession());
 
+  // Keep the session event stream alive for the life of the page. A long-lived SSE gets reset
+  // periodically (idle proxy/server timeouts) — a transient drop must NOT kill the face or strand
+  // it on a fake "error"; reconnect and keep streaming. Only a real session.error sets error.
   (async () => {
-    try { const sid = await getSession(); streamEvents(sid).catch(() => setAct('error')); }
-    catch { setAct('error'); }
+    let sid;
+    try { sid = await getSession(); } catch { setAct('error'); return; }
+    while (!abort.signal.aborted) {
+      try { await streamEvents(sid); } catch { /* stream dropped — reconnect below */ }
+      if (abort.signal.aborted) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
   })();
 
   return {
