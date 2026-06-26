@@ -304,6 +304,24 @@ export class MeshAgent extends EventEmitter {
     return taken.map((p) => p.item);
   }
 
+  /** Ack + remove the buffered messages with these ids, wherever they sit in the inbox. An id
+   *  that's no longer buffered — already acked, e.g. force-evicted by the MAX_INBOX overflow — is
+   *  a harmless no-op. This lets a consumer ack exactly the messages it surfaced, immune to the
+   *  front-eviction that shifts positions out from under {@link drainInbox}. */
+  ackInbox(ids: string[]): InboxItem[] {
+    if (!ids.length) return [];
+    const wanted = new Set(ids);
+    const taken: InboxItem[] = [];
+    this.inbox = this.inbox.filter((p) => {
+      if (!wanted.has(p.item.id)) return true;
+      p.ack();
+      this.markHandled(p.item.id);
+      taken.push(p.item);
+      return false;
+    });
+    return taken;
+  }
+
   /** Record an id as surfaced/handled, for {@link ingest}'s commit-aware cross-path dedup. Bounded via
    *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
    *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
