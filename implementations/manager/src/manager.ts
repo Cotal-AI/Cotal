@@ -1,5 +1,5 @@
-import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname, delimiter, resolve } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -30,6 +30,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { resolveOnPath } from "./bin-path.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
@@ -38,31 +39,6 @@ const MAX_AGENTS = 50;
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
 const MIN_LIFETIME = 10_000;
-
-/** Is `bin` an executable on PATH? A side-effect-free preflight for a connector's `requires` —
- *  scans PATH directly with `accessSync(X_OK)` rather than shelling out to `which`, so it can't
- *  hang or run the harness. An absolute/relative path is checked as-is; a bare name is looked up
- *  across PATH entries (empty entries skipped). POSIX-only (macOS/Linux); no PATHEXT handling. */
-function binOnPath(bin: string): boolean {
-  if (bin.includes("/")) {
-    try {
-      accessSync(bin, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    try {
-      accessSync(join(dir, bin), constants.X_OK);
-      return true;
-    } catch {
-      // not here — keep scanning
-    }
-  }
-  return false;
-}
 
 export interface ManagerOptions {
   space: string;
@@ -521,7 +497,7 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const missing = (connector.requires ?? []).filter((bin) => !binOnPath(bin));
+    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length)
       return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH — not found` };
 
