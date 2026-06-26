@@ -76,9 +76,10 @@ with no silent fallback.
   (native in-process plugin injected via `OPENCODE_CONFIG_CONTENT`).
 - **`@cotal-ai/connector-hermes`** (`extensions/connector-hermes`): the Hermes (Nous Research)
   adapter; includes a Python sidecar.
-- **`@cotal-ai/pi`** (`extensions/pi`): native-embed adapter — embeds `MeshAgent` in the pi
-  agent's own process and drives its loop straight off the inbox, with true mid-turn `steer()`.
-  See [docs/agent-frameworks.md](docs/agent-frameworks.md).
+- **`@cotal-ai/pi`** / **`@cotal-ai/openai-agents`** / **`@cotal-ai/vercel-ai`**
+  (`extensions/{pi,openai-agents,vercel-ai}`): native-embed adapters — they embed `MeshAgent` in
+  the agent framework's own process and drive its loop straight off the inbox (pi adds true
+  mid-turn `steer()`). See [docs/agent-frameworks.md](docs/agent-frameworks.md).
 - **`@cotal-ai/cmux`** (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
   plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 - **`@cotal-ai/tmux`** (`extensions/tmux`): the tmux integration: a driver over the tmux CLI

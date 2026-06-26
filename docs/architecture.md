@@ -170,9 +170,10 @@ Implementations stay self-contained and never import each other: the `cli` drive
 purely over the mesh (`start`/`stop`/`ps` control requests), so neither imports the other. Only
 the example wires them together.
 
-Beyond the host-bound connectors, `@cotal-ai/pi` is a **native-embed** adapter: it embeds a
-Cotal endpoint directly in the pi agent's own process and drives its run loop off the inbox —
-see [agent-frameworks](agent-frameworks.md).
+Beyond the host-bound connectors, `@cotal-ai/pi`, `@cotal-ai/openai-agents`, and
+`@cotal-ai/vercel-ai` are **native-embed** adapters: they embed a Cotal endpoint directly in an
+agent framework's own process and drive its run loop off the inbox — see
+[agent-frameworks](agent-frameworks.md).
 
 ## Integration surfaces (Claude Code + OpenCode)
 

@@ -1,0 +1,20 @@
+{
+  "name": "@cotal-ai/example-03-vercel-ai",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "manager": "tsx src/manager.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/manager": "workspace:*",
+    "@cotal-ai/vercel-ai": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}
