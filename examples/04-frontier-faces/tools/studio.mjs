@@ -42,6 +42,25 @@ const PORT = Number(process.env.PORT || 4097);
 const MODEL = process.env.MODEL || ""; // overrides each agent file's model
 const MAX = 9;
 const DEFAULT_ROSTER = ["sven", "david", "garry", "elon"];
+// Channels the panel shares (Slack-style). `general` is always present (the default broadcast
+// target); add more with CHANNELS=general,ideas,random — every agent joins all of them.
+const CHANNELS = (process.env.CHANNELS || "general").split(",").map((s) => s.trim()).filter(Boolean);
+if (!CHANNELS.includes("general")) CHANNELS.unshift("general");
+// Idle attract loop: when nobody has interacted for a while, seed #general so the panel keeps
+// talking for passers-by. ATTRACT=0 disables it. Tunable for a permanent lobby kiosk.
+const ATTRACT = process.env.ATTRACT !== "0";
+const ATTRACT_IDLE_MS = Number(process.env.ATTRACT_IDLE_MS || 120_000); // quiet this long → seed
+const ATTRACT_EVERY_MS = Number(process.env.ATTRACT_EVERY_MS || 180_000); // min gap between seeds
+const SEEDS = [
+  "Hot take: is AGI closer to a breakthrough or a wall?",
+  "One line each — what will AI agents make obsolete first?",
+  "Open-source AI or closed labs — who's actually right?",
+  "What's the most overrated idea in tech right now?",
+  "Should autonomous agents be allowed to hold and spend money?",
+  "Is 'taste' a real moat, or just vibes?",
+  "What's a huge problem nobody's brave enough to work on?",
+  "If you got one wish for humanity by 2035, what is it?",
+];
 
 const log = (...a) => console.error("\x1b[36m[studio]\x1b[0m", ...a);
 const warn = (...a) => console.error("\x1b[33m[studio]\x1b[0m", ...a);
@@ -113,8 +132,8 @@ async function ensureMesh() {
 /** Wipe the space's retained chat history so a fresh boot starts clean — no replayed backlog for
  *  the agents to react to (which both clutters the feed and biases the model toward old, long
  *  messages). Best-effort: a brand-new mesh has nothing to clear. */
-async function clearHistory() {
-  log(`fresh boot — clearing chat history on space "${SPACE}"`);
+async function clearHistory(why = "fresh boot") {
+  log(`${why} — clearing chat history on space "${SPACE}"`);
   await new Promise((resolve) => {
     const p = spawn("pnpm", ["cotal", "history", "clear", "--force", "--dms", "--space", SPACE], {
       cwd: ROOT,
@@ -138,6 +157,10 @@ function spawnAgent(name) {
     COTAL_SERVERS: SERVERS,
     COTAL_AGENT_FILE: file,
     COTAL_OPENCODE_HOME: ROOT,
+    // Put every agent on all of the studio's channels (read + post), overriding the file's general-only ACL.
+    COTAL_SUBSCRIBE: CHANNELS.join(","),
+    COTAL_ALLOW_SUBSCRIBE: CHANNELS.join(","),
+    COTAL_ALLOW_PUBLISH: CHANNELS.join(","),
     OPENCODE_CONFIG_CONTENT: JSON.stringify({
       $schema: "https://opencode.ai/config.json",
       permission: "allow",
@@ -198,6 +221,7 @@ const feedClients = new Set(); // open SSE responses
 const recent = []; // last N transcript events for late-joining browsers
 let roomRoster = [];
 const peerIds = new Map(); // agent name -> live instance id (from presence), for direct messages
+let lastHuman = Date.now(); // last real human send (drives the idle attract loop)
 
 function pushFeed(ev) {
   if (ev.type === "msg") {
@@ -240,7 +264,7 @@ async function startOperator(reused) {
     space: SPACE,
     servers: SERVERS,
     card: { name: "you", kind: "endpoint", role: "host" },
-    channels: ["general"],
+    channels: CHANNELS,
     consume: true, // we want every message
     registerPresence: true, // appear in the room as "you"
     watchPresence: true,
@@ -365,9 +389,9 @@ function handleSay(req, res) {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", async () => {
-    let text, to;
+    let text, to, channel;
     try {
-      ({ text, to } = JSON.parse(body || "{}"));
+      ({ text, to, channel } = JSON.parse(body || "{}"));
     } catch {
       /* fall through */
     }
@@ -376,6 +400,7 @@ function handleSay(req, res) {
       res.end(JSON.stringify({ error: "empty" }));
       return;
     }
+    lastHuman = Date.now(); // a real person is interacting → hold off the attract loop
     const reply = (code, obj) => {
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(obj));
@@ -390,13 +415,74 @@ function handleSay(req, res) {
         pushFeed({ type: "msg", id: msg.id, kind: "dm", from: "you", role: "host", to, text: text.trim(), ts: msg.ts });
         return reply(200, { ok: true, id: msg.id });
       }
-      const msg = await ep.multicast(text.trim(), { channel: "general" });
+      const ch = typeof channel === "string" && channel.trim() ? channel.trim() : "general";
+      const msg = await ep.multicast(text.trim(), { channel: ch });
       pushFeed(normalizeMsg(msg, { kind: "channel", historical: false }));
       return reply(200, { ok: true, id: msg.id });
     } catch (e) {
       return reply(500, { error: e.message });
     }
   });
+}
+
+/** Give each agent a fresh OpenCode session — the connector adopts a new top-level session as a
+ *  context reset (same mesh identity, empty context), so the panel forgets the prior conversation.
+ *  Updates each record's session id so the browser can re-attach its face to the new stream. */
+async function resetAgentContexts() {
+  await Promise.all(
+    agents
+      .filter((a) => !a.dead)
+      .map(async (a) => {
+        try {
+          const auth = "Basic " + Buffer.from(`opencode:${a.password}`).toString("base64");
+          const r = await fetch(`http://127.0.0.1:${a.port}/session`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: auth },
+            body: JSON.stringify({ title: `cotal:${SPACE}:${a.name}` }),
+          });
+          if (r.ok) {
+            const j = await r.json();
+            if (j.id) {
+              a.session = j.id;
+              log(`reset ${a.name} context → ${j.id.slice(0, 12)}…`);
+            }
+          }
+        } catch (e) {
+          warn(`reset ${a.name} context failed: ${e.message}`);
+        }
+      }),
+  );
+}
+
+function handleClear(req, res) {
+  // A full reset: wipe the mesh transcript + the studio's buffer AND reset each agent's OpenCode
+  // context, then tell every open page to clear and re-attach to the new sessions.
+  (async () => {
+    recent.length = 0;
+    await clearHistory("clear requested");
+    await resetAgentContexts();
+    pushFeed({ type: "clear" });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  })().catch((e) => {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: e.message }));
+  });
+}
+
+// Idle attract loop — keep the panel alive for passers-by when nobody is interacting.
+let lastAttract = 0;
+let seedIdx = 0;
+function attractTick() {
+  const now = Date.now();
+  if (now - lastHuman < ATTRACT_IDLE_MS) return; // someone's interacting — leave it to them
+  if (now - lastAttract < ATTRACT_EVERY_MS) return; // don't pile seeds on top of each other
+  lastAttract = now;
+  const seed = SEEDS[seedIdx++ % SEEDS.length];
+  log(`attract: seeding #general — "${seed}"`);
+  ep.multicast(seed, { channel: "general" })
+    .then((m) => pushFeed(normalizeMsg(m, { kind: "channel", historical: false })))
+    .catch((e) => warn("attract send failed:", e.message));
 }
 
 function startHttp() {
@@ -408,6 +494,7 @@ function startHttp() {
         JSON.stringify({
           space: SPACE,
           you: "you",
+          channels: CHANNELS,
           agents: agents
             .filter((a) => !a.dead)
             .map((a) => ({ name: a.name, persona: a.persona, role: a.role, model: a.model, session: a.session })),
@@ -417,6 +504,7 @@ function startHttp() {
     }
     if (p === "/api/feed") return handleFeed(req, res);
     if (p === "/api/say" && req.method === "POST") return handleSay(req, res);
+    if (p === "/api/clear" && req.method === "POST") return handleClear(req, res);
     const am = p.match(/^\/agent\/([^/]+)(\/.*)?$/);
     if (am) return proxyAgent(req, res, am[1], am[2] || "/");
     return serveStatic(req, res);
@@ -481,6 +569,10 @@ async function main() {
   log(`\x1b[1m\x1b[32mstudio ready → http://127.0.0.1:${PORT}/\x1b[0m  (${ok}/${roster.length} agents · space "${SPACE}")`);
   log("type into the page to talk to the panel · Ctrl-C to stop");
   server.on("error", (e) => warn("http error:", e.message));
+  if (ATTRACT) {
+    log(`attract loop on — seeds #general after ${Math.round(ATTRACT_IDLE_MS / 1000)}s idle`);
+    setInterval(attractTick, 20_000);
+  }
 }
 
 main().catch((e) => {
