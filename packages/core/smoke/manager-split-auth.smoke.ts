@@ -125,6 +125,10 @@ try {
   const dmCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable("victim")}`;
   const dlvCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.dlv_victim`;
   const dmRead = `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable("victim")}`;
+  const dlvRead = `$JS.API.CONSUMER.MSG.NEXT.${DLV}.dlv_victim`;
+  // Body reads also ride the direct STREAM.MSG.GET path — assert both DM and DLV are denied there too,
+  // so the matrix mirrors the DM AND DLV confidentiality claim directly (review-security), not by omission.
+  const dmGet = `$JS.API.STREAM.MSG.GET.${DM}`, dlvGet = `$JS.API.STREAM.MSG.GET.${DLV}`;
 
   console.log("supervisor (the always-on daemon — the residual-2 gate):");
   check("acquire lease (own key) ALLOWED", await tryPublish(supCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, sup.id) === "allowed");
@@ -133,6 +137,9 @@ try {
   check("create a DM consumer (push-bypass) DENIED", await tryPublish(supCreds, dmCreate, sup.id) === "denied");
   check("create a DLV consumer (push-bypass) DENIED", await tryPublish(supCreds, dlvCreate, sup.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(supCreds, dmRead, sup.id) === "denied");
+  check("read a DLV body (MSG.NEXT) DENIED", await tryPublish(supCreds, dlvRead, sup.id) === "denied");
+  check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(supCreds, dmGet, sup.id) === "denied");
+  check("direct-get a DLV body (STREAM.MSG.GET) DENIED", await tryPublish(supCreds, dlvGet, sup.id) === "denied");
   check("STREAM.DELETE the presence bucket (roster wipe) DENIED", await tryPublish(supCreds, `$JS.API.STREAM.DELETE.${PKV}`, sup.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED", await tryPublish(supCreds, `$JS.API.STREAM.PURGE.${DM}`, sup.id) === "denied");
   check("publish chat DENIED (never posts)", await tryPublish(supCreds, chatSubject(space, sup.id, "general"), sup.id) === "denied");
@@ -147,6 +154,8 @@ try {
   check("read the ACL registry ALLOWED (commitAcl read-before-write)", await tryPublish(provCreds, `$JS.API.STREAM.MSG.GET.KV_${aclBucket(space)}`, prov.id) === "allowed");
   check("write the channel registry ALLOWED (seed)", await tryPublish(provCreds, `$KV.${channelBucket(space)}.general`, prov.id) === "allowed");
   check("read a DM body (MSG.NEXT) DENIED (creates the mailbox, never reads it)", await tryPublish(provCreds, dmRead, prov.id) === "denied");
+  check("read a DLV body (MSG.NEXT) DENIED (creates it, never reads it)", await tryPublish(provCreds, dlvRead, prov.id) === "denied");
+  check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(provCreds, dmGet, prov.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(provCreds, `$JS.API.STREAM.DELETE.${PKV}`, prov.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED (not a purger)", await tryPublish(provCreds, `$JS.API.STREAM.PURGE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, prov.id, "general"), prov.id) === "denied");
@@ -157,6 +166,8 @@ try {
   check("STREAM.PURGE on DM ALLOWED (the isolated --dms grant)", await tryPublish(purCreds, `$JS.API.STREAM.PURGE.${DM}`, pur.id) === "allowed");
   check("create a DM consumer DENIED", await tryPublish(purCreds, dmCreate, pur.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(purCreds, dmRead, pur.id) === "denied");
+  check("read a DLV body (MSG.NEXT) DENIED", await tryPublish(purCreds, dlvRead, pur.id) === "denied");
+  check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(purCreds, dmGet, pur.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(purCreds, `$JS.API.STREAM.DELETE.${PKV}`, pur.id) === "denied");
   check("publish chat DENIED", await tryPublish(purCreds, chatSubject(space, pur.id, "general"), pur.id) === "denied");
   check("write the ACL registry DENIED", await tryPublish(purCreds, `$KV.${aclBucket(space)}.${pur.id}`, pur.id) === "denied");
