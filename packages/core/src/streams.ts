@@ -28,6 +28,7 @@ import {
   aclBucket,
   membershipBucket,
   deliveryBucket,
+  managerBucket,
   inboxStream,
   dlvStream,
   dlvSubject,
@@ -293,6 +294,11 @@ export async function setupSpaceStreams(opts: {
     // holder's lease auto-expires and a fresh daemon can re-acquire. Holds ONLY lease keys, writable
     // only by the `delivery` cred, world-readable (the non-gating delivery-health surface). Idempotent.
     await kvm.create(deliveryBucket(opts.space), { ttl: LEASE_TTL_MS });
+    // Manager singleton-lease bucket (bucket-level TTL, like the delivery lease). PRE-CREATED here so the
+    // long-lived supervisor can lease-bind OPEN-ONLY (closure (ii), residual 2) — it holds no STREAM.CREATE.
+    // Config matches `managerLeaseRegistry()`'s create-first exactly, so that path stays idempotent until
+    // the supervisor profile drops bucket-create. Idempotent.
+    await kvm.create(managerBucket(opts.space), { ttl: MANAGER_LEASE_TTL_MS });
   } finally {
     await nc.drain();
   }

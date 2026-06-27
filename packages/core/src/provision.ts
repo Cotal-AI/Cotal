@@ -64,7 +64,14 @@ import type { Identity } from "./identity.js";
  *  scope each one — at which point the manager MUST already hold its own privileged
  *  profile (broad: pre-create others' DM durables, serve ctl), not "agent", or it
  *  silently loses those powers the moment "agent" is tightened. */
-export type Profile = "agent" | "observer" | "admin" | "manager" | "delivery" | "membership-rw";
+export type Profile =
+  | "agent"
+  | "observer"
+  | "admin"
+  | "manager"
+  | "provisioner"
+  | "delivery"
+  | "membership-rw";
 
 /** A space's persisted trust material. The `signingSeed` is the sensitive provisioner
  *  secret; everything else is public (JWTs) or recoverable. The system-account `signingSeed` is the ONE
@@ -284,6 +291,7 @@ function permissionsFor(
 ): Record<string, unknown> {
   if (profile === "delivery") return deliveryPermissions(space, id); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, id); // scoped graph-feed reader/writer
+  if (profile === "provisioner") return provisionerPermissions(space, id); // ephemeral onboarding authority (closure (ii))
   if (profile === "manager") return managerPermissions(space, id); // scoped operator (closure (i))
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
@@ -482,6 +490,67 @@ function permissionsFor(
   if (opts.capabilities?.includes("spawn"))
     controlReplies.push(`${controlServiceSubject(space, CONTROL_PRIVILEGED, id)}.reply.>`);
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat] } };
+}
+
+/** The ephemeral PROVISIONER permission set (closure (ii), residual 2) — the onboarding authority,
+ *  carved off the long-lived manager. Minted short-lived for `cotal up` (create the space's streams + KV
+ *  buckets, seed the channel registry) and for per-spawn provisioning (pre-create each agent's bind-only
+ *  DM/DLV/TASK durables + record its read ACL via `commitAcl`). NEVER minted for an agent — `cotal mint`
+ *  whitelists agent/observer/admin only, like `manager`/`delivery`.
+ *
+ *  This profile HOLDS the DM/DLV `CONSUMER.CREATE` push-consumer surface — the irreducible onboarding
+ *  power (the create-time `deliver_subject` of a push consumer is not ACL-constrained, so whoever can
+ *  create a DM/DLV consumer can stream the bodies). That is exactly why it is split OFF the always-on
+ *  supervisor and made EPHEMERAL: the daemon opens a provisioner connection per spawn and drains it
+ *  immediately, so the surface exists only for the provisioning window, not as a standing target. The
+ *  cred is MEMORY-ONLY (never written to `.cotal`); short-`exp`/revocation is the auth-callout follow-up.
+ *
+ *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
+ *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
+ *  DM/DLV (it creates the bind-only mailbox but never reads it), NO STREAM.DELETE/PURGE/UPDATE/MSG.DELETE
+ *  (it provisions, it does not tear down or tamper). KV value-writes are scoped to exactly the two
+ *  registries provisioning touches: the read-ACL bucket (`commitAcl`) and the channel registry (seed). */
+function provisionerPermissions(space: string, id: string): Record<string, unknown> {
+  const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
+  const INBOX = inboxStream(space), DLV = dlvStream(space);
+  // Every backing stream the provisioner pre-creates — the 5 message streams + the KV buckets (a bucket's
+  // backing stream is `KV_<bucket>`). `managerBucket` is now pre-created here too (so the supervisor binds
+  // its lease open-only); members/membership/delivery are written by other creds but created at setup here.
+  const buckets = [
+    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
+  ].map((b) => `KV_${b(space)}`);
+  // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
+  // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, ...buckets].flatMap((s) => [
+    `$JS.API.STREAM.CREATE.${s}`,
+    `$JS.API.STREAM.INFO.${s}`,
+  ]);
+  // DM/DLV/TASK durable pre-create (bind-only mailboxes): both the new-API CREATE and legacy DURABLE.CREATE
+  // forms (the client's consumer-add path varies by version), plus INFO (the add returns ConsumerInfo).
+  // NO MSG.NEXT/MSG.GET/ACK — the provisioner creates the consumer but MUST NOT read its body.
+  const consumerCreate = [DM, DLV, TASK].flatMap((s) => [
+    `$JS.API.CONSUMER.CREATE.${s}.>`,
+    `$JS.API.CONSUMER.DURABLE.CREATE.${s}.>`,
+    `$JS.API.CONSUMER.INFO.${s}.>`,
+  ]);
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        ...streamSetup,
+        ...consumerCreate,
+        // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
+        // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).
+        // NO presence/members/membership/delivery writes (the agent's own key, the delivery cred, and the
+        // membership-rw cred own those).
+        `$KV.${aclBucket(space)}.>`,
+        `$KV.${channelBucket(space)}.>`,
+      ],
+    },
+    // Replies only: every stream/consumer/KV-create PubAck and JS API response lands on the per-id inbox.
+    // NO chat/inst/dlv/ctl subscription — the provisioner never serves control nor reads any feed.
+    sub: { allow: [`_INBOX_${id}.>`] },
+  };
 }
 
 /** The privileged OPERATOR permission set (`manager` profile) — formerly allow-all (`{}`). The
