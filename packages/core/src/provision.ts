@@ -494,14 +494,15 @@ function permissionsFor(
  *  `dinbox`/`dlv` writes, and the `ctl.delivery` service). `CotalEndpoint` pins `card.id` to the cred's
  *  own identity (it throws on a mismatch), so "as the operator" always means as THIS `id`.
  *
- *  closure (i), SCOPED TO ACTOR-FORGERY (the headline guarantee, proven by a cross-owner forge-deny
- *  smoke): the allow-all `{}` is replaced with an exact set whose `pub` is an enumerated, SELF-SCOPED
- *  list — it may post chat/inst/svc only as `id`, never as another actor. That became expressible by
- *  migrating the three control tiers to BOUNDED replies (`ctl.<tier>.<caller>.reply.>` via `boundReply`),
- *  removing the per-id-`_INBOX` reply target that previously forced a position-1 publish wildcard.
+ *  closure (i), SCOPED TO peer-MESSAGE ACTOR-FORGERY — chat/inst/svc publishes ONLY, NOT presence/KV
+ *  state (the headline guarantee, proven by a cross-owner forge-deny smoke): the allow-all `{}` is
+ *  replaced with an exact set whose `pub` is an enumerated, SELF-SCOPED list — it may post chat/inst/svc
+ *  only as `id`, never as another actor. That became expressible by migrating the three control tiers to
+ *  BOUNDED replies (`ctl.<tier>.<caller>.reply.>` via `boundReply`), removing the per-id-`_INBOX` reply
+ *  target that previously forced a position-1 publish wildcard.
  *
- *  TWO residuals remain OPEN and MUST gate the human-owner cutover (do not read this set as full
- *  owner-lane confinement):
+ *  THREE residuals remain OPEN and MUST gate the human-owner cutover (do not read this set as full
+ *  owner-lane confinement, nor even as full actor-attributable-STATE confinement — see (3)):
  *   1. Plane-3 INJECT is not self-scoped — and is a true FORGE, not just a write: `dinbox.*` / `dlv.*`
  *      let the operator publish into any owner's delivery store, and the `dlv.<owner>` subject names the
  *      RECIPIENT, not the sender, so the receiver can't do the subject-vs-body authenticity check it
@@ -517,7 +518,14 @@ function permissionsFor(
  *      (b) `CONSUMER.CREATE` on DM/DLV stays allowed (the operator pre-creates the bind-only durables), so
  *      a PUSH consumer with a deliver subject it may subscribe streams the bodies historically. The real
  *      closure is the provisioner role-split (no manager DM/DLV create) AND tightening `sub` to {own inbox
- *      + served control subjects} — they MUST land together, since the broad `sub` is itself path (a). */
+ *      + served control subjects} — they MUST land together, since the broad `sub` is itself path (a).
+ *   3. PRESENCE / KV STATE forgery is open (caught by the mesh security + critic panel). `pub` keeps
+ *      `$KV.>`, and presence consumption (endpoint.ts `applyPresence`) trusts the KV record without
+ *      binding the bucket key to `raw.card.id` — so a leaked operator cred can WRITE another agent's
+ *      presence key and spoof its roster-visible identity / status / activity. This is not a chat/inst/svc
+ *      MESSAGE forge (hence the narrowed headline), but it IS actor-attributable STATE. Closes by scoping
+ *      `$KV.>` to only the buckets/keys the operator writes, PLUS a defense-in-depth check in
+ *      `applyPresence` that rejects a presence record whose KV key != its `card.id`. */
 function managerPermissions(space: string, id: string): Record<string, unknown> {
   const p = spacePrefix(space);
   const DM = dmStream(space), DLV = dlvStream(space);
