@@ -41,6 +41,7 @@ import {
   dlvStream,
   taskStream,
   dmDurable,
+  unicastSubject,
   presenceBucket,
   managerBucket,
   aclBucket,
@@ -117,6 +118,8 @@ try {
   const provCreds = await mintCreds(auth, prov, "provisioner");
   const pur = newIdentity();
   const purCreds = await mintCreds(auth, pur, "purger");
+  const op = newIdentity();
+  const opCreds = await mintCreds(auth, op, "operator");
 
   const CHAT = chatStream(space), DM = dmStream(space), DLV = dlvStream(space), TASK = taskStream(space);
   const PKV = `KV_${presenceBucket(space)}`;
@@ -171,6 +174,18 @@ try {
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(purCreds, `$JS.API.STREAM.DELETE.${PKV}`, pur.id) === "denied");
   check("publish chat DENIED", await tryPublish(purCreds, chatSubject(space, pur.id, "general"), pur.id) === "denied");
   check("write the ACL registry DENIED", await tryPublish(purCreds, `$KV.${aclBucket(space)}.${pur.id}`, pur.id) === "denied");
+
+  console.log("operator (human-CLI client — posts as itself + reads the roster, nothing else):");
+  check("post chat AS SELF ALLOWED", await tryPublish(opCreds, chatSubject(space, op.id, "general"), op.id) === "allowed");
+  check("DM (inst) AS SELF ALLOWED", await tryPublish(opCreds, unicastSubject(space, sup.id, op.id), op.id) === "allowed");
+  check("read the presence roster (STREAM.INFO) ALLOWED", await tryPublish(opCreds, `$JS.API.STREAM.INFO.${PKV}`, op.id) === "allowed");
+  check("FORGE chat as another actor DENIED", await tryPublish(opCreds, chatSubject(space, sup.id, "general"), op.id) === "denied");
+  check("create a DM consumer DENIED", await tryPublish(opCreds, dmCreate, op.id) === "denied");
+  check("read a DM body (MSG.NEXT) DENIED", await tryPublish(opCreds, dmRead, op.id) === "denied");
+  check("write the ACL registry DENIED", await tryPublish(opCreds, `$KV.${aclBucket(space)}.${op.id}`, op.id) === "denied");
+  check("STREAM.PURGE the chat stream DENIED", await tryPublish(opCreds, `$JS.API.STREAM.PURGE.${CHAT}`, op.id) === "denied");
+  check("STREAM.DELETE the presence bucket DENIED", await tryPublish(opCreds, `$JS.API.STREAM.DELETE.${PKV}`, op.id) === "denied");
+  check("acquire the manager lease DENIED", await tryPublish(opCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, op.id) === "denied");
 
   console.log(`\nMANAGER-SPLIT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

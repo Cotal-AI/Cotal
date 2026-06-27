@@ -17,12 +17,13 @@ export interface ConnectValues {
 }
 
 /** Resolve where to connect + with what credentials (`--creds` → raw off-registry; else the running
- *  mesh's minted manager creds). Fail-loud — an unresolved registry or an unreachable/auth-mismatched
- *  broker exits with one sentence, never degrades. */
+ *  mesh's minted least-privilege OPERATOR creds — self-scoped publish + presence/channel read, no broad
+ *  manager). Fail-loud — an unresolved registry or an unreachable/auth-mismatched broker exits with one
+ *  sentence, never degrades. */
 export async function resolveConnect(
   values: ConnectValues,
 ): Promise<{ server: string; space: string; creds?: string }> {
-  const { server, space, creds } = await connectOrExit(values, "manager");
+  const { server, space, creds } = await connectOrExit(values, "operator");
   return { server, space, creds };
 }
 

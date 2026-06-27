@@ -77,8 +77,9 @@ async function uniqueMeshName(
   { space, server, auth }: { space: string; server: string; auth?: SpaceAuth },
 ): Promise<string> {
   // Reading presence in auth mode needs a credential (the bucket is OPEN-only for agents): a
-  // short-lived manager cred, the same throwaway `cotal dm` mints to resolve a name → id.
-  const creds = auth ? await mintCreds(auth, newIdentity(), "manager") : undefined;
+  // short-lived least-privilege OPERATOR cred (presence/channel read + self-publish), the same throwaway
+  // `cotal dm`/`send` mints to resolve a name → id.
+  const creds = auth ? await mintCreds(auth, newIdentity(), "operator") : undefined;
   if (!(await isReachable(server, { creds }))) return requested;
   const ep = new CotalEndpoint({
     space,
@@ -222,12 +223,13 @@ export async function spawn(argv: string[]): Promise<void> {
     const prov = new CotalEndpoint({
       space,
       servers: server,
-      creds: await mintCreds(auth, newIdentity(), "manager"),
+      creds: await mintCreds(auth, newIdentity(), "provisioner"),
       channels: [],
       consume: false,
       registerPresence: false,
       watchPresence: false,
-      card: { name: "spawn-provisioner", role: "manager", kind: "endpoint" },
+      watchChannels: false,
+      card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
     });
     prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
     await prov.start();

@@ -72,6 +72,7 @@ export type Profile =
   | "manager"
   | "supervisor"
   | "provisioner"
+  | "operator"
   | "purger"
   | "delivery"
   | "membership-rw";
@@ -297,6 +298,7 @@ function permissionsFor(
   if (profile === "supervisor") return supervisorPermissions(space, id); // always-on daemon (closure (ii) gate)
   if (profile === "provisioner") return provisionerPermissions(space, id); // ephemeral onboarding authority (closure (ii))
   if (profile === "purger") return purgerPermissions(space, id); // ephemeral history-purge (closure (ii))
+  if (profile === "operator") return operatorPermissions(space, id); // human-CLI client (send/dm/ask) (closure (ii))
   if (profile === "manager") return managerPermissions(space, id); // scoped operator (closure (i); CLI surfaces, residual 2 follow-up)
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
@@ -545,6 +547,48 @@ function supervisorPermissions(space: string, id: string): Record<string, unknow
       // supervisor reads no feed), NO broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
       allow: [`_INBOX_${id}.>`, ...ctlServe],
     },
+  };
+}
+
+/** The human-CLI OPERATOR permission set (closure (ii), residual 2) — the ephemeral key the headless
+ *  client commands mint (`cotal send dm|msg|ask`, `cotal dm`, `personas list --running`, via
+ *  `openTransient`). It does exactly what those do: POST as itself (chat/DM/anycast — self-scoped, can
+ *  never forge another actor), and READ the public roster (presence) + the channel registry to resolve a
+ *  name→id and a channel's delivery class. Much narrower than the old broad `manager`: NO serve-control,
+ *  NO DM/DLV body read, NO chat-history read, NO stream CREATE/DELETE/PURGE, NO ACL write, NO lease, NO
+ *  provisioning. A leaked operator cred can post as itself and read the roster — the same surface as the
+ *  human who ran the command. (The interactive `cotal join` console — chat read + own-DM receive — is a
+ *  separate, fuller surface, deferred: it needs the unprovisioned-console DM self-create fixed first.) */
+function operatorPermissions(space: string, id: string): Record<string, unknown> {
+  const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
+  return {
+    pub: {
+      allow: [
+        // Post AS itself only — self-scoped, so a leaked operator cred can never forge a message
+        // attributable to another actor.
+        chatSubject(space, id, ">"), // chat.<id>.>  — multicast any channel as me
+        unicastSubject(space, "*", id), // inst.*.<id>  — DM any peer as me
+        anycastSubject(space, "*", id), // svc.*.<id>   — anycast any role as me
+        `$KV.${presenceBucket(space)}.${id}`, // own presence key (when a caller registers; own key only)
+        "$JS.API.INFO",
+        // Presence watch (name→id resolution + the live roster) — read-only ordered consumer. No
+        // STREAM.MSG.GET (the roster is the in-memory watch cache).
+        `$JS.API.STREAM.INFO.${PKV}`,
+        `$JS.API.CONSUMER.CREATE.${PKV}.>`,
+        `$JS.API.CONSUMER.INFO.${PKV}.>`,
+        // Channel registry read — the transient endpoint opens+watches it, and multicast reads a
+        // channel's delivery class. Read-only (no `$KV.<channel>` write — that's the provisioner).
+        `$JS.API.STREAM.INFO.${CHKV}`,
+        `$JS.API.STREAM.MSG.GET.${CHKV}`,
+        `$JS.API.DIRECT.GET.${CHKV}`,
+        `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
+        `$JS.API.CONSUMER.INFO.${CHKV}.>`,
+        "$JS.FC.>", // ordered-consumer flow control
+      ],
+    },
+    // Own reply inbox only (presence/channel watch ordered-consumer delivery + any request replies land
+    // here). NO chat/inst/dlv native sub — the operator posts and reads the roster, it receives no feed.
+    sub: { allow: [`_INBOX_${id}.>`] },
   };
 }
 
