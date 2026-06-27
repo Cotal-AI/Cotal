@@ -91,6 +91,13 @@ export class PtyRuntime implements Runtime {
       status: () => (alive ? "running" : "exited"),
       stop: (opts) => {
         if (!alive) return;
+        // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a
+        // pseudoconsole can't deliver SIGTERM for a graceful mesh-leave. So a stop here is a hard
+        // terminate — the agent's presence then expires via NATS rather than leaving cleanly.
+        if (process.platform === "win32") {
+          proc.kill();
+          return;
+        }
         if (opts?.graceful === false) {
           proc.kill("SIGKILL");
           return;
