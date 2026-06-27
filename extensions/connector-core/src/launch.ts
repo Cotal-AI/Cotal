@@ -19,11 +19,12 @@ import type { McpServerSpec } from "@cotal-ai/core";
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
  *  USERPROFILE / APPDATA / LOCALAPPDATA on Windows), locale (LANG / LC_*), timezone (TZ), temp
- *  dirs, session/runtime dir (XDG_RUNTIME_DIR), and the shell it may invoke. On Windows, tools and
- *  the DLL loader also ASSUME SystemRoot / WINDIR (and a `.cmd`-shim launch via cmd.exe reads them),
- *  so a child given a foreign/empty env fails to start without them. NOT a model key, NOT an operator
- *  secret. A fixed, named allow-list — each entry is copied once by canonical name, so the child env
- *  never carries a case-duplicate (`Path` AND `PATH`) that Windows process creation would choke on. */
+ *  dirs, session/runtime dir (XDG_RUNTIME_DIR), and the shell it may invoke. NOT a model key,
+ *  NOT an operator secret. A fixed, named allow-list; each entry is forwarded only when present,
+ *  so the Unix-only and Windows-only names below coexist harmlessly on either OS. Names are matched
+ *  case-insensitively against the source env and copied under the source's own key (see
+ *  {@link launchEnv}), so Windows casing (`Path`, `ComSpec`, `windir`) is forwarded without ever
+ *  emitting a case-duplicate (`Path` AND `PATH`) that Windows process creation would choke on. */
 const OS_ENV_ALLOW = [
   "PATH",
   "HOME",
@@ -53,8 +54,22 @@ const OS_ENV_ALLOW = [
   "APPDATA",
   "LOCALAPPDATA",
   "XDG_RUNTIME_DIR",
+  // Windows system env. SystemRoot is mandatory: without it a spawned process aborts at startup
+  // (node `InitializeOnce`, winsock/ICU can't load) — and a `pty`-runtime (ConPTY) child does NOT
+  // inherit it the way a plain child_process does, so a manager-spawned agent dies before its first
+  // line. The rest let agents resolve the system drive, arch, and Program/Data roots they shell out
+  // to. Absent on POSIX (skipped); present only on Windows.
   "SystemRoot",
-  "WINDIR",
+  "windir",
+  "SystemDrive",
+  "PROCESSOR_ARCHITECTURE",
+  "NUMBER_OF_PROCESSORS",
+  "ALLUSERSPROFILE",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "CommonProgramFiles",
+  "PUBLIC",
 ] as const;
 
 /** Model-provider API keys a key-based connector may forward to its child. claude needs none

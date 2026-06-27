@@ -96,8 +96,15 @@ export const opencodeConnector: Connector = {
       const face = def.meta?.face;
       if (face) env.COTAL_FACE_PERSONA = face; // shim swaps the TUI for the face viewer
     }
-    // The `--model` flag wins over the agent file, and applies even with no agent file.
-    if (model) config.model = model;
+    // The `--model` flag wins over the agent file, and applies even with no agent file. Pin it to a
+    // dedicated primary agent made the default, so an operator's own `default_agent` in
+    // ~/.config/opencode (with its own model) can't override the model a Cotal spawn asks for — the
+    // session the plugin drives runs the persona's model, not the operator's default agent's.
+    if (model) {
+      config.model = model;
+      config.agent = { cotal: { mode: "primary", model } };
+      config.default_agent = "cotal";
+    }
 
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config);
 

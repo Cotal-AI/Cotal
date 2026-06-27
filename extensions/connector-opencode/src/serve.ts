@@ -22,9 +22,27 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
-const BIN = process.env.COTAL_OPENCODE_BIN?.trim() || "opencode";
+/** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
+ *  an npm `.cmd` shim that child_process can't spawn, and the real `opencode.exe` it wraps
+ *  (`<bindir>/node_modules/opencode-ai/bin/opencode.exe`) isn't itself on PATH — resolve and spawn
+ *  it directly, so there's no `cmd.exe` wrapper to orphan the server on kill. POSIX spawns the name
+ *  as-is. Unresolved on Windows → returns the bare name so spawn fails with a clear ENOENT. */
+function resolveOpencodeBin(): string {
+  const override = process.env.COTAL_OPENCODE_BIN?.trim();
+  if (override) return override;
+  if (process.platform !== "win32") return "opencode";
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const exe of [join(dir, "opencode.exe"), join(dir, "node_modules", "opencode-ai", "bin", "opencode.exe")]) {
+      if (existsSync(exe)) return exe;
+    }
+  }
+  return "opencode";
+}
+
+const BIN = resolveOpencodeBin();
 
 /** Per-launch secret gating the spawned server's HTTP API (see SECURITY above). */
 const SECRET = randomBytes(24).toString("hex");

@@ -29,9 +29,9 @@ export class PtyRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and
-    // adapt — a `.cmd`/`.bat` shim can't be launched by CreateProcessW, so it runs through cmd.exe
-    // with a pre-escaped command line. Resolve against `spec.env` (the env we actually launch with),
-    // not the manager's, so executable selection stays inside P3 isolation.
+    // adapt — a `.cmd`/`.bat` shim runs through cmd.exe with a pre-escaped command line. Resolve
+    // against `spec.env` (the env we actually launch with), not the manager's, so executable
+    // selection stays inside P3 isolation.
     const { command, args } = preparePtyLaunch(spec.command, spec.args, spec.env ?? {});
     const proc = pty.spawn(command, args, {
       name: "xterm-256color",
@@ -91,6 +91,13 @@ export class PtyRuntime implements Runtime {
       status: () => (alive ? "running" : "exited"),
       stop: (opts) => {
         if (!alive) return;
+        // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a
+        // pseudoconsole can't deliver SIGTERM for a graceful mesh-leave. So a stop here is a hard
+        // terminate — the agent's presence then expires via NATS rather than leaving cleanly.
+        if (process.platform === "win32") {
+          proc.kill();
+          return;
+        }
         if (opts?.graceful === false) {
           proc.kill("SIGKILL");
           return;
