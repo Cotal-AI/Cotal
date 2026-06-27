@@ -45,10 +45,17 @@ export function startSidecar(): Sidecar {
   agent.start(); // background connect with retry
 
   const controlSock = need("COTAL_CONTROL_SOCKET");
+  const controlToken = need("COTAL_CONTROL_TOKEN");
   const bridgeSock = need("COTAL_BRIDGE_SOCKET");
   const toolsFile = need("COTAL_TOOLS_FILE");
 
-  const controlServer = startControlServer(agent, controlSock, hermesHookHandle);
+  // Managed listener: own the endpoint (fatal bind) and authenticate every frame against the token.
+  const controlServer = startControlServer(
+    agent,
+    { path: controlSock, token: controlToken },
+    hermesHookHandle,
+    { fatalBind: true },
+  );
   const bridge = startBridgeServer(agent, config, bridgeSock);
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).

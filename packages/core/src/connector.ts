@@ -63,6 +63,13 @@ export interface LaunchSpec {
    *  non-interactive. Matched after stripping ANSI + whitespace (TUIs position
    *  text with cursor moves, not spaces). */
   confirm?: string;
+  /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
+   *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
+   *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
+   *  (never persisted — token hygiene) to send a cooperative `{op:"shutdown"}` on a runtime that
+   *  can't deliver a clean exit signal (ConPTY/Windows). Absent for connectors with no control
+   *  plane (OpenCode is in-process). */
+  control?: { path: string; token: string };
 }
 
 /**

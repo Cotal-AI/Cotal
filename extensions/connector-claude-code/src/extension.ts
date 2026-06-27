@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -40,6 +40,11 @@ export const claudeConnector: Connector = {
     // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
     // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
     // by name). The operator's unrelated secrets don't reach the child (P3).
+    // The session's local control endpoint: the in-process MCP server LISTENS on it (auth), and the
+    // lifecycle hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read
+    // path+token from the env — never recomputed from public identity — and the manager keeps the
+    // pair (returned as `control` below) to drive a cooperative shutdown on Windows.
+    const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
       ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
       ...aclEnv(opts),
@@ -48,6 +53,8 @@ export const claudeConnector: Connector = {
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
       // `claude/channel` capability back over MCP, so auto-detection would see it "off".
       COTAL_CHANNEL: "1",
+      COTAL_CONTROL_SOCKET: control.path,
+      COTAL_CONTROL_TOKEN: control.token, // env only — never argv/logs/persisted (token hygiene)
     };
     // A session can mirror its own transcript to `tr-<name>` so peers can read what the
     // agent actually did — OFF by default (transcripts are verbose and may carry sensitive
@@ -122,6 +129,7 @@ export const claudeConnector: Connector = {
       // The dev-channels flag shows a one-time "Enter to confirm" prompt; the
       // manager auto-clears it so a supervised launch needs no human keypress.
       confirm: "Enter to confirm",
+      control,
     };
   },
 };

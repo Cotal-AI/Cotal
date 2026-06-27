@@ -30,6 +30,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { controlShutdown } from "./control-shutdown.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
@@ -93,6 +94,11 @@ interface ManagedAgent {
   spawner: string;
   startedAt: number;
   handle: AgentHandle;
+  /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
+   *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
+   *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
+   *  kill that would deny the agent its clean mesh-leave. */
+  control?: { path: string; token: string };
 }
 
 /**
@@ -316,7 +322,7 @@ export class Manager {
     const target = [...this.agents.values()].find((a) => a.id === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
-    target.handle.stop({ graceful });
+    this.stopHandle(target, graceful);
     this.freeSlot(target, true); // self-despawn is rate-floored (recycle churn)
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
@@ -325,6 +331,17 @@ export class Manager {
   // `ctl.delivery` control service (endpoint.startPlane3 → handleDeliveryControl). The manager is
   // lifecycle-only; it records each agent's read ACL at spawn (commitAcl) so the daemon can validate
   // those ops against the durable ACL registry — the single source of truth, no in-memory ledger.
+
+  /** Tear an agent down — the single chokepoint for every stop path (despawn, self-stop, reap). On
+   *  Windows a graceful stop can't ride a signal (ConPTY delivers none, so the agent never runs its
+   *  exit handlers / leaves the mesh), so first send a cooperative `{op:"shutdown"}` over its authed
+   *  control endpoint; the agent exits cleanly and the runtime hard-kills as a fallback after its
+   *  grace window. POSIX delivers SIGTERM→SIGKILL natively, so it keeps the signal path. A hard stop
+   *  (`graceful:false`, e.g. emergency reap) skips the cooperative step on every platform. */
+  private stopHandle(a: ManagedAgent, graceful: boolean): void {
+    if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
+    a.handle.stop({ graceful });
+  }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
    *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
@@ -343,7 +360,7 @@ export class Manager {
   private reapChildrenOf(parentId: string): void {
     for (const child of [...this.agents.values()]) {
       if (child.spawner !== parentId) continue;
-      child.handle.stop({ graceful: false });
+      this.stopHandle(child, false);
       this.freeSlot(child, true);
       this.reapChildrenOf(child.id);
     }
@@ -604,6 +621,7 @@ export class Manager {
         spawner: spawner ?? this.ep.ref().id,
         startedAt: Date.now(),
         handle,
+        control: spec.control,
       };
       this.agents.set(name, managed);
       // Wire the runtime exit signal so a natural exit (crash / /exit / finished) frees the slot
@@ -648,7 +666,7 @@ export class Manager {
     const denied = this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
     const graceful = args.graceful !== false;
-    a.handle.stop({ graceful });
+    this.stopHandle(a, graceful);
     this.freeSlot(a, !admin); // own-child despawn is rate-floored; admin emergency-kill is not
     return { ok: true, data: { name, stopped: true, graceful } };
   }

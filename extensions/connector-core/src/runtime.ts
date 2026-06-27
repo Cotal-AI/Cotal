@@ -1,24 +1,36 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-const ILLEGAL = /[^A-Za-z0-9_-]/g;
-
-function tok(s: string): string {
-  const t = s.trim().replace(ILLEGAL, "_");
-  return t.length ? t.slice(0, 40) : "_";
-}
+import { createHash, randomBytes } from "node:crypto";
 
 /**
- * Deterministic path to a connector's local control socket. Both the long-lived
- * MCP server (which listens) and its short-lived hooks (which connect) compute
- * this from the SAME identity, so they always agree without a discovery step.
+ * A connector's local control endpoint: the OS path its lifecycle hooks (and the manager's
+ * cooperative-shutdown call) connect to, plus the shared secret that authenticates the first frame.
  *
- * NOTE: the Windows control plane (a `\\.\pipe\` named pipe — Node has no filesystem
- * AF_UNIX socket there) is deferred to the control-plane stage, where it lands WITH
- * the authenticated endpoint (random token, hashed id, first-frame auth, fatal bind).
- * A deterministic identity-only pipe name is a guessable, squattable, unauthenticated
- * endpoint, so it must not ship ahead of that auth. This stays POSIX-shaped for now.
+ * The path id is `sha256(space\0name\0pid\0token)` (base64url, ≤32) — unguessable and
+ * collision-free without leaking identity; the 256-bit `token` is the actual auth boundary (the
+ * server validates it with a constant-time compare before doing anything — see `control.ts`).
+ *
+ * Transport is per-platform but the same `node:net` path string drives both: win32 has no
+ * filesystem AF_UNIX socket Node can bind, so the path is a named pipe (`\\.\pipe\…`) whose default
+ * DACL lets ANY local process connect — which is exactly why the token, not the path, is the
+ * security boundary there. POSIX uses a per-user `tmpdir` socket.
+ *
+ * Minted ONCE at launch (in the manager's process, via the connector's `buildLaunch`). Both ends —
+ * the in-agent server that LISTENS and the short-lived hooks that CONNECT — then read `path`+`token`
+ * from the child env (`COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), never recompute them from
+ * public identity; the manager keeps them in memory for the cooperative shutdown. (`process.pid` is
+ * just generation-time entropy — the value flows by env, so it never has to match across processes.)
  */
-export function controlSocketPath(space: string, name: string): string {
-  return join(tmpdir(), `cotal-${tok(space)}-${tok(name)}.sock`);
+export function controlEndpoint(
+  space: string,
+  name: string,
+  token: string = randomBytes(32).toString("base64url"),
+): { path: string; token: string } {
+  const id = createHash("sha256")
+    .update(`${space}\0${name}\0${process.pid}\0${token}`)
+    .digest("base64url")
+    .slice(0, 32);
+  const path =
+    process.platform === "win32" ? `\\\\.\\pipe\\cotal-${id}` : join(tmpdir(), `cotal-${id}.sock`);
+  return { path, token };
 }

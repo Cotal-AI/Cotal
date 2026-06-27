@@ -8,8 +8,7 @@
  * entry points are one-liners over {@link runHookRelay}.
  */
 import { connect } from "node:net";
-import { configFromEnv, hasIdentity } from "./config.js";
-import { controlSocketPath } from "./runtime.js";
+import { hasIdentity } from "./config.js";
 
 const TIMEOUT_MS = 2000;
 
@@ -36,9 +35,20 @@ function done(out: string): void {
 /** Relay one hook event from stdin to the connector's control socket and print the reply. */
 export async function runHookRelay(): Promise<void> {
   if (!hasIdentity()) return done(""); // plain session, not a managed one — no-op
+  // Path + token come from the launch env (shared with the in-agent server, which we inherited from);
+  // never recomputed from public identity. Absent → not an authenticated control session: no-op (fail
+  // open, so a hook never blocks the user's session).
+  const path = process.env.COTAL_CONTROL_SOCKET;
+  const token = process.env.COTAL_CONTROL_TOKEN;
+  if (!path || !token) return done("");
   const raw = (await readStdin()).trim() || "{}";
-  const cfg = configFromEnv();
-  const sock = connect(controlSocketPath(cfg.space, cfg.name));
+  let event: unknown = {};
+  try {
+    event = JSON.parse(raw); // the hook event the runtime piped in
+  } catch {
+    /* malformed — relay an empty event under a valid token */
+  }
+  const sock = connect(path);
 
   let reply = "";
   let settled = false;
@@ -55,7 +65,7 @@ export async function runHookRelay(): Promise<void> {
   const timer = setTimeout(() => finish(""), TIMEOUT_MS);
 
   sock.setEncoding("utf8");
-  sock.on("connect", () => sock.write(raw + "\n"));
+  sock.on("connect", () => sock.write(JSON.stringify({ token, event }) + "\n"));
   sock.on("data", (d) => {
     reply += d;
     const nl = reply.indexOf("\n");
