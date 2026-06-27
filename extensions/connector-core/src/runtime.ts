@@ -9,17 +9,16 @@ function tok(s: string): string {
 }
 
 /**
- * Deterministic path to a connector's local control endpoint. Both the long-lived
+ * Deterministic path to a connector's local control socket. Both the long-lived
  * MCP server (which listens) and its short-lived hooks (which connect) compute
  * this from the SAME identity, so they always agree without a discovery step.
  *
- * Windows has no filesystem (AF_UNIX) sockets: Node's `net` server/client treat a
- * pipe path as a named pipe in the `\\.\pipe\` namespace (off-disk, auto-removed
- * when the last handle closes — so `control.ts`'s stale-file unlink is correctly a
- * no-op there). `tok` keeps the id within `[A-Za-z0-9_-]`, always a valid pipe name.
- * On POSIX, a real socket under the temp dir.
+ * NOTE: the Windows control plane (a `\\.\pipe\` named pipe — Node has no filesystem
+ * AF_UNIX socket there) is deferred to the control-plane stage, where it lands WITH
+ * the authenticated endpoint (random token, hashed id, first-frame auth, fatal bind).
+ * A deterministic identity-only pipe name is a guessable, squattable, unauthenticated
+ * endpoint, so it must not ship ahead of that auth. This stays POSIX-shaped for now.
  */
 export function controlSocketPath(space: string, name: string): string {
-  const id = `cotal-${tok(space)}-${tok(name)}`;
-  return process.platform === "win32" ? `\\\\.\\pipe\\${id}` : join(tmpdir(), `${id}.sock`);
+  return join(tmpdir(), `cotal-${tok(space)}-${tok(name)}.sock`);
 }

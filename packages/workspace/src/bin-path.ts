@@ -41,28 +41,32 @@ function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
  * as-is.
  */
 export function resolveOnPath(bin: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  // Probe real executables (.com/.exe) before script shims (.bat/.cmd/…) REGARDLESS of the order
-  // PATHEXT lists them, so a co-located `foo.exe` always wins over a `foo.cmd` shim and a hostile or
-  // reordered PATHEXT can't force shim selection. (A deliberate divergence from cmd's strict
-  // PATHEXT-order lookup: a real `.exe` launches directly; a shim needs a cmd.exe wrapper. An
-  // explicit `foo.cmd` is still honored — a name that already carries an extension skips this.)
+  // Probe `.COM`/`.EXE` FIRST and ALWAYS — independent of what PATHEXT contains OR its order, because
+  // they're always executable on Windows. Then the script extensions PATHEXT actually lists (or our
+  // default), in their order. So a co-located `foo.exe` always wins over a `foo.cmd` shim, and a
+  // stripped/reordered/hostile PATHEXT (even one that OMITS `.EXE`) can't force shim selection. (A
+  // deliberate divergence from cmd's strict PATHEXT-order lookup: a real `.exe` launches directly;
+  // a shim needs a cmd.exe wrapper.)
   const isExecutableExt = (e: string): boolean => e.toLowerCase() === ".com" || e.toLowerCase() === ".exe";
-  const exts = isWindows
-    ? (() => {
-        const all = (envGet(env, "PATHEXT") ?? DEFAULT_PATHEXT)
-          .split(";")
-          .map((e) => e.trim())
-          .filter(Boolean);
-        return [...all.filter(isExecutableExt), ...all.filter((e) => !isExecutableExt(e))];
-      })()
+  const scriptExts = isWindows
+    ? (envGet(env, "PATHEXT") ?? DEFAULT_PATHEXT)
+        .split(";")
+        .map((e) => e.trim())
+        .filter((e) => e && !isExecutableExt(e))
     : [];
+  const exts = isWindows ? [".COM", ".EXE", ...scriptExts] : [];
+  // An explicit extension is honored as-is when it's one Cotal launches (`.com/.exe/.bat/.cmd`) or one
+  // PATHEXT lists — so `foo.cmd` is taken literally even when a stripped PATHEXT omits `.CMD`.
+  const honorExts = isWindows
+    ? new Set([".com", ".exe", ".bat", ".cmd", ...scriptExts].map((e) => e.toLowerCase()))
+    : new Set<string>();
 
   // The candidate filenames to probe for one base path. POSIX: just the base. Windows: the base
-  // as-is when it already carries a known executable extension, else the base + each PATHEXT ext.
+  // as-is when it already carries a known executable/script extension, else the base + each ext.
   const candidates = (base: string): string[] => {
     if (!isWindows) return [base];
     const ext = extname(base).toLowerCase();
-    if (ext && exts.some((e) => e.toLowerCase() === ext)) return [base];
+    if (ext && honorExts.has(ext)) return [base];
     return exts.map((e) => base + e);
   };
 

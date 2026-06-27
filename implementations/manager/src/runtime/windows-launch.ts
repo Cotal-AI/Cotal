@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { extname, win32 } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
 
@@ -171,8 +172,13 @@ export function preparePtyLaunch(
   const ext = extname(resolved).toLowerCase();
   if (ext === ".cmd" || ext === ".bat") {
     // Interpreter from the TRUSTED operator env (process.env); command/args quoted against the child
-    // `spec.env` — so a poisoned spec.env can't reselect the interpreter (B1).
-    return { command: resolveComspec(), args: buildCmdCommandLine(resolved, args, env) };
+    // `spec.env` — so a poisoned spec.env can't reselect the interpreter (B1). Fail loud if the
+    // system cmd.exe isn't actually on disk (no silent fallback).
+    const comspec = resolveComspec();
+    if (!existsSync(comspec)) {
+      throw new Error(`cannot launch "${command}": system cmd.exe not found at ${comspec}`);
+    }
+    return { command: comspec, args: buildCmdCommandLine(resolved, args, env) };
   }
   return { command: resolved, args: [...args] };
 }

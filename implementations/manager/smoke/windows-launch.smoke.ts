@@ -14,8 +14,10 @@
  *      its argv byte-for-byte — the matrix coordinated with win-testlead. [WS2 end-to-end, win32-only]
  *   D. launchEnv copies the allow-list case-insensitively under each var's source key (Windows
  *      `Path`/`ComSpec`/`windir`) with no case-duplicate. [WS5(env)]
+ *   E. a hard stop of a `.cmd`-wrapped agent reaps the WHOLE conpty→cmd.exe→node tree (no orphaned
+ *      grandchild). [WS2 orphan-on-kill, win32-only]
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
@@ -42,6 +44,7 @@ function throws(label: string, fn: () => unknown): void {
   }
   check(label, threw);
 }
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // =================================================================================================
 // A. resolver — env-aware, .exe-over-.cmd
@@ -74,6 +77,9 @@ function throws(label: string, fn: () => unknown): void {
     // executables ahead of scripts regardless of env order, so a poisoned PATHEXT can't force the shim.
     const hostileEnv: NodeJS.ProcessEnv = { PATH: both, PATHEXT: ".CMD;.EXE;.BAT;.COM" };
     check(".exe still wins when PATHEXT lists .CMD first (order-independent)", (resolveOnPath("foo", hostileEnv) ?? "").toLowerCase().endsWith(".exe"));
+    // Even a STRIPPED PATHEXT that OMITS .EXE entirely must not force the shim — .com/.exe are always probed.
+    const strippedEnv: NodeJS.ProcessEnv = { PATH: both, PATHEXT: ".CMD;.BAT" };
+    check(".exe still wins when PATHEXT omits .EXE (contents-independent)", (resolveOnPath("foo", strippedEnv) ?? "").toLowerCase().endsWith(".exe"));
     check("an explicit .cmd is honored", (resolveOnPath("foo.cmd", winEnv) ?? "").toLowerCase().endsWith(".cmd"));
     const onlyCmd = mkdtempSync(join(tmpdir(), "cotal-resolve-cmd-"));
     writeFileSync(join(onlyCmd, "bar.cmd"), "@echo off\r\n");
@@ -263,6 +269,60 @@ if (isWin) {
   restore("SystemRoot", saved.sr);
   restore("ComSpec", saved.cs);
   restore("windir", saved.wd);
+}
+
+// =================================================================================================
+// E. orphan-on-kill — a hard stop of a `.cmd`-wrapped agent must terminate the WHOLE tree
+//    (conpty → cmd.exe → node grandchild = the real agent), not orphan the grandchild. The wrap adds
+//    the cmd.exe layer, so this guards that ConPTY's ClosePseudoConsole reaps through it. win32-only.
+// =================================================================================================
+if (isWin) {
+  const dir = mkdtempSync(join(tmpdir(), "cotal-orphan-"));
+  const pidfile = join(dir, "gpid.txt");
+  writeFileSync(join(dir, "shim.cmd"), '@echo off\r\nnode "%~dp0orphan-child.cjs"\r\n');
+  writeFileSync(
+    join(dir, "orphan-child.cjs"),
+    'const fs=require("fs"); fs.writeFileSync(process.env.COTAL_ORPHAN_PIDFILE, String(process.pid)); setInterval(()=>{}, 1<<30);\n',
+  );
+  const h = createRuntime("pty", "orphan").spawn(
+    "orphan",
+    { command: join(dir, "shim.cmd"), args: [], env: { ...process.env, COTAL_ORPHAN_PIDFILE: pidfile } },
+    dir,
+  );
+  // Wait for the grandchild to actually start (write its real OS pid) — killing before it spawned
+  // would be an invalid test.
+  let gpid = 0;
+  for (let i = 0; i < 100 && !gpid; i++) {
+    if (existsSync(pidfile)) {
+      const raw = readFileSync(pidfile, "utf8").trim();
+      if (/^\d+$/.test(raw)) gpid = Number(raw);
+    }
+    if (!gpid) await sleep(50);
+  }
+  check("orphan probe: grandchild started (wrote its pid)", gpid > 0);
+  if (gpid > 0) {
+    h.stop({ graceful: false }); // win32 hard kill → node-pty ConPTY close
+    await sleep(1500); // let the pseudoconsole close propagate down the tree
+    let alive = false;
+    try {
+      process.kill(gpid, 0); // signal 0 = existence probe; throws ESRCH once the process is gone
+      alive = true;
+    } catch {
+      alive = false;
+    }
+    console.log("orphan-probe: grandchild alive after kill =", alive);
+    check("ConPTY kill terminates the cmd.exe→agent grandchild (no orphan)", !alive);
+    if (alive) {
+      try {
+        process.kill(gpid); // never leak a live grandchild on the runner
+      } catch {
+        /* gone */
+      }
+    }
+  }
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+} else {
+  console.log("· orphan-on-kill is win32-only (the cmd.exe grandchild layer) — skipped (CI is the oracle)");
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
