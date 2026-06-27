@@ -131,11 +131,6 @@ jobs:
         continue-on-error: true
         run: pnpm smoke:windows
 
-      # TEMP — direct-vs-wrapped evidence (delete once the launch-mechanism decision is recorded).
-      - name: Direct-vs-wrapped probe (temp)
-        continue-on-error: true
-        run: pnpm smoke:windows:direct-probe
-
       # Live-broker smokes, each its own step (continue-on-error) so a cleanup failure can't mask the
       # other. Deliberately EXCLUDED until made Windows-aware: smoke:runtime/smoke:tmux (tmux),
       # smoke:attach (sleep/tmux), smoke:spawn-from-anywhere:live (asserts 0700),
