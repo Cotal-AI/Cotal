@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -11,10 +11,12 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
+  mkSecretDir,
   newIdentity,
   provisionAgent,
   registry,
   saveAgentFile,
+  writeSecretFile,
   subjectMatches,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
@@ -579,8 +581,8 @@ export class Manager {
           capabilities,
         });
         credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
-        mkdirSync(dirname(credsPath), { recursive: true });
-        writeFileSync(credsPath, creds, { mode: 0o600 });
+        mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
+        writeSecretFile(credsPath, creds);
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards).

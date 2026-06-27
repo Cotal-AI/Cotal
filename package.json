@@ -53,6 +53,7 @@
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:attach": "tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",
+    "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",
     "smoke:env-isolate": "tsx implementations/manager/smoke/env-isolate.smoke.ts",
     "smoke:tmux": "tsx extensions/tmux/smoke.ts",
     "smoke:runtime": "pnpm smoke:tmux && pnpm smoke:env-isolate && pnpm smoke:attach",

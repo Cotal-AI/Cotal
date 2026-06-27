@@ -82,10 +82,16 @@ jobs:
         run: pnpm smoke:view && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:env-isolate
 
       # The `.cmd`/`.bat` launch matrix (PATHEXT resolution + cmd-arg byte-for-byte quoting + orphan
-      # reap). Deterministic, broker-free, validated green-in-logs on windows-latest → an ENFORCED
-      # required gate (no continue-on-error: a future regression fails the gate, never masked).
-      - name: Windows launch matrix (smoke:windows)
+      # reap) + the authenticated control-plane seams (first-frame token auth, shutdown routing,
+      # fatal-bind-on-squat, pre-auth DoS bound). Deterministic, broker-free, validated green-in-logs
+      # on windows-latest → an ENFORCED required gate (no continue-on-error: a regression fails it).
+      - name: Windows launch + control-plane matrix (smoke:windows)
         run: pnpm smoke:windows
+
+      # Secrets at rest: 0o600/0o700 is a no-op on Windows, so secret files/dirs are locked down via
+      # an NTFS ACL (icacls). This asserts the broad inherited access is actually stripped.
+      - name: Secrets-at-rest ACL hardening (smoke:secret-fs)
+        run: pnpm smoke:secret-fs
 
       - name: Protocol & security smoke tests
         run: pnpm smoke:ci

@@ -5,6 +5,7 @@ import {
   mintCreds,
   newIdentity,
   waitForDeliveryLease,
+  writeSecretFile,
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
@@ -101,7 +102,7 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   const space = o.space ?? resolveSpace(process.cwd());
   const server = o.server ?? DEFAULT_SERVER;
   if (!deliveryUp()) {
-    writeFileSync(CREDS_PATH(), creds, { mode: 0o600 });
+    writeSecretFile(CREDS_PATH(), creds);
     startDeliveryDetached({ ...o, space, server });
   }
   // ALWAYS wait for the daemon to be READY (lease flipped ready AFTER it bound ctl.delivery) before

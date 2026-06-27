@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import type { SpaceAuth } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFile, type SpaceAuth } from "@cotal-ai/core";
 
 /**
  * On-disk auth-material I/O for a local checkout's `.cotal/` — machine-local path resolution plus
@@ -36,9 +36,9 @@ export function findCotalRoot(start: string = process.cwd()): string {
  *  The system-account `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting capability,
  *  so it never lands on disk (it lives only in the in-memory {@link createSpaceAuth} result). */
 export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
-  mkdirSync(dir, { recursive: true });
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
   const onDisk: SpaceAuth = { ...auth, sys: { pub: auth.sys.pub, jwt: auth.sys.jwt } };
-  writeFileSync(join(dir, AUTH_FILE), JSON.stringify(onDisk, null, 2), { mode: 0o600 });
+  writeSecretFile(join(dir, AUTH_FILE), JSON.stringify(onDisk, null, 2));
 }
 
 /** Load the space trust material, or undefined if auth was never set up here. */

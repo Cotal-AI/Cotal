@@ -1,13 +1,7 @@
-import {
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 
 /**
  * The registry of running meshes: one record per broker `cotal up` started on this machine, so a
@@ -34,11 +28,16 @@ export interface MeshEntry {
   ts: string;
 }
 
-/** The cotal machine-home dir (`~/.cotal`), overridable via `COTAL_HOME` so tests sandbox it and
- *  never touch the real one. The single source of that path for the registry, the current pointer,
- *  and the onboard marker. */
+/** The cotal machine-home dir, overridable via `COTAL_HOME` so tests sandbox it and never touch the
+ *  real one. POSIX: `~/.cotal`. Windows: `%LOCALAPPDATA%\Cotal` — the platform's place for per-user
+ *  app state (a dotdir in the profile root is a Unix idiom; `%LOCALAPPDATA%` is already a per-user
+ *  private dir, so secrets under it start owner-only). The single source of that path for the
+ *  registry, the current pointer, and the onboard marker. */
 export function homeCotalDir(): string {
-  return process.env.COTAL_HOME ?? join(homedir(), ".cotal");
+  if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
+  if (process.platform === "win32" && process.env.LOCALAPPDATA)
+    return join(process.env.LOCALAPPDATA, "Cotal");
+  return join(homedir(), ".cotal");
 }
 
 /** Directory holding the per-mesh registry files (`~/.cotal/meshes`). */
@@ -56,14 +55,15 @@ function currentFile(): string {
 
 /** Record (or refresh) a running mesh — atomic write, 0600 (the file points at a secrets dir). */
 export function recordMesh(m: MeshEntry): void {
-  // 0700: the filenames in here ARE the space names, so a world-traversable dir would leak them to
-  // other local users even though the file contents are 0600. Keep the dir readable only by us.
-  mkdirSync(meshesDir(), { recursive: true, mode: 0o700 });
+  // The filenames in here ARE the space names, so a world-traversable dir would leak them to other
+  // local users even though the file contents are private. Keep the dir readable only by us
+  // (0700 POSIX / hardened ACL win32).
+  mkSecretDir(meshesDir());
   const file = meshFile(m.space);
   // Per-process temp name so two concurrent `up`s for the same space can't stomp each other's
   // half-written file before the rename.
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(m, null, 2), { mode: 0o600 });
+  writeSecretFile(tmp, JSON.stringify(m, null, 2)); // hardened before rename; rename preserves the ACL/mode
   renameSync(tmp, file); // atomic replace — a reader never sees a half-written record
 }
 
@@ -108,8 +108,8 @@ export function getCurrent(): string | undefined {
 }
 
 export function setCurrent(space: string): void {
-  mkdirSync(homeCotalDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(currentFile(), space, { mode: 0o600 });
+  mkSecretDir(homeCotalDir());
+  writeSecretFile(currentFile(), space);
 }
 
 export function clearCurrent(): void {

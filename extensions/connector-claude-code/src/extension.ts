@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
@@ -104,8 +104,9 @@ export const claudeConnector: Connector = {
       // overwrite). Left for the OS to reap: the file must outlive this call (Claude reads it at
       // startup and on /mcp reconnect), and buildLaunch doesn't own the child's lifecycle.
       const dir = mkdtempSync(join(tmpdir(), "cotal-mcp-"));
+      hardenPrivate(dir, "dir"); // win32: mkdtemp's 0700 is a no-op — harden the ACL before the config lands
       mcpConfig = join(dir, "mcp.json");
-      writeFileSync(mcpConfig, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
+      writeSecretFile(mcpConfig, JSON.stringify({ mcpServers }, null, 2));
     }
     args.push("--strict-mcp-config", "--mcp-config", mcpConfig);
 
