@@ -614,10 +614,13 @@ function purgerPermissions(space: string, id: string): Record<string, unknown> {
 }
 
 /** The ephemeral PROVISIONER permission set (closure (ii), residual 2) — the onboarding authority,
- *  carved off the long-lived manager. Minted short-lived for `cotal up` (create the space's streams + KV
- *  buckets, seed the channel registry) and for per-spawn provisioning (pre-create each agent's bind-only
- *  DM/DLV/TASK durables + record its read ACL via `commitAcl`). NEVER minted for an agent — `cotal mint`
- *  whitelists agent/observer/admin only, like `manager`/`delivery`.
+ *  carved off the long-lived manager. Minted short-lived for per-spawn provisioning (pre-create each
+ *  agent's bind-only DM/DLV/TASK durables + record its read ACL via `commitAcl`) — the daemon opens it per
+ *  spawn (`manager.ts withProvisioner`). It is ALSO the cred that creates the space's streams + KV buckets
+ *  and seeds the channel registry via `setupSpaceStreams` (exercised by the manager-split smoke). NOTE: the
+ *  `cotal up` CLI itself still mints the broad `manager` for that setup path (`up.ts authSetup`) — narrowing
+ *  `up` to this profile is a follow-up. NEVER minted for an agent — `cotal mint` whitelists
+ *  agent/observer/admin only, like `manager`/`delivery`.
  *
  *  This profile HOLDS the DM/DLV `CONSUMER.CREATE` push-consumer surface — the irreducible onboarding
  *  power (the create-time `deliver_subject` of a push consumer is not ACL-constrained, so whoever can
