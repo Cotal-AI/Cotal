@@ -615,10 +615,25 @@ export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Ide
 }
 
 /** Render the `nats-server` config that trusts this space's operator and serves its
- *  accounts via the in-config MEMORY resolver. */
-export function serverConfig(auth: SpaceAuth, opts: { port?: number; host?: string; storeDir: string }): string {
+ *  accounts via the in-config MEMORY resolver. When `tls` is given the client port REQUIRES
+ *  TLS (no `allow_non_tls`): nats clients connect plain TCP, read the server INFO, and on
+ *  `tls_required` upgrade the same socket to TLS (opportunistic STARTTLS) — so a client only
+ *  needs to address the broker by the cert's hostname for verification to pass; no client-side
+ *  flag is needed. Use a hostname the cert covers (e.g. `nats://broker.example:4222`), not a
+ *  bare IP. */
+export function serverConfig(
+  auth: SpaceAuth,
+  opts: { port?: number; host?: string; storeDir: string; tls?: { certFile: string; keyFile: string } },
+): string {
   const port = opts.port ?? 4222;
   const host = opts.host ?? "127.0.0.1";
+  const tls = opts.tls
+    ? `tls {
+  cert_file: ${JSON.stringify(opts.tls.certFile)}
+  key_file: ${JSON.stringify(opts.tls.keyFile)}
+}
+`
+    : "";
   // A minted "agent" carries its full permission allow-list inline in its user JWT, which the
   // client sends in the CONNECT protocol line. With per-channel + JetStream-API grants that JWT
   // exceeds the 4 KB default max_control_line at ~2 channels, and the server then silently drops
@@ -630,7 +645,7 @@ export function serverConfig(auth: SpaceAuth, opts: { port?: number; host?: stri
 host: ${host}
 port: ${port}
 max_control_line: 65536
-jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+${tls}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
 operator: ${auth.operator.jwt}
 system_account: ${auth.sys.pub}
 resolver: MEMORY

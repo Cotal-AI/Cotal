@@ -63,11 +63,14 @@ export async function up(argv: string[]): Promise<void> {
       channels: { type: "string" }, // seed the channel registry from this JSON file
       detach: { type: "boolean" }, // run the server in the background (pid in .cotal/nats.pid)
       host: { type: "string" }, // bind address (default 127.0.0.1 — loopback; 0.0.0.0 to expose with auth)
+      "tls-cert": { type: "string" }, // PEM cert (full chain) — serve the client port over TLS
+      "tls-key": { type: "string" }, // PEM private key for --tls-cert (both required together)
       runtime: { type: "string" }, // with -f: override the manifest's runtime (pty | tmux | cmux)
       file: { type: "string", short: "f" }, // a mesh manifest (cotal.yaml) — fresh broker + channels + agents
       "dry-run": { type: "boolean" }, // with -f: print the plan, mutate nothing
     },
   });
+  const tls = resolveTlsOpts(values["tls-cert"], values["tls-key"]);
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
@@ -119,6 +122,7 @@ export async function up(argv: string[]): Promise<void> {
       open: values.open,
       channels: values.channels,
       host,
+      tls,
     });
     console.log(c.dim(`Started nats-server (${source}).`));
     console.log(c.green(`✓ mesh running in the background (pid ${pid}) — stop with: cotal down`));
@@ -132,14 +136,14 @@ export async function up(argv: string[]): Promise<void> {
   assertAuthMatchesSpace(useAuth, space);
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, tls) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const args = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
   const { bin, source } = await resolveNatsServer();
 
   console.log(
     c.dim(
-      `Starting nats-server (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}, ${source}) — store: ${storeDir}, bind: ${host}`,
+      `Starting nats-server (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}${tls ? ", TLS" : ""}, ${source}) — store: ${storeDir}, bind: ${host}`,
     ),
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
@@ -296,6 +300,8 @@ export interface DetachOpts {
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
    *  `--channels` file. Takes precedence over {@link channels}. */
   seed?: ChannelRegistryFile;
+  /** Serve the client port over TLS (cert + key paths). See {@link serverConfig}. */
+  tls?: { certFile: string; keyFile: string };
   /** Live boot lines, tailed from the server's log file (safe for a detached child). */
   onLine?: (line: string) => void;
 }
@@ -317,7 +323,7 @@ export async function startMeshDetached(opts: DetachOpts = {}): Promise<{ server
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
-  const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.tls) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const args = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
   const { bin, source } = await resolveNatsServer();
@@ -482,6 +488,7 @@ async function authSetup(
   server: string,
   space: string,
   host: string = "127.0.0.1",
+  tls?: { certFile: string; keyFile: string },
 ): Promise<{ confPath: string; creds: string }> {
   const dir = authDir(cotalRoot());
   let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
@@ -492,9 +499,30 @@ async function authSetup(
   }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host }));
+  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host, tls }));
   const creds = await mintCreds(auth, newIdentity(), "manager"); // privileged, ephemeral
   return { confPath, creds };
+}
+
+/** Resolve the `--tls-cert`/`--tls-key` flag pair into a TLS config for {@link serverConfig}.
+ *  Both or neither — a half-set pair is a hard error (no silent plaintext fallback) — and each
+ *  file must exist now, so a typo'd path fails before the broker starts rather than at first
+ *  client handshake. */
+function resolveTlsOpts(certFile?: string, keyFile?: string): { certFile: string; keyFile: string } | undefined {
+  if (!certFile && !keyFile) return undefined;
+  if (!certFile || !keyFile) {
+    console.error(c.red("✗ --tls-cert and --tls-key must be given together"));
+    process.exit(1);
+  }
+  const cert = resolve(certFile);
+  const key = resolve(keyFile);
+  for (const [flag, p] of [["--tls-cert", cert], ["--tls-key", key]] as const) {
+    if (!existsSync(p)) {
+      console.error(c.red(`✗ ${flag} file not found: ${p}`));
+      process.exit(1);
+    }
+  }
+  return { certFile: cert, keyFile: key };
 }
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
