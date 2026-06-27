@@ -5,12 +5,13 @@ name: Windows
 #
 # TWO LANES, deliberately split (a single all-or-nothing soak job is a permanently-red ignored check):
 #   • `required` — typecheck + build + unit tests + the GREEN, broker-free seam smokes (resolver /
-#     env-isolation / view / core-boundary / preflight) and the protocol/security suite. Gating: a red
-#     here is a real Windows regression.
-#   • `smoke`    — the WIP soak (`continue-on-error`): the `.cmd` launch matrix (`smoke:windows`), the
-#     throwaway direct-vs-wrapped probe, and the live-broker smokes (each its own step so one cleanup
-#     failure can't mask the next). Promote `smoke:windows` into `required` once the launch matrix is
-#     confirmed green on a real runner. See .internal/plans/windows-native-support.md.
+#     env-isolation / view / core-boundary / preflight), the `.cmd` launch matrix (`smoke:windows`,
+#     validated green-in-logs on windows-latest), and the protocol/security suite. Gating: a red here
+#     is a real Windows regression.
+#   • `smoke`    — the live-broker soak (`continue-on-error`): server-resolution + spawn-manifest, each
+#     its own step so one cleanup failure can't mask the next. Genuinely green now, but broker-timing-
+#     dependent — promote into `required` once proven stable across runs.
+#     See .internal/plans/windows-native-support.md.
 
 on:
   pull_request:
@@ -80,6 +81,12 @@ jobs:
       - name: Broker-free seam smokes
         run: pnpm smoke:view && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:env-isolate
 
+      # The `.cmd`/`.bat` launch matrix (PATHEXT resolution + cmd-arg byte-for-byte quoting + orphan
+      # reap). Deterministic, broker-free, validated green-in-logs on windows-latest → an ENFORCED
+      # required gate (no continue-on-error: a future regression fails the gate, never masked).
+      - name: Windows launch matrix (smoke:windows)
+        run: pnpm smoke:windows
+
       - name: Protocol & security smoke tests
         run: pnpm smoke:ci
 
@@ -124,12 +131,6 @@ jobs:
       # Live smokes run the built dist (tsx bin/cotal.ts -> dist), not src — build before them.
       - name: Build
         run: pnpm build
-
-      # The `.cmd`/`.bat` launch matrix (PATHEXT resolution + cmd-arg byte-for-byte quoting). Promote
-      # into the required lane once it's confirmed green on a real runner.
-      - name: Windows launch matrix (smoke:windows)
-        continue-on-error: true
-        run: pnpm smoke:windows
 
       # Live-broker smokes, each its own step (continue-on-error) so a cleanup failure can't mask the
       # other. Deliberately EXCLUDED until made Windows-aware: smoke:runtime/smoke:tmux (tmux),
