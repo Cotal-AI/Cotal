@@ -1366,22 +1366,27 @@ export class CotalEndpoint extends EventEmitter {
     try { return e.json<DeliveryLeaseInfo>(); } catch { return undefined; }
   }
 
-  /** Ensure + bind the manager singleton-lease bucket. NOTE: `Kvm.open` binds LAZILY — it does NOT
-   *  verify the stream exists or throw when it's missing, so it can't "create if absent" (a fresh bucket
-   *  then fails 'stream not found' on the first write — unlike the delivery bucket, which is pre-created
-   *  at `cotal up`). `create` is the ensure-exists call: it makes the bucket (bucket-level TTL) or, when
-   *  another manager already did, throws — and we bind the now-existing one. Either way the per-KEY CAS
-   *  create stays the only single-flight gate, so a lost bucket-create race never reads as "lease held".
-   *  The manager profile is scoped (managerPermissions) but retains broad `$JS.>` for stream/bucket
-   *  lifecycle, so it may create this bucket. */
+  /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):
+   *  AUTH mode OPENs the bucket pre-created at `cotal up` (the scoped `supervisor` cred holds no
+   *  STREAM.CREATE — and `open` binds direct=false, so the CAS-conflict `kv.get` inside `acquire` rides
+   *  STREAM.MSG.GET, the verb the supervisor grants, never DIRECT.GET). OPEN mode (no creds) create-firsts:
+   *  `Kvm.open` binds LAZILY — it does NOT verify the stream exists or throw when it's missing (a fresh
+   *  bucket then fails 'stream not found' on the first write), so `create` is the ensure-exists call (it
+   *  makes the bucket or, when another endpoint already did, throws and we bind the existing one). Either
+   *  way the per-KEY CAS create stays the only single-flight gate, so a lost bucket-create race never reads
+   *  as "lease held". */
   private async managerLeaseRegistry(): Promise<KV> {
     if (!this.nc) throw new Error("endpoint not started");
     if (this.managerLeaseKv) return this.managerLeaseKv;
     const kvm = new Kvm(this.nc);
-    try {
-      this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: MANAGER_LEASE_TTL_MS });
-    } catch {
+    if (this.creds) {
       this.managerLeaseKv = await kvm.open(managerBucket(this.space));
+    } else {
+      try {
+        this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: MANAGER_LEASE_TTL_MS });
+      } catch {
+        this.managerLeaseKv = await kvm.open(managerBucket(this.space));
+      }
     }
     return this.managerLeaseKv;
   }

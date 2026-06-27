@@ -157,9 +157,11 @@ export class Manager {
     if (this.auth) {
       const identity = newIdentity();
       id = identity.id;
-      // Privileged profile — the manager pre-creates others' DM durables and serves ctl;
-      // minting it as "agent" would silently strip those once step 5 scopes "agent".
-      creds = await mintCreds(this.auth, identity, "manager");
+      // The long-lived SUPERVISOR cred (closure (ii), residual 2): serve the three control tiers, hold the
+      // singleton lease (open-only), publish + watch presence — and nothing else. Provisioning runs on an
+      // EPHEMERAL provisioner connection per spawn (withProvisioner); destructive purge mints a PURGER per
+      // call. So the always-on daemon holds no DM/DLV read, no consumer-create, no stream-admin tamper.
+      creds = await mintCreds(this.auth, identity, "supervisor");
     }
     this.ep = new CotalEndpoint({
       space: this.space,
@@ -560,15 +562,18 @@ export class Manager {
       let credsPath: string | undefined;
       if (this.auth) {
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
-        // — the shared onboarding step (provisionAgent); the manager supplies its own connected
-        // endpoint as the privileged provisioner.
-        const creds = await provisionAgent(this.ep, this.auth, identity, {
-          subscribe,
-          allowSubscribe,
-          allowPublish,
-          role,
-          capabilities,
-        });
+        // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
+        // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
+        // for the provisioning window, never as a standing grant on the always-on daemon (residual 2).
+        const creds = await this.withProvisioner((prov) =>
+          provisionAgent(prov, this.auth!, identity, {
+            subscribe,
+            allowSubscribe,
+            allowPublish,
+            role,
+            capabilities,
+          }),
+        );
         credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
         mkdirSync(dirname(credsPath), { recursive: true });
         writeFileSync(credsPath, creds, { mode: 0o600 });
@@ -661,13 +666,42 @@ export class Manager {
     return { ok: true, data: { name, stopped: true, graceful } };
   }
 
-  /** Purge the space's retained message backlog (chat, optionally DMs). Privileged — the
-   *  manager mints its own "manager" creds (same as `cotal history clear`); regular agents are
-   *  denied STREAM.PURGE under auth. Cleanup only: leaves live agents and the TASK queue alone. */
+  /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
+   *  residual 2). The DM/DLV consumer-create surface — the irreducible onboarding power — lives only for
+   *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
+   *  (no presence/consume/channel-watch) connected with memory-only `provisioner` creds; it sets its own
+   *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
+  private async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
+    if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
+    const identity = newIdentity();
+    const creds = await mintCreds(this.auth, identity, "provisioner");
+    const prov = new CotalEndpoint({
+      space: this.space,
+      servers: this.servers,
+      channels: [],
+      creds,
+      card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
+      registerPresence: false,
+      watchPresence: false,
+      watchChannels: false,
+      consume: false,
+    });
+    await prov.start();
+    try {
+      return await fn(prov);
+    } finally {
+      await prov.stop();
+    }
+  }
+
+  /** Purge the space's retained message backlog (chat, optionally DMs). Privileged — the manager mints a
+   *  short-lived "purger" cred (same destructive grant as `cotal history clear`, isolated off the
+   *  supervisor); regular agents are denied STREAM.PURGE under auth. Cleanup only: leaves live agents and
+   *  the TASK queue alone. */
   private async opPurge(args: Record<string, unknown>, _caller: string): Promise<ControlReply> {
     const includeDms = args.includeDms === true;
     try {
-      const creds = this.auth ? await mintCreds(this.auth, newIdentity(), "manager") : undefined;
+      const creds = this.auth ? await mintCreds(this.auth, newIdentity(), "purger") : undefined;
       const result = await clearSpaceHistory({
         servers: this.servers ?? DEFAULT_SERVER,
         space: this.space,

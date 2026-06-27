@@ -36,6 +36,7 @@ import {
   fanoutDurable,
   readerDurable,
 } from "./subjects.js";
+import { idFromCreds } from "./identity.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
@@ -84,6 +85,20 @@ export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 export interface ClearSpaceHistoryResult {
   chat: number;
   dm?: number;
+}
+
+/** Connection options for a privileged STANDALONE helper (`setupSpaceStreams`, `clearSpaceHistory`,
+ *  `clearChannel`): authenticate with `creds` and PIN the reply inbox to the cred's own id. A scoped cred
+ *  (provisioner/purger/operator) subscribes only `_INBOX_<id>.>`, so without this its JS-API replies land
+ *  on the default `_INBOX.<nuid>` — a subject the cred's sub rejects (Permissions Violation), hanging
+ *  every `jetstreamManager`/`streams.*` request. Open mode (no creds) connects bare with the default inbox. */
+function authConnectOpts(creds?: string): Record<string, unknown> {
+  return creds
+    ? {
+        authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
+        inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+      }
+    : {};
 }
 
 /**
@@ -266,10 +281,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
   try {
     await createSpaceStreams(await jetstreamManager(nc), opts.space);
     // The presence + channels KV buckets are streams too — pre-create them so agents (denied
@@ -312,10 +324,7 @@ export async function clearSpaceHistory(opts: {
   creds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -341,10 +350,7 @@ export async function clearChannel(opts: {
 }): Promise<{ channel: string; purged: number }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
