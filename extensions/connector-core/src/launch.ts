@@ -87,21 +87,31 @@ export const MODEL_PROVIDER_KEYS = [
 
 /** Build the base env a spawned agent runs with: the OS allow-list plus any named keys the
  *  connector declares the agent needs — `providerKeys` (the model-provider key) and `mcpKeys`
- *  (the `${VAR}` secrets a shared MCP server references, see {@link mcpServerEnvKeys}). Every
- *  entry is copied from the manager's env BY NAME and only when present — never required, never
- *  spread wholesale, so the operator's unrelated secrets don't bleed into the child (P3). */
+ *  (the `${VAR}` secrets a shared MCP server references, see {@link mcpServerEnvKeys}). Every entry
+ *  is copied from the manager's env BY NAME and only when present — never required, never spread
+ *  wholesale, so the operator's unrelated secrets don't bleed into the child (P3).
+ *
+ *  Matching is CASE-INSENSITIVE and each value is copied under the OS's OWN key casing: Windows
+ *  spells these `Path`/`ComSpec`/`windir`, so a canonical-only copy would either miss them (a plain
+ *  read of `process.env.SystemRoot` differs from `process.env.systemroot`) or, worse, emit BOTH
+ *  `Path` and `PATH` — a case-duplicate Windows process creation chokes on. Keying off the source
+ *  env's actual casing (one entry per lowercased name) forwards each var exactly once. */
 export function launchEnv(
   opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[] } = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const k of OS_ENV_ALLOW) {
-    const v = process.env[k];
-    if (v !== undefined) env[k] = v;
-  }
-  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? [])]) {
-    const v = process.env[k];
-    if (v !== undefined) env[k] = v;
-  }
+  // lowercased name -> the OS's actual key casing; one entry per var (the OS env has no case-dup),
+  // so every allow-list name resolves to a single source key and the result carries no case-dup.
+  const sourceKey = new Map<string, string>();
+  for (const k of Object.keys(process.env)) sourceKey.set(k.toLowerCase(), k);
+  const copy = (name: string): void => {
+    const src = sourceKey.get(name.toLowerCase());
+    if (src === undefined) return;
+    const v = process.env[src];
+    if (v !== undefined) env[src] = v;
+  };
+  for (const k of OS_ENV_ALLOW) copy(k);
+  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? [])]) copy(k);
   return env;
 }
 

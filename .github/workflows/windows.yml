@@ -4,11 +4,13 @@ name: Windows
 # (no tmux/runtime/Hermes — those are Unix-only) and the broker install is Windows-specific.
 #
 # TWO LANES, deliberately split (a single all-or-nothing soak job is a permanently-red ignored check):
-#   • `required` — typecheck + build + unit tests. Windows-clean today; meant to be a REQUIRED gate.
-#   • `smoke`    — the seam + broker smokes (incl. `smoke:windows`). A non-blocking soak
-#     (`continue-on-error: true`) until the native-Windows fixes land and the first run is green; then
-#     remove `continue-on-error` to make it required. No PR may claim native-Windows support while the
-#     smoke lane is non-required. See .internal/plans/windows-native-support.md.
+#   • `required` — typecheck + build + unit tests + the GREEN, broker-free seam smokes (resolver /
+#     env-isolation / view / core-boundary / preflight) and the protocol/security suite. Gating: a red
+#     here is a real Windows regression.
+#   • `smoke`    — the WIP soak (`continue-on-error`): the `.cmd` launch matrix (`smoke:windows`), the
+#     throwaway direct-vs-wrapped probe, and the live-broker smokes (each its own step so one cleanup
+#     failure can't mask the next). Promote `smoke:windows` into `required` once the launch matrix is
+#     confirmed green on a real runner. See .internal/plans/windows-native-support.md.
 
 on:
   pull_request:
@@ -19,10 +21,11 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  # REQUIRED lane — must stay green. Typecheck + build + unit tests carry no POSIX assumptions, so a
-  # red here is a real Windows regression, not a soak artifact.
+  # REQUIRED lane — must stay green. typecheck/build/test carry no POSIX assumptions, and the seam
+  # smokes here are broker-free + launch-mechanism-independent (resolver, P3 env-isolation) or the
+  # already-green protocol suite, so a red is a real regression, not a soak artifact.
   required:
-    name: Windows / required (typecheck, build, test)
+    name: Windows / required
     timeout-minutes: 30
     runs-on: windows-latest
     steps:
@@ -44,6 +47,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # smoke:ci spins its own nats-server from PATH. Checksum-pinned (supply-chain gate) since this
+      # lane is REQUIRED. PowerShell string `-ne` is case-insensitive, so the uppercase Get-FileHash
+      # output compares equal to the lowercase pin.
+      - name: Install nats-server
+        shell: pwsh
+        run: |
+          $NatsVersion = "v2.10.22"
+          $Sha256 = "33c8a0c6feb441ec4c7007e0af9ef2a45356d6809cd08ec4871a3d659fc74e91"
+          $Name = "nats-server-$NatsVersion-windows-amd64"
+          $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          $InstallDir = Join-Path $env:RUNNER_TEMP $Name
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
+          $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash
+          if ($Actual -ne $Sha256) { throw "nats-server zip checksum mismatch: got $Actual expected $Sha256" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP -Force
+          # $GITHUB_PATH only affects LATER steps, so verify here via the absolute path.
+          "$InstallDir" >> $env:GITHUB_PATH
+          & "$InstallDir\nats-server.exe" --version
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -53,14 +75,21 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-  # SOAK lane — non-blocking until green. The seam smokes (resolver / `.cmd` launch adapter / authed
-  # control pipe) are RED until the native-Windows fixes land; that red is expected ground truth, not
-  # a broken pipeline. Flip to required (delete `continue-on-error`) once the first run is green.
+      # Broker-free seam smokes — launch-mechanism-independent: PATHEXT/`.exe`-preference resolution,
+      # P3 child-env isolation (launches node.exe directly), and pure protocol/view/preflight checks.
+      - name: Broker-free seam smokes
+        run: pnpm smoke:view && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:env-isolate
+
+      - name: Protocol & security smoke tests
+        run: pnpm smoke:ci
+
+  # SOAK lane — non-blocking until green. The `.cmd` launch matrix is the mechanism still settling;
+  # the live-broker smokes are split into independent steps (each continue-on-error) so one's cleanup
+  # failure can't mask the next (the `&&`-chain used to short-circuit spawn-manifest:live entirely).
   smoke:
     name: Windows / smoke (soak — non-blocking)
     timeout-minutes: 30
     runs-on: windows-latest
-    continue-on-error: true # soak only — remove once green; see header
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -81,15 +110,14 @@ jobs:
         shell: pwsh
         run: |
           $NatsVersion = "v2.10.22"
+          $Sha256 = "33c8a0c6feb441ec4c7007e0af9ef2a45356d6809cd08ec4871a3d659fc74e91"
           $Name = "nats-server-$NatsVersion-windows-amd64"
           $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
           $InstallDir = Join-Path $env:RUNNER_TEMP $Name
           Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
-          # TODO(before-required): checksum-pin the zip — `(Get-FileHash $Zip -Algorithm SHA256).Hash`
-          # must equal a pinned constant; fail the step on mismatch (supply-chain gate). Safe to defer
-          # while this lane is a continue-on-error soak.
+          $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash
+          if ($Actual -ne $Sha256) { throw "nats-server zip checksum mismatch: got $Actual expected $Sha256" }
           Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP -Force
-          # $GITHUB_PATH only affects LATER steps, so verify here via the absolute path.
           "$InstallDir" >> $env:GITHUB_PATH
           & "$InstallDir\nats-server.exe" --version
 
@@ -97,17 +125,25 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # Broker-free, cross-platform smokes + the Windows seam smoke (PATHEXT resolution, `.cmd`/`.bat`
-      # launch + cmd-arg quoting; named-pipe control + secrets ACLs as those stages land).
-      - name: Broker-free smoke tests
-        run: pnpm smoke:view && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:windows
+      # The `.cmd`/`.bat` launch matrix (PATHEXT resolution + cmd-arg byte-for-byte quoting). Promote
+      # into the required lane once it's confirmed green on a real runner.
+      - name: Windows launch matrix (smoke:windows)
+        continue-on-error: true
+        run: pnpm smoke:windows
 
-      - name: Protocol & security smoke tests
-        run: pnpm smoke:ci
+      # TEMP — direct-vs-wrapped evidence (delete once the launch-mechanism decision is recorded).
+      - name: Direct-vs-wrapped probe (temp)
+        continue-on-error: true
+        run: pnpm smoke:windows:direct-probe
 
-      # Live-broker smokes that exercise resolution + spawn/control/down without POSIX shell helpers.
-      # Deliberately EXCLUDED until made Windows-aware: smoke:runtime/smoke:tmux (tmux, Unix-only),
-      # smoke:env-isolate & smoke:attach (printenv/sh -c/sleep/tmux), smoke:spawn-from-anywhere:live
-      # (asserts 0700), smoke:up-manifest:live (asserts 0600), smoke:manager-singleton:live (sh -c lsof|xargs).
-      - name: Windows live broker smoke tests
-        run: pnpm smoke:server-resolution:live && pnpm smoke:spawn-manifest:live
+      # Live-broker smokes, each its own step (continue-on-error) so a cleanup failure can't mask the
+      # other. Deliberately EXCLUDED until made Windows-aware: smoke:runtime/smoke:tmux (tmux),
+      # smoke:attach (sleep/tmux), smoke:spawn-from-anywhere:live (asserts 0700),
+      # smoke:up-manifest:live (asserts 0600), smoke:manager-singleton:live (sh -c lsof|xargs).
+      - name: Live — server resolution
+        continue-on-error: true
+        run: pnpm smoke:server-resolution:live
+
+      - name: Live — spawn manifest
+        continue-on-error: true
+        run: pnpm smoke:spawn-manifest:live

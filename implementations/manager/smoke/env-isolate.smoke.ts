@@ -55,7 +55,9 @@ async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown
   const out = raw.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   console.log("pty runtime:");
   check("sentinel ABSENT from child env (no process.env bleed)", !out.includes(SENTINEL));
-  check("PATH present (OS allow-list carried)", /(^|\n)PATH=/.test(out));
+  // Case-insensitive: launchEnv forwards each var under the OS's own key casing, so on Windows this
+  // is `Path=`, not `PATH=` (the allow-list copy preserves the source key — see launchEnv).
+  check("PATH present (OS allow-list carried)", /(^|\n)PATH=/i.test(out));
   // Home dir var is platform-specific: HOME on POSIX, USERPROFILE on Windows.
   const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
   check(`${homeVar} present (OS allow-list carried)`, new RegExp(`(^|\\n)${homeVar}=`).test(out));

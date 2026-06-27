@@ -41,11 +41,20 @@ function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
  * as-is.
  */
 export function resolveOnPath(bin: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  // Probe real executables (.com/.exe) before script shims (.bat/.cmd/…) REGARDLESS of the order
+  // PATHEXT lists them, so a co-located `foo.exe` always wins over a `foo.cmd` shim and a hostile or
+  // reordered PATHEXT can't force shim selection. (A deliberate divergence from cmd's strict
+  // PATHEXT-order lookup: a real `.exe` launches directly; a shim needs a cmd.exe wrapper. An
+  // explicit `foo.cmd` is still honored — a name that already carries an extension skips this.)
+  const isExecutableExt = (e: string): boolean => e.toLowerCase() === ".com" || e.toLowerCase() === ".exe";
   const exts = isWindows
-    ? (envGet(env, "PATHEXT") ?? DEFAULT_PATHEXT)
-        .split(";")
-        .map((e) => e.trim())
-        .filter(Boolean)
+    ? (() => {
+        const all = (envGet(env, "PATHEXT") ?? DEFAULT_PATHEXT)
+          .split(";")
+          .map((e) => e.trim())
+          .filter(Boolean);
+        return [...all.filter(isExecutableExt), ...all.filter((e) => !isExecutableExt(e))];
+      })()
     : [];
 
   // The candidate filenames to probe for one base path. POSIX: just the base. Windows: the base

@@ -12,14 +12,15 @@
  *      (throw) the arguments cmd can't preserve. [WS2: the cmd-quoting correctness boundary]
  *   C. The PtyRuntime launches a real (pnpm-shim-shaped) `.cmd` through cmd.exe and the program gets
  *      its argv byte-for-byte — the matrix coordinated with win-testlead. [WS2 end-to-end, win32-only]
- *   D. launchEnv forwards SystemRoot/WINDIR and carries no case-duplicate keys. [WS5(env)]
+ *   D. launchEnv copies the allow-list case-insensitively under each var's source key (Windows
+ *      `Path`/`ComSpec`/`windir`) with no case-duplicate. [WS5(env)]
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { launchEnv } from "@cotal-ai/connector-core";
-import { quoteCmdArg, buildCmdCommandLine, preparePtyLaunch } from "../src/runtime/windows-launch.js";
+import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
 import { createRuntime } from "../src/index.js";
 
 const isWin = process.platform === "win32";
@@ -69,6 +70,10 @@ function throws(label: string, fn: () => unknown): void {
     writeFileSync(join(both, "foo.cmd"), "@echo off\r\n");
     const winEnv: NodeJS.ProcessEnv = { PATH: both, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
     check(".exe is preferred over .cmd for a bare name", (resolveOnPath("foo", winEnv) ?? "").toLowerCase().endsWith(".exe"));
+    // The preference must survive a HOSTILE/reordered PATHEXT (.CMD before .EXE) — Cotal tiers
+    // executables ahead of scripts regardless of env order, so a poisoned PATHEXT can't force the shim.
+    const hostileEnv: NodeJS.ProcessEnv = { PATH: both, PATHEXT: ".CMD;.EXE;.BAT;.COM" };
+    check(".exe still wins when PATHEXT lists .CMD first (order-independent)", (resolveOnPath("foo", hostileEnv) ?? "").toLowerCase().endsWith(".exe"));
     check("an explicit .cmd is honored", (resolveOnPath("foo.cmd", winEnv) ?? "").toLowerCase().endsWith(".cmd"));
     const onlyCmd = mkdtempSync(join(tmpdir(), "cotal-resolve-cmd-"));
     writeFileSync(join(onlyCmd, "bar.cmd"), "@echo off\r\n");
@@ -97,9 +102,9 @@ const qenv: NodeJS.ProcessEnv = { PATH: "x", TEMP: "y" };
   eq("quoteCmdArg: literal ! (delayed expansion off)", quoteCmdArg("!X!", qenv), '"!X!"');
 
   eq(
-    "buildCmdCommandLine: /d /s /c with outer-quote-wrapped invocation",
+    "buildCmdCommandLine: /e:ON /v:OFF /d /s /c with outer-quote-wrapped invocation",
     buildCmdCommandLine("C:\\bin\\claude.cmd", ["a b", "x&y"], qenv),
-    '/d /s /c ""C:\\bin\\claude.cmd" "a b" "x&y""',
+    '/e:ON /v:OFF /d /s /c ""C:\\bin\\claude.cmd" "a b" "x&y""',
   );
 
   // REJECT (fail closed) — never silently launch a mutated value.
@@ -109,6 +114,15 @@ const qenv: NodeJS.ProcessEnv = { PATH: "x", TEMP: "y" };
   throws("quoteCmdArg: rejects a DEFINED %VAR% (cmd would expand it)", () => quoteCmdArg("%PATH%", qenv));
   throws("quoteCmdArg: rejects a defined %VAR% substring form", () => quoteCmdArg("%PATH:~0,1%", qenv));
   throws("buildCmdCommandLine: rejects a quote in the script path", () => buildCmdCommandLine('C:\\b"d\\x.cmd', [], qenv));
+  // B2: the resolved SCRIPT PATH gets the same fail-closed %VAR% rejection as argv (a `%TEMP%` in the
+  // path would be cmd-expanded inside the quotes and launch a different file).
+  throws("buildCmdCommandLine: rejects a defined %VAR% in the script path", () => buildCmdCommandLine("C:\\%PATH%\\x.cmd", [], qenv));
+  check("buildCmdCommandLine: an UNdefined %VAR% in the script path is allowed", buildCmdCommandLine("C:\\%UNDEF_COTAL%\\x.cmd", [], qenv).includes("%UNDEF_COTAL%"));
+
+  // B1: the wrap interpreter is the system cmd.exe from the TRUSTED operator env — a poisoned
+  // ComSpec in the (child) env is IGNORED; only %SystemRoot% selects it.
+  eq("resolveComspec ignores a poisoned ComSpec, uses %SystemRoot%\\System32\\cmd.exe", resolveComspec({ SystemRoot: "C:\\Windows", ComSpec: "C:\\evil\\pwn.exe" }), "C:\\Windows\\System32\\cmd.exe");
+  eq("resolveComspec falls back to windir then C:\\Windows", resolveComspec({ windir: "D:\\WINNT" }), "D:\\WINNT\\System32\\cmd.exe");
 }
 
 // =================================================================================================
@@ -187,6 +201,29 @@ if (isWin) {
     }
     eq(`argv preserved byte-for-byte: ${JSON.stringify(arg)}`, parsed, [arg]);
   }
+
+  // C5: multi-arg fidelity — the `%*` boundary is where collapse/split bugs hide. Each arg must keep
+  // its position and bytes; an empty arg must survive as a DISTINCT element (length preserved).
+  const MULTI_ARG_MATRIX: string[][] = [
+    ["a b", "x&y"],
+    ["", "x"], // empty arg before a non-empty one
+    ["one", "", "three"], // empty arg between non-empty ones
+  ];
+  for (const args of MULTI_ARG_MATRIX) {
+    const out = await launchCapture(shim, args, env, dir);
+    const m = out.match(/__ARGV__(.*)__END__/s);
+    if (!m) {
+      check(`multi-arg shim launched + captured for ${JSON.stringify(args)} (got: ${JSON.stringify(out.slice(0, 80))})`, false);
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(m[1]);
+    } catch {
+      parsed = `UNPARSEABLE:${m[1]}`;
+    }
+    eq(`multi-arg argv preserved (length + bytes): ${JSON.stringify(args)}`, parsed, args);
+  }
 } else {
   // POSIX passthrough sanity: a shim launches and its output streams through the PtyRuntime. The
   // quoting the win32 matrix exercises end-to-end is still covered locally by section B above.
@@ -201,21 +238,31 @@ if (isWin) {
 }
 
 // =================================================================================================
-// D. child env allow-list — SystemRoot/WINDIR forwarded, no case-duplicate keys
+// D. child env allow-list — case-insensitive, source-key-preserving, no case-duplicate keys
 // =================================================================================================
 {
-  const saved = { sr: process.env.SystemRoot, wd: process.env.WINDIR };
+  const saved = { sr: process.env.SystemRoot, cs: process.env.ComSpec, wd: process.env.windir };
+  // Non-canonical Windows casings (ComSpec / windir) alongside SystemRoot: launchEnv must forward
+  // each under its OWN source key (NOT a forced canonical COMSPEC/WINDIR), and never a case-duplicate.
   process.env.SystemRoot = "C:\\Windows";
-  process.env.WINDIR = "C:\\Windows";
+  process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+  process.env.windir = "C:\\Windows";
   const env = launchEnv();
   check("launchEnv forwards SystemRoot", env.SystemRoot === "C:\\Windows");
-  check("launchEnv forwards WINDIR", env.WINDIR === "C:\\Windows");
+  check(
+    "launchEnv forwards ComSpec under its SOURCE key (not COMSPEC)",
+    env.ComSpec === "C:\\Windows\\System32\\cmd.exe" && env.COMSPEC === undefined,
+  );
+  check("launchEnv forwards windir under its source key", env.windir === "C:\\Windows");
   const lower = Object.keys(env).map((k) => k.toLowerCase());
   check("launchEnv carries no case-duplicate keys (no Path AND PATH)", lower.length === new Set(lower).size);
-  if (saved.sr === undefined) delete process.env.SystemRoot;
-  else process.env.SystemRoot = saved.sr;
-  if (saved.wd === undefined) delete process.env.WINDIR;
-  else process.env.WINDIR = saved.wd;
+  const restore = (k: "SystemRoot" | "ComSpec" | "windir", v: string | undefined): void => {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  };
+  restore("SystemRoot", saved.sr);
+  restore("ComSpec", saved.cs);
+  restore("windir", saved.wd);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
