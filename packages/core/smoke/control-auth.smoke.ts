@@ -30,6 +30,7 @@ import {
   chatSubject,
   unicastSubject,
   anycastSubject,
+  presenceBucket,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
@@ -134,6 +135,14 @@ try {
   check("manager FORGE inst as another actor DENIED", await tryPublish(mgrCreds, unicastSubject(space, victim.id, victim.id), mgrId.id) === "denied");
   check("manager anycast (svc) AS SELF ALLOWED", await tryPublish(mgrCreds, anycastSubject(space, "worker", mgrId.id), mgrId.id) === "allowed");
   check("manager FORGE svc as another actor DENIED", await tryPublish(mgrCreds, anycastSubject(space, "worker", victim.id), mgrId.id) === "denied");
+
+  // closure (i) residual (3) — the scoped operator writes ONLY its OWN presence key (`$KV.<presence>.<id>`),
+  // so a leaked manager cred cannot spoof a peer's roster-visible identity/status. (The READ side also
+  // drops a presence record whose KV key != its card.id — endpoint.ts applyPresence.) A `$KV` publish to
+  // an allowed key replies with a PubAck ("allowed"); a denied key is an Authorization Violation ("denied").
+  console.log("scoped manager (closure (i) residual (3) — presence write is self-keyed, no roster spoof):");
+  check("manager write OWN presence key ALLOWED", await tryPublish(mgrCreds, `$KV.${presenceBucket(space)}.${mgrId.id}`, mgrId.id) === "allowed");
+  check("manager FORGE a peer's presence key DENIED", await tryPublish(mgrCreds, `$KV.${presenceBucket(space)}.${victim.id}`, mgrId.id) === "denied");
 
   console.log(`\nCONTROL-AUTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

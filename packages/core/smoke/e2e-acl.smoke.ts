@@ -89,16 +89,28 @@ try {
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   mgr.on("error", (e) => console.log("mgr err:", e.message));
   await mgr.start();
-  await mgr.startPlane3((id) => allowById.get(id));
+  // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
+  // manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
+  // The manager stays provisioner + publisher (its multicast posts chat AS the operator;
+  // the daemon's fan-out reads CHAT and delivers). Only the HOST endpoint moves here.
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
+  await dlv.startPlane3((id) => allowById.get(id));
   mgr.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
     const allow = allowById.get(req.from.id) ?? [];
     const ch = typeof req.args?.channel === "string" ? req.args.channel : "";
     if (req.op === "durableJoin") {
       if (!channelInAllow(allow, ch)) return { ok: false, error: `"${ch}" outside allowSubscribe` };
-      return { ok: true, data: await mgr.durableJoinFor(req.from.id, ch) };
+      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
     }
     if (req.op === "durableLeave") {
-      await mgr.durableLeaveFor(req.from.id, ch, typeof req.args?.generation === "number" ? req.args.generation : undefined);
+      await dlv.durableLeaveFor(req.from.id, ch, typeof req.args?.generation === "number" ? req.args.generation : undefined);
       return { ok: true, data: { channel: ch } };
     }
     return { ok: false, error: `unsupported op ${req.op}` };
@@ -205,7 +217,7 @@ try {
   check("bob's raw #ops history create is broker-denied", rawDenied);
 
   console.log(`\nE2E ACL ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-  await Promise.all([A.ep.stop(), B.ep.stop(), C.ep.stop(), mgr.stop()]);
+  await Promise.all([A.ep.stop(), B.ep.stop(), C.ep.stop(), dlv.stop(), mgr.stop()]);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);

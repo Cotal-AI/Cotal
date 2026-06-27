@@ -80,10 +80,13 @@ try {
   await a1b.flush();
 
   // --- bob: a durable member of #deploys (no live conn), written straight to the members registry ---
+  // The members registry is the DELIVERY daemon's to write (closure (i): the manager cred no longer holds
+  // a members-bucket grant). Seed with a `delivery` cred; it has no default `_INBOX`, so pin its per-id one.
   const bob = newIdentity();
-  const mgrNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(mgrCreds)) });
-  conns.push(mgrNc);
-  const members = await openMembersRegistry(mgrNc, space);
+  const seedId = newIdentity();
+  const seedNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(await mintCreds(auth, seedId, "delivery"))), inboxPrefix: `_INBOX_${seedId.id}` });
+  conns.push(seedNc);
+  const members = await openMembersRegistry(seedNc, space);
   const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
   await commitMember(members, rec("deploys", bob.id));
   await commitMember(members, rec("general", alice.id)); // alice is ALSO a durable member of #general (live ∪ durable union)

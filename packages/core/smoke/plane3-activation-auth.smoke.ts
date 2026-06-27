@@ -81,6 +81,18 @@ try {
   });
   mgr.on("error", (e: Error) => console.error("  ! mgr", e.message));
   await mgr.start();
+  // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
+  // manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
+  // The manager stays provisioner + publisher (its multicast posts chat AS the operator;
+  // the daemon's fan-out reads CHAT and delivers). Only the HOST endpoint moves here.
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
 
   // Agent boots subscribed to "general" (durable by default), read ACL also covers "review". (v3) The
   // manager records the read-ACL at provision but writes NO boot membership; the agent SELF-JOINS its
@@ -88,7 +100,7 @@ try {
   // below lists alice only AFTER she connects (+ self-joins), which startPlane3 here serves.
   const aId = newIdentity();
   const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"] });
-  await mgr.startPlane3((id) => (id === aId.id ? ["general", "review"] : undefined));
+  await dlv.startPlane3((id) => (id === aId.id ? ["general", "review"] : undefined));
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
@@ -124,18 +136,20 @@ try {
   // Plant an activation-PENDING record (durable-active, activated:false) for alice on "review", which
   // she does NOT live-subscribe — so the ONLY delivery path is fan-out → dinbox → reader → DLV.
   // joinCursor:0 ⇒ any new post is in-interval.
+  // The members registry is the DELIVERY daemon's to write (closure (i): the manager cred no longer
+  // holds a members-bucket grant). Plant the crafted record with a `delivery` cred (its own per-id inbox).
+  const seedId = newIdentity();
   const kvNc = await connect({
     servers: SERVERS,
-    authenticator: credsAuthenticator(new TextEncoder().encode(mgrCreds)),
-    // The scoped manager cred (closure (i)) allows reply-sub only on its OWN per-id `_INBOX_<id>`.
-    inboxPrefix: `_INBOX_${mgrId.id}`,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, seedId, "delivery"))),
+    inboxPrefix: `_INBOX_${seedId.id}`,
     maxReconnectAttempts: 0,
   });
   kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
   const pending: MembershipRecord = {
     channel: "review", owner: aId.id, state: "durable-active", joinCursor: 0,
-    generation: 1, activated: false, writerIdentity: mgrId.id, updatedAt: Date.now(),
+    generation: 1, activated: false, writerIdentity: seedId.id, updatedAt: Date.now(),
   };
   await commitMember(kv, pending);
 
@@ -172,6 +186,7 @@ try {
   await kvNc.close();
 
   await a.stop();
+  await dlv.stop();
   await mgr.stop();
   console.log(`\nPLANE-3 ACTIVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {

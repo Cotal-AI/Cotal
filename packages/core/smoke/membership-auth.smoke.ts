@@ -99,10 +99,22 @@ try {
   });
   mgr.on("error", (e: Error) => console.error("  ! mgr", e.message));
   await mgr.start();
+  // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
+  // manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
+  // The manager stays provisioner + publisher (its multicast posts chat AS the operator;
+  // the daemon's fan-out reads CHAT and delivers). Only the HOST endpoint moves here.
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
   // Host Plane-3 so provisionAgent's boot membership write (durable-class boot channels → durable-active
   // records) lands — channelMembers reads that registry.
   const agentId = newIdentity();
-  await mgr.startPlane3((id) => (id === agentId.id ? ["general"] : undefined));
+  await dlv.startPlane3((id) => (id === agentId.id ? ["general"] : undefined));
 
   // An agent: provision its bind-only durables + boot membership, mint scoped creds, join #general.
   const agentCreds = await provisionAgent(mgr, auth, agentId, { subscribe: ["general"], allowPublish: ["general"], role: "worker" });
@@ -131,6 +143,7 @@ try {
   check("agent CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "agent", { allowSubscribe: ["general"] }))) === false);
 
   await agent.stop();
+  await dlv.stop();
   await mgr.stop();
 } catch (e) {
   fail++;

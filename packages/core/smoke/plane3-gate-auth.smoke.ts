@@ -71,10 +71,23 @@ try {
   });
   mgr.on("error", (e: Error) => console.error("  ! mgr", e.message));
   await mgr.start();
+  // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
+  // manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
+  // The manager stays provisioner + publisher; only the HOST endpoint moves here. The
+  // backstop must survive the broker restart below — the delivery endpoint auto-reconnects
+  // and re-arms Plane-3 (armPlane3 in connectAndBind), exactly as the manager-host did.
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
 
   const aId = newIdentity();
   const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"] });
-  await mgr.startPlane3((id) => (id === aId.id ? ["general", "review"] : undefined));
+  await dlv.startPlane3((id) => (id === aId.id ? ["general", "review"] : undefined));
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
@@ -93,7 +106,7 @@ try {
   // check returns durable:true; the buggy global-seq check would false-positive eviction → durable:false.
   for (let i = 0; i < 40; i++) await mgr.multicast(`noise-${i}`, { channel: "general" });
   await wait(200);
-  const rj = await mgr.durableJoinFor(aId.id, "review");
+  const rj = await dlv.durableJoinFor(aId.id, "review");
   check("busy multi-channel space: durable join is NOT falsely degraded (durable:true)", rj.durable === true, rj);
   await mgr.multicast("after-busy-join", { channel: "review" });
   check("busy-join member receives the post via the backstop", await until(() => got.includes("after-busy-join")), got);
@@ -106,7 +119,7 @@ try {
   let back = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { back = true; break; } await wait(200); }
   if (!back) throw new Error("broker did not restart");
-  await wait(3500); // mgr + agent reconnect; mgr re-arms fan-out + reader (armPlane3 in connectAndBind)
+  await wait(3500); // dlv + agent reconnect; the delivery host re-arms fan-out + reader (armPlane3 in connectAndBind)
   await mgr.multicast("after-broker-restart", { channel: "review" });
   check(
     "durable backstop SURVIVES a broker restart — post still reaches the member (Plane-3 re-armed)",
@@ -115,6 +128,7 @@ try {
   );
 
   await a.stop();
+  await dlv.stop();
   await mgr.stop();
   console.log(`\nPLANE-3 GATE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {

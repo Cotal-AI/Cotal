@@ -145,17 +145,18 @@ try {
   const mgrCreds = await mintCreds(auth, mgrIdentity, "manager");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
 
-  // Seed a lease key with the manager cred. The scoped manager cred (closure (i)) allows reply-sub only
-  // on its OWN per-id `_INBOX_<id>` (+ default `_INBOX`), so a raw connection must use the cred's id.
-  await withConn(mgrCreds, mgrIdentity.id, async (nc) => {
-    const kv = await new Kvm(nc).open(deliveryBucket(space));
-    await kv.put(leaseKey(0), new TextEncoder().encode(JSON.stringify({ holder: "seed", since: 1 })));
-  });
-
   // ---- the scoped delivery cred ----
   const d = newIdentity();
   const dCreds = await mintCreds(auth, d, "delivery");
   const owner = newIdentity().id; // some arbitrary owner the daemon writes for
+
+  // Seed a lease key with the DELIVERY cred — the delivery daemon owns `lease.*` in this bucket. (The
+  // scoped manager cred no longer holds a blanket `$KV.>` and so cannot write the delivery lease; only
+  // `delivery` may — which this very smoke asserts below.) A raw connection must use the cred's own id.
+  await withConn(dCreds, d.id, async (nc) => {
+    const kv = await new Kvm(nc).open(deliveryBucket(space));
+    await kv.put(leaseKey(0), new TextEncoder().encode(JSON.stringify({ holder: "seed", since: 1 })));
+  });
 
   check("delivery: subscribe own _INBOX is allowed", (await trySubscribe(dCreds, d.id, `_INBOX_${d.id}.reply`)) === "allowed");
   check("delivery: subscribe ctl.delivery.* (serves it) is allowed", (await trySubscribe(dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, "*"))) === "allowed");

@@ -257,12 +257,24 @@ try {
   // (C) A Plane-3 durable join (durable:true) survives a broker restart — the manager re-arms its
   // fan-out + trusted reader, so a post after the blip still reaches the member via the backstop.
   const aclC = ["general", "rev.>", "team.>", "ops.>"];
-  await pub.startPlane3((id) => (id === aId.id ? aclC : undefined));
+  // Phase 2 Plane-3 host = a scoped `delivery` cred, NOT the manager (`pub`). The manager cred
+  // no longer carries the Plane-3 inject grants (closure (i)); `pub` stays provisioner + publisher
+  // and serves the CONTROL_SELF_SERVICE tier below, but the durableJoin/Leave/ownerMemberships ops
+  // it mediates run on the delivery host (which writes members + hosts the per-member reader).
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
+  await dlv.startPlane3((id) => (id === aId.id ? aclC : undefined));
   pub.serveControl(CONTROL_SELF_SERVICE, async (req) => {
     const ch = typeof (req.args as { channel?: unknown })?.channel === "string" ? (req.args as { channel: string }).channel : "";
-    if (req.op === "durableJoin") return { ok: true, data: await pub.durableJoinFor(req.from.id, ch) };
+    if (req.op === "durableJoin") return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
     if (req.op === "durableLeave") {
-      await pub.durableLeaveFor(req.from.id, ch, typeof (req.args as { generation?: unknown })?.generation === "number" ? (req.args as { generation: number }).generation : undefined);
+      await dlv.durableLeaveFor(req.from.id, ch, typeof (req.args as { generation?: unknown })?.generation === "number" ? (req.args as { generation: number }).generation : undefined);
       return { ok: true };
     }
     return { ok: false, error: `unknown op ${req.op}` };
@@ -285,6 +297,7 @@ try {
     await until(() => got.includes("#ops.dual:dual-after-restart"), 12000), got);
 
   await a.stop();
+  await dlv.stop();
   await pub.stop();
 } catch (e) {
   fail++;

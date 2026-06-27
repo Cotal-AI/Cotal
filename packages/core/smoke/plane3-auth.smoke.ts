@@ -110,7 +110,19 @@ try {
   const bId = newIdentity();
   const aclFor = (id: string): string[] | undefined =>
     id === aId.id ? ["general", "review"] : id === bId.id ? ["general"] : undefined;
-  await mgr.startPlane3(aclFor);
+  // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the manager — the
+  // manager cred no longer carries the Plane-3 inject grants (closure (i): no `dinbox`/`dlv`/members
+  // write, no `ctl.delivery`). The manager stays provisioner (provisionAgent above) + publisher (the
+  // multicast calls below post chat AS the operator; the daemon's fan-out reads CHAT and delivers).
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
+  await dlv.startPlane3(aclFor);
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
@@ -130,7 +142,7 @@ try {
   await wait(300);
 
   // ---- durable join + delivery ----
-  const r = await mgr.durableJoinFor(aId.id, "review");
+  const r = await dlv.durableJoinFor(aId.id, "review");
   check("durableJoinFor('review') reports durable:true (record committed + reader hosted)", r.durable === true, r);
 
   await mgr.multicast("hello-durable", { channel: "review" });
@@ -149,7 +161,7 @@ try {
   check("steady-state fan-out delivers a later post", await until(() => got.some((g) => g.text === "second")));
 
   // ---- leave = hard read boundary (interval) ----
-  await mgr.durableLeaveFor(aId.id, "review");
+  await dlv.durableLeaveFor(aId.id, "review");
   await wait(150);
   const beforeLeave = got.length;
   await mgr.multicast("after-leave", { channel: "review" });
@@ -212,6 +224,7 @@ try {
   await bNc.close();
 
   await a.stop();
+  await dlv.stop();
   await mgr.stop();
 
   console.log(`\nPLANE-3 SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

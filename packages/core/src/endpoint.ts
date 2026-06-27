@@ -2504,6 +2504,12 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private applyPresence(id: string, raw: Presence): void {
+    // Defense-in-depth (per-user-auth closure (i), residual 3): the KV key IS the publisher's identity —
+    // publishPresence() writes its record under card.id — so a record whose embedded card.id disagrees
+    // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
+    // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
+    // mis-keyed record even if a broad writer slips one in under another agent's key.
+    if (raw.card?.id !== id) return;
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
     // Any offline materialization (a stale snapshot OR a graceful-leave record) drops the advisory

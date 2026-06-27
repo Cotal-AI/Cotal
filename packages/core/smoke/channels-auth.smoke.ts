@@ -44,6 +44,18 @@ await seedChannelRegistry({ servers: server, space, creds: mgrCreds, file: { def
 const mgr = new CotalEndpoint({ space, servers: server, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
 mgr.on("error", (e) => console.log("mgr err:", e.message));
 await mgr.start();
+// Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
+// manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
+// The manager stays provisioner + publisher (its multicast posts chat AS the operator;
+// the daemon's fan-out reads CHAT and delivers). Only the HOST endpoint moves here.
+const dlvId = newIdentity();
+const dlv = new CotalEndpoint({
+  space, servers: server, creds: await mintCreds(auth, dlvId, "delivery"),
+  card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+  channels: [], consume: false, registerPresence: false, watchPresence: true,
+});
+dlv.on("error", (e) => console.log("dlv err:", e.message));
+await dlv.start();
 
 // The privileged provisioner serves the mediated join/leave op (what the manager does in prod): it
 // validates the requested set ⊆ the agent's allowSubscribe, then moves its bind-only chat filter.
@@ -55,10 +67,10 @@ mgr.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
   // allowSubscribe (what the manager op does), then write membership with the privileged endpoint.
   if (req.op === "durableJoin") {
     if (!channelInAllow(allowSub, ch)) return { ok: false, error: `"${ch}" outside allowSubscribe` };
-    return { ok: true, data: await mgr.durableJoinFor(req.from.id, ch) };
+    return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
   }
   if (req.op === "durableLeave") {
-    await mgr.durableLeaveFor(req.from.id, ch, typeof args.generation === "number" ? args.generation : undefined);
+    await dlv.durableLeaveFor(req.from.id, ch, typeof args.generation === "number" ? args.generation : undefined);
     return { ok: true, data: { channel: ch } };
   }
   return { ok: false, error: `unsupported op ${req.op}` };
@@ -74,7 +86,7 @@ const ident = newIdentity();
 const agentCreds = await provisionAgent(mgr, auth, ident, { subscribe: ["log", "general"], allowSubscribe: allowSub });
 // Host Plane-3 (fan-out + trusted reader) so the runtime durable join above resolves to a real
 // backstop. The reader re-authorizes against the agent's current ACL (its allowSubscribe).
-await mgr.startPlane3((id) => (id === ident.id ? allowSub : undefined));
+await dlv.startPlane3((id) => (id === ident.id ? allowSub : undefined));
 const errors: string[] = [];
 const got: { channel?: string; text: string; historical: boolean }[] = [];
 const agent = new CotalEndpoint({ space, servers: server, creds: agentCreds, card: { name: "ag1", kind: "agent", id: ident.id }, channels: ["log", "general"] });
@@ -109,6 +121,7 @@ assert.deepEqual(errors, [], `still no permission errors after join/leave/list: 
 
 console.log("AUTH GRANT CHECKS PASSED");
 await agent.stop();
+await dlv.stop();
 await mgr.stop();
 child.kill("SIGTERM");
 process.exit(0);

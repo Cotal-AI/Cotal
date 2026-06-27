@@ -211,19 +211,31 @@ try {
   // a finite generation (fail-closed stale-leave guard), and listMemberships serves the caller's own
   // current memberships so a connecting agent can hydrate its boot generations.
   const acls: Record<string, string[]> = { [aId.id]: ["general", "ops", "review.>"] };
-  await pub.startPlane3((id) => acls[id]);
+  // Phase 2 Plane-3 host = a scoped `delivery` cred, NOT the manager (`pub`). The manager cred
+  // no longer carries the Plane-3 inject grants (closure (i)); `pub` stays provisioner + publisher
+  // and serves the CONTROL_SELF_SERVICE tier below, but the durableJoin/Leave/ownerMemberships ops
+  // it mediates run on the delivery host (which writes members + hosts the per-member reader).
+  const dlvId = newIdentity();
+  const dlv = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: true,
+  });
+  dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  await dlv.start();
+  await dlv.startPlane3((id) => acls[id]);
   pub.serveControl(CONTROL_SELF_SERVICE, async (req) => {
     const acl = acls[req.from.id];
     const args = req.args as { channel?: unknown; generation?: unknown };
     const ch = typeof args?.channel === "string" ? args.channel : "";
-    if (req.op === "listMemberships") return { ok: true, data: { memberships: await pub.ownerMemberships(req.from.id) } };
+    if (req.op === "listMemberships") return { ok: true, data: { memberships: await dlv.ownerMemberships(req.from.id) } };
     if (req.op === "durableJoin") {
       if (!ch || !acl || !channelInAllow(acl, ch)) return { ok: false, error: `not in ACL: ${ch}` };
-      return { ok: true, data: await pub.durableJoinFor(req.from.id, ch) };
+      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
     }
     if (req.op === "durableLeave") {
       if (typeof args?.generation !== "number") return { ok: false, error: "durableLeave: a finite generation is required (fail-closed)" };
-      await pub.durableLeaveFor(req.from.id, ch, args.generation);
+      await dlv.durableLeaveFor(req.from.id, ch, args.generation);
       return { ok: true, data: { channel: ch } };
     }
     return { ok: false, error: `unknown op: ${req.op}` };
@@ -267,9 +279,10 @@ try {
   // (pure-interval durableEligible) but is hidden from channelMembers + the hydration mirror — so
   // leaveChannel must still DISCOVER it via ownerMemberships (which returns non-activated records) and
   // TOMBSTONE it (the engineer/critic BLOCKER-1 leave-discovery gap), exercised end-to-end.
-  // Default `_INBOX` prefix: the scoped manager cred (closure (i)) allows reply-sub only on its own
-  // per-id `_INBOX_<id>` and the default `_INBOX` — not an arbitrary `_INBOX_kv` namespace.
-  const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(mgrCreds)), inboxPrefix: "_INBOX", maxReconnectAttempts: 0 });
+  // The members registry is the DELIVERY daemon's to write (closure (i): the manager cred no longer
+  // holds a members-bucket grant). Use a `delivery` cred with its own per-id inbox.
+  const seedId = newIdentity();
+  const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, seedId, "delivery"))), inboxPrefix: `_INBOX_${seedId.id}`, maxReconnectAttempts: 0 });
   kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
   const opsRec = (await readMember(kv, "ops", aId.id))!.record;
@@ -321,6 +334,7 @@ try {
 
   await b.stop();
   await a.stop();
+  await dlv.stop();
   await pub.stop();
 } catch (e) {
   fail++;
