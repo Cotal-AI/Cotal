@@ -25,10 +25,11 @@ export async function history(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Resolve the running mesh (from any dir) + manager creds — `--creds` is a raw off-registry connect.
-  // `history clear` is destructive, so targeting the RIGHT mesh matters: this no longer blindly hits
-  // DEFAULT_SERVER + the cwd space.
-  const { server, space, creds } = await connectOrExit(values, "manager");
+  // Resolve the running mesh (from any dir) + a least-privilege PURGER cred — `--creds` is a raw
+  // off-registry connect. `history clear` is purge-only and destructive, so it mints exactly the purge
+  // grant (STREAM.PURGE on CHAT + DM), not the broad operator cred; targeting the RIGHT mesh matters, so
+  // this no longer blindly hits DEFAULT_SERVER + the cwd space.
+  const { server, space, creds } = await connectOrExit(values, "purger");
   const result = await clearSpaceHistory({
     servers: server,
     space,
