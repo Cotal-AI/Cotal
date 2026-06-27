@@ -1,0 +1,113 @@
+name: Windows
+
+# Native-Windows gate. Kept separate from the ubuntu `CI` workflow because the command set differs
+# (no tmux/runtime/Hermes — those are Unix-only) and the broker install is Windows-specific.
+#
+# TWO LANES, deliberately split (a single all-or-nothing soak job is a permanently-red ignored check):
+#   • `required` — typecheck + build + unit tests. Windows-clean today; meant to be a REQUIRED gate.
+#   • `smoke`    — the seam + broker smokes (incl. `smoke:windows`). A non-blocking soak
+#     (`continue-on-error: true`) until the native-Windows fixes land and the first run is green; then
+#     remove `continue-on-error` to make it required. No PR may claim native-Windows support while the
+#     smoke lane is non-required. See .internal/plans/windows-native-support.md.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  # REQUIRED lane — must stay green. Typecheck + build + unit tests carry no POSIX assumptions, so a
+  # red here is a real Windows regression, not a soak artifact.
+  required:
+    name: Windows / required (typecheck, build, test)
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Default pnpm install keeps optionalDependencies. Do NOT add --omit=optional / --no-optional:
+      # @lydell/node-pty ships its prebuilt ConPTY binary as a per-platform optional dep, and the
+      # @eplightning/nats-server-win32-* fallback binaries are optional deps too.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+  # SOAK lane — non-blocking until green. The seam smokes (resolver / `.cmd` launch adapter / authed
+  # control pipe) are RED until the native-Windows fixes land; that red is expected ground truth, not
+  # a broken pipeline. Flip to required (delete `continue-on-error`) once the first run is green.
+  smoke:
+    name: Windows / smoke (soak — non-blocking)
+    timeout-minutes: 30
+    runs-on: windows-latest
+    continue-on-error: true # soak only — remove once green; see header
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install nats-server
+        shell: pwsh
+        run: |
+          $NatsVersion = "v2.10.22"
+          $Name = "nats-server-$NatsVersion-windows-amd64"
+          $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          $InstallDir = Join-Path $env:RUNNER_TEMP $Name
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
+          # TODO(before-required): checksum-pin the zip — `(Get-FileHash $Zip -Algorithm SHA256).Hash`
+          # must equal a pinned constant; fail the step on mismatch (supply-chain gate). Safe to defer
+          # while this lane is a continue-on-error soak.
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP -Force
+          # $GITHUB_PATH only affects LATER steps, so verify here via the absolute path.
+          "$InstallDir" >> $env:GITHUB_PATH
+          & "$InstallDir\nats-server.exe" --version
+
+      # Live smokes run the built dist (tsx bin/cotal.ts -> dist), not src — build before them.
+      - name: Build
+        run: pnpm build
+
+      # Broker-free, cross-platform smokes + the Windows seam smoke (PATHEXT resolution, `.cmd`/`.bat`
+      # launch + cmd-arg quoting; named-pipe control + secrets ACLs as those stages land).
+      - name: Broker-free smoke tests
+        run: pnpm smoke:view && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:windows
+
+      - name: Protocol & security smoke tests
+        run: pnpm smoke:ci
+
+      # Live-broker smokes that exercise resolution + spawn/control/down without POSIX shell helpers.
+      # Deliberately EXCLUDED until made Windows-aware: smoke:runtime/smoke:tmux (tmux, Unix-only),
+      # smoke:env-isolate & smoke:attach (printenv/sh -c/sleep/tmux), smoke:spawn-from-anywhere:live
+      # (asserts 0700), smoke:up-manifest:live (asserts 0600), smoke:manager-singleton:live (sh -c lsof|xargs).
+      - name: Windows live broker smoke tests
+        run: pnpm smoke:server-resolution:live && pnpm smoke:spawn-manifest:live
