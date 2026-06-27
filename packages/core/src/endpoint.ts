@@ -727,8 +727,10 @@ export class CotalEndpoint extends EventEmitter {
    *  PEER's reply lane (`ctl.delivery.<victim>.reply.<n>`) and turn the responder into a confused
    *  deputy — the broker does NOT permission-check the requester's embedded reply subject. With it, a
    *  reply is published only when `m.reply` is under the AUTHENTICATED request subject
-   *  (`${m.subject}.reply.…`), binding the reply to the broker-policed sender token. (The manager's
-   *  tiers reply into the per-id `_INBOX` and leave it off.) */
+   *  (`${m.subject}.reply.…`), binding the reply to the broker-policed sender token. The manager's three
+   *  lifecycle tiers ALSO require it as of closure (i): they reply on bounded `ctl.<tier>.<caller>.reply.…`
+   *  (the manager cred holds the wildcard `ctl.<tier>.*.reply.>` pub — exactly the confused-deputy
+   *  condition above), so do NOT drop `boundReply` on them. */
   serveControl(
     service: string,
     handler: (req: ControlRequest) => Promise<ControlReply> | ControlReply,
@@ -786,7 +788,12 @@ export class CotalEndpoint extends EventEmitter {
    *  inbox wildcard, so its publish surface can be an exact self-scoped allow-list (no message forging).
    *  `noMux` lets us name the reply subject while keeping NoResponders detection. The random suffix is
    *  defense-in-depth (a predictable suffix would let a peer target an in-flight named reply sub). The
-   *  reply sits under the sender's OWN request subject, so the responder's `boundReply` guard accepts it. */
+   *  reply sits under the sender's OWN request subject, so the responder's `boundReply` guard accepts it.
+   *
+   *  CUTOVER (not backward-compatible): an agent cred minted BEFORE closure (i) lacks the
+   *  `ctl.<tier>.<id>.reply.>` sub grant — it can still publish the request but cannot subscribe the
+   *  reply, so its control calls (spawn/despawn/purge/definePersona, self-stop) hang. The per-user-auth
+   *  atomic cutover re-mints every agent; if this change ships ahead of that, agents must be RESPAWNED. */
   async requestControl(
     service: string,
     req: ControlRequestInit,

@@ -502,18 +502,22 @@ function permissionsFor(
  *
  *  TWO residuals remain OPEN and MUST gate the human-owner cutover (do not read this set as full
  *  owner-lane confinement):
- *   1. Plane-3 INJECT is not self-scoped — `dinbox.*` / `dlv.*` / `ctl.delivery.*.reply.>` let the
- *      operator write any owner's delivery store. These exist only for the LEGACY fallback where the
- *      manager hosts Plane-3 itself; the current architecture makes Plane-3 the `delivery` daemon's job
- *      (manager.ts), so these should be REMOVED from the manager once the Plane-3-hosting test fixtures
+ *   1. Plane-3 INJECT is not self-scoped — and is a true FORGE, not just a write: `dinbox.*` / `dlv.*`
+ *      let the operator publish into any owner's delivery store, and the `dlv.<owner>` subject names the
+ *      RECIPIENT, not the sender, so the receiver can't do the subject-vs-body authenticity check it
+ *      applies on chat/inst/svc — it surfaces the body's `from` as an authentic channel message from any
+ *      forged actor. These grants (plus `ctl.delivery.*.reply.>`) exist only for the LEGACY fallback where
+ *      the manager hosts Plane-3 itself; the current architecture makes Plane-3 the `delivery` daemon's
+ *      job (manager.ts), so they must be REMOVED from the manager once the Plane-3-hosting test fixtures
  *      move to a `delivery` cred. Until then they are a trusted-infra capability, not owner-confinement.
- *   2. DM/DLV body READ is only PARTIALLY closed. The `CONSUMER.MSG.NEXT` / `STREAM.MSG.GET` denies shut
- *      the pull/direct-get path (defense in depth), but `CONSUMER.CREATE` on DM/DLV stays allowed (the
- *      operator pre-creates the bind-only durables) — so it could still create a PUSH consumer whose
- *      deliver subject it is allowed to subscribe and read the bodies that way. The real closure is the
- *      provisioner role-split (no manager DM/DLV create) PLUS tightening `sub` to {own inbox + served
- *      control subjects}; broad `sub` (kept here for operator/observe + Plane-3 fallback + the listener
- *      fixtures) is exactly what makes that push-consumer exfiltration easy, so the two land together. */
+ *   2. DM/DLV body READ is NOT closed. The `CONSUMER.MSG.NEXT` / `STREAM.MSG.GET` denies do shut the JS
+ *      pull/direct-get path (deny-beats-allow over `$JS.>`), but the operator still reads DM/DLV bodies by
+ *      two other paths the denies don't touch: (a) MOST DIRECTLY, the broad `sub` `${p}.>` is a native
+ *      core subscription over every `inst.*` (DM) and `dlv.*` message LIVE — no JetStream involved; and
+ *      (b) `CONSUMER.CREATE` on DM/DLV stays allowed (the operator pre-creates the bind-only durables), so
+ *      a PUSH consumer with a deliver subject it may subscribe streams the bodies historically. The real
+ *      closure is the provisioner role-split (no manager DM/DLV create) AND tightening `sub` to {own inbox
+ *      + served control subjects} — they MUST land together, since the broad `sub` is itself path (a). */
 function managerPermissions(space: string, id: string): Record<string, unknown> {
   const p = spacePrefix(space);
   const DM = dmStream(space), DLV = dlvStream(space);
