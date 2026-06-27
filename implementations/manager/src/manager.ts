@@ -20,7 +20,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
 import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -30,7 +30,6 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
-import { resolveOnPath } from "./bin-path.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */

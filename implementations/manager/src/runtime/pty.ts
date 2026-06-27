@@ -1,6 +1,6 @@
 import * as pty from "@lydell/node-pty";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime } from "@cotal-ai/core";
-import { resolveOnPath } from "../bin-path.js";
+import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
@@ -28,12 +28,12 @@ export class PtyRuntime implements Runtime {
   readonly kind = "pty" as const;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
-    // node-pty launches the command directly and, unlike a POSIX exec, won't resolve a bare
-    // `claude`/`opencode` to its Windows PATHEXT shim (`claude.cmd`) — resolve it to the on-disk
-    // path first. No-op on POSIX and when the command already resolves (path or has an extension).
-    const command =
-      process.platform === "win32" ? (resolveOnPath(spec.command) ?? spec.command) : spec.command;
-    const proc = pty.spawn(command, spec.args, {
+    // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and
+    // adapt — a `.cmd`/`.bat` shim can't be launched by CreateProcessW, so it runs through cmd.exe
+    // with a pre-escaped command line. Resolve against `spec.env` (the env we actually launch with),
+    // not the manager's, so executable selection stays inside P3 isolation.
+    const { command, args } = preparePtyLaunch(spec.command, spec.args, spec.env ?? {});
+    const proc = pty.spawn(command, args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
