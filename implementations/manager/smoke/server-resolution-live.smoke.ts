@@ -13,6 +13,7 @@
  * Run: pnpm smoke:server-resolution:live
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,8 +121,14 @@ try {
       /* already gone */
     }
   }
-  rmSync(home, { recursive: true, force: true });
-  rmSync(cwd, { recursive: true, force: true });
-  rmSync(projectRoot, { recursive: true, force: true });
+  // Windows EBUSY-locks a directory that's still a live process's cwd (POSIX tolerates rmdir of a
+  // live cwd; Windows does not), so wait for each killed child to ACTUALLY exit before removing the
+  // sandbox dirs it ran in. force + maxRetries lets fs.rmSync ride out the brief tail where a handle
+  // lingers past exit (Node retries EBUSY/EPERM/ENOTEMPTY natively on Windows — no dep).
+  await Promise.all(kids.map((cp) => (cp.exitCode !== null || cp.signalCode !== null ? null : once(cp, "exit"))));
+  const rmOpts = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 } as const;
+  rmSync(home, rmOpts);
+  rmSync(cwd, rmOpts);
+  rmSync(projectRoot, rmOpts);
 }
 process.exit(0);
