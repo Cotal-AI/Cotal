@@ -8,9 +8,9 @@ name: Windows
 #     env-isolation / view / core-boundary / preflight), the `.cmd` launch matrix (`smoke:windows`,
 #     validated green-in-logs on windows-latest), and the protocol/security suite. Gating: a red here
 #     is a real Windows regression.
-#   • `smoke`    — the live-broker soak (`continue-on-error`): server-resolution + spawn-manifest, each
-#     its own step so one cleanup failure can't mask the next. Genuinely green now, but broker-timing-
-#     dependent — promote into `required` once proven stable across runs.
+#   • `smoke`    — the live-broker soak (`continue-on-error`): server-resolution + spawn-manifest +
+#     cooperative-stop (WS4), each its own step so one cleanup failure can't mask the next. Genuinely
+#     green now, but broker-timing-dependent — promote into `required` once proven stable across runs.
 #     See .internal/plans/windows-native-support.md.
 
 on:
@@ -149,3 +149,10 @@ jobs:
       - name: Live — spawn manifest
         continue-on-error: true
         run: pnpm smoke:spawn-manifest:live
+
+      # WS4: a cooperative graceful stop publishes OFFLINE presence over the named-pipe control plane
+      # (not TTL expiry). node:net abstracts the AF_UNIX socket ↔ Windows named pipe, so the real wire
+      # is exercised here against a live broker.
+      - name: Live — cooperative stop (WS4 offline presence)
+        continue-on-error: true
+        run: pnpm smoke:cooperative-stop:live

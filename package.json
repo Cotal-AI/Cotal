@@ -63,6 +63,7 @@
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:server-resolution:live": "tsx implementations/manager/smoke/server-resolution-live.smoke.ts",
+    "smoke:cooperative-stop:live": "tsx implementations/manager/smoke/cooperative-stop-live.smoke.ts",
     "smoke:spawn-args": "tsx extensions/connector-core/smoke/spawn-args.smoke.ts",
     "smoke:install": "tsx implementations/cli/smoke/install.smoke.ts",
     "smoke:send": "tsx implementations/cli/smoke/send.smoke.ts",
