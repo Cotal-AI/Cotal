@@ -62,5 +62,7 @@ try {
 } finally {
   process.chdir(origCwd);
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* gone */ } }
-  rmSync(root, { recursive: true, force: true });
+  // Best-effort: Windows holds killed children's handles briefly past kill, so a bare rmSync races
+  // into EPERM — retry, and never let cleanup fail a scenario whose assertions passed. No-op on POSIX.
+  try { rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }); } catch { /* OS-temp dir */ }
 }

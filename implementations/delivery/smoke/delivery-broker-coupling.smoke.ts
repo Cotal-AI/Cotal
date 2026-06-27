@@ -42,6 +42,9 @@ try {
   daemon = spawn("pnpm", ["cotal", "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
     cwd: repoRoot,
     stdio: "ignore",
+    // Windows: pnpm is a `.cmd` shim child_process can't spawn by bare name — go through the shell so it
+    // resolves via PATHEXT (POSIX spawns it directly, unchanged).
+    shell: process.platform === "win32",
     env: { ...process.env, COTAL_DELIVERY_BROKER_GONE_MS: "2000" },
   });
   daemon.on("exit", () => { daemonExited = true; });

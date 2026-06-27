@@ -134,5 +134,12 @@ try {
   process.exitCode = 1;
 } finally {
   srv.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  // Best-effort temp cleanup — Windows can hold the killed broker's JetStream store handles past
+  // SIGKILL, so a bare rmSync races into EPERM. Retry, and never let a cleanup error fail a scenario
+  // whose assertions all passed (the OS reclaims its own temp dir). No-op on POSIX.
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  } catch {
+    /* OS-temp dir — reclaimed by the OS; cleanup is not a test result */
+  }
 }

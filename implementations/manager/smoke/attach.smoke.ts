@@ -31,7 +31,8 @@ function attachError(fn: () => unknown): string {
 }
 
 const SESSION = "cotal-smoke";
-const spec: LaunchSpec = { command: "sleep", args: ["60"] };
+// A cross-platform long-running child to attach to — `sleep` is Unix-only; node idles instead.
+const spec: LaunchSpec = { command: process.execPath, args: ["-e", "setTimeout(() => {}, 60000)"] };
 const cwd = process.cwd();
 
 // pty (default) — the one streamable backend: attach() returns a live session, never throws.
