@@ -51,6 +51,7 @@
     "smoke:cross-path-dedup": "tsx extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/smoke/feedback.smoke.ts",
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
+    "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
     "smoke:attach": "tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",
     "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",

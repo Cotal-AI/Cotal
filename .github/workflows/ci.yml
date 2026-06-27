@@ -66,5 +66,14 @@ jobs:
         # @window_id/%pane_id, P3 env -i isolation, attach hints). dist is built by Typecheck above.
         run: pnpm smoke:runtime
 
+      - name: OpenCode cooperative-stop smoke test
+        # The opencode plugin's control-plane cooperative shutdown: a {op:"shutdown"} makes the plugin
+        # leave the mesh (publish offline presence) instead of waiting out the presence TTL. Drives the
+        # real plugin closure (in a subprocess) under Node against a real broker; the real opencode
+        # (Bun) runtime — incl. Bun-on-Windows named pipes — is not in CI yet (no opencode binary here).
+        # (smoke:opencode / turn-wedge is intentionally not wired here — it depends on open-mode stream
+        # auto-setup that is currently broken independent of this change; tracked separately.)
+        run: pnpm smoke:opencode-coop
+
       - name: Verify Claude connector package
         run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run

@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -108,11 +108,22 @@ export const opencodeConnector: Connector = {
 
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config);
 
+    // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a signal-less
+    // runtime (ConPTY/Windows), where a hard kill skips cleanup and the agent lingers until its
+    // presence TTL expires. The plugin (in the opencode server process) starts the control server and
+    // leaves the mesh cleanly on shutdown. Minted here; passed to the plugin in the child env (the
+    // token never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
+    // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
+    const control = controlEndpoint(opts.space, opts.name);
+    env.COTAL_CONTROL_SOCKET = control.path;
+    env.COTAL_CONTROL_TOKEN = control.token;
+
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {
       command: process.execPath,
       args: [SERVE_SHIM],
       env,
+      control,
     };
   },
 };

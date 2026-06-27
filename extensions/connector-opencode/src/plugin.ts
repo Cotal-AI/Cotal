@@ -23,6 +23,7 @@ import {
   configFromEnv,
   hasIdentity,
   MeshAgent,
+  startControlServer,
   formatInjection,
   fmtFrom,
   ORIENTATION_BOOTSTRAP,
@@ -93,6 +94,42 @@ export const cotal: Plugin = async ({ client }) => {
       /* presence is best-effort — never throw into opencode */
     }
   };
+
+  // Cooperative shutdown. The manager sends an authenticated {op:"shutdown"} to this agent's local
+  // control endpoint on a signal-less runtime (ConPTY/Windows), where a hard kill would skip cleanup
+  // and leave the agent online until its presence TTL expires. We leave the mesh cleanly instead, then
+  // exit (the runtime hard-kills as a backstop). The endpoint (path + token) is minted by the
+  // connector's buildLaunch and arrives in the child env; the plugin runs inside the opencode server
+  // process, so it reads it there. Hooks are in-process (no external relay connects), so only the
+  // shutdown op is used — the handle path is inert. fatalBind: a managed agent MUST own its control
+  // endpoint, so a squatter (or a runtime that can't host the pipe) fails loud rather than running a
+  // hijacked or absent control plane.
+  let controlServer: ReturnType<typeof startControlServer> | undefined;
+  const shutdown = async (): Promise<void> => {
+    try {
+      controlServer?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await safeStatus("offline");
+      await agent.stop();
+    } finally {
+      process.exit(0);
+    }
+  };
+  const controlPath = process.env.COTAL_CONTROL_SOCKET?.trim();
+  const controlToken = process.env.COTAL_CONTROL_TOKEN?.trim();
+  if (controlPath && controlToken) {
+    const handle = async (): Promise<Record<string, unknown>> => ({
+      ok: false,
+      error: "opencode runs cotal hooks in-process; only the shutdown control op is supported",
+    });
+    controlServer = startControlServer(agent, { path: controlPath, token: controlToken }, handle, {
+      fatalBind: true,
+      onShutdown: () => void shutdown(),
+    });
+  }
 
   function pendingForWake(): number {
     return agent.pendingWake(); // mode-and-channel-aware: excludes held dnd/quiet ambient
@@ -312,6 +349,11 @@ export const cotal: Plugin = async ({ client }) => {
     },
 
     dispose: async () => {
+      try {
+        controlServer?.close();
+      } catch {
+        /* ignore */
+      }
       await safeStatus("offline");
       await agent.stop();
     },
