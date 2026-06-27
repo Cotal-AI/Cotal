@@ -48,8 +48,9 @@ export class TmuxRuntime implements Runtime {
 
     tmux.ensureSession(this.session, cwd);
     // P3: env -i strips the tmux server's inherited environment; only the connector-declared
-    // env reaches the spawned agent (identity, model key, OS allow-list).
-    const command = tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args);
+    // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
+    // values out of tmux's command line (ps-visible) — they ride a 0o600 launcher script instead.
+    const command = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
     // Key the whole lifecycle off the STABLE window ID (@N), not `session:name`. tmux can rename
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
     const { windowId } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
@@ -112,7 +113,7 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
   const [first, ...rest] = tab.panes;
   if (!first) throw new Error(`tmux layout "${label}": tab has no panes`);
 
-  const firstCmd = tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? []);
+  const firstCmd = tmux.privateLaunch(tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? []));
   // Drive splits/focus/confirm off the STABLE window/pane IDs returned here — never `session:label`
   // (labels can collide or be renamed) or pane indexes `.0`/`.1` (shift under `pane-base-index`).
   const { windowId, paneId: firstPane } = tmux.openWindow(session, label, firstCmd, first.cwd ?? ".", {
@@ -127,7 +128,7 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
   if (first.confirm) scheduleConfirm(firstPane);
 
   rest.forEach((pane) => {
-    const cmd = tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? []);
+    const cmd = tmux.privateLaunch(tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? []));
     const newPane = tmux.splitWindow(windowId, cmd, pane.cwd ?? ".", tab.split!.direction, tab.split!.ratio);
     if (pane.confirm) scheduleConfirm(newPane);
   });

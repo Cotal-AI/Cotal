@@ -7,6 +7,7 @@ import * as tmux from "./src/driver.js";
 import { TmuxRuntime, tmuxRuntimeProvider, tmuxTerminalProvider } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 
 const SESSION = "cotal-tmux-smoke";
 let passed = 0;
@@ -167,6 +168,16 @@ ok("isolatedCommand contains quoted command", isolated.includes("'/usr/bin/env'"
 const merged = tmux.mergedCommand({ FOO: "bar" }, "echo", ["hello"]);
 ok("mergedCommand starts with 'env'", merged.startsWith("env"));
 ok("mergedCommand does NOT contain '-i'", !merged.includes("env -i"));
+
+// privateLaunch keeps secret env VALUES off tmux's command line: the rendered body (with the secret)
+// goes into an owner-only (0o600) launcher script, and tmux only ever sees `bash <path>`.
+const secretBody = tmux.isolatedCommand({ COTAL_CONTROL_TOKEN: "s3cr3t-token" }, "/bin/echo", ["hi"]);
+const launch = tmux.privateLaunch(secretBody);
+const launchPath = launch.replace(/^bash\s+'?|'?$/g, ""); // strip `bash '` … `'`
+ok("privateLaunch returns a `bash <path>` invocation", launch.startsWith("bash ") && launchPath.endsWith(".sh"));
+ok("privateLaunch does NOT leak the secret into the returned command", !launch.includes("s3cr3t-token"));
+ok("privateLaunch script is 0o600 (owner-only)", (statSync(launchPath).mode & 0o777) === 0o600);
+ok("privateLaunch script contains the secret body (read from the file, not argv)", readFileSync(launchPath, "utf8").includes("s3cr3t-token"));
 
 console.log("\n────────────────────────────────────────────────");
 console.log(`\n${passed} passed, ${failed} failed\n`);
