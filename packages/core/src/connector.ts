@@ -67,8 +67,9 @@ export interface LaunchSpec {
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
    *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
    *  (never persisted — token hygiene) to send a cooperative `{op:"shutdown"}` on a runtime that
-   *  can't deliver a clean exit signal (ConPTY/Windows). Absent for connectors with no control
-   *  plane (OpenCode is in-process). */
+   *  can't deliver a clean exit signal (ConPTY/Windows). Both the Claude Code (MCP server) and
+   *  OpenCode (in-process plugin) connectors mint one; absent only for a connector with no control
+   *  plane at all. */
   control?: { path: string; token: string };
 }
 

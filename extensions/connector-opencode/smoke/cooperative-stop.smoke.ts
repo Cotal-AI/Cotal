@@ -32,7 +32,7 @@ import {
   newIdentity,
   setupSpaceStreams,
 } from "@cotal-ai/core";
-import { controlEndpoint } from "@cotal-ai/connector-core";
+import { opencodeConnector } from "../src/extension.js";
 
 // Fresh random port BELOW the Windows dynamic/ephemeral range (49152–65535) — see WS4 smoke.
 const PORT = 20000 + Math.floor(Math.random() * 20000); // 20000–39999
@@ -137,28 +137,33 @@ try {
   watcher.on("error", (e: Error) => console.error("  ! watcher:", e.message));
   await watcher.start();
 
-  // Mint Otto's control endpoint and write Otto's creds to a file (COTAL_CREDS is a path).
-  const ep = controlEndpoint(space, "Otto");
+  // Write Otto's creds to a file (COTAL_CREDS is a path), then build the launch THROUGH the connector
+  // — so this also guards that buildLaunch attaches the control endpoint to the LaunchSpec + child env
+  // (a regression dropping that wiring fails here instead of passing green on a hand-built env).
   const credsFile = join(dir, "otto.creds");
   writeFileSync(credsFile, ottoCreds);
+  const spec = opencodeConnector.buildLaunch({
+    space,
+    name: "Otto",
+    role: "worker",
+    id: ottoId.id,
+    creds: credsFile,
+    servers: SERVERS,
+    subscribe: ["general"],
+    allowSubscribe: ["general"],
+    allowPublish: ["general"],
+  });
+  check(
+    "buildLaunch attaches the control endpoint to the LaunchSpec + child env",
+    !!spec.control && spec.env?.COTAL_CONTROL_SOCKET === spec.control.path && spec.env?.COTAL_CONTROL_TOKEN === spec.control.token,
+    spec.control,
+  );
+  const ep = spec.control!;
 
-  // Boot the REAL plugin in a subprocess with Otto's identity + the control endpoint.
+  // Boot the REAL plugin in a subprocess with the connector-built env (Otto's identity + control).
   const PROBE = fileURLToPath(new URL("./cooperative-stop-probe.ts", import.meta.url));
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
-    env: {
-      ...process.env,
-      COTAL_NAME: "Otto",
-      COTAL_ID: ottoId.id,
-      COTAL_ROLE: "worker",
-      COTAL_SPACE: space,
-      COTAL_SERVERS: SERVERS,
-      COTAL_CREDS: credsFile,
-      COTAL_SUBSCRIBE: "general",
-      COTAL_ALLOW_SUBSCRIBE: "general",
-      COTAL_ALLOW_PUBLISH: "general",
-      COTAL_CONTROL_SOCKET: ep.path,
-      COTAL_CONTROL_TOKEN: ep.token,
-    },
+    env: { ...process.env, ...spec.env },
     stdio: ["ignore", "inherit", "inherit"],
   });
   let probeExit: number | null = null;
