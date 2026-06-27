@@ -34,7 +34,7 @@ function shellQuote(s: string): string {
  *  assignments, so `env` applies them and then execs the command. `isolate` (agent-spawn panes)
  *  adds `-i` so the pane inherits ONLY the connector-declared env, not the cmux server's (P3 — the
  *  operator's unrelated secrets don't reach a spawned agent); setup panes keep the inherited env. */
-function paneCommand(pane: Pane, login: boolean, isolate = false): string {
+export function paneCommand(pane: Pane, login: boolean, isolate = false): string {
   const env = Object.entries(pane.env ?? {}).map(([k, v]) => `${k}=${shellQuote(v)}`);
   const cmd = [...env, shellQuote(pane.command), ...(pane.args ?? []).map(shellQuote)].join(" ");
   const cd = pane.cwd ? `cd ${shellQuote(pane.cwd)}\n` : "";

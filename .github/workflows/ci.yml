@@ -64,7 +64,14 @@ jobs:
       - name: Runtime smoke tests (tmux)
         # Exercises the tmux Runtime + TerminalLayout end to end (driver, lifecycle by stable
         # @window_id/%pane_id, P3 env -i isolation, attach hints). dist is built by Typecheck above.
+        # Includes the privateLaunch no-leak guard: a live pane's command carries no env secret.
         run: pnpm smoke:runtime
+
+      - name: cmux launcher secret-hygiene smoke
+        # The cmux pane launcher writes the agent's env (creds + control token) to a 0o600 file in a
+        # 0o700 dir, never a world-readable /tmp script or the returned command line. Exercises
+        # paneCommand directly (no cmux CLI needed), so it runs here.
+        run: pnpm smoke:cmux
 
       - name: OpenCode cooperative-stop smoke test
         # The opencode plugin's control-plane cooperative shutdown: a {op:"shutdown"} makes the plugin

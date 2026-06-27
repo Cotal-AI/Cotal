@@ -125,15 +125,27 @@ ok("layout window closes by stable id", !tmux.windowAliveRef(lay.windowId));
 console.log("\n── runtime ─────────────────────────────────────");
 
 const runtime = new TmuxRuntime(SESSION);
+const SECRET_CANARY = "leak-canary-tmux-DO-NOT-LEAK";
 const handle = runtime.spawn("smoke-agent", {
   command: "sleep",
   args: ["30"],
-  env: { TEST_VAR: "hello" },
+  env: { TEST_VAR: "hello", COTAL_CONTROL_TOKEN: SECRET_CANARY },
 }, "/tmp");
 ok(`handle.name = "smoke-agent"`, handle.name === "smoke-agent");
 ok(`handle.kind = "tmux"`, handle.kind === "tmux");
 ok("handle.status() = running", handle.status() === "running");
 ok("window alive after spawn", tmux.windowAlive(SESSION, "smoke-agent"));
+
+// E2E no-leak: the LIVE pane's start command must NOT contain the secret env VALUE — it rides the
+// 0o600 launcher script (privateLaunch), so tmux only ever sees `bash <path>`. This fails on the old
+// inline-`env -i KEY='value'` path (the canary would appear in pane_start_command).
+const paneStartCmd = execFileSync(
+  "tmux",
+  ["list-panes", "-t", `${SESSION}:smoke-agent`, "-F", "#{pane_start_command}"],
+  { encoding: "utf8" },
+);
+ok("live tmux pane command is `bash <script>` (not inline env)", paneStartCmd.includes("bash "));
+ok("live tmux pane command does NOT leak the env secret", !paneStartCmd.includes(SECRET_CANARY));
 
 handle.interrupt();
 ok("interrupt() doesn't throw", true);
