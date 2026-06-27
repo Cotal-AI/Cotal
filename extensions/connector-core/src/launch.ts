@@ -20,7 +20,8 @@ import type { McpServerSpec } from "@cotal-ai/core";
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
  *  USERPROFILE / APPDATA / LOCALAPPDATA on Windows), locale (LANG / LC_*), timezone (TZ), temp
  *  dirs, session/runtime dir (XDG_RUNTIME_DIR), and the shell it may invoke. NOT a model key,
- *  NOT an operator secret. A fixed, named allow-list. */
+ *  NOT an operator secret. A fixed, named allow-list; each entry is forwarded only when present,
+ *  so the Unix-only and Windows-only names below coexist harmlessly on either OS. */
 const OS_ENV_ALLOW = [
   "PATH",
   "HOME",
@@ -50,6 +51,22 @@ const OS_ENV_ALLOW = [
   "APPDATA",
   "LOCALAPPDATA",
   "XDG_RUNTIME_DIR",
+  // Windows system env. SystemRoot is mandatory: without it a spawned process aborts at startup
+  // (node `InitializeOnce`, winsock/ICU can't load) — and a `pty`-runtime (ConPTY) child does NOT
+  // inherit it the way a plain child_process does, so a manager-spawned agent dies before its first
+  // line. The rest let agents resolve the system drive, arch, and Program/Data roots they shell out
+  // to. Absent on POSIX (skipped); present only on Windows.
+  "SystemRoot",
+  "windir",
+  "SystemDrive",
+  "PROCESSOR_ARCHITECTURE",
+  "NUMBER_OF_PROCESSORS",
+  "ALLUSERSPROFILE",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "CommonProgramFiles",
+  "PUBLIC",
 ] as const;
 
 /** Model-provider API keys a key-based connector may forward to its child. claude needs none
