@@ -494,33 +494,41 @@ function permissionsFor(
  *  `card.id` to the cred's own identity (it throws on a mismatch), so "as the operator" always means as
  *  THIS `id`. Plane-3 is NOT the manager's job (manager.ts) — the server-side `delivery` daemon hosts it.
  *
- *  closure (i) CLOSED here on THREE fronts — peer-MESSAGE actor-forgery, presence/KV-STATE forgery, and
- *  the dead Plane-3 inject grants:
+ *  closure (i) — peer-MESSAGE actor-forgery and presence-VALUE forgery are CLOSED here; the dead Plane-3
+ *  inject grants are removed. The STREAM-ADMIN tamper class and DM/DLV body-read are NOT closed — both
+ *  ride the broad `$JS.>` (+ broad `sub`) left below, folded into the single residual stated after:
  *   • PUB is an enumerated, SELF-SCOPED list — it may post chat/inst/svc only as `id`, never as another
  *     actor (proven by a cross-owner forge-deny smoke). Expressible after migrating the three control
  *     tiers to BOUNDED replies (`ctl.<tier>.<caller>.reply.>` via `boundReply`), which removed the
  *     per-id-`_INBOX` reply target that had forced a position-1 publish wildcard.
- *   • `$KV.>` is SCOPED to exactly the buckets the operator writes — own presence key ONLY (no peer
- *     roster spoof), the manager lease, the agent read-ACL registry, the channel registry — paired with a
- *     read-side guard in endpoint.ts `applyPresence` that drops a presence record whose KV key !=
- *     `card.id`, PLUS a `deny` on PURGE / MSG.DELETE of the presence KV stream so the operator can't
- *     force-offline a peer (a DEL/PURGE drives every watcher's `markOffline`). (Was: blanket `$KV.>` ⇒
- *     write any agent's presence key and spoof its identity/status; `$JS.>` ⇒ purge a peer offline.)
+ *   • `$KV.>` is SCOPED to exactly the buckets the operator VALUE-writes — own presence key ONLY (no peer
+ *     roster spoof), the manager lease, the agent read-ACL registry, the channel registry. A peer's
+ *     presence VALUE can't be forged (key-pinned) nor key-deleted (`kv.delete/purge(peerkey)` is a
+ *     `$KV.<presence>.<peerkey>` publish — denied), and a `deny` blocks whole-stream PURGE / per-message
+ *     MSG.DELETE of the presence stream. The read-side `applyPresence` guard additionally drops a record
+ *     whose KV key != `card.id` — defense-in-depth (corrupt/mis-keyed rejection), NOT the spoof boundary
+ *     (the write-scope is). (Was: blanket `$KV.>` ⇒ forge any agent's presence value.)
  *   • The legacy Plane-3 FALLBACK grants (`${p}.dinbox.*` / `${p}.dlv.*` / `ctl.delivery.*.reply.>`) are
  *     REMOVED — they were a true sender-FORGE (the `dlv.<recipient>` subject names the receiver, so the
  *     body's `from` can't be subject-checked) kept only for a manager-hosted Plane-3 that no longer
  *     exists; the `delivery` cred owns those writes + serves `ctl.delivery` (deliveryPermissions).
  *
- *  ONE residual remains OPEN and MUST gate the human-owner cutover: DM/DLV body READ. The
- *  `CONSUMER.MSG.NEXT` / `STREAM.MSG.GET` denies shut the JS pull/direct-get path (deny-beats-allow over
- *  `$JS.>`), but the operator still reads DM/DLV bodies two other ways: (a) the broad `sub` `${p}.>` is a
- *  native core subscription over every `inst.*` (DM) and `dlv.*` message LIVE — no JetStream; and (b)
- *  `CONSUMER.CREATE` on DM/DLV stays allowed under `$JS.>` (the operator pre-creates the bind-only
- *  durables), so a PUSH consumer streams the bodies. The real closure is the provisioner role-split (move
- *  DM/DLV durable pre-creation off the long-lived manager) AND tightening `sub` to {own inbox + served
- *  control subjects} — they MUST land together, since the broad `sub` is itself path (a). Tightening
- *  `sub` also forces splitting the chat-reading operator surfaces (`cotal join`/`send`/`history`) onto
- *  their own profile, so this is the next slice, not a one-liner. */
+ *  THE residual gate before the human-owner cutover is the broad `$JS.>` + broad `sub` below — ONE
+ *  over-grant with TWO faces (mesh-panel review of 062ef58/9261076 caught face (b)):
+ *   (a) DM/DLV body READ. The `CONSUMER.MSG.NEXT` / `STREAM.MSG.GET` denies shut the JS pull/direct-get
+ *       path, but the broad `sub` `${p}.>` natively reads every `inst.*`/`dlv.*` LIVE, and `$JS.>` leaves
+ *       a `CONSUMER.CREATE` push-consumer bypass on DM/DLV.
+ *   (b) STREAM-ADMIN tamper. `$JS.>` still allows `STREAM.DELETE` / `STREAM.UPDATE` (and snapshot/restore)
+ *       on EVERY KV stream — `KV_<presence>` (delete the bucket ⇒ wipe the roster, an availability tamper
+ *       the value-scope + purge/msg-delete deny + `applyPresence` do NOT catch), and likewise
+ *       `KV_<acl>`/`KV_<channel>`/`KV_<members>`. It can't be closed by more targeted denies, because
+ *       `cotal down` (deleteSpace) legitimately STREAM.DELETEs those buckets through this SAME profile.
+ *   Both close the same way: the provisioner role-split (move DM/DLV durable pre-creation + the ACL writes
+ *   off the long-lived manager) + REPLACE broad `$JS.>` with an enumerated per-stream JS-API allow-list +
+ *   tighten `sub` to {own inbox + served control}. That forces splitting the chat-reading operator
+ *   surfaces (`cotal join`/`send`/`history`) and the teardown surface (`cotal down`, which keeps
+ *   STREAM.DELETE) onto their own profiles — the next slice. A leaked long-lived manager can also still
+ *   rewrite any actor's read-ACL (`$KV.<aclBucket>.>`); that ACL-write moves to the provisioner too. */
 function managerPermissions(space: string, id: string): Record<string, unknown> {
   const p = spacePrefix(space);
   const DM = dmStream(space), DLV = dlvStream(space);

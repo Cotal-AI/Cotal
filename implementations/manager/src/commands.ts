@@ -161,8 +161,8 @@ function parse(argv: string[]): Values {
  *  (which prints the friendly message + prunes on failure), so this connects straight through. `tier`
  *  picks the control subject: privileged for spawn/ps; admin for the operator's cross-agent ops
  *  (stop/attach/purge), which the manager refuses on the privileged subject for a non-owner. `creds`
- *  is the privileged "manager" cred resolved by {@link resolveManagerTarget} (allow-all, so it
- *  reaches either subject), or undefined on an open mesh. */
+ *  is the privileged "manager" cred resolved by {@link resolveManagerTarget} (scoped, but granted both
+ *  the privileged and admin control subjects, so it reaches either), or undefined on an open mesh. */
 async function ask(
   space: string,
   server: string,

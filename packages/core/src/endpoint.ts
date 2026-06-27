@@ -1362,7 +1362,8 @@ export class CotalEndpoint extends EventEmitter {
    *  at `cotal up`). `create` is the ensure-exists call: it makes the bucket (bucket-level TTL) or, when
    *  another manager already did, throws — and we bind the now-existing one. Either way the per-KEY CAS
    *  create stays the only single-flight gate, so a lost bucket-create race never reads as "lease held".
-   *  The manager is allow-all, so it may create. */
+   *  The manager profile is scoped (managerPermissions) but retains broad `$JS.>` for stream/bucket
+   *  lifecycle, so it may create this bucket. */
   private async managerLeaseRegistry(): Promise<KV> {
     if (!this.nc) throw new Error("endpoint not started");
     if (this.managerLeaseKv) return this.managerLeaseKv;
