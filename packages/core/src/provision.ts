@@ -33,6 +33,7 @@ import {
   controlServiceSubject,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
+  CONTROL_ADMIN,
   CONTROL_DELIVERY,
   chatStream,
   dmStream,
@@ -282,7 +283,7 @@ function permissionsFor(
 ): Record<string, unknown> {
   if (profile === "delivery") return deliveryPermissions(space, id); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, id); // scoped graph-feed reader/writer
-  if (profile === "manager") return {}; // privileged: allow-all defaults
+  if (profile === "manager") return managerPermissions(space, id); // scoped operator (closure (i))
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
@@ -471,7 +472,95 @@ function permissionsFor(
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<id>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, id)}.>`;
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...subChat] } };
+  // Bounded control replies (closure (i)): the manager's lifecycle tiers now reply on
+  // `ctl.<tier>.<id>.reply.>` (not the per-id `_INBOX`), so each agent must subscribe the reply subtree
+  // for the tiers it may call. Every agent can self-stop ⇒ always grant the self tier; the privileged
+  // tier's reply is granted only with the spawn capability (which also grants the request publish above).
+  // Admin is manager-only — agents never call it, so no admin reply sub.
+  const controlReplies = [`${controlServiceSubject(space, CONTROL_SELF_SERVICE, id)}.reply.>`];
+  if (opts.capabilities?.includes("spawn"))
+    controlReplies.push(`${controlServiceSubject(space, CONTROL_PRIVILEGED, id)}.reply.>`);
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat] } };
+}
+
+/** The privileged OPERATOR permission set (`manager` profile) — formerly allow-all (`{}`). The
+ *  `manager` cred is the space's privileged operator, minted with a FRESH identity at ~12 sites:
+ *  `cotal up` (create the streams + KV buckets, write channel defaults), `cotal spawn` and the
+ *  supervisor (pre-create each agent's DM/DLV/TASK durables, record its read ACL, run lifecycle),
+ *  `cotal history`/`web` (read + purge), the operator-facing senders `cotal send` / the `cotal join`
+ *  console / `demo` / `feedback` (which post chat/inst/svc AS the operator), and the long-lived manager
+ *  (serve the three control tiers + hold the singleton lease + publish presence, and — when no separate
+ *  delivery daemon is present — host Plane-3 as a fallback: fan-out, the trusted reader, the
+ *  `dinbox`/`dlv` writes, and the `ctl.delivery` service). `CotalEndpoint` pins `card.id` to the cred's
+ *  own identity (it throws on a mismatch), so "as the operator" always means as THIS `id`.
+ *
+ *  closure (i), SCOPED TO ACTOR-FORGERY (the headline guarantee, proven by a cross-owner forge-deny
+ *  smoke): the allow-all `{}` is replaced with an exact set whose `pub` is an enumerated, SELF-SCOPED
+ *  list — it may post chat/inst/svc only as `id`, never as another actor. That became expressible by
+ *  migrating the three control tiers to BOUNDED replies (`ctl.<tier>.<caller>.reply.>` via `boundReply`),
+ *  removing the per-id-`_INBOX` reply target that previously forced a position-1 publish wildcard.
+ *
+ *  TWO residuals remain OPEN and MUST gate the human-owner cutover (do not read this set as full
+ *  owner-lane confinement):
+ *   1. Plane-3 INJECT is not self-scoped — `dinbox.*` / `dlv.*` / `ctl.delivery.*.reply.>` let the
+ *      operator write any owner's delivery store. These exist only for the LEGACY fallback where the
+ *      manager hosts Plane-3 itself; the current architecture makes Plane-3 the `delivery` daemon's job
+ *      (manager.ts), so these should be REMOVED from the manager once the Plane-3-hosting test fixtures
+ *      move to a `delivery` cred. Until then they are a trusted-infra capability, not owner-confinement.
+ *   2. DM/DLV body READ is only PARTIALLY closed. The `CONSUMER.MSG.NEXT` / `STREAM.MSG.GET` denies shut
+ *      the pull/direct-get path (defense in depth), but `CONSUMER.CREATE` on DM/DLV stays allowed (the
+ *      operator pre-creates the bind-only durables) — so it could still create a PUSH consumer whose
+ *      deliver subject it is allowed to subscribe and read the bodies that way. The real closure is the
+ *      provisioner role-split (no manager DM/DLV create) PLUS tightening `sub` to {own inbox + served
+ *      control subjects}; broad `sub` (kept here for operator/observe + Plane-3 fallback + the listener
+ *      fixtures) is exactly what makes that push-consumer exfiltration easy, so the two land together. */
+function managerPermissions(space: string, id: string): Record<string, unknown> {
+  const p = spacePrefix(space);
+  const DM = dmStream(space), DLV = dlvStream(space);
+  // Reply-publish grants for every control service the manager SERVES (bounded replies ride
+  // `ctl.<tier>.<caller>.reply.>`): the three lifecycle tiers + `ctl.delivery` for fallback Plane-3.
+  const ctlReplies = [CONTROL_PRIVILEGED, CONTROL_SELF_SERVICE, CONTROL_ADMIN, CONTROL_DELIVERY].map(
+    (tier) => `${controlServiceSubject(space, tier, "*")}.reply.>`,
+  );
+  return {
+    pub: {
+      allow: [
+        // Post AS the operator ONLY — self-scoped, so a leaked/compromised manager cred can never forge
+        // a chat/DM/anycast message attributable to another actor (the closure-(i) gate).
+        chatSubject(space, id, ">"), //  chat.<id>.>   — any channel, as me
+        unicastSubject(space, "*", id), //  inst.*.<id>   — DM any instance, as me
+        anycastSubject(space, "*", id), //  svc.*.<id>    — anycast any role, as me
+        // Account-scoped JetStream + KV administration (create/consume/ack/purge streams + consumers,
+        // KV bucket lifecycle + key writes). The DM/DLV body-read paths are carved back out in `deny`.
+        "$JS.>",
+        "$KV.>",
+        // Plane-3 fallback writes (fan-out target + post-auth handoff) when hosting delivery itself.
+        `${p}.dinbox.*`,
+        `${p}.dlv.*`,
+        // Control: CALL any lifecycle tier as self (the request subject), plus reply to any requester on
+        // every served tier (bounded `.reply.>`). No position-1 wildcard needed anymore.
+        controlServiceSubject(space, CONTROL_PRIVILEGED, id),
+        controlServiceSubject(space, CONTROL_SELF_SERVICE, id),
+        controlServiceSubject(space, CONTROL_ADMIN, id),
+        ...ctlReplies,
+      ],
+      deny: [
+        // No DM/DLV body reads via the JS pull path. CONSUMER.CREATE on these stays allowed (the operator
+        // pre-creates the bind-only durables) — but it must never consume or fetch their bodies. The
+        // trusted reader reads INBOX/`dinbox`, never DM/DLV, so denying these breaks no operator role.
+        `$JS.API.CONSUMER.MSG.NEXT.${DM}.>`,
+        `$JS.API.CONSUMER.MSG.NEXT.${DLV}.>`,
+        `$JS.API.STREAM.MSG.GET.${DM}`,
+        `$JS.API.STREAM.MSG.GET.${DLV}`,
+      ],
+    },
+    sub: {
+      // Account-scoped observe (operator/observer + Plane-3 fallback host + the JS/KV-write arrival
+      // fixtures) plus its reply inboxes. Broad by design FOR NOW — the publish lane-lock above is the
+      // closure-(i) gate; narrowing sub to {own inbox + served control subjects} is the follow-up.
+      allow: [`${p}.>`, "$JS.>", "$KV.>", "_INBOX.>", `_INBOX_${id}.>`],
+    },
+  };
 }
 
 /** The scoped `delivery` daemon permission set (server-side Plane-3 infra; NEVER allow-all, never

@@ -204,9 +204,13 @@ export class Manager {
     // agent, privileged only to spawn-capable ones, and admin only to the manager's own profile
     // (no agent ever reaches it); the handler then routes by op↔tier (fail-closed on mismatch) so a
     // misrouted op is rejected before anything acts.
-    this.ep.serveControl(CONTROL_PRIVILEGED, (req) => this.handle(req, CONTROL_PRIVILEGED));
-    this.ep.serveControl(CONTROL_SELF_SERVICE, (req) => this.handle(req, CONTROL_SELF_SERVICE));
-    this.ep.serveControl(CONTROL_ADMIN, (req) => this.handle(req, CONTROL_ADMIN));
+    // `boundReply` (closure (i)): each tier replies ONLY into the requester's own subtree
+    // (`${reqSubject}.reply.…`), never the per-id `_INBOX`. This both keeps the confused-deputy guard
+    // (a caller can't redirect a reply onto a peer's lane) AND lets the manager cred drop its position-1
+    // inbox publish wildcard — callers subscribe `ctl.<tier>.<id>.reply.>`, granted per tier they may call.
+    this.ep.serveControl(CONTROL_PRIVILEGED, (req) => this.handle(req, CONTROL_PRIVILEGED), { boundReply: true });
+    this.ep.serveControl(CONTROL_SELF_SERVICE, (req) => this.handle(req, CONTROL_SELF_SERVICE), { boundReply: true });
+    this.ep.serveControl(CONTROL_ADMIN, (req) => this.handle(req, CONTROL_ADMIN), { boundReply: true });
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The

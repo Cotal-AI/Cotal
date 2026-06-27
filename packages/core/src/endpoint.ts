@@ -780,19 +780,23 @@ export class CotalEndpoint extends EventEmitter {
     return sub;
   }
 
-  /** Send a control request to a service and await its reply (client side). */
+  /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},
+   *  the reply rides a BOUNDED subject UNDER the request subject (`ctl.<service>.<id>.reply.<uuid>`), not
+   *  the per-id `_INBOX` — closure (i): this frees the manager's permission set from needing a position-1
+   *  inbox wildcard, so its publish surface can be an exact self-scoped allow-list (no message forging).
+   *  `noMux` lets us name the reply subject while keeping NoResponders detection. The random suffix is
+   *  defense-in-depth (a predictable suffix would let a peer target an in-flight named reply sub). The
+   *  reply sits under the sender's OWN request subject, so the responder's `boundReply` guard accepts it. */
   async requestControl(
     service: string,
     req: ControlRequestInit,
     timeoutMs = 5000,
   ): Promise<ControlReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = controlServiceSubject(this.space, service, this.card.id);
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
-    const m = await this.nc.request(
-      controlServiceSubject(this.space, service, this.card.id),
-      JSON.stringify(body),
-      { timeout: timeoutMs },
-    );
+    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
     return m.json<ControlReply>();
   }
 

@@ -267,7 +267,9 @@ try {
   // (pure-interval durableEligible) but is hidden from channelMembers + the hydration mirror — so
   // leaveChannel must still DISCOVER it via ownerMemberships (which returns non-activated records) and
   // TOMBSTONE it (the engineer/critic BLOCKER-1 leave-discovery gap), exercised end-to-end.
-  const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(mgrCreds)), inboxPrefix: "_INBOX_kv", maxReconnectAttempts: 0 });
+  // Default `_INBOX` prefix: the scoped manager cred (closure (i)) allows reply-sub only on its own
+  // per-id `_INBOX_<id>` and the default `_INBOX` — not an arbitrary `_INBOX_kv` namespace.
+  const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(mgrCreds)), inboxPrefix: "_INBOX", maxReconnectAttempts: 0 });
   kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
   const opsRec = (await readMember(kv, "ops", aId.id))!.record;

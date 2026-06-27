@@ -119,6 +119,25 @@ export function assertValidChannel(channel: string): string {
   return channel;
 }
 
+/** Validate an **owner token** — the broker-authenticated, cross-user lane boundary that the
+ *  owner+actor grammar adds to the wire subjects and that already keys every persisted owner-bearing
+ *  KV record ({@link memberKey}, {@link aclKey}, {@link dinboxSubject}, {@link dlvSubject}). STRICTER
+ *  than {@link assertValidChannel}: an owner is exactly ONE NATS-safe token — `[A-Za-z0-9_-]+`, with
+ *  NO dots, NO `*`, NO `>`. A separator or wildcard in a user id is lane breakout or aliasing (it would
+ *  let one owner's grant span, or collide with, another's), so this FAILS LOUD rather than sanitizing.
+ *  Do NOT substitute {@link token}/`routeToken` here: they silently rewrite illegal characters — safe
+ *  for nkeys (already base32), unsafe for human-owner ids where a rewrite hides an aliasing attempt.
+ *  Returns the token unchanged when valid so callers can use it inline. */
+export function assertValidOwnerToken(owner: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(owner))
+    throw new Error(
+      `invalid owner token "${owner}": an owner must be a single NATS-safe token ([A-Za-z0-9_-]) — ` +
+        `no dots, '*', or '>'. A separator or wildcard in an owner id is lane breakout or aliasing, ` +
+        `so it is rejected rather than silently rewritten.`,
+    );
+  return owner;
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by

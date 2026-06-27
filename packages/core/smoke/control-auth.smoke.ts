@@ -27,6 +27,9 @@ import {
   newIdentity,
   setupSpaceStreams,
   controlServiceSubject,
+  chatSubject,
+  unicastSubject,
+  anycastSubject,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
@@ -91,7 +94,8 @@ try {
   }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrId = newIdentity();
+  const mgrCreds = await mintCreds(auth, mgrId, "manager");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
 
   // Two agents: one without capabilities, one declaring spawn. The stub provisioner skips
@@ -117,6 +121,19 @@ try {
   console.log("spawn-capable agent (capabilities:[spawn]):");
   check("publish ctl.manager.<id> ALLOWED", await tryPublish(capCreds, capPriv, capId.id) === "allowed");
   check("publish ctl.admin.<id> DENIED by nats-server", await tryPublish(capCreds, capAdmin, capId.id) === "denied");
+
+  // closure (i) GATE — the scoped operator (manager) can post AS ITSELF but can NEVER forge a message
+  // attributable to another actor. `tryPublish` reports "allowed" when the broker accepts the publish
+  // (no responder ⇒ timeout) and "denied" on an Authorization Violation, so a self-post is "allowed"
+  // and a cross-actor forge is "denied".
+  console.log("scoped manager (closure (i) — self-scoped publish, no forge):");
+  const victim = newIdentity();
+  check("manager post chat AS SELF ALLOWED", await tryPublish(mgrCreds, chatSubject(space, mgrId.id, "general"), mgrId.id) === "allowed");
+  check("manager FORGE chat as another actor DENIED", await tryPublish(mgrCreds, chatSubject(space, victim.id, "general"), mgrId.id) === "denied");
+  check("manager DM (inst) AS SELF ALLOWED", await tryPublish(mgrCreds, unicastSubject(space, victim.id, mgrId.id), mgrId.id) === "allowed");
+  check("manager FORGE inst as another actor DENIED", await tryPublish(mgrCreds, unicastSubject(space, victim.id, victim.id), mgrId.id) === "denied");
+  check("manager anycast (svc) AS SELF ALLOWED", await tryPublish(mgrCreds, anycastSubject(space, "worker", mgrId.id), mgrId.id) === "allowed");
+  check("manager FORGE svc as another actor DENIED", await tryPublish(mgrCreds, anycastSubject(space, "worker", victim.id), mgrId.id) === "denied");
 
   console.log(`\nCONTROL-AUTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

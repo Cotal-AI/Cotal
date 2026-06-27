@@ -141,11 +141,13 @@ try {
   }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrIdentity = newIdentity();
+  const mgrCreds = await mintCreds(auth, mgrIdentity, "manager");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
 
-  // Seed a lease key with the (allow-all) manager cred so the agent-read assertion has something to read.
-  await withConn(mgrCreds, newIdentity().id, async (nc) => {
+  // Seed a lease key with the manager cred. The scoped manager cred (closure (i)) allows reply-sub only
+  // on its OWN per-id `_INBOX_<id>` (+ default `_INBOX`), so a raw connection must use the cred's id.
+  await withConn(mgrCreds, mgrIdentity.id, async (nc) => {
     const kv = await new Kvm(nc).open(deliveryBucket(space));
     await kv.put(leaseKey(0), new TextEncoder().encode(JSON.stringify({ holder: "seed", since: 1 })));
   });

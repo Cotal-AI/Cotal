@@ -127,7 +127,8 @@ try {
   const kvNc = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(new TextEncoder().encode(mgrCreds)),
-    inboxPrefix: `_INBOX_kv_${mgrId.id}`,
+    // The scoped manager cred (closure (i)) allows reply-sub only on its OWN per-id `_INBOX_<id>`.
+    inboxPrefix: `_INBOX_${mgrId.id}`,
     maxReconnectAttempts: 0,
   });
   kvNc.on?.("error", () => {});
