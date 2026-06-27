@@ -3,6 +3,7 @@ import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } 
 import {
   DEFAULT_SERVER,
   mintCreds,
+  mkSecretDir,
   newIdentity,
   waitForDeliveryLease,
   writeSecretFile,
@@ -102,6 +103,7 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   const space = o.space ?? resolveSpace(process.cwd());
   const server = o.server ?? DEFAULT_SERVER;
   if (!deliveryUp()) {
+    mkSecretDir(cotalPath()); // harden .cotal/ before the cred lands (born under a private ACL, no race)
     writeSecretFile(CREDS_PATH(), creds);
     startDeliveryDetached({ ...o, space, server });
   }

@@ -43,21 +43,24 @@ if (!isWin) {
   // win32: the Unix mode is a no-op — the NTFS ACL is the boundary. Read it back with icacls and
   // assert the broad inherited principals are GONE and only owner + SYSTEM + Administrators remain.
   const acl = (p: string): string => execFileSync("icacls", [p], { encoding: "utf8" });
+  // The current account name (icacls shows resolved NAMES, not SIDs) — its ACE must survive so we
+  // never lock ourselves out of our own secret.
+  const user = execFileSync("whoami", { encoding: "utf8" }).trim(); // e.g. machine\user
   const broadGone = (out: string): boolean =>
     !/\bEveryone\b/i.test(out) &&
     !/\bAuthenticated Users\b/i.test(out) &&
     !/\\Users:/i.test(out); // BUILTIN\Users
   const hasSafe = (out: string): boolean =>
-    /\\SYSTEM:/i.test(out) && /\\Administrators:/i.test(out);
+    /\\SYSTEM:/i.test(out) && /\\Administrators:/i.test(out) && out.toLowerCase().includes(user.toLowerCase());
 
   const fileAcl = acl(file);
   check("file ACL strips Everyone / Authenticated Users / Users", broadGone(fileAcl));
-  check("file ACL grants SYSTEM + Administrators (+ owner)", hasSafe(fileAcl));
+  check("file ACL grants owner SID + SYSTEM + Administrators", hasSafe(fileAcl));
   check("file ACL dropped inheritance (no inherited ACEs)", !/\(I\)/.test(fileAcl));
 
   const dirAcl = acl(sub);
   check("dir ACL strips Everyone / Authenticated Users / Users", broadGone(dirAcl));
-  check("dir ACL grants SYSTEM + Administrators (+ owner)", hasSafe(dirAcl));
+  check("dir ACL grants owner SID + SYSTEM + Administrators", hasSafe(dirAcl));
 }
 
 rmSync(dir, { recursive: true, force: true, maxRetries: 10 });

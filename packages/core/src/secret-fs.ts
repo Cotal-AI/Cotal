@@ -59,9 +59,9 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
 
 /**
  * Write a private secret file: the bytes (mode 0o600 at create on POSIX), then {@link hardenPrivate}
- * for the win32 ACL. FAIL-CLOSED — if hardening throws, the just-written file is deleted before the
- * error propagates, so a secret is never left behind with a permissive ACL. `flag` (e.g. `"wx"` for
- * exclusive create) is honored.
+ * for the win32 ACL. FAIL-CLOSED — if hardening throws, the hardening error propagates (the caller
+ * never proceeds as if the secret were safe) and the just-written file is best-effort deleted so it
+ * isn't left readable. `flag` (e.g. `"wx"` for exclusive create) is honored.
  */
 export function writeSecretFile(path: string, data: string | Buffer, opts: { flag?: string } = {}): void {
   writeFileSync(path, data, opts.flag ? { mode: 0o600, flag: opts.flag } : { mode: 0o600 });
@@ -70,9 +70,9 @@ export function writeSecretFile(path: string, data: string | Buffer, opts: { fla
     hardenPrivate(path, "file");
   } catch (e) {
     try {
-      unlinkSync(path);
+      unlinkSync(path); // best-effort cleanup; the hardening error below is what the caller sees
     } catch {
-      /* ignore */
+      /* ignore — surface the original hardening failure, not a secondary unlink error */
     }
     throw e;
   }

@@ -22,6 +22,7 @@ import {
   setupSpaceStreams,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  mkSecretDir,
   writeSecretFile,
   type SpaceAuth,
   type ChannelRegistryFile,
@@ -512,6 +513,7 @@ async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
+    mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
     writeSecretFile(cotalPath("membership-observer.creds"), observer);
     writeSecretFile(cotalPath("membership-rw.creds"), rw);
     writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
