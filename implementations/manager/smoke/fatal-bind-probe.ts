@@ -6,6 +6,9 @@
  */
 import { startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 
+// NB: the token rides argv here only because this is a throwaway TEST probe (a fresh per-run token
+// the parent squats around). Real launches pass the token via env ONLY, never argv — see the
+// connectors' buildLaunch. Don't copy this argv pattern into a production launch path.
 const [path, token] = process.argv.slice(2);
 startControlServer({} as unknown as MeshAgent, { path, token }, async () => ({}), { fatalBind: true });
 setTimeout(() => process.exit(0), 3000);

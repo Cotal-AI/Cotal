@@ -102,7 +102,16 @@ export class PtyRuntime implements Runtime {
             proc.kill();
             return;
           }
-          setTimeout(() => alive && proc.kill(), GRACE_MS);
+          // `alive` guards the already-exited case; the try/catch covers the narrow race where the
+          // ConPTY tears down between the check and the kill (node-pty throws on a dead handle).
+          setTimeout(() => {
+            if (!alive) return;
+            try {
+              proc.kill();
+            } catch {
+              /* already gone */
+            }
+          }, GRACE_MS);
           return;
         }
         if (opts?.graceful === false) {

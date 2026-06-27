@@ -30,6 +30,7 @@ export function controlShutdown(endpoint: { path: string; token: string }): void
     }
   };
   const timer = setTimeout(finish, TIMEOUT_MS);
+  timer.unref?.(); // best-effort + fire-and-forget — never hold the manager's event loop open at exit
   try {
     sock = connect(endpoint.path);
   } catch {

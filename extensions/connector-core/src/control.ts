@@ -43,6 +43,14 @@ export interface ControlServerOpts {
   onShutdown?: () => void;
 }
 
+/** Hard cap on the first (only) frame: a control request is a token + one small lifecycle event —
+ *  kilobytes at most. Generous headroom for a legit event, tiny next to the ~512MB string limit an
+ *  unauthenticated spewer would otherwise drive `buf` toward to crash the process. */
+const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
+/** Idle window for a connection that hasn't sent its newline-terminated frame yet — reaps a silent
+ *  client camping on a finite pipe instance. Cleared once the full frame is in hand. */
+const CONN_IDLE_MS = 5_000;
+
 /** Constant-time match of a presented token against the endpoint's. Both sides are SHA-256'd first
  *  so the compare is fixed-length (and length-independent) regardless of the presented value — a
  *  non-string or wrong-length token can never throw `timingSafeEqual` or leak length via timing. */
@@ -96,11 +104,25 @@ export function startControlServer(
   }
   const server = createServer((sock) => {
     let buf = "";
+    let handled = false; // one frame per connection — ignore anything after the first line
     sock.setEncoding("utf8");
+    // Bound an UNAUTHENTICATED peer: on Windows the named pipe's default DACL lets any local process
+    // connect, so a client that streams bytes with no newline (would grow `buf` until it throws
+    // `Invalid string length` → crashes this long-lived process) or that connects and sends nothing
+    // (camps on a finite pipe instance) must be cut off BEFORE auth. The idle timeout reaps a silent
+    // client; MAX_FRAME_BYTES caps a spewing one. A legit client sends one small line immediately.
+    sock.setTimeout(CONN_IDLE_MS, () => sock.destroy());
     sock.on("data", async (d) => {
+      if (handled) return;
       buf += d;
+      if (buf.length > MAX_FRAME_BYTES) {
+        sock.destroy(); // oversized pre-newline — drop hard, never half-close (it keeps spewing)
+        return;
+      }
       const nl = buf.indexOf("\n");
       if (nl < 0) return; // wait for the full line
+      handled = true;
+      sock.setTimeout(0); // full frame in hand — don't let the idle timeout reap a slow handler
       let frame: ControlFrame = {};
       try {
         frame = JSON.parse(buf.slice(0, nl) || "{}") as ControlFrame;
@@ -108,7 +130,7 @@ export function startControlServer(
         /* malformed — fails the auth check below and is dropped */
       }
       if (!tokenMatches(frame.token, digest)) {
-        sock.end(); // unauthenticated — drop before handle/onShutdown
+        sock.destroy(); // unauthenticated — drop hard before handle/onShutdown (no half-open)
         return;
       }
       if ((frame as { op?: unknown }).op === "shutdown") {

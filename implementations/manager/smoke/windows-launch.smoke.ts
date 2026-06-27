@@ -448,5 +448,51 @@ if (isWin) {
   console.log("· fatal-bind-on-squat needs a live named-pipe squatter (EADDRINUSE) — win32-only, skipped (CI is the oracle)");
 }
 
+// =================================================================================================
+// H. pre-auth DoS hardening — on the win32 pipe ANY local process can connect, so an UNauthenticated
+//    client streaming bytes with no newline must NOT grow `buf` toward the ~512MB string limit and
+//    crash the long-lived server. The connection is dropped (oversized) and the server keeps serving.
+//    Runs everywhere (the bound is platform-agnostic).
+// =================================================================================================
+{
+  const stubAgent = {} as unknown as MeshAgent;
+  const ep = controlEndpoint("smoke", "dos");
+  let hits = 0;
+  const handle = async (): Promise<Record<string, unknown>> => {
+    hits++;
+    return { ok: true };
+  };
+  const server = startControlServer(stubAgent, ep, handle);
+  await waitListening(server);
+
+  // Stream >1 MiB with NO newline — must be dropped without ever reaching the handler or crashing.
+  const flood = await new Promise<string>((resolve) => {
+    const sock = connect(ep.path);
+    let done = false;
+    const finish = (r: string): void => {
+      if (done) return;
+      done = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(r);
+    };
+    sock.on("connect", () => sock.write("x".repeat((1 << 20) + 1024)));
+    sock.on("close", () => finish("closed"));
+    sock.on("error", () => finish("closed"));
+    setTimeout(() => finish("timeout"), 4000);
+  });
+  check("DoS: oversized newline-less frame is dropped (connection closed)", flood === "closed");
+  eq("DoS: oversized frame never reached the handler", hits, 0);
+
+  // The server SURVIVED the flood and still serves a valid frame on a fresh connection.
+  const r = await sendFrame(ep.path, { token: ep.token, event: { hook_event_name: "Ping" } });
+  eq("DoS: server still serves a valid frame after the flood", r.trim(), JSON.stringify({ ok: true }));
+  eq("DoS: the post-flood valid frame reached the handler", hits, 1);
+  server.close();
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
