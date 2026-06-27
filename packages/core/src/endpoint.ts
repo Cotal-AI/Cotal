@@ -144,6 +144,11 @@ export interface EndpointOptions {
   registerPresence?: boolean;
   /** Track the roster of peers (default true). */
   watchPresence?: boolean;
+  /** Open + watch the channel registry (default true). Independent of {@link watchPresence}: a
+   *  presence-only supervisor sets this false to track the roster WITHOUT opening the channel-registry
+   *  cache — so its cred needs no channel-registry read grant (residual 2). No effect when `consume` is
+   *  true: the join-time replay decision reads the registry, so a consumer always opens it. */
+  watchChannels?: boolean;
   /** Create inbound stream consumers (DM / chat / anycast). Default true; a pure observer sets false. */
   consume?: boolean;
   /** Initial per-channel attention overrides to publish in presence from the first heartbeat (the
@@ -202,6 +207,7 @@ export class CotalEndpoint extends EventEmitter {
   private readonly ttlMs: number;
   private readonly doRegister: boolean;
   private readonly doWatch: boolean;
+  private readonly doWatchChannels: boolean;
   private readonly doConsume: boolean;
   private readonly ackWaitMs: number;
   private readonly inactiveThresholdMs: number;
@@ -327,6 +333,7 @@ export class CotalEndpoint extends EventEmitter {
     this.ttlMs = opts.ttlMs ?? 6000;
     this.doRegister = opts.registerPresence ?? true;
     this.doWatch = opts.watchPresence ?? true;
+    this.doWatchChannels = opts.watchChannels ?? true;
     this.doConsume = opts.consume ?? true;
     // Seed the presence mirror so file-default channel modes are visible from the first publish
     // (not only after the first runtime toggle). Mirror only — delivery reads the connector's state.
@@ -386,11 +393,14 @@ export class CotalEndpoint extends EventEmitter {
     }
 
     // Open the channel registry bucket when we either watch it (live cache for the connector's
-    // pull/display) or consume (the join-time replay decision reads it fresh). Auth mode OPENs
-    // the bucket pre-created at `cotal up`; open mode lazily creates it.
-    if (this.doWatch || this.doConsume) {
+    // pull/display) or consume (the join-time replay decision reads it fresh). A presence-only
+    // supervisor (watchChannels:false, consume:false) skips it entirely — it needs no channel cache,
+    // so its scoped cred holds no channel-registry read (residual 2). Auth mode OPENs the bucket
+    // pre-created at `cotal up`; open mode lazily creates it.
+    const watchChannels = this.doWatch && this.doWatchChannels;
+    if (watchChannels || this.doConsume) {
       this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.creds });
-      if (this.doWatch) await this.startChannelWatch();
+      if (watchChannels) await this.startChannelWatch();
     }
 
     if (this.doRegister) {

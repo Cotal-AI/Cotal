@@ -171,6 +171,10 @@ export class Manager {
       // under auth avoids trying to bind its own DM/task durables that nothing pre-created.
       // It still pre-creates OTHERS' durables via provisionDmInbox/provisionTaskQueue (lazy jsm).
       consume: false,
+      // It also never reads the channel registry (it provisions + serves control, no channel
+      // pull/display), so skip the channel-registry watch — the supervisor cred (residual 2) then
+      // holds no channel-KV read grant. Presence (the roster) is still watched.
+      watchChannels: false,
       card: { id, name: this.name, role: "manager", kind: "endpoint" },
     });
     // Surface endpoint errors (incl. NATS permission denials) — without a listener an
