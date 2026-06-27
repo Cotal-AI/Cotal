@@ -21,6 +21,7 @@ import {
   newIdentity,
   setupSpaceStreams,
   seedChannelRegistry,
+  ensureDefaultDeliveryClass,
   type SpaceAuth,
   type ChannelRegistryFile,
 } from "@cotal-ai/core";
@@ -444,6 +445,16 @@ async function postStart(
   if (seedFile) {
     await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
   }
+  // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
+  // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
+  // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
+  // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
+  await ensureDefaultDeliveryClass({
+    servers: server,
+    space,
+    creds: setup?.creds,
+    deliveryClass: setup ? "durable" : "live",
+  });
 }
 
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
