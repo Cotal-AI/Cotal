@@ -143,6 +143,7 @@ try {
   console.log("scoped manager (closure (i) residual (3) — presence write is self-keyed, no roster spoof):");
   check("manager write OWN presence key ALLOWED", await tryPublish(mgrCreds, `$KV.${presenceBucket(space)}.${mgrId.id}`, mgrId.id) === "allowed");
   check("manager FORGE a peer's presence key DENIED", await tryPublish(mgrCreds, `$KV.${presenceBucket(space)}.${victim.id}`, mgrId.id) === "denied");
+  check("manager PURGE the presence stream (force-offline a peer) DENIED", await tryPublish(mgrCreds, `$JS.API.STREAM.PURGE.KV_${presenceBucket(space)}`, mgrId.id) === "denied");
 
   console.log(`\nCONTROL-AUTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

@@ -503,7 +503,9 @@ function permissionsFor(
  *   • `$KV.>` is SCOPED to exactly the buckets the operator writes — own presence key ONLY (no peer
  *     roster spoof), the manager lease, the agent read-ACL registry, the channel registry — paired with a
  *     read-side guard in endpoint.ts `applyPresence` that drops a presence record whose KV key !=
- *     `card.id`. (Was: blanket `$KV.>` ⇒ write any agent's presence key and spoof its identity/status.)
+ *     `card.id`, PLUS a `deny` on PURGE / MSG.DELETE of the presence KV stream so the operator can't
+ *     force-offline a peer (a DEL/PURGE drives every watcher's `markOffline`). (Was: blanket `$KV.>` ⇒
+ *     write any agent's presence key and spoof its identity/status; `$JS.>` ⇒ purge a peer offline.)
  *   • The legacy Plane-3 FALLBACK grants (`${p}.dinbox.*` / `${p}.dlv.*` / `ctl.delivery.*.reply.>`) are
  *     REMOVED — they were a true sender-FORGE (the `dlv.<recipient>` subject names the receiver, so the
  *     body's `from` can't be subject-checked) kept only for a manager-hosted Plane-3 that no longer
@@ -565,6 +567,14 @@ function managerPermissions(space: string, id: string): Record<string, unknown> 
         `$JS.API.CONSUMER.MSG.NEXT.${DLV}.>`,
         `$JS.API.STREAM.MSG.GET.${DM}`,
         `$JS.API.STREAM.MSG.GET.${DLV}`,
+        // No force-offline tamper of a peer's presence. The write-scoping above stops a value FORGE, but
+        // `$JS.>` would still let the operator PURGE / MSG.DELETE the presence KV stream — and a resulting
+        // DEL/PURGE drives every watcher's `markOffline`, dropping the peer from all rosters (the read-side
+        // `applyPresence` guard never sees a delete). The manager never purges individual presence keys
+        // (its own offline is a `$KV` publish; `cotal down` rides STREAM.DELETE; ACL/member purges are
+        // `$KV`-level, not stream purges), so denying these closes the tamper with no operator-role cost.
+        `$JS.API.STREAM.PURGE.KV_${presenceBucket(space)}`,
+        `$JS.API.STREAM.MSG.DELETE.KV_${presenceBucket(space)}`,
       ],
     },
     sub: {
