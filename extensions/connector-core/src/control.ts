@@ -47,9 +47,11 @@ export interface ControlServerOpts {
  *  kilobytes at most. Generous headroom for a legit event, tiny next to the ~512MB string limit an
  *  unauthenticated spewer would otherwise drive `buf` toward to crash the process. */
 const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
-/** Idle window for a connection that hasn't sent its newline-terminated frame yet — reaps a silent
- *  client camping on a finite pipe instance. Cleared once the full frame is in hand. */
-const CONN_IDLE_MS = 5_000;
+/** ABSOLUTE deadline (not an idle timeout — a slow-loris dribbling one byte at a time would keep
+ *  resetting an idle timer) for a connection to deliver its complete auth frame. Past it, an
+ *  unauthenticated connection is dropped so a local process can't camp on a finite pipe instance.
+ *  Cleared the instant a full frame is in hand (the token-bearing client then owns the connection). */
+const AUTH_DEADLINE_MS = 5_000;
 
 /** Constant-time match of a presented token against the endpoint's. Both sides are SHA-256'd first
  *  so the compare is fixed-length (and length-independent) regardless of the presented value — a
@@ -107,11 +109,14 @@ export function startControlServer(
     let handled = false; // one frame per connection — ignore anything after the first line
     sock.setEncoding("utf8");
     // Bound an UNAUTHENTICATED peer: on Windows the named pipe's default DACL lets any local process
-    // connect, so a client that streams bytes with no newline (would grow `buf` until it throws
-    // `Invalid string length` → crashes this long-lived process) or that connects and sends nothing
-    // (camps on a finite pipe instance) must be cut off BEFORE auth. The idle timeout reaps a silent
-    // client; MAX_FRAME_BYTES caps a spewing one. A legit client sends one small line immediately.
-    sock.setTimeout(CONN_IDLE_MS, () => sock.destroy());
+    // connect, so a client that streams bytes with no newline (would grow `buf` toward the ~512MB
+    // string limit → crashes this long-lived process), that connects and sends nothing, OR that
+    // dribbles a byte at a time (a slow-loris) to camp on a finite pipe instance must be cut off
+    // BEFORE auth. MAX_FRAME_BYTES caps a spewing one; an ABSOLUTE deadline (reset-proof, unlike an
+    // idle timeout) reaps a silent/slow one. A legit client sends one small line immediately.
+    const deadline = setTimeout(() => sock.destroy(), AUTH_DEADLINE_MS);
+    deadline.unref?.(); // never hold the process open on an unauthenticated connection
+    sock.on("close", () => clearTimeout(deadline));
     sock.on("data", async (d) => {
       if (handled) return;
       buf += d;
@@ -122,7 +127,7 @@ export function startControlServer(
       const nl = buf.indexOf("\n");
       if (nl < 0) return; // wait for the full line
       handled = true;
-      sock.setTimeout(0); // full frame in hand — don't let the idle timeout reap a slow handler
+      clearTimeout(deadline); // full frame in hand — the token-bearing client now owns the connection
       let frame: ControlFrame = {};
       try {
         frame = JSON.parse(buf.slice(0, nl) || "{}") as ControlFrame;

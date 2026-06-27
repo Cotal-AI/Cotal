@@ -491,6 +491,38 @@ if (isWin) {
   const r = await sendFrame(ep.path, { token: ep.token, event: { hook_event_name: "Ping" } });
   eq("DoS: server still serves a valid frame after the flood", r.trim(), JSON.stringify({ ok: true }));
   eq("DoS: the post-flood valid frame reached the handler", hits, 1);
+
+  // Slow-loris: dribble bytes (no newline) PAST the auth deadline. An ABSOLUTE deadline must drop it
+  // even though traffic keeps arriving — an idle timeout would reset on each byte and never fire.
+  const loris = await new Promise<string>((resolve) => {
+    const sock = connect(ep.path);
+    let done = false;
+    const finish = (s: string): void => {
+      if (done) return;
+      done = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(s);
+    };
+    sock.on("connect", () => {
+      let n = 0;
+      const t = setInterval(() => {
+        if (n++ > 9 || sock.destroyed) return clearInterval(t);
+        try {
+          sock.write("x"); // one byte, never a newline — past the 5s deadline (~8s of dribble)
+        } catch {
+          clearInterval(t);
+        }
+      }, 800);
+    });
+    sock.on("close", () => finish("closed"));
+    sock.on("error", () => finish("closed"));
+    setTimeout(() => finish("timeout"), 11000);
+  });
+  check("DoS: a slow-loris (dribbled bytes, no newline) is dropped at the absolute auth deadline", loris === "closed");
   server.close();
 }
 
