@@ -1,5 +1,12 @@
 # @cotal-ai/connector-opencode
 
+## 0.8.2
+
+### Patch Changes
+
+- 58b673a: Drive OpenCode peer-message turns through the authenticated serve HTTP API for the exact attached session.
+  - @cotal-ai/connector-core@0.8.2
+
 ## 0.8.1
 
 ### Patch Changes
