@@ -6,7 +6,7 @@
  *   2. poke it once so the lazily-loaded plugin initializes (joins the mesh, creates ONE session);
  *   3. the plugin announces that session's id on stderr (`[cotal-session] <id>`);
  *   4. launch a foreground `opencode attach <url> --session <id>` — the TUI opens straight onto the
- *      agent's session, and every turn the plugin drives (via `session.promptAsync`) renders live.
+ *      agent's session, and every turn the plugin drives through this exact server renders live.
  *
  * The attach TUI is a pure viewer (it connects to the running server); its env strips the plugin
  * config + COTAL_* so it never loads a *second* mesh endpoint.
@@ -43,6 +43,7 @@ function resolveOpencodeBin(): string {
 }
 
 const BIN = resolveOpencodeBin();
+const USERNAME = "opencode";
 
 /** Per-launch secret gating the spawned server's HTTP API (see SECURITY above). */
 const SECRET = randomBytes(24).toString("hex");
@@ -103,7 +104,13 @@ async function main(): Promise<void> {
 
   mkdirSync(agentHome, { recursive: true });
   const serve = spawn(BIN, ["serve", "--hostname", "127.0.0.1", "--port", port], {
-    env: { ...process.env, OPENCODE_SERVER_PASSWORD: SECRET, OPENCODE_DB: dbPath },
+    env: {
+      ...process.env,
+      COTAL_OPENCODE_SERVER_URL: url,
+      OPENCODE_SERVER_USERNAME: USERNAME,
+      OPENCODE_SERVER_PASSWORD: SECRET,
+      OPENCODE_DB: dbPath,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   writeFileSync(pidFile, String(serve.pid));
@@ -136,7 +143,7 @@ async function main(): Promise<void> {
   // bootstrap that loads the plugin. Each poke carries its own abort timeout: a request that
   // lands in the early-boot window can hang with no response, and an un-timed fetch would pin
   // the loop on it forever (undici queues later requests behind it on the pooled connection).
-  const auth = `Basic ${Buffer.from(`opencode:${SECRET}`).toString("base64")}`;
+  const auth = `Basic ${Buffer.from(`${USERNAME}:${SECRET}`).toString("base64")}`;
   void (async () => {
     for (let i = 0; i < 300 && !sessionId; i++) {
       try {
@@ -164,6 +171,7 @@ async function main(): Promise<void> {
 
   const tuiEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    OPENCODE_SERVER_USERNAME: USERNAME,
     OPENCODE_SERVER_PASSWORD: SECRET,
     OPENCODE_DB: dbPath,
   };

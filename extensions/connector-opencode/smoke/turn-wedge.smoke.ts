@@ -6,21 +6,33 @@
  * first human turn left `busy` stuck true and every later channel/DM push was buffered forever.
  *
  * Flow (no model, no `opencode` binary — just the plugin closure + a real mesh):
- *   1. a live channel message drives a turn (promptAsync #1)  — baseline push works;
+ *   1. a live channel message drives a turn (prompt_async #1)  — baseline push works;
  *   2. that turn completes (session.idle);
  *   3. a HUMAN turn runs on the same session (session.status busy → session.idle) — the wedge trigger;
- *   4. a second channel message MUST still drive a turn (promptAsync #2) — pre-fix this never fires.
+ *   4. a second channel message MUST still drive a turn (prompt_async #2) — pre-fix this never fires.
  * Run: pnpm smoke:opencode
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { cotal } from "../src/plugin.js";
 
-const PORT = 14238;
+async function freePort(): Promise<number> {
+  const srv = createNetServer();
+  srv.listen(0, "127.0.0.1");
+  await once(srv, "listening");
+  const port = (srv.address() as { port: number }).port;
+  await new Promise<void>((r) => srv.close(() => r()));
+  return port;
+}
+
+const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "ocwedge";
 const SID = "ses_test";
@@ -28,6 +40,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-ocwedge-"));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -35,26 +48,46 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-// The plugin reads its identity from COTAL_* env (it runs inside the opencode process).
+// A fake OpenCode HTTP server: hand the plugin a session id and record every turn it drives.
+const prompts: { id: string; body: unknown }[] = [];
+const oc = createHttpServer((req, res) => {
+  if (req.headers.authorization !== auth) {
+    res.writeHead(401).end();
+    return;
+  }
+  let raw = "";
+  req.setEncoding("utf8");
+  req.on("data", (d) => (raw += d));
+  req.on("end", () => {
+    if (req.method === "POST" && req.url === "/session") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: SID }));
+      return;
+    }
+    if (req.method === "POST" && req.url === `/session/${SID}/prompt_async`) {
+      prompts.push({ id: SID, body: raw ? JSON.parse(raw) : undefined });
+      res.writeHead(204).end();
+      return;
+    }
+    res.writeHead(404).end();
+  });
+});
+oc.listen(0, "127.0.0.1");
+await once(oc, "listening");
+const ocPort = (oc.address() as { port: number }).port;
+
+// The plugin reads its identity from COTAL_* env (it runs inside the opencode process). Scrub any
+// managed-agent env inherited by this smoke itself; stale creds/links would point at the wrong broker.
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 Object.assign(process.env, {
   COTAL_NAME: "Otto",
   COTAL_SPACE: space,
   COTAL_SERVERS: servers,
   COTAL_SUBSCRIBE: "team",
   COTAL_ROLE: "generalist",
+  COTAL_OPENCODE_SERVER_URL: `http://127.0.0.1:${ocPort}`,
+  OPENCODE_SERVER_USERNAME: "opencode",
+  OPENCODE_SERVER_PASSWORD: "test-secret",
 });
-
-// A fake opencode client: hand the plugin a session id and record every turn it drives.
-const prompts: { id: string }[] = [];
-const fakeClient = {
-  session: {
-    create: async (_: unknown) => ({ data: { id: SID } }),
-    promptAsync: async ({ path }: { path: { id: string } }) => {
-      prompts.push({ id: path.id });
-      return { data: {} };
-    },
-  },
-};
 
 // Fire one opencode bus event at the plugin's `event` hook.
 type Hooks = Awaited<ReturnType<typeof cotal>>;
@@ -76,8 +109,12 @@ try {
   await pub.start();
 
   // Boot the plugin (it connects its mesh agent in the background and creates session SID).
-  hooks = await cotal({ client: fakeClient } as never);
-  await sleep(2000); // let the internal MeshAgent connect + subscribe to #team
+  hooks = await cotal({} as never);
+  for (let i = 0; i < 50; i++) {
+    if (pub.getRoster().some((p) => p.card.name === "Otto")) break;
+    await sleep(100);
+  }
+  check("the opencode plugin came online (Otto live in the publisher roster)", pub.getRoster().some((p) => p.card.name === "Otto"));
 
   // (1) a live channel message drives a turn — baseline push works.
   await pub.multicast("hello team", { channel: "team" });
@@ -102,6 +139,7 @@ try {
   await hooks?.dispose?.();
   await pub.stop();
   srv.kill("SIGKILL");
+  oc.close();
   await sleep(150);
   rmSync(dir, { recursive: true, force: true });
 }

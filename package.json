@@ -14,7 +14,7 @@
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "test": "pnpm -r --if-present test",
     "check": "pnpm typecheck && pnpm test && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:ci",
-    "smoke:ci": "pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill",
+    "smoke:ci": "pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "clean": "git clean -fdX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "cotal": "tsx bin/cotal.ts",

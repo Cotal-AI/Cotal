@@ -8,9 +8,9 @@
  *  • registers the cotal_* tools natively, rendered from the SHARED {@link cotalToolSpecs}
  *    (`./tools.ts`) — same surface as Claude Code, incl. channels / join / leave / channel_info;
  *  • maps OpenCode bus events to presence (idle | working | waiting | offline);
- *  • owns ONE session (created at boot) and drives it: it injects each inbox batch as a turn via the
- *    prompt API (`session.promptAsync` — server-side, so it can't race the TUI input box; the
- *    attached TUI renders it live), acking ON TURN COMPLETION (so a crash/error redelivers).
+ *  • owns ONE session (created at boot) and drives it: it injects each inbox batch as a turn through
+ *    the authenticated OpenCode server HTTP API (the same server the TUI is attached to), acking ON
+ *    TURN COMPLETION (so a crash/error redelivers).
  *    Delivery is **attention-aware** (open/dnd/focus) and never interrupts a running turn — a
  *    message that arrives mid-turn waits for the turn to end (matching Claude's no-interrupt
  *    behavior), then drives.
@@ -42,7 +42,7 @@ function log(msg: string): void {
  *  one agent), whichever scope opencode ends up using. */
 const guard = globalThis as { __cotalOpencodeHooks?: Hooks };
 
-export const cotal: Plugin = async ({ client }) => {
+export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
   if (!hasIdentity()) {
     log("no COTAL_NAME — not a managed session; staying off the mesh");
@@ -51,8 +51,29 @@ export const cotal: Plugin = async ({ client }) => {
   if (guard.__cotalOpencodeHooks) return guard.__cotalOpencodeHooks; // one agent; reuse the hooks
   const config = configFromEnv();
   config.connector = "opencode"; // advertise the host harness on our AgentCard (meta.connector)
+  const serverUrl = process.env.COTAL_OPENCODE_SERVER_URL?.trim();
+  const serverUsername = process.env.OPENCODE_SERVER_USERNAME?.trim() || "opencode";
+  const serverPassword = process.env.OPENCODE_SERVER_PASSWORD?.trim();
+  if (!serverUrl || !serverPassword) throw new Error("opencode connector: missing COTAL_OPENCODE_SERVER_URL/OPENCODE_SERVER_PASSWORD");
+  const serverAuth = `Basic ${Buffer.from(`${serverUsername}:${serverPassword}`).toString("base64")}`;
+
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks startup
+
+  async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
+    const res = await fetch(`${serverUrl}${path}`, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
+      headers: {
+        authorization: serverAuth,
+        "content-type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) throw new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`);
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  }
 
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   // Face-hosted (`face:` in the agent file → the shim attaches the face viewer): teach the agent
@@ -81,7 +102,7 @@ export const cotal: Plugin = async ({ client }) => {
   let sessionID: string | undefined;
   let busy = false; // a turn is running (ours via drive(), OR the human's via session.status) → don't
   // prompt: opencode would COALESCE onto it (no reject). Released at EVERY turn end (completeTurn).
-  let driving = false; // re-entrancy guard around an in-flight promptAsync
+  let driving = false; // re-entrancy guard around an in-flight server prompt
   let primed = false; // persona is prepended to the first turn's text once
   let briefed = false; // the boot channel briefing is prepended once, on the first turn
   let surfaced: string[] = []; // ids surfaced into the current turn, acked on completion (by id, not count)
@@ -158,8 +179,11 @@ export const cotal: Plugin = async ({ client }) => {
    *  can't be picked. Awaited by ensureSession before the first drive. */
   const sessionReady: Promise<string | undefined> = (async () => {
     try {
-      const res = await client.session.create({ body: { title: `cotal:${config.space}:${config.name}` } });
-      const id = res.data?.id;
+      const res = await opencodeApi<{ id?: string }>("/session", {
+        method: "POST",
+        body: JSON.stringify({ title: `cotal:${config.space}:${config.name}` }),
+      }, 10_000);
+      const id = res.id;
       if (id) {
         adoptSession(id, "boot");
         process.stderr.write(`[cotal-session] ${id}\n`);
@@ -176,7 +200,7 @@ export const cotal: Plugin = async ({ client }) => {
   }
 
   /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
-   *  session via the prompt API — server-side, so it can't race like the TUI input box, and the TUI
+   *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
    *  renders it live (it subscribes to that session's events). Surfaces the items but does NOT ack
    *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. `override` replaces
    *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
@@ -211,10 +235,10 @@ export const cotal: Plugin = async ({ client }) => {
       if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}`;
       busy = true;
       surfaced = ids;
-      // Arm BEFORE the await: a turn-end signal can land before promptAsync resolves, and
+      // Arm BEFORE the await: a turn-end signal can land before the server request resolves, and
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
-      await client.session.promptAsync({ path: { id }, body });
+      await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
       primed = true;
     } catch (e) {
       busy = false;

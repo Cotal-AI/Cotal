@@ -18,8 +18,8 @@ const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
  * OpenCode's client/server split (see serve.ts). The Cotal mesh bridge runs as an in-process plugin
  * inside a headless `opencode serve`: it holds the {@link MeshAgent}, registers the cotal_* tools
  * natively (from the shared specs, at parity with Claude Code), reports presence off the event bus,
- * and owns ONE session it drives — injecting each incoming peer batch as a turn via the prompt API
- * (`session.promptAsync`, server-side, so it can't race the TUI input box). The shim then attaches a
+ * and owns ONE session it drives — injecting each incoming peer batch through the authenticated
+ * OpenCode server API on the same serve process the TUI attaches to. The shim then attaches a
  * foreground TUI to that session, so a human watching sees the agent work and can type into it.
  *
  * Config rides in `OPENCODE_CONFIG_CONTENT` (inline JSON, the highest merge layer), so the
