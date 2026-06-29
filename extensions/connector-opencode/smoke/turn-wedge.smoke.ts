@@ -109,7 +109,7 @@ try {
   await pub.start();
 
   // Boot the plugin (it connects its mesh agent in the background and creates session SID).
-  hooks = await cotal({} as never);
+  hooks = await cotal();
   for (let i = 0; i < 50; i++) {
     if (pub.getRoster().some((p) => p.card.name === "Otto")) break;
     await sleep(100);

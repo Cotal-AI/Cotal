@@ -31,7 +31,7 @@ process.env.COTAL_OPENCODE_SERVER_URL = `http://127.0.0.1:${port}`;
 process.env.OPENCODE_SERVER_USERNAME = "opencode";
 process.env.OPENCODE_SERVER_PASSWORD = "test-secret";
 
-await cotal({} as never);
+await cotal();
 
 // The plugin's control server keeps the event loop alive; the authenticated shutdown op calls
 // process.exit(0). Backstop: never linger on CI if the parent dies before driving shutdown.
