@@ -1,0 +1,52 @@
+# Frontier Tower faces — declarative mesh.
+#
+#   cotal up -f cotal.yaml            # fresh broker + channels + the four agents
+#   cotal up -f cotal.yaml --dry-run  # validate + print the plan, change nothing
+#
+# Channel membership lives here, not in a launcher script: `subscribe` is who reads a
+# channel, `allowPublish` is who may post to it (`allowSubscribe` defaults to `subscribe`).
+apiVersion: cotal/v1
+kind: Mesh
+space: frontier
+
+# A fresh OPEN broker on its own port — the default :4222 is usually taken by another mesh.
+broker:
+  servers: nats://127.0.0.1:4299
+  auth: false
+
+# Every agent is an OpenCode-hosted persona; model/role/face come from the .md frontmatter.
+agent: opencode
+
+# The cast — each entry points at its persona file (resolved relative to this manifest).
+agents:
+  sven: agents/sven.md
+  david: agents/david.md
+  garry: agents/garry.md
+  elon: agents/elon.md
+  michelle: agents/michelle.md
+  mira: agents/mira.md
+
+channels:
+  # Everyone — the open broadcast panel.
+  general:
+    description: The whole panel — open broadcast to every agent.
+    subscribe: [sven, david, garry, elon, michelle, mira]
+    allowPublish: [sven, david, garry, elon, michelle, mira]
+
+  # The two founders building Cotal.
+  cotal:
+    description: Building Cotal — the founders on the wire protocol.
+    subscribe: [david, sven]
+    allowPublish: [david, sven]
+
+  # Spicy provocations — the optimist, accelerationist, contrarian, and perfectionist go at it.
+  hot-takes:
+    description: Spicy provocations — no consensus required.
+    subscribe: [sven, garry, elon, david]
+    allowPublish: [sven, garry, elon, david]
+
+  # The women's room: the conscience and the diplomat on stewardship and getting it right.
+  salon:
+    description: Stewardship and getting it right — the conscience and the diplomat.
+    subscribe: [michelle, mira]
+    allowPublish: [michelle, mira]

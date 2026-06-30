@@ -26,6 +26,7 @@ import { connect as netConnect } from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { CotalEndpoint } from "@cotal-ai/core";
 
 // ---- paths + config -------------------------------------------------------------------------
@@ -36,25 +37,51 @@ const CONN = join(ROOT, "extensions", "connector-opencode", "dist");
 const SERVE = join(CONN, "serve.js");
 const PLUGIN = join(CONN, "plugin.bundle.js");
 
-const SPACE = process.env.SPACE || "demo";
-const SERVERS = process.env.COTAL_SERVERS || "nats://127.0.0.1:4222";
 const PORT = Number(process.env.PORT || 4097);
 const MODEL = process.env.MODEL || ""; // overrides each agent file's model
 const EFFORT = process.env.REASONING_EFFORT || "medium"; // reasoning effort for models that support it
 const MAX = 9;
-const DEFAULT_ROSTER = ["sven", "david", "garry", "elon"];
-// Channels the panel shares (Slack-style). `general` is always present (the default broadcast
-// target); add more with CHANNELS=general,ideas,random — every agent joins all of them.
-const CHANNELS = (process.env.CHANNELS || "general").split(",").map((s) => s.trim()).filter(Boolean);
-if (!CHANNELS.includes("general")) CHANNELS.unshift("general");
-// Idle attract loop: when nobody has interacted for a while, seed #general so the panel keeps
-// talking for passers-by. ATTRACT=0 disables it. Tunable for a permanent lobby kiosk.
-const ATTRACT = process.env.ATTRACT !== "0";
+
+// The roster and per-channel membership come from a Cotal mesh manifest (cotal.yaml): a channel's
+// `subscribe` is who reads it, `allowPublish` who may post. `-f <path>` overrides ./cotal.yaml.
+function manifestPath() {
+  const i = process.argv.indexOf("-f");
+  return (i >= 0 && process.argv[i + 1]) || process.env.MANIFEST || join(EX, "cotal.yaml");
+}
+function loadManifest() {
+  const path = manifestPath();
+  if (!existsSync(path)) throw new Error(`no manifest at ${path} — pass -f <cotal.yaml>`);
+  const raw = parseYaml(readFileSync(path, "utf8")) || {};
+  if (!raw.channels) throw new Error(`${path}: manifest has no \`channels:\``);
+  const channels = Object.entries(raw.channels).map(([name, c]) => ({
+    name,
+    description: c?.description || "",
+    subscribe: c?.subscribe || [],
+    publish: c?.allowPublish || [],
+  }));
+  if (!channels.some((c) => c.name === "general")) throw new Error(`${path}: needs a \`general\` channel`);
+  return { path, space: raw.space, servers: raw.broker?.servers, agents: Object.keys(raw.agents || {}), channels };
+}
+const manifest = loadManifest();
+
+const SPACE = process.env.SPACE || manifest.space || "demo";
+// The manifest's broker wins over an ambient COTAL_SERVERS: the operator's own shell may be on a
+// DIFFERENT mesh (e.g. an MCP Cotal session) whose COTAL_SERVERS must not redirect the studio.
+const SERVERS = manifest.servers || process.env.COTAL_SERVERS || "nats://127.0.0.1:4222";
+const CHANNELS = manifest.channels.map((c) => c.name); // the operator joins every channel (it sees all)
+// Per-agent channel membership, inverted from the manifest (the channels each name appears in).
+const subsOf = (name) => manifest.channels.filter((c) => c.subscribe.includes(name)).map((c) => c.name);
+const pubsOf = (name) => manifest.channels.filter((c) => c.publish.includes(name)).map((c) => c.name);
+const membersOf = (ch) => manifest.channels.find((c) => c.name === ch)?.subscribe ?? [];
+// Idle attract loop — a KIOSK feature, OFF by default: when nobody's interacted for a while it seeds
+// #general so an unattended signage screen keeps talking for passers-by. Opt in with ATTRACT=1 (it
+// would only interrupt someone who's actually using the panel). Tunable for a permanent lobby kiosk.
+const ATTRACT = process.env.ATTRACT === "1";
 const ATTRACT_IDLE_MS = Number(process.env.ATTRACT_IDLE_MS || 120_000); // quiet this long → seed
 const ATTRACT_EVERY_MS = Number(process.env.ATTRACT_EVERY_MS || 180_000); // min gap between seeds
-// Auto fresh-start: after this long unattended, wipe + reset contexts + snap the view to #general,
-// so each new visitor gets a clean panel (no prior stranger's chat/DMs). AUTO_RESET=0 disables it.
-const AUTO_RESET = process.env.AUTO_RESET !== "0";
+// Auto fresh-start — also KIOSK-only, OFF by default: after long idle it wipes + resets contexts so
+// the next visitor gets a clean panel. Opt in with AUTO_RESET=1 (it would wipe a real user's chat).
+const AUTO_RESET = process.env.AUTO_RESET === "1";
 const AUTO_RESET_IDLE_MS = Number(process.env.AUTO_RESET_IDLE_MS || 1_200_000); // 20 min unattended → fresh-start
 const MAX_SAY = 500; // hard cap on a single message (kiosk anti-flood, with the client maxlength)
 const SEEDS = [
@@ -95,9 +122,8 @@ function opencodeConfig(model) {
   return cfg;
 }
 
-// ---- roster resolution ----------------------------------------------------------------------
-let roster = process.argv.slice(2).filter((a) => !a.startsWith("-"));
-if (roster.length === 0) roster = DEFAULT_ROSTER;
+// ---- roster (from the manifest) -------------------------------------------------------------
+let roster = manifest.agents;
 if (roster.length > MAX) {
   warn(`capping roster at ${MAX} (got ${roster.length})`);
   roster = roster.slice(0, MAX);
@@ -197,14 +223,15 @@ function spawnAgent(name) {
     COTAL_SERVERS: SERVERS,
     COTAL_AGENT_FILE: file,
     COTAL_OPENCODE_HOME: ROOT,
-    // Put every agent on all of the studio's channels (read + post), overriding the file's general-only ACL.
-    COTAL_SUBSCRIBE: CHANNELS.join(","),
-    COTAL_ALLOW_SUBSCRIBE: CHANNELS.join(","),
-    COTAL_ALLOW_PUBLISH: CHANNELS.join(","),
-    // Read every channel but never WAKE on peer chatter — only an @mention or a DM drives a turn.
-    // This stops the runaway "everyone replies to everyone" spiral: the studio @mentions the panel
-    // when YOU post, so they answer you; an agent's reply (no @mention) doesn't wake the others.
-    COTAL_QUIET: CHANNELS.join(","),
+    // Per-channel membership from the manifest: this agent reads exactly the channels it `subscribe`s
+    // to and posts to its `allowPublish` channels — NOT a flat all-channels list.
+    COTAL_SUBSCRIBE: subsOf(name).join(","),
+    COTAL_ALLOW_SUBSCRIBE: subsOf(name).join(","),
+    COTAL_ALLOW_PUBLISH: pubsOf(name).join(","),
+    // Read its channels but never WAKE on peer chatter — only an @mention or a DM drives a turn.
+    // The studio @mentions a channel's members when YOU post, so they answer you; an agent's reply
+    // (no @mention) doesn't wake the others, which stops the everyone-replies-to-everyone spiral.
+    COTAL_QUIET: subsOf(name).join(","),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(model)),
   };
   const child = spawn(process.execPath, [SERVE], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -256,8 +283,10 @@ function spawnAgent(name) {
 
 // ---- operator endpoint (the human seat) -----------------------------------------------------
 let ep = null;
-const feedClients = new Set(); // open SSE responses
+const feedClients = new Set(); // open SSE responses (legacy direct-connect path)
 const recent = []; // last N transcript events for late-joining browsers
+let feedSeq = 0; // monotonic id for the polling feed
+const feedLog = []; // ring of non-roster events (msg/clear/focus) the polling feed (/api/events) replays
 let roomRoster = [];
 const peerIds = new Map(); // agent name -> live instance id (from presence), for direct messages
 let lastHuman = Date.now(); // last real human send (drives the idle attract loop)
@@ -267,6 +296,13 @@ function pushFeed(ev) {
     recent.push(ev);
     if (recent.length > 80) recent.shift();
   }
+  // Roster is delivered as a per-poll snapshot (and live to SSE clients); only non-roster events get a
+  // sequence id and go in the polling log, so presence churn can't evict transcript from the ring.
+  if (ev.type !== "roster") {
+    ev = { ...ev, seq: ++feedSeq };
+    feedLog.push(ev);
+    if (feedLog.length > 400) feedLog.shift();
+  }
   const line = `data: ${JSON.stringify(ev)}\n\n`;
   for (const res of feedClients) {
     try {
@@ -275,6 +311,16 @@ function pushFeed(ev) {
       /* client gone; reaped on 'close' */
     }
   }
+}
+
+/** Polling feed — robust where a proxy/tunnel buffers SSE: each poll returns the events after the
+ *  client's cursor plus the current roster snapshot. A short request/response like /api/state, which
+ *  works everywhere an EventSource stream may not. `since=0` replays the whole ring for a fresh tab. */
+function handleEvents(req, res) {
+  const since = Number(new URL(req.url, "http://x").searchParams.get("since") || 0);
+  const events = feedLog.filter((e) => e.seq > since);
+  res.writeHead(200, { "content-type": "application/json", "cache-control": "no-cache" });
+  res.end(JSON.stringify({ cursor: feedSeq, roster: roomRoster, events }));
 }
 
 // Strip stray model-leaked pseudo-tags (e.g. a hallucinated `</MESSAGE-v0>` envelope or a leftover
@@ -463,8 +509,9 @@ function handleSay(req, res) {
         return reply(200, { ok: true, id: msg.id });
       }
       const ch = typeof channel === "string" && channel.trim() ? channel.trim() : "general";
-      // @mention the panel so they wake for YOU (they're quiet on plain channel chatter).
-      const msg = await ep.multicast(text.trim(), { channel: ch, mentions: liveAgentNames() });
+      // @mention only THIS channel's members so they wake for YOU (they're quiet on plain chatter).
+      const inChannel = (n) => membersOf(ch).includes(n);
+      const msg = await ep.multicast(text.trim(), { channel: ch, mentions: liveAgentNames().filter(inChannel) });
       pushFeed(normalizeMsg(msg, { kind: "channel", historical: false }));
       return reply(200, { ok: true, id: msg.id });
     } catch (e) {
@@ -508,6 +555,7 @@ async function clearAll(reason) {
   recent.length = 0;
   await clearHistory(reason);
   await resetAgentContexts();
+  feedLog.length = 0; // drop replayable transcript so a fresh poll doesn't show the just-wiped messages
   pushFeed({ type: "clear" });
 }
 
@@ -545,7 +593,7 @@ function attractTick() {
   const seed = SEEDS[seedIdx++ % SEEDS.length];
   log(`attract: seeding #general — "${seed}"`);
   pushFeed({ type: "focus", channel: "general" }); // bring the panel's talking into view
-  ep.multicast(seed, { channel: "general", mentions: liveAgentNames() })
+  ep.multicast(seed, { channel: "general", mentions: liveAgentNames().filter((n) => membersOf("general").includes(n)) })
     .then((m) => pushFeed(normalizeMsg(m, { kind: "channel", historical: false })))
     .catch((e) => warn("attract send failed:", e.message));
 }
@@ -559,7 +607,7 @@ function startHttp() {
         JSON.stringify({
           space: SPACE,
           you: "you",
-          channels: CHANNELS,
+          channels: manifest.channels.map((c) => ({ name: c.name, description: c.description, members: c.subscribe })),
           agents: agents
             .filter((a) => !a.dead)
             .map((a) => ({ name: a.name, persona: a.persona, role: a.role, model: a.model, session: a.session })),
@@ -567,6 +615,7 @@ function startHttp() {
       );
       return;
     }
+    if (p === "/api/events") return handleEvents(req, res);
     if (p === "/api/feed") return handleFeed(req, res);
     if (p === "/api/say" && req.method === "POST") return handleSay(req, res);
     if (p === "/api/clear" && req.method === "POST") return handleClear(req, res);
@@ -574,7 +623,10 @@ function startHttp() {
     if (am) return proxyAgent(req, res, am[1], am[2] || "/");
     return serveStatic(req, res);
   });
-  return new Promise((resolve) => server.listen(PORT, "127.0.0.1", () => resolve(server)));
+  // Bind dual-stack (IPv6 `::` also accepts IPv4-mapped connections) so the page loads whether the
+  // browser resolves `localhost` to ::1 or 127.0.0.1 — an IPv4-only bind is refused by an IPv6-first
+  // Chrome (the usual "localhost won't load but 127.0.0.1 does" footgun).
+  return new Promise((resolve) => server.listen(PORT, "::", () => resolve(server)));
 }
 
 // ---- teardown -------------------------------------------------------------------------------

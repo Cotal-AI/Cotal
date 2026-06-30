@@ -12,6 +12,7 @@
     "wall:web": "node tools/serve-wall.mjs"
   },
   "dependencies": {
-    "@cotal-ai/core": "workspace:*"
+    "@cotal-ai/core": "workspace:*",
+    "yaml": "^2.9.0"
   }
 }
