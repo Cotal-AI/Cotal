@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/example-04-frontier-faces",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

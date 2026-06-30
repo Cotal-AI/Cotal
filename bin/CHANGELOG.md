@@ -1,5 +1,20 @@
 # cotal-ai
 
+## 0.8.3
+
+### Patch Changes
+
+- Updated dependencies [a10ed79]
+  - @cotal-ai/connector-opencode@0.8.3
+  - @cotal-ai/connector-claude-code@0.8.3
+  - @cotal-ai/core@0.8.3
+  - @cotal-ai/manager@0.8.3
+  - @cotal-ai/connector-hermes@0.8.3
+  - @cotal-ai/cmux@0.8.3
+  - @cotal-ai/tmux@0.8.3
+  - @cotal-ai/cli@0.8.3
+  - @cotal-ai/delivery@0.8.3
+
 ## 0.8.2
 
 ### Patch Changes
