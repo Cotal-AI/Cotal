@@ -484,24 +484,24 @@
     $('termtitle').textContent = `${labelOf(a)} · live session`;
     $('termwrap').hidden = false;
     const body = $('termbody');
-    // first open this page-load → pull the stored backlog so a reload doesn't reset the terminal
-    if (!histLoaded.has(name) && a?.session) {
-      body.innerHTML = `<div class="empty">loading ${labelOf(a)}'s session…</div>`;
+    // Re-fetch the session EVERY open. There's no live stream (that cost one connection per face —
+    // the exhaustion bug), so caching the first fetch would leave a terminal opened before the agent
+    // had spoken stuck empty forever. A fresh one-shot fetch each open always shows current activity.
+    body.innerHTML = `<div class="empty">loading ${labelOf(a)}'s session…</div>`;
+    let hist = [];
+    if (a?.session) {
       try {
         const r = await fetch(`/agent/${name}/session/${a.session}/message`);
         if (r.ok) {
           const data = await r.json();
-          const hist = partsToEntries(Array.isArray(data) ? data : (data.messages || []));
-          if (hist.length) logs.set(name, hist.slice(-LOG_CAP));
+          hist = partsToEntries(Array.isArray(data) ? data : (data.messages || []));
         }
-      } catch { /* no history reachable — fall back to the live buffer */ }
-      histLoaded.add(name);
-      if (termName !== name) return; // closed or switched while loading
+      } catch { /* unreachable — show the empty hint below */ }
     }
-    const arr = logs.get(name) || [];
+    if (termName !== name) return; // closed or switched to another face while loading
     body.innerHTML = '';
-    if (!arr.length) body.innerHTML = `<div class="empty">waiting for ${labelOf(a)} to do something…</div>`;
-    else for (const e of arr) body.appendChild(lineEl(e));
+    if (!hist.length) body.innerHTML = `<div class="empty">waiting for ${labelOf(a)} to do something…</div>`;
+    else for (const e of hist.slice(-LOG_CAP)) body.appendChild(lineEl(e));
     body.scrollTop = body.scrollHeight;
   }
   function closeTerm() { termName = null; $('termwrap').hidden = true; }
