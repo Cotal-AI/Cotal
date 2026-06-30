@@ -178,6 +178,34 @@ export async function seedChannelRegistry(opts: {
   }
 }
 
+/** Write the space-wide default delivery class at space creation IF it is not already set (SPEC §4:
+ *  `defaults.deliveryClass` MUST be on the wire so the effective default is discoverable, never
+ *  inferred from the `?? "durable"` resolution fallback). Clobber-safe and idempotent: an explicit
+ *  value already in the registry (e.g. seeded from a `channels.json` default) wins, so a re-up never
+ *  overrides an operator's choice. Returns true if it wrote. Called by `cotal up` with the profile
+ *  class — local/self-hosted (auth, daemon present) ⇒ `durable`, open/dev (no daemon) ⇒ `live`. */
+export async function ensureDefaultDeliveryClass(opts: {
+  servers: string;
+  space: string;
+  creds?: string;
+  deliveryClass: DeliveryClass;
+}): Promise<boolean> {
+  const nc = await connect({
+    servers: opts.servers,
+    ...(opts.creds
+      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) }
+      : {}),
+  });
+  try {
+    const kv = await openChannelRegistry(nc, opts.space, { create: true });
+    if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
+    await writeChannelDefaults(kv, { deliveryClass: opts.deliveryClass });
+    return true;
+  } finally {
+    await nc.drain();
+  }
+}
+
 /** Connect (privileged/open), delete the given channel-registry keys, disconnect. Used by
  *  `cotal down -f` to remove ONLY the cards a `spawn -f` run created (ownership-scoped); the caller is
  *  responsible for the members-present safety check. The bucket must already exist (no create on a

@@ -221,9 +221,13 @@ Code launches `claude`), and the plugin:
   box and the TUI renders it live), acking on `session.idle`. A human watching the TUI sees the
   agent work and can type into the same session.
 
-So it is push-capable, and unlike Claude Code it needs no separate hooks or control socket. The
-plugin holds the mesh connection for the session and closes it in `dispose`. Spawned agents run
-autonomously (`permission: "allow"`). The foreground viewer is swappable: an agent file's
+So it is push-capable, and unlike Claude Code it needs no separate hooks *process* — the plugin
+holds the mesh connection in-process. It does run the same authenticated control endpoint
+([`connector-core/src/control.ts`](../extensions/connector-core/src/control.ts)), but only for the
+manager's cooperative `{op:"shutdown"}` (its hooks are in-process, so there is no hook relay): on a
+graceful stop where the runtime can't deliver a signal (Windows ConPTY), the plugin leaves the mesh
+cleanly — publishing offline presence — instead of lingering until its presence TTL expires. It also
+leaves on OpenCode's own `dispose`. Spawned agents run autonomously (`permission: "allow"`). The foreground viewer is swappable: an agent file's
 optional `face:` id makes the launcher attach an animated avatar viewer to the session instead
 of the chat TUI (`COTAL_FACE_BIN` must point at a face-term-compatible script; it watches the
 same event stream and can still send prompts into the session). A face-hosted agent is also told

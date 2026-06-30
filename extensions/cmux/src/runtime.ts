@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -34,15 +34,19 @@ function shellQuote(s: string): string {
  *  assignments, so `env` applies them and then execs the command. `isolate` (agent-spawn panes)
  *  adds `-i` so the pane inherits ONLY the connector-declared env, not the cmux server's (P3 — the
  *  operator's unrelated secrets don't reach a spawned agent); setup panes keep the inherited env. */
-function paneCommand(pane: Pane, key: string, login: boolean, isolate = false): string {
+export function paneCommand(pane: Pane, login: boolean, isolate = false): string {
   const env = Object.entries(pane.env ?? {}).map(([k, v]) => `${k}=${shellQuote(v)}`);
   const cmd = [...env, shellQuote(pane.command), ...(pane.args ?? []).map(shellQuote)].join(" ");
   const cd = pane.cwd ? `cd ${shellQuote(pane.cwd)}\n` : "";
   const confirm = pane.confirm ? `${ENTER_LOOP}\n` : "";
   const script = `#!/usr/bin/env bash\n${cd}${confirm}exec env ${isolate ? "-i " : ""}${cmd}\n`;
-  const scriptPath = join(tmpdir(), `cotal-pane-${key.replace(/[^A-Za-z0-9_.-]/g, "_")}.sh`);
-  writeFileSync(scriptPath, script, { mode: 0o755 });
-  return `bash ${login ? "-l " : ""}${scriptPath}`;
+  // The script holds the pane's env inline (the agent's creds + control token, and any provider key).
+  // Write it into a fresh 0o700 temp dir as a 0o600 file: never a world-readable script, and never a
+  // predictable, symlink-attackable /tmp path. cmux runs it as the same user via `bash <path>`.
+  const dir = mkdtempSync(join(tmpdir(), "cotal-pane-"));
+  const scriptPath = join(dir, "launch.sh");
+  writeFileSync(scriptPath, script, { mode: 0o600 });
+  return `bash ${login ? "-l " : ""}${shellQuote(scriptPath)}`;
 }
 
 /** A single-terminal pane node in cmux's layout JSON. */
@@ -54,7 +58,7 @@ function surface(command: string): unknown {
  *  knows cmux's layout shape. One pane → a bare terminal; several → a split (`direction` + `split`
  *  ratio). These panes run under a login shell. */
 function cmuxLayout(label: string, tab: Tab): string {
-  const nodes = tab.panes.map((p, i) => surface(paneCommand(p, `${label}-${i}`, true)));
+  const nodes = tab.panes.map((p) => surface(paneCommand(p, true)));
   if (nodes.length === 1 && !tab.split) return JSON.stringify(nodes[0]);
   if (!tab.split)
     throw new Error(`cmux layout "${label}": ${nodes.length} panes need a split (direction + ratio)`);
@@ -86,7 +90,6 @@ export class CmuxRuntime implements Runtime {
     // tab's own surface — so a spawned teammate joins the mesh without anyone switching to its tab.
     const command = paneCommand(
       { command: spec.command, args: spec.args, env: spec.env, cwd, confirm: Boolean(spec.confirm) },
-      `spawn-${name}`,
       false,
       true, // isolate: spawned agent gets ONLY the connector-declared env (P3)
     );

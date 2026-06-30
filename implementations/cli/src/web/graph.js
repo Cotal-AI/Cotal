@@ -326,6 +326,10 @@
       ctx.lineWidth = 1.5; ctx.strokeStyle = rgba(MODE.chat, 0.95 * dim); ctx.stroke();
       ctx.fillStyle = rgba("#cfe2ff", dim); ctx.font = "600 12.5px var(--font), sans-serif"; ctx.fillText("#" + h.name, h.x, h.y + h.r + 13);
     }
+    // Label gate counts VISIBLE agents (what's actually drawn), not agents.size — the Map also holds
+    // hidden offline ghosts (durable members kept for "member, currently offline"), which would push the
+    // count past the threshold and suppress every label even with only a handful of agents online.
+    let shown = 0; for (const a of agents.values()) if (!isHidden(a)) shown++;
     for (const a of agents.values()) {
       if (isHidden(a)) continue;
       const col = STAT[a.status] || STAT.idle, focus = a === hover || a === sel, off = a.status === "offline";
@@ -337,7 +341,7 @@
       const g = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, r); g.addColorStop(0, rgba(col, off ? 0.5 : 1)); g.addColorStop(0.55, rgba(col, off ? 0.2 : 0.55)); g.addColorStop(1, "#141b26");
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, 2 * Math.PI); ctx.fill(); ctx.restore();
       ctx.lineWidth = 2; ctx.strokeStyle = rgba(col, off ? 0.6 : 1); ctx.stroke();
-      if (focus || a.status === "waiting" || agents.size <= 16) { ctx.fillStyle = focus ? "#ffffff" : "#cdd6e2"; ctx.font = (focus ? "600 " : "500 ") + "11px var(--font), sans-serif"; ctx.fillText(a.name, a.x, a.y - r - 8); }
+      if (focus || a.status === "waiting" || shown <= 16) { ctx.fillStyle = focus ? "#ffffff" : "#cdd6e2"; ctx.font = (focus ? "600 " : "500 ") + "11px var(--font), sans-serif"; ctx.fillText(a.name, a.x, a.y - r - 8); }
     }
     ctx.globalAlpha = 1;
   }

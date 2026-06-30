@@ -61,14 +61,19 @@ export class AttachEndpoint {
     this.#http = createServer((req, res) => this.#onRequest(req, res));
     this.#wss = new WebSocketServer({ noServer: true });
     this.#http.on("upgrade", (req, socket, head) => {
-      const path = req.url ?? "/";
+      const path = (req.url ?? "/").split("?")[0];
       if (!path.startsWith("/attach/")) {
         socket.destroy();
         return;
       }
-      this.#wss.handleUpgrade(req, socket, head, (ws) =>
-        this.#onConnection(ws, decodeURIComponent(path.slice("/attach/".length))),
-      );
+      let name: string;
+      try {
+        name = decodeURIComponent(path.slice("/attach/".length));
+      } catch {
+        socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      this.#wss.handleUpgrade(req, socket, head, (ws) => this.#onConnection(ws, name));
     });
   }
 
@@ -106,23 +111,49 @@ export class AttachEndpoint {
   }
 
   #onRequest(req: IncomingMessage, res: ServerResponse): void {
-    const path = (req.url ?? "/").split("?")[0];
-    if (path === "/agents") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(this.list()));
-      return;
+    try {
+      const path = (req.url ?? "/").split("?")[0];
+      if (path === "/agents") {
+        const body = JSON.stringify(this.list());
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(body);
+        return;
+      }
+      if (path === "/feed") {
+        this.#openFeed(res);
+        return;
+      }
+      const file = PAGE[path] ?? ASSETS[path];
+      if (file) {
+        this.#serveFile(res, file.path, file.type);
+        return;
+      }
+      res.writeHead(404).end("not found");
+    } catch {
+      // Last-resort guard: a stray/malformed request must never kill the manager.
+      try {
+        if (!res.headersSent) res.writeHead(500);
+        res.end("internal error");
+      } catch {
+        /* response already torn down */
+      }
     }
-    if (path === "/feed") {
-      this.#openFeed(res);
-      return;
+  }
+
+  #serveFile(res: ServerResponse, file: string, type: string): void {
+    try {
+      const body = readFileSync(file);
+      res.writeHead(200, { "content-type": type });
+      res.end(body);
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err.code === "ENOENT" || err.code === "ENOTDIR") {
+        res.writeHead(404).end("not found");
+        return;
+      }
+      console.error(`manager console failed to serve ${file}:`, err);
+      res.writeHead(500).end("internal error");
     }
-    const file = PAGE[path] ?? ASSETS[path];
-    if (file) {
-      res.writeHead(200, { "content-type": file.type });
-      res.end(readFileSync(file.path));
-      return;
-    }
-    res.writeHead(404).end("not found");
   }
 
   /** Open an SSE stream, replay the snapshot, and keep it on the broadcast set. */

@@ -21,6 +21,9 @@ import {
   newIdentity,
   setupSpaceStreams,
   seedChannelRegistry,
+  ensureDefaultDeliveryClass,
+  mkSecretDir,
+  writeSecretFile,
   type SpaceAuth,
   type ChannelRegistryFile,
 } from "@cotal-ai/core";
@@ -444,6 +447,16 @@ async function postStart(
   if (seedFile) {
     await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
   }
+  // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
+  // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
+  // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
+  // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
+  await ensureDefaultDeliveryClass({
+    servers: server,
+    space,
+    creds: setup?.creds,
+    deliveryClass: setup ? "durable" : "live",
+  });
 }
 
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
@@ -500,9 +513,10 @@ async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
-    writeFileSync(cotalPath("membership-observer.creds"), observer, { mode: 0o600 });
-    writeFileSync(cotalPath("membership-rw.creds"), rw, { mode: 0o600 });
-    writeFileSync(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+    mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
+    writeSecretFile(cotalPath("membership-observer.creds"), observer);
+    writeSecretFile(cotalPath("membership-rw.creds"), rw);
+    writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {
     console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));
   }

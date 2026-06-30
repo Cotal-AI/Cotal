@@ -3,6 +3,7 @@
  * Asserts the deterministic parse → schema → normalize/invert → semantic rules in src/lib/manifest.
  */
 import assert from "node:assert/strict";
+import { resolve, dirname } from "node:path";
 import type { AgentDef } from "@cotal-ai/core";
 import { resolveManifest } from "../src/lib/manifest/resolve.js";
 import { ManifestError } from "../src/lib/manifest/errors.js";
@@ -10,6 +11,10 @@ import { prepareAgent } from "../src/lib/manifest/prepare.js";
 import type { ResolvedAgent, ResolvedManifest } from "../src/lib/manifest/model.js";
 
 const PATH = "/tmp/cotal.yaml";
+// A `./rel` persona path is resolved against the manifest dir via platform `node:path` (so it is
+// `C:\tmp\agents\…` on Windows, `/tmp/agents/…` on POSIX) — derive the expectation the same way
+// instead of hardcoding the POSIX form.
+const rel = (p: string): string => resolve(dirname(PATH), p);
 const ok = (src: string): ResolvedManifest => resolveManifest(src, PATH);
 function fails(src: string, needle: string): void {
   assert.throws(
@@ -54,11 +59,11 @@ channels:
   const scout = m.agents.find((a) => a.name === "scout")!;
 
   // string form → persona path resolved relative to the manifest dir; no overrides.
-  assert.equal(planner.persona, "/tmp/agents/planner.md");
+  assert.equal(planner.persona, rel("agents/planner.md"));
   assert.equal(planner.model, undefined);
   assert.equal(planner.agentType, "claude"); // inherits the top-level `agent:` default
   // override form → persona + model.
-  assert.equal(builder.persona, "/tmp/agents/builder.md");
+  assert.equal(builder.persona, rel("agents/builder.md"));
   assert.equal(builder.model, "sonnet");
   // inline form → no persona, body + model carried.
   assert.equal(scout.persona, undefined);

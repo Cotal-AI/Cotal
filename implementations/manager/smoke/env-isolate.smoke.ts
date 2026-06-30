@@ -32,7 +32,10 @@ const cwd = process.cwd();
 /** Spawn `printenv` under a runtime with a connector-style spec, collect its env output, stop. */
 async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown; stop: (o?: { graceful?: boolean }) => void }): Promise<string> {
   // A connector-style spec: env is the OS allow-list only (launchEnv) — the sentinel is NOT in it.
-  const spec: LaunchSpec = { command: "printenv", args: [], env: launchEnv() };
+  // Dump the child's env cross-platform — `printenv` is Unix-only; node (always present, and able to
+  // start from the allow-list alone) prints each KEY=value the same way on Windows and POSIX.
+  const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: launchEnv() };
   const h = spawnFn(spec);
   const sess = h.attach() as { onData: (fn: (b: Buffer) => void) => () => void; onExit: (fn: () => void) => () => void };
   let buf = "";
@@ -46,11 +49,18 @@ async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown
 // pty — the default, always-available backend.
 {
   const runtime = createRuntime("pty", "cotal-p3");
-  const out = await childEnvOf((spec) => runtime.spawn("p3-pty", spec, cwd));
+  const raw = await childEnvOf((spec) => runtime.spawn("p3-pty", spec, cwd));
+  // ConPTY interleaves terminal-init escapes + a window-title OSC with the output, so the first var
+  // (PATH) lands after escapes, not at a clean line start — strip control sequences before asserting.
+  const out = raw.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   console.log("pty runtime:");
   check("sentinel ABSENT from child env (no process.env bleed)", !out.includes(SENTINEL));
-  check("PATH present (OS allow-list carried)", /(^|\n)PATH=/.test(out));
-  check("HOME present (OS allow-list carried)", /(^|\n)HOME=/.test(out));
+  // Case-insensitive: launchEnv forwards each var under the OS's own key casing, so on Windows this
+  // is `Path=`, not `PATH=` (the allow-list copy preserves the source key — see launchEnv).
+  check("PATH present (OS allow-list carried)", /(^|\n)PATH=/i.test(out));
+  // Home dir var is platform-specific: HOME on POSIX, USERPROFILE on Windows.
+  const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
+  check(`${homeVar} present (OS allow-list carried)`, new RegExp(`(^|\\n)${homeVar}=`).test(out));
   check("sentinel value not present", !out.includes(SENTINEL_VALUE));
 }
 

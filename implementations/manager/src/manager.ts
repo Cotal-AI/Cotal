@@ -1,5 +1,5 @@
-import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname, delimiter, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -11,16 +11,18 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
+  mkSecretDir,
   newIdentity,
   provisionAgent,
   registry,
   saveAgentFile,
+  writeSecretFile,
   subjectMatches,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
 import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -30,6 +32,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { controlShutdown } from "./control-shutdown.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
@@ -38,31 +41,6 @@ const MAX_AGENTS = 50;
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
 const MIN_LIFETIME = 10_000;
-
-/** Is `bin` an executable on PATH? A side-effect-free preflight for a connector's `requires` —
- *  scans PATH directly with `accessSync(X_OK)` rather than shelling out to `which`, so it can't
- *  hang or run the harness. An absolute/relative path is checked as-is; a bare name is looked up
- *  across PATH entries (empty entries skipped). POSIX-only (macOS/Linux); no PATHEXT handling. */
-function binOnPath(bin: string): boolean {
-  if (bin.includes("/")) {
-    try {
-      accessSync(bin, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    try {
-      accessSync(join(dir, bin), constants.X_OK);
-      return true;
-    } catch {
-      // not here — keep scanning
-    }
-  }
-  return false;
-}
 
 export interface ManagerOptions {
   space: string;
@@ -118,6 +96,11 @@ interface ManagedAgent {
   spawner: string;
   startedAt: number;
   handle: AgentHandle;
+  /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
+   *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
+   *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
+   *  kill that would deny the agent its clean mesh-leave. */
+  control?: { path: string; token: string };
 }
 
 /**
@@ -341,7 +324,7 @@ export class Manager {
     const target = [...this.agents.values()].find((a) => a.id === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
-    target.handle.stop({ graceful });
+    this.stopHandle(target, graceful);
     this.freeSlot(target, true); // self-despawn is rate-floored (recycle churn)
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
@@ -350,6 +333,17 @@ export class Manager {
   // `ctl.delivery` control service (endpoint.startPlane3 → handleDeliveryControl). The manager is
   // lifecycle-only; it records each agent's read ACL at spawn (commitAcl) so the daemon can validate
   // those ops against the durable ACL registry — the single source of truth, no in-memory ledger.
+
+  /** Tear an agent down — the single chokepoint for every stop path (despawn, self-stop, reap). On
+   *  Windows a graceful stop can't ride a signal (ConPTY delivers none, so the agent never runs its
+   *  exit handlers / leaves the mesh), so first send a cooperative `{op:"shutdown"}` over its authed
+   *  control endpoint; the agent exits cleanly and the runtime hard-kills as a fallback after its
+   *  grace window. POSIX delivers SIGTERM→SIGKILL natively, so it keeps the signal path. A hard stop
+   *  (`graceful:false`, e.g. emergency reap) skips the cooperative step on every platform. */
+  private stopHandle(a: ManagedAgent, graceful: boolean): void {
+    if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
+    a.handle.stop({ graceful });
+  }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
    *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
@@ -368,7 +362,7 @@ export class Manager {
   private reapChildrenOf(parentId: string): void {
     for (const child of [...this.agents.values()]) {
       if (child.spawner !== parentId) continue;
-      child.handle.stop({ graceful: false });
+      this.stopHandle(child, false);
       this.freeSlot(child, true);
       this.reapChildrenOf(child.id);
     }
@@ -521,7 +515,7 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const missing = (connector.requires ?? []).filter((bin) => !binOnPath(bin));
+    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length)
       return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH — not found` };
 
@@ -587,8 +581,8 @@ export class Manager {
           capabilities,
         });
         credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
-        mkdirSync(dirname(credsPath), { recursive: true });
-        writeFileSync(credsPath, creds, { mode: 0o600 });
+        mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
+        writeSecretFile(credsPath, creds);
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards).
@@ -629,6 +623,7 @@ export class Manager {
         spawner: spawner ?? this.ep.ref().id,
         startedAt: Date.now(),
         handle,
+        control: spec.control,
       };
       this.agents.set(name, managed);
       // Wire the runtime exit signal so a natural exit (crash / /exit / finished) frees the slot
@@ -673,7 +668,7 @@ export class Manager {
     const denied = this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
     const graceful = args.graceful !== false;
-    a.handle.stop({ graceful });
+    this.stopHandle(a, graceful);
     this.freeSlot(a, !admin); // own-child despawn is rate-floored; admin emergency-kill is not
     return { ok: true, data: { name, stopped: true, graceful } };
   }
