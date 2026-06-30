@@ -10,10 +10,9 @@
  *  • maps OpenCode bus events to presence (idle | working | waiting | offline);
  *  • owns ONE session (created at boot) and drives it: it injects each inbox batch as a turn through
  *    the authenticated OpenCode server HTTP API (the same server the TUI is attached to), acking ON
- *    TURN COMPLETION (so a crash/error redelivers).
- *    Delivery is **attention-aware** (open/dnd/focus) and never interrupts a running turn — a
- *    message that arrives mid-turn waits for the turn to end (matching Claude's no-interrupt
- *    behavior), then drives.
+ *    TURN COMPLETION (so a crash/error redelivers). Pending peer messages are also injected into
+ *    the next native prompt creation when a human/API prompt starts in the attached session.
+ *    Delivery is **attention-aware** (open/dnd/focus) and never interrupts a running turn.
  *
  * Identity comes from COTAL_* env (the plugin runs in the opencode process and inherits it).
  * No identity → inert, so an operator's own `opencode` never joins as a stray peer.
@@ -41,6 +40,8 @@ function log(msg: string): void {
  *  call wires up the agent, and every call returns the *same* hooks (the same tools, bound to that
  *  one agent), whichever scope opencode ends up using. */
 const guard = globalThis as { __cotalOpencodeHooks?: Hooks };
+const ERROR_RETRY_INITIAL_MS = 1_000;
+const ERROR_RETRY_MAX_MS = 30_000;
 
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
@@ -107,6 +108,8 @@ export const cotal: Plugin = async () => {
   let briefed = false; // the boot channel briefing is prepended once, on the first turn
   let surfaced: string[] = []; // ids surfaced into the current turn, acked on completion (by id, not count)
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
+  let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  let errorRetryMs = ERROR_RETRY_INITIAL_MS;
 
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
     try {
@@ -156,6 +159,23 @@ export const cotal: Plugin = async () => {
     return agent.pendingWake(); // mode-and-channel-aware: excludes held dnd/quiet ambient
   }
 
+  function clearErrorRetry(resetDelay = false): void {
+    if (errorRetryTimer) clearTimeout(errorRetryTimer);
+    errorRetryTimer = undefined;
+    if (resetDelay) errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  }
+
+  function scheduleErrorRetry(): void {
+    if (errorRetryTimer || pendingForWake() === 0) return;
+    const delay = errorRetryMs;
+    errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
+    errorRetryTimer = setTimeout(() => {
+      errorRetryTimer = undefined;
+      if (!busy && pendingForWake() > 0) void drive();
+    }, delay);
+    errorRetryTimer.unref?.();
+  }
+
   function adoptSession(id: string, reason: string): void {
     if (sessionID === id) return;
     const previous = sessionID;
@@ -167,6 +187,7 @@ export const cotal: Plugin = async () => {
     briefed = false;
     surfaced = [];
     awaitingTurnEnd = false;
+    clearErrorRetry(true);
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
       if (pendingForWake() > 0) void drive();
@@ -245,6 +266,7 @@ export const cotal: Plugin = async () => {
       surfaced = [];
       awaitingTurnEnd = false;
       log(`drive failed: ${(e as Error).message}`);
+      scheduleErrorRetry();
     } finally {
       driving = false;
     }
@@ -264,6 +286,31 @@ export const cotal: Plugin = async () => {
     surfaced = [];
   }
 
+  function abandonSurfaced(): void {
+    surfaced = [];
+  }
+
+  /** Native TUI / API prompts enter through OpenCode's chat.message hook before the model loop
+   *  starts. This is the real "next turn" boundary for human-typed input: prepend the buffered Cotal
+   *  batch to the user's text, then ack it when the resulting turn ends. We only mutate an existing
+   *  text part so we don't need to manufacture OpenCode's internal part IDs. */
+  function injectIntoPrompt(output: { parts?: unknown[] }): void {
+    if (driving || awaitingTurnEnd) return; // drive() already injected, or one surfaced batch is open
+    const items = agent.peekInbox();
+    if (items.length === 0) return;
+    const inj = formatInjection(items);
+    if (!inj) return;
+    const textPart = output.parts?.find(
+      (p): p is { type: "text"; text: string } =>
+        typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
+    );
+    if (!textPart) return;
+    textPart.text = `${inj}\n\n${textPart.text}`;
+    surfaced = items.map((i) => i.id);
+    awaitingTurnEnd = true;
+    busy = true;
+  }
+
   /** A turn ended — ANY turn, ours (a driven inbox batch) OR the human's (typing into the attached
    *  TUI, a `/reconnect`, etc). Clear `busy` regardless of who drove it: it's the COALESCE guard, so
    *  a turn the connector didn't drive must still release it or every later push wedges behind a
@@ -278,6 +325,7 @@ export const cotal: Plugin = async () => {
       awaitingTurnEnd = false;
       ackSurfaced(); // our driven turn: ack the surfaced batch (the sole ack site)
     }
+    clearErrorRetry(true);
     if (pendingForWake() > 0) void drive();
   }
 
@@ -287,7 +335,7 @@ export const cotal: Plugin = async () => {
   // (read on the agent's terms; a `quiet` @mention still drives). `muted` ambient never reaches here
   // (ack-dropped at ingest); in `focus`, ambient/@mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
-    if (busy) return; // buffer; completeTurn drives at turn end
+    if (busy) return; // buffer; chat.message or completeTurn drives at the next safe boundary
     const directed = item.kind !== "channel" || item.mentionsMe;
     const quiet = item.kind === "channel" && agent.channelMode(item.channel) === "quiet";
     if (directed || (!quiet && agent.attention === "open")) void drive();
@@ -310,6 +358,11 @@ export const cotal: Plugin = async () => {
 
   const hooks: Hooks = {
     tool: buildCotalTools(agent, config),
+
+    "chat.message": async (input, output) => {
+      if (!ours(input.sessionID)) return;
+      injectIntoPrompt(output);
+    },
 
     event: async ({ event }) => {
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
@@ -354,10 +407,10 @@ export const cotal: Plugin = async () => {
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;
-            ackSurfaced(); // our turn surfaced the batch but failed — ack (don't retry-loop) and move on
+            abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
           }
           await safeStatus("idle");
-          if (pendingForWake() > 0) void drive();
+          scheduleErrorRetry();
           break;
         case "session.deleted":
           if (!ours(event.properties.info.id)) return;
@@ -379,6 +432,7 @@ export const cotal: Plugin = async () => {
         /* ignore */
       }
       await safeStatus("offline");
+      clearErrorRetry(true);
       await agent.stop();
     },
   };
