@@ -18,6 +18,7 @@ import {
   saveAgentFile,
   writeSecretFile,
   subjectMatches,
+  transcriptChannel,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
@@ -561,6 +562,12 @@ export class Manager {
 
     const name = this.uniqueName(identityName);
     this.reserved.add(name);
+    // Transcript mirroring → `tr-<name>`: default-on when COTAL_TRANSCRIPT_DEFAULT=1 (scoped per mesh
+    // by the operator's `cotal up` env) so observers can read what every managed agent actually did.
+    // Auth-mode publish is default-deny, so grant the agent pub on its OWN tr-<name> (else the mirror's
+    // publish is rejected). transcriptChannel() is the shared convention (core) the connectors publish to.
+    const transcript = opts.transcript ?? process.env.COTAL_TRANSCRIPT_DEFAULT === "1";
+    if (transcript) allowPublish = [...(allowPublish ?? []), transcriptChannel(name)];
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -607,7 +614,8 @@ export class Manager {
         subscribe,
         allowSubscribe,
         allowPublish,
-        transcript: opts.transcript,
+        capabilities,
+        transcript,
         mcpServers,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.

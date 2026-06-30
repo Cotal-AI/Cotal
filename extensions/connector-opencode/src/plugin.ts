@@ -26,10 +26,12 @@ import {
   formatInjection,
   fmtFrom,
   ORIENTATION_BOOTSTRAP,
+  transcriptChannel,
   type InboxItem,
 } from "@cotal-ai/connector-core";
 import type { Plugin, Hooks } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
+import { createTranscriptMirror } from "./transcript.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -110,6 +112,14 @@ export const cotal: Plugin = async () => {
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  // Transcript mirror → `tr-<name>`: opt-in via COTAL_TRANSCRIPT (the connector's buildLaunch / the
+  // manager set it for managed sessions; a personal opencode never mirrors). EVENT-DRIVEN — fed from
+  // the OpenCode event hook below (message.updated → assistant roles, message.part.updated → parts)
+  // and flushed at session.idle, so it never re-reads the whole session. The manager grants this agent
+  // pub rights on the same `tr-<name>` channel.
+  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? "")
+    ? createTranscriptMirror(agent, transcriptChannel(config.name))
+    : undefined;
 
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
     try {
@@ -188,6 +198,7 @@ export const cotal: Plugin = async () => {
     surfaced = [];
     awaitingTurnEnd = false;
     clearErrorRetry(true);
+    transcript?.reset(); // hard session boundary: drop any buffered parts so `/new` never mirrors them
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
       if (pendingForWake() > 0) void drive();
@@ -379,11 +390,26 @@ export const cotal: Plugin = async () => {
           // Cotal-aware context reset: same mesh identity, new OpenCode context/session id.
           if (!event.properties.info.parentID) adoptSession(event.properties.info.id, "top-level session create");
           break;
-        case "session.idle":
-          if (!ours(event.properties.sessionID)) return;
+        case "message.updated":
+          // Feed the transcript mirror: which messages on OUR session are assistant-authored.
+          if (transcript && ours(event.properties.info.sessionID)) transcript.record(event.properties.info);
+          break;
+        case "message.part.updated":
+          // Feed the transcript mirror: buffer each part as it streams (no per-turn refetch).
+          if (transcript && ours(event.properties.part.sessionID)) transcript.observe(event.properties.part);
+          break;
+        case "session.idle": {
+          const idleSession = event.properties.sessionID;
+          if (!ours(idleSession)) return;
           await safeStatus("idle");
+          // Publish what the agent did this turn BEFORE driving the next batch, so a fresh turn's parts
+          // don't bleed in. The mirror is an observability side-channel: surface a publish failure but
+          // keep it OFF the turn loop, so a transport hiccup can never wedge the agent.
+          if (transcript)
+            await transcript.flush().catch((e) => log(`transcript mirror publish failed: ${(e as Error).message}`));
           completeTurn(); // the sole turn-end site: ack-on-surface + drive the next batch
           break;
+        }
         case "session.status": {
           if (!ours(event.properties.sessionID)) return;
           const s = event.properties.status;

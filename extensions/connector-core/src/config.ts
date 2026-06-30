@@ -143,7 +143,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     description: def?.description,
     tags: def?.tags,
     meta: def?.meta,
-    capabilities: def?.capabilities,
+    capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
     model: env.COTAL_MODEL?.trim() || def?.model || undefined,
     servers: env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,

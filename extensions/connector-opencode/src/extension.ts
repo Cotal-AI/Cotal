@@ -58,6 +58,7 @@ export const opencodeConnector: Connector = {
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
+    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the plugin's transcript mirror (parity with Claude)
     // Where serve.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
     // workspace root so a per-agent launch cwd (which the manager can point at any repo) doesn't
     // drop `.cotal/opencode/<name>` into the target tree. Standalone `cotal spawn` has no manager

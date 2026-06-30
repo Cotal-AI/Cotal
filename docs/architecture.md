@@ -337,7 +337,7 @@ dependency on them). Selectable backends:
   x64/arm64: zero compiler, zero `node-gyp`, ABI-stable). A real native TUI. The human watches
   or types in via `cotal attach <name>` (stream the PTY), and the manager keeps full OS-signal
   control (group-kill, restart). No external software to install.
-- **`tmux` (integration).** Each agent gets its own window in a shared per-space tmux session.
+- **`tmux` (integration).** Each agent gets its own window in a shared per-space [tmux](https://github.com/tmux/tmux/wiki) session.
   This is a true plug-in: the runtime lives in **`@cotal-ai/tmux`** and self-registers a
   `RuntimeProvider` on import (opt in with `import "@cotal-ai/tmux"`, which the `cotal` binary
   does). You watch it natively (`tmux attach-session -t cotal-<space>`, then `tmux select-window -t
@@ -346,7 +346,7 @@ dependency on them). Selectable backends:
   window (graceful) or kills immediately (hard). The package also self-registers a
   **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session,
   so `cotal setup` can lay out its tabs without cmux.
-- **`cmux` (integration).** Each agent gets its own [cmux](https://github.com/) tab. This is a
+- **`cmux` (integration).** Each agent gets its own [cmux](https://cmux.com) tab. This is a
   true plug-in: the `cmux` runtime lives in **`@cotal-ai/cmux`** and self-registers a
   `RuntimeProvider` on import, so the manager spawns into tabs without depending on the package
   (a composition root opts in with one `import "@cotal-ai/cmux"`, which the `cotal` binary does).
