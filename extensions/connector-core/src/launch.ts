@@ -125,13 +125,23 @@ export function aclEnv(opts: {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  capabilities?: string[];
 }): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.subscribe?.length) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
   if (opts.allowSubscribe?.length) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
   if (opts.allowPublish?.length) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
+  // Control-plane capabilities (e.g. `spawn`) gate cotal_spawn/cotal_persona in the connector's tool
+  // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
+  // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.
+  if (opts.capabilities?.length) env.COTAL_CAPABILITIES = opts.capabilities.join(",");
   return env;
 }
+
+/** The per-agent transcript-mirror channel — the convention now lives in `@cotal-ai/core` (shared by
+ *  the manager + connectors). Re-exported here so the connectors' existing
+ *  `import { transcriptChannel } from "@cotal-ai/connector-core"` keeps resolving. */
+export { transcriptChannel } from "@cotal-ai/core";
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /
  *  `${VAR:-default}` (in command/args/env/url/headers). The single source of which operator vars

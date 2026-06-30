@@ -24,6 +24,12 @@ export interface LaunchOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Control-plane capabilities the manager granted this agent (e.g. `["spawn"]`) — the SAME set
+   *  the creds were provisioned from. Forwarded as `COTAL_CAPABILITIES` so the connector exposes the
+   *  matching control-plane tools (cotal_spawn / cotal_persona). Without it a manifest-spawned agent —
+   *  whose materialized persona carries no `capabilities:` frontmatter — gets none, so those tools stay
+   *  hidden even though its creds authorize them. */
+  capabilities?: string[];
   /** Path to an agent definition file (`.cotal/agents/<name>.md`). The connector
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
    *  card from it, and applies the file's persona/model at launch. */
