@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, transcriptChannel } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -30,6 +30,7 @@ const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
 export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
+  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["opencode"],
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Tool-sharing isn't wired for opencode: its OPENCODE_CONFIG_CONTENT is a merge layer, so an

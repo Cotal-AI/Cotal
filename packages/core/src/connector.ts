@@ -42,9 +42,10 @@ export interface LaunchOpts {
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */
   prompt?: string;
-  /** Mirror this session's transcript to `tr-<name>` so peers/observers can read what
-   *  the agent actually did (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to
-   *  opt in — surfaced as the `--transcript` flag on `cotal spawn` / `cotal start`. */
+  /** Mirror this session's transcript to the connector's per-agent transcript channel (see
+   *  {@link Connector.transcriptChannel}) so peers/observers can read what the agent actually did
+   *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
+   *  flag on `cotal spawn` / `cotal start`. */
   transcript?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
@@ -90,6 +91,15 @@ export interface Connector extends Extension {
   readonly kind: "connector";
   readonly name: string;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
+  /** The channel this connector publishes an agent's transcript mirror to (see
+   *  {@link LaunchOpts.transcript}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
+   *  actually mirror (Claude Code, OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
+   *  naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not
+   *  core. The manager calls it to grant the agent publish rights on its transcript channel at provision
+   *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
+   *  one source and can't drift. If `transcript` is requested for a connector that lacks this, the
+   *  manager fails loud rather than silently skipping the grant. */
+  transcriptChannel?(name: string): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager checks each is on PATH before spawning and fails with a clear error naming the

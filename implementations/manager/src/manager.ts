@@ -18,7 +18,6 @@ import {
   saveAgentFile,
   writeSecretFile,
   subjectMatches,
-  transcriptChannel,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
@@ -562,12 +561,21 @@ export class Manager {
 
     const name = this.uniqueName(identityName);
     this.reserved.add(name);
-    // Transcript mirroring → `tr-<name>`: default-on when COTAL_TRANSCRIPT_DEFAULT=1 (scoped per mesh
-    // by the operator's `cotal up` env) so observers can read what every managed agent actually did.
-    // Auth-mode publish is default-deny, so grant the agent pub on its OWN tr-<name> (else the mirror's
-    // publish is rejected). transcriptChannel() is the shared convention (core) the connectors publish to.
+    // Transcript mirroring (opt-in: `--transcript` / COTAL_TRANSCRIPT_DEFAULT=1) → grant the agent pub
+    // on its OWN transcript channel; auth-mode publish is default-deny, so without the grant the mirror's
+    // publish is rejected. Ask the resolved connector for the channel — the SAME one it publishes to, so
+    // the grant and the publish can't drift, and the literal stays out of core. Uses the spawned `name`
+    // (post-uniqueName) so the grant matches the actual identity. Mirroring is OPTIONAL per connector
+    // (like prompt): if it's requested for a connector that doesn't mirror, fail loud — never silently
+    // skip the grant (that would surface later as a confusing auth-mode publish rejection).
     const transcript = opts.transcript ?? process.env.COTAL_TRANSCRIPT_DEFAULT === "1";
-    if (transcript) allowPublish = [...(allowPublish ?? []), transcriptChannel(name)];
+    if (transcript) {
+      if (!connector.transcriptChannel) {
+        this.reserved.delete(name); // release the just-reserved name on this fail-fast path
+        return { ok: false, error: `connector "${connector.name}" does not support transcript mirroring, but transcript was requested` };
+      }
+      allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
+    }
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.

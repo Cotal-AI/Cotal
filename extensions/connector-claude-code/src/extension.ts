@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -31,6 +31,7 @@ const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
+  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   buildLaunch(opts: LaunchOpts): LaunchSpec {

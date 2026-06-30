@@ -138,10 +138,15 @@ export function aclEnv(opts: {
   return env;
 }
 
-/** The per-agent transcript-mirror channel — the convention now lives in `@cotal-ai/core` (shared by
- *  the manager + connectors). Re-exported here so the connectors' existing
- *  `import { transcriptChannel } from "@cotal-ai/connector-core"` keeps resolving. */
-export { transcriptChannel } from "@cotal-ai/core";
+/** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
+ *  subject-safe characters. The SINGLE source of this connector convention — connectors publish here
+ *  (their plugin/runtime path AND their `Connector.transcriptChannel` method both call this), and the
+ *  manager grants pub on it through that contract method. It lives in the connector layer, NOT core:
+ *  transcript mirroring is a connector feature, not the normative wire standard. Sanitizer kept exact
+ *  (illegal runs collapse to a single `-`) — changing it would rename every live transcript channel. */
+export function transcriptChannel(name: string): string {
+  return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+}
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /
  *  `${VAR:-default}` (in command/args/env/url/headers). The single source of which operator vars

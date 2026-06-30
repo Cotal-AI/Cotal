@@ -19,8 +19,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, seedChannelRegistry, isReachable, transcriptChannel } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import type { CotalMessage, Delivery } from "@cotal-ai/core";
+import { transcriptChannel } from "@cotal-ai/connector-core";
 import { cotal } from "../src/plugin.js";
 
 async function freePort(): Promise<number> {
@@ -37,7 +38,7 @@ const servers = `nats://127.0.0.1:${PORT}`;
 const space = "octr";
 const SID = "ses_tr";
 const NAME = "Otto";
-const CHAN = transcriptChannel(NAME); // "tr-otto" — also exercises the core-exported convention
+const CHAN = transcriptChannel(NAME); // "tr-otto" — the shared connector-core convention
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-octr-"));

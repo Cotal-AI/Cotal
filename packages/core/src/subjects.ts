@@ -74,17 +74,6 @@ export function isConcreteChannel(channel: string): boolean {
   return !channel.split(".").some((s) => s.trim() === "*" || s.trim() === ">");
 }
 
-/** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
- *  subject-safe characters. The SINGLE source of this convention — the connectors publish their
- *  transcript here, and the manager grants the agent pub rights on it (auth-mode publish is
- *  default-deny). Lives in core because the manager (an implementation) and the connectors (an
- *  extension) both need it and core is their only shared layer. Deliberately NOT {@link token}:
- *  this established channel string collapses illegal runs to a single `-`, so swapping the
- *  sanitizer would silently rename every live transcript channel. */
-export function transcriptChannel(name: string): string {
-  return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
-}
-
 /** Does NATS subject `pattern` (with `*`/`>`) match `subject`? Also reused for channel-level
  *  matching ("is a member on `team.>` a member of `team.backend`?") — channels are dotted
  *  token strings, same rules. */

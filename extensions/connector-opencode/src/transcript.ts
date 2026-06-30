@@ -90,7 +90,8 @@ function chunkLines(lines: string[], max: number): string[] {
 export interface TranscriptMirror {
   /** message.updated → remember which messageIDs are assistant-authored (this turn). */
   record(message: any): void;
-  /** message.part.updated → condense+truncate the part and buffer its lines (keyed by id, this turn). */
+  /** message.part.updated → condense the part and buffer its lines (tool results truncated, assistant
+   *  text kept full; keyed by `${messageID}:${partID}`, this turn). */
   observe(part: any): void;
   /** session.idle → publish the turn's settled assistant lines to the channel, then clear. */
   flush(): Promise<void>;
