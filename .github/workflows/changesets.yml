@@ -95,8 +95,14 @@ jobs:
           fi
           notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
             -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" --jq .body)
+          # The generated notes are merged-PR *titles* only. Prepend the changeset summaries (the actual
+          # per-change descriptions changesets wrote into the package CHANGELOGs) so a release reads as
+          # more than a list of one-liners. Best-effort: the package is already published, so a hiccup in
+          # this cosmetic step must never block cutting the Release (|| true).
+          detail=$(node scripts/release-notes-detail.mjs "$version" 2>/dev/null || true)
           {
             printf '🚀 **Cotal %s is out!**\n\nGrab it: `npm i cotal-ai@%s`\n\n' "$version" "$version"
+            if [ -n "$detail" ]; then printf '%s\n\n' "$detail"; fi
             printf '%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" \
