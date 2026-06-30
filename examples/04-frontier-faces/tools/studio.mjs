@@ -228,10 +228,11 @@ function spawnAgent(name) {
     COTAL_SUBSCRIBE: subsOf(name).join(","),
     COTAL_ALLOW_SUBSCRIBE: subsOf(name).join(","),
     COTAL_ALLOW_PUBLISH: pubsOf(name).join(","),
-    // Read its channels but never WAKE on peer chatter — only an @mention or a DM drives a turn.
-    // The studio @mentions a channel's members when YOU post, so they answer you; an agent's reply
-    // (no @mention) doesn't wake the others, which stops the everyone-replies-to-everyone spiral.
-    COTAL_QUIET: subsOf(name).join(","),
+    // Discussion by default: agents WAKE on channel chatter, so they actually talk to each other —
+    // the host poking the room kicks off a real back-and-forth, not one reply each. Set QUIET=1 to
+    // restore "answer the host once, never wake on a peer" (no agent-to-agent cascade); the personas'
+    // "agreement alone isn't a message / stay silent" rules are what keep the open discussion bounded.
+    ...(process.env.QUIET === "1" ? { COTAL_QUIET: subsOf(name).join(",") } : {}),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(model)),
   };
   const child = spawn(process.execPath, [SERVE], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
