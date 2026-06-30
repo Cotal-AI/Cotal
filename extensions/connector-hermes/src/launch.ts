@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlSocketPath, ORIENTATION_BOOTSTRAP } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP } from "@cotal-ai/connector-core";
 import { startSidecar } from "./sidecar.js";
 
 /** Hermes API line this connector is written + pinned against (see pyproject.toml). A different
@@ -111,10 +111,11 @@ async function main(): Promise<void> {
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
-  const controlSock = controlSocketPath(config.space, config.name);
+  const control = controlEndpoint(config.space, config.name);
   const bridgeSock = bridgeSocketPath(config.space, config.name);
   const toolsFile = join(home, "cotal-tools.json");
-  process.env.COTAL_CONTROL_SOCKET = controlSock;
+  process.env.COTAL_CONTROL_SOCKET = control.path;
+  process.env.COTAL_CONTROL_TOKEN = control.token; // first-frame auth, shared sidecar↔plugin via env
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
 
@@ -126,7 +127,8 @@ async function main(): Promise<void> {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_HOME: home,
-    COTAL_CONTROL_SOCKET: controlSock,
+    COTAL_CONTROL_SOCKET: control.path,
+    COTAL_CONTROL_TOKEN: control.token,
     COTAL_BRIDGE_SOCKET: bridgeSock,
     COTAL_TOOLS_FILE: toolsFile,
   };

@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { createConnection } from "node:net";
 import {
   connect,
   credsAuthenticator,
@@ -2639,15 +2640,70 @@ export function isPermissionDenied(e: unknown): boolean {
   return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
 }
 
-/** Whether a NATS server is *running* at `servers`. True on a successful connect AND on an
- *  auth rejection — an auth error means a server is there, just refusing these creds (so the
- *  caller should surface the real auth failure, not a misleading "server down", and `up`
- *  must not try to start a duplicate on the bound port). Only a genuine connection failure
- *  (refused / timeout / no server) returns false. */
+/** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
+ *  first entry wins) into a host+port for {@link tcpInfoProbe}. Defaults the port to 4222. */
+function hostPort(server: string): { host: string; port: number } {
+  const first = (server.split(",")[0] ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme
+  const u = new URL(`http://${first}`); // http:// so .hostname/.port resolve (incl. bracketed IPv6)
+  return { host: u.hostname, port: u.port ? Number(u.port) : 4222 };
+}
+
+/** Silent credless liveness probe. Opens a plain TCP connection and confirms a NATS server is there
+ *  by reading its UNPROMPTED `INFO {…}` greeting — which the server sends on accept, BEFORE the
+ *  client's CONNECT/auth (per the NATS client protocol) — then closes immediately without
+ *  authenticating. Since it never sends CONNECT, an auth broker has nothing to reject, so this emits
+ *  NO broker-side auth-error/auth-timeout log line (unlike a credless `connect()`, which an auth
+ *  broker rejects and logs). It is a *plaintext NATS* liveness check only:
+ *    • a TLS-first (`handshake_first`, NATS ≥ 2.10.4) listener sends its TLS handshake before INFO,
+ *      so the read won't match → returns false (a documented false-negative for that broker config);
+ *    • a non-NATS / silent listener never sends a valid `INFO {` → also false (we require the real
+ *      greeting, never "any open port is reachable").
+ *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log. */
+function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let socket: ReturnType<typeof createConnection> | undefined;
+    let done = false;
+    const finish = (live: boolean) => {
+      if (done) return;
+      done = true;
+      try { socket?.destroy(); } catch { /* already gone */ }
+      resolve(live);
+    };
+    let host: string, port: number;
+    try { ({ host, port } = hostPort(server)); } catch { return resolve(false); }
+    socket = createConnection({ host, port });
+    socket.setTimeout(timeoutMs);
+    let buf = "";
+    socket.on("data", (chunk: Buffer) => {
+      buf += chunk.toString("utf8");
+      const nl = buf.indexOf("\r\n");
+      if (nl === -1) { if (buf.length > 4096) finish(false); return; } // no real INFO line is 4KB+
+      const line = buf.slice(0, nl);
+      const brace = line.indexOf("{"); // greeting is `INFO {json}` (the server appends a trailing space)
+      if (!/^INFO\b/.test(line) || brace === -1) return finish(false); // not NATS (incl. a TLS-first handshake)
+      try { JSON.parse(line.slice(brace)); finish(true); } // require a real INFO greeting, not arbitrary bytes
+      catch { finish(false); }
+    });
+    socket.on("timeout", () => finish(false));
+    socket.on("error", () => finish(false)); // refused / reset / DNS failure
+    socket.on("close", () => finish(false)); // closed before a full INFO line arrived
+  });
+}
+
+/** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext
+ *  liveness check ({@link tcpInfoProbe}): it reads the server's pre-auth `INFO` greeting and closes
+ *  WITHOUT authenticating, so a live broker (open OR auth — INFO precedes auth) returns true while
+ *  emitting no broker auth-error log. It may return false for a TLS-first listener — the credless
+ *  probe is plaintext-only. With creds/token/tls supplied it is instead the AUTHORITATIVE identity
+ *  check: a real authenticated connect, true on success AND on an auth rejection (a server that
+ *  refuses these creds is still up — so the caller surfaces the real auth failure, and `up` won't
+ *  start a duplicate on the bound port). Only a genuine connection failure (refused/timeout) is false. */
 export async function isReachable(
   servers: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
+  if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls)
+    return tcpInfoProbe(servers, opts.timeoutMs ?? 1000);
   try {
     const nc = await connect({
       servers,

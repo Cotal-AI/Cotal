@@ -13,6 +13,7 @@
  * Run: pnpm smoke:server-resolution:live
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-home-"));
 const cwd = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-cwd-"));
 const projectRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-root-"));
 process.env.COTAL_HOME = home;
+const startCwd = process.cwd(); // restored before cleanup so Windows can rmdir `cwd` (it locks a live process's cwd)
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry
 
 const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
@@ -120,8 +122,16 @@ try {
       /* already gone */
     }
   }
-  rmSync(home, { recursive: true, force: true });
-  rmSync(cwd, { recursive: true, force: true });
-  rmSync(projectRoot, { recursive: true, force: true });
+  // Windows EBUSY-locks a directory that's still a live process's cwd (POSIX tolerates rmdir of a
+  // live cwd; Windows does not). The chief locker is THIS test process — it chdir'd into `cwd` — so
+  // step OUT before removing it; then wait for each killed child to actually exit (their cwd handles
+  // release too), and let force + maxRetries ride out the brief tail where a handle lingers past exit
+  // (Node retries EBUSY/EPERM/ENOTEMPTY natively on Windows — no dep).
+  process.chdir(startCwd);
+  await Promise.all(kids.map((cp) => (cp.exitCode !== null || cp.signalCode !== null ? null : once(cp, "exit"))));
+  const rmOpts = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 } as const;
+  rmSync(home, rmOpts);
+  rmSync(cwd, rmOpts);
+  rmSync(projectRoot, rmOpts);
 }
 process.exit(0);

@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
-import { writeFileSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable,
@@ -17,7 +19,10 @@ import {
 //   • mediated join/leave: the agent has no UPDATE grant, so it asks the privileged provisioner to
 //     move its filter, validated against allowSubscribe.
 // No external server (spins its own JWT-auth nats-server).
-const space = "authcheck", port = 4227, server = `nats://127.0.0.1:${port}`, storeDir = "/tmp/authcheck-nats", conf = "/tmp/authcheck.conf", log = "/tmp/authcheck.log";
+// Scratch lives under the OS temp dir (NOT a hardcoded POSIX `/tmp/*`, which on Windows resolves
+// drive-relative and hands nats-server.exe a bogus storeDir) so the suite is portable.
+const dir = mkdtempSync(join(tmpdir(), "cotal-authcheck-"));
+const space = "authcheck", port = 4227, server = `nats://127.0.0.1:${port}`, storeDir = join(dir, "nats"), conf = join(dir, "authcheck.conf"), log = join(dir, "authcheck.log");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 

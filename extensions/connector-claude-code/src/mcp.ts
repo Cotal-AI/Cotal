@@ -14,7 +14,6 @@ import {
   configFromEnv,
   hasIdentity,
   MeshAgent,
-  controlSocketPath,
   startControlServer,
   registerCotalTools,
   feedbackLine,
@@ -136,9 +135,39 @@ async function main(): Promise<void> {
   if (/^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? ""))
     mirror = new TranscriptMirror(agent, transcriptChannel(config.name));
 
-  // Local control plane for the lifecycle hooks (presence + message injection).
-  const socketPath = controlSocketPath(config.space, config.name);
-  const controlServer = startControlServer(agent, socketPath, claudeHandle);
+  // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
+  // cooperative shutdown. Path + token come from the launch env (buildLaunch set them, and the hooks
+  // inherit this process's env) — a managed session without them is misconfigured, so fail loud
+  // rather than serve an unauthenticated/no control plane.
+  const controlPath = process.env.COTAL_CONTROL_SOCKET;
+  const controlToken = process.env.COTAL_CONTROL_TOKEN;
+  if (!controlPath || !controlToken) {
+    process.stderr.write(
+      "[cotal-connector] managed session missing COTAL_CONTROL_SOCKET/COTAL_CONTROL_TOKEN — cannot serve the control plane\n",
+    );
+    process.exit(1);
+  }
+  // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
+  // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
+  let controlServer: ReturnType<typeof startControlServer> | undefined;
+  const shutdown = async () => {
+    try {
+      controlServer?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await agent.stop();
+    } finally {
+      process.exit(0);
+    }
+  };
+  controlServer = startControlServer(
+    agent,
+    { path: controlPath, token: controlToken },
+    claudeHandle,
+    { fatalBind: true, onShutdown: () => void shutdown() },
+  );
 
   const server = new McpServer(
     { name: "cotal", version: "0.0.0" },
@@ -216,18 +245,6 @@ async function main(): Promise<void> {
   );
   agent.on("wake", () => nudge());
 
-  const shutdown = async () => {
-    try {
-      controlServer.close();
-    } catch {
-      /* ignore */
-    }
-    try {
-      await agent.stop();
-    } finally {
-      process.exit(0);
-    }
-  };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 

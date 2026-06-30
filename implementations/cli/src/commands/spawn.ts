@@ -1,5 +1,4 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -10,10 +9,12 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
+  mkSecretDir,
   newIdentity,
   parseShareSelection,
   provisionAgent,
   registry,
+  writeSecretFile,
   CotalEndpoint,
   type AgentDef,
   type CompletionResult,
@@ -246,8 +247,8 @@ export async function spawn(argv: string[]): Promise<void> {
     });
     await prov.stop();
     credsPath = join(authDir(target.root), "creds", `${name}.creds`);
-    mkdirSync(dirname(credsPath), { recursive: true });
-    writeFileSync(credsPath, creds, { mode: 0o600 });
+    mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
+    writeSecretFile(credsPath, creds);
     id = identity.id;
     console.error(`minted creds for ${name} (auth mode) → ${credsPath}`);
   }

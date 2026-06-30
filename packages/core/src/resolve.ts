@@ -89,4 +89,6 @@ export function assertValidName(name: string): void {
     throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
   if (name.includes("/"))
     throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);
+  if (name.includes("\\"))
+    throw new Error(`invalid name ${JSON.stringify(name)}: "\\" is reserved (a Windows path separator)`);
 }

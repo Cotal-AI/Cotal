@@ -293,10 +293,13 @@ Hermes has no MCP), so it lives in connector settings, not the
 - **Secrets stay references.** Write keys as `${VAR}` / `${VAR:-default}`, never literals — the
   config file is safe to keep in `~/.config` or a gitignored `.cotal/`. At launch the connector
   forwards *only* the named vars the chosen servers declare (from the operator's env, by name —
-  never the whole environment, preserving the P3 env allow-list) and passes the merged config as a
-  `0600` file (in a private `0700` temp dir); Claude expands the references from that env at launch,
-  so the secret never lands on disk or the command line. `--strict-mcp-config` stays on, so only
-  cotal + the explicitly-shared servers ever load.
+  never the whole environment, preserving the P3 env allow-list) and passes the merged config as an
+  owner-only file in a private temp dir (`0600`/`0700` on POSIX; on Windows — where those modes are a
+  no-op — the file and dir are ACL-hardened via `icacls` to the current user + SYSTEM + Admins);
+  Claude expands the references from that env at launch, so the secret never lands on disk or the
+  command line. `--strict-mcp-config` stays on, so only cotal + the explicitly-shared servers ever
+  load. (Operator config lives at `$XDG_CONFIG_HOME/cotal/config.json`, else `~/.config/cotal/` on
+  POSIX / `%APPDATA%\Cotal\` on Windows; machine state under `~/.cotal` / `%LOCALAPPDATA%\Cotal`.)
 - **Sharing a server grants its credential to the agent.** The forwarded var lives in the *Claude
   process's* environment (that's how Claude expands the `${VAR}` and the server reads it), so an
   agent with shell/tool access can read it directly — not only through the server's tools. Keeping
@@ -448,10 +451,16 @@ falls back to `Notification.message`. The pending tool is cleared on turn start 
 idle-input wait never inherits a stale command.
 
 Wired in [`hooks.json`](../extensions/connector-claude-code/hooks/hooks.json), relayed over
-the connector's control socket
+the connector's **authenticated** control endpoint
 ([`connector-core/src/control.ts`](../extensions/connector-core/src/control.ts)), and mapped
 to presence by the Claude handle in
-[`mcp.ts`](../extensions/connector-claude-code/src/mcp.ts).
+[`mcp.ts`](../extensions/connector-claude-code/src/mcp.ts). The endpoint is a per-user socket on
+POSIX and a named pipe on Windows; its path + a random per-launch token ride the child env
+(`COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), and every frame's token is checked (constant-time)
+before any handler runs — so a local process that finds the path still can't drive presence, inject
+messages, or stop the agent. The manager also uses it to send a cooperative `{op:"shutdown"}` on a
+graceful stop where the runtime can't deliver a signal (Windows ConPTY), so the agent leaves the
+mesh cleanly instead of being hard-killed.
 
 ## Transcript mirror
 

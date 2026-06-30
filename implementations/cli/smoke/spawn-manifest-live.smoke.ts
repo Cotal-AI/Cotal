@@ -20,7 +20,13 @@ const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "spawnf-live";
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+// Run the TS CLI as `node --import tsx <cli.ts>` rather than via the `.bin/tsx` shim: that shim is a
+// `.cmd` on Windows, and Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980), so the shim
+// silently no-ops (null stdout) there. `import.meta.resolve` gives tsx an absolute URL so it resolves
+// regardless of the spawn's cwd (the temp project root below).
+const TSX_IMPORT = import.meta.resolve("tsx");
+const nodeRun = (...args: string[]): ReturnType<typeof spawnSync> =>
+  spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: root, env, encoding: "utf8" });
 
 const home = mkdtempSync(join(tmpdir(), "cotal-spawnf-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-spawnf-root-"));
@@ -32,7 +38,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const cli = (...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
+const cli = (...args: string[]) => nodeRun(...args);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const portOpen = (port: number) =>
   new Promise<boolean>((res) => {
@@ -67,7 +73,7 @@ channels:
 writeDeploy("DEPLOY would change this — must NOT be applied to the unmanaged card.");
 
 function down(): void {
-  spawnSync(TSX, [CLI, "down"], { cwd: root, env, encoding: "utf8" });
+  nodeRun("down");
 }
 
 try {

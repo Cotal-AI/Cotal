@@ -253,12 +253,13 @@ function fmItem(value: string): string {
   return fmScalar(value);
 }
 
-/** Resolve a name-or-path to an agent file. A path (absolute, contains a slash,
- *  or ends in `.md`) is used as given; a bare name maps to the directory
+/** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on
+ *  Windows, `\` — or ends in `.md`) is used as given; a bare name maps to the directory
  *  convention `<root>/.cotal/agents/<name>.md`. */
 export function agentFilePath(root: string, nameOrPath: string): string {
   if (isAbsolute(nameOrPath)) return nameOrPath;
-  if (nameOrPath.includes("/") || nameOrPath.endsWith(".md")) return resolve(root, nameOrPath);
+  if (nameOrPath.includes("/") || nameOrPath.includes("\\") || nameOrPath.endsWith(".md"))
+    return resolve(root, nameOrPath);
   return join(root, ".cotal", "agents", `${nameOrPath}.md`);
 }
 

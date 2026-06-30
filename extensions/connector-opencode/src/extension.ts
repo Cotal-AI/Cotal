@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -18,8 +18,8 @@ const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
  * OpenCode's client/server split (see serve.ts). The Cotal mesh bridge runs as an in-process plugin
  * inside a headless `opencode serve`: it holds the {@link MeshAgent}, registers the cotal_* tools
  * natively (from the shared specs, at parity with Claude Code), reports presence off the event bus,
- * and owns ONE session it drives — injecting each incoming peer batch as a turn via the prompt API
- * (`session.promptAsync`, server-side, so it can't race the TUI input box). The shim then attaches a
+ * and owns ONE session it drives — injecting each incoming peer batch through the authenticated
+ * OpenCode server API on the same serve process the TUI attaches to. The shim then attaches a
  * foreground TUI to that session, so a human watching sees the agent work and can type into it.
  *
  * Config rides in `OPENCODE_CONFIG_CONTENT` (inline JSON, the highest merge layer), so the
@@ -96,16 +96,34 @@ export const opencodeConnector: Connector = {
       const face = def.meta?.face;
       if (face) env.COTAL_FACE_PERSONA = face; // shim swaps the TUI for the face viewer
     }
-    // The `--model` flag wins over the agent file, and applies even with no agent file.
-    if (model) config.model = model;
+    // The `--model` flag wins over the agent file, and applies even with no agent file. Pin it to a
+    // dedicated primary agent made the default, so an operator's own `default_agent` in
+    // ~/.config/opencode (with its own model) can't override the model a Cotal spawn asks for — the
+    // session the plugin drives runs the persona's model, not the operator's default agent's.
+    if (model) {
+      config.model = model;
+      config.agent = { cotal: { mode: "primary", model } };
+      config.default_agent = "cotal";
+    }
 
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config);
+
+    // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a signal-less
+    // runtime (ConPTY/Windows), where a hard kill skips cleanup and the agent lingers until its
+    // presence TTL expires. The plugin (in the opencode server process) starts the control server and
+    // leaves the mesh cleanly on shutdown. Minted here; passed to the plugin in the child env (the
+    // token never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
+    // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
+    const control = controlEndpoint(opts.space, opts.name);
+    env.COTAL_CONTROL_SOCKET = control.path;
+    env.COTAL_CONTROL_TOKEN = control.token;
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {
       command: process.execPath,
       args: [SERVE_SHIM],
       env,
+      control,
     };
   },
 };

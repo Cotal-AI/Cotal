@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/manager",
   "description": "Cotal agent supervisor: spawns and manages mesh nodes via a pluggable runtime (pty/tmux/cmux).",
-  "version": "0.8.0",
+  "version": "0.8.2",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,7 +19,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\"",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

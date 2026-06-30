@@ -260,7 +260,15 @@ try {
   //    by her self-join via the daemon. Below we force its mirror entry to a pending/missing state, so
   //    leaving "ops" must STILL tombstone — leaveChannel re-resolves the generation from the delivery
   //    service on demand (fail-closed), so a missing mirror entry is not a silent §7 fail-open.
-  const aliceOpsBefore = await pub.channelMembers("ops");
+  // alice self-joined "ops" in Phase 1 (no daemon yet); the daemon reconciles that boot membership
+  // only after it comes up in Phase 2, so POLL for it rather than assume the elapsed review.db steps
+  // were enough — a slow round-trip (CI/Windows) lagged it and flaked this check (cf. the `until`
+  // wait the durable-delivery check above uses for the same eventual-consistency reason).
+  let aliceOpsBefore = await pub.channelMembers("ops");
+  for (let i = 0; i < 160 && !aliceOpsBefore.some((m) => m.id === aId.id); i++) {
+    await wait(50);
+    aliceOpsBefore = await pub.channelMembers("ops");
+  }
   check("alice's boot 'ops' membership is present (self-joined at connect)", aliceOpsBefore.some((m) => m.id === aId.id), aliceOpsBefore);
 
   // Force alice's "ops" record to a crash-stuck PENDING activation (activated:false). It still routes
@@ -302,9 +310,14 @@ try {
   b.on("error", () => {});
   b.on("message", (m, d: Delivery) => { gotB.push(`#${m.channel}:${m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")}`); d.ack(); });
   await b.start();
-  await wait(400); // connect + boot-membership hydration round-trip
 
-  const bootMembers = await pub.channelMembers("ops");
+  // Poll for bob's boot self-join to hydrate (connect + daemon round-trip) rather than assume a fixed
+  // delay — same eventual-consistency flake class as alice's check above; a fixed wait can lag on CI/Windows.
+  let bootMembers = await pub.channelMembers("ops");
+  for (let i = 0; i < 160 && !bootMembers.some((m) => m.id === bId.id); i++) {
+    await wait(50);
+    bootMembers = await pub.channelMembers("ops");
+  }
   check("bob's BOOT durable membership is listed (activated, hydrated)", bootMembers.some((m) => m.id === bId.id), bootMembers);
 
   const bootLeave = await b.leaveChannel("ops");

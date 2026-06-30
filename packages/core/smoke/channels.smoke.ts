@@ -17,7 +17,8 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
 import {
-  CotalEndpoint, seedChannelRegistry, readChannelRegistry, effectiveReplay, validateChannelConfig,
+  CotalEndpoint, seedChannelRegistry, readChannelRegistry, effectiveReplay, effectiveDeliveryClass,
+  ensureDefaultDeliveryClass, validateChannelConfig,
   isReachable, chatSubject, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 
@@ -75,6 +76,15 @@ try {
   check("merge-on-write keeps other fields", reg2.channels?.review.description === "Critique v2" && reg2.channels?.review.instructions === "Be specific.");
   assert.throws(() => validateChannelConfig({ description: "x".repeat(1000) }), /too long/);
   check("validation rejects oversize", true);
+
+  // ---- default delivery class written at space creation (SPEC §4: on the wire, not inferred) ----
+  const dcSpace = `${space}-dc`;
+  check("writes default deliveryClass when unset", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" })) === true);
+  const dcReg = await readChannelRegistry({ servers, space: dcSpace });
+  check("default deliveryClass is discoverable on the wire", dcReg.defaults?.deliveryClass === "durable" && effectiveDeliveryClass(undefined, dcReg.defaults) === "durable");
+  check("idempotent re-write is a no-op", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" })) === false);
+  check("clobber-safe: an existing class wins over the profile default", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "live" })) === false
+    && (await readChannelRegistry({ servers, space: dcSpace })).defaults?.deliveryClass === "durable");
 
   // ---- replay on join ----
   const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["log", "chat", "general", "incident"] });

@@ -1,0 +1,158 @@
+name: Windows
+
+# Native-Windows gate. Kept separate from the ubuntu `CI` workflow because the command set differs
+# (no tmux/runtime/Hermes — those are Unix-only) and the broker install is Windows-specific.
+#
+# TWO LANES, deliberately split (a single all-or-nothing soak job is a permanently-red ignored check):
+#   • `required` — typecheck + build + unit tests + the GREEN, broker-free seam smokes (resolver /
+#     env-isolation / view / core-boundary / preflight), the `.cmd` launch matrix (`smoke:windows`,
+#     validated green-in-logs on windows-latest), and the protocol/security suite. Gating: a red here
+#     is a real Windows regression.
+#   • `smoke`    — the live-broker soak (`continue-on-error`): server-resolution + spawn-manifest +
+#     cooperative-stop (WS4), each its own step so one cleanup failure can't mask the next. Genuinely
+#     green now, but broker-timing-dependent — promote into `required` once proven stable across runs.
+#     See .internal/plans/windows-native-support.md.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  # REQUIRED lane — must stay green. typecheck/build/test carry no POSIX assumptions, and the seam
+  # smokes here are broker-free + launch-mechanism-independent (resolver, P3 env-isolation) or the
+  # already-green protocol suite, so a red is a real regression, not a soak artifact.
+  required:
+    name: Windows / required
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Default pnpm install keeps optionalDependencies. Do NOT add --omit=optional / --no-optional:
+      # @lydell/node-pty ships its prebuilt ConPTY binary as a per-platform optional dep, and the
+      # @eplightning/nats-server-win32-* fallback binaries are optional deps too.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # smoke:ci spins its own nats-server from PATH. Checksum-pinned (supply-chain gate) since this
+      # lane is REQUIRED. PowerShell string `-ne` is case-insensitive, so the uppercase Get-FileHash
+      # output compares equal to the lowercase pin.
+      - name: Install nats-server
+        shell: pwsh
+        run: |
+          $NatsVersion = "v2.10.22"
+          $Sha256 = "33c8a0c6feb441ec4c7007e0af9ef2a45356d6809cd08ec4871a3d659fc74e91"
+          $Name = "nats-server-$NatsVersion-windows-amd64"
+          $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          $InstallDir = Join-Path $env:RUNNER_TEMP $Name
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
+          $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash
+          if ($Actual -ne $Sha256) { throw "nats-server zip checksum mismatch: got $Actual expected $Sha256" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP -Force
+          # $GITHUB_PATH only affects LATER steps, so verify here via the absolute path.
+          "$InstallDir" >> $env:GITHUB_PATH
+          & "$InstallDir\nats-server.exe" --version
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+      # Broker-free seam smokes — launch-mechanism-independent: PATHEXT/`.exe`-preference resolution,
+      # P3 child-env isolation (launches node.exe directly), and pure protocol/view/preflight checks.
+      - name: Broker-free seam smokes
+        run: pnpm smoke:view && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:env-isolate
+
+      # The `.cmd`/`.bat` launch matrix (PATHEXT resolution + cmd-arg byte-for-byte quoting + orphan
+      # reap) + the authenticated control-plane seams (first-frame token auth, shutdown routing,
+      # fatal-bind-on-squat, pre-auth DoS bound). Deterministic, broker-free, validated green-in-logs
+      # on windows-latest → an ENFORCED required gate (no continue-on-error: a regression fails it).
+      - name: Windows launch + control-plane matrix (smoke:windows)
+        run: pnpm smoke:windows
+
+      # Secrets at rest: 0o600/0o700 is a no-op on Windows, so secret files/dirs are locked down via
+      # an NTFS ACL (icacls). This asserts the broad inherited access is actually stripped.
+      - name: Secrets-at-rest ACL hardening (smoke:secret-fs)
+        run: pnpm smoke:secret-fs
+
+      - name: Protocol & security smoke tests
+        run: pnpm smoke:ci
+
+  # SOAK lane — non-blocking until green. The `.cmd` launch matrix is the mechanism still settling;
+  # the live-broker smokes are split into independent steps (each continue-on-error) so one's cleanup
+  # failure can't mask the next (the `&&`-chain used to short-circuit spawn-manifest:live entirely).
+  smoke:
+    name: Windows / smoke (soak — non-blocking)
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install nats-server
+        shell: pwsh
+        run: |
+          $NatsVersion = "v2.10.22"
+          $Sha256 = "33c8a0c6feb441ec4c7007e0af9ef2a45356d6809cd08ec4871a3d659fc74e91"
+          $Name = "nats-server-$NatsVersion-windows-amd64"
+          $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          $InstallDir = Join-Path $env:RUNNER_TEMP $Name
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
+          $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash
+          if ($Actual -ne $Sha256) { throw "nats-server zip checksum mismatch: got $Actual expected $Sha256" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP -Force
+          "$InstallDir" >> $env:GITHUB_PATH
+          & "$InstallDir\nats-server.exe" --version
+
+      # Live smokes run the built dist (tsx bin/cotal.ts -> dist), not src — build before them.
+      - name: Build
+        run: pnpm build
+
+      # Live-broker smokes, each its own step (continue-on-error) so a cleanup failure can't mask the
+      # other. Deliberately EXCLUDED until made Windows-aware: smoke:runtime/smoke:tmux (tmux),
+      # smoke:attach (sleep/tmux), smoke:spawn-from-anywhere:live (asserts 0700),
+      # smoke:up-manifest:live (asserts 0600), smoke:manager-singleton:live (sh -c lsof|xargs).
+      - name: Live — server resolution
+        continue-on-error: true
+        run: pnpm smoke:server-resolution:live
+
+      - name: Live — spawn manifest
+        continue-on-error: true
+        run: pnpm smoke:spawn-manifest:live
+
+      # WS4: a cooperative graceful stop publishes OFFLINE presence over the named-pipe control plane
+      # (not TTL expiry). node:net abstracts the AF_UNIX socket ↔ Windows named pipe, so the real wire
+      # is exercised here against a live broker.
+      - name: Live — cooperative stop (WS4 offline presence)
+        continue-on-error: true
+        run: pnpm smoke:cooperative-stop:live

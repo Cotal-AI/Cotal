@@ -4,10 +4,11 @@
  * `supervise --launch`), and the connector-availability preflight. No broker lifecycle here (that's
  * the command), so this stays reusable across both verbs.
  */
-import { accessSync, constants, renameSync, writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { join, delimiter } from "node:path";
+import { join } from "node:path";
 import { ensureDirNoSymlink, registry, type ChannelConfig, type ChannelRegistryFile, type Connector, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { resolveOnPath } from "@cotal-ai/workspace";
 import type { PreparedManifest } from "./preflight.js";
 import type { PreparedAgent } from "./prepare.js";
 import type { ResolvedChannel } from "./model.js";
@@ -121,23 +122,8 @@ export function preflightConnectors(prepared: PreparedManifest): string {
       problems.push(`unknown connector "${type}" (no such agent type registered)`);
       continue;
     }
-    const missing = (connector.requires ?? []).filter((bin) => !binOnPath(bin));
+    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length) problems.push(`${type} needs ${missing.join(", ")} on PATH`);
   }
   return problems.join("; ");
-}
-
-/** Is `bin` an executable on PATH (or an executable absolute/relative path)? POSIX-only — mirrors
- *  the manager's own preflight so `up -f` fails the same way `cotal start` would. */
-function binOnPath(bin: string): boolean {
-  const check = (p: string): boolean => {
-    try {
-      accessSync(p, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (bin.includes("/")) return check(bin);
-  return (process.env.PATH ?? "").split(delimiter).some((dir) => dir && check(join(dir, bin)));
 }
