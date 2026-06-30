@@ -122,6 +122,31 @@ throws("old `<win>.0` index target is invalid under pane-base-index 1", () =>
 tmux.closeWindow(lay.windowId);
 ok("layout window closes by stable id", !tmux.windowAliveRef(lay.windowId));
 
+console.log("\n── regression: numeric session name (#131) ──────");
+
+// A default `tmux new` session is named "0". `new-window -t` takes a target-*window*, so a bare
+// numeric name was read as window-index 0 → "create window failed: index 0 in use"; openWindow now
+// targets the session (`-t "0:"`). A numeric session shares the default tmux server, so guard the
+// user's real session "0": skip if one already exists (never touch it), and only kill the one we make.
+const NUMERIC = "0";
+const numericPreexists = (() => {
+  try { execFileSync("tmux", ["has-session", "-t", NUMERIC], { stdio: "ignore" }); return true; }
+  catch { return false; }
+})();
+if (numericPreexists) {
+  console.log(`  • skipped — a tmux session named "${NUMERIC}" already exists (won't touch it)`);
+} else {
+  tmux.ensureSession(NUMERIC, "/tmp");
+  let numWinId: string | undefined;
+  try {
+    numWinId = tmux.openWindow(NUMERIC, "num-regression", "sleep 10", "/tmp", { focus: false }).windowId;
+  } catch { /* pre-fix bug: `new-window -t 0` → "index 0 in use" */ }
+  ok("openWindow opens a window in a numeric-named session (pre-fix: 'index 0 in use')",
+    numWinId?.startsWith("@") ?? false);
+  if (numWinId) tmux.closeWindow(numWinId);
+  try { execFileSync("tmux", ["kill-session", "-t", NUMERIC], { stdio: "ignore" }); } catch { /* gone */ }
+}
+
 console.log("\n── runtime ─────────────────────────────────────");
 
 const runtime = new TmuxRuntime(SESSION);

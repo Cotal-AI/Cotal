@@ -97,7 +97,7 @@ frictionless open, loopback-only, live-only mesh (no auth, no daemon).
 
 > [!NOTE]
 > **Want each teammate in its own terminal?** Run `setup` inside a **[cmux](https://cmux.com)** pane and Cotal opens a
-> tab per agent, or inside a **tmux** session and it opens a window per agent. Otherwise they run in the background
+> tab per agent, or inside a **[tmux](https://github.com/tmux/tmux/wiki)** session and it opens a window per agent. Otherwise they run in the background
 > on the same mesh, watched with `cotal console` or the dashboard.
 
 When you're all set up, here are the commands you'll use most:
@@ -200,8 +200,9 @@ concrete mechanism you can check against the code.
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-Plus the three agent connectors above and the [`@cotal-ai/cmux`](extensions/cmux)
-integration (agents in cmux tabs); the full package list is in [AGENTS.md](AGENTS.md).
+Plus the three agent connectors above and the [`@cotal-ai/cmux`](extensions/cmux) /
+[`@cotal-ai/tmux`](extensions/tmux) integrations (agents in cmux tabs or tmux windows); the full
+package list is in [AGENTS.md](AGENTS.md).
 
 ## Documentation
 

@@ -100,7 +100,9 @@ export function openWindow(
   cwd: string,
   opts: { focus?: boolean } = {},
 ): WindowRefs {
-  const args = ["new-window", "-t", session, "-n", name, "-c", cwd];
+  // Trailing `:` forces a target-*session* + next free index. A bare numeric session name (the
+  // default `tmux new` session is "0") would otherwise be read as window-index 0 → "index 0 in use".
+  const args = ["new-window", "-t", `${session}:`, "-n", name, "-c", cwd];
   if (!(opts.focus ?? false)) args.push("-d");
   // -P -F prints the new window + pane IDs before returning — stable across renames and reorders.
   args.push("-P", "-F", "#{window_id} #{pane_id}", command);
