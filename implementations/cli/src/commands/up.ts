@@ -493,7 +493,10 @@ async function authSetup(
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
   writeFileSync(confPath, serverConfig(auth, { port, storeDir, host }));
-  const creds = await mintCreds(auth, newIdentity(), "manager"); // privileged, ephemeral
+  // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
+  // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
+  // enumerated `provisioner` scope. No broad `manager` residual for the up path.
+  const creds = await mintCreds(auth, newIdentity(), "provisioner");
   return { confPath, creds };
 }
 

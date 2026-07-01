@@ -580,7 +580,9 @@ function operatorPermissions(space: string, id: string): Record<string, unknown>
         // channel's delivery class. Read-only (no `$KV.<channel>` write — that's the provisioner).
         `$JS.API.STREAM.INFO.${CHKV}`,
         `$JS.API.STREAM.MSG.GET.${CHKV}`,
-        `$JS.API.DIRECT.GET.${CHKV}`,
+        // Keyed KV get rides `DIRECT.GET.<stream>.$KV.<bucket>.<key>` — the key is in the SUBJECT, so
+        // the grant needs the trailing `.>` (unlike STREAM.MSG.GET, which carries it in the payload).
+        `$JS.API.DIRECT.GET.${CHKV}.>`,
         `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
         "$JS.FC.>", // ordered-consumer flow control
@@ -674,9 +676,9 @@ function provisionerPermissions(space: string, id: string): Record<string, unkno
         // read verbs on both buckets to cover the open/create-path variance — reads of registries it already
         // writes, no escalation. Without these the read-before-write rejects and provisioning/seed throws.
         `$JS.API.STREAM.MSG.GET.KV_${aclBucket(space)}`,
-        `$JS.API.DIRECT.GET.KV_${aclBucket(space)}`,
+        `$JS.API.DIRECT.GET.KV_${aclBucket(space)}.>`, // keyed get: `.>` (the key rides the subject)
         `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`,
-        `$JS.API.DIRECT.GET.KV_${channelBucket(space)}`,
+        `$JS.API.DIRECT.GET.KV_${channelBucket(space)}.>`, // keyed get: `.>` (the key rides the subject)
       ],
     },
     // Replies only: every stream/consumer/KV-create PubAck and JS API response lands on the per-id inbox.
