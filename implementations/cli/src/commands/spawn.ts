@@ -126,6 +126,7 @@ export async function spawn(argv: string[]): Promise<void> {
       agent: { type: "string" },
       role: { type: "string" },
       prompt: { type: "string" },
+      resume: { type: "string" }, // fork an existing session id into the mesh (host-local; claude only)
       transcript: { type: "boolean" },
       "no-transcript": { type: "boolean" },
       "share-tools": { type: "string" },
@@ -278,6 +279,9 @@ export async function spawn(argv: string[]): Promise<void> {
     allowSubscribe,
     allowPublish,
     prompt: values.prompt,
+    // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
+    // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
+    resume: values.resume,
     transcript,
     mcpServers,
   });

@@ -490,14 +490,15 @@ export class MeshAgent extends EventEmitter {
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (default the manager's `cotal`/Claude), `opts.model` overrides the
-   *  persona file's `model:`, and `opts.cwd` roots the new peer at a different folder/repo
-   *  than the manager's workspace — the same knobs the operator's `cotal start` carries, so
+   *  persona file's `model:`, `opts.cwd` roots the new peer at a different folder/repo
+   *  than the manager's workspace, and `opts.resume` forks an existing (host-local) session id
+   *  into the mesh — the same knobs the operator's `cotal start` carries, so
    *  the agent and operator spawn doors share one control-op contract. */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; cwd?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; cwd?: string; resume?: string }): Promise<ControlReply> {
     this.assertConnected();
     return this.ep.requestControl(CONTROL_PRIVILEGED, {
       op: "start",
-      args: { name, role, agent: opts?.agent, model: opts?.model, cwd: opts?.cwd },
+      args: { name, role, agent: opts?.agent, model: opts?.model, cwd: opts?.cwd, resume: opts?.resume },
     });
   }
 

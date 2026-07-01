@@ -33,6 +33,15 @@ export const opencodeConnector: Connector = {
   transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["opencode"],
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
+    // a plugin that CREATES its own session then attaches a TUI, so a fork must plumb into
+    // session-creation (SDK fork / the serve attach), not argv. Throw rather than spawn fresh
+    // silently (no fallbacks). Tracked as a follow-up (issue #154).
+    if (opts.resume)
+      throw new Error(
+        "opencode connector: resuming an existing session (resume) is not implemented — it needs " +
+          "session-creation plumbing (SDK fork), not an argv flag. Tracked in issue #154.",
+      );
     // Tool-sharing isn't wired for opencode: its OPENCODE_CONFIG_CONTENT is a merge layer, so an
     // opencode agent already INHERITS the operator's MCP servers (the opposite default to Claude's
     // strict isolation). A `connectors.opencode.mcpServers` entry would need inverse (opt-OUT)

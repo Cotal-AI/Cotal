@@ -14,6 +14,9 @@
  *      connector forwards it as COTAL_SUBSCRIBE / COTAL_ALLOW_*. Guards the bug where creds were
  *      minted from the policy but it never reached the connector, so a manifest-spawned agent (whose
  *      materialized persona has no access frontmatter) fell back to ["general"] and joined nothing.
+ *   5. RESUME (issue #23) — claude buildLaunch emits `--resume <id> --fork-session` (never one
+ *      without the other, hostile id stays one argv token, coexists with the persona append);
+ *      opencode + hermes THROW; and `resume` threads StartAgentOpts → LaunchOpts verbatim.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +40,7 @@ function check(label: string, cond: boolean, extra?: unknown): void {
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
 mkdirSync(agentsDir, { recursive: true });
-for (const n of ["reject1", "rec1", "rec2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
+for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
 // rec3 carries an explicit access policy — its frontmatter ACL must thread through to LaunchOpts.
 writeFileSync(join(agentsDir, "rec3.md"), `---\nname: rec3\nsubscribe: [team]\nallowSubscribe: [team, team.>]\nallowPublish: [team]\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
@@ -152,6 +155,71 @@ registry.register(recCon);
     // falls back to the general baseline — never silently overridden to empty).
     check(`${con.name}: no policy → COTAL_SUBSCRIBE absent`, con.buildLaunch({ ...base }).env!.COTAL_SUBSCRIBE === undefined);
   }
+}
+
+// 5 — RESUME: fork an existing session into the mesh (issue #23). claude renders
+// `--resume <id> --fork-session`; opencode + hermes THROW (no silent fresh-spawn fallback); the id
+// threads through the manager verbatim and stays a single argv token (no shell). The manifest path
+// carries no resume by construction (see the cotal.yaml reject in cli manifest.smoke.ts).
+{
+  const base = { space: "smoke", name: "tester" };
+  const cArgs = (o: LaunchOpts) => claudeConnector.buildLaunch(o).args;
+
+  // claude, resume SET → BOTH --resume <id> and --fork-session, id is the token right after --resume.
+  {
+    const a = cArgs({ ...base, resume: "sess-123" });
+    const ri = a.indexOf("--resume");
+    check("claude: --resume emitted when resume set", ri >= 0, a);
+    check("claude: id is the single token after --resume", a[ri + 1] === "sess-123", a[ri + 1]);
+    check("claude: --fork-session emitted when resume set", a.includes("--fork-session"), a);
+  }
+  // claude, resume UNSET → neither flag.
+  {
+    const a = cArgs({ ...base });
+    check("claude: no --resume when unset", !a.includes("--resume"), a);
+    check("claude: no --fork-session when unset", !a.includes("--fork-session"), a);
+  }
+  // INVARIANT — claude NEVER emits --resume without --fork-session (argv-level hijack guard).
+  {
+    const a = cArgs({ ...base, resume: "x" });
+    check("claude: --resume never without --fork-session", !a.includes("--resume") || a.includes("--fork-session"), a);
+  }
+  // A hostile-looking id stays ONE argv element — args is an array, so no shell/interpolation/split.
+  {
+    const weird = "abc def;$(nope) `id` && rm -rf /";
+    const a = cArgs({ ...base, resume: weird });
+    check("claude: hostile id stays one argv element", a[a.indexOf("--resume") + 1] === weird, a[a.indexOf("--resume") + 1]);
+  }
+  // resume + persona: the forked context runs under the CURRENT mesh persona (both flags coexist).
+  {
+    const dir = mkdtempSync(join(tmpdir(), "cotal-resume-af-"));
+    const af = join(dir, "p.md");
+    writeFileSync(af, "---\nname: p\n---\nMESH PERSONA BODY\n");
+    const a = cArgs({ ...base, configPath: af, resume: "sess-9" });
+    check("claude: resume + persona → --append-system-prompt kept", a.includes("--append-system-prompt"), a);
+    check("claude: resume + persona → --resume kept", a.includes("--resume"), a);
+    check("claude: resume + persona → --fork-session kept", a.includes("--fork-session"), a);
+  }
+  // opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
+  for (const con of [opencodeConnector, hermesConnector]) {
+    let threw = false;
+    let spec: LaunchSpec | undefined;
+    try { spec = con.buildLaunch({ ...base, resume: "sess-1" }); } catch { threw = true; }
+    check(`${con.name}: buildLaunch({resume}) throws`, threw, spec);
+  }
+  // …but the common no-resume path still builds normally (the guard doesn't over-fire).
+  for (const con of [opencodeConnector, hermesConnector]) {
+    let built = false;
+    try { con.buildLaunch({ ...base }); built = true; } catch { /* unexpected */ }
+    check(`${con.name}: no resume → builds normally`, built);
+  }
+  // MANAGER THREADING: startAgent({resume}) → LaunchOpts.resume verbatim, and absent → undefined.
+  lastOpts = undefined;
+  await mgr.startAgent({ name: "rrec1", agent: "smoke-rec", resume: "sess-thread" });
+  check("startAgent resume threads into LaunchOpts.resume", lastOpts?.resume === "sess-thread", lastOpts?.resume);
+  lastOpts = undefined;
+  await mgr.startAgent({ name: "rrec2", agent: "smoke-rec" });
+  check("no resume → LaunchOpts.resume undefined", lastOpts?.resume === undefined, lastOpts?.resume);
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

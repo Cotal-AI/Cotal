@@ -157,6 +157,27 @@ agent spawn door carries the same knobs as the operator's `cotal start` — `rol
 and `model` (overrides the persona file's `model:`) — set at spawn because they are policy, not
 persona content.
 
+**Resume an existing session (fork, never hijack).** `--resume <session-id>` pulls an existing
+Claude session — its deep context and long transcript — into the mesh instead of starting fresh
+([issue #23](https://github.com/Cotal-AI/Cotal/issues/23)). It **forks**: Claude mints a *new*
+session id from that transcript (`claude --resume <id> --fork-session`) so the meshed agent gets its
+own session and the original is left untouched — resuming never takes over the source session. The
+session id is **machine-local state**, not a portable value: it only means something on the host
+whose `~/.claude` holds that transcript.
+
+- `cotal spawn --resume <id>` is the primary, least-surprising surface — it runs as *you*, in *your*
+  cwd, on *your* machine, so the transcript is right there. Combines with `--prompt` and a persona
+  (the forked context runs under the current mesh persona).
+- `cotal start --resume <id>` (and MCP `cotal_spawn(resume:)`) work too, but the manager is detached:
+  the id is resolved against the **manager host's** `~/.claude`, and you practically need `--cwd` to
+  point at the original project directory. Prefer foreground `spawn` unless you know the manager
+  shares your session state.
+- Only the **claude** connector supports resume today; **opencode** and **hermes** fail loud
+  (`resume not supported`) rather than silently spawning fresh. A bad id (missing session, or an old
+  `claude` that doesn't know `--fork-session`) surfaces Claude's own stderr — it is never flattened
+  into a generic "spawn failed". opencode resume is tracked in
+  [#154](https://github.com/Cotal-AI/Cotal/issues/154).
+
 **Manage the catalog from the CLI.** `cotal personas` is the operator-side counterpart to the
 runtime `cotal_persona` tool. It reads and writes the same `.cotal/agents/*.md` files
 **directly** — instant, offline, no mesh — where the tool path goes over the wire with the

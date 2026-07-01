@@ -30,6 +30,11 @@ export const hermesConnector: Connector = {
     // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
     if (process.platform === "win32")
       throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
+    // Resuming an existing session isn't supported by Hermes (no fork-from-transcript primitive in
+    // the gateway launcher). Throw rather than spawn fresh silently — this connector otherwise
+    // ignores opts it doesn't render, so without this guard `resume` would be dropped without a word.
+    if (opts.resume)
+      throw new Error("the Hermes connector does not support resuming an existing session (resume)");
     // OS allow-list + the named model-provider key (Hermes is model-agnostic; any one unlocks a
     // provider), forwarded BY NAME — never `...process.env` — so the operator's unrelated secrets
     // don't reach the gateway child (P3).

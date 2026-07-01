@@ -487,10 +487,16 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .describe(
             "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
           ),
+        resume: z
+          .string()
+          .optional()
+          .describe(
+            "Optional: fork an existing session id into the mesh instead of starting fresh (claude only; the new peer gets a NEW session forked from that transcript, the original is untouched). The id is a HOST-LOCAL pointer into the manager host's `~/.claude` — it means nothing on another machine, and forking it reads that host's transcript. Only meaningful for a session on the manager's own host.",
+          ),
       },
-      async run(agent, _config, { name, role, agent: agentType, model, cwd }: { name: string; role?: string; agent?: string; model?: string; cwd?: string }) {
+      async run(agent, _config, { name, role, agent: agentType, model, cwd, resume }: { name: string; role?: string; agent?: string; model?: string; cwd?: string; resume?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, cwd });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, cwd, resume });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned

@@ -18,6 +18,7 @@
     }
   },
   "scripts": {
+    "test": "tsx smoke/start-model-preflight.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\"",
     "prepublishOnly": "pnpm run build"
