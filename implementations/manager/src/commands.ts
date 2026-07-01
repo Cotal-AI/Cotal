@@ -325,7 +325,16 @@ async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<
     process.exit(1);
   }
   const consolePort = v["console-port"] ? Number(v["console-port"]) : undefined;
-  const mgr = new Manager({ space, servers: server, runtime, consolePort });
+  // Construction resolves the runtime (createRuntime) — which fails loud on an unusable env, e.g. the
+  // pty runtime under Bun. Render that as one actionable line, not a raw stack (this also lands in
+  // `.cotal/manager.log` for a detached `cotal up` daemon).
+  let mgr: Manager;
+  try {
+    mgr = new Manager({ space, servers: server, runtime, consolePort });
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   await mgr.start();
   console.log(
     c.green("✓ manager up") +
