@@ -39,8 +39,8 @@ Requirements:
    Cotal works); **sven**, the guide (what to build); and **me**, the session you drive.
    The experts can help you set up and experiment, and hand off to each other.
 5. **Offers a demo.** A Claude you drive, with david and sven helping (manager-owned
-   teammates you can `cotal_despawn`). Inside [cmux](https://github.com/) they get their own
-   tabs alongside your focused `cotal-main` pane; inside a **tmux** session they get their own
+   teammates you can `cotal_despawn`). Inside [cmux](https://cmux.com) they get their own
+   tabs alongside your focused `cotal-main` pane; inside a **[tmux](https://github.com/tmux/tmux/wiki)** session they get their own
    windows. Otherwise david, sven, and the manager run in the background, and your terminal is
    handed to the driving session. Either way the demo needs **Claude Code**. Decline or lack
    it, and you get the `cotal · ready` card instead.

@@ -1,9 +1,11 @@
 """Hermes lifecycle hooks → Cotal presence (the relay.ts pattern, in Python).
 
 Each hook makes a one-shot connection to connector-core's control socket
-(``COTAL_CONTROL_SOCKET``), sends ``{"hook_event_name": ...}``, and ignores the reply — the TS
-``hermesHookHandle`` turns it into a presence change. Hooks must never block the gateway, so the
-connection has a short timeout and every error is swallowed.
+(``COTAL_CONTROL_SOCKET``), sends ``{"token": ..., "event": {"hook_event_name": ...}}``, and
+ignores the reply — the TS ``hermesHookHandle`` turns it into a presence change. The control server
+validates ``token`` (constant-time) before doing anything, so a frame without it is dropped. Both
+the path and token come from the launch env (shared with the sidecar). Hooks must never block the
+gateway, so the connection has a short timeout and every error is swallowed.
 
 Hermes hook callback signatures vary by version; these take ``*args, **kwargs`` and best-effort
 extract what they need, so a signature change degrades to "no detail" rather than an exception.
@@ -21,9 +23,10 @@ _TIMEOUT_S = 2.0
 def relay(event_name: str, **fields: Any) -> None:
     """Forward one lifecycle event to the connector's control socket; fire-and-forget."""
     path = os.environ.get("COTAL_CONTROL_SOCKET")
-    if not path:
+    token = os.environ.get("COTAL_CONTROL_TOKEN")
+    if not path or not token:
         return
-    payload = {"hook_event_name": event_name, **fields}
+    payload = {"token": token, "event": {"hook_event_name": event_name, **fields}}
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(_TIMEOUT_S)

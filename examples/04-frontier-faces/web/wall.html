@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cotal · frontier faces — live wall</title>
+<style>
+  body { background:#06000f; color:#53ebe4; font-family:ui-monospace,Menlo,Consolas,monospace; margin:0; padding:22px; }
+  h1 { font-size:15px; font-weight:600; opacity:.85; margin:0 0 4px; }
+  p.lede { font-size:12px; opacity:.55; margin:0 0 16px; max-width:70ch; }
+  code { color:#f1a5bd; }
+  .bcast { display:flex; gap:8px; margin-bottom:20px; max-width:680px; }
+  input { background:#0b0420; color:#53ebe4; border:1px solid rgba(83,235,228,.35); border-radius:6px;
+          padding:7px 10px; font-family:inherit; font-size:13px; flex:1; outline:none; }
+  input:focus { border-color:rgba(83,235,228,.7); }
+  button { background:transparent; color:#f1a5bd; border:1px solid rgba(225,58,106,.5); border-radius:6px;
+           padding:7px 14px; font-family:inherit; font-size:12px; cursor:pointer; }
+  button:hover { background:rgba(225,58,106,.14); }
+  .grid { display:grid; gap:22px; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); }
+  .tile { display:flex; flex-direction:column; gap:8px; --cf-width:100%; max-width:360px; }
+  .tile .who { font-size:12px; opacity:.7; }
+  .tile input { font-size:12px; }
+  /* live-event branding: a Cotal lockup + a scannable QR so passers-by open cotal.ai on a phone */
+  header.brand { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; margin-bottom:12px; }
+  .lockup { display:flex; gap:12px; align-items:center; }
+  .lockup .dot { width:15px; height:15px; border-radius:50%; background:#58a6ff; box-shadow:0 0 16px #58a6ff; flex:none; }
+  .lockup .name { font-size:21px; font-weight:700; letter-spacing:.4px; color:#cfeffd; line-height:1.1; }
+  .lockup .name .sub { font-size:13px; font-weight:500; opacity:.5; }
+  .lockup .tag { font-size:12px; opacity:.55; margin-top:3px; }
+  a.qr { display:flex; flex-direction:column; align-items:center; gap:5px; text-decoration:none; color:#53ebe4; flex:none; }
+  a.qr canvas { background:#fff; padding:7px; border-radius:8px; display:block; }
+  a.qr span { font-size:11px; opacity:.7; letter-spacing:.5px; }
+  footer { margin:34px 0 6px; border-top:1px solid rgba(83,235,228,.16); padding-top:22px; }
+  footer .cta { display:inline-flex; gap:18px; align-items:center; text-decoration:none; color:#53ebe4; }
+  footer canvas { background:#fff; padding:9px; border-radius:10px; display:block; }
+  footer .big { font-size:18px; font-weight:700; color:#cfeffd; }
+  footer .small { font-size:12px; opacity:.55; max-width:48ch; margin:4px 0 7px; }
+  footer .url { font-size:14px; color:#58a6ff; font-weight:600; }
+</style>
+</head>
+<body>
+  <header class="brand">
+    <div class="lockup">
+      <span class="dot"></span>
+      <div>
+        <div class="name">Cotal <span class="sub">· frontier faces</span></div>
+        <div class="tag">the web for agents — a live multi-agent mesh</div>
+      </div>
+    </div>
+    <a class="qr" id="qr-head-link" href="https://cotal.ai" target="_blank" rel="noopener" title="cotal.ai">
+      <canvas id="qr-head" width="116" height="116"></canvas>
+      <span>scan · cotal.ai</span>
+    </a>
+  </header>
+  <p class="lede">One <code>&lt;cotal-face&gt;</code> per persona, each driven by its own live OpenCode
+    session — the browser twin of <code>face-wall.sh</code>. Type to one face, or broadcast a prompt to
+    all of them. Serve via <code>tools/serve-wall.mjs</code> so the API is same-origin (no CORS).</p>
+
+  <div class="bcast">
+    <input id="bcast" placeholder="broadcast a prompt to every face… (Enter)">
+    <button id="bcast-go">broadcast</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    <a class="cta" id="qr-foot-link" href="https://cotal.ai" target="_blank" rel="noopener">
+      <canvas id="qr-foot" width="145" height="145"></canvas>
+      <div>
+        <div class="big">Built with Cotal</div>
+        <div class="small">the open wire for AI agents to coordinate in real time — these faces are
+          lateral peers on one Cotal mesh.</div>
+        <div class="url">cotal.ai →</div>
+      </div>
+    </a>
+  </footer>
+
+<script type="module">
+  import './cotal-face.js';
+  import { PERSONAS } from '../personas.mjs';
+  import { MATRIX, COTAL_URL } from '../qr-cotal.mjs';
+  import { driveFace } from './cotal-opencode.js';
+
+  // Paint the pre-generated QR (dark-on-light, with a quiet zone) so a phone reads it reliably.
+  function drawQR(canvas) {
+    const N = MATRIX.length, QZ = 2, S = N + 2 * QZ;
+    const ctx = canvas.getContext('2d');
+    const px = Math.floor(canvas.width / S), off = Math.floor((canvas.width - px * S) / 2);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000';
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++)
+      if (MATRIX[y][x] === '1') ctx.fillRect(off + (x + QZ) * px, off + (y + QZ) * px, px, px);
+  }
+  drawQR(document.getElementById('qr-head'));
+  drawQR(document.getElementById('qr-foot'));
+  for (const a of [document.getElementById('qr-head-link'), document.getElementById('qr-foot-link')]) a.href = COTAL_URL;
+
+  const params = new URLSearchParams(location.search);
+  const server = params.get('server') || '';                 // '' = same origin (serve-wall.mjs proxies)
+  const model = params.get('model') || 'opencode-go/glm-5.1';
+  const password = params.get('password') || '';
+  const want = (params.get('personas') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const MAX = 9;                                              // match the tmux wall's cap
+  const personas = (want.length ? want : Object.keys(PERSONAS)).slice(0, MAX);
+
+  const grid = document.getElementById('grid');
+  const drivers = [];
+
+  for (const name of personas) {
+    if (!PERSONAS[name]) { console.warn('unknown persona', name); continue; }
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+
+    const face = document.createElement('cotal-face');
+    face.setAttribute('persona', name);
+    face.setAttribute('chrome', 'off'); // compact tile — hide the window chrome bar
+    tile.appendChild(face);
+
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = `${PERSONAS[name].label} · ${name}`;
+    tile.appendChild(who);
+
+    const inp = document.createElement('input');
+    inp.placeholder = `talk to ${name}… (Enter)`;
+    tile.appendChild(inp);
+
+    grid.appendChild(tile);
+
+    const drv = driveFace(face, { server, persona: name, model, password });
+    drivers.push(drv);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !inp.value.trim()) return;
+      drv.send(inp.value);
+      inp.value = '';
+    });
+  }
+
+  const bcast = document.getElementById('bcast');
+  const fire = () => {
+    const t = bcast.value.trim();
+    if (!t) return;
+    drivers.forEach((d) => d.send(t));
+    bcast.value = '';
+  };
+  document.getElementById('bcast-go').addEventListener('click', fire);
+  bcast.addEventListener('keydown', (e) => { if (e.key === 'Enter') fire(); });
+</script>
+</body>
+</html>

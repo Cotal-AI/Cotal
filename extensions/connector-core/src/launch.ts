@@ -125,12 +125,27 @@ export function aclEnv(opts: {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  capabilities?: string[];
 }): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.subscribe?.length) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
   if (opts.allowSubscribe?.length) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
   if (opts.allowPublish?.length) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
+  // Control-plane capabilities (e.g. `spawn`) gate cotal_spawn/cotal_persona in the connector's tool
+  // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
+  // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.
+  if (opts.capabilities?.length) env.COTAL_CAPABILITIES = opts.capabilities.join(",");
   return env;
+}
+
+/** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
+ *  subject-safe characters. The SINGLE source of this connector convention — connectors publish here
+ *  (their plugin/runtime path AND their `Connector.transcriptChannel` method both call this), and the
+ *  manager grants pub on it through that contract method. It lives in the connector layer, NOT core:
+ *  transcript mirroring is a connector feature, not the normative wire standard. Sanitizer kept exact
+ *  (illegal runs collapse to a single `-`) — changing it would rename every live transcript channel. */
+export function transcriptChannel(name: string): string {
+  return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
 }
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /

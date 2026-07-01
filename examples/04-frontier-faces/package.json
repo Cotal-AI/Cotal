@@ -1,0 +1,18 @@
+{
+  "name": "@cotal-ai/example-04-frontier-faces",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "studio": "node tools/studio.mjs",
+    "mesh": "./mesh-wall.sh",
+    "face": "node face-term.mjs",
+    "wall": "./face-wall.sh",
+    "wall:web": "node tools/serve-wall.mjs"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "yaml": "^2.9.0"
+  }
+}

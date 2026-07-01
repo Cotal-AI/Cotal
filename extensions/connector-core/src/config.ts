@@ -24,7 +24,7 @@ export interface AgentConfig {
   role?: string;
   description?: string;
   tags?: string[];
-  /** Display-only metadata from unmodelled agent-file frontmatter keys (for example `face`).
+  /** Display-only metadata from unmodelled agent-file frontmatter keys (for example `theme`).
    *  Connector-owned keys such as `connector` and `model` are overlaid later and cannot be spoofed here. */
   meta?: Record<string, string>;
   /** Control-plane capabilities this session declares (from the agent file's `capabilities:`); today
@@ -143,7 +143,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     description: def?.description,
     tags: def?.tags,
     meta: def?.meta,
-    capabilities: def?.capabilities,
+    capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
     model: env.COTAL_MODEL?.trim() || def?.model || undefined,
     servers: env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,

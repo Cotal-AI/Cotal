@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import * as p from "@clack/prompts";
@@ -12,7 +11,7 @@ import {
   type Pane,
   type TerminalLayout,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, homeCotalDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { LivePane } from "../lib/live-window.js";
 import { runSteps, type Step } from "../lib/steps.js";
@@ -283,7 +282,7 @@ function claudePluginStep(): Step {
     name: "claude-plugin",
     title: "Install the Claude Code plugin",
     explain: "Lets a Claude Code session join the web and wake on peer messages.",
-    context: [join(homedir(), ".cotal/claude-plugin"), CC_DOCS_URL],
+    context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
     async run() {
       installClaudePlugin();
       return "cotal@cotal-mesh (local scope)";
@@ -567,7 +566,7 @@ function installClaudePlugin(): void {
     }
   }
 
-  const marketDir = join(homedir(), ".cotal", "claude-plugin");
+  const marketDir = join(homeCotalDir(), "claude-plugin");
   const pluginDir = join(marketDir, "cotal");
   for (const f of [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"]) {
     cpSync(join(pluginRoot, f), join(pluginDir, f), { recursive: true });

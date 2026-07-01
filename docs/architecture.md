@@ -221,15 +221,13 @@ Code launches `claude`), and the plugin:
   box and the TUI renders it live), acking on `session.idle`. A human watching the TUI sees the
   agent work and can type into the same session.
 
-So it is push-capable, and unlike Claude Code it needs no separate hooks or control socket. The
-plugin holds the mesh connection for the session and closes it in `dispose`. Spawned agents run
-autonomously (`permission: "allow"`). The foreground viewer is swappable: an agent file's
-optional `face:` id makes the launcher attach an animated avatar viewer to the session instead
-of the chat TUI (`COTAL_FACE_BIN` must point at a face-term-compatible script; it watches the
-same event stream and can still send prompts into the session). A face-hosted agent is also told
-to embed `[[face:X]]` emotion tags in its send text. The viewer reads them from the tool-call
-input to animate the avatar, and the send tools strip them before publishing, so they never
-reach the wire.
+So it is push-capable, and unlike Claude Code it needs no separate hooks *process* — the plugin
+holds the mesh connection in-process. It does run the same authenticated control endpoint
+([`connector-core/src/control.ts`](../extensions/connector-core/src/control.ts)), but only for the
+manager's cooperative `{op:"shutdown"}` (its hooks are in-process, so there is no hook relay): on a
+graceful stop where the runtime can't deliver a signal (Windows ConPTY), the plugin leaves the mesh
+cleanly — publishing offline presence — instead of lingering until its presence TTL expires. It also
+leaves on OpenCode's own `dispose`. Spawned agents run autonomously (`permission: "allow"`).
 
 **Connection recovery.** The endpoint self-heals. When nats.js exhausts its own reconnect and
 the connection closes terminally, a supervisor rebuilds it (`connectAndBind` is re-runnable;
@@ -333,7 +331,7 @@ dependency on them). Selectable backends:
   x64/arm64: zero compiler, zero `node-gyp`, ABI-stable). A real native TUI. The human watches
   or types in via `cotal attach <name>` (stream the PTY), and the manager keeps full OS-signal
   control (group-kill, restart). No external software to install.
-- **`tmux` (integration).** Each agent gets its own window in a shared per-space tmux session.
+- **`tmux` (integration).** Each agent gets its own window in a shared per-space [tmux](https://github.com/tmux/tmux/wiki) session.
   This is a true plug-in: the runtime lives in **`@cotal-ai/tmux`** and self-registers a
   `RuntimeProvider` on import (opt in with `import "@cotal-ai/tmux"`, which the `cotal` binary
   does). You watch it natively (`tmux attach-session -t cotal-<space>`, then `tmux select-window -t
@@ -342,7 +340,7 @@ dependency on them). Selectable backends:
   window (graceful) or kills immediately (hard). The package also self-registers a
   **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session,
   so `cotal setup` can lay out its tabs without cmux.
-- **`cmux` (integration).** Each agent gets its own [cmux](https://github.com/) tab. This is a
+- **`cmux` (integration).** Each agent gets its own [cmux](https://cmux.com) tab. This is a
   true plug-in: the `cmux` runtime lives in **`@cotal-ai/cmux`** and self-registers a
   `RuntimeProvider` on import, so the manager spawns into tabs without depending on the package
   (a composition root opts in with one `import "@cotal-ai/cmux"`, which the `cotal` binary does).

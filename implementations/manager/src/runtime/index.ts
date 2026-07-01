@@ -17,7 +17,18 @@ export type RuntimeMode = RuntimeKind | "auto";
  *  reachable — throws, never a silent fallback to pty. `session` names the tmux session (per space). */
 export function createRuntime(mode: RuntimeMode, session: string): Runtime {
   const kind: RuntimeKind = mode === "auto" ? "pty" : mode;
-  if (kind === "pty") return new PtyRuntime();
+  if (kind === "pty") {
+    // node-pty's native spawn-helper hangs before exec under Bun — it never becomes the child, so
+    // every agent wedges at "starting…" with no error. Fail loud rather than silently break the mesh:
+    // the pty runtime is Node-only. tmux/cmux drive their own CLIs (no node-pty), so they're fine.
+    if (process.versions.bun)
+      throw new Error(
+        `the pty runtime requires Node.js — the manager is running under Bun (v${process.versions.bun}), ` +
+          `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
+          `Run the manager under node, or use --runtime tmux / --runtime cmux (which don't use node-pty).`,
+      );
+    return new PtyRuntime();
+  }
   let provider: RuntimeProvider;
   try {
     provider = registry.resolve<RuntimeProvider>("runtime", kind);

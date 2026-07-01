@@ -1,10 +1,13 @@
 /**
- * Stage-1 Windows launch smoke (no NATS, no test runner) — run with: pnpm smoke:windows
+ * Windows seam smoke (Stage 1 launch + Stage 2 control plane; no NATS, no test runner) — run with:
+ * pnpm smoke:windows
  *
- * Guards the resolver + `.cmd`/`.bat` launch adapter + child-env seams a POSIX-only build breaks on
- * Windows. Most of it runs EVERYWHERE — the pure resolver/quoting checks are the regression guard for
- * the local (macOS/Linux) validate loop. The end-to-end ConPTY round-trip is inherently win32 and is
- * logged-and-skipped off Windows; Windows CI is the oracle for those (this box can't run cmd.exe).
+ * Guards the resolver + `.cmd`/`.bat` launch adapter + child-env + authenticated control-plane seams
+ * a POSIX-only build breaks on Windows. Most of it runs EVERYWHERE — the pure resolver/quoting and
+ * the control-auth checks are the regression guard for the local (macOS/Linux) validate loop
+ * (`node:net` abstracts AF_UNIX ↔ named pipe, so the auth logic exercises identically). The pieces
+ * that are inherently win32 (the ConPTY argv round-trip, orphan reap, named-pipe squat) are
+ * logged-and-skipped off Windows; Windows CI is the oracle for those.
  *
  *   A. resolveOnPath resolves against the PASSED env (not global process.env), and on win32 prefers a
  *      real `.exe` over a `.cmd` shim. [WS1 / security: executable selection stays in P3 isolation]
@@ -16,13 +19,22 @@
  *      `Path`/`ComSpec`/`windir`) with no case-duplicate. [WS5(env)]
  *   E. a hard stop of a `.cmd`-wrapped agent reaps the WHOLE conpty→cmd.exe→node tree (no orphaned
  *      grandchild). [WS2 orphan-on-kill, win32-only]
+ *   F. the control endpoint authenticates the first frame: a wrong/absent token is dropped before the
+ *      handler or shutdown ever runs; the cooperative `{op:"shutdown"}` routes to onShutdown, not the
+ *      hook handler; controlShutdown (manager → server) round-trips. [WS3/WS4: the auth boundary]
+ *   G. a managed listener whose endpoint is squatted exits(1) — fatal bind, no degraded plane. [WS3,
+ *      win32-only: a named pipe is the only transport where a live squatter yields EADDRINUSE]
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
+import { connect, createServer } from "node:net";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { resolveOnPath } from "@cotal-ai/workspace";
-import { launchEnv } from "@cotal-ai/connector-core";
+import { launchEnv, controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
+import { controlShutdown } from "../src/control-shutdown.js";
 import { createRuntime } from "../src/index.js";
 
 const isWin = process.platform === "win32";
@@ -323,6 +335,195 @@ if (isWin) {
   rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
 } else {
   console.log("· orphan-on-kill is win32-only (the cmd.exe grandchild layer) — skipped (CI is the oracle)");
+}
+
+// =================================================================================================
+// F. authenticated control plane — first-frame auth + shutdown routing. Runs EVERYWHERE (node:net
+//    abstracts the AF_UNIX socket / named pipe, so the auth + routing logic exercises identically).
+// =================================================================================================
+function sendFrame(path: string, frame: unknown): Promise<string> {
+  return new Promise((resolve) => {
+    const sock = connect(path);
+    let reply = "";
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(reply);
+    };
+    sock.setEncoding("utf8");
+    sock.on("connect", () => sock.write(JSON.stringify(frame) + "\n"));
+    sock.on("data", (d) => (reply += d));
+    sock.on("end", finish);
+    sock.on("close", finish);
+    sock.on("error", finish);
+    setTimeout(finish, 2000);
+  });
+}
+function waitListening(server: ReturnType<typeof startControlServer>): Promise<void> {
+  return new Promise((resolve) => {
+    server.on("listening", () => resolve());
+    setTimeout(resolve, 500); // backstop — listen is async (next tick), we attach before it fires
+  });
+}
+{
+  const stubAgent = {} as unknown as MeshAgent;
+  const ep = controlEndpoint("smoke", "ctl");
+
+  // F1: endpoint shape — a named pipe on win32 / a tmpdir .sock on POSIX, a 256-bit base64url token,
+  // and a token-derived (so unguessable) path.
+  check(
+    "controlEndpoint path is a named pipe on win32 / a tmpdir .sock on POSIX",
+    isWin ? ep.path.startsWith("\\\\.\\pipe\\cotal-") : ep.path.startsWith(join(tmpdir(), "cotal-")) && ep.path.endsWith(".sock"),
+  );
+  check("controlEndpoint token is a 43-char base64url string (32 random bytes)", /^[A-Za-z0-9_-]{43}$/.test(ep.token));
+  check("controlEndpoint path is token-derived (different token → different path)", controlEndpoint("smoke", "ctl").path !== ep.path);
+
+  const events: unknown[] = [];
+  let shutdowns = 0;
+  const handle = async (_a: MeshAgent, ev: unknown): Promise<Record<string, unknown>> => {
+    events.push(ev);
+    return { handled: true };
+  };
+  const server = startControlServer(stubAgent, ep, handle, { onShutdown: () => shutdowns++ });
+  await waitListening(server);
+
+  // F2: a WRONG token is dropped before the handler — no reply, the event never reaches it.
+  const before = events.length;
+  const r2 = await sendFrame(ep.path, { token: "not-the-token", event: { hook_event_name: "X" } });
+  await sleep(50);
+  eq("auth: wrong token → no reply (connection dropped)", r2, "");
+  eq("auth: wrong token → handler NOT invoked", events.length, before);
+
+  // F3: the RIGHT token + an event → handler runs and its reply comes back, with the event intact.
+  const r3 = await sendFrame(ep.path, { token: ep.token, event: { hook_event_name: "SessionStart", k: 1 } });
+  eq("auth: right token → handler reply returned", r3.trim(), JSON.stringify({ handled: true }));
+  eq("auth: right token → handler saw the event", events.at(-1), { hook_event_name: "SessionStart", k: 1 });
+
+  // F4: a valid {op:"shutdown"} routes to onShutdown, NOT the hook handler.
+  const evBefore = events.length;
+  const r4 = await sendFrame(ep.path, { token: ep.token, op: "shutdown" });
+  await sleep(50);
+  eq("shutdown: acked", r4.trim(), JSON.stringify({ ok: true }));
+  eq("shutdown: onShutdown fired", shutdowns, 1);
+  eq("shutdown: NOT routed through the hook handler", events.length, evBefore);
+
+  // F5: a {op:"shutdown"} with a WRONG token shuts nothing down.
+  await sendFrame(ep.path, { token: "nope", op: "shutdown" });
+  await sleep(50);
+  eq("shutdown: wrong token → onShutdown NOT fired", shutdowns, 1);
+
+  // F6: the manager's controlShutdown client round-trips to a server's onShutdown (the WS4 wire path).
+  const ep2 = controlEndpoint("smoke", "ws4");
+  let ws4 = false;
+  const server2 = startControlServer(stubAgent, ep2, handle, { onShutdown: () => (ws4 = true) });
+  await waitListening(server2);
+  controlShutdown(ep2);
+  for (let i = 0; i < 40 && !ws4; i++) await sleep(25);
+  check("WS4: controlShutdown(endpoint) reaches the server's onShutdown", ws4);
+
+  server.close();
+  server2.close();
+}
+
+// =================================================================================================
+// G. fatal bind on a squatted endpoint — win32-only. A named pipe is the only transport where a LIVE
+//    squatter yields EADDRINUSE (libuv binds with FILE_FLAG_FIRST_PIPE_INSTANCE; POSIX unlinks a
+//    stale socket first). A managed listener must then exit(1), never serve a hijacked/no-op plane.
+// =================================================================================================
+if (isWin) {
+  const ep = controlEndpoint("squat", "test");
+  const squatter = createServer(() => {});
+  await new Promise<void>((resolve) => squatter.listen(ep.path, () => resolve()));
+  const probe = fileURLToPath(new URL("./fatal-bind-probe.ts", import.meta.url));
+  const res = spawnSync(process.execPath, ["--import", "tsx", probe, ep.path, ep.token], { timeout: 15000 });
+  check(`fatal bind: a squatted managed listener exits(1) (got status ${res.status})`, res.status === 1);
+  squatter.close();
+} else {
+  console.log("· fatal-bind-on-squat needs a live named-pipe squatter (EADDRINUSE) — win32-only, skipped (CI is the oracle)");
+}
+
+// =================================================================================================
+// H. pre-auth DoS hardening — on the win32 pipe ANY local process can connect, so an UNauthenticated
+//    client streaming bytes with no newline must NOT grow `buf` toward the ~512MB string limit and
+//    crash the long-lived server. The connection is dropped (oversized) and the server keeps serving.
+//    Runs everywhere (the bound is platform-agnostic).
+// =================================================================================================
+{
+  const stubAgent = {} as unknown as MeshAgent;
+  const ep = controlEndpoint("smoke", "dos");
+  let hits = 0;
+  const handle = async (): Promise<Record<string, unknown>> => {
+    hits++;
+    return { ok: true };
+  };
+  const server = startControlServer(stubAgent, ep, handle);
+  await waitListening(server);
+
+  // Stream >1 MiB with NO newline — must be dropped without ever reaching the handler or crashing.
+  const flood = await new Promise<string>((resolve) => {
+    const sock = connect(ep.path);
+    let done = false;
+    const finish = (r: string): void => {
+      if (done) return;
+      done = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(r);
+    };
+    sock.on("connect", () => sock.write("x".repeat((1 << 20) + 1024)));
+    sock.on("close", () => finish("closed"));
+    sock.on("error", () => finish("closed"));
+    setTimeout(() => finish("timeout"), 4000);
+  });
+  check("DoS: oversized newline-less frame is dropped (connection closed)", flood === "closed");
+  eq("DoS: oversized frame never reached the handler", hits, 0);
+
+  // The server SURVIVED the flood and still serves a valid frame on a fresh connection.
+  const r = await sendFrame(ep.path, { token: ep.token, event: { hook_event_name: "Ping" } });
+  eq("DoS: server still serves a valid frame after the flood", r.trim(), JSON.stringify({ ok: true }));
+  eq("DoS: the post-flood valid frame reached the handler", hits, 1);
+
+  // Slow-loris: dribble bytes (no newline) PAST the auth deadline. An ABSOLUTE deadline must drop it
+  // even though traffic keeps arriving — an idle timeout would reset on each byte and never fire.
+  const loris = await new Promise<string>((resolve) => {
+    const sock = connect(ep.path);
+    let done = false;
+    const finish = (s: string): void => {
+      if (done) return;
+      done = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(s);
+    };
+    sock.on("connect", () => {
+      let n = 0;
+      const t = setInterval(() => {
+        if (n++ > 9 || sock.destroyed) return clearInterval(t);
+        try {
+          sock.write("x"); // one byte, never a newline — past the 5s deadline (~8s of dribble)
+        } catch {
+          clearInterval(t);
+        }
+      }, 800);
+    });
+    sock.on("close", () => finish("closed"));
+    sock.on("error", () => finish("closed"));
+    setTimeout(() => finish("timeout"), 11000);
+  });
+  check("DoS: a slow-loris (dribbled bytes, no newline) is dropped at the absolute auth deadline", loris === "closed");
+  server.close();
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

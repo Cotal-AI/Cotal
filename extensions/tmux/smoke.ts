@@ -7,6 +7,7 @@ import * as tmux from "./src/driver.js";
 import { TmuxRuntime, tmuxRuntimeProvider, tmuxTerminalProvider } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 
 const SESSION = "cotal-tmux-smoke";
 let passed = 0;
@@ -121,18 +122,55 @@ throws("old `<win>.0` index target is invalid under pane-base-index 1", () =>
 tmux.closeWindow(lay.windowId);
 ok("layout window closes by stable id", !tmux.windowAliveRef(lay.windowId));
 
+console.log("\n── regression: numeric session name (#131) ──────");
+
+// A default `tmux new` session is named "0". `new-window -t` takes a target-*window*, so a bare
+// numeric name was read as window-index 0 → "create window failed: index 0 in use"; openWindow now
+// targets the session (`-t "0:"`). A numeric session shares the default tmux server, so guard the
+// user's real session "0": skip if one already exists (never touch it), and only kill the one we make.
+const NUMERIC = "0";
+const numericPreexists = (() => {
+  try { execFileSync("tmux", ["has-session", "-t", NUMERIC], { stdio: "ignore" }); return true; }
+  catch { return false; }
+})();
+if (numericPreexists) {
+  console.log(`  • skipped — a tmux session named "${NUMERIC}" already exists (won't touch it)`);
+} else {
+  tmux.ensureSession(NUMERIC, "/tmp");
+  let numWinId: string | undefined;
+  try {
+    numWinId = tmux.openWindow(NUMERIC, "num-regression", "sleep 10", "/tmp", { focus: false }).windowId;
+  } catch { /* pre-fix bug: `new-window -t 0` → "index 0 in use" */ }
+  ok("openWindow opens a window in a numeric-named session (pre-fix: 'index 0 in use')",
+    numWinId?.startsWith("@") ?? false);
+  if (numWinId) tmux.closeWindow(numWinId);
+  try { execFileSync("tmux", ["kill-session", "-t", NUMERIC], { stdio: "ignore" }); } catch { /* gone */ }
+}
+
 console.log("\n── runtime ─────────────────────────────────────");
 
 const runtime = new TmuxRuntime(SESSION);
+const SECRET_CANARY = "leak-canary-tmux-DO-NOT-LEAK";
 const handle = runtime.spawn("smoke-agent", {
   command: "sleep",
   args: ["30"],
-  env: { TEST_VAR: "hello" },
+  env: { TEST_VAR: "hello", COTAL_CONTROL_TOKEN: SECRET_CANARY },
 }, "/tmp");
 ok(`handle.name = "smoke-agent"`, handle.name === "smoke-agent");
 ok(`handle.kind = "tmux"`, handle.kind === "tmux");
 ok("handle.status() = running", handle.status() === "running");
 ok("window alive after spawn", tmux.windowAlive(SESSION, "smoke-agent"));
+
+// E2E no-leak: the LIVE pane's start command must NOT contain the secret env VALUE — it rides the
+// 0o600 launcher script (privateLaunch), so tmux only ever sees `bash <path>`. This fails on the old
+// inline-`env -i KEY='value'` path (the canary would appear in pane_start_command).
+const paneStartCmd = execFileSync(
+  "tmux",
+  ["list-panes", "-t", `${SESSION}:smoke-agent`, "-F", "#{pane_start_command}"],
+  { encoding: "utf8" },
+);
+ok("live tmux pane command is `bash <script>` (not inline env)", paneStartCmd.includes("bash "));
+ok("live tmux pane command does NOT leak the env secret", !paneStartCmd.includes(SECRET_CANARY));
 
 handle.interrupt();
 ok("interrupt() doesn't throw", true);
@@ -167,6 +205,16 @@ ok("isolatedCommand contains quoted command", isolated.includes("'/usr/bin/env'"
 const merged = tmux.mergedCommand({ FOO: "bar" }, "echo", ["hello"]);
 ok("mergedCommand starts with 'env'", merged.startsWith("env"));
 ok("mergedCommand does NOT contain '-i'", !merged.includes("env -i"));
+
+// privateLaunch keeps secret env VALUES off tmux's command line: the rendered body (with the secret)
+// goes into an owner-only (0o600) launcher script, and tmux only ever sees `bash <path>`.
+const secretBody = tmux.isolatedCommand({ COTAL_CONTROL_TOKEN: "s3cr3t-token" }, "/bin/echo", ["hi"]);
+const launch = tmux.privateLaunch(secretBody);
+const launchPath = launch.replace(/^bash\s+'?|'?$/g, ""); // strip `bash '` … `'`
+ok("privateLaunch returns a `bash <path>` invocation", launch.startsWith("bash ") && launchPath.endsWith(".sh"));
+ok("privateLaunch does NOT leak the secret into the returned command", !launch.includes("s3cr3t-token"));
+ok("privateLaunch script is 0o600 (owner-only)", (statSync(launchPath).mode & 0o777) === 0o600);
+ok("privateLaunch script contains the secret body (read from the file, not argv)", readFileSync(launchPath, "utf8").includes("s3cr3t-token"));
 
 console.log("\n────────────────────────────────────────────────");
 console.log(`\n${passed} passed, ${failed} failed\n`);

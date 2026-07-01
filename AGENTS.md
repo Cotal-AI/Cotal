@@ -13,6 +13,18 @@ The wire contract (subjects, message schemas, presence/discovery conventions) *i
 libraries are thin clients over it. Transport is **NATS + JetStream**; the reference
 implementation is **TypeScript**.
 
+**Thin waist, real substance, guarded core:**
+
+- **Thin waist** — the normative wire contract (subjects, schemas, presence/discovery, delivery
+  semantics, the owner+actor auth grammar) is the standard.
+- **Pluggable edges** — identity, transport, storage, secrets, discovery, payments are adapters over
+  existing building blocks. Compose, don't reinvent (e.g. any OIDC IdP plugs in via a thin
+  auth-callout adapter).
+- **Not hollow** — the substance is the contract *and its guarantees*, the reference implementation,
+  and the local operator tooling; not a bare shim.
+- **Guard the core** — keep adapters thin and swappable, and never let an adapter's or example's
+  concepts leak into `@cotal-ai/core` or the shared layers.
+
 ## Read these first
 
 - [README.md](README.md): what Cotal is, for a general audience.

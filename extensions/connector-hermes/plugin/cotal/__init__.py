@@ -16,6 +16,7 @@ in the environment. Two run modes:
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -99,6 +100,10 @@ def _bootstrap_standalone_sidecar() -> None:
     space = os.environ.get("COTAL_SPACE") or "(from COTAL_LINK)"
     os.environ.setdefault("COTAL_BRIDGE_SOCKET", str(run_dir / "bridge.sock"))
     os.environ.setdefault("COTAL_CONTROL_SOCKET", str(run_dir / "control.sock"))
+    # The sidecar (listener) and the lifecycle hooks (this process) authenticate the control plane
+    # with a shared first-frame token. Managed mode gets it from the launcher; standalone mints one
+    # here so both sides — they share this env — agree on it.
+    os.environ.setdefault("COTAL_CONTROL_TOKEN", secrets.token_urlsafe(32))
     os.environ.setdefault("COTAL_TOOLS_FILE", str(run_dir / "cotal-tools.json"))
 
     sidecar = _resolve_sidecar_js()

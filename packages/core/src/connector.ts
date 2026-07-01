@@ -24,6 +24,12 @@ export interface LaunchOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Control-plane capabilities the manager granted this agent (e.g. `["spawn"]`) — the SAME set
+   *  the creds were provisioned from. Forwarded as `COTAL_CAPABILITIES` so the connector exposes the
+   *  matching control-plane tools (cotal_spawn / cotal_persona). Without it a manifest-spawned agent —
+   *  whose materialized persona carries no `capabilities:` frontmatter — gets none, so those tools stay
+   *  hidden even though its creds authorize them. */
+  capabilities?: string[];
   /** Path to an agent definition file (`.cotal/agents/<name>.md`). The connector
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
    *  card from it, and applies the file's persona/model at launch. */
@@ -36,9 +42,10 @@ export interface LaunchOpts {
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */
   prompt?: string;
-  /** Mirror this session's transcript to `tr-<name>` so peers/observers can read what
-   *  the agent actually did (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to
-   *  opt in — surfaced as the `--transcript` flag on `cotal spawn` / `cotal start`. */
+  /** Mirror this session's transcript to the connector's per-agent transcript channel (see
+   *  {@link Connector.transcriptChannel}) so peers/observers can read what the agent actually did
+   *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
+   *  flag on `cotal spawn` / `cotal start`. */
   transcript?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
@@ -63,6 +70,14 @@ export interface LaunchSpec {
    *  non-interactive. Matched after stripping ANSI + whitespace (TUIs position
    *  text with cursor moves, not spaces). */
   confirm?: string;
+  /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
+   *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
+   *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
+   *  (never persisted — token hygiene) to send a cooperative `{op:"shutdown"}` on a runtime that
+   *  can't deliver a clean exit signal (ConPTY/Windows). Both the Claude Code (MCP server) and
+   *  OpenCode (in-process plugin) connectors mint one; absent only for a connector with no control
+   *  plane at all. */
+  control?: { path: string; token: string };
 }
 
 /**
@@ -76,6 +91,15 @@ export interface Connector extends Extension {
   readonly kind: "connector";
   readonly name: string;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
+  /** The channel this connector publishes an agent's transcript mirror to (see
+   *  {@link LaunchOpts.transcript}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
+   *  actually mirror (Claude Code, OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
+   *  naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not
+   *  core. The manager calls it to grant the agent publish rights on its transcript channel at provision
+   *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
+   *  one source and can't drift. If `transcript` is requested for a connector that lacks this, the
+   *  manager fails loud rather than silently skipping the grant. */
+  transcriptChannel?(name: string): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager checks each is on PATH before spawning and fails with a clear error naming the

@@ -12,8 +12,8 @@
  *   allowPublish: [general]    # post ACL — channels it may publish to; omit ⇒ DENY (default-deny)
  *   model: opus                # optional CLI/model override
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
- *   face: sven             # any unmodelled key is kept verbatim in AgentDef.meta — e.g. the
- *                          #   OpenCode connector reads meta.face for its avatar viewer
+ *   theme: dark            # any unmodelled key is kept verbatim in AgentDef.meta, so a
+ *                          #   connector can read its own launcher hints without core knowing them
  *   ---
  *   <the Markdown body is the persona — an appended system prompt>
  *
@@ -68,7 +68,7 @@ export interface AgentDef {
    *  existing file. Set once at creation (owner = creator), preserved on every later redefine. */
   owner?: string;
   /** Frontmatter keys not modelled above, kept verbatim so a connector can read its own launcher
-   *  hints without core knowing about each one (e.g. the OpenCode face viewer's `face:` avatar id). */
+   *  hints without core knowing about each one. */
   meta?: Record<string, string>;
   /** Markdown body — the agent's persona / appended system prompt. */
   persona?: string;
@@ -184,8 +184,8 @@ export function loadAgentFile(path: string): AgentDef {
         throw new Error(`agent file ${path}: ${field} channel "${ch}" is not within your read ACL / allowSubscribe [${effAllow.join(", ")}]`);
     }
 
-  // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector hints
-  // (face, etc.) ride here so core stays ignorant of surface-specific keys.
+  // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
+  // hints ride here so core stays ignorant of surface-specific keys.
   const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "model", "capabilities", "owner"]);
   const meta: Record<string, string> = {};
   for (const [k, v] of Object.entries(fm)) if (!known.has(k) && typeof v === "string") meta[k] = v;
@@ -253,12 +253,13 @@ function fmItem(value: string): string {
   return fmScalar(value);
 }
 
-/** Resolve a name-or-path to an agent file. A path (absolute, contains a slash,
- *  or ends in `.md`) is used as given; a bare name maps to the directory
+/** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on
+ *  Windows, `\` — or ends in `.md`) is used as given; a bare name maps to the directory
  *  convention `<root>/.cotal/agents/<name>.md`. */
 export function agentFilePath(root: string, nameOrPath: string): string {
   if (isAbsolute(nameOrPath)) return nameOrPath;
-  if (nameOrPath.includes("/") || nameOrPath.endsWith(".md")) return resolve(root, nameOrPath);
+  if (nameOrPath.includes("/") || nameOrPath.includes("\\") || nameOrPath.endsWith(".md"))
+    return resolve(root, nameOrPath);
   return join(root, ".cotal", "agents", `${nameOrPath}.md`);
 }
 

@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /** True if tmux is installed and reachable on PATH. */
 export function available(): boolean {
@@ -97,7 +100,9 @@ export function openWindow(
   cwd: string,
   opts: { focus?: boolean } = {},
 ): WindowRefs {
-  const args = ["new-window", "-t", session, "-n", name, "-c", cwd];
+  // Trailing `:` forces a target-*session* + next free index. A bare numeric session name (the
+  // default `tmux new` session is "0") would otherwise be read as window-index 0 → "index 0 in use".
+  const args = ["new-window", "-t", `${session}:`, "-n", name, "-c", cwd];
   if (!(opts.focus ?? false)) args.push("-d");
   // -P -F prints the new window + pane IDs before returning — stable across renames and reorders.
   args.push("-P", "-F", "#{window_id} #{pane_id}", command);
@@ -210,6 +215,19 @@ export function mergedCommand(
   args: string[],
 ): string {
   return ["env", ...envPairs(env), shellQuote(command), ...args.map(shellQuote)].join(" ");
+}
+
+/** Wrap a secret-bearing command body (e.g. an {@link isolatedCommand} `env -i KEY='val' … cmd`) in a
+ *  private launcher script and return a `bash` invocation of it. tmux runs the command we hand it as a
+ *  process argument — visible to any local `ps`/`tmux list-panes` — so passing the rendered `env`
+ *  inline would leak the agent's creds + control token (and any model-provider key). Instead the body
+ *  lives in a fresh 0o700 temp dir as a 0o600 (owner-only) script; tmux only ever sees `bash <path>`,
+ *  and the secrets are read from the file, never the command line. */
+export function privateLaunch(commandBody: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "cotal-tmux-"));
+  const scriptPath = join(dir, "launch.sh");
+  writeFileSync(scriptPath, `#!/usr/bin/env bash\nexec ${commandBody}\n`, { mode: 0o600 });
+  return `bash ${shellQuote(scriptPath)}`;
 }
 
 /** Type literal text into a tmux target.

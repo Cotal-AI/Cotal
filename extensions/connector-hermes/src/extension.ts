@@ -25,6 +25,11 @@ export const hermesConnector: Connector = {
   name: "hermes",
   requires: ["hermes"],
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
+    // sidecar, none of which are ported to Windows. Fail loud rather than launch a half-wired agent
+    // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
+    if (process.platform === "win32")
+      throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
     // OS allow-list + the named model-provider key (Hermes is model-agnostic; any one unlocks a
     // provider), forwarded BY NAME — never `...process.env` — so the operator's unrelated secrets
     // don't reach the gateway child (P3).

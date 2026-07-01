@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cotal · frontier tower — live mesh studio</title>
+<style>
+  :root {
+    --bg:#06000f; --panel:#0b0420; --panel2:#0d0726; --side:#080216; --line:rgba(83,235,228,.13);
+    --cyan:#53ebe4; --pink:#f1a5bd; --rose:#e13a6a; --blue:#58a6ff; --ink:#cfeffd; --dim:#7d7aa6;
+    /* themed cursors (native, custom SVG) — a cyan arrow, pink on anything clickable */
+    --cur:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24'%3E%3Cpath d='M4 2 L4 20 L9 15 L12 22 L15 21 L12 14 L19 14 Z' fill='%2353ebe4' stroke='%2306000f' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") 4 2, auto;
+    --cur-point:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24'%3E%3Cpath d='M4 2 L4 20 L9 15 L12 22 L15 21 L12 14 L19 14 Z' fill='%23f1a5bd' stroke='%2306000f' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") 4 2, pointer;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    background:var(--bg); color:var(--ink); display:flex; flex-direction:column; overflow:hidden;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    cursor:var(--cur);
+  }
+  .item, .tile, button, .clearbtn, a, .qrsign { cursor:var(--cur-point); }
+  .composer input { cursor:text; }
+
+  /* header */
+  header { display:flex; align-items:center; gap:14px; padding:11px 18px; border-bottom:1px solid var(--line);
+           background:linear-gradient(180deg, rgba(13,7,38,.7), transparent); flex:none; }
+  .lockup { display:flex; align-items:center; gap:10px; }
+  .lockup b { font-size:16px; font-weight:700; letter-spacing:.3px; }
+  .lockup .sub { font-size:11px; color:var(--dim); }
+  /* the Cotal brand mark (gold interlocking rings) */
+  .logo { width:22px; height:22px; display:block; flex:none; filter:drop-shadow(0 0 6px rgba(233,196,106,.5)); }
+  .sign .lk .logo { width:28px; height:28px; filter:drop-shadow(0 0 9px rgba(233,196,106,.45)); }
+  .grow { flex:1; }
+  .chip { font-size:11px; color:var(--cyan); border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:rgba(83,235,228,.05); }
+  .chip b { color:var(--ink); }
+  .status { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); }
+  .status .live { width:8px; height:8px; border-radius:50%; background:#42d977; box-shadow:0 0 10px #42d977; animation:pulse 2.4s ease-in-out infinite; }
+  .status.off .live { background:var(--rose); box-shadow:0 0 10px var(--rose); animation:none; }
+  @keyframes pulse { 50% { opacity:.35; } }
+
+  /* body: 3 columns — the persona panel gets generous, screen-scaled width */
+  main { flex:1; display:grid; grid-template-columns:208px minmax(0,1fr) clamp(420px, 32vw, 680px); min-height:0; }
+
+  /* sidebar */
+  .sidebar { background:var(--side); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .sidebar .scroll { flex:1; overflow-y:auto; padding:14px 10px; }
+  .sec { font-size:10px; letter-spacing:.7px; text-transform:uppercase; color:var(--dim); margin:14px 8px 6px; }
+  .sec:first-child { margin-top:0; }
+  .item { display:flex; align-items:center; gap:8px; padding:6px 9px; border-radius:7px; cursor:pointer; font-size:13px;
+          color:#b9c4e6; transition:background .15s; }
+  .item:hover { background:rgba(83,235,228,.06); }
+  .item.active { background:rgba(83,235,228,.13); color:var(--ink); }
+  .item .hash { color:var(--dim); font-weight:600; }
+  .item.active .hash { color:var(--cyan); }
+  .item .pd { width:8px; height:8px; border-radius:50%; flex:none; opacity:.4; }
+  .item.online .pd { opacity:1; }
+  .item .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .item .badge { background:var(--rose); color:#fff; font-size:10px; font-weight:700; border-radius:999px; padding:0 6px; min-width:17px; text-align:center; }
+  .sidebar .foot { border-top:1px solid var(--line); padding:10px; }
+  .clearbtn { width:100%; background:transparent; color:var(--dim); border:1px solid var(--line); border-radius:8px;
+              padding:8px; font-family:inherit; font-size:12px; cursor:pointer; transition:.15s; }
+  .clearbtn:hover { color:var(--pink); border-color:rgba(241,165,189,.4); background:rgba(225,58,106,.07); }
+
+  /* conversation */
+  .convo { display:flex; flex-direction:column; min-height:0; }
+  .convo .top { padding:13px 18px; border-bottom:1px solid var(--line); }
+  .convo .top .h { font-size:15px; font-weight:700; color:var(--ink); }
+  .convo .top .s { font-size:11px; color:var(--dim); margin-top:2px; }
+  .convo .top.dm { background:linear-gradient(180deg, rgba(241,165,189,.08), transparent); }
+  .convo .top.dm .h { color:var(--pink); }
+  /* who's on the channel */
+  .mem { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:9px; }
+  .mem .lbl { font-size:10px; letter-spacing:.5px; text-transform:uppercase; color:var(--dim); }
+  .mem .m { display:flex; align-items:center; gap:5px; font-size:11.5px; color:#b9c4e6; }
+  .mem .m .d { width:7px; height:7px; border-radius:50%; flex:none; }
+  .convo .top.dm .mem { display:none; }
+  /* kiosk hint — tells a stranger the screen is two-way */
+  .khint { padding:9px 16px 0; font-size:12px; color:var(--cyan); opacity:.75; text-align:center; flex:none; }
+  .khint b { color:var(--ink); font-weight:600; }
+  .msgs { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:13px; }
+  .msg { animation:rise .26s ease both; }
+  @keyframes rise { from { opacity:0; transform:translateY(6px); } }
+  .msg .head { display:flex; align-items:baseline; gap:8px; margin-bottom:2px; }
+  .msg .name { font-size:13px; font-weight:700; }
+  .msg .pill { font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:5px; padding:0 5px; }
+  .msg .t { font-size:11px; color:var(--dim); margin-left:auto; }
+  .msg .body { font-size:13.5px; line-height:1.5; color:#dbeaf6; white-space:pre-wrap; word-break:break-word; }
+  .msg.you .body { color:var(--pink); }
+  .placeholder { color:var(--dim); font-size:12px; margin:auto; text-align:center; line-height:1.7; }
+
+  .composer { border-top:1px solid var(--line); padding:12px 16px; display:flex; gap:9px; background:var(--panel2); flex:none; }
+  .composer input { flex:1; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:9px;
+                    padding:11px 13px; font-family:inherit; font-size:13px; outline:none; transition:border-color .2s; }
+  .composer input:focus { border-color:rgba(83,235,228,.55); }
+  .composer button { background:var(--rose); color:#fff; border:0; border-radius:9px; padding:0 18px; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+  .composer button:hover { opacity:.88; }
+
+  /* faces rail */
+  .faces { background:linear-gradient(180deg, rgba(13,7,38,.4), transparent); border-left:1px solid var(--line);
+           display:flex; flex-direction:column; min-height:0; }
+  .faces h2 { font-size:10px; letter-spacing:.7px; text-transform:uppercase; color:var(--dim); margin:0; padding:16px 16px 12px; }
+  .fgrid { flex:1; overflow-y:auto; display:grid; gap:18px; grid-template-columns:1fr 1fr; align-content:start; padding:0 16px 16px; }
+  .tile { position:relative; border:1px solid var(--line); border-radius:14px; padding:12px; background:var(--panel);
+          transition:border-color .25s, box-shadow .25s, transform .2s; }
+  /* signage — pinned, for walk-up passers-by */
+  .sign { border-top:1px solid var(--line); padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:14px; }
+  .sign .lk { display:flex; align-items:center; gap:10px; }
+  .sign .lk .d { width:11px; height:11px; border-radius:50%; background:var(--blue); box-shadow:0 0 13px var(--blue); }
+  .sign .lk b { font-size:15px; color:var(--ink); }
+  .sign .lk .tag { font-size:10.5px; color:var(--dim); margin-top:1px; }
+  .qrsign { display:flex; flex-direction:column; align-items:center; gap:4px; text-decoration:none; color:var(--dim); }
+  .qrsign canvas { background:#06000f; padding:6px; border-radius:9px; display:block; border:1px solid rgba(83,235,228,.45); box-shadow:0 0 16px rgba(83,235,228,.18); }
+  .qrsign span { font-size:12.5px; letter-spacing:.4px; color:var(--ink); }
+  .tile:hover { transform:translateY(-2px); }
+  .tile.sel { border-color:rgba(241,165,189,.55); }
+  .tile.dim { opacity:.34; filter:grayscale(.5); }   /* not a member of the active channel */
+  .tile.speaking { border-color:rgba(83,235,228,.55); box-shadow:0 0 22px rgba(83,235,228,.13); }
+  .tile.flash { border-color:rgba(241,165,189,.7); box-shadow:0 0 22px rgba(241,165,189,.18); }
+  .tile cotal-face { --cf-width:100%; --cf-caption-display:none; display:block; }
+  .tile .lab { display:flex; align-items:center; gap:6px; margin-top:7px; font-size:11px; }
+  .tile .lab .nm { font-weight:600; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tile .termbtn { font-family:inherit; font-size:10px; line-height:1; padding:3px 5px; border:1px solid var(--line);
+                   border-radius:5px; background:transparent; color:var(--dim); transition:.15s; }
+  .tile .termbtn:hover { color:var(--cyan); border-color:rgba(83,235,228,.4); background:rgba(83,235,228,.08); }
+  .tile .sdot { width:7px; height:7px; border-radius:50%; background:var(--dim); transition:background .2s; }
+  .tile .sdot.thinking { background:#e8c34a; box-shadow:0 0 8px #e8c34a; }
+  .tile .sdot.working  { background:var(--blue); box-shadow:0 0 8px var(--blue); }
+  .tile .sdot.speaking { background:var(--cyan); box-shadow:0 0 8px var(--cyan); }
+  .tile .sdot.error    { background:var(--rose); box-shadow:0 0 8px var(--rose); }
+  /* status + emotion as text (mirrors the CLI face's caption + expression) */
+  .tile .stat { display:flex; align-items:center; gap:6px; margin-top:5px; font-size:10.5px; color:var(--dim); }
+  .tile .stat .act { color:#9fb0d8; }
+  .tile .stat .sep { opacity:.4; }
+  .tile .stat .emo { text-transform:capitalize; }
+  .tile .stat .emo.neutral { color:var(--dim); }
+  .tile .stat .emo.happy { color:var(--cyan); }
+  .tile .stat .emo.sad { color:var(--blue); }
+  .tile .stat .emo.angry { color:var(--rose); }
+  .tile .stat .emo.surprised { color:#e8c34a; }
+
+  /* per-agent live terminal — its OpenCode session activity, streamed */
+  .termwrap { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+              background:rgba(4,2,12,.74); backdrop-filter:blur(5px); }
+  .termwrap[hidden] { display:none; }
+  .termmodal { width:min(840px,92vw); height:min(560px,82vh); background:#050310; border:1px solid rgba(83,235,228,.28);
+               border-radius:12px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 26px 90px rgba(0,0,0,.62); }
+  .termbar { display:flex; align-items:center; gap:7px; padding:9px 13px; background:#0a0622; border-bottom:1px solid var(--line); }
+  .termbar .d { width:10px; height:10px; border-radius:50%; flex:none; }
+  .termtitle { font-size:12.5px; color:var(--cyan); font-weight:600; margin-left:6px; }
+  .termsub { font-size:11px; color:var(--dim); }
+  .termx { margin-left:auto; background:transparent; border:0; color:var(--dim); font-size:16px; line-height:1; }
+  .termx:hover { color:var(--pink); }
+  .termbody { flex:1; overflow-y:auto; padding:12px 15px; font-size:12.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+  .termbody .ln { margin:1px 0; }
+  .termbody .reason { color:#6f6d96; font-style:italic; }
+  .termbody .say { color:#dbeaf6; }
+  .termbody .tool { color:#e8c34a; }
+  .termbody .send { color:var(--pink); }
+  .termbody .idle { color:#3f5a55; text-align:center; margin:8px 0; letter-spacing:1px; }
+  .termbody .err { color:var(--rose); }
+  .termbody .empty { color:var(--dim); text-align:center; margin-top:24px; }
+
+  ::-webkit-scrollbar { width:9px; }
+  ::-webkit-scrollbar-thumb { background:rgba(83,235,228,.16); border-radius:9px; }
+
+  @media (max-width: 900px) { main { grid-template-columns:180px 1fr; } .faces { display:none; } }
+</style>
+</head>
+<body>
+  <header>
+    <div class="lockup"><img class="logo" src="cotal-mark.svg" alt="Cotal" /><div><b>Cotal</b> <span class="sub">· frontier tower</span></div></div>
+    <div class="grow"></div>
+    <div class="chip">space <b id="space">…</b></div>
+    <div class="chip"><b id="count">0</b> agents</div>
+    <div class="status" id="conn"><span class="live"></span><span id="conn-t">connecting…</span></div>
+  </header>
+
+  <main>
+    <nav class="sidebar">
+      <div class="scroll">
+        <div class="sec">Channels</div>
+        <div id="channels"></div>
+        <div class="sec">Direct messages</div>
+        <div id="dms"></div>
+      </div>
+      <div class="foot"><button class="clearbtn" id="clear">🗑  Clear history</button></div>
+    </nav>
+
+    <section class="convo">
+      <div class="top"><div class="h" id="conv-h">#general</div><div class="s" id="conv-s"></div><div class="mem" id="conv-mem"></div></div>
+      <div class="msgs" id="msgs"></div>
+      <div class="khint">💬 <b>Live AI panel</b> — type a question to join the conversation</div>
+      <form class="composer" id="composer" autocomplete="off">
+        <input id="say" maxlength="500" placeholder="type a question for the panel…" />
+        <button type="submit" id="sendbtn">send</button>
+      </form>
+    </section>
+
+    <aside class="faces">
+      <h2>the agents</h2>
+      <div class="fgrid" id="fgrid"></div>
+      <div class="sign">
+        <div class="lk"><img class="logo" src="cotal-mark.svg" alt="Cotal" /><div><b>Cotal</b><div class="tag">The open standard for agent coordination</div></div></div>
+        <a class="qrsign" id="qrlink" href="https://cotal.ai" target="_blank" rel="noopener">
+          <canvas id="qr" width="96" height="96"></canvas><span>scan · cotal.ai</span>
+        </a>
+      </div>
+    </aside>
+  </main>
+
+  <div class="termwrap" id="termwrap" hidden>
+    <div class="termmodal">
+      <div class="termbar">
+        <span class="d" style="background:#e13a6a"></span><span class="d" style="background:#e46a87"></span><span class="d" style="background:#53ebe4"></span>
+        <span class="termtitle" id="termtitle">live session</span>
+        <span class="termsub">· what the agent is doing on OpenCode</span>
+        <button class="termx" id="termx" title="close (Esc)">✕</button>
+      </div>
+      <div class="termbody" id="termbody"></div>
+    </div>
+  </div>
+
+<script type="module">
+  import './cotal-face.js';
+  import { PERSONAS } from '../personas.mjs';
+  import { MATRIX, COTAL_URL } from '../qr-cotal.mjs';
+
+  const $ = (id) => document.getElementById(id);
+
+  // signage QR — pre-generated matrix, dark-on-light with a quiet zone (scans on any phone)
+  function drawQR() {
+    const cv = $('qr'), N = MATRIX.length, QZ = 2, S = N + 2 * QZ;
+    const ctx = cv.getContext('2d'), px = Math.floor(cv.width / S), off = Math.floor((cv.width - px * S) / 2);
+    ctx.fillStyle = '#06000f'; ctx.fillRect(0, 0, cv.width, cv.height);   // dark quiet-zone bg — matches the UI
+    ctx.fillStyle = '#53ebe4';                                            // cyan modules (theme accent) — bright on dark, still scans
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++)
+      if (MATRIX[y][x] === '1') ctx.fillRect(off + (x + QZ) * px, off + (y + QZ) * px, px, px);
+    $('qrlink').href = COTAL_URL;
+  }
+  const hue = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+  const nameColor = (s) => s === 'you' ? 'var(--pink)' : `hsl(${hue(s)} 70% 70%)`;
+  const labelOf = (a) => a.name.charAt(0).toUpperCase() + a.name.slice(1); // the agent's handle (Elon, not Musk)
+
+  // ---- conversation model -------------------------------------------------------------------
+  const convos = new Map();   // id -> { id, kind, name, label, role, persona, messages:[], unread:0 }
+  const tiles = new Map();    // agent name -> { el, sdot }
+  const faces = new Map();    // agent name -> face controller { hint(status), speak(text) }
+  const online = new Set();
+  const seen = new Set();
+  let activeId = null;
+  let state = null;
+
+  const convChannel = (name) => `#${name}`;
+  const convDM = (name) => `@${name}`;
+
+  function ensureConv(id, init) {
+    if (!convos.has(id)) convos.set(id, { id, messages: [], unread: 0, ...init });
+    return convos.get(id);
+  }
+
+  function routeOf(m) {
+    if (m.kind === 'dm') return convDM(m.from === 'you' ? m.to : m.from);
+    return convChannel(m.channel || 'general');
+  }
+
+  // ---- sidebar ------------------------------------------------------------------------------
+  function renderSidebar() {
+    const chans = $('channels'); chans.innerHTML = '';
+    for (const ch of state.channels) {
+      const c = ensureConv(convChannel(ch.name), { kind: 'channel', name: ch.name, label: ch.name });
+      chans.appendChild(sideRow(c, `<span class="hash">#</span>`, ch.name));
+    }
+    const dms = $('dms'); dms.innerHTML = '';
+    for (const a of state.agents) {
+      const c = ensureConv(convDM(a.name), { kind: 'dm', name: a.name, label: labelOf(a), role: a.role, persona: a.persona });
+      const dot = `<span class="pd" style="background:${nameColor(a.name)}"></span>`;
+      dms.appendChild(sideRow(c, dot, labelOf(a), online.has(a.name)));
+    }
+  }
+  function sideRow(c, lead, text, isOnline) {
+    const row = document.createElement('div');
+    row.className = 'item' + (c.id === activeId ? ' active' : '') + (isOnline ? ' online' : '');
+    row.innerHTML = `${lead}<span class="nm">${text}</span>${c.unread ? `<span class="badge">${c.unread}</span>` : ''}`;
+    row.onclick = () => selectConv(c.id);
+    return row;
+  }
+
+  // who's IN this channel — its manifest members; a member currently present gets a lit dot.
+  const channelMembers = (name) => state.channels.find((c) => c.name === name)?.members || [];
+  function renderMembers(c) {
+    const mem = $('conv-mem');
+    if (c.kind !== 'channel') { mem.innerHTML = ''; return; }
+    const members = channelMembers(c.name)
+      .filter((n) => state.agents.some((a) => a.name === n))
+      .map((n) => ({ name: n, label: labelOf({ name: n }), here: online.has(n) }));
+    const people = [{ name: 'you', label: 'you', here: true }, ...members];
+    const here = people.filter((p) => p.here).length;
+    mem.innerHTML = `<span class="lbl">${here} of ${people.length} here</span>` +
+      people.map((p) => `<span class="m" style="${p.here ? '' : 'opacity:.42'}"><span class="d" style="background:${nameColor(p.name)}"></span>${p.label}</span>`).join('');
+  }
+
+  // ---- conversation pane --------------------------------------------------------------------
+  function selectConv(id) {
+    activeId = id;
+    const c = convos.get(id);
+    c.unread = 0;
+    const dm = c.kind === 'dm';
+    $('conv-h').textContent = dm ? `@ ${c.label}` : `#${c.name}`;
+    $('conv-s').textContent = dm
+      ? `message ${c.label} directly · ${c.role || 'agent'} · the others don't see it`
+      : 'everyone on the channel sees this';
+    $('say').placeholder = dm ? `message ${c.label} directly…` : `message #${c.name}`;
+    $('conv-h').parentElement.classList.toggle('dm', dm);
+    renderMembers(c);
+    const box = $('msgs'); box.innerHTML = '';
+    if (!c.messages.length) {
+      box.innerHTML = `<div class="placeholder">${dm
+        ? `Message ${c.label} directly — only ${c.label} answers (the others stay out of it).`
+        : `Nothing in #${c.name} yet — type a question and the agents pick it up.`}</div>`;
+    } else for (const m of c.messages) box.appendChild(msgRow(m));
+    box.scrollTop = box.scrollHeight;
+    const inActive = c.kind === 'channel' ? new Set(channelMembers(c.name)) : null;
+    for (const [name, t] of tiles) {
+      t.el.classList.toggle('sel', id === convDM(name));
+      t.el.classList.toggle('dim', inActive ? !inActive.has(name) : false); // fade non-members of this channel
+    }
+    renderSidebar();
+  }
+
+  function msgRow(m) {
+    const row = document.createElement('div');
+    row.className = 'msg' + (m.from === 'you' ? ' you' : '');
+    const route = m.kind === 'dm' ? (m.from === 'you' ? `dm → ${m.to}` : 'dm') : m.kind === 'anycast' ? `@${m.toService}` : '';
+    const time = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    row.innerHTML = `<div class="head"><span class="name" style="color:${nameColor(m.from)}">${m.from}</span>${
+      route ? `<span class="pill">${route}</span>` : ''}<span class="t">${time}</span></div><div class="body"></div>`;
+    row.querySelector('.body').textContent = m.text;
+    return row;
+  }
+
+  function addMsg(m) {
+    if (m.id && seen.has(m.id)) return;
+    if (m.id) seen.add(m.id);
+    const c = ensureConv(routeOf(m), m.kind === 'dm'
+      ? { kind: 'dm', name: m.from === 'you' ? m.to : m.from, label: m.from === 'you' ? m.to : m.from }
+      : { kind: 'channel', name: m.channel || 'general', label: m.channel || 'general' });
+    c.messages.push(m);
+    if (c.id === activeId) {
+      const box = $('msgs');
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      if (c.messages.length === 1) box.innerHTML = '';
+      box.appendChild(msgRow(m));
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    } else if (m.from !== 'you') {
+      c.unread++;
+      renderSidebar();
+    }
+  }
+
+  // ---- faces --------------------------------------------------------------------------------
+  // activity kind -> the status word shown under each face (mirrors the CLI face's caption)
+  const ACT_TEXT = { thinking: 'thinking…', working: 'working…', speaking: 'speaking…', waiting: 'ready', done: 'ready', error: 'error', idle: 'idle' };
+
+  // Faces are driven entirely off the ONE polling feed — NOT a stream per face. A per-face stream
+  // would open one long-lived connection each; 6 faces exhaust the browser's 6-per-host HTTP/1.1
+  // cap, starving the feed/sends/page-loads (the old "stuck connecting / nothing sends" bug). Here a
+  // face animates from roster status (faceHint) and lip-syncs its mesh message when it arrives (faceSpeak).
+  function buildFaces() {
+    const grid = $('fgrid');
+    faces.clear(); tiles.clear(); grid.innerHTML = '';
+    for (const a of state.agents) {
+      const persona = PERSONAS[a.persona] ? a.persona : 'neon';
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.innerHTML = `<cotal-face persona="${persona}" chrome="off"></cotal-face>
+        <div class="lab"><span class="nm">${labelOf(a)}</span><button class="termbtn" title="open ${labelOf(a)}'s messages">&gt;_</button><span class="sdot"></span></div>
+        <div class="stat"><span class="act">idle</span><span class="sep">·</span><span class="emo neutral">neutral</span></div>`;
+      tile.onclick = () => selectConv(convDM(a.name));
+      grid.appendChild(tile);
+      const faceEl = tile.querySelector('cotal-face');
+      const sdot = tile.querySelector('.sdot');
+      const actEl = tile.querySelector('.act');
+      const emoEl = tile.querySelector('.emo');
+      tile.querySelector('.termbtn').addEventListener('click', (e) => { e.stopPropagation(); openTerm(a.name); });
+      tiles.set(a.name, { el: tile, sdot });
+      let flashT;
+      const setAct = (kind) => {
+        faceEl.setActivity(kind);
+        tile.classList.toggle('speaking', kind === 'speaking');
+        sdot.className = 'sdot ' + (kind === 'waiting' || kind === 'done' ? '' : (kind || ''));
+        actEl.textContent = ACT_TEXT[kind] || 'idle';
+        emoEl.textContent = faceEl.expr; emoEl.className = 'emo ' + faceEl.expr;
+      };
+      const ctl = {
+        busy: false,
+        // roster hint: don't fight an in-progress lip-sync
+        hint: (status) => { if (ctl.busy) return; setAct(/work|think|run/i.test(status || '') ? 'working' : 'idle'); },
+        // a message from this agent landed — lip-sync it
+        speak: (text) => {
+          ctl.busy = true;
+          tile.classList.add('flash'); clearTimeout(flashT); flashT = setTimeout(() => tile.classList.remove('flash'), 700);
+          setAct('speaking');
+          Promise.resolve(faceEl.speak(stripTags(text || ''))).catch(() => {}).finally(() => { ctl.busy = false; setAct('idle'); });
+        },
+      };
+      faces.set(a.name, ctl);
+      setAct('idle');
+    }
+  }
+
+  // ---- per-agent live terminal (the OpenCode session, off the same SSE the face already holds) --
+  const logs = new Map();        // agent name -> [{ kind, msg, text, tool, to, role, channel }]
+  const histLoaded = new Set();  // agents whose stored session backlog we've already pulled in
+  const LOG_CAP = 400;
+  let termName = null;           // agent whose terminal modal is open, or null
+
+  const stripTags = (t) => (t || '').replace(/\[\[\s*face\s*:[^\]]*\]\]/gi, '');
+  function logText(e) {
+    if (e.kind === 'reason' || e.kind === 'say') return stripTags(e.text);
+    if (e.kind === 'tool') return `⚙ ${e.tool}`;
+    if (e.kind === 'send') {
+      const dest = e.tool === 'cotal_dm' ? `dm → ${e.to}` : e.tool === 'cotal_anycast' ? `@${e.role}` : `#${e.channel || 'general'}`;
+      return `→ ${dest}: ${stripTags(e.text)}`;
+    }
+    if (e.kind === 'idle') return '— idle —';
+    if (e.kind === 'error') return '⚠ session error';
+    return e.text || '';
+  }
+  const logClass = (k) => ({ reason: 'reason', say: 'say', tool: 'tool', send: 'send', idle: 'idle', error: 'err' }[k] || '');
+  function lineEl(e) {
+    const d = document.createElement('div');
+    d.className = 'ln ' + logClass(e.kind);
+    d.textContent = logText(e);
+    return d;
+  }
+  const atBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+
+  function pushLog(name, e) {
+    let arr = logs.get(name); if (!arr) logs.set(name, arr = []);
+    const last = arr[arr.length - 1];
+    // coalesce a streamed reason/say delta into the running line for that same message
+    if ((e.kind === 'reason' || e.kind === 'say') && last && last.kind === e.kind && last.msg === e.msg) {
+      last.text = (last.text || '') + (e.text || '');
+      if (termName === name) {
+        const body = $('termbody'), el = body.lastElementChild, at = atBottom(body);
+        if (el) { el.textContent = logText(last); if (at) body.scrollTop = body.scrollHeight; }
+      }
+      return;
+    }
+    arr.push(e);
+    if (arr.length > LOG_CAP) arr.shift();
+    if (termName === name) {
+      const body = $('termbody'), at = atBottom(body);
+      if (body.firstElementChild?.classList.contains('empty')) body.innerHTML = '';
+      body.appendChild(lineEl(e));
+      if (at) body.scrollTop = body.scrollHeight;
+    }
+  }
+
+  // Rebuild the scrollback from OpenCode's stored session history (so a page reload doesn't show an
+  // empty box — a real terminal keeps its history). Mirrors the live view: the agent's own activity.
+  function partsToEntries(messages) {
+    const out = [];
+    for (const m of (messages || [])) {
+      if (m.info?.role !== 'assistant') continue;
+      for (const p of (m.parts || [])) {
+        if (p.type === 'reasoning' && p.text) out.push({ kind: 'reason', msg: m.info.id, text: p.text });
+        else if (p.type === 'text' && p.text) out.push({ kind: 'say', msg: m.info.id, text: p.text });
+        else if (p.type === 'tool') {
+          const inp = p.state?.input || {};
+          if (['cotal_send', 'cotal_dm', 'cotal_anycast'].includes(p.tool) && inp.text)
+            out.push({ kind: 'send', tool: p.tool, to: inp.to, role: inp.role, channel: inp.channel, text: inp.text });
+          else out.push({ kind: 'tool', tool: p.tool, msg: m.info.id });
+        }
+      }
+    }
+    return out;
+  }
+
+  async function openTerm(name) {
+    termName = name;
+    const a = state.agents.find((x) => x.name === name);
+    $('termtitle').textContent = `${labelOf(a)} · live session`;
+    $('termwrap').hidden = false;
+    const body = $('termbody');
+    // Re-fetch the session EVERY open. There's no live stream (that cost one connection per face —
+    // the exhaustion bug), so caching the first fetch would leave a terminal opened before the agent
+    // had spoken stuck empty forever. A fresh one-shot fetch each open always shows current activity.
+    body.innerHTML = `<div class="empty">loading ${labelOf(a)}'s session…</div>`;
+    let hist = [];
+    if (a?.session) {
+      try {
+        const r = await fetch(`/agent/${name}/session/${a.session}/message`);
+        if (r.ok) {
+          const data = await r.json();
+          hist = partsToEntries(Array.isArray(data) ? data : (data.messages || []));
+        }
+      } catch { /* unreachable — show the empty hint below */ }
+    }
+    if (termName !== name) return; // closed or switched to another face while loading
+    body.innerHTML = '';
+    if (!hist.length) body.innerHTML = `<div class="empty">waiting for ${labelOf(a)} to do something…</div>`;
+    else for (const e of hist.slice(-LOG_CAP)) body.appendChild(lineEl(e));
+    body.scrollTop = body.scrollHeight;
+  }
+  function closeTerm() { termName = null; $('termwrap').hidden = true; }
+  $('termx').addEventListener('click', closeTerm);
+  $('termwrap').addEventListener('click', (e) => { if (e.target === $('termwrap')) closeTerm(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('termwrap').hidden) closeTerm(); });
+
+  const homeId = () => convChannel(state.channels[0]?.name || 'general');
+
+  // Clear resets the agents' OpenCode context server-side → re-fetch state, re-attach faces to the
+  // new sessions, wipe every conversation, and snap back to #general (fresh for the next visitor).
+  async function onClear() {
+    for (const c of convos.values()) { c.messages = []; c.unread = 0; }
+    seen.clear();
+    logs.clear(); histLoaded.clear(); closeTerm(); // drop each agent's terminal scrollback — the sessions are new
+    try { state = await fetch('/api/state').then((r) => r.json()); } catch { /* keep old state */ }
+    buildFaces();
+    selectConv(homeId());
+  }
+
+  // ---- send + clear -------------------------------------------------------------------------
+  async function say(text, opts) {
+    if (!text || !text.trim()) return;
+    try {
+      await fetch('/api/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, ...opts }) });
+    } catch { /* the feed reflects it if it landed */ }
+  }
+  // anti-flood: brief cooldown after each send (kiosk visitors can't spam the panel / model costs)
+  let cooling = false;
+  $('composer').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (cooling) return;
+    const input = $('say'), btn = $('sendbtn');
+    const c = convos.get(activeId);
+    if (!input.value.trim()) return;
+    say(input.value, c.kind === 'channel' ? { channel: c.name } : { to: c.name });
+    input.value = '';
+    cooling = true; btn.disabled = true; input.disabled = true;
+    setTimeout(() => { cooling = false; btn.disabled = false; input.disabled = false; input.focus(); }, 2500);
+  });
+  // Clear (wipe the shared chat + reset every agent's OpenCode context) — always available.
+  $('clear').addEventListener('click', async () => {
+    if (!confirm('Clear the shared chat + reset all agent contexts?')) return;
+    try { await fetch('/api/clear', { method: 'POST' }); } catch { /* feed clear event handles UI */ }
+  });
+
+  // ---- live feed ----------------------------------------------------------------------------
+  function setConn(ok) { $('conn').classList.toggle('off', !ok); $('conn-t').textContent = ok ? 'live' : 'reconnecting…'; }
+  // Apply a roster snapshot — only re-render when presence membership actually changed (avoids churn).
+  function applyRoster(roster) {
+    for (const p of (roster || [])) if (p.name !== 'you') faces.get(p.name)?.hint(p.status); // animate faces off the same poll
+    const next = new Set((roster || []).filter((p) => p.name !== 'you').map((p) => p.name));
+    let changed = next.size !== online.size;
+    if (!changed) for (const n of next) if (!online.has(n)) { changed = true; break; }
+    if (!changed) return;
+    online.clear(); for (const n of next) online.add(n);
+    renderSidebar();
+    const c = convos.get(activeId); if (c && c.kind === 'channel') renderMembers(c);
+  }
+  // Live feed via POLLING, not SSE: a short fetch like /api/state, so it works even where a proxy or
+  // tunnel buffers an EventSource stream (the "stuck on connecting…" bug). Each poll asks for events
+  // after the last cursor plus the current roster snapshot.
+  function connectFeed() {
+    let cursor = 0, primed = false; // first poll replays backlog silently; later polls lip-sync new msgs
+    const tick = async () => {
+      try {
+        const r = await fetch('/api/events?since=' + cursor);
+        if (!r.ok) throw new Error('http ' + r.status);
+        const data = await r.json();
+        setConn(true);
+        cursor = typeof data.cursor === 'number' ? data.cursor : cursor;
+        applyRoster(data.roster);
+        for (const ev of (data.events || [])) {
+          if (ev.type === 'msg') { addMsg(ev); if (primed && ev.from && ev.from !== 'you') faces.get(ev.from)?.speak(ev.text); }
+          else if (ev.type === 'clear') onClear();
+          else if (ev.type === 'focus') selectConv(convChannel(ev.channel || 'general'));
+        }
+        primed = true;
+      } catch { setConn(false); }
+      setTimeout(tick, 1200);
+    };
+    tick();
+  }
+
+  // ---- boot ---------------------------------------------------------------------------------
+  (async () => {
+    try {
+      state = await fetch('/api/state').then((r) => r.json());
+    } catch (e) {
+      console.error('[studio] /api/state failed — is the server running?', e);
+      setConn(false); $('conn-t').textContent = 'no server';
+      return;
+    }
+    try {
+      $('space').textContent = state.space;
+      $('count').textContent = state.agents.length;
+      drawQR();
+      buildFaces();
+      renderSidebar();
+      selectConv(convChannel(state.channels[0]?.name || 'general'));
+    } catch (e) {
+      console.error('[studio] initial render failed:', e); // surface it; the live feed still connects below
+    }
+    connectFeed(); // always open the live feed — its status must not hinge on the initial render
+  })();
+</script>
+</body>
+</html>

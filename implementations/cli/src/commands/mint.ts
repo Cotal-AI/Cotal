@@ -1,12 +1,14 @@
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { parseArgs } from "node:util";
 import {
   agentFilePath,
   loadAgentFile,
   mintCreds,
+  mkSecretDir,
   newIdentity,
   stripSpaceAuth,
+  writeSecretFile,
   type Profile,
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
@@ -45,7 +47,7 @@ export async function mint(argv: string[]): Promise<void> {
       console.error(c.red(`${out} already exists — pass --force to overwrite`));
       process.exit(1);
     }
-    writeFileSync(out, JSON.stringify(stripSpaceAuth(auth), null, 2), { mode: 0o600 });
+    writeSecretFile(out, JSON.stringify(stripSpaceAuth(auth), null, 2));
     console.log(c.green(`✓ wrote signer for space "${auth.space}"`));
     console.log(c.dim(`  ${out}`));
     console.log(c.dim("  mount read-only at /workspace/.cotal/auth/auth.json in the container"));
@@ -86,8 +88,8 @@ export async function mint(argv: string[]): Promise<void> {
   const identity = newIdentity();
   const creds = await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role });
   const out = resolve(values.out ?? join(dir, "creds", `${name}.creds`));
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, creds, { mode: 0o600 });
+  mkSecretDir(dirname(out));
+  writeSecretFile(out, creds);
   console.log(c.green(`✓ minted ${profile} creds for "${name}"`));
   console.log(c.dim(`  id:    ${identity.id}`));
   console.log(c.dim(`  creds: ${out}`));

@@ -92,10 +92,26 @@ export class PtyRuntime implements Runtime {
       stop: (opts) => {
         if (!alive) return;
         // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a
-        // pseudoconsole can't deliver SIGTERM for a graceful mesh-leave. So a stop here is a hard
-        // terminate — the agent's presence then expires via NATS rather than leaving cleanly.
+        // pseudoconsole can't deliver SIGTERM for a graceful mesh-leave. The manager instead sends a
+        // cooperative `{op:"shutdown"}` over the agent's control endpoint BEFORE a graceful stop, so
+        // here we just give the agent a window to run its exit handlers (leave the mesh, publish
+        // offline) and exit on its own, then hard-kill (ConPTY close) as a fallback. A hard stop
+        // (graceful:false — emergency reap) skips the window and kills immediately.
         if (process.platform === "win32") {
-          proc.kill();
+          if (opts?.graceful === false) {
+            proc.kill();
+            return;
+          }
+          // `alive` guards the already-exited case; the try/catch covers the narrow race where the
+          // ConPTY tears down between the check and the kill (node-pty throws on a dead handle).
+          setTimeout(() => {
+            if (!alive) return;
+            try {
+              proc.kill();
+            } catch {
+              /* already gone */
+            }
+          }, GRACE_MS);
           return;
         }
         if (opts?.graceful === false) {

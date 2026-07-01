@@ -6,7 +6,7 @@
  *   2. poke it once so the lazily-loaded plugin initializes (joins the mesh, creates ONE session);
  *   3. the plugin announces that session's id on stderr (`[cotal-session] <id>`);
  *   4. launch a foreground `opencode attach <url> --session <id>` — the TUI opens straight onto the
- *      agent's session, and every turn the plugin drives (via `session.promptAsync`) renders live.
+ *      agent's session, and every turn the plugin drives through this exact server renders live.
  *
  * The attach TUI is a pure viewer (it connects to the running server); its env strips the plugin
  * config + COTAL_* so it never loads a *second* mesh endpoint.
@@ -43,6 +43,7 @@ function resolveOpencodeBin(): string {
 }
 
 const BIN = resolveOpencodeBin();
+const USERNAME = "opencode";
 
 /** Per-launch secret gating the spawned server's HTTP API (see SECURITY above). */
 const SECRET = randomBytes(24).toString("hex");
@@ -103,7 +104,13 @@ async function main(): Promise<void> {
 
   mkdirSync(agentHome, { recursive: true });
   const serve = spawn(BIN, ["serve", "--hostname", "127.0.0.1", "--port", port], {
-    env: { ...process.env, OPENCODE_SERVER_PASSWORD: SECRET, OPENCODE_DB: dbPath },
+    env: {
+      ...process.env,
+      COTAL_OPENCODE_SERVER_URL: url,
+      OPENCODE_SERVER_USERNAME: USERNAME,
+      OPENCODE_SERVER_PASSWORD: SECRET,
+      OPENCODE_DB: dbPath,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   writeFileSync(pidFile, String(serve.pid));
@@ -136,7 +143,7 @@ async function main(): Promise<void> {
   // bootstrap that loads the plugin. Each poke carries its own abort timeout: a request that
   // lands in the early-boot window can hang with no response, and an un-timed fetch would pin
   // the loop on it forever (undici queues later requests behind it on the pooled connection).
-  const auth = `Basic ${Buffer.from(`opencode:${SECRET}`).toString("base64")}`;
+  const auth = `Basic ${Buffer.from(`${USERNAME}:${SECRET}`).toString("base64")}`;
   void (async () => {
     for (let i = 0; i < 300 && !sessionId; i++) {
       try {
@@ -162,29 +169,28 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Headless mode (COTAL_SERVE_HEADLESS=1): no foreground TUI. Hand the running server back to a
+  // non-terminal host (a web studio, an automated harness) via one machine-readable handshake line
+  // on stdout, then keep the serve alive. The host drives the session over HTTP (basic auth with the
+  // password below) and tails its event stream. `attached` stays false, so the `serve.on("exit")`
+  // handler above still exits us if the server dies; SIGTERM tears the server down for real.
+  if (process.env.COTAL_SERVE_HEADLESS?.trim() === "1") {
+    process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id, password: SECRET })}\n`);
+    for (const sig of ["SIGINT", "SIGTERM"] as const)
+      process.on(sig, () => void killServe(serve).then(() => process.exit(0)));
+    return;
+  }
+
   const tuiEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    OPENCODE_SERVER_USERNAME: USERNAME,
     OPENCODE_SERVER_PASSWORD: SECRET,
     OPENCODE_DB: dbPath,
   };
   delete tuiEnv.OPENCODE_CONFIG_CONTENT; // a viewer, not a peer — must NOT load the plugin again
   for (const k of Object.keys(tuiEnv)) if (k.startsWith("COTAL_")) delete tuiEnv[k];
   attached = true;
-  // COTAL_FACE_PERSONA (from the agent file's `face:`) swaps the chat TUI for the animated
-  // face viewer (face-term). COTAL_FACE_BIN must point at face-term.mjs — no fallback.
-  const facePersona = process.env.COTAL_FACE_PERSONA?.trim();
-  const faceBin = process.env.COTAL_FACE_BIN?.trim();
-  if (facePersona && !faceBin) {
-    await killServe(serve); // don't orphan the server — it holds the agent's data dir
-    throw new Error("COTAL_FACE_PERSONA is set but COTAL_FACE_BIN is not — point it at face-term.mjs");
-  }
-  const [cmd, args] = facePersona
-    ? [
-        process.execPath,
-        [faceBin!, "--persona", facePersona, "--server", url, "--session", id, "--password", SECRET],
-      ]
-    : [BIN, ["attach", url, "--session", id, "--password", SECRET]];
-  const tui = spawn(cmd, args, {
+  const tui = spawn(BIN, ["attach", url, "--session", id, "--password", SECRET], {
     env: tuiEnv,
     stdio: "inherit",
   });
