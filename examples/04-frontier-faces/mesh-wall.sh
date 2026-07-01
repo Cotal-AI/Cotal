@@ -111,7 +111,7 @@ if [ -n "$FRESH" ]; then
 fi
 
 # --- build the tmux grid: one mesh-face.sh per agent --------------------------
-cmd_for() {  # <index> — serve.js picks a free port; mesh-face derives the persona from `face:`
+cmd_for() {  # <index> — mesh-face.mjs picks a free port; mesh-face derives the persona from `face:`
   local i="$1" pre
   pre="COTAL_SPACE=$(printf %q "$SPACE")"
   [ -n "${MODEL:-}" ] && pre="$pre MODEL=$(printf %q "$MODEL")"

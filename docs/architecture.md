@@ -227,13 +227,7 @@ holds the mesh connection in-process. It does run the same authenticated control
 manager's cooperative `{op:"shutdown"}` (its hooks are in-process, so there is no hook relay): on a
 graceful stop where the runtime can't deliver a signal (Windows ConPTY), the plugin leaves the mesh
 cleanly — publishing offline presence — instead of lingering until its presence TTL expires. It also
-leaves on OpenCode's own `dispose`. Spawned agents run autonomously (`permission: "allow"`). The foreground viewer is swappable: an agent file's
-optional `face:` id makes the launcher attach an animated avatar viewer to the session instead
-of the chat TUI (`COTAL_FACE_BIN` must point at a face-term-compatible script; it watches the
-same event stream and can still send prompts into the session). A face-hosted agent is also told
-to embed `[[face:X]]` emotion tags in its send text. The viewer reads them from the tool-call
-input to animate the avatar, and the send tools strip them before publishing, so they never
-reach the wire.
+leaves on OpenCode's own `dispose`. Spawned agents run autonomously (`permission: "allow"`).
 
 **Connection recovery.** The endpoint self-heals. When nats.js exhausts its own reconnect and
 the connection closes terminally, a supervisor rebuilds it (`connectAndBind` is re-runnable;

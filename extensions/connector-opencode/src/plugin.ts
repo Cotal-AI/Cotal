@@ -79,24 +79,7 @@ export const cotal: Plugin = async () => {
   }
 
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
-  // Face-hosted (`face:` in the agent file → the shim attaches the face viewer): teach the agent
-  // to steer its avatar's expression with inline [[face:X]] tags in the text it passes to the
-  // cotal send tools. The viewer reads them from the tool-call input; the tool layer strips them
-  // before the wire, so peers never see them.
-  const facePrompt = process.env.COTAL_FACE_PERSONA?.trim()
-    ? "You speak through an animated pixel-art avatar of yourself. Hard formatting rule: the text " +
-      "you pass to the cotal send tools (cotal_send / cotal_dm) must START with an emotion tag " +
-      "[[face:X]], where X is one of: neutral, happy, sad, angry, surprised — pick the one matching " +
-      "your mood, and insert another tag mid-text whenever your mood shifts. Example: " +
-      '"[[face:angry]] That race condition cost me three days. [[face:happy]] But watch it run now." ' +
-      "Never mention or explain the tags — they are stripped before peers see your message."
-    : undefined;
-  const persona = [def?.persona, facePrompt].filter(Boolean).join("\n\n") || undefined;
-  // System-position rules get ignored by some models — repeat the format rule in every injected
-  // turn (a fresh user-turn instruction is followed far more reliably).
-  const faceReminder = facePrompt
-    ? "(avatar: begin your cotal_send/cotal_dm text with [[face:X]] — neutral|happy|sad|angry|surprised — and add another tag when your mood shifts)"
-    : undefined;
+  const persona = def?.persona || undefined;
 
   // This agent OWNS one top-level OpenCode session at a time. The serve shim attaches the foreground
   // TUI to the boot session; if the human runs `/new` in that same TUI/process, OpenCode creates a
@@ -260,7 +243,6 @@ export const cotal: Plugin = async () => {
         if (brief) parts.unshift({ type: "text", text: brief });
       }
       if (parts.length === 0) return;
-      if (faceReminder) parts.push({ type: "text", text: faceReminder });
       const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
       // agent is told to orient first — gated on persona so we never replace OpenCode's default system.

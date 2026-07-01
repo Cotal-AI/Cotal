@@ -94,8 +94,6 @@ export const opencodeConnector: Connector = {
       env.COTAL_AGENT_FILE = path; // plugin reads persona from it
       const def = loadAgentFile(path);
       model ??= def.model;
-      const face = def.meta?.face;
-      if (face) env.COTAL_FACE_PERSONA = face; // shim swaps the TUI for the face viewer
     }
     // The `--model` flag wins over the agent file, and applies even with no agent file. Pin it to a
     // dedicated primary agent made the default, so an operator's own `default_agent` in

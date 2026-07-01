@@ -5,8 +5,8 @@
  * the work channels (the Claude connector has had this; OpenCode did not).
  *
  * EVENT-DRIVEN, not poll-based. The connector plugin already receives OpenCode's bus events
- * in-process, so the mirror taps them (the same live stream the frontier-faces studio proxies to its
- * browser, instead of re-reading the session each frame):
+ * in-process, so the mirror taps them (the same live stream a UI can proxy to a browser, instead of
+ * re-reading the session each frame):
  *   • record(msg)   ← message.updated:      learn which messageIDs are ASSISTANT (mirror the agent's
  *                                           own output, never the injected user/peer turns).
  *   • observe(part) ← message.part.updated: condense the part NOW and buffer its lines (tool results

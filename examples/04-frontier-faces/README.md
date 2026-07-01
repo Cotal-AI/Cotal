@@ -2,7 +2,7 @@
 
 Animated pixel-art avatars for agents, built for the Frontier Tower demo: each persona is
 an OpenCode-hosted agent with a 32×32 truecolor face that thinks, lip-syncs its streamed
-reply, and steers its own expression with hidden `[[face:X]]` tags. Run as a mesh, the
+reply, and steers its own expression as it talks. Run as a mesh, the
 faces coordinate as lateral peers in one Cotal space — you watch them talk to each other.
 
 There are two front-ends onto the *same* live mesh: a **browser studio** (`tools/studio.mjs`)
@@ -130,18 +130,22 @@ node tools/serve-wall.mjs      # then open the printed URL
   `cotal-opencode.js`) and the transcript from the operator endpoint's feed.
 - **`mesh-wall.sh`** — the tmux one-command launcher: starts the mesh, a tmux grid of mesh faces
   (one `mesh-face.sh` per agent), and the console.
-- **`mesh-face.sh`** — one mesh agent: starts an `opencode serve` with the
-  `@cotal-ai/connector-opencode` plugin + an agent file, so it joins the mesh and creates a
-  session; the script reads that session's id (the plugin prints `[cotal-session] <id>`)
-  and attaches the face, so the face renders the agent's real mesh turns.
-- **`face-term.mjs`** — the terminal face (half-block renderer, zero deps). Connects to an
-  OpenCode server, maps its SSE events to the face, strips `[[face:X]]` tags into expressions.
+- **`mesh-face.sh`** + **`mesh-face.mjs`** — one mesh agent: the `.mjs` launcher starts an
+  `opencode serve` with the `@cotal-ai/connector-opencode` plugin + an agent file (so it joins the
+  mesh and creates a session), reads that session's id (the plugin prints `[cotal-session] <id>`),
+  and attaches the face. The OpenCode connector is face-agnostic — this launcher owns the viewer
+  attach, so face rendering never leaks into shared code.
+- **`face-plugin.mjs`** — example-local OpenCode plugin registering the `face_<mood>` expression
+  tools. A mesh face calls them to drive its avatar, keeping its `cotal_*` messages clean on the wire.
+- **`face-term.mjs`** — the terminal face (half-block renderer, zero deps). Connects to an OpenCode
+  server, maps its SSE events to the face: assistant text drives the lip-sync, while `face_<mood>`
+  tool calls (mesh) and inline `[[face:X]]` tags (standalone direct chat) drive the expression.
 - **`personas.mjs`** — the pixel data, one entry per persona (single source for the terminal face).
 - **`face-wall.sh`** — tmux grid of standalone faces, one direct chat session per pane.
 - **`agents/`** — the persona definitions (OpenCode agent files): digital twins of ten
-  Frontier Tower panelists, each tuned to coordinate as a lateral peer on a Cotal mesh and
-  to emit face tags. The `face:` frontmatter maps an agent to its persona key where the
-  names differ (steve→jobs, elon→musk, rayan→ray).
+  Frontier Tower panelists, each tuned to coordinate as a lateral peer on a Cotal mesh. The `face:`
+  frontmatter maps an agent to its persona key where the names differ (steve→jobs, elon→musk,
+  rayan→ray).
 - **`research/`** — the public-record research the agent files are distilled from.
 - **`web/`** — the same engine as a `<cotal-face>` custom element (`cotal-face.js`, drawing
   its personas straight from `personas.mjs`), a live `wall.html` (a browser twin of the tmux

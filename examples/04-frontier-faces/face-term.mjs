@@ -319,7 +319,14 @@ function handleEvent(sid, ev) {
       const part = pr.part;
       if (!part) break;
       if (part.type === 'tool') {
-        if (MESH_SEND_TOOLS.has(part.tool) && part.state?.status === 'completed') feedMeshSend(part);
+        if (part.tool?.startsWith('face_')) {
+          // Expression tool (mesh mode): the mood rides the tool name (face_happy → happy). It
+          // never animates the mouth (it isn't speech) and never shows status — just set the face.
+          if (part.state?.status === 'completed') {
+            const e = part.tool.slice(5);
+            if (EXPRS.includes(e)) state.expr = e;
+          }
+        } else if (MESH_SEND_TOOLS.has(part.tool) && part.state?.status === 'completed') feedMeshSend(part);
         else if (state.status !== 'speaking') state.status = 'working';
       } else if (part.type === 'text' && msgRole.get(part.messageID) === 'assistant') {
         // Snapshot: full text so far — feed only what the delta path hasn't already. Key the
