@@ -167,19 +167,32 @@ whose `~/.claude` holds that transcript.
 
 - `cotal spawn --resume <id>` is the primary, least-surprising surface — it runs as *you*, in *your*
   cwd, on *your* machine, so the transcript is right there. Combines with `--prompt` and a persona
-  (the forked context runs under the current mesh persona).
-- `cotal start --resume <id>` (and MCP `cotal_spawn(resume:)`) work too, but the manager is detached:
-  the id is resolved against the **manager host's** `~/.claude`, and you practically need `--cwd` to
-  point at the original project directory. Prefer foreground `spawn` unless you know the manager
-  shares your session state.
-- Only the **claude** connector supports resume today; **opencode** and **hermes** fail loud
-  (`resume not supported`) rather than silently spawning fresh. A bad id (missing session, or an old
-  `claude` that doesn't know `--fork-session`) surfaces Claude's own stderr — it is never flattened
-  into a generic "spawn failed". opencode resume is tracked in
-  [#154](https://github.com/Cotal-AI/Cotal/issues/154).
+  (the forked context runs under the current mesh persona). Because it launches in your own terminal
+  (inherited stdio), a bad id / missing session / old-`claude` error is Claude's own stderr right in
+  front of you and the command exits non-zero — never flattened into a generic "spawn failed".
+- `cotal start --resume <id>` (and MCP `cotal_spawn(resume:)`) work too, but the manager is detached,
+  so two things differ. **Locality:** the id resolves against the **manager host's** `~/.claude`, and
+  you practically need `--cwd` to point at the original project directory. **Async failure (less
+  obvious):** the manager reports `✓ started` the moment the process launches — *before* Claude runs —
+  so a missing id or an old CLI rejecting `--fork-session` makes Claude exit inside its PTY and the
+  error is **not** reported at the call site. The symptom is a peer that "started" but never appears in
+  `cotal ps` / the roster; diagnose with `cotal attach`. Prefer foreground `spawn` unless you know the
+  manager shares your session state. (The *unsupported-connector* case is still inline — `cotal start
+  --agent opencode --resume …` fails with `✗ …` before launching; only the claude-exits-after-launch
+  case is async.)
+- MCP `cotal_spawn(resume:)` carries a trust note for the **operator**, not only the calling peer: a
+  spawn-capable mesh peer can name a host-local session id and fork that `~/.claude` transcript into a
+  live agent — a bounded read of your local session context. It's gated by the privileged spawn
+  capability and high-entropy ids make guessing impractical, but you, the host operator, bear that
+  exposure. (`cotal_spawn` deliberately can't request transcript mirroring, so there's no auto-leak.)
+- Only the **claude** connector supports resume today; **opencode** and **hermes** fail loud rather
+  than silently spawning fresh (opencode: *"resuming an existing session … is not implemented"*,
+  tracked in [#154](https://github.com/Cotal-AI/Cotal/issues/154); hermes: *"does not support resuming
+  an existing session"*).
 - Needs a `claude` new enough to know `--resume ... --fork-session` (verified on **2.1.197**). Cotal
   only co-emits the flags; it can't force an old binary to honor them — an old `claude` rejects
-  `--fork-session` with its own error, which the surfaced stderr above makes obvious.
+  `--fork-session` with its own error (surfaced inline on foreground `spawn`, async on detached
+  `start`, per above).
 
 **Manage the catalog from the CLI.** `cotal personas` is the operator-side counterpart to the
 runtime `cotal_persona` tool. It reads and writes the same `.cotal/agents/*.md` files

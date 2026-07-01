@@ -153,6 +153,12 @@ export async function spawn(argv: string[]): Promise<void> {
     });
     return;
   }
+  // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
+  // rather than silently spawn a fresh one (no fallbacks). An absent flag (undefined) is fine.
+  if (values.resume !== undefined && !values.resume.trim()) {
+    console.error("--resume needs a session id (got an empty value)");
+    process.exit(1);
+  }
   // Transcript mirroring to `tr-<name>` is OFF by default; `--transcript` opts in
   // (`--no-transcript` is accepted too, to be explicit about the default).
   const transcript = values.transcript ? true : values["no-transcript"] ? false : false;

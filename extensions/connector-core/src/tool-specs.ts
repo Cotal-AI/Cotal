@@ -489,6 +489,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           ),
         resume: z
           .string()
+          .min(1)
           .optional()
           .describe(
             "Optional: fork an existing session id into the mesh instead of starting fresh (claude only; the new peer gets a NEW session forked from that transcript, the original is untouched). The id is a HOST-LOCAL pointer into the manager host's `~/.claude` — it means nothing on another machine, and forking it reads that host's transcript. Only meaningful for a session on the manager's own host.",
