@@ -177,6 +177,9 @@ whose `~/.claude` holds that transcript.
   `claude` that doesn't know `--fork-session`) surfaces Claude's own stderr — it is never flattened
   into a generic "spawn failed". opencode resume is tracked in
   [#154](https://github.com/Cotal-AI/Cotal/issues/154).
+- Needs a `claude` new enough to know `--resume ... --fork-session` (verified on **2.1.197**). Cotal
+  only co-emits the flags; it can't force an old binary to honor them — an old `claude` rejects
+  `--fork-session` with its own error, which the surfaced stderr above makes obvious.
 
 **Manage the catalog from the CLI.** `cotal personas` is the operator-side counterpart to the
 runtime `cotal_persona` tool. It reads and writes the same `.cotal/agents/*.md` files

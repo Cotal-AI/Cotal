@@ -200,6 +200,15 @@ registry.register(recCon);
     check("claude: resume + persona → --resume kept", a.includes("--resume"), a);
     check("claude: resume + persona → --fork-session kept", a.includes("--fork-session"), a);
   }
+  // prompt + resume: the ONE combo that only foreground spawn can produce (the recommended primary
+  // surface). The leading positional prompt AND the resume/fork pair must coexist — auto-submit into
+  // the forked session, not a special resume-only launch shape.
+  {
+    const a = cArgs({ ...base, prompt: "hello mesh", resume: "sess-p" });
+    check("claude: prompt+resume → prompt is the leading positional", a[0] === "hello mesh", a[0]);
+    check("claude: prompt+resume → --resume still emitted", a.includes("--resume"), a);
+    check("claude: prompt+resume → --fork-session still emitted", a.includes("--fork-session"), a);
+  }
   // opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
   for (const con of [opencodeConnector, hermesConnector]) {
     let threw = false;
