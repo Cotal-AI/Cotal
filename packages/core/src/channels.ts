@@ -10,6 +10,7 @@
 import { Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
+import { idFromCreds } from "./identity.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** The declarative channel-config file read at `cotal up` to seed the registry. */
@@ -162,7 +163,7 @@ export async function seedChannelRegistry(opts: {
   const nc = await connect({
     servers: opts.servers,
     ...(opts.creds
-      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) }
+      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` }
       : {}),
   });
   try {
@@ -193,7 +194,7 @@ export async function ensureDefaultDeliveryClass(opts: {
   const nc = await connect({
     servers: opts.servers,
     ...(opts.creds
-      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) }
+      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` }
       : {}),
   });
   try {
@@ -219,7 +220,7 @@ export async function deleteChannels(opts: {
 }): Promise<void> {
   const nc = await connect({
     servers: opts.servers,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
+    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` } : {}),
   });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
@@ -240,20 +241,28 @@ export async function readChannelRegistry(opts: {
   const nc = await connect({
     servers: opts.servers,
     ...(opts.creds
-      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) }
+      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` }
       : {}),
   });
   try {
-    const kv = await openChannelRegistry(nc, opts.space, { create: true });
+    // Read-only: never CREATE the bucket — a scoped read cred (operator) has no STREAM.CREATE, and a
+    // read must not have the side effect of provisioning. `Kvm.open` binds lazily, so a never-seeded
+    // space surfaces as 'stream not found'/404 on the first read — treat that as an empty registry.
+    const kv = await openChannelRegistry(nc, opts.space, { create: false });
     const channels: Record<string, ChannelConfig> = {};
     let defaults: ChannelDefaults | undefined;
-    for await (const key of await kv.keys()) {
-      if (key === CHANNEL_DEFAULTS_KEY) {
-        defaults = await readChannelDefaults(kv);
-        continue;
+    try {
+      for await (const key of await kv.keys()) {
+        if (key === CHANNEL_DEFAULTS_KEY) {
+          defaults = await readChannelDefaults(kv);
+          continue;
+        }
+        const cfg = await readChannelConfig(kv, key);
+        if (cfg) channels[key] = cfg;
       }
-      const cfg = await readChannelConfig(kv, key);
-      if (cfg) channels[key] = cfg;
+    } catch (e) {
+      // No channel bucket yet ⇒ empty registry, not an error (and not an over-privileged auto-create).
+      if ((e as { code?: number }).code !== 404 && !/not found/i.test((e as Error).message)) throw e;
     }
     return { defaults, channels };
   } finally {

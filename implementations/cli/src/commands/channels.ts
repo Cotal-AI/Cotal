@@ -43,7 +43,11 @@ export async function channels(argv: string[]): Promise<void> {
   if (sub === "set" && !positionals[1]) return usage(); // need a channel name before touching the mesh
   // Tri-state replay: --replay → true, --no-replay → false, neither → leave unchanged.
   const replay = values["no-replay"] ? false : values.replay ? true : undefined;
-  const { server, space, creds } = await connectOrExit(values, "manager"); // creds undefined ⇒ open mode
+  // `list` is read-only → the scoped `operator` cred (channel-registry read, no stream-admin).
+  // `set`/`default` WRITE the registry and stay on the privileged `manager` cred for now — a
+  // documented residual pending a narrow `channel-writer` profile ($KV.<channelBucket>.> only).
+  const profile = sub === "list" ? "operator" : "manager";
+  const { server, space, creds } = await connectOrExit(values, profile); // creds undefined ⇒ open mode
 
   switch (sub) {
     case "list": {
