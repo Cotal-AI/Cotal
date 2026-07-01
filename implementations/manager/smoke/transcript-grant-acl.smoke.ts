@@ -9,11 +9,10 @@
  * Broker-backed: closure (i) provisions each spawn through a short-lived EPHEMERAL provisioner
  * connection (residual-2 — the DM/DLV consumer-create surface lives only for the spawn window, never as
  * a standing supervisor grant), so `startAgent` connects for real before minting. We boot our OWN
- * JWT-auth nats-server + provision the space (its trust chain matches the manager's minted provisioner
- * cred), let the real spawn path run end to end, then DECODE the written creds JWT to read the minted
- * publish ACL. Modeled on manager-split-auth.smoke.ts. Run with: pnpm smoke:transcript-grant
+ * JWT-auth nats-server (collision-robust — see _boot-broker) + provision the space, let the real spawn
+ * path run end to end, then DECODE the written creds JWT to read the minted publish ACL.
+ * Run with: pnpm smoke:transcript-grant
  */
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,15 +21,14 @@ import { Manager } from "../src/manager.js";
 import {
   createSpaceAuth,
   registry,
-  isReachable,
   mintCreds,
-  serverConfig,
   newIdentity,
   setupSpaceStreams,
   type Connector,
   type LaunchSpec,
   type AgentHandle,
 } from "@cotal-ai/core";
+import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -45,22 +43,10 @@ function pubAcl(path: string): string[] {
   return ((claims.nats?.pub?.allow as string[] | undefined) ?? []).filter((s) => s.includes(".chat.") && !s.startsWith("$JS"));
 }
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
-const SERVERS = `nats://127.0.0.1:${PORT}`;
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
-  new Promise((resolve) => {
-    if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
-    proc.once("exit", () => resolve());
-    setTimeout(resolve, timeoutMs);
-  });
-
 // A dedicated space + its own JWT-auth broker, so the manager's minted provisioner cred is trusted.
 const space = `tr-grant-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-transcript-grant-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const { servers: SERVERS, stop: stopBroker } = await bootBroker(auth);
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-transcript-grant-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
@@ -91,12 +77,6 @@ registry.register({ ...base, name: "smoke-nomirror" } satisfies Connector); // n
 const credsDir = join(workspaceRoot, ".cotal", "auth", "creds");
 
 try {
-  let up = false;
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(SERVERS)) { up = true; break; }
-    await wait(200);
-  }
-  if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   // `cotal up` pre-creates the streams + buckets the ephemeral provisioner then binds/writes against.
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
@@ -125,9 +105,7 @@ try {
     check("transcript on a non-mirroring connector fails loud", reply.ok === false && /does not support transcript mirroring/.test(reply.error ?? ""), reply);
   }
 } finally {
-  srv.kill("SIGTERM");
-  await awaitExit(srv);
-  rmSync(dir, { recursive: true, force: true });
+  await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
 }
 

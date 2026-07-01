@@ -4,10 +4,9 @@
  * silent default. Regression guard for the "spawned-by-display-name → default-ACL agent" bug.
  * Broker-backed: closure (i) provisions each spawn through a real short-lived ephemeral provisioner
  * connection (residual-2), so `startAgent` connects before minting — we boot our OWN JWT-auth
- * nats-server + provision the space, run the real spawn path, then DECODE the written creds JWT to read
- * the minted ACL. Run with: pnpm smoke:persona-acl
+ * nats-server (collision-robust — see _boot-broker) + provision the space, run the real spawn path,
+ * then DECODE the written creds JWT to read the minted ACL. Run with: pnpm smoke:persona-acl
  */
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,15 +15,14 @@ import { Manager } from "../src/manager.js";
 import {
   createSpaceAuth,
   registry,
-  isReachable,
   mintCreds,
-  serverConfig,
   newIdentity,
   setupSpaceStreams,
   type Connector,
   type LaunchSpec,
   type AgentHandle,
 } from "@cotal-ai/core";
+import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -43,22 +41,10 @@ function credAcl(path: string): { sub: string[]; pub: string[] } {
   return { sub: chat(nats.sub?.allow, true), pub: chat(nats.pub?.allow, false) };
 }
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
-const SERVERS = `nats://127.0.0.1:${PORT}`;
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
-  new Promise((resolve) => {
-    if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
-    proc.once("exit", () => resolve());
-    setTimeout(resolve, timeoutMs);
-  });
-
 // A dedicated space + its own JWT-auth broker, so the manager's minted provisioner cred is trusted.
 const space = `persona-acl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-persona-acl-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const { servers: SERVERS, stop: stopBroker } = await bootBroker(auth);
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-persona-acl-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
@@ -86,12 +72,6 @@ const recCon: Connector = { kind: "connector", name: "smoke-rec2", requires: ["n
 registry.register(recCon);
 
 try {
-  let up = false;
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(SERVERS)) { up = true; break; }
-    await wait(200);
-  }
-  if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   // 1 — Spawn by FILENAME; identity comes from the file's name:, ACL from the file (not default).
@@ -118,9 +98,7 @@ try {
     check("second spawn auto-numbers the identity", reply.ok && reply.data?.name === "socrates-2", reply.ok && reply.data?.name);
   }
 } finally {
-  srv.kill("SIGTERM");
-  await awaitExit(srv);
-  rmSync(dir, { recursive: true, force: true });
+  await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
 }
 
