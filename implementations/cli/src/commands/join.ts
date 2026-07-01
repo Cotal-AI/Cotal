@@ -60,6 +60,10 @@ export async function join(argv: string[]): Promise<void> {
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
     await reachableOrExit(server, auth);
   } else {
+    // RESIDUAL (PR 1.5): a console needs a receive-capable SCOPED profile (channel read + own DM
+    // receive) plus self-provisioning of its DM inbox — coupled to the pre-existing unprovisioned-console
+    // DM bug (a self-minted console has no manager to pre-create its `dm_<id>` durable). Until that lands
+    // this self-mints `manager`; the `ep.start()` wrap below keeps the failure legible in the meantime.
     const conn = await connectOrExit(values, "manager");
     space = conn.space;
     server = conn.server;
@@ -134,7 +138,26 @@ export async function join(argv: string[]): Promise<void> {
 
   ep.on("error", (e: Error) => print(c.red(`! ${e.message}`)));
 
-  await ep.start();
+  try {
+    await ep.start();
+  } catch (e) {
+    // Legible operator errors instead of a raw NATS stack trace (the plan's stale-cred fail-fast gate).
+    // A bare `cotal join` self-mints creds and binds a durable DM inbox nobody pre-created on an
+    // unprovisioned space; surface that (and an auth reject) as ONE human sentence.
+    const msg = (e as Error)?.message ?? String(e);
+    if (/consumer not found|no responders|not provisioned/i.test(msg))
+      console.error(
+        c.red(`${space} isn't provisioned for a console session yet — run `) +
+          c.bold("cotal up") +
+          c.red(` first, or join with --creds/--token.`),
+      );
+    else if (/authoriz|permission|not authorized/i.test(msg))
+      console.error(
+        c.red(`not authorized to join ${space}'s channels — pass --creds/--token, or ask the mesh operator for a join link.`),
+      );
+    else throw e;
+    process.exit(1);
+  }
 
   const shutdown = async () => {
     print(c.dim("leaving…"));
