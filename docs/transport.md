@@ -52,7 +52,7 @@ NATS/JetStream satisfies all five capabilities:
 | Durability and history | JetStream streams `CHAT_/DM_/TASK_<space>`, per-instance chat/DM durables (`chat_`/`dm_`), per-role task durables (`svc_`), at-least-once ack-on-surface, `Nats-Msg-Id` publish dedup, Direct-Get chat backfill for late join. |
 | Presence and registry | KV buckets `cotal_presence_<space>` (TTL/stale/delete-derived liveness) and `cotal_channels_<space>` (durable channel config). |
 | Identity | The instance's **nkey public key** = `card.id` = subject sender token = JWT subject = the id token used in per-instance durable names ([`identity.ts`](../packages/core/src/identity.ts)). |
-| Authz and isolation | Operator-signed **account per space** plus per-profile JWT ACLs (agent/observer/admin/manager) built from the shared subject/stream builders ([`provision.ts`](../packages/core/src/provision.ts)). |
+| Authz and isolation | Operator-signed **account per space** plus per-profile JWT ACLs (agent/observer/admin plus the narrow operator-side profiles — supervisor/provisioner/teardown/control-caller/deployer/operator/probe/purger; **no allow-all profile**) built from the shared subject/stream builders ([`provision.ts`](../packages/core/src/provision.ts)). |
 
 Capabilities 2 and 3 are offloaded to JetStream and KV. Cotal does not implement history,
 presence, ack/redelivery, or publish dedup itself; it uses the native NATS mechanisms. Handlers

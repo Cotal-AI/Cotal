@@ -80,8 +80,13 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   nonce or idempotency key. It cannot replay as another agent (subject binding still holds).
 - **Credential revocation/TTL:** minted credentials are long-lived in v0 unless rotated out of
   band.
-- **Manager compromise:** the v0 manager profile is broad because it hosts provisioning; its
-  blast radius is the whole space. Scoping it is reserved for a later version.
+- **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there
+  is **no allow-all cred**) — the long-lived **supervisor** serves control and touches
+  presence/its lease but cannot read a DM, create a consumer, or delete a stream; the destructive
+  verbs (`STREAM.DELETE`/`PURGE`, cross-agent stop, per-agent provisioning) ride ephemeral
+  per-command creds (teardown / control-caller-admin / deployer / provisioner). What stays hot is
+  the account **signing key** on the mint/manager box — a compromise there can still mint fresh
+  creds — and confining it is the auth-callout stage.
 
 ## Prompt-facing data
 

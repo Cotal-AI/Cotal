@@ -704,8 +704,25 @@ later).
     ACL-gated, so this is a deliberate opt-in: `cotal web --admin` with an admin cred.
     `CONSUMER.CREATE` on `DM_<space>` is the DM-confidentiality surface, granted here only for
     this profile.
-  - **manager:** privileged (broad), the provisioner host; pre-creates others' DM/TASK durables.
-    (Eventually it should be scoped too, see limitations.)
+  - **operator profiles (the manager + CLI side):** there is **no allow-all `manager` profile** —
+    the most-privileged identity is split into narrow, single-purpose creds (each a default-deny
+    allow-list), so no one connection can read every DM or delete every stream:
+    - **supervisor** — the always-on daemon: serves the three control tiers, opens the manager
+      lease, pub/watches presence. Enumerated `$JS`; **no** DM/DLV read, consumer-create,
+      `STREAM.CREATE/DELETE/PURGE`, or chat publish.
+    - **provisioner** — the *signer capability* (holds the account signing key), ephemeral and
+      **create-only**: pre-creates the per-agent DM/TASK/history durables at spawn.
+    - **teardown** — the **sole `STREAM.DELETE` holder** (`down -f`), scoped to the space's own
+      streams; **channel-purger** / **purger** hold only `STREAM.PURGE` (channel-delete /
+      history-clear).
+    - **control-caller-privileged** / **control-caller-admin** — per-command lifecycle callers
+      (`ps`/`start` vs `stop`/`attach`): each holds exactly its one `ctl.<tier>.<id>` request
+      subject plus that tier's bounded reply. **deployer** (`spawn -f`) reads live state
+      (presence/registry/membership/lease) and calls the admin tier; no `$JS.>`, `STREAM.DELETE`,
+      DM read, or self-post.
+    - **operator** — the read/publish CLI cred (`send`/`dm`/`console`): self-scoped publish +
+      presence-watch + channel read. **probe** — connect-only liveness. `cotal join` self-provisions
+      (mints an ephemeral provisioner, then connects as a plain **agent**).
 - **The control plane is split into three privilege tiers**, op↔tier routed **fail-closed** by
   the manager (a misrouted op is rejected before anything acts: the cred gates *who reaches* a
   subject, this gates *what each subject honors*):
@@ -720,11 +737,12 @@ later).
     actually invoke instead of failing at call time (`cotal_despawn` stays — its no-name
     self-despawn is on `ctl.self`, granted to all). The cred is still the boundary; in open mode
     (no creds minted) the gate is permissive, since nothing is enforced there anyway.
-  - `ctl.admin.<id>` (reached only by the manager's allow-all profile, **no agent ever gets
-    it**): the destructive / cross-agent operator ops: `purge`, and stop/despawn/attach/
-    `definePersona` of *any* agent. Admin is transport-proven (reaching the subject = holding
-    manager creds), so the handler never guesses it. `purge` lives here on purpose: on the
-    privileged tier any spawn-capable agent could wipe space history.
+  - `ctl.admin.<id>` (reached only by the operator's per-command **control-caller-admin** cred,
+    **no agent ever gets it**): the destructive / cross-agent operator ops: `purge`, and
+    stop/despawn/attach/`definePersona` of *any* agent. Admin is transport-proven (reaching the
+    subject = holding that scoped cred; the manager does not re-check the caller), so the handler
+    never guesses it. `purge` lives here on purpose: on the privileged tier any spawn-capable agent
+    could wipe space history.
 - **`definePersona` separates content from policy.** Its write path takes only content (`model`
   / `persona`); `role` / `publish` / `capabilities` / `owner` are policy and have no slot, so a
   peer cannot grant itself a capability or seize ownership by redefining. A fresh name records its
@@ -785,8 +803,6 @@ later).
   it no longer logs a broker auth-error on every check. Limitation: it returns false for a TLS-first
   (`handshake_first`) listener (that broker config isn't supported by the credless probe yet); the
   creds path stays a real authenticated connect and is unaffected.
-- The **manager profile is allow-all**, fine for Demo 1, but the most-privileged identity should
-  eventually be scoped for the full untrusted-peer claim.
 - **Callout stage (later, additive):** auth-callout (NATS 2.10+) mints creds *at connect* from a
   per-space/per-profile bootstrap token (the `token@` the join link already parses), moving the
   signing key into the callout service (true key-confinement) and removing the out-of-band mint.
