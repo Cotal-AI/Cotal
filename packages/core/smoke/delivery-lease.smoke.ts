@@ -41,7 +41,7 @@ try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
-  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "manager") });
+  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   d1 = await mkDaemon(); d1.on("error", () => {}); await d1.start();
   d2 = await mkDaemon(); d2.on("error", () => {}); await d2.start();

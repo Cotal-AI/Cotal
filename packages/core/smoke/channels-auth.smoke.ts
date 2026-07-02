@@ -33,7 +33,7 @@ const fd = openSync(log, "w");
 const child = spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] });
 process.on("exit", () => child.kill("SIGTERM"));
 
-const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
 let up = false;
 for (let i = 0; i < 50; i++) { if (await isReachable(server, { creds: mgrCreds })) { up = true; break; } await sleep(200); }
 if (!up) throw new Error(`server not up:\n${readFileSync(log, "utf8")}`);
@@ -57,10 +57,20 @@ const dlv = new CotalEndpoint({
 dlv.on("error", (e) => console.log("dlv err:", e.message));
 await dlv.start();
 
-// The privileged provisioner serves the mediated join/leave op (what the manager does in prod): it
+// The former allow-all manager is split into scoped creds (PR 1.5): the provisioner endpoint (`mgr`)
+// keeps setupSpaceStreams/seedChannelRegistry/provisionAgent; a `supervisor` cred serves the control
+// tiers; an `operator` cred posts chat AS itself. (The daemon's fan-out reads CHAT and delivers.)
+const sup = new CotalEndpoint({ space, servers: server, creds: await mintCreds(auth, newIdentity(), "supervisor"), card: { name: "sup", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
+sup.on("error", (e) => console.log("sup err:", e.message));
+await sup.start();
+const poster = new CotalEndpoint({ space, servers: server, creds: await mintCreds(auth, newIdentity(), "operator"), card: { name: "poster", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
+poster.on("error", (e) => console.log("poster err:", e.message));
+await poster.start();
+
+// The supervisor serves the mediated join/leave op (what the manager does in prod): it
 // validates the requested set ⊆ the agent's allowSubscribe, then moves its bind-only chat filter.
 const allowSub = ["log", "general", "incident"];
-mgr.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
+sup.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
   const args = req.args ?? {};
   const ch = typeof args.channel === "string" ? args.channel : "";
   // Stage 4: a runtime durable join/leave goes to Plane-3 (durableJoin/durableLeave). Validate ⊆
@@ -76,8 +86,8 @@ mgr.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
   return { ok: false, error: `unsupported op ${req.op}` };
 });
 
-await mgr.multicast("log-hist", { channel: "log" });
-await mgr.multicast("incident-hist", { channel: "incident" });
+await poster.multicast("log-hist", { channel: "log" });
+await poster.multicast("incident-hist", { channel: "incident" });
 await sleep(300);
 
 // scoped agent — the whole point: it holds ONLY the minted "agent" grants. It subscribes to
@@ -122,6 +132,8 @@ assert.deepEqual(errors, [], `still no permission errors after join/leave/list: 
 console.log("AUTH GRANT CHECKS PASSED");
 await agent.stop();
 await dlv.stop();
+await poster.stop();
+await sup.stop();
 await mgr.stop();
 child.kill("SIGTERM");
 process.exit(0);

@@ -1,9 +1,10 @@
 /**
  * Auth-mode test for channelMembers() — proves the privilege boundary (no test runner).
  * Spins up its OWN JWT-auth nats-server (no external server needed) and verifies:
- *   - a privileged (manager) endpoint can read the live membership end-to-end;
- *   - the broker grant it rides — $JS.API.CONSUMER.LIST.CHAT_<space> — is held by manager
- *     only; observer/admin/agent are denied (so the view is manager-served today).
+ *   - a privileged (delivery-cred) endpoint reads the live membership end-to-end (the provisioner
+ *     onboards + the scoped `delivery` cred serves the read, post manager-least-privilege split);
+ *   - the members-KV grant channelMembers() rides is held by the `delivery` profile only, and no
+ *     profile can enumerate CHAT consumers (observer/admin/agent denied) — the view is delivery-served.
  * Run: pnpm smoke:membership:auth
  */
 import { randomUUID } from "node:crypto";
@@ -12,7 +13,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import {
   CotalEndpoint,
   isReachable,
@@ -22,8 +23,9 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
-  chatStream,
+  membersBucket,
 } from "../src/index.js";
+import type { Identity } from "../src/index.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -46,19 +48,22 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   }
 };
 
-// Can this principal publish CONSUMER.LIST on the chat stream? (raw, no endpoint.)
-async function canList(creds: string): Promise<boolean> {
+// Can this principal READ the members-KV registry — the grant channelMembers() rides now the view is
+// delivery-served? (raw; per-id inbox because scoped creds only sub `_INBOX_<id>.>`.) Mirrors
+// listMembers' read: open the bucket + iterate keys (the ordered-consumer create is the ACL boundary).
+async function canReadMembers(id: Identity, creds: string): Promise<boolean> {
   const nc = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
+    inboxPrefix: `_INBOX_${id.id}`,
     maxReconnectAttempts: 0,
   });
   try {
-    const jsm = await jetstreamManager(nc, { timeout: 3000 });
-    await jsm.consumers.list(chatStream(space)).next(); // first page triggers the request
+    const kv = await new Kvm(nc).open(membersBucket(space));
+    for await (const _ of await kv.keys()) break; // first page triggers the read request
     return true;
   } catch {
-    return false; // permission violation (or no responder) → denied
+    return false; // permission violation → denied
   } finally {
     await nc.drain().catch(() => {});
   }
@@ -82,10 +87,12 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   // Privileged setup: manager creds create the streams + presence KV.
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
 
-  // The dashboard: a manager-profile endpoint (watches presence, doesn't consume).
+  // The onboarding authority: a provisioner-cred endpoint (the DurableProvisioner for provisionAgent).
+  // It does NOT watch presence — the provisioner cred holds no presence-watch grant; the dashboard
+  // membership read (roster + members-KV) rides the scoped `delivery` cred (`dlv`) below instead.
   const mgr = new CotalEndpoint({
     space,
     servers: SERVERS,
@@ -93,7 +100,7 @@ try {
     card: { name: "mgr", kind: "endpoint" },
     consume: false,
     registerPresence: false,
-    watchPresence: true,
+    watchPresence: false,
     heartbeatMs: 300,
     ttlMs: 1500,
   });
@@ -132,15 +139,25 @@ try {
   await wait(900);
 
   console.log("\n[AUTH] privileged read works end-to-end");
-  const members = await mgr.channelMembers("general");
+  // channelMembers reads the members-KV registry + the presence roster — the scoped `delivery` cred
+  // (`dlv`, watchPresence:true) holds both grants; the provisioner cred (`mgr`) holds neither.
+  const members = await dlv.channelMembers("general");
   check("manager channelMembers sees ag1 live", members.some((m) => m.name === "ag1" && m.live), members);
   check("agent id is the real cred identity", members.some((m) => m.id === agentId.id));
 
-  console.log("\n[AUTH] the CONSUMER.LIST grant is manager-only");
-  check("manager CAN list CHAT consumers", (await canList(mgrCreds)) === true);
-  check("observer CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "observer"))) === false);
-  check("admin CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "admin"))) === false);
-  check("agent CANNOT list CHAT consumers", (await canList(await mintCreds(auth, newIdentity(), "agent", { allowSubscribe: ["general"] }))) === false);
+  console.log("\n[AUTH] the membership read is capability-gated (delivery-served; others can't enumerate)");
+  // The privileged membership read now rides the members-KV grant (channelMembers → the members
+  // registry), held by the `delivery` profile only — NOT the former CONSUMER.LIST path, which the
+  // manager-least-privilege split removed from every profile. Fresh `delivery` id for the raw probe.
+  const memReaderId = newIdentity();
+  check("delivery CAN read the members registry", (await canReadMembers(memReaderId, await mintCreds(auth, memReaderId, "delivery"))) === true);
+  // Negatives must probe the SAME capability the view now rides (members-KV read), NOT the removed
+  // CONSUMER.LIST path — else they're vacuously true (no profile can list) and a future regression handing
+  // a non-privileged cred members-KV read would sail through green.
+  const obsId = newIdentity(), admId = newIdentity(), agtId = newIdentity();
+  check("observer CANNOT read the members registry", (await canReadMembers(obsId, await mintCreds(auth, obsId, "observer"))) === false);
+  check("admin CANNOT read the members registry", (await canReadMembers(admId, await mintCreds(auth, admId, "admin"))) === false);
+  check("agent CANNOT read the members registry", (await canReadMembers(agtId, await mintCreds(auth, agtId, "agent", { allowSubscribe: ["general"] }))) === false);
 
   await agent.stop();
   await dlv.stop();

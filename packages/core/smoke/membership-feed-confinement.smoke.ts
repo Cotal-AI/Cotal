@@ -71,9 +71,35 @@ async function publishArrives(listenCreds: string, pubCreds: string, pubId: stri
     return got ? "allowed" : "denied";
   });
 }
+/** Resolve "allowed"/"denied" for a KV WRITE — the KV API awaits a JetStream ack, so a permission-denied
+ *  `put` rejects (unlike a fire-and-forget raw publish, which no scoped cred can natively hear on `$KV.>`
+ *  now that the allow-all `manager` listener is deleted). */
+async function kvWriteAllowed(creds: string, id: string, bucket: string, key: string): Promise<"allowed" | "denied"> {
+  return withConn(creds, id, async (nc) => {
+    try {
+      const kv = await new Kvm(nc).open(bucket);
+      await kv.put(key, new TextEncoder().encode("x"));
+      return "allowed";
+    } catch (e) {
+      // Only an authz rejection counts as "denied"; a non-authz failure (e.g. a bucket that wasn't
+      // pre-created → "stream not found") must NOT masquerade as a permission denial and false-pass.
+      const msg = (e as Error)?.message ?? "";
+      if (/permission|authorization|not authorized/i.test(msg)) return "denied";
+      throw e;
+    }
+  });
+}
 async function tryKvGet(creds: string, id: string, bucket: string, key: string): Promise<"allowed" | "denied"> {
   return withConn(creds, id, async (nc) => {
-    try { const kv = await new Kvm(nc).open(bucket); await kv.get(key); return "allowed"; } catch { return "denied"; }
+    try {
+      const kv = await new Kvm(nc).open(bucket);
+      await kv.get(key);
+      return "allowed";
+    } catch (e) {
+      const msg = (e as Error)?.message ?? "";
+      if (/permission|authorization|not authorized/i.test(msg)) return "denied";
+      throw e; // a non-authz failure must not masquerade as a permission denial
+    }
   });
 }
 
@@ -87,8 +113,12 @@ try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
+  // An `admin` LISTENER (space-wide `${p}.>` sub) is the arrival oracle for the `cotal.<space>.*` publish
+  // checks below — the former allow-all `manager` listener is gone. ($KV.<bucket> writes use kvWriteAllowed;
+  // this is NOT the web-admin cred the smoke TESTS below — that one is a publisher in its own check.)
+  const adminListen = await mintCreds(auth, newIdentity(), "admin");
 
   // ---- conn A: the SYSTEM-account observer (explicit perms block; NOT allow-all) ----
   const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
@@ -111,19 +141,19 @@ try {
   const owner = newIdentity().id;
   check("rw: read the members KV (durable arm) is allowed", (await tryKvGet(rwCreds, rw.id, membersBucket(space), `general/${owner}`)) === "allowed");
   check("rw: read the membership feed KV is allowed", (await tryKvGet(rwCreds, rw.id, membershipBucket(space), membershipKey(owner))) === "allowed");
-  check("rw: WRITE the membership feed KV is allowed", (await publishArrives(mgrCreds, rwCreds, rw.id, `$KV.${membershipBucket(space)}.${membershipKey(owner)}`)) === "allowed");
-  check("rw: WRITE the members KV is DENIED (read-only on the durable arm)", (await publishArrives(mgrCreds, rwCreds, rw.id, `$KV.${membersBucket(space)}.general/${owner}`)) === "denied");
-  check("rw: post to a chat channel is DENIED", (await publishArrives(mgrCreds, rwCreds, rw.id, chatSubject(space, rw.id, "general"))) === "denied");
+  check("rw: WRITE the membership feed KV is allowed", (await kvWriteAllowed(rwCreds, rw.id, membershipBucket(space), membershipKey(owner))) === "allowed");
+  check("rw: WRITE the members KV is DENIED (read-only on the durable arm)", (await kvWriteAllowed(rwCreds, rw.id, membersBucket(space), `general/${owner}`)) === "denied");
+  check("rw: post to a chat channel is DENIED", (await publishArrives(adminListen, rwCreds, rw.id, chatSubject(space, rw.id, "general"))) === "denied");
   check("rw: native subscribe chat.> is DENIED", (await trySubscribe(rwCreds, rw.id, `${spacePrefix(space)}.chat.>`)) === "denied");
-  check("rw: write presence KV is DENIED", (await publishArrives(mgrCreds, rwCreds, rw.id, `$KV.${presenceBucket(space)}.${rw.id}`)) === "denied");
-  check("rw: write ACL KV is DENIED", (await publishArrives(mgrCreds, rwCreds, rw.id, `$KV.${aclBucket(space)}.${owner}`)) === "denied");
+  check("rw: write presence KV is DENIED", (await kvWriteAllowed(rwCreds, rw.id, presenceBucket(space), rw.id)) === "denied");
+  check("rw: write ACL KV is DENIED", (await kvWriteAllowed(rwCreds, rw.id, aclBucket(space), owner)) === "denied");
   check("rw: request $SYS CONNZ is DENIED (it's a data-account cred — account isolation)", (await trySubscribe(rwCreds, rw.id, connzRequestSubject(auth.account.pub))) === "denied");
 
   // ---- admin/web cred: reads the feed, never writes it, no $SYS ----
   const admin = newIdentity();
   const adminCreds = await mintCreds(auth, admin, "admin");
   check("web/admin: read the membership feed is allowed", (await tryKvGet(adminCreds, admin.id, membershipBucket(space), membershipKey(owner))) === "allowed");
-  check("web/admin: WRITE the membership feed is DENIED (read-only consumer)", (await publishArrives(mgrCreds, adminCreds, admin.id, `$KV.${membershipBucket(space)}.${membershipKey(owner)}`)) === "denied");
+  check("web/admin: WRITE the membership feed is DENIED (read-only consumer)", (await kvWriteAllowed(adminCreds, admin.id, membershipBucket(space), membershipKey(owner))) === "denied");
   check("web/admin: request $SYS CONNZ is DENIED (no broker-admin in the browser tier)", (await trySubscribe(adminCreds, admin.id, connzRequestSubject(auth.account.pub))) === "denied");
 
   console.log(`\nMEMBERSHIP-FEED-CONFINEMENT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

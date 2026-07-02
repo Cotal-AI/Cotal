@@ -60,7 +60,7 @@ try {
 
   // Privileged setup: manager creds create streams + presence KV, seed the channel registry, and
   // provision the two peers' bind-only durables + scoped creds.
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: mgrCreds });
   await seedChannelRegistry({
     servers,

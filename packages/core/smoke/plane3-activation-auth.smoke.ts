@@ -72,7 +72,7 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   const mgrId = newIdentity();
-  const mgrCreds = await mintCreds(auth, mgrId, "manager");
+  const mgrCreds = await mintCreds(auth, mgrId, "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   const mgr = new CotalEndpoint({
     space, servers: SERVERS, creds: mgrCreds,

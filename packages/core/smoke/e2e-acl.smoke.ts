@@ -75,7 +75,7 @@ function agentFile(name: string, fm: string) {
 }
 
 try {
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS, { creds: mgrCreds })) { up = true; break; } await sleep(200); }
   if (!up) throw new Error("auth nats-server did not come up");
@@ -102,7 +102,16 @@ try {
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
   await dlv.startPlane3((id) => allowById.get(id));
-  mgr.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
+  // The former allow-all manager is split into scoped creds (PR 1.5): the provisioner endpoint (`mgr`)
+  // keeps setupSpaceStreams/seedChannelRegistry/provisionAgent; a `supervisor` cred serves the control
+  // tiers; an `operator` cred posts chat AS itself (the daemon's fan-out reads CHAT and delivers).
+  const sup = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "supervisor"), card: { name: "sup", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
+  sup.on("error", (e) => console.log("sup err:", e.message));
+  await sup.start();
+  const poster = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "operator"), card: { name: "poster", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
+  poster.on("error", (e) => console.log("poster err:", e.message));
+  await poster.start();
+  sup.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
     const allow = allowById.get(req.from.id) ?? [];
     const ch = typeof req.args?.channel === "string" ? req.args.channel : "";
     if (req.op === "durableJoin") {
@@ -117,9 +126,9 @@ try {
   });
 
   // Pre-seed history BEFORE agents connect (so backfill has something to find).
-  await mgr.multicast("general-history", { channel: "general" });
-  await mgr.multicast("ops-secret-1", { channel: "ops" });
-  await mgr.multicast("ops-secret-2", { channel: "ops" });
+  await poster.multicast("general-history", { channel: "general" });
+  await poster.multicast("ops-secret-1", { channel: "ops" });
+  await poster.multicast("ops-secret-2", { channel: "ops" });
   await sleep(300);
 
   // Provision the three agents FROM FILES (file → loadAgentFile → provisionAgent → scoped creds).
@@ -189,7 +198,7 @@ try {
   check("alice backfilled #ops history after join", A.got.filter((g) => g.channel === "ops" && g.historical).length === 2, A.got);
   // Live delivery on the newly-joined channel proves the mediated join moved the live-tail FILTER,
   // not just the history backfill — and that bob/carol (not joined) still don't see it.
-  await mgr.multicast("ops-live", { channel: "ops" });
+  await poster.multicast("ops-live", { channel: "ops" });
   await sleep(400);
   check("alice receives LIVE #ops after join (filter moved)", A.got.some((g) => g.channel === "ops" && g.text === "ops-live" && !g.historical), A.got);
   check("bob does NOT receive #ops live (never joined)", !B.got.some((g) => g.channel === "ops"), B.got);
@@ -217,7 +226,7 @@ try {
   check("bob's raw #ops history create is broker-denied", rawDenied);
 
   console.log(`\nE2E ACL ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-  await Promise.all([A.ep.stop(), B.ep.stop(), C.ep.stop(), dlv.stop(), mgr.stop()]);
+  await Promise.all([A.ep.stop(), B.ep.stop(), C.ep.stop(), dlv.stop(), poster.stop(), sup.stop(), mgr.stop()]);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);

@@ -17,6 +17,8 @@ import { resolve } from "node:path";
 import {
   DEFAULT_SERVER,
   MANAGER_LEASE_TTL_MS,
+  mintCreds,
+  newIdentity,
   readChannelRegistry,
   seedChannelRegistry,
   type ControlReply,
@@ -75,8 +77,11 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   }
 
   // spawn -f deploys onto a RUNNING mesh — the broker MUST be reachable (opposite of up -f). Resolve
-  // the mesh + mint a manager (admin-control) cred from the local registry/auth (same-checkout).
-  const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "manager");
+  // the mesh + mint a scoped `deployer` cred from the local registry/auth (same-checkout): the one
+  // connectProbe endpoint below reads live state (roster/registry/membership/lease) AND admin-control
+  // calls the manager's `launch`/`ps` — no `$JS.>`, no STREAM.DELETE, no DM read, no self-post. The
+  // channel SEED rides a separate `channel-writer` cred (below), so the deploy cred writes no KV.
+  const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "deployer");
 
   const root = cotalRoot();
   // Same-checkout invariant (security/UX): the launch spec, the ledger, and the manager `spawn -f`
@@ -117,7 +122,13 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   const ep = await connectProbe({ space, server: connection.server, creds: connection.creds });
   try {
     const roster: Presence[] = await settleRoster(ep);
-    const membership: MembershipSnapshot | null = await ep.readMembership().catch(() => null);
+    const membership: MembershipSnapshot | null = await ep.readMembership().catch((e: Error) => {
+      // An open mesh (or a space with no membership feed yet) has no bucket to read → degrade to null.
+      // But an AUTHORIZATION rejection means this cred should hold the membership-feed read and doesn't
+      // (a grant regression) — surface it rather than silently drop detectUnmanagedActors' safety check.
+      if (/authoriz|permission|not authorized/i.test(e?.message ?? "")) throw e;
+      return null;
+    });
 
     const channelPlan = classifyChannels(m.channels, liveRegistry, ownedKeys);
     const agentPlan = classifyAgents(eff.agents, roster, prior);
@@ -146,9 +157,15 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
 
     console.log(renderSpawnPlan(eff, channelPlan, agentPlan, unmanaged, { server: connection.server, runId, dryRun: false }), "\n");
 
-    // 1) Seed ONLY brand-new channel keys — no defaults, no pre-existing/unmanaged card mutation.
-    if (channelPlan.create.length)
-      await seedChannelRegistry({ servers: connection.server, space, creds: connection.creds, file: channelsSeed(channelPlan.create) });
+    // 1) Seed ONLY brand-new channel keys — no defaults, no pre-existing/unmanaged card mutation. The
+    //    write rides a SEPARATE, narrow `channel-writer` cred (the `deployer` cred writes no KV); open/raw
+    //    meshes have no signing seed → fall back to the connection creds.
+    if (channelPlan.create.length) {
+      const seedCreds = connection.auth
+        ? await mintCreds(connection.auth, newIdentity(), "channel-writer")
+        : connection.creds;
+      await seedChannelRegistry({ servers: connection.server, space, creds: seedCreds, file: channelsSeed(channelPlan.create) });
+    }
 
     // 2-4) Boot the will-create agents through the workspace-local manager's admin `launch` op,
     //      capturing the SPAWNED name + id the ledger keys on (creds are filed under the

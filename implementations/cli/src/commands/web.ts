@@ -54,12 +54,13 @@ export async function web(argv: string[]): Promise<void> {
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
-  // control. Instead pre-mint ONE scoped `manager` cred for the only write path (channel delete) and
-  // let the seed fall out of scope here, so it isn't reachable from the request handlers. `--creds`
-  // / open mode have no seed → the connection creds carry the purge rights.
+  // control. Instead pre-mint ONE scoped `channel-purger` cred for the only write path (channel delete
+  // = filtered CHAT purge + a channel-registry key delete) and let the seed fall out of scope here, so
+  // it isn't reachable from the request handlers. `--creds` / open mode have no seed → the connection
+  // creds carry the purge rights.
   const { server, space, creds, purgeCreds } = await (async () => {
     const conn = await connectOrExit(values, "admin");
-    const purge = conn.auth ? await mintCreds(conn.auth, newIdentity(), "manager") : conn.creds;
+    const purge = conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
     return { server: conn.server, space: conn.space, creds: conn.creds, purgeCreds: purge };
   })();
   const port = values.port ? Number(values.port) : WEB_PORT;

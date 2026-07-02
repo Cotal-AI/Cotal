@@ -58,7 +58,7 @@ export async function preflightTarget(
   probeCreds?: string,
 ): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean }> {
   const creds =
-    probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "manager") : undefined);
+    probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "probe") : undefined);
   const probe = await probeConnect(target.server, creds ? { creds } : {});
   if (probe.ok) return { ok: true };
   const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));

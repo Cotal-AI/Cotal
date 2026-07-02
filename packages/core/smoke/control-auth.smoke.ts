@@ -95,9 +95,12 @@ try {
   }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
-  const mgrId = newIdentity();
-  const mgrCreds = await mintCreds(auth, mgrId, "manager");
-  await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
+  // Setup uses the provisioner (streams/buckets); the self-scoped poster below uses `operator` — the
+  // profile that replaced the former allow-all `manager` for posting AS the operator (closure (i)).
+  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+
+  const opId = newIdentity();
+  const opCreds = await mintCreds(auth, opId, "operator");
 
   // Two agents: one without capabilities, one declaring spawn. The stub provisioner skips
   // durable pre-create (we only need the creds' publish allow-list, which is what nats-server
@@ -123,27 +126,27 @@ try {
   check("publish ctl.manager.<id> ALLOWED", await tryPublish(capCreds, capPriv, capId.id) === "allowed");
   check("publish ctl.admin.<id> DENIED by nats-server", await tryPublish(capCreds, capAdmin, capId.id) === "denied");
 
-  // closure (i) GATE — the scoped operator (manager) can post AS ITSELF but can NEVER forge a message
-  // attributable to another actor. `tryPublish` reports "allowed" when the broker accepts the publish
-  // (no responder ⇒ timeout) and "denied" on an Authorization Violation, so a self-post is "allowed"
-  // and a cross-actor forge is "denied".
-  console.log("scoped manager (closure (i) — self-scoped publish, no forge):");
+  // closure (i) GATE — the scoped `operator` (which replaced the allow-all `manager` for posting) can
+  // post AS ITSELF but can NEVER forge a message attributable to another actor. `tryPublish` reports
+  // "allowed" when the broker accepts the publish (no responder ⇒ timeout) and "denied" on an
+  // Authorization Violation, so a self-post is "allowed" and a cross-actor forge is "denied".
+  console.log("scoped operator (closure (i) — self-scoped publish, no forge):");
   const victim = newIdentity();
-  check("manager post chat AS SELF ALLOWED", await tryPublish(mgrCreds, chatSubject(space, mgrId.id, "general"), mgrId.id) === "allowed");
-  check("manager FORGE chat as another actor DENIED", await tryPublish(mgrCreds, chatSubject(space, victim.id, "general"), mgrId.id) === "denied");
-  check("manager DM (inst) AS SELF ALLOWED", await tryPublish(mgrCreds, unicastSubject(space, victim.id, mgrId.id), mgrId.id) === "allowed");
-  check("manager FORGE inst as another actor DENIED", await tryPublish(mgrCreds, unicastSubject(space, victim.id, victim.id), mgrId.id) === "denied");
-  check("manager anycast (svc) AS SELF ALLOWED", await tryPublish(mgrCreds, anycastSubject(space, "worker", mgrId.id), mgrId.id) === "allowed");
-  check("manager FORGE svc as another actor DENIED", await tryPublish(mgrCreds, anycastSubject(space, "worker", victim.id), mgrId.id) === "denied");
+  check("operator post chat AS SELF ALLOWED", await tryPublish(opCreds, chatSubject(space, opId.id, "general"), opId.id) === "allowed");
+  check("operator FORGE chat as another actor DENIED", await tryPublish(opCreds, chatSubject(space, victim.id, "general"), opId.id) === "denied");
+  check("operator DM (inst) AS SELF ALLOWED", await tryPublish(opCreds, unicastSubject(space, victim.id, opId.id), opId.id) === "allowed");
+  check("operator FORGE inst as another actor DENIED", await tryPublish(opCreds, unicastSubject(space, victim.id, victim.id), opId.id) === "denied");
+  check("operator anycast (svc) AS SELF ALLOWED", await tryPublish(opCreds, anycastSubject(space, "worker", opId.id), opId.id) === "allowed");
+  check("operator FORGE svc as another actor DENIED", await tryPublish(opCreds, anycastSubject(space, "worker", victim.id), opId.id) === "denied");
 
   // closure (i) residual (3) — the scoped operator writes ONLY its OWN presence key (`$KV.<presence>.<id>`),
-  // so a leaked manager cred cannot spoof a peer's roster-visible identity/status. (The READ side also
+  // so a leaked operator cred cannot spoof a peer's roster-visible identity/status. (The READ side also
   // drops a presence record whose KV key != its card.id — endpoint.ts applyPresence.) A `$KV` publish to
   // an allowed key replies with a PubAck ("allowed"); a denied key is an Authorization Violation ("denied").
-  console.log("scoped manager (closure (i) residual (3) — presence write is self-keyed, no roster spoof):");
-  check("manager write OWN presence key ALLOWED", await tryPublish(mgrCreds, `$KV.${presenceBucket(space)}.${mgrId.id}`, mgrId.id) === "allowed");
-  check("manager FORGE a peer's presence key DENIED", await tryPublish(mgrCreds, `$KV.${presenceBucket(space)}.${victim.id}`, mgrId.id) === "denied");
-  check("manager PURGE the presence stream (force-offline a peer) DENIED", await tryPublish(mgrCreds, `$JS.API.STREAM.PURGE.KV_${presenceBucket(space)}`, mgrId.id) === "denied");
+  console.log("scoped operator (closure (i) residual (3) — presence write is self-keyed, no roster spoof):");
+  check("operator write OWN presence key ALLOWED", await tryPublish(opCreds, `$KV.${presenceBucket(space)}.${opId.id}`, opId.id) === "allowed");
+  check("operator FORGE a peer's presence key DENIED", await tryPublish(opCreds, `$KV.${presenceBucket(space)}.${victim.id}`, opId.id) === "denied");
+  check("operator PURGE the presence stream (force-offline a peer) DENIED", await tryPublish(opCreds, `$JS.API.STREAM.PURGE.KV_${presenceBucket(space)}`, opId.id) === "denied");
 
   console.log(`\nCONTROL-AUTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

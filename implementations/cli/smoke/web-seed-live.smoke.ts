@@ -50,7 +50,7 @@ try {
   const fd = openSync(log, "w");
   kids.push(spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] }));
 
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   let up = false;
   for (let i = 0; i < 50; i++) {
     if (await isReachable(server, { creds: mgrCreds })) {
@@ -66,7 +66,7 @@ try {
 
   // web's NEW model: connect as ADMIN, pre-mint ONE MANAGER cred for the purge, drop the seed.
   const adminCreds = await mintCreds(auth, newIdentity(), "admin");
-  const purgeCreds = await mintCreds(auth, newIdentity(), "manager"); // pre-minted once, like web
+  const purgeCreds = await mintCreds(auth, newIdentity(), "channel-purger"); // pre-minted once, like web
 
   // Seed #ops with history (via a manager endpoint — a plain publisher).
   const pub = new CotalEndpoint({

@@ -94,10 +94,13 @@ async function trySubscribe(creds: string, id: string, subject: string, graceMs 
   });
 }
 
-/** Resolve "allowed" if a publish actually goes through, "denied" if the broker rejects it. Detected by
- *  ARRIVAL: an allow-all listener subscribes the subject; the scoped cred publishes; if the listener
- *  receives it the publish was permitted, else it was rejected (nats.js doesn't reliably surface a
- *  publish permission violation on the status channel, but a rejected publish never reaches a subscriber). */
+/** Resolve "allowed" if a raw publish reaches a listener, "denied" if the broker rejects it. Detected by
+ *  ARRIVAL (nats.js does not reliably surface a publish permission violation on the status channel): the
+ *  listener subscribes the subject; the scoped cred publishes; if the listener receives it the publish was
+ *  permitted, else rejected. `listenCreds` MUST be able to natively subscribe the subject — pass the
+ *  `admin` cred (space-wide `${p}.>` sub) for the `cotal.<space>.*` subjects here. For top-level
+ *  `$KV.<bucket>.<key>` writes use {@link kvWriteAllowed} instead: no cred natively subscribes `$KV.>`
+ *  now that the allow-all `manager` was deleted, but the KV API's ack detects the denial. */
 async function publishArrives(listenCreds: string, pubCreds: string, pubId: string, subject: string): Promise<"allowed" | "denied"> {
   return withConn(listenCreds, `listen-${randomUUID().slice(0, 6)}`, async (lnc) => {
     let got = false;
@@ -114,6 +117,25 @@ async function publishArrives(listenCreds: string, pubCreds: string, pubId: stri
   });
 }
 
+/** Resolve "allowed"/"denied" for a KV WRITE — the KV API awaits a JetStream ack, so a permission-denied
+ *  `put` rejects (unlike a fire-and-forget raw publish, which no scoped cred can natively hear on `$KV.>`
+ *  now that the allow-all `manager` listener is deleted). */
+async function kvWriteAllowed(creds: string, id: string, bucket: string, key: string): Promise<"allowed" | "denied"> {
+  return withConn(creds, id, async (nc) => {
+    try {
+      const kv = await new Kvm(nc).open(bucket);
+      await kv.put(key, new TextEncoder().encode("x"));
+      return "allowed";
+    } catch (e) {
+      // Only an authz rejection counts as "denied"; a non-authz failure (e.g. a bucket that wasn't
+      // pre-created → "stream not found") must NOT masquerade as a permission denial and false-pass.
+      const msg = (e as Error)?.message ?? "";
+      if (/permission|authorization|not authorized/i.test(msg)) return "denied";
+      throw e;
+    }
+  });
+}
+
 /** Resolve "allowed" if a kv.get succeeds (value or null), "denied" on a permission error. */
 async function tryKvGet(creds: string, id: string, bucket: string, key: string): Promise<"allowed" | "denied"> {
   return withConn(creds, id, async (nc) => {
@@ -122,7 +144,9 @@ async function tryKvGet(creds: string, id: string, bucket: string, key: string):
       await kv.get(key);
       return "allowed";
     } catch (e) {
-      return /permission|authorization|not authorized/i.test((e as Error).message) ? "denied" : "denied";
+      const msg = (e as Error)?.message ?? "";
+      if (/permission|authorization|not authorized/i.test(msg)) return "denied";
+      throw e; // a non-authz failure must not masquerade as a permission denial
     }
   });
 }
@@ -142,8 +166,12 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   const mgrIdentity = newIdentity();
-  const mgrCreds = await mintCreds(auth, mgrIdentity, "manager");
+  const mgrCreds = await mintCreds(auth, mgrIdentity, "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
+
+  // An `admin` listener (space-wide `${p}.>` sub) is the arrival oracle for the `cotal.<space>.*` publish
+  // checks below — the former allow-all `manager` listener is gone. (`$KV.<bucket>` writes use kvWriteAllowed.)
+  const adminListen = await mintCreds(auth, newIdentity(), "admin");
 
   // ---- the scoped delivery cred ----
   const d = newIdentity();
@@ -162,19 +190,19 @@ try {
   check("delivery: subscribe ctl.delivery.* (serves it) is allowed", (await trySubscribe(dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, "*"))) === "allowed");
   check("delivery: native subscribe dinbox.> (mixed pre-auth store) is DENIED", (await trySubscribe(dCreds, d.id, `${spacePrefix(space)}.dinbox.>`)) === "denied");
   check("delivery: native subscribe chat.> is DENIED", (await trySubscribe(dCreds, d.id, `${spacePrefix(space)}.chat.>`)) === "denied");
-  check("delivery: post to a chat channel (spoof a peer) is DENIED", (await publishArrives(mgrCreds, dCreds, d.id, chatSubject(space, d.id, "general"))) === "denied");
+  check("delivery: post to a chat channel (spoof a peer) is DENIED", (await publishArrives(adminListen, dCreds, d.id, chatSubject(space, d.id, "general"))) === "denied");
 
-  check("delivery: write dinbox.<owner> (fan-out target) is allowed", (await publishArrives(mgrCreds, dCreds, d.id, dinboxSubject(space, owner))) === "allowed");
-  check("delivery: write dlv.<owner> (post-auth handoff) is allowed", (await publishArrives(mgrCreds, dCreds, d.id, dlvSubject(space, owner))) === "allowed");
-  check("delivery: write its own lease key is allowed", (await publishArrives(mgrCreds, dCreds, d.id, `$KV.${deliveryBucket(space)}.${leaseKey(0)}`)) === "allowed");
-  check("delivery: write a NON-lease delivery key is DENIED", (await publishArrives(mgrCreds, dCreds, d.id, `$KV.${deliveryBucket(space)}.other`)) === "denied");
-  check("delivery: write members KV (membership authority) is allowed", (await publishArrives(mgrCreds, dCreds, d.id, `$KV.${membersBucket(space)}.review/${owner}`)) === "allowed");
-  check("delivery: write ACL KV (manager's job, not the daemon's) is DENIED", (await publishArrives(mgrCreds, dCreds, d.id, `$KV.${aclBucket(space)}.${owner}`)) === "denied");
-  check("delivery: write presence KV is DENIED (it's off the roster)", (await publishArrives(mgrCreds, dCreds, d.id, `$KV.${presenceBucket(space)}.${d.id}`)) === "denied");
+  check("delivery: write dinbox.<owner> (fan-out target) is allowed", (await publishArrives(adminListen, dCreds, d.id, dinboxSubject(space, owner))) === "allowed");
+  check("delivery: write dlv.<owner> (post-auth handoff) is allowed", (await publishArrives(adminListen, dCreds, d.id, dlvSubject(space, owner))) === "allowed");
+  check("delivery: write its own lease key is allowed", (await kvWriteAllowed(dCreds, d.id, deliveryBucket(space), leaseKey(0))) === "allowed");
+  check("delivery: write a NON-lease delivery key is DENIED", (await kvWriteAllowed(dCreds, d.id, deliveryBucket(space), "other")) === "denied");
+  check("delivery: write members KV (membership authority) is allowed", (await kvWriteAllowed(dCreds, d.id, membersBucket(space), `review/${owner}`)) === "allowed");
+  check("delivery: write ACL KV (manager's job, not the daemon's) is DENIED", (await kvWriteAllowed(dCreds, d.id, aclBucket(space), owner)) === "denied");
+  check("delivery: write presence KV is DENIED (it's off the roster)", (await kvWriteAllowed(dCreds, d.id, presenceBucket(space), d.id)) === "denied");
   // ctl.delivery: the daemon publishes REPLIES only (m.respond → ctl.delivery.<id>.reply.<n>), never the
   // request subjects themselves — the scoped `.reply.>` pub grant (tighter than a blanket ctl.delivery.>).
-  check("delivery: publish a ctl.delivery REPLY subject is allowed", (await publishArrives(mgrCreds, dCreds, d.id, `${controlServiceSubject(space, CONTROL_DELIVERY, owner)}.reply.1`)) === "allowed");
-  check("delivery: publish a ctl.delivery REQUEST subject is DENIED (replies only)", (await publishArrives(mgrCreds, dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, owner))) === "denied");
+  check("delivery: publish a ctl.delivery REPLY subject is allowed", (await publishArrives(adminListen, dCreds, d.id, `${controlServiceSubject(space, CONTROL_DELIVERY, owner)}.reply.1`)) === "allowed");
+  check("delivery: publish a ctl.delivery REQUEST subject is DENIED (replies only)", (await publishArrives(adminListen, dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, owner))) === "denied");
 
   // ---- an ordinary agent cred ----
   const { provisionAgent } = await import("../src/index.js");
@@ -184,7 +212,7 @@ try {
 
   check("agent: native subscribe dinbox.> is DENIED (regression)", (await trySubscribe(aCreds, a.id, `${spacePrefix(space)}.dinbox.>`)) === "denied");
   check("agent: READ the delivery lease bucket is allowed (Component 6 health)", (await tryKvGet(aCreds, a.id, deliveryBucket(space), leaseKey(0))) === "allowed");
-  check("agent: WRITE the delivery lease is DENIED (only the delivery cred writes it)", (await publishArrives(mgrCreds, aCreds, a.id, `$KV.${deliveryBucket(space)}.${leaseKey(0)}`)) === "denied");
+  check("agent: WRITE the delivery lease is DENIED (only the delivery cred writes it)", (await kvWriteAllowed(aCreds, a.id, deliveryBucket(space), leaseKey(0))) === "denied");
 
   console.log(`\nDELIVERY-CRED-CONFINEMENT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

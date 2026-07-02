@@ -69,13 +69,22 @@ export type Profile =
   | "agent"
   | "observer"
   | "admin"
-  | "manager"
   | "supervisor"
   | "provisioner"
   | "operator"
   | "purger"
   | "delivery"
-  | "membership-rw";
+  | "membership-rw"
+  // PR 1.5 — the CLI-surface profiles that finish scoping (and DELETE) the former allow-all `manager`.
+  | "probe" // connect-only liveness/auth preflight
+  | "channel-writer" // channel-registry value-writes (channels set/default, spawn -f seed)
+  | "channel-purger" // channel-writer + STREAM.PURGE.CHAT (web channel-delete)
+  | "teardown" // the SOLE STREAM.DELETE holder (down -f space teardown)
+  // Control callers — the manager's control tiers are SUBJECT-gated (holding the tier's pub grant IS
+  // the authority), so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
+  | "control-caller-privileged" // ps/start → ctl.<privileged>.<id> only (no cross-agent reach)
+  | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
+  | "deployer"; // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
 
 /** A space's persisted trust material. The `signingSeed` is the sensitive provisioner
  *  secret; everything else is public (JWTs) or recoverable. The system-account `signingSeed` is the ONE
@@ -262,8 +271,8 @@ export async function provisionAgent(
  *  (`fromPublic`) — the agent seed is never part of the signature, it's only folded into
  *  the resulting creds file. The "agent" profile is scoped to publish only as itself and only to
  *  its declared `allowPublish` channels (post ACL, default-deny), and to read only within
- *  `allowSubscribe` (live tail bind-only + per-channel history grants); "manager" and "observer"
- *  stay permissive here and are scoped in steps 6–7. */
+ *  `allowSubscribe` (live tail bind-only + per-channel history grants). Every profile is now
+ *  enumerated least-privilege — there is no allow-all cred (the former `manager` is deleted). */
 export async function mintCreds(
   auth: SpaceAuth,
   identity: Identity,
@@ -284,9 +293,10 @@ export async function mintCreds(
 }
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
- *  exactly what each profile does. "manager" stays permissive (the privileged provisioner
- *  host). Subject/stream/durable names come from the shared builders so the ACLs can't drift
- *  from the wire layout. */
+ *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
+ *  allow-all `manager` is gone (its roles split across supervisor/provisioner/operator/purger and the
+ *  PR 1.5 CLI-surface profiles). Subject/stream/durable names come from the shared builders so the ACLs
+ *  can't drift from the wire layout. */
 function permissionsFor(
   profile: Profile,
   space: string,
@@ -299,7 +309,13 @@ function permissionsFor(
   if (profile === "provisioner") return provisionerPermissions(space, id); // ephemeral onboarding authority (closure (ii))
   if (profile === "purger") return purgerPermissions(space, id); // ephemeral history-purge (closure (ii))
   if (profile === "operator") return operatorPermissions(space, id); // human-CLI client (send/dm/ask) (closure (ii))
-  if (profile === "manager") return managerPermissions(space, id); // scoped operator (closure (i); CLI surfaces, residual 2 follow-up)
+  if (profile === "probe") return probePermissions(id); // connect-only liveness/auth preflight (PR 1.5)
+  if (profile === "channel-writer") return channelWriterPermissions(space, id); // channel-registry writes (PR 1.5)
+  if (profile === "channel-purger") return channelPurgerPermissions(space, id); // channel-writer + CHAT purge (PR 1.5)
+  if (profile === "teardown") return teardownPermissions(space, id); // sole STREAM.DELETE holder (PR 1.5)
+  if (profile === "control-caller-privileged") return controlCallerPermissions(space, id, CONTROL_PRIVILEGED); // ps/start (PR 1.5)
+  if (profile === "control-caller-admin") return controlCallerPermissions(space, id, CONTROL_ADMIN); // stop/attach (PR 1.5)
+  if (profile === "deployer") return deployerPermissions(space, id); // spawn -f deploy authority (PR 1.5)
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
@@ -369,6 +385,11 @@ function permissionsFor(
   }
 
   // ---- agent ----
+  // No silent fallthrough: every non-agent profile is handled above, so anything else reaching here is a
+  // stale/unwired profile string (e.g. a JS caller bypassing the closed `Profile` union). Fail loud rather
+  // than mint it agent perms by accident (the no-fallbacks rule; matches the deleted `manager`'s intent).
+  if (profile !== "agent")
+    throw new Error(`permissionsFor: unhandled profile "${profile}" — add an explicit arm, do not fall through to agent`);
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
@@ -594,6 +615,191 @@ function operatorPermissions(space: string, id: string): Record<string, unknown>
   };
 }
 
+/** Connect-only PROBE (PR 1.5) — the liveness/auth preflight (`preflight.ts preflightTarget`, minted on
+ *  ~every CLI command that resolves a mesh). `probeConnect` opens a connection to prove the broker is up
+ *  and the creds are accepted, then closes it — it performs NO pub/sub. So the tightest possible grant:
+ *  deny ALL publish, subscribe only to the own reply inbox. A leaked probe cred can open a socket and do
+ *  nothing else. (Was the broad `manager` cred — minted on nearly every command, the worst over-grant.) */
+function probePermissions(id: string): Record<string, unknown> {
+  return { pub: { deny: [">"] }, sub: { allow: [`_INBOX_${id}.>`] } };
+}
+
+/** CHANNEL-WRITER (PR 1.5) — edits the channel registry ONLY: `cotal channels set/default` and the
+ *  `spawn -f` new-channel seed (`seedChannelRegistry`). It VALUE-writes `$KV.<channelBucket>` (a channel's
+ *  config key) and read-before-writes it. NO stream data, NO other bucket, NO chat/DM — a leaked
+ *  channel-writer can only rewrite channel config, never post, read a body, or tear a stream down. */
+function channelWriterPermissions(space: string, id: string): Record<string, unknown> {
+  const CHKV = `KV_${channelBucket(space)}`;
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        `$KV.${channelBucket(space)}.>`, // create/update/delete a channel config key
+        `$JS.API.STREAM.INFO.${CHKV}`, // kvm.open/create existence check
+        `$JS.API.STREAM.CREATE.${CHKV}`, // kvm.create is create-if-matching (bucket already exists post-up)
+        // read-before-write: kvm.open rides STREAM.MSG.GET; kvm.create (direct=true) rides keyed DIRECT.GET.
+        `$JS.API.STREAM.MSG.GET.${CHKV}`,
+        `$JS.API.DIRECT.GET.${CHKV}.>`,
+      ],
+    },
+    sub: { allow: [`_INBOX_${id}.>`] },
+  };
+}
+
+/** CHANNEL-PURGER (PR 1.5) — the `cotal web` dashboard's ONLY write path: delete a channel
+ *  (`clearChannel` = filtered `STREAM.PURGE.CHAT` to drop the channel's messages + a `$KV.<channelBucket>`
+ *  key delete). Pre-minted once by `web` so the account signing seed falls out of scope; the dashboard's
+ *  READ side runs on the separate read-only `admin` cred. = channel-writer + the scoped CHAT purge. */
+function channelPurgerPermissions(space: string, id: string): Record<string, unknown> {
+  const CHKV = `KV_${channelBucket(space)}`;
+  // `clearChannel` only kvm.OPENs the (already-created) bucket, key-deletes, and purges — it never
+  // kvm.creates, so — unlike channel-writer's set/default back-compat path — this cred gets NO
+  // `STREAM.CREATE`. Compose the shared channel-KV read + delete verbs + the scoped CHAT purge explicitly.
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        `$KV.${channelBucket(space)}.>`, // delete the channel's registry key
+        `$JS.API.STREAM.INFO.${CHKV}`, // kvm.open existence check
+        `$JS.API.STREAM.MSG.GET.${CHKV}`, // read-before-delete
+        `$JS.API.DIRECT.GET.${CHKV}.>`,
+        `$JS.API.STREAM.PURGE.${chatStream(space)}`, // drop the channel's chat messages
+      ],
+    },
+    sub: { allow: [`_INBOX_${id}.>`] },
+  };
+}
+
+/** TEARDOWN (PR 1.5) — `cotal down -f` space teardown. The SOLE cred that keeps `STREAM.DELETE` (the
+ *  face-b tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
+ *  → `requestControl(CONTROL_ADMIN, ps/stop)` to politely stop the managed agents → `deleteChannels`
+ *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 12 space streams/buckets).
+ *  So it reads state, CALLS admin control, deletes channels, and deletes streams — but NEVER reads a
+ *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
+ *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
+ *  nothing else. Minted ephemerally per teardown from the local trust material (same-checkout `down -f`). */
+function teardownPermissions(space: string, id: string): Record<string, unknown> {
+  const CHAT = chatStream(space);
+  const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
+  // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 buckets); each needs
+  // INFO (jsm existence) + DELETE. This is the ONLY cred that holds STREAM.DELETE (face-b isolated here).
+  const del = [
+    CHAT, dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
+    PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
+    `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
+  ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        // connectProbe read: presence watch (name→id + roster) + channel registry read.
+        `$JS.API.CONSUMER.CREATE.${PKV}.>`,
+        `$JS.API.CONSUMER.INFO.${PKV}.>`,
+        `$JS.API.STREAM.MSG.GET.${CHKV}`,
+        `$JS.API.DIRECT.GET.${CHKV}.>`,
+        `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
+        `$JS.API.CONSUMER.INFO.${CHKV}.>`,
+        "$JS.FC.>", // ordered-consumer flow control
+        // Stop the managed agents via the admin control tier (ps + per-agent stop).
+        controlServiceSubject(space, CONTROL_ADMIN, id),
+        ...del,
+        // deleteChannels/clearChannel: purge the channel's chat messages + delete its registry key.
+        `$JS.API.STREAM.PURGE.${CHAT}`,
+        `$KV.${channelBucket(space)}.>`,
+      ],
+    },
+    // Own inbox (connectProbe presence-watch delivery + JS API responses) + the BOUNDED admin control-reply
+    // subtree: the agent-stop step is `requestControl(CONTROL_ADMIN, ps/stop)`, whose reply rides
+    // `ctl.admin.<id>.reply.<uuid>` (NOT `_INBOX`) — without this grant those calls hang and the agents are
+    // never stopped before the streams are deleted.
+    sub: { allow: [`_INBOX_${id}.>`, `${controlServiceSubject(space, CONTROL_ADMIN, id)}.reply.>`] },
+  };
+}
+
+/** CONTROL-CALLER (PR 1.5) — the operator's lifecycle commands (`cotal ps/start/stop/attach`,
+ *  `manager/commands.ts`). It CALLS ONE of the running manager's control tiers and reads the bounded
+ *  reply on its own inbox. That is ALL — no `$JS`, no `$KV`, no chat/DM: it forges nothing, reads no body.
+ *
+ *  The tiers are SPLIT because the manager's control authz is SUBJECT-gated, NOT caller-identity-gated
+ *  (`manager.ts authorizeNamed`: `if (admin) return undefined` — ANY caller reaching `ctl.<admin>` may
+ *  stop/attach ANY agent; the privileged tier restricts named ops to the caller's OWN spawned child).
+ *  So the BROKER grant is load-bearing: holding `ctl.<admin>.<id>` pub *is* cross-agent stop/attach
+ *  power — the manager does not re-narrow it by `req.from.id`. Therefore:
+ *   • `control-caller-privileged` (ps/start) gets ONLY `ctl.<privileged>.<id>` — structurally barred from
+ *     cross-agent admin ops by the broker. This is the high-frequency path; it never needs admin reach.
+ *   • `control-caller-admin` (stop/attach) gets ONLY `ctl.<admin>.<id>` — it genuinely needs cross-agent
+ *     reach. Its containment is NOT a manager re-check (there is none): it is the broker gating the admin
+ *     subject + the cred being ephemeral (mint → one request → disconnect, from the local signing seed). */
+function controlCallerPermissions(space: string, id: string, tier: string): Record<string, unknown> {
+  const reqSubject = controlServiceSubject(space, tier, id);
+  return {
+    pub: { allow: [reqSubject] }, // exactly ONE tier — ps/start XOR stop/attach
+    // Own inbox + the BOUNDED control-reply subtree. `requestControl` issues a `noMux` request whose reply
+    // rides `ctl.<tier>.<id>.reply.<uuid>` (UNDER its own request subject, NOT `_INBOX`), so it must be able
+    // to subscribe that subtree — without this grant the reply sub is broker-denied and every control call
+    // hangs to timeout (endpoint.ts:803-806 predicts exactly this).
+    sub: { allow: [`_INBOX_${id}.>`, `${reqSubject}.reply.>`] },
+  };
+}
+
+/** DEPLOYER (PR 1.5) — the `cotal spawn -f` manifest-deploy authority. `spawn -f` drives ONE
+ *  `connectProbe` endpoint that both READS live state (roster/presence watch, channel registry,
+ *  membership feed, manager-singleton lease) AND control-CALLS the running manager's admin tier
+ *  (`launch` + `ps` readiness — both `CONTROL_ADMIN`). Those interleave on one connection, so a strict
+ *  3-connection split would only refactor `live.ts` for marginal gain; `deployer` is that one coherent,
+ *  ephemeral deploy cred. It is the SOLE profile that combines reads + admin-control — NOT a template a
+ *  4th command should reach for (revisit the connection split before adding a second such caller).
+ *
+ *  Boundaries (all enforced by omission / default-deny): NO self-post (`chat`/`inst`/`svc`), NO `$JS.>`,
+ *  NO `STREAM.DELETE`/`PURGE`/`UPDATE`, NO DM/DLV/TASK `CONSUMER.CREATE` (no body-read surface), NO `$KV`
+ *  writes (channel seeding rides a SEPARATE `channel-writer` cred), admin tier ONLY (no privileged, no
+ *  serve). It holds `ctl.<admin>.<id>` because manifest launch/ps genuinely need the admin tier — and
+ *  that IS real cross-agent power: the manager's admin authz is subject-gated, not caller-identity-gated
+ *  (`authorizeNamed`: `if (admin) return undefined`), so holding the admin pub grant lets it stop/attach/
+ *  launch ANY agent, with no manager-side `req.from.id` re-check. The BROKER gating that subject is the
+ *  boundary. Containment is therefore the LIFETIME, not a manager re-check: minted from LOCAL same-checkout
+ *  auth for one `spawn -f`, memory-only, dropped after deploy. If it is ever persisted, handed to
+ *  user-supplied `--creds`, or reused as a general "read + admin" cred, revisit. */
+function deployerPermissions(space: string, id: string): Record<string, unknown> {
+  const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
+  const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
+  // Read verbs for a KV bucket SCANNED/WATCHED via an ordered consumer (presence, channel registry, and
+  // the membership feed — `readMembership` enumerates keys via `kv.keys()`): existence + kv.get (both
+  // STREAM.MSG.GET and keyed DIRECT.GET forms) + the ordered consumer. NO `$KV.<bucket>` publish → no write.
+  const kvScan = (bucket: string) => [
+    `$JS.API.STREAM.INFO.${bucket}`,
+    `$JS.API.STREAM.MSG.GET.${bucket}`,
+    `$JS.API.DIRECT.GET.${bucket}.>`,
+    `$JS.API.CONSUMER.CREATE.${bucket}.>`,
+    `$JS.API.CONSUMER.INFO.${bucket}.>`,
+  ];
+  // A KV bucket read by a KEYED point-get only (`readManagerLease` = kvm.open + `kv.get(LEASE_KEY)`, no
+  // scan/watch): existence + kv.get, but NO ordered-consumer verbs (nothing enumerates or watches it).
+  const kvPointRead = (bucket: string) => [
+    `$JS.API.STREAM.INFO.${bucket}`,
+    `$JS.API.STREAM.MSG.GET.${bucket}`,
+    `$JS.API.DIRECT.GET.${bucket}.>`,
+  ];
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        ...kvScan(PKV), // presence watch — roster + name→id
+        ...kvScan(CHKV), // channel registry read (readChannelRegistry + classifyChannels)
+        ...kvScan(MSHIP), // membership FEED read (readMembership → detectUnmanagedActors) — the membership_ bucket
+        ...kvPointRead(MGRKV), // manager-singleton lease keyed read (waitManagerReady) — point-get, NO write, NO watch
+        "$JS.FC.>", // ordered-consumer flow control
+        // Admin control tier ONLY — launch + ps readiness (both CONTROL_ADMIN). No privileged subject.
+        controlServiceSubject(space, CONTROL_ADMIN, id),
+      ],
+    },
+    // Own inbox (presence/registry watch delivery + JS API responses) + the BOUNDED admin control-reply
+    // subtree: `requestControl(CONTROL_ADMIN, launch/ps)` subscribes `ctl.admin.<id>.reply.<uuid>`, so
+    // without this grant the launch + ps-readiness calls hang to timeout.
+    sub: { allow: [`_INBOX_${id}.>`, `${controlServiceSubject(space, CONTROL_ADMIN, id)}.reply.>`] },
+  };
+}
+
 /** The ephemeral PURGER permission set (closure (ii), residual 2) — minted per-purge inside the daemon's
  *  `opPurge` and `cotal history clear`. Isolates the DESTRUCTIVE history-purge grant
  *  (`STREAM.PURGE.CHAT` + `STREAM.PURGE.DM`) off the always-on supervisor: `--dms` purges the DM stream,
@@ -684,117 +890,6 @@ function provisionerPermissions(space: string, id: string): Record<string, unkno
     // Replies only: every stream/consumer/KV-create PubAck and JS API response lands on the per-id inbox.
     // NO chat/inst/dlv/ctl subscription — the provisioner never serves control nor reads any feed.
     sub: { allow: [`_INBOX_${id}.>`] },
-  };
-}
-
-/** The privileged OPERATOR permission set (`manager` profile) — formerly allow-all (`{}`). The
- *  `manager` cred is the space's privileged operator, minted with a FRESH identity at ~12 sites:
- *  `cotal up` (create the streams + KV buckets, write channel defaults), `cotal spawn` and the
- *  supervisor (pre-create each agent's DM/DLV/TASK durables, record its read ACL, run lifecycle),
- *  `cotal history`/`web` (read + purge), the operator-facing senders `cotal send` / the `cotal join`
- *  console / `demo` / `feedback` (which post chat/inst/svc AS the operator), and the long-lived manager
- *  (serve the three control tiers + hold the singleton lease + publish presence). `CotalEndpoint` pins
- *  `card.id` to the cred's own identity (it throws on a mismatch), so "as the operator" always means as
- *  THIS `id`. Plane-3 is NOT the manager's job (manager.ts) — the server-side `delivery` daemon hosts it.
- *
- *  closure (i) — peer-MESSAGE actor-forgery and presence-VALUE forgery are CLOSED here; the dead Plane-3
- *  inject grants are removed. The STREAM-ADMIN tamper class and DM/DLV body-read are NOT closed — both
- *  ride the broad `$JS.>` (+ broad `sub`) left below, folded into the single residual stated after:
- *   • PUB is an enumerated, SELF-SCOPED list — it may post chat/inst/svc only as `id`, never as another
- *     actor (proven by a cross-owner forge-deny smoke). Expressible after migrating the three control
- *     tiers to BOUNDED replies (`ctl.<tier>.<caller>.reply.>` via `boundReply`), which removed the
- *     per-id-`_INBOX` reply target that had forced a position-1 publish wildcard.
- *   • `$KV.>` is SCOPED to exactly the buckets the operator VALUE-writes — own presence key ONLY (no peer
- *     roster spoof), the manager lease, the agent read-ACL registry, the channel registry. A peer's
- *     presence VALUE can't be forged (key-pinned) nor key-deleted (`kv.delete/purge(peerkey)` is a
- *     `$KV.<presence>.<peerkey>` publish — denied), and a `deny` blocks whole-stream PURGE / per-message
- *     MSG.DELETE of the presence stream. The read-side `applyPresence` guard additionally drops a record
- *     whose KV key != `card.id` — defense-in-depth (corrupt/mis-keyed rejection), NOT the spoof boundary
- *     (the write-scope is). (Was: blanket `$KV.>` ⇒ forge any agent's presence value.)
- *   • The legacy Plane-3 FALLBACK grants (`${p}.dinbox.*` / `${p}.dlv.*` / `ctl.delivery.*.reply.>`) are
- *     REMOVED — they were a true sender-FORGE (the `dlv.<recipient>` subject names the receiver, so the
- *     body's `from` can't be subject-checked) kept only for a manager-hosted Plane-3 that no longer
- *     exists; the `delivery` cred owns those writes + serves `ctl.delivery` (deliveryPermissions).
- *
- *  THE residual gate before the human-owner cutover is the broad `$JS.>` + broad `sub` below — ONE
- *  over-grant with TWO faces (mesh-panel review of 062ef58/9261076 caught face (b)):
- *   (a) DM/DLV body READ. The `CONSUMER.MSG.NEXT` / `STREAM.MSG.GET` denies shut the JS pull/direct-get
- *       path, but the broad `sub` `${p}.>` natively reads every `inst.*`/`dlv.*` LIVE, and `$JS.>` leaves
- *       a `CONSUMER.CREATE` push-consumer bypass on DM/DLV.
- *   (b) STREAM-ADMIN tamper. `$JS.>` still allows `STREAM.DELETE` / `STREAM.UPDATE` (and snapshot/restore)
- *       on EVERY KV stream — `KV_<presence>` (delete the bucket ⇒ wipe the roster, an availability tamper
- *       the value-scope + purge/msg-delete deny + `applyPresence` do NOT catch), and likewise
- *       `KV_<acl>`/`KV_<channel>`/`KV_<members>`. It can't be closed by more targeted denies, because
- *       `cotal down` (deleteSpace) legitimately STREAM.DELETEs those buckets through this SAME profile.
- *   Both close the same way: the provisioner role-split (move DM/DLV durable pre-creation + the ACL writes
- *   off the long-lived manager) + REPLACE broad `$JS.>` with an enumerated per-stream JS-API allow-list +
- *   tighten `sub` to {own inbox + served control}. That forces splitting the chat-reading operator
- *   surfaces (`cotal join`/`send`/`history`) and the teardown surface (`cotal down`, which keeps
- *   STREAM.DELETE) onto their own profiles — the next slice. A leaked long-lived manager can also still
- *   rewrite any actor's read-ACL (`$KV.<aclBucket>.>`); that ACL-write moves to the provisioner too. */
-function managerPermissions(space: string, id: string): Record<string, unknown> {
-  const p = spacePrefix(space);
-  const DM = dmStream(space), DLV = dlvStream(space);
-  // Reply-publish grants for every control tier the manager SERVES (bounded replies ride
-  // `ctl.<tier>.<caller>.reply.>`): exactly the three lifecycle tiers (manager.ts serveControl). The
-  // manager does NOT serve `ctl.delivery` — that is the delivery daemon (endpoint.ts) — so no grant here.
-  const ctlReplies = [CONTROL_PRIVILEGED, CONTROL_SELF_SERVICE, CONTROL_ADMIN].map(
-    (tier) => `${controlServiceSubject(space, tier, "*")}.reply.>`,
-  );
-  return {
-    pub: {
-      allow: [
-        // Post AS the operator ONLY — self-scoped, so a leaked/compromised manager cred can never forge
-        // a chat/DM/anycast message attributable to another actor (the closure-(i) gate).
-        chatSubject(space, id, ">"), //  chat.<id>.>   — any channel, as me
-        unicastSubject(space, "*", id), //  inst.*.<id>   — DM any instance, as me
-        anycastSubject(space, "*", id), //  svc.*.<id>    — anycast any role, as me
-        // Account-scoped JetStream administration: create/consume/ack/purge streams + consumers, create
-        // KV buckets, manage durables. DM/DLV body reads are carved back out in `deny`. (Residual (2):
-        // `$JS.>` still grants DM/DLV CONSUMER.CREATE — the push-consumer read bypass — closed by the next
-        // slice's provisioner role-split, not here.)
-        "$JS.>",
-        // KV DATA writes — SCOPED to exactly the buckets the operator writes (was a blanket `$KV.>`):
-        //   • own presence key ONLY — can't spoof a peer's roster identity (closure (i) residual (3));
-        //   • the singleton manager lease + the agent read-ACL registry (commitAcl at provision);
-        //   • the channel registry (seeded at `cotal up`, edited by channel admin / `down -f`).
-        // It writes NO members/membership/delivery bucket — those are the delivery + membership-rw creds.
-        `$KV.${presenceBucket(space)}.${id}`,
-        `$KV.${managerBucket(space)}.>`,
-        `$KV.${aclBucket(space)}.>`,
-        `$KV.${channelBucket(space)}.>`,
-        // Control: CALL any lifecycle tier as self (the request subject), plus reply to any requester on
-        // every SERVED tier (bounded `.reply.>`). No position-1 wildcard needed.
-        controlServiceSubject(space, CONTROL_PRIVILEGED, id),
-        controlServiceSubject(space, CONTROL_SELF_SERVICE, id),
-        controlServiceSubject(space, CONTROL_ADMIN, id),
-        ...ctlReplies,
-      ],
-      deny: [
-        // No DM/DLV body reads via the JS pull path. CONSUMER.CREATE on these stays allowed (the operator
-        // pre-creates the bind-only durables) — but it must never consume or fetch their bodies. The
-        // trusted reader reads INBOX/`dinbox`, never DM/DLV, so denying these breaks no operator role.
-        `$JS.API.CONSUMER.MSG.NEXT.${DM}.>`,
-        `$JS.API.CONSUMER.MSG.NEXT.${DLV}.>`,
-        `$JS.API.STREAM.MSG.GET.${DM}`,
-        `$JS.API.STREAM.MSG.GET.${DLV}`,
-        // No force-offline tamper of a peer's presence. The write-scoping above stops a value FORGE, but
-        // `$JS.>` would still let the operator PURGE / MSG.DELETE the presence KV stream — and a resulting
-        // DEL/PURGE drives every watcher's `markOffline`, dropping the peer from all rosters (the read-side
-        // `applyPresence` guard never sees a delete). The manager never purges individual presence keys
-        // (its own offline is a `$KV` publish; `cotal down` rides STREAM.DELETE; ACL/member purges are
-        // `$KV`-level, not stream purges), so denying these closes the tamper with no operator-role cost.
-        `$JS.API.STREAM.PURGE.KV_${presenceBucket(space)}`,
-        `$JS.API.STREAM.MSG.DELETE.KV_${presenceBucket(space)}`,
-      ],
-    },
-    sub: {
-      // Account-scoped observe (operator/observer + the JS/KV-write arrival fixtures) plus its reply
-      // inboxes. Broad by design FOR NOW — narrowing `sub` to {own inbox + served control subjects} lands
-      // together with the provisioner role-split (residual (2)), since the broad `sub` is itself a DM/DLV
-      // read path.
-      allow: [`${p}.>`, "$JS.>", "$KV.>", "_INBOX.>", `_INBOX_${id}.>`],
-    },
   };
 }
 

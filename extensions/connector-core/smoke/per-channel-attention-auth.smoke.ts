@@ -62,7 +62,7 @@ try {
 
   // Privileged setup: streams + presence KV, channel registry (replay ON so recall has data to skip),
   // and the two peers' bind-only durables + scoped "agent" creds.
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: mgrCreds });
   await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: {} } });
   const mgr = new CotalEndpoint({ space, servers, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });

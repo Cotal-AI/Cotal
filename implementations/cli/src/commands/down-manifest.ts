@@ -274,10 +274,11 @@ function credSubject(path: string): string | undefined | null {
   }
 }
 
-/** Mint a manager (admin-control) cred for the ledger's space from the local trust material, or
- *  undefined for an open mesh / mismatched checkout (then we connect bare and do local cleanup). */
+/** Mint a scoped `teardown` cred for the ledger's space from the local trust material, or undefined for
+ *  an open mesh / mismatched checkout (then we connect bare and do local cleanup). `teardown` is the SOLE
+ *  cred that keeps `STREAM.DELETE` (deleteSpace + clearChannel) — no read, no forge, no other stream. */
 async function mintIfAuth(root: string, space: string): Promise<string | undefined> {
   const auth = loadSpaceAuth(authDir(root));
   if (!auth || auth.space !== space) return undefined;
-  return mintCreds(auth, newIdentity(), "manager");
+  return mintCreds(auth, newIdentity(), "teardown");
 }

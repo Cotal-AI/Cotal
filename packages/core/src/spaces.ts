@@ -8,7 +8,23 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { DEFAULT_SERVER } from "./endpoint.js";
-import { parseSubject, chatStream, dmStream, taskStream, presenceBucket, channelBucket } from "./subjects.js";
+import {
+  parseSubject, chatStream, dmStream, taskStream, inboxStream, dlvStream,
+  presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket,
+  deliveryBucket, managerBucket,
+} from "./subjects.js";
+import { idFromCreds } from "./identity.js";
+
+/** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
+ *  cred needs (its `sub.allow` is `_INBOX_<id>.>`, so JS API replies must land there, not the default
+ *  `_INBOX.<nuid>`). Bare/open mode → default inbox. Mirrors `streams.ts authConnectOpts`. */
+function scopedConnectOpts(creds?: string): Record<string, unknown> {
+  if (!creds) return {};
+  return {
+    authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
+    inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+  };
+}
 
 /** One row of the space overview. */
 export interface SpaceInfo {
@@ -33,7 +49,7 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
     timeout: opts.timeoutMs ?? 2000,
     reconnect: false,
     maxReconnectAttempts: 0,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
+    ...scopedConnectOpts(opts.creds),
   });
   try {
     const jsm = await jetstreamManager(nc);
@@ -88,16 +104,26 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
     servers: opts.servers ?? DEFAULT_SERVER,
     reconnect: false,
     maxReconnectAttempts: 0,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)) } : {}),
+    ...scopedConnectOpts(opts.creds),
   });
   try {
     const jsm = await jetstreamManager(nc);
+    // Delete EVERY stream + KV bucket `setupSpaceStreams` creates — otherwise `down` leaves the DLV/INBOX
+    // streams and the members/acl/membership/delivery/manager buckets orphaned (a space leak), and since
+    // `teardown` is the sole STREAM.DELETE holder, nothing else could ever reap them. Best-effort.
     const streams = [
       chatStream(opts.space),
       dmStream(opts.space),
       taskStream(opts.space),
+      inboxStream(opts.space),
+      dlvStream(opts.space),
       `KV_${presenceBucket(opts.space)}`,
       `KV_${channelBucket(opts.space)}`,
+      `KV_${membersBucket(opts.space)}`,
+      `KV_${aclBucket(opts.space)}`,
+      `KV_${membershipBucket(opts.space)}`,
+      `KV_${deliveryBucket(opts.space)}`,
+      `KV_${managerBucket(opts.space)}`,
     ];
     for (const s of streams) await jsm.streams.delete(s).catch(() => {});
   } finally {

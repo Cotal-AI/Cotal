@@ -88,7 +88,7 @@ try {
 
   // ---- privileged manager endpoint: provisioner + Plane-3 host + publisher ----
   const mgrId = newIdentity();
-  const mgrCreds = await mintCreds(auth, mgrId, "manager");
+  const mgrCreds = await mintCreds(auth, mgrId, "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   const mgr = new CotalEndpoint({
     space, servers: SERVERS, creds: mgrCreds,
@@ -97,6 +97,16 @@ try {
   });
   mgr.on("error", (e: Error) => console.error("  ! mgr", e.message));
   await mgr.start();
+
+  // The former allow-all manager is split into scoped creds (PR 1.5): the provisioner endpoint (`mgr`)
+  // keeps setupSpaceStreams/provisionAgent; an `operator` cred posts chat AS itself (the daemon's
+  // fan-out reads CHAT and delivers). No control is served here, so no supervisor cred is needed.
+  const poster = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "operator"),
+    card: { name: "poster", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false,
+  });
+  poster.on("error", (e: Error) => console.error("  ! poster", e.message));
+  await poster.start();
 
   // ---- agent A: boots subscribed ONLY to "general"; read ACL also covers "review". It durable-joins
   //      "review" but never live-subscribes it, so a review post can reach it ONLY via Plane-3. ----
@@ -145,7 +155,7 @@ try {
   const r = await dlv.durableJoinFor(aId.id, "review");
   check("durableJoinFor('review') reports durable:true (record committed + reader hosted)", r.durable === true, r);
 
-  await mgr.multicast("hello-durable", { channel: "review" });
+  await poster.multicast("hello-durable", { channel: "review" });
   check(
     "a durable MEMBER not live-subscribed receives the post via Plane-3 (next turn)",
     await until(() => got.some((g) => g.text === "hello-durable")),
@@ -157,14 +167,14 @@ try {
   check("durable:true (real JetStream backstop ack, coalesces with any live copy)", h?.durable === true);
 
   // a second post arrives too (steady-state fan-out, seq > activationFence)
-  await mgr.multicast("second", { channel: "review" });
+  await poster.multicast("second", { channel: "review" });
   check("steady-state fan-out delivers a later post", await until(() => got.some((g) => g.text === "second")));
 
   // ---- leave = hard read boundary (interval) ----
   await dlv.durableLeaveFor(aId.id, "review");
   await wait(150);
   const beforeLeave = got.length;
-  await mgr.multicast("after-leave", { channel: "review" });
+  await poster.multicast("after-leave", { channel: "review" });
   await wait(900); // settle: prove ABSENCE (can't poll for non-arrival)
   check(
     "a post AFTER leave (seq > leaveCursor) is NOT delivered — leave is a hard backstop cut",
@@ -173,7 +183,7 @@ try {
   );
 
   // ---- general (boot channel) is untouched: a general post still reaches A live (core-sub path) ----
-  await mgr.multicast("on-general", { channel: "general" });
+  await poster.multicast("on-general", { channel: "general" });
   check("boot channel 'general' still delivers (Plane-3 is additive)", await until(() => got.some((g) => g.text === "on-general")));
 
   // ---- security boundary: the agent cannot reach the mixed INBOX store, nor write its own plane-3 ----
@@ -225,6 +235,7 @@ try {
 
   await a.stop();
   await dlv.stop();
+  await poster.stop();
   await mgr.stop();
 
   console.log(`\nPLANE-3 SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

@@ -87,28 +87,40 @@ try {
   }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
-  // Privileged endpoint: provisions durables + publishes (and, in phase 2, serves the control plane).
-  // Until then it is a BARE endpoint that does NOT serve control, so runtime joins have no responder.
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
-  await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
-  const pub = new CotalEndpoint({
-    space,
-    servers: SERVERS,
-    creds: mgrCreds,
-    card: { name: "pub", kind: "endpoint" },
-    consume: false,
-    registerPresence: false,
-    watchPresence: false,
-    heartbeatMs: 300,
-    ttlMs: 1500,
-  });
-  pub.on("error", (e: Error) => console.error("  ! pub", e.message));
-  await pub.start();
+  // Least-privilege role split (PR 1.5 — the allow-all `manager` cred is DELETED). The former single
+  // god `pub` endpoint is decomposed into scoped endpoints, each on its own profile cred, so no one
+  // connection can do all four jobs:
+  //   prov   (provisioner) — setupSpaceStreams + provisionAgent (pre-create DM/DLV/TASK durables + commitAcl)
+  //   poster (operator)    — posts chat (multicast), as itself
+  //   sup    (supervisor)  — serves the CONTROL_SELF_SERVICE tier (durableJoin/Leave/listMemberships), Phase 2
+  //   dlv    (delivery)    — Plane-3 host + members/ACL reads (channelMembers); created in Phase 2 below
+  const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
+  const mkEndpoint = (name: string, creds: string) =>
+    new CotalEndpoint({
+      space,
+      servers: SERVERS,
+      creds,
+      card: { name, kind: "endpoint" },
+      consume: false,
+      registerPresence: false,
+      watchPresence: false,
+      heartbeatMs: 300,
+      ttlMs: 1500,
+    });
+  const prov = mkEndpoint("prov", provCreds); // provisioner: onboards agents (DurableProvisioner)
+  const poster = mkEndpoint("poster", await mintCreds(auth, newIdentity(), "operator")); // posts chat as itself
+  const sup = mkEndpoint("sup", await mintCreds(auth, newIdentity(), "supervisor")); // serves control (Phase 2)
+  for (const [ep, nm] of [[prov, "prov"], [poster, "poster"], [sup, "sup"]] as const)
+    ep.on("error", (e: Error) => console.error(`  ! ${nm}`, e.message));
+  await prov.start();
+  await poster.start();
+  await sup.start();
 
   // Agent A: boots subscribed to ["general","ops"] (durable pre-created over both), read ACL also
   // covers review.> (so it can self-serve runtime joins under that subtree) but NOT "secret".
   const aId = newIdentity();
-  const aCreds = await provisionAgent(pub, auth, aId, {
+  const aCreds = await provisionAgent(prov, auth, aId, {
     subscribe: ["general", "ops"],
     allowSubscribe: ["general", "ops", "review.>"],
   });
@@ -138,7 +150,7 @@ try {
   check("manager-free joinChannel(review.api) succeeds", r.joined === true, r);
   check("manager-free join reports durable:false (joined live, backstop unestablished)", r.durable === false, r);
 
-  await pub.multicast("live via core-sub", { channel: "review.api" });
+  await poster.multicast("live via core-sub", { channel: "review.api" });
   await wait(400);
   check(
     "manager-free join DELIVERS the live message (core-sub)",
@@ -146,7 +158,7 @@ try {
     got,
   );
 
-  await pub.multicast("on general", { channel: "general" });
+  await poster.multicast("on general", { channel: "general" });
   await wait(400);
   check(
     "boot channel delivered via its core-sub, exactly once",
@@ -170,7 +182,7 @@ try {
   if (!back) throw new Error("broker did not restart");
   await wait(3000); // reconnect + startConsumers rebind + core-sub reconciliation
   got.length = 0;
-  await pub.multicast("after reconnect", { channel: "review.api" });
+  await poster.multicast("after reconnect", { channel: "review.api" });
   await wait(800);
   check(
     "manager-free core-sub join SURVIVES a broker reconnect",
@@ -189,7 +201,7 @@ try {
   // Core-sub leave is manager-free and stops delivery.
   await a.leaveChannel("review.api");
   got.length = 0;
-  await pub.multicast("after leave", { channel: "review.api" });
+  await poster.multicast("after leave", { channel: "review.api" });
   await wait(400);
   check("after manager-free leave, no live delivery", !got.some((g) => g.includes("after leave")), got);
 
@@ -198,12 +210,13 @@ try {
   const leftGeneral = await a.leaveChannel("general");
   check("leaving a boot channel succeeds (manager-free core-sub close)", leftGeneral.left === true, leftGeneral);
   got.length = 0;
-  await pub.multicast("after general leave", { channel: "general" });
+  await poster.multicast("after general leave", { channel: "general" });
   await wait(300);
   check("after leaving the boot channel, no delivery", !got.some((g) => g.includes("after general leave")), got);
 
   // ───────────── Phase 2 — a real Plane-3 host: the delivery daemon (fan-out + trusted reader + ctl.delivery join/leave) ─────────────
-  // Host Plane-3 on `pub` and serve the durableJoin/Leave ctl ops that joinChannel/leaveChannel now use
+  // Host Plane-3 on the `dlv` (delivery) endpoint and serve the durableJoin/Leave ctl ops that
+  // joinChannel/leaveChannel now use — via the `sup` (supervisor) control responder that mediates them —
   // for a `durable`-class channel (the legacy filter-move is no longer the runtime durable path). The
   // trusted reader re-authorizes against the caller's current ACL (its allowSubscribe), supplied here.
   // Per-id read ACLs, shared by the reader (startPlane3) and the control responder. Faithful to the
@@ -211,10 +224,10 @@ try {
   // a finite generation (fail-closed stale-leave guard), and listMemberships serves the caller's own
   // current memberships so a connecting agent can hydrate its boot generations.
   const acls: Record<string, string[]> = { [aId.id]: ["general", "ops", "review.>"] };
-  // Phase 2 Plane-3 host = a scoped `delivery` cred, NOT the manager (`pub`). The manager cred
-  // no longer carries the Plane-3 inject grants (closure (i)); `pub` stays provisioner + publisher
-  // and serves the CONTROL_SELF_SERVICE tier below, but the durableJoin/Leave/ownerMemberships ops
-  // it mediates run on the delivery host (which writes members + hosts the per-member reader).
+  // Phase 2 Plane-3 host = a scoped `delivery` cred (`dlv`), NOT the deleted allow-all manager. The
+  // supervisor cred (`sup`) serves the CONTROL_SELF_SERVICE tier below (its only job — no chat publish,
+  // no members read), but the durableJoin/Leave/ownerMemberships ops the handler mediates run on the
+  // delivery host `dlv` (which writes members + hosts the per-member reader + answers channelMembers).
   const dlvId = newIdentity();
   const dlv = new CotalEndpoint({
     space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
@@ -224,7 +237,7 @@ try {
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
   await dlv.startPlane3((id) => acls[id]);
-  pub.serveControl(CONTROL_SELF_SERVICE, async (req) => {
+  sup.serveControl(CONTROL_SELF_SERVICE, async (req) => {
     const acl = acls[req.from.id];
     const args = req.args as { channel?: unknown; generation?: unknown };
     const ch = typeof args?.channel === "string" ? args.channel : "";
@@ -248,7 +261,7 @@ try {
   check("manager-present joinChannel(review.db) succeeds", r2.joined === true, r2);
   check("manager-present join reports durable:true (Plane-3 backstop active)", r2.durable === true, r2);
 
-  await pub.multicast("dual-path once", { channel: "review.db" });
+  await poster.multicast("dual-path once", { channel: "review.db" });
   check(
     "the Plane-3 durable backstop delivers the durable copy (next-turn, durable:true)",
     await until(() => gotDurable.includes("#review.db:dual-path once")),
@@ -264,7 +277,7 @@ try {
   await a.leaveChannel("review.db");
   got.length = 0;
   gotDurable.length = 0;
-  await pub.multicast("gone", { channel: "review.db" });
+  await poster.multicast("gone", { channel: "review.db" });
   await wait(900);
   check("manager-present leave stops delivery (core-sub closed + backstop tombstoned)", !got.some((g) => g.includes("gone")), got);
 
@@ -276,10 +289,10 @@ try {
   // only after it comes up in Phase 2, so POLL for it rather than assume the elapsed review.db steps
   // were enough — a slow round-trip (CI/Windows) lagged it and flaked this check (cf. the `until`
   // wait the durable-delivery check above uses for the same eventual-consistency reason).
-  let aliceOpsBefore = await pub.channelMembers("ops");
+  let aliceOpsBefore = await dlv.channelMembers("ops");
   for (let i = 0; i < 160 && !aliceOpsBefore.some((m) => m.id === aId.id); i++) {
     await wait(50);
-    aliceOpsBefore = await pub.channelMembers("ops");
+    aliceOpsBefore = await dlv.channelMembers("ops");
   }
   check("alice's boot 'ops' membership is present (self-joined at connect)", aliceOpsBefore.some((m) => m.id === aId.id), aliceOpsBefore);
 
@@ -295,7 +308,7 @@ try {
   const kv = await openMembersRegistry(kvNc, space);
   const opsRec = (await readMember(kv, "ops", aId.id))!.record;
   await commitMember(kv, { ...opsRec, activated: false });
-  const hidden = await pub.channelMembers("ops");
+  const hidden = await dlv.channelMembers("ops");
   check("an activation-pending (activated:false) member is HIDDEN from channelMembers", !hidden.some((m) => m.id === aId.id), hidden);
 
   const opsLeave = await a.leaveChannel("ops");
@@ -305,7 +318,7 @@ try {
   check("leave TOMBSTONES the activation-pending record (discovered despite activated:false — BLOCKER-1 leave-discovery)", opsRecAfter?.record.leaveCursor !== undefined, opsRecAfter?.record);
   await kvNc.close();
   got.length = 0;
-  await pub.multicast("after ops leave", { channel: "ops" });
+  await poster.multicast("after ops leave", { channel: "ops" });
   await wait(900); // settle: prove ABSENCE — both planes closed
   check("after the un-hydrated boot leave, no delivery (live sub closed + backstop tombstoned)", !got.some((g) => g.includes("after ops leave")), got);
 
@@ -315,7 +328,7 @@ try {
   //    the mirror entry were missing, leaveChannel re-resolves the generation on demand (fail-closed).
   const bId = newIdentity();
   acls[bId.id] = ["ops"];
-  const bCreds = await provisionAgent(pub, auth, bId, { subscribe: ["ops"], allowSubscribe: ["ops"] });
+  const bCreds = await provisionAgent(prov, auth, bId, { subscribe: ["ops"], allowSubscribe: ["ops"] });
   const b = new CotalEndpoint({
     space, servers: SERVERS, creds: bCreds,
     card: { id: bId.id, name: "bob", kind: "agent" },
@@ -328,27 +341,29 @@ try {
 
   // Poll for bob's boot self-join to hydrate (connect + daemon round-trip) rather than assume a fixed
   // delay — same eventual-consistency flake class as alice's check above; a fixed wait can lag on CI/Windows.
-  let bootMembers = await pub.channelMembers("ops");
+  let bootMembers = await dlv.channelMembers("ops");
   for (let i = 0; i < 160 && !bootMembers.some((m) => m.id === bId.id); i++) {
     await wait(50);
-    bootMembers = await pub.channelMembers("ops");
+    bootMembers = await dlv.channelMembers("ops");
   }
   check("bob's BOOT durable membership is listed (activated, hydrated)", bootMembers.some((m) => m.id === bId.id), bootMembers);
 
   const bootLeave = await b.leaveChannel("ops");
   check("leaving a BOOT durable channel succeeds (hydrated generation → fail-closed tombstone)", bootLeave.left === true, bootLeave);
   await wait(150);
-  const afterBootLeave = await pub.channelMembers("ops");
+  const afterBootLeave = await dlv.channelMembers("ops");
   check("a boot-channel leave TOMBSTONES its Plane-3 membership (no longer a member)", !afterBootLeave.some((m) => m.id === bId.id), afterBootLeave);
   gotB.length = 0;
-  await pub.multicast("after boot leave", { channel: "ops" });
+  await poster.multicast("after boot leave", { channel: "ops" });
   await wait(900); // settle: prove ABSENCE — both planes closed (live sub + backstop)
   check("after a boot-channel leave the backstop stops too (§7 hard boundary, both planes)", !gotB.some((g) => g.includes("after boot leave")), gotB);
 
   await b.stop();
   await a.stop();
   await dlv.stop();
-  await pub.stop();
+  await sup.stop();
+  await poster.stop();
+  await prov.stop();
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);

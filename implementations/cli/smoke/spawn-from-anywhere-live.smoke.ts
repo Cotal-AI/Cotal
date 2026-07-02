@@ -100,7 +100,7 @@ try {
   // Escape hatch: `--server` + an UNREGISTERED `--space` (open remote mesh, no creds) bypasses the
   // registry and connects bare, returning the flag values — no "no mesh named X" throw. ("rawopen"
   // is not in the registry; only "alpha" is.)
-  const raw = await connectOrExit({ server: SRV_OPEN, space: "rawopen" }, "manager");
+  const raw = await connectOrExit({ server: SRV_OPEN, space: "rawopen" }, "provisioner");
   ok(
     "B: connectOrExit(--server + unregistered --space) → raw open connect (escape hatch)",
     raw.server === SRV_OPEN && raw.space === "rawopen" && raw.creds === undefined,

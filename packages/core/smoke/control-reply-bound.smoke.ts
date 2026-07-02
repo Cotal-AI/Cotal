@@ -27,6 +27,8 @@ import {
   setupSpaceStreams,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
+  CONTROL_ADMIN,
+  type Profile,
 } from "../src/index.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -71,8 +73,10 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   const mgrId = newIdentity();
-  const mgrCreds = await mintCreds(auth, mgrId, "manager");
-  await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
+  // Setup via provisioner; the serving endpoint below uses `supervisor` — the always-on-daemon profile
+  // that serves the control tiers (the profile that replaced `manager` for serving control).
+  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const mgrCreds = await mintCreds(auth, mgrId, "supervisor");
 
   // The supervisor stand-in: serve the lifecycle tiers with bounded replies (manager.ts does the same).
   const mgr = new CotalEndpoint({
@@ -83,6 +87,7 @@ try {
   await mgr.start();
   mgr.serveControl(CONTROL_PRIVILEGED, (req) => ({ ok: true, data: { echoed: req.op, tier: "manager" } }), { boundReply: true });
   mgr.serveControl(CONTROL_SELF_SERVICE, (req) => ({ ok: true, data: { echoed: req.op, tier: "self" } }), { boundReply: true });
+  mgr.serveControl(CONTROL_ADMIN, (req) => ({ ok: true, data: { echoed: req.op, tier: "admin" } }), { boundReply: true });
   await wait(200);
 
   // Spawn-capable agent: may call BOTH the privileged and self tiers.
@@ -115,6 +120,40 @@ try {
 
   await plain.stop();
   await cap.stop();
+
+  // ── PR 1.5: the tier-scoped CONTROL-CALLER profiles must actually RECEIVE the bounded reply ──
+  // These are minted for the operator's lifecycle commands — control-caller-privileged (`ps/start`),
+  // control-caller-admin (`stop/attach`), deployer (`spawn -f` launch/ps), teardown (`down -f` agent-stop).
+  // Each is a minimal control-only endpoint (consume/presence off, like manager/commands.ts makeControlCall)
+  // that publishes ONE request and must subscribe the bounded reply on its OWN `ctl.<tier>.<id>.reply.<uuid>`
+  // subtree — NOT `_INBOX`. Without that sub grant (regressed once already) every one of these commands
+  // hangs to timeout; the pub-only deny-matrix can't catch it (it routes the reply through the harness
+  // inbox), so this live round-trip is the gate. tier chosen per profile: privileged → CONTROL_PRIVILEGED;
+  // admin/deployer/teardown → CONTROL_ADMIN (their real production tier).
+  const roundTrip = async (profile: Profile, tier: string, label: string) => {
+    const cid = newIdentity();
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, creds: await mintCreds(auth, cid, profile),
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: { id: cid.id, name: label, kind: "endpoint" },
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    try {
+      const r = await ep.requestControl(tier, { op: "ps" }, 2000);
+      check(`${label} (${profile}): bounded ${tier} control-reply RECEIVED`,
+        r.ok === true && (r.data as { echoed?: string })?.echoed === "ps", r);
+    } catch (e) {
+      check(`${label} (${profile}): bounded ${tier} control-reply RECEIVED`, false, (e as Error).message);
+    } finally {
+      await ep.stop();
+    }
+  };
+  await roundTrip("control-caller-privileged", CONTROL_PRIVILEGED, "cc-priv");
+  await roundTrip("control-caller-admin", CONTROL_ADMIN, "cc-admin");
+  await roundTrip("deployer", CONTROL_ADMIN, "deployer");
+  await roundTrip("teardown", CONTROL_ADMIN, "teardown");
+
   await mgr.stop();
 
   console.log(`\nCONTROL-REPLY-BOUND SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

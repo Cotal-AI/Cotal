@@ -66,7 +66,7 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   // Privileged setup + the membership reader (manager profile: allow-all).
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   const mgr = new CotalEndpoint({
     space,

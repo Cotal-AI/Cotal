@@ -8,14 +8,40 @@ import {
   resolvePeer,
   AmbiguousPeerError,
   DEFAULT_SERVER,
+  mintCreds,
+  newIdentity,
+  provisionAgent,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
   type CotalMessage,
 } from "@cotal-ai/core";
 import { resolveSpace } from "../lib/status.js";
-import { connectOrExit, reachableOrExit } from "../lib/connect.js";
+import { reachableOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
+
+// The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
+// sentence instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
+// BEFORE ep.start) and ep.start itself. Returns false for anything that isn't a known auth/
+// provisioning class, so the caller re-throws the raw error for genuinely unexpected failures.
+function renderJoinAuthError(e: unknown, space: string): boolean {
+  const msg = (e as Error)?.message ?? String(e);
+  if (/consumer not found|no responders|not provisioned/i.test(msg)) {
+    console.error(
+      c.red(`${space} isn't provisioned for a console session yet — run `) +
+        c.bold("cotal up") +
+        c.red(` first, or join with --creds/--token.`),
+    );
+    return true;
+  }
+  if (/authoriz|permission|not authorized/i.test(msg)) {
+    console.error(
+      c.red(`not authorized to join ${space}'s channels — pass --creds/--token, or ask the mesh operator for a join link.`),
+    );
+    return true;
+  }
+  return false;
+}
 
 export async function join(argv: string[]): Promise<void> {
   const { values } = parseArgs({
@@ -60,14 +86,53 @@ export async function join(argv: string[]): Promise<void> {
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
     await reachableOrExit(server, auth);
   } else {
-    // RESIDUAL (PR 1.5): a console needs a receive-capable SCOPED profile (channel read + own DM
-    // receive) plus self-provisioning of its DM inbox — coupled to the pre-existing unprovisioned-console
-    // DM bug (a self-minted console has no manager to pre-create its `dm_<id>` durable). Until that lands
-    // this self-mints `manager`; the `ep.start()` wrap below keeps the failure legible in the meantime.
-    const conn = await connectOrExit(values, "manager");
-    space = conn.space;
-    server = conn.server;
-    auth.creds = conn.creds;
+    // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
+    // exactly like the manager does at spawn — open a short-lived `provisioner`, pre-create THIS console's
+    // own bind-only dm_<id>/dlv_<id> durables + record its read ACL, then connect as a plain `agent`. The
+    // console never HOLDS provisioner authority as a session cred (mint → provision own inbox → drop →
+    // connect as agent), so the DM CONSUMER.CREATE surface exists only for the provisioning window — the
+    // same containment as the manager's `withProvisioner`. This fixes the unprovisioned-console
+    // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
+    // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
+    const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+    space = target.space;
+    server = target.server;
+    await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
+    if (target.auth) {
+      const identity = newIdentity();
+      const prov = new CotalEndpoint({
+        space,
+        servers: server,
+        creds: await mintCreds(target.auth, newIdentity(), "provisioner"),
+        channels: [],
+        consume: false,
+        registerPresence: false,
+        watchPresence: false,
+        watchChannels: false,
+        card: { name: "join-provisioner", role: "provisioner", kind: "endpoint" },
+      });
+      // Swallow provisioner errors: this ephemeral endpoint's failures surface through the try/catch
+      // below as one legible sentence, not a raw `! provisioner: …` side channel.
+      prov.on("error", () => {});
+      try {
+        await prov.start();
+        // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
+        // (durableMembership:false) — the console reads live via its core-sub + receives DMs on its dm_<id>.
+        auth.creds = await provisionAgent(prov, target.auth, identity, {
+          subscribe: [channel],
+          allowSubscribe: [channel],
+          allowPublish: [channel],
+          role: values.role,
+          durableMembership: false,
+        });
+        await prov.stop();
+      } catch (e) {
+        // The self-mint step runs BEFORE ep.start(), so its auth/provisioning failure must render
+        // legibly too — same fail-fast gate, not a raw NATS error leaked through the on-error channel.
+        if (!renderJoinAuthError(e, space)) throw e;
+        process.exit(1);
+      }
+    }
   }
 
   const ep = new CotalEndpoint({
@@ -141,21 +206,9 @@ export async function join(argv: string[]): Promise<void> {
   try {
     await ep.start();
   } catch (e) {
-    // Legible operator errors instead of a raw NATS stack trace (the plan's stale-cred fail-fast gate).
-    // A bare `cotal join` self-mints creds and binds a durable DM inbox nobody pre-created on an
-    // unprovisioned space; surface that (and an auth reject) as ONE human sentence.
-    const msg = (e as Error)?.message ?? String(e);
-    if (/consumer not found|no responders|not provisioned/i.test(msg))
-      console.error(
-        c.red(`${space} isn't provisioned for a console session yet — run `) +
-          c.bold("cotal up") +
-          c.red(` first, or join with --creds/--token.`),
-      );
-    else if (/authoriz|permission|not authorized/i.test(msg))
-      console.error(
-        c.red(`not authorized to join ${space}'s channels — pass --creds/--token, or ask the mesh operator for a join link.`),
-      );
-    else throw e;
+    // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
+    // surface that (and an auth reject) as ONE human sentence, not a raw NATS stack.
+    if (!renderJoinAuthError(e, space)) throw e;
     process.exit(1);
   }
 

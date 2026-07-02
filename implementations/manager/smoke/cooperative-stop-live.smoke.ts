@@ -81,7 +81,7 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   // Privileged setup (manager profile: allow-all) — provisions the peers, exactly as a launcher would.
-  const mgrCreds = await mintCreds(auth, newIdentity(), "manager");
+  const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   mgr = new CotalEndpoint({
     space,

@@ -15,6 +15,7 @@ import {
   type Command,
   type ControlReply,
   type ControlTier,
+  type Profile,
 } from "@cotal-ai/core";
 import {
   authDir,
@@ -77,15 +78,18 @@ async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise
  *       same escape hatch `connectOrExit` has; plain reachability, no prune).
  *    3. otherwise the registry/`current` resolver, with the same stale-prune + friendly preflight —
  *       so `cotal ps --space <name>` reaches that mesh's RECORDED broker instead of silently assuming
- *       `DEFAULT_SERVER` (:4222); `--server` overrides. The privileged "manager" cred is minted from
- *       the RESOLVED mesh's own recorded root (so `--space other` loads other's auth, guarded by
+ *       `DEFAULT_SERVER` (:4222); `--server` overrides. The tier-scoped caller cred (`profile`) is minted
+ *       from the RESOLVED mesh's own recorded root (so `--space other` loads other's auth, guarded by
  *       `targetFromEntry`'s `auth.space === m.space` check), or none for an open mesh.
  *  Shares `@cotal-ai/workspace`'s `preflightTarget`/`pruneStaleMeshes` with the CLI, so a dead/mismatched entry gets
  *  the same one-sentence message + stale-prune the rest of the CLI gives — not a raw NATS trace. The
  *  pre-resolution sweep runs only for bare / `--server`-only resolution; an explicit `--space` is
  *  resolved + preflighted directly (so a `--server` override can recover a dead-recorded mesh).
  *  `ask()` can therefore trust the target is reachable + auth-valid. */
-export async function resolveManagerTarget(v: Values): Promise<{ space: string; server: string; creds?: string }> {
+export async function resolveManagerTarget(
+  v: Values,
+  profile: Profile,
+): Promise<{ space: string; server: string; creds?: string }> {
   if (v.creds) {
     const server = v.server ?? DEFAULT_SERVER;
     const creds = readFileSync(v.creds, "utf8");
@@ -116,7 +120,7 @@ export async function resolveManagerTarget(v: Values): Promise<{ space: string; 
     }
     throw e;
   }
-  const creds = target.auth ? await mintCreds(target.auth, newIdentity(), "manager") : undefined;
+  const creds = target.auth ? await mintCreds(target.auth, newIdentity(), profile) : undefined;
   await preflightOrExit(target, creds);
   return { space: target.space, server: target.server, creds };
 }
@@ -159,10 +163,11 @@ function parse(argv: string[]): Values {
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
  *  disconnect. The target is already reachability- + auth-preflighted by {@link resolveManagerTarget}
  *  (which prints the friendly message + prunes on failure), so this connects straight through. `tier`
- *  picks the control subject: privileged for spawn/ps; admin for the operator's cross-agent ops
+ *  picks the control subject: privileged for start/ps; admin for the operator's cross-agent ops
  *  (stop/attach/purge), which the manager refuses on the privileged subject for a non-owner. `creds`
- *  is the privileged "manager" cred resolved by {@link resolveManagerTarget} (scoped, but granted both
- *  the privileged and admin control subjects, so it reaches either), or undefined on an open mesh. */
+ *  is the tier-scoped caller cred resolved by {@link resolveManagerTarget} (`control-caller-privileged`
+ *  for start/ps, `control-caller-admin` for stop/attach — each holds ONLY its own tier's pub grant, so
+ *  `tier` here matches the cred the caller minted), or undefined on an open mesh. */
 async function ask(
   space: string,
   server: string,
@@ -205,7 +210,7 @@ async function start(argv: string[]): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
-  const t = await resolveManagerTarget(v);
+  const t = await resolveManagerTarget(v, "control-caller-privileged");
   const reply = await ask(t.space, t.server, "start", {
     name: v.name,
     role: v.role,
@@ -231,8 +236,10 @@ async function stop(argv: string[]): Promise<void> {
     process.exit(1);
   }
   // Operator stop is a cross-agent (admin) op — the CLI operator isn't the agent's spawner, so the
-  // privileged subject would reject it; admin (its allow-all "manager" cred reaches it) is correct.
-  const t = await resolveManagerTarget(v);
+  // privileged subject would reject it; the admin tier reaches any agent. The scoped `control-caller-admin`
+  // cred holds ONLY `ctl.<admin>.<id>` (that IS the cross-agent authority — the manager doesn't re-check
+  // the caller), so it reaches this op and nothing else.
+  const t = await resolveManagerTarget(v, "control-caller-admin");
   const reply = await ask(t.space, t.server, "stop", {
     name: v.name,
   }, t.creds, CONTROL_ADMIN);
@@ -242,7 +249,7 @@ async function stop(argv: string[]): Promise<void> {
 
 async function ps(argv: string[]): Promise<void> {
   const v = parse(argv);
-  const t = await resolveManagerTarget(v);
+  const t = await resolveManagerTarget(v, "control-caller-privileged");
   const reply = await ask(t.space, t.server, "ps", undefined, t.creds);
   failIfNotOk(reply);
   const rows =
@@ -283,8 +290,8 @@ async function attach(argv: string[]): Promise<void> {
     process.exit(1);
   }
   // Operator attach is a cross-agent (admin) op — same reasoning as stop (the operator isn't the
-  // spawner; admin reaches any agent).
-  const t = await resolveManagerTarget(v);
+  // spawner; admin reaches any agent). Scoped `control-caller-admin`: ctl.<admin> only.
+  const t = await resolveManagerTarget(v, "control-caller-admin");
   const reply = await ask(t.space, t.server, "attach", {
     name: v.name,
   }, t.creds, CONTROL_ADMIN);
