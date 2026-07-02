@@ -34,6 +34,13 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
+// Hermes is Unix-only — its buildLaunch THROWS on win32 by design (AF_UNIX bridge + Python sidecar).
+// This smoke is CI-gated on both OSes (`pnpm test`), so on Windows we skip the Hermes buildLaunch rows
+// (claude + opencode still run) and instead assert the Unix-only guard fires. `connectors` is the set
+// whose buildLaunch is exercised per-platform.
+const onWin = process.platform === "win32";
+const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnector, opencodeConnector, hermesConnector];
+
 // A workspace with no cotal *config*. A manager spawn now REQUIRES a discoverable persona (no
 // silent default-ACL fallback), so seed a minimal `.cotal/agents/<name>.md` per spawned name —
 // this test's subject is harness preflight + model threading, not persona/ACL resolution.
@@ -123,30 +130,38 @@ registry.register(recCon);
   check("opencode.requires == [opencode]", JSON.stringify(opencodeConnector.requires) === '["opencode"]');
   check("hermes.requires == [hermes]", JSON.stringify(hermesConnector.requires) === '["hermes"]');
 
+  // Hermes is Unix-only: on win32 buildLaunch throws BEFORE producing a spec — assert that guard here
+  // and skip the Hermes model rows below (they'd all throw). claude + opencode still run on both OSes.
+  if (onWin) {
+    let threw = false;
+    try { hermesConnector.buildLaunch({ ...base }); } catch { threw = true; }
+    check("hermes: buildLaunch throws (Unix-only) on win32", threw);
+  }
+
   // flag wins over the agent file's `model:`
   check("claude: flag beats frontmatter", claudeModel(claudeConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
   check("opencode: flag beats frontmatter", ocModel(opencodeConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
-  check("hermes: flag beats frontmatter", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
+  if (!onWin) check("hermes: flag beats frontmatter", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
 
   // flag applies with NO agent file (the gap the fix closes)
   check("claude: flag with no agent file", claudeModel(claudeConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
   check("opencode: flag with no agent file", ocModel(opencodeConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
-  check("hermes: flag with no agent file", hermesModel(hermesConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
+  if (!onWin) check("hermes: flag with no agent file", hermesModel(hermesConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
 
   // no flag → agent-file model is the fallback (incl. Hermes, whose launcher previously ignored it)
   check("claude: no flag → frontmatter opus", claudeModel(claudeConnector.buildLaunch({ ...base, configPath: af })) === "opus");
   check("opencode: no flag → frontmatter opus", ocModel(opencodeConnector.buildLaunch({ ...base, configPath: af })) === "opus");
-  check("hermes: no flag → frontmatter opus", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af })) === "opus");
+  if (!onWin) check("hermes: no flag → frontmatter opus", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af })) === "opus");
 
   // nothing set → no model applied
   check("claude: nothing → no --model", claudeModel(claudeConnector.buildLaunch({ ...base })) === undefined);
   check("opencode: nothing → no config.model", ocModel(opencodeConnector.buildLaunch({ ...base })) === undefined);
-  check("hermes: nothing → no HERMES_MODEL", hermesModel(hermesConnector.buildLaunch({ ...base })) === undefined);
+  if (!onWin) check("hermes: nothing → no HERMES_MODEL", hermesModel(hermesConnector.buildLaunch({ ...base })) === undefined);
 
   // 4 — ACL ENV emission: each connector forwards the resolved policy so the spawned session's
   // runtime read/post set matches its minted creds. Wildcard allowSubscribe (team.>) must survive.
   const acl = { subscribe: ["team"], allowSubscribe: ["team", "team.>"], allowPublish: ["team"] };
-  for (const con of [claudeConnector, opencodeConnector, hermesConnector]) {
+  for (const con of connectors) {
     const env = con.buildLaunch({ ...base, ...acl }).env!;
     check(`${con.name}: COTAL_SUBSCRIBE forwarded`, env.COTAL_SUBSCRIBE === "team", env.COTAL_SUBSCRIBE);
     check(`${con.name}: COTAL_ALLOW_SUBSCRIBE forwarded (wildcard kept)`, env.COTAL_ALLOW_SUBSCRIBE === "team,team.>", env.COTAL_ALLOW_SUBSCRIBE);
@@ -210,14 +225,16 @@ registry.register(recCon);
     check("claude: prompt+resume → --fork-session still emitted", a.includes("--fork-session"), a);
   }
   // opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
-  for (const con of [opencodeConnector, hermesConnector]) {
+  // Hermes is excluded on win32 (its buildLaunch throws Unix-only regardless — asserted in §3).
+  const unsupportedResume = onWin ? [opencodeConnector] : [opencodeConnector, hermesConnector];
+  for (const con of unsupportedResume) {
     let threw = false;
     let spec: LaunchSpec | undefined;
     try { spec = con.buildLaunch({ ...base, resume: "sess-1" }); } catch { threw = true; }
     check(`${con.name}: buildLaunch({resume}) throws`, threw, spec);
   }
   // …but the common no-resume path still builds normally (the guard doesn't over-fire).
-  for (const con of [opencodeConnector, hermesConnector]) {
+  for (const con of unsupportedResume) {
     let built = false;
     try { con.buildLaunch({ ...base }); built = true; } catch { /* unexpected */ }
     check(`${con.name}: no resume → builds normally`, built);
