@@ -428,6 +428,11 @@ export class Manager {
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
   private opStart(args: Record<string, unknown>, caller: string): Promise<ControlReply> {
+    // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
+    // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
+    // but a raw control message could otherwise slip an empty value through and silently start fresh.
+    if (args.resume !== undefined && !String(args.resume).trim())
+      return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
     return this.startAgent(
       {
         name: String(args.name ?? "").trim(),
