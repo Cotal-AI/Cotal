@@ -17,6 +17,9 @@
  *   5. RESUME (issue #23) — claude buildLaunch emits `--resume <id> --fork-session` (never one
  *      without the other, hostile id stays one argv token, coexists with the persona append);
  *      opencode + hermes THROW; and `resume` threads StartAgentOpts → LaunchOpts verbatim.
+ *   6. RESUME CAPABILITY PREFLIGHT (issue #159 Part A) — a resume request for a connector that doesn't
+ *      declare `supportsResume` is rejected BEFORE any provisioning side effect (no mint, no
+ *      buildLaunch), mirroring the harness preflight; `supportsResume` matrix across the connectors.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,7 +50,7 @@ const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnect
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
 mkdirSync(agentsDir, { recursive: true });
-for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
+for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
 // rec3 carries an explicit access policy — its frontmatter ACL must thread through to LaunchOpts.
 writeFileSync(join(agentsDir, "rec3.md"), `---\nname: rec3\nsubscribe: [team]\nallowSubscribe: [team, team.>]\nallowPublish: [team]\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
@@ -70,15 +73,28 @@ let lastSpec: LaunchSpec | undefined;
 const agentCount = () => (mgr as unknown as { agents: Map<string, unknown> }).agents.size;
 
 // A recording connector that requires `node` (present whenever this smoke runs) — captures the
-// LaunchOpts the manager hands it, so we can assert the model threads through verbatim.
+// LaunchOpts the manager hands it, so we can assert the model threads through verbatim. Declares
+// `supportsResume` so a resume request passes the pre-mint preflight and reaches buildLaunch.
 let lastOpts: LaunchOpts | undefined;
 const recCon: Connector = {
   kind: "connector",
   name: "smoke-rec",
   requires: ["node"],
+  supportsResume: true,
   buildLaunch: (o) => { lastOpts = o; return { command: "true", args: [], env: {} }; },
 };
 registry.register(recCon);
+
+// A twin that passes the harness preflight (node present) but does NOT support resume — used to prove
+// the pre-mint resume preflight rejects BEFORE reaching buildLaunch (its buildLaunch must never run).
+let noResumeBuilt = false;
+const recNoResumeCon: Connector = {
+  kind: "connector",
+  name: "smoke-norsm",
+  requires: ["node"],
+  buildLaunch: (o) => { noResumeBuilt = true; lastOpts = o; return { command: "true", args: [], env: {} }; },
+};
+registry.register(recNoResumeCon);
 
 // 1 — Preflight REJECT: hide PATH so `claude` can't be found; the real claude connector requires it.
 {
@@ -246,6 +262,30 @@ registry.register(recCon);
   lastOpts = undefined;
   await mgr.startAgent({ name: "rrec2", agent: "smoke-rec" });
   check("no resume → LaunchOpts.resume undefined", lastOpts?.resume === undefined, lastOpts?.resume);
+}
+
+// 6 — RESUME CAPABILITY PREFLIGHT (#159 Part A): resume is a connector capability. A resume request for
+// a connector that doesn't declare `supportsResume` is REJECTED before any side effect (no reserve, no
+// mint, no buildLaunch) — mirrors the harness preflight; the buildLaunch throw stays the backstop.
+{
+  check("claude supportsResume === true", claudeConnector.supportsResume === true);
+  check("opencode supportsResume falsy", !opencodeConnector.supportsResume, opencodeConnector.supportsResume);
+  check("hermes supportsResume falsy", !hermesConnector.supportsResume, hermesConnector.supportsResume);
+
+  // REJECT: smoke-norsm passes the node PATH check but declares no resume support.
+  noResumeBuilt = false;
+  const before = agentCount();
+  const reply = await mgr.startAgent({ name: "norsm1", agent: "smoke-norsm", resume: "sess-x" });
+  check("unsupported-connector resume rejected", reply.ok === false, reply);
+  check("reject names 'does not support resuming'", /does not support resuming/.test(reply.error ?? ""), reply.error);
+  check("reject BEFORE buildLaunch (no spec built)", noResumeBuilt === false);
+  check("reject BEFORE side effect (no agent recorded)", agentCount() === before);
+
+  // …but no resume → the same connector spawns normally (the preflight doesn't over-fire).
+  noResumeBuilt = false;
+  const ok = await mgr.startAgent({ name: "norsm2", agent: "smoke-norsm" });
+  check("no resume → unsupported-resume connector still spawns", ok.ok === true, ok);
+  check("no resume → buildLaunch reached", noResumeBuilt === true);
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

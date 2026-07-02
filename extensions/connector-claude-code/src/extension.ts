@@ -34,6 +34,8 @@ export const claudeConnector: Connector = {
   transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
+  supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
+
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};

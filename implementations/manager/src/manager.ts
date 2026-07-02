@@ -538,6 +538,11 @@ export class Manager {
     const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length)
       return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH — not found` };
+    // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
+    // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
+    // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
+    if (opts.resume && !connector.supportsResume)
+      return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
 
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
     // + model. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`

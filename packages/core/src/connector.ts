@@ -119,4 +119,12 @@ export interface Connector extends Extension {
    *  plugin install. Consumers (like `cotal setup`) resolve it via the registry
    *  so they never import the extension package directly. */
   readonly pluginRoot?: string;
+  /** Whether this connector can honor {@link LaunchOpts.resume} (fork an existing session into the
+   *  mesh). The manager reads this as a PRE-MINT preflight: when `resume` is requested for a connector
+   *  that doesn't declare support, it fails loud BEFORE any provisioning side effect (mirrors the
+   *  {@link requires} PATH preflight) — so an unsupported resume can never mint-then-orphan creds +
+   *  durables. Default-deny: absent/false → not supported, and `buildLaunch` throwing on `resume`
+   *  stays as the backstop. Only a connector that forks-from a prior session (never hijacks it) sets
+   *  this `true`. */
+  readonly supportsResume?: boolean;
 }
