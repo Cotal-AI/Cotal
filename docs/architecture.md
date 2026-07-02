@@ -385,7 +385,10 @@ browser).
   `addon-attach`, `addon-serialize`, all MIT, zero-dep) for the terminal, in **our own
   lightweight UI** (no framework lock-in, no forked dashboard). The manager exposes a local
   **attach endpoint** (HTTP plus WebSocket) that bridges PTY ↔ browser; `addon-attach` wires a
-  pane straight to that socket, and `addon-serialize` replays scrollback on late attach.
+  pane straight to that socket. The manager mirrors each PTY into a **headless terminal**
+  (`@xterm/headless` + `addon-serialize`) and, on attach, replays a serialized snapshot of it —
+  including a full-screen TUI's alternate-screen buffer — so a late or concurrent attach repaints
+  the current screen in full rather than a partial frame.
 - **Topology:** the manager hosts the attach endpoint (it holds the PTYs); the **console** runs
   **in-process** today, so the manager serves the page itself (`GET /` console, `GET /agents`
   the managed roster, `/assets/*` the vendored xterm bundles, `WS /attach/<name>` the PTY

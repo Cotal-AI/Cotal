@@ -11,8 +11,10 @@ export type RuntimeKind = string;
 export interface AttachSession {
   readonly cols: number;
   readonly rows: number;
-  /** Scrollback so a late attach sees output that already scrolled past. */
-  backlog(): Buffer;
+  /** A snapshot to bootstrap a late/concurrent attach: bytes that repaint the current screen.
+   *  May be async — a backend can reconstruct a full-screen (alternate-screen) TUI's buffer rather
+   *  than replay raw scrollback, so an attach paints correctly without the child having to repaint. */
+  backlog(): Buffer | Promise<Buffer>;
   /** Subscribe to live output; returns an unsubscribe fn. */
   onData(fn: (chunk: Buffer) => void): () => void;
   /** Fires when the underlying process exits; returns an unsubscribe fn. */

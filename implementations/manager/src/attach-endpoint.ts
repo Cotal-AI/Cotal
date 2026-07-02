@@ -73,7 +73,9 @@ export class AttachEndpoint {
         socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
         return;
       }
-      this.#wss.handleUpgrade(req, socket, head, (ws) => this.#onConnection(ws, name));
+      this.#wss.handleUpgrade(req, socket, head, (ws) => {
+        this.#onConnection(ws, name).catch(() => ws.close());
+      });
     });
   }
 
@@ -178,7 +180,7 @@ export class AttachEndpoint {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
-  #onConnection(ws: WebSocket, name: string): void {
+  async #onConnection(ws: WebSocket, name: string): Promise<void> {
     const handle = this.lookup(name);
     if (!handle || handle.status() !== "running") {
       ws.close();
@@ -194,14 +196,23 @@ export class AttachEndpoint {
       return;
     }
 
-    const backlog = session.backlog();
-    if (backlog.length) ws.send(backlog);
-
+    const send = (b: Buffer) => {
+      if (ws.readyState === ws.OPEN) ws.send(b);
+    };
+    // Subscribe to live output BEFORE requesting the snapshot, and buffer what arrives until the
+    // snapshot is sent. The snapshot (below) is a point-in-time screen image; anything the child
+    // emits after it must land after it, in order. Subscribing first (no await in between) means no
+    // chunk can slip through unobserved, and the buffer stops a mid-snapshot burst from racing ahead
+    // of — or being lost before — the image.
+    let live = false;
+    const buffered: Buffer[] = [];
     const offData = session.onData((chunk) => {
-      if (ws.readyState === ws.OPEN) ws.send(chunk);
+      if (live) send(chunk);
+      else buffered.push(chunk);
     });
     const offExit = session.onExit(() => ws.close());
-
+    // Wire input + cleanup now too, so the client's initial `r:cols,rows` (and any early keystrokes)
+    // during the snapshot await aren't dropped, and a disconnect mid-await still unsubscribes.
     ws.on("message", (data, isBinary) => {
       if (isBinary) {
         session.write((data as Buffer).toString("utf8"));
@@ -209,12 +220,31 @@ export class AttachEndpoint {
       }
       const text = data.toString();
       const m = /^r:(\d+),(\d+)$/.exec(text);
-      if (m) session.resize(Number(m[1]), Number(m[2]));
-      else session.write(text);
+      if (!m) {
+        session.write(text);
+        return;
+      }
+      session.resize(Number(m[1]), Number(m[2]));
     });
     ws.on("close", () => {
       offData();
       offExit();
     });
+
+    // Reconstructed screen image: the backend replays a byte-exact snapshot — including the
+    // alternate-screen buffer of a full-screen TUI (OpenCode/Claude) — so a late or concurrent attach
+    // paints correctly without depending on the child to repaint. (Raw scrollback replay couldn't
+    // rebuild an alt-screen, leaving same-size re/co-attaches a partial screen.) Then flush anything
+    // that arrived while we built it, and switch to sending live output straight through.
+    let snapshot: Buffer;
+    try {
+      snapshot = await session.backlog();
+    } catch {
+      ws.close(1011, "attach snapshot failed");
+      return;
+    }
+    if (snapshot.length) send(snapshot);
+    for (const chunk of buffered) send(chunk);
+    live = true; // snapshot delivered — stream subsequent output straight through
   }
 }

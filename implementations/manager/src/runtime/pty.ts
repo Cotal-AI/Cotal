@@ -1,11 +1,14 @@
 import * as pty from "@lydell/node-pty";
+import Headless from "@xterm/headless";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
-/** How much terminal output to retain for late-attach scrollback replay. */
-const SCROLLBACK_BYTES = 256 * 1024;
+/** How many rows of history the attach-time screen mirror retains (see spawn) so a late attach
+ *  still sees output that scrolled past. */
+const SCROLLBACK_ROWS = 1000;
 /** Spacing between auto-confirm Enter presses, and how many to send. Claude's startup gates
  *  (workspace-trust, then the dev-channels warning) each wait for Enter and neither has a headless
  *  override. The count is variable — a fresh folder shows both, a re-launch on a now-trusted folder
@@ -47,8 +50,18 @@ export class PtyRuntime implements Runtime {
 
     const dataSubs = new Set<(c: Buffer) => void>();
     const exitSubs = new Set<() => void>();
-    const ring: Buffer[] = [];
-    let ringBytes = 0;
+    // Mirror the child's PTY into a headless terminal, so on attach we hand the new client a
+    // reconstructed screen image — the alternate-screen buffer of a full-screen TUI, or the
+    // scrollback of an inline one — instead of a raw byte replay. A raw replay can't rebuild an
+    // alt-screen, which left a late or concurrent attach staring at a partial screen (see `backlog`).
+    const term = new Headless.Terminal({
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      scrollback: SCROLLBACK_ROWS,
+      allowProposedApi: true, // the serialize addon reads buffer internals via proposed API
+    });
+    const serializer = new SerializeAddon();
+    term.loadAddon(serializer);
     let alive = true;
     let cols = DEFAULT_COLS;
     let rows = DEFAULT_ROWS;
@@ -70,12 +83,8 @@ export class PtyRuntime implements Runtime {
     }
 
     proc.onData((d) => {
+      term.write(d); // mirror into the screen model for attach-time reconstruction
       const b = Buffer.from(d, "utf8");
-      ring.push(b);
-      ringBytes += b.length;
-      while (ringBytes > SCROLLBACK_BYTES && ring.length > 1) {
-        ringBytes -= ring.shift()!.length;
-      }
       for (const fn of dataSubs) fn(b);
     });
     proc.onExit(() => {
@@ -133,7 +142,14 @@ export class PtyRuntime implements Runtime {
         get rows() {
           return rows;
         },
-        backlog: () => Buffer.concat(ring),
+        backlog: () =>
+          // Serialize the mirrored screen into bytes that repaint it exactly — the alt-screen buffer
+          // (and modes) of a full-screen TUI, or the scrollback of an inline one. The empty write
+          // drains the parser first (xterm writes are FIFO), so the snapshot reflects every byte the
+          // child has emitted so far, not a state that lags behind in-flight output.
+          new Promise<Buffer>((resolve) =>
+            term.write("", () => resolve(Buffer.from(serializer.serialize(), "utf8"))),
+          ),
         onData: (fn) => {
           dataSubs.add(fn);
           return () => dataSubs.delete(fn);
@@ -148,6 +164,7 @@ export class PtyRuntime implements Runtime {
         resize: (c, r) => {
           cols = c;
           rows = r;
+          if (c > 0 && r > 0) term.resize(c, r); // keep the mirror in step so snapshots reconstruct at size
           if (alive) proc.resize(c, r);
         },
       }),
