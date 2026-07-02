@@ -101,7 +101,7 @@ jobs:
           # this cosmetic step must never block cutting the Release (|| true).
           detail=$(node scripts/release-notes-detail.mjs "$version" 2>/dev/null || true)
           {
-            printf '🚀 **Cotal %s is out!**\n\nGrab it: `npm i cotal-ai@%s`\n\n' "$version" "$version"
+            printf '**Cotal %s is out!**\n\nGrab it: `npm i cotal-ai@%s`\n\n' "$version" "$version"
             if [ -n "$detail" ]; then printf '%s\n\n' "$detail"; fi
             printf '%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
