@@ -124,6 +124,13 @@ export const claudeConnector: Connector = {
     // The `--model` flag wins over the agent file, and applies even with no agent file.
     if (model) args.push("--model", model);
 
+    // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
+    // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
+    // session id from that transcript and leaves the original untouched. The id is a single argv
+    // token (no shell), so a hostile-looking id can't inject. The persona `--append-system-prompt`
+    // above still applies, so the forked context runs under the current mesh persona.
+    if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+
     return {
       command: "claude",
       args,

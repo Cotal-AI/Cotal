@@ -172,6 +172,14 @@ agents: { a: { persona: ./a.md, bogus: 1 } }
 channels: { general: { subscribe: [a] } }
 `, "Unrecognized key");
 
+// `resume:` is an IMPERATIVE-only knob (cotal spawn/start/cotal_spawn) — a manifest must reject it,
+// not silently forward it. Pins the strictObject lock so a future loosen-to-passthrough breaks CI
+// (issue #23: session resume is excluded from the declarative path by construction).
+fails(`${HEAD}
+agents: { a: { persona: ./a.md, resume: sess-123 } }
+channels: { general: { subscribe: [a] } }
+`, "Unrecognized key");
+
 // undeclared name inside allowPublish specifically
 fails(`${HEAD}
 agents: { a: ./a.md }

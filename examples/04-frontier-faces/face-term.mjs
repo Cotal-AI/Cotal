@@ -178,10 +178,16 @@ function tick() {
   // blink
   if (state.blink && t > blinkOffAt) { state.blink = false; nextBlinkAt = t + 2200 + Math.random() * 2800; }
   else if (!state.blink && t > nextBlinkAt) { state.blink = true; blinkOffAt = t + 140; }
-  // lip-sync: consume one queued char per frame; status follows the mouth, not just the events.
-  // Expression markers ride the same queue, so a mid-message [[face:X]] lands exactly when the
-  // mouth reaches that sentence.
+  // lip-sync: consume one queued char per frame, but follow the LATEST output — agents write far
+  // faster than one char per frame, and playing the whole backlog kept the mouth flapping for
+  // minutes after the agent went quiet. Skip everything beyond ~2s of backlog (like the browser
+  // engine's pushTokens), applying skipped expression markers so a fast-forwarded [[face:X]] still
+  // lands the right mood; within the window a marker still fires when the mouth reaches its spot.
   if (speakBuf.length) {
+    while (speakBuf.length > 25) {
+      const skipped = speakBuf.shift();
+      if (skipped && typeof skipped === 'object') applyExpr(skipped.expr);
+    }
     let head = speakBuf.shift();
     while (head && typeof head === 'object') { applyExpr(head.expr); head = speakBuf.shift(); }
     if (head !== undefined) { state.viseme = vis(head); state.speaking = true; state.status = 'speaking'; }
@@ -276,6 +282,14 @@ async function streamEvents(sid) {
       }
     }
   }
+}
+
+/** The event stream is gone (serve exited, or the connection failed): the agent cannot speak
+ *  anymore, so stop the mouth NOW — drop the un-played backlog instead of talking on as if alive. */
+function streamDead() {
+  speakBuf.length = 0;
+  state.speaking = false; state.viseme = null; turnDone = true;
+  state.status = 'error';
 }
 
 // A mesh agent speaks through the cotal send tools — its words are tool-call ARGUMENTS, not
@@ -417,7 +431,7 @@ async function main() {
         ? `watching ${p.label} · session ${SESSION.slice(0, 16)}… type + Enter to talk to it.`
         : `connected to ${SERVER} · model ${MODEL.providerID}/${MODEL.modelID}. ask me something + Enter.`,
     });
-    try { sid = await getSession(); streamEvents(sid).catch(() => { state.status = 'error'; }); }
+    try { sid = await getSession(); streamEvents(sid).then(streamDead, streamDead); }
     catch (e) { convo.push({ who: p.label, text: '[no server at ' + SERVER + ' — run `opencode serve --port 4096`, or use --demo]' }); }
   }
 }

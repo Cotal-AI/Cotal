@@ -137,6 +137,7 @@ function parse(argv: string[]): Values {
       agent: { type: "string" },
       config: { type: "string" },
       model: { type: "string" }, // start: model override, wins over the agent file's `model:`
+      resume: { type: "string" }, // start: fork an existing session id into the mesh (host-local; claude only)
       roster: { type: "string" },
       creds: { type: "string" },
       runtime: { type: "string" }, // supervise: force pty | tmux | cmux (default pty)
@@ -210,6 +211,11 @@ async function start(argv: string[]): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
+  // `--resume ""` asked to resume but named no session — fail loud, don't silently start fresh.
+  if (v.resume !== undefined && !v.resume.trim()) {
+    console.error(c.red("--resume needs a session id (got an empty value)"));
+    process.exit(1);
+  }
   const t = await resolveManagerTarget(v, "control-caller-privileged");
   const reply = await ask(t.space, t.server, "start", {
     name: v.name,
@@ -217,6 +223,7 @@ async function start(argv: string[]): Promise<void> {
     agent: v.agent,
     config: v.config,
     model: v.model,
+    resume: v.resume, // fork an existing session into the mesh (host-local id; caveated for detached start — see docs)
     // Opt-in: only sent when `--transcript` is given; absent => the daemon's default (mirror off).
     transcript: v.transcript ? true : undefined,
     cwd: v.cwd,
@@ -434,7 +441,7 @@ const managerCommands: Command[] = [
     name: "start",
     group: "Control plane",
     summary:
-      "ask the manager to spawn a persona — --name <persona> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] [--cwd <dir>] (loads .cotal/agents/<persona>.md; the peer joins under its name:)",
+      "ask the manager to spawn a persona — --name <persona> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] [--cwd <dir>] [--resume <id> (pair with --cwd)] (loads .cotal/agents/<persona>.md; the peer joins under its name:)",
     run: start,
   },
   {

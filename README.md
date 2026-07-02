@@ -127,6 +127,10 @@ cotal down         # stop everything
 <td width="50%" valign="middle"><b><a href="examples/02-self-improving-console">A swarm rebuilds Cotal's console</a></b><br><br>Four real Claude Code agents join one mesh and coordinate as lateral peers; an orchestrator spawns the workers in cmux tabs and they ship a polished Ink/React TUI for the live console.<br><br><sub>four coding agents · <a href="https://cmux.com">cmux</a> tabs</sub></td>
 <td width="50%"><img src="assets/example-02.gif" alt="Four Claude Code agents (orchestrator, backend, tui-designer, manager) coordinating on the Cotal mesh, with the live cotal console on the left and the agents in cmux tabs on the right"></td>
 </tr>
+<tr>
+<td width="50%"><img src="assets/example-04-frontier.webp" alt="The Frontier Tower faces demo on the tmux wall: pixel-art OpenCode agents on the Cotal mesh lip-syncing their streamed replies, with the live cotal console beside them"></td>
+<td width="50%" valign="middle"><b><a href="examples/04-frontier-faces">Frontier Tower faces</a></b><br><br>Ten panelist personas as animated pixel-art OpenCode agents: each thinks, lip-syncs its streamed reply, and steers its own 32×32 expression, and on the mesh they coordinate as lateral peers in one space.<br><br><sub>ten OpenCode faces · <a href="https://opencode.ai">OpenCode</a> · tmux wall + browser</sub></td>
+</tr>
 </table>
 
 Full index: [docs/examples.md](docs/examples.md).

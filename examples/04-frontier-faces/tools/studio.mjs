@@ -40,7 +40,7 @@ const PLUGIN = join(CONN, "plugin.bundle.js");
 const PORT = Number(process.env.PORT || 4097);
 const MODEL = process.env.MODEL || ""; // overrides each agent file's model
 const EFFORT = process.env.REASONING_EFFORT || "medium"; // reasoning effort for models that support it
-const MAX = 9;
+const MAX = 10;
 
 // The roster and per-channel membership come from a Cotal mesh manifest (cotal.yaml): a channel's
 // `subscribe` is who reads it, `allowPublish` who may post. `-f <path>` overrides ./cotal.yaml.

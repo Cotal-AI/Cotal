@@ -487,6 +487,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .describe(
             "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
           ),
+        // NOTE: session `resume` is deliberately NOT exposed here. Forking a host-local `~/.claude`
+        // transcript is an operator-local intent; letting a spawn-capable mesh PEER name a host
+        // session id would expand `spawn` into host-transcript disclosure with no broker-enforced
+        // boundary. Resume lives only on the operator CLI (`cotal spawn --resume` / `cotal start
+        // --resume`); a peer-facing, capability-gated resume is deferred (see #159).
       },
       async run(agent, _config, { name, role, agent: agentType, model, cwd }: { name: string; role?: string; agent?: string; model?: string; cwd?: string }) {
         try {

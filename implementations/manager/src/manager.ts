@@ -68,6 +68,10 @@ export interface StartAgentOpts {
   config?: string;
   /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
   model?: string;
+  /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
+   *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
+   *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
+  resume?: string;
   /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
@@ -424,6 +428,11 @@ export class Manager {
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
   private opStart(args: Record<string, unknown>, caller: string): Promise<ControlReply> {
+    // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
+    // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
+    // but a raw control message could otherwise slip an empty value through and silently start fresh.
+    if (args.resume !== undefined && !String(args.resume).trim())
+      return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
     return this.startAgent(
       {
         name: String(args.name ?? "").trim(),
@@ -431,6 +440,7 @@ export class Manager {
         role: args.role ? String(args.role) : undefined,
         config: args.config ? String(args.config) : undefined,
         model: args.model ? String(args.model) : undefined,
+        resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
       },
@@ -628,6 +638,10 @@ export class Manager {
         servers: this.servers,
         configPath,
         model,
+        // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
+        // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
+        // construction. An unsupported connector throws here before any process is spawned.
+        resume: opts.resume,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) falls back to `["general"]`, which its

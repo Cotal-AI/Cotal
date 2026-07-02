@@ -492,7 +492,9 @@ export class MeshAgent extends EventEmitter {
    *  the harness (default the manager's `cotal`/Claude), `opts.model` overrides the
    *  persona file's `model:`, and `opts.cwd` roots the new peer at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal start` carries, so
-   *  the agent and operator spawn doors share one control-op contract. */
+   *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
+   *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
+   *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; cwd?: string }): Promise<ControlReply> {
     this.assertConnected();
     return this.ep.requestControl(CONTROL_PRIVILEGED, {

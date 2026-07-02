@@ -1,6 +1,6 @@
 # Frontier Tower faces — declarative mesh.
 #
-#   cotal up -f cotal.yaml            # fresh broker + channels + the four agents
+#   cotal up -f cotal.yaml            # fresh broker + channels + the full panel
 #   cotal up -f cotal.yaml --dry-run  # validate + print the plan, change nothing
 #
 # Channel membership lives here, not in a launcher script: `subscribe` is who reads a
@@ -25,13 +25,17 @@ agents:
   elon: agents/elon.md
   michelle: agents/michelle.md
   mira: agents/mira.md
+  bernie: agents/bernie.md
+  dario: agents/dario.md
+  steve: agents/steve.md
+  rayan: agents/rayan.md
 
 channels:
   # Everyone — the open broadcast panel.
   general:
     description: The whole panel — open broadcast to every agent.
-    subscribe: [sven, david, garry, elon, michelle, mira]
-    allowPublish: [sven, david, garry, elon, michelle, mira]
+    subscribe: [sven, david, garry, elon, michelle, mira, bernie, dario, steve, rayan]
+    allowPublish: [sven, david, garry, elon, michelle, mira, bernie, dario, steve, rayan]
 
   # The two founders building Cotal.
   cotal:
@@ -39,14 +43,26 @@ channels:
     subscribe: [david, sven]
     allowPublish: [david, sven]
 
-  # Spicy provocations — the optimist, accelerationist, contrarian, and perfectionist go at it.
-  hot-takes:
-    description: Spicy provocations — no consensus required.
-    subscribe: [sven, garry, elon, david]
-    allowPublish: [sven, garry, elon, david]
+  # Control vs. emergence — a human at the gate, or environments that self-correct?
+  gates-vs-gardens:
+    description: Control vs. emergence — a human at the gate, or environments that self-correct?
+    subscribe: [sven, david, rayan, michelle, mira]
+    allowPublish: [sven, david, rayan, michelle, mira]
 
-  # The women's room: the conscience and the diplomat on stewardship and getting it right.
-  salon:
-    description: Stewardship and getting it right — the conscience and the diplomat.
-    subscribe: [michelle, mira]
-    allowPublish: [michelle, mira]
+  # How fast, how dangerous, and can we steer it?
+  the-curve:
+    description: How fast, how dangerous, and can we steer it?
+    subscribe: [dario, elon, garry, mira, sven]
+    allowPublish: [dario, elon, garry, mira, sven]
+
+  # The human ledger of automation — jobs, access, and power.
+  who-pays:
+    description: The human ledger of automation — jobs, access, and power.
+    subscribe: [bernie, elon, garry, dario, michelle, mira]
+    allowPublish: [bernie, elon, garry, dario, michelle, mira]
+
+  # Craft, and the last moat when agents generate everything.
+  taste-and-slop:
+    description: Craft, and the last moat when agents generate everything.
+    subscribe: [steve, rayan, sven, garry, david, michelle]
+    allowPublish: [steve, rayan, sven, garry, david, michelle]

@@ -25,7 +25,7 @@ SESSION="${SESSION:-mesh-faces}"
 PLUGIN="$ROOT/extensions/connector-opencode/dist/plugin.bundle.js"
 PIDFILE="/tmp/cotal-mesh-wall.pids"
 MESHLOG="/tmp/cotal-mesh-wall.log"
-MAX=9
+MAX=10
 # default to a clean 2x2 (faces render at a fixed 32x16, so 4 leaves each pane big enough).
 # names are agent-file basenames; their faces come from `face:` (elon->musk, steve->jobs, rayan->ray).
 DEFAULT_ROSTER=(sven david elon garry)

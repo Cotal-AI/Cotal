@@ -126,6 +126,7 @@ export async function spawn(argv: string[]): Promise<void> {
       agent: { type: "string" },
       role: { type: "string" },
       prompt: { type: "string" },
+      resume: { type: "string" }, // fork an existing session id into the mesh (host-local; claude only)
       transcript: { type: "boolean" },
       "no-transcript": { type: "boolean" },
       "share-tools": { type: "string" },
@@ -151,6 +152,12 @@ export async function spawn(argv: string[]): Promise<void> {
       allowStale: splitFlag(values["allow-stale"]),
     });
     return;
+  }
+  // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
+  // rather than silently spawn a fresh one (no fallbacks). An absent flag (undefined) is fine.
+  if (values.resume !== undefined && !values.resume.trim()) {
+    console.error("--resume needs a session id (got an empty value)");
+    process.exit(1);
   }
   // Transcript mirroring to `tr-<name>` is OFF by default; `--transcript` opts in
   // (`--no-transcript` is accepted too, to be explicit about the default).
@@ -278,6 +285,9 @@ export async function spawn(argv: string[]): Promise<void> {
     allowSubscribe,
     allowPublish,
     prompt: values.prompt,
+    // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
+    // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
+    resume: values.resume,
     transcript,
     mcpServers,
   });

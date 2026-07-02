@@ -42,6 +42,14 @@ export interface LaunchOpts {
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */
   prompt?: string;
+  /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
+   *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
+   *  portable value like `model`: it only means something on the machine that produced it. A
+   *  connector that honors it MUST fork a new session id from that transcript (Claude
+   *  `--resume <id> --fork-session`), so the meshed agent gets a fresh session and the original is
+   *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
+   *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
+  resume?: string;
   /** Mirror this session's transcript to the connector's per-agent transcript channel (see
    *  {@link Connector.transcriptChannel}) so peers/observers can read what the agent actually did
    *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
