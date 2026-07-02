@@ -77,6 +77,10 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   provisionDlvInbox: async () => {},
   commitAcl: async () => {},
   provisionTaskQueue: async () => {},
+  // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent joined.
+  on: () => {},
+  off: () => {},
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
 };
 const recCon: Connector = { kind: "connector", name: "smoke-launch", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) };
 registry.register(recCon);

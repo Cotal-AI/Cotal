@@ -715,6 +715,10 @@ later).
       `STREAM.CREATE/DELETE/PURGE`, or chat publish.
     - **provisioner** — the *signer capability* (holds the account signing key), ephemeral and
       **create-only**: pre-creates the per-agent DM/TASK/history durables at spawn.
+    - **deprovisioner** — the teardown counterpart, ephemeral and **target-pinned**: when an agent
+      exits the manager tears down *that one* agent's id-keyed footprint (its `dm_<id>`/`dlv_<id>`
+      durables + read-ACL row + creds file) and nothing else — never a peer's, never the role-shared
+      `svc_<role>` its siblings still bind.
     - **teardown** — the **sole `STREAM.DELETE` holder** (`down -f`), scoped to the space's own
       streams; **channel-purger** / **purger** hold only `STREAM.PURGE` (channel-delete /
       history-clear).

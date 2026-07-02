@@ -37,6 +37,7 @@ import {
   readerDurable,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
+import { openAclRegistry, deleteAcl } from "./acls.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
@@ -365,5 +366,56 @@ export async function clearChannel(opts: {
     return { channel: opts.channel, purged };
   } finally {
     await nc.drain();
+  }
+}
+
+/** Delete a departed agent's id-keyed provisioning footprint (#159 Part B) — the teardown counterpart
+ *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS agent: its two
+ *  bind-only durables (`dm_<id>`, `dlv_<id>`) and its read-ACL row. Idempotent — a missing consumer /
+ *  absent ACL row is a no-op (the agent may have exited before a durable was created, or a re-run).
+ *
+ *  Does NOT touch the role-SHARED `svc_<role>` TASK durable (deleting it would break the role's other
+ *  agents — it lives until space teardown), nor the ephemeral `chathist_<id>` history consumers (they
+ *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
+ *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
+ *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
+export async function deprovisionAgent(opts: {
+  servers: string;
+  space: string;
+  targetId: string;
+  creds?: string;
+}): Promise<void> {
+  const nc = await connect({
+    servers: opts.servers,
+    ...authConnectOpts(opts.creds),
+    // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's
+    // fail-loud `.catch` is load-bearing: no reconnect loop (a wedged broker rejects promptly instead of
+    // looping silently) and a bounded initial connect. Without this a broker-down deprovision would sit
+    // pending forever and the footprint would survive with no log.
+    maxReconnectAttempts: 0,
+    timeout: 5_000,
+  });
+  try {
+    const jsm = await jetstreamManager(nc);
+    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(opts.targetId));
+    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(opts.targetId));
+    await deleteAcl(await openAclRegistry(nc, opts.space), opts.targetId);
+  } finally {
+    await nc.drain();
+  }
+}
+
+/** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays
+ *  idempotent — but re-throwing anything else (e.g. a permissions violation) so a mis-scoped cred fails
+ *  loud rather than silently leaving the durable behind. */
+async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string): Promise<void> {
+  try {
+    await jsm.consumers.delete(stream, name);
+  } catch (e) {
+    // Swallow ONLY "already gone" — a 404 code (the real NATS JS-API signal) or a codeless
+    // consumer/stream-not-found message. Anything else (a permissions violation, a broker error) is
+    // re-thrown so a mis-scoped cred fails loud. The message match is deliberately narrow (not a bare
+    // `/not found/i`) so an unrelated "…not found" error can't be mistaken for the idempotent case.
+    if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;
   }
 }
