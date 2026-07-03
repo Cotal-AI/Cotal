@@ -20,6 +20,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
   chatSubject, unicastSubject, unicastRecvFilter, anycastSubject, dinboxSubject, dlvSubject,
+  controlServiceSubject, CONTROL_SELF_SERVICE, CONTROL_DELIVERY, membershipBucket,
   principalKey, presenceBucket, spacePrefix,
 } from "../src/index.js";
 
@@ -92,6 +93,18 @@ try {
   check("write OWN presence key ALLOWED", await tryPublish(a1, `$KV.${presenceBucket(space)}.${pk(OWNER_A, "actora1")}`, idA1.id) === "allowed");
   check("FORGE the SIBLING's presence key DENIED", await tryPublish(a1, `$KV.${presenceBucket(space)}.${pk(OWNER_A, "actora2")}`, idA1.id) === "denied");
   check("FORGE the OTHER OWNER's presence key DENIED", await tryPublish(a1, `$KV.${presenceBucket(space)}.${pk(OWNER_B, "actorb1")}`, idA1.id) === "denied");
+
+  // Control + delivery-plane forge matrix (defense-in-depth beyond the message lanes): an agent's ctl
+  // grants are its OWN-principal ctl.self/ctl.delivery only, and it holds no publish on the delivery
+  // plane (dinbox/dlv) nor the membership feed — so forging any of these as a sibling or another owner
+  // must be denied. Proves the owner+actor pin extends to control and the fan-out/handoff plane.
+  console.log("A1 control + delivery-plane forge matrix:");
+  check("call OWN ctl.self AS SELF ALLOWED", await tryPublish(a1, controlServiceSubject(space, CONTROL_SELF_SERVICE, OWNER_A, "actora1"), idA1.id) === "allowed");
+  check("FORGE ctl.self as the SIBLING (A2) DENIED", await tryPublish(a1, controlServiceSubject(space, CONTROL_SELF_SERVICE, OWNER_A, "actora2"), idA1.id) === "denied");
+  check("FORGE ctl.delivery as the OTHER OWNER (B1) DENIED", await tryPublish(a1, controlServiceSubject(space, CONTROL_DELIVERY, OWNER_B, "actorb1"), idA1.id) === "denied");
+  check("FORGE-WRITE the SIBLING's dinbox (DM pre-auth fan-out) DENIED", await tryPublish(a1, dinboxSubject(space, OWNER_A, "actora2"), idA1.id) === "denied");
+  check("FORGE-WRITE the OTHER OWNER's dlv (post-auth handoff) DENIED", await tryPublish(a1, dlvSubject(space, OWNER_B, "actorb1"), idA1.id) === "denied");
+  check("FORGE-WRITE a membership-feed key (broker-owned) DENIED", await tryPublish(a1, `$KV.${membershipBucket(space)}.${pk(OWNER_A, "actora2")}`, idA1.id) === "denied");
 
   console.log("A1 subscribe deny matrix (read boundary):");
   check("read #general (own ACL) ALLOWED", await trySubscribe(a1, idA1.id, chatSubject(space, "*", "*", "general")) === "allowed");
