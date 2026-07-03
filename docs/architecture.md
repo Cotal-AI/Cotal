@@ -392,6 +392,14 @@ browser).
   (`@xterm/headless` + `addon-serialize`) and, on attach, replays a serialized snapshot of it —
   including a full-screen TUI's alternate-screen buffer — so a late or concurrent attach repaints
   the current screen in full rather than a partial frame.
+- **The attach contract (pinned).** Since the control *clients* moved into the CLI (the manager
+  keeps only `supervise`), the attach hop is cross-implementation wire and must not drift:
+  the `attach` control op replies `ControlReply.data.ws` — a loopback `ws://` URL for that
+  agent's PTY. On the socket, **binary frames** carry terminal bytes in both directions (PTY
+  output to the client; client bytes are keystrokes), and a **text frame** `r:<cols>,<rows>`
+  resizes. On connect the server replays a serialized full-screen snapshot first (see above).
+  Both ends — the manager's attach endpoint and the CLI's `attach`/web clients — implement
+  exactly this; a change is a coordinated, versioned edit to both plus this paragraph.
 - **Topology:** the manager hosts the attach endpoint (it holds the PTYs); the **console** runs
   **in-process** today, so the manager serves the page itself (`GET /` console, `GET /agents`
   the managed roster, `/assets/*` the vendored xterm bundles, `WS /attach/<name>` the PTY
@@ -419,7 +427,7 @@ the **manager** to start an agent (over the control plane) and it performs the l
 owns (default `pty` runtime, see *Manager*):
 
 ```
-cotal start --role planner --name alice      # CLI → control msg → manager spawns it
+cotal spawn --detach alice --role planner    # CLI → control msg → manager spawns it
 ```
 
 Under the hood the manager runs the *real* `claude` with the plugin attached and identity in the

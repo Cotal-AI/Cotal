@@ -141,7 +141,7 @@ run`). They differ only in how they *run* the spec:
 
 | Launcher | How to point at a file |
 |---|---|
-| Manager (supervised PTY) | `cotal start --name dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <path>`; `--model <m>` overrides the file's `model:` for this launch. Detached; view via console / `cotal attach`. |
+| Manager (supervised PTY) | `cotal spawn --detach dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <path>`; the SAME grammar as the foreground launch — `--model`, `--cwd`, `--prompt`, ACL overrides, `--share-tools` all apply. View via console / `cotal attach`. |
 | Foreground (`cotal spawn`) | `cotal spawn <name-or-path>`. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
 
 `.cotal/` is gitignored (user-local, like `.claude/`). The demo ships committed example
@@ -153,7 +153,7 @@ point at with `--config`.
 manager, which writes the same `.cotal/agents/<name>.md` file (via `saveAgentFile`) and
 announces it on the mesh. A later `cotal_spawn(name, role?, agent?, model?)` auto-discovers it, so
 a peer can mint a teammate's persona on the fly and bring it online with no hand-written file. The
-agent spawn door carries the same knobs as the operator's `cotal start` — `role`, `agent` (harness)
+agent spawn door carries the same knobs as the operator's `cotal spawn --detach` — `role`, `agent` (harness)
 and `model` (overrides the persona file's `model:`) — set at spawn because they are policy, not
 persona content.
 
@@ -170,7 +170,7 @@ whose `~/.claude` holds that transcript.
   (the forked context runs under the current mesh persona). Because it launches in your own terminal
   (inherited stdio), a bad id / missing session / old-`claude` error is Claude's own stderr right in
   front of you and the command exits non-zero — never flattened into a generic "spawn failed".
-- `cotal start --resume <id>` works too, but the manager is detached, so two things differ.
+- `cotal spawn --detach --resume <id>` works too, but the manager is detached, so two things differ.
   **Locality:** the id resolves against the **manager host's** `~/.claude`, and you practically need
   `--cwd` to point at the original project directory. **Failure reporting:** the manager can't inherit
   your terminal, so it waits for a **real outcome** before replying — not a timer — resolving on whichever
@@ -186,8 +186,8 @@ whose `~/.claude` holds that transcript.
       is reaped by the manager's exit watch (freed + deprovisioned).
 
   So `✓ started` means it *joined*, never just "a process launched". Prefer foreground `spawn` when you can
-  (its errors are fully inline). (The *unsupported-connector* case fails earlier still — `cotal start --agent
-  opencode --resume …` is rejected before any launch or mint.)
+  (its errors are fully inline). (The *unsupported-connector* case fails earlier still — `cotal spawn --detach
+  --agent opencode --resume …` is rejected before any launch or mint.)
 - Resume is an **operator surface only** — it is deliberately **not** exposed on MCP `cotal_spawn`.
   Forking a host-local `~/.claude` transcript is operator-local intent; letting a spawn-capable mesh
   *peer* name a host session id would widen the `spawn` capability into host-transcript disclosure with
@@ -352,7 +352,7 @@ Hermes has no MCP), so it lives in connector settings, not the
   fine with that teammate holding the key.
 - **Per-spawn override.** `cotal spawn <name> --share-tools tavily,figma` shares only those
   (they must be declared); `--share-tools none` shares nothing. Absent, all declared servers are
-  shared. Manager-spawned agents (`cotal start`) use the config as-is. Default — no config file —
+  shared. Manager-spawned agents (`cotal spawn --detach`, which honors `--share-tools` too) default to the config as-is. Default — no config file —
   is unchanged: a spawned agent gets only cotal.
 - **Mind the memory.** Sharing re-opens the cost isolation guards: a heavy server booted once per
   spawn multiplies across a team. Share lean servers; keep the Chromium-class ones out.

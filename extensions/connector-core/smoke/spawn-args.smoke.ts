@@ -1,6 +1,6 @@
 /**
  * cotal_spawn parity smoke — proves the MCP spawn door carries the same harness/model knobs as the
- * operator's `cotal start`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which puts `agent`
+ * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which puts `agent`
  * and `model` into the manager's `start` control op; the manager's opStart already consumes both.
  * No NATS: the MeshAgent constructor builds an endpoint but never connects, so we swap in a
  * recording `ep` and mark connected. Run with: pnpm smoke:spawn-args

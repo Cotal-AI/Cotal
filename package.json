@@ -13,8 +13,8 @@
     "build": "pnpm -r build",
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "test": "pnpm -r --if-present test",
-    "check": "pnpm typecheck && pnpm test && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:ci",
-    "smoke:ci": "pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:deprovision && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl && pnpm smoke:cli-kernel && pnpm smoke:flag-inventory",
+    "check": "pnpm typecheck && pnpm test && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:ci && pnpm smoke:spawn-detach:live",
+    "smoke:ci": "pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:deprovision && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl && pnpm smoke:cli-kernel && pnpm smoke:flag-inventory && pnpm smoke:start-overrides && pnpm smoke:launch-parity",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "clean": "git clean -fdX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "cotal": "tsx bin/cotal.ts",
@@ -95,7 +95,10 @@
     "smoke:delivery-reconnect:auth": "tsx packages/core/smoke/delivery-reconnect.smoke.ts",
     "smoke:delivery-broker-coupling": "tsx implementations/delivery/smoke/delivery-broker-coupling.smoke.ts",
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
-    "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts"
+    "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
+    "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",
+    "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
+    "smoke:spawn-detach:live": "tsx bin/smoke/spawn-detach-live.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "workspace:*",

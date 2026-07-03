@@ -1,5 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
   connectorServers,
@@ -18,12 +18,24 @@ import {
   type AgentDef,
   type CompletionResult,
   type Connector,
+  type FlagSpec,
+  type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { authDir, loadMeshes, provenance, resolveMeshTarget } from "@cotal-ai/workspace";
+import {
+  authDir,
+  credsFlag,
+  launchFlags,
+  loadMeshes,
+  provenance,
+  resolveMeshTarget,
+  serverFlag,
+  spaceFlag,
+} from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
+import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
 import { listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 
@@ -52,9 +64,10 @@ export function spawnComplete(argv: string[]): CompletionResult {
  * `cotal spawn <name-or-path>` — launch an agent in the FOREGROUND of this
  * terminal from a local agent file, joined to the mesh with its persona.
  *
- * Unlike `cotal start` (the manager spawns into a detached PTY you attach to),
- * `cotal spawn` hands the terminal straight to the agent: run it in your shell,
- * or inside a cmux/tmux pane, and the real Claude TUI takes over.
+ * With `--detach` the manager spawns it into a detached PTY you `cotal attach` to;
+ * otherwise `cotal spawn` hands THIS terminal straight to the agent: run it in your
+ * shell, or inside a cmux/tmux pane, and the real Claude TUI takes over. One grammar,
+ * two run modes.
  *
  * The launch recipe is the connector's `buildLaunch` (the single source of truth,
  * shared with the manager); only *how the spec runs* differs — foreground exec
@@ -114,9 +127,67 @@ async function uniqueMeshName(
 }
 
 
+/** `cotal spawn`'s full grammar: target + the shared launch bundle + the two spawn-only modes
+ *  (`--detach` = manager-run; `-f` = manifest deploy). Declared `as const` so the values cast
+ *  below is compile-checked against exactly these specs. Foreground and detached parse the SAME
+ *  flags — the old `spawn` vs `start` ability drift is structurally gone. */
+export const spawnFlags = [
+  spaceFlag,
+  serverFlag,
+  { ...credsFlag, description: "control-caller creds for an off-registry manager (--detach only)" },
+  ...launchFlags,
+  { name: "detach", type: "boolean", short: "d", description: "launch via the manager into a detached PTY (reattach with `cotal attach`)" },
+  { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "deploy a manifest onto the running mesh" },
+  { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
+  { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
+  { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
+] as const satisfies readonly FlagSpec[];
+
+/** The `--detach` mode: hand the launch to the running manager over the control plane. One grammar
+ *  with the foreground path; the persona file is resolved (and is the access default) manager-side,
+ *  overridden by the same flags, which ride the `start` op. Replaces the removed `cotal start`. */
+async function spawnDetached(
+  values: FlagValues<typeof spawnFlags>,
+  positionals: string[],
+  transcript: boolean,
+): Promise<void> {
+  const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
+  // The persona REF the manager loads: the positional (or --name), falling back to `default` like
+  // the foreground path; an explicit --config path overrides which FILE is loaded (identity still
+  // comes from the file's `name:`). Mirrors the foreground `ref` resolution 1:1.
+  const ref = positionals[0] ?? values.name ?? values.config ?? "default";
+  const t = await resolveControlTarget(
+    { space: values.space, server: values.server, creds: values.creds },
+    "control-caller-privileged",
+  );
+  provenance.read("mesh", `${t.space} (${t.server})`);
+  const reply = await askManager(t.space, t.server, "start", {
+    name: ref,
+    role: values.role,
+    agent: values.agent,
+    config: values.config,
+    model: values.model,
+    cwd: values.cwd,
+    resume: values.resume, // host-local session id; the manager preflights connector resume support
+    prompt: values.prompt,
+    shareTools: values["share-tools"],
+    subscribe: splitFlag(values.subscribe),
+    allowSubscribe: splitFlag(values["allow-subscribe"]),
+    allowPublish: splitFlag(values["allow-publish"]),
+    // Tri-state: true (--transcript), false (--no-transcript, explicit), absent → manager default.
+    transcript: transcript ? true : values["no-transcript"] ? false : undefined,
+  }, t.creds);
+  failIfNotOk(reply);
+  const d = reply.data as { name: string; role?: string; agent: string; mode: string };
+  console.log(
+    c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
+      c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) — attach with: cotal attach --name ${d.name}`),
+  );
+}
+
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
-  const values = args.values as { name?: string; config?: string; space?: string; server?: string; agent?: string; role?: string; prompt?: string; resume?: string; transcript?: boolean; "no-transcript"?: boolean; "share-tools"?: string; subscribe?: string; "allow-subscribe"?: string; "allow-publish"?: string; file?: string; "dry-run"?: boolean; "allow-stale"?: string; runtime?: string };
+  const values = args.values as FlagValues<typeof spawnFlags>;
   const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
 
   // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
@@ -140,6 +211,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Transcript mirroring to `tr-<name>` is OFF by default; `--transcript` opts in
   // (`--no-transcript` is accepted too, to be explicit about the default).
   const transcript = values.transcript ? true : values["no-transcript"] ? false : false;
+
+  // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
+  // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
+  // request and override the file exactly as the foreground path does.
+  if (values.detach) {
+    return spawnDetached(values, positionals, transcript);
+  }
+  // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
+  // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
+  if (values.creds) {
+    console.error(c.red("✗ --creds is only valid with --detach (it authenticates the manager control call)"));
+    process.exit(1);
+  }
 
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, a local
   // project, or the registry (the running mesh / the `current` default).
@@ -227,7 +311,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // and no long-lived manager knows this agent (it's in no manager's `agents` ledger), so a durable
     // boot membership could be neither authorized for reader delivery nor leaved via self-service. Skip
     // it — the agent reads live via its core-sub; a durable backstop requires spawning under a manager
-    // (`cotal start` / `cotal up`).
+    // (`cotal spawn --detach` / `cotal up`).
     const creds = await provisionAgent(prov, auth, identity, {
       subscribe,
       allowSubscribe,
@@ -263,6 +347,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     creds: credsPath,
     servers: server,
     configPath: path,
+    // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
+    model: values.model,
     subscribe,
     allowSubscribe,
     allowPublish,
@@ -282,6 +368,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
     // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
     env: spec.env ?? {},
+    // `--cwd` roots the agent at another folder/repo (launch-grammar parity with --detach); a
+    // relative path resolves against the invoking shell's cwd. Omitted → inherit this cwd.
+    cwd: values.cwd ? resolvePath(values.cwd) : undefined,
   });
   await new Promise<void>((resolve) => {
     child.on("error", (e) => {

@@ -491,7 +491,7 @@ export class MeshAgent extends EventEmitter {
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (default the manager's `cotal`/Claude), `opts.model` overrides the
    *  persona file's `model:`, and `opts.cwd` roots the new peer at a different folder/repo
-   *  than the manager's workspace — the same knobs the operator's `cotal start` carries, so
+   *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
