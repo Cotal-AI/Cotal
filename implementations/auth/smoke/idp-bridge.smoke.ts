@@ -108,7 +108,7 @@ const bridge = createIdpBridge({
   },
 });
 
-const expectedOwner = deriveOwnerToken(SECRET, `${origin}|${userId}`);
+const expectedOwner = deriveOwnerToken(SECRET, JSON.stringify([origin, userId]));
 const res = await bridge.exchange(idpJwt, { actor: "agent_1" });
 check("exchange mints a bearer bound to the issuer-namespaced derived owner", res.owner === expectedOwner);
 check("exchange reports the bearer exp", typeof res.exp === "number" && res.exp === decodeJwt(res.token).exp);
@@ -167,7 +167,7 @@ const synth = createIdpBridge({
 });
 
 check("synthetic happy path exchanges (control for the rejects below)",
-  (await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, `${IDP_ISS}|human-42`));
+  (await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, JSON.stringify([IDP_ISS, "human-42"])));
 check("an empty grant object mints a scopeless bearer (explicit allow, no scope)",
   (await validateUserToken((await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).token,
     { key: cotalIssuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE })).scope.length === 0);
@@ -193,7 +193,7 @@ await rejects("wrong aud is rejected",
 await rejects("a MULTI-audience token is rejected — exact aud, not set-membership",
   async () => synth.exchange(await mintIdp((j) => baseIdp(j).setAudience([IDP_ISS, "https://other.example"])), { actor: "agent_1" }), "aud");
 check("a singleton-array aud equal to the configured audience is accepted (RFC 7519 array form)",
-  (await synth.exchange(await mintIdp((j) => baseIdp(j).setAudience([IDP_ISS])), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, `${IDP_ISS}|human-42`));
+  (await synth.exchange(await mintIdp((j) => baseIdp(j).setAudience([IDP_ISS])), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, JSON.stringify([IDP_ISS, "human-42"])));
 await rejects("a missing iat is rejected",
   async () => synth.exchange(await mintIdp((j) => j.setSubject("human-42").setIssuer(IDP_ISS).setAudience(IDP_ISS).setExpirationTime(now() + 300)), { actor: "agent_1" }), "iat");
 await rejects("an embedded jwk header is rejected outright",
@@ -216,9 +216,23 @@ await rejects("a missing sub is rejected",
     async () => badGrant.exchange(await mintIdp(baseIdp), { actor: "agent_1" }), "deny");
 }
 
+// Misconfig fails at CONSTRUCTION, not as every-exchange-rejected.
+await rejects("a missing idp.issuer pin fails at construction",
+  () => createIdpBridge({ idp: { issuer: "", audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "issuer");
+await rejects("a missing idp.audience pin fails at construction",
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: "", key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "audience");
+await rejects("a missing idp.key fails at construction",
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: undefined as never }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "key");
+await rejects("a missing authorizeActor hook fails at construction",
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: undefined as never }), "hook");
+
+// The derivation encoding is INJECTIVE: a '|'-straddling issuer/sub pair cannot collide.
+check("derivation encoding is injective — ('a','b|c') and ('a|b','c') derive different owners",
+  deriveOwnerToken(SECRET, JSON.stringify(["a".repeat(1), "b|c"])) !== deriveOwnerToken(SECRET, JSON.stringify(["a|b", "c"])));
+
 // The owner namespace is issuer-separated: same sub under a different IdP issuer → different owner.
 check("same sub under a different IdP issuer derives a DIFFERENT owner",
-  deriveOwnerToken(SECRET, `${IDP_ISS}|human-42`) !== deriveOwnerToken(SECRET, `${origin}|human-42`));
+  deriveOwnerToken(SECRET, JSON.stringify([IDP_ISS, "human-42"])) !== deriveOwnerToken(SECRET, JSON.stringify([origin, "human-42"])));
 
 server.close();
 console.log(`\nidp-bridge smoke: ${pass} passed, ${fail} failed`);

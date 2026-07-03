@@ -14,10 +14,11 @@
  *  2. the IdP token verifies against the PINNED key path only — `alg` pinned to EdDSA, embedded
  *     key material (`jku`/`jwk`/`x5u`/`x5c`) rejected outright, exact `iss`/`aud`, `exp` and a
  *     non-post-dated `iat` required, `sub` a non-empty string (no coercion);
- *  3. the owner derives from `<idp issuer>|<sub>` — issuer-namespaced so the same `sub` from two
- *     IdPs can never collide, and deterministic so re-login re-lands in the same lanes. Changing
- *     the IdP issuer string therefore RE-KEYS every owner (a migration, like rotating the space
- *     secret);
+ *  3. the owner derives from the JSON-array encoding of [idp issuer, sub] — issuer-namespaced so
+ *     the same `sub` from two IdPs can never collide, INJECTIVE by construction (JSON escaping —
+ *     no delimiter an issuer/sub pair could straddle), and deterministic so re-login re-lands in
+ *     the same lanes. This encoding is FROZEN: changing it (or the IdP issuer string) re-keys
+ *     every owner in the space — a migration, like rotating the space secret;
  *  4. the ledger hook AUTHORIZES (owner, actor) and is the ONLY source of `scope`/`parent` — the
  *     request cannot carry them (server-authored `act`, no confused deputy). The hook must return
  *     an explicit grant object; anything else is a deny;
@@ -114,14 +115,26 @@ async function verifyIdpToken(token: string, idp: IdpConfig): Promise<string> {
   return payload.sub;
 }
 
-/** Build an {@link IdpBridge}. */
+/** Build an {@link IdpBridge}. Misconfig fails HERE, at construction — an empty pin would
+ *  otherwise fail closed on every exchange with a far worse operator signal. */
 export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
   if (!opts.space) throw new Error("idp bridge: a space is required");
+  if (typeof opts.idp?.issuer !== "string" || !opts.idp.issuer)
+    throw new Error("idp bridge: idp.issuer (the exact iss pin) is required");
+  if (typeof opts.idp.audience !== "string" || !opts.idp.audience)
+    throw new Error("idp bridge: idp.audience (the exact aud pin) is required");
+  if (!opts.idp.key) throw new Error("idp bridge: idp.key (the pinned JWKS resolver / public key) is required");
+  if (typeof opts.authorizeActor !== "function")
+    throw new Error("idp bridge: an authorizeActor ledger hook is required — there is no allow-by-default");
   return {
     exchange: async (idpToken, req) => {
       assertValidOwnerToken(req.actor);
       const sub = await verifyIdpToken(idpToken, opts.idp);
-      const owner = deriveOwnerToken(opts.spaceSecret, `${opts.idp.issuer}|${sub}`);
+      // JSON-array encoding, NOT `${issuer}|${sub}`: a bare-delimiter concat is non-injective
+      // (("a","b|c") and ("a|b","c") would hash the same input). Safe-by-luck today (one fixed
+      // issuer per bridge), but the derivation input is frozen once real owners exist — an
+      // ambiguity here becomes an owner re-key migration, so it is closed now, while it's free.
+      const owner = deriveOwnerToken(opts.spaceSecret, JSON.stringify([opts.idp.issuer, sub]));
       const grant = await opts.authorizeActor(owner, req.actor);
       if (grant === null || typeof grant !== "object" || Array.isArray(grant))
         throw new Error("idp bridge: authorizeActor must return a grant object — anything else is a deny");
