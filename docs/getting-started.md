@@ -6,13 +6,13 @@ This page is the fastest way to a running local mesh.
 ## Install and run
 
 ```bash
-npm install -g cotal-ai   # recommended: puts `cotal` (and `cotal go`) on your PATH
+npm install -g cotal-ai   # recommended: puts `cotal` on your PATH
 cotal                      # runs setup
 ```
 
 Prefer `npx`? `npx cotal-ai` works too. Setup then offers to install `cotal` globally
 (default yes) so you can just type `cotal`. Decline and the hints stay `npx cotal-ai …`;
-everything still works, because the cmux/tmux session and background processes invoke their own
+everything still works, because the background processes `cotal up` starts invoke their own
 resolved path, not a global `cotal`.
 
 Requirements:
@@ -23,56 +23,59 @@ Requirements:
 
 ## First run
 
-`cotal` with no command runs `setup`. The first time, it walks you through five steps.
+`cotal` with no command runs `setup`. Setup is **configure-only** — it gets your machine ready
+and **starts nothing**. The first time, it walks you through:
 
-1. **Checks.** Verifies Node and locates NATS.
-2. **Starts the web for agents.** A local NATS + JetStream server you own, running in the
-   background (you watch it boot live). By default it is a **JWT-authed** mesh (sender
-   authenticity + per-agent ACLs), and the **server-side delivery daemon** comes up with it to
-   provide the durable backstop. Pass `cotal setup --open` for a frictionless **open** local
-   mesh (no auth, loopback-only, live-only — no daemon) when you just want zero-setup local
-   poking.
-3. **Picks connectors.** Choose which agents join your web (Claude or OpenCode; detected
+1. **Checks.** Verifies Node 20+ and **locates** a `nats-server` (bundled, or your own on PATH —
+   located, not started).
+2. **Picks connectors.** Choose which agents join your web (Claude or OpenCode; detected
    ones are pre-selected). Claude installs a plugin, because its wake channel needs one.
    OpenCode needs no install; it auto-wires when you `cotal spawn` it.
-4. **Adds two experts plus your own session.** By default: **david**, the engineer (how
-   Cotal works); **sven**, the guide (what to build); and **me**, the session you drive.
-   The experts can help you set up and experiment, and hand off to each other.
-5. **Offers a demo.** A Claude you drive, with david and sven helping (manager-owned
-   teammates you can `cotal_despawn`). Inside [cmux](https://cmux.com) they get their own
-   tabs alongside your focused `cotal-main` pane; inside a **[tmux](https://github.com/tmux/tmux/wiki)** session they get their own
-   windows. Otherwise david, sven, and the manager run in the background, and your terminal is
-   handed to the driving session. Either way the demo needs **Claude Code**. Decline or lack
-   it, and you get the `cotal · ready` card instead.
+3. **Adds two experts plus your own session.** By default: **david**, the engineer (how
+   Cotal works); **sven**, the guide (what to build); and **me**, the session you drive. It also
+   seeds a generic `default` persona. Every file it writes is announced with a `→ wrote …` line.
+4. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
+   `npm i -g cotal-ai` so you can just type `cotal` (default yes).
 
-`cotal down` stops the mesh, web, and background manager. In cmux, also close the tabs or
-quit cmux; in tmux, close the windows or the session.
+When it finishes, **nothing is running** — it prints the commands to start things. Bring the
+stack up, then spawn an agent:
 
-**To reopen the session later,** run **`cotal go`** from inside cmux or a tmux session (or
-just `cotal setup` again). It reuses the live manager plus david and sven, and opens only
-what is missing, so there are no duplicate managers. `cotal go` is the friendly "open/resume"
-name; `cotal setup` is the same flow under its install/update name.
+```bash
+cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
+cotal spawn me             # drive a session (or david / sven)
+cotal web                  # open the browser dashboard
+cotal console              # watch the mesh live in this terminal
+cotal down                 # stop everything
+```
+
+`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs), the
+**server-side delivery daemon** comes up with it for the durable backstop, and a detached
+**manager** starts alongside so `cotal spawn --detach` / `cotal_spawn` work right after. Pass
+`cotal up --open` for a frictionless open, loopback-only, live-only mesh (no auth, no daemon)
+when you just want zero-setup local poking.
 
 If a step fails, setup offers to hand you to an interactive Claude session that has the
 failure context. Type `/exit` to return, and it retries.
 
 ## After the first run
 
-Every later `cotal` is a quick status:
+Every later `cotal` prints a **read-only status card**:
 
 ```
-cotal · ready
-✓ NATS  ✓ plugin  ✓ mesh     nats://127.0.0.1:4222 · space main
-                  ✓ web      http://cotal.localhost:7799
-                  ✓ manager  running
+cotal · status
+✓ NATS     nats://127.0.0.1:4222
+✓ plugin   installed
+○ mesh     down — start: cotal up --detach
+○ web      down — start: cotal web
+○ manager  not running — spawns start it, or: cotal supervise
 ```
 
-It makes sure three things are running in the current folder: the mesh, the browser
-dashboard, and the manager (the control plane behind `cotal_spawn` / `despawn` /
-`persona`). Then it prints your next steps.
+It probes the current folder — the mesh, the browser dashboard, and the manager (the control
+plane behind `cotal_spawn` / `despawn` / `persona`) — and for anything down it shows the exact
+command to start it. It starts nothing itself; `cotal setup` only configures.
 
-The dashboard auto-starts at `http://cotal.localhost:7799` (works in Chrome, Firefox, and
-Edge; on Safari use `http://127.0.0.1:7799`).
+The dashboard runs at `http://cotal.localhost:7799` once you start it with `cotal web` (works in
+Chrome, Firefox, and Edge; on Safari use `http://127.0.0.1:7799`).
 
 You drive Cotal through an agent: spawn one and talk to it. It has the tools to message
 peers, spawn teammates, and send feedback.
@@ -80,13 +83,13 @@ peers, spawn teammates, and send feedback.
 Prefer commands?
 
 ```bash
-cotal go                             # open or resume your session (reuses what is up)
+cotal up --detach                    # start the mesh + delivery daemon + manager
 cotal spawn                          # the default agent (edit .cotal/agents/default.md)
 cotal spawn me                       # the session you drive (consults david/sven)
 cotal spawn david                    # ask the engineer (or sven, the guide)
 cotal console --space main           # live mesh view in the terminal (TUI)
-cotal web --space main               # (re)open the browser dashboard
-cotal down                           # stop the background mesh, dashboard, and manager
+cotal web --space main               # open the browser dashboard
+cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 
 Feedback flows through your agent too: tell it "send feedback: ..." and it reports it for
@@ -106,7 +109,7 @@ cotal up -f cotal.yaml               # bring up a fresh mesh from the file
 cotal down                           # tear it down
 ```
 
-If setup already started the default mesh, `cotal up -f` will refuse a second one on the same
+If a mesh is already up (e.g. from `cotal up`), `cotal up -f` will refuse a second one on the same
 address — run `cotal down` first, point the manifest at another address (e.g.
 `broker: { servers: nats://127.0.0.1:14999 }`), or use `cotal spawn -f cotal.yaml` to deploy the
 team onto the running mesh (and `cotal down -f cotal.yaml` to remove just what that deploy
@@ -115,18 +118,18 @@ created). See
 
 ## For agents and CI
 
-A coding agent can set Cotal up for you with one non-interactive command:
+A coding agent can set Cotal up for you with two non-interactive commands:
 
 ```bash
-npx cotal-ai setup --yes
+npx cotal-ai setup --yes     # configure: install the plugin + seed personas (launches nothing)
+npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
 ```
 
-`--yes` accepts every default with no prompts. It installs the plugin, writes the experts
-and your driving session, and starts the mesh, the web dashboard, and the background
-**manager** (so an agent can use the `cotal_*` tools, spawn/despawn/persona, right away). It
-never hands over the terminal, never opens the demo, and exits non-zero with the log path if
-a step fails, so an agent or a CI job can check the result. `cotal down` stops the
-background processes.
+`setup --yes` accepts every default with no prompts — it installs the plugin, writes the experts
+and your driving session, and exits non-zero with the log path if a step fails, so an agent or a
+CI job can check the result. It launches nothing. `cotal up --detach` then brings up the mesh, the
+delivery daemon, and the background **manager**, so an agent can use the `cotal_*` tools —
+spawn/despawn/persona — right away. `cotal down` stops the background processes.
 
 ## Troubleshooting
 

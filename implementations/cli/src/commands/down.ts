@@ -6,7 +6,7 @@ import { cotalPath } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 
-/** Stop the background processes started by `cotal up --detach` / `cotal setup`: the manager, the
+/** Stop the background processes started by `cotal up --detach`: the manager, the
  *  delivery daemon, the web dashboard, and the mesh. With `-f <cotal.yaml>` (or `--run <id>`) it does
  *  an ownership-scoped teardown of a `spawn -f` deploy instead — removing ONLY what that run created
  *  (its agents + the channels it added), from the ledger, never the whole shared mesh. */

@@ -23,7 +23,7 @@ A complete, runnable manifest — two agents, two channels, no separate files:
 ```yaml
 apiVersion: cotal/v1
 kind: Mesh
-space: main                            # the default space — runnable fresh or right after `cotal setup`
+space: main                            # the default space — runnable fresh or right after `cotal up`
 agent: claude                          # the harness that runs each agent (see note below)
 
 agents:                                # inline personas — no external files needed
@@ -57,7 +57,7 @@ cotal down                             # stop the whole mesh
 ```
 
 > If a Cotal mesh is already running at the manifest's broker address (e.g. the default
-> `127.0.0.1:4222` from `cotal setup`), `up -f` **refuses** — it never re-seeds a live broker.
+> `127.0.0.1:4222` from `cotal up`), `up -f` **refuses** — it never re-seeds a live broker.
 > The check is on the *address*, not the `space:` name, so a different space won't dodge it. Run
 > `cotal down` first, point the manifest at another address
 > (`broker: { servers: nats://127.0.0.1:14999 }`, or the `--server` override), or use
@@ -102,7 +102,7 @@ the whole space). An additive deploy from `spawn -f` is torn down with **`cotal 
 |---|---|---|
 | `apiVersion` | yes | Must be `cotal/v1`. |
 | `kind` | yes | Must be `Mesh`. |
-| `space` | yes | The space name (one per file; `spaces:` is not supported in v1). A space's auth is bound to one root — to run a non-default space in a checkout that already ran `cotal setup` (which sets up `main`), use a fresh directory. |
+| `space` | yes | The space name (one per file; `spaces:` is not supported in v1). A space's auth is bound to one root — to run a non-default space in a checkout that already ran `cotal up` (which sets up `main`), use a fresh directory. |
 | `broker` | no | `servers` (comma-separated broker URLs — this sets the address/port; default `nats://127.0.0.1:4222`; **no embedded creds**), `host` (bind interface only, no scheme — does *not* set the port), `auth` (bool — JWT auth, default `true`; `false` is an open dev mesh). The port comes from `servers`/`--server`, never `host`/`--host`. |
 | `runtime` | no | How the manager runs each agent: `pty` (default) · `tmux` · `cmux`. |
 | `agent` | no | Default harness (`claude` / `opencode` / `hermes` / …) for agents that don't set their own. There is **no silent default** — an agent needs this or its own `agent:`. |

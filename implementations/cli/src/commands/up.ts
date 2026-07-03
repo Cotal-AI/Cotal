@@ -44,8 +44,8 @@ import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { ensureDelivery, stopDelivery, stopOldHostingManagerIfPresent } from "../lib/delivery-proc.js";
-import { startManagerDetached } from "../lib/manager-proc.js";
+import { ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
+import { stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -133,15 +133,18 @@ export async function up(args: ParsedArgs): Promise<void> {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     process.exit(1);
   });
-  // The delivery daemon is coupled to the broker: stop it when this `up` stops (Ctrl-C), so the daemon
-  // never outlives the broker it serves.
-  const stop = () => { stopDelivery(); child.kill("SIGTERM"); };
+  // The control plane is coupled to the broker: stop the delivery daemon AND the detached manager
+  // when this `up` stops (Ctrl-C), so neither outlives the broker it serves — a surviving manager
+  // would reconnect-loop invisibly against the dead (or the NEXT) broker (the documented
+  // orphan-supervisor failure mode). Both kill by pidfile, symmetric.
+  const stop = () => { stopDelivery(); stopManager(); child.kill("SIGTERM"); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", (code) => {
     stopDelivery();
+    stopManager();
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
     // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
     // record — removing by name would clobber the live winner and hide it from the registry.
@@ -206,22 +209,34 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     process.exit(1);
   }
 
-  // 1) fresh broker + space streams + channels seeded from the manifest (in-memory seed).
+  // The resolved launch spec is written FIRST so the ONE control-plane manager that comes up with
+  // the broker (inside startMeshDetached) carries it. Exactly one manager serves a space (the
+  // singleton lease): a second `supervise` started here for the launch would race the plain one for
+  // the lease — the loser refuses, so either the agents never boot or the incumbent is orphaned
+  // behind an overwritten pid file. The manager materializes each transient persona and mints creds
+  // from the resolved policy — never re-reading a file for authority.
+  const specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, genRunId()));
+  // A leftover detached manager (its broker is gone — the reachability check above proved nothing
+  // lives at this address) would win the fresh mesh's lease and the launch manager would refuse.
+  // Stop it, so the manager started below WITH the launch spec is THE manager.
+  stopManager();
   let pid: number;
+  let controlPlane = false;
   try {
-    ({ pid } = await startMeshDetached({ server, space: m.space, open, host, seed: manifestToChannels(eff) }));
+    ({ pid, controlPlane } = await startMeshDetached({ server, space: m.space, open, host, seed: manifestToChannels(eff), runtime, launch: specPath }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
   console.log(c.green(`✓ mesh "${m.space}" up at ${server}`) + c.dim(` (broker pid ${pid})`));
   console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
-
-  // 2) write the resolved launch spec + boot agents through a manager (it materializes each transient
-  //    persona and mints creds from the resolved policy — never re-reading a file for authority).
-  const specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, genRunId()));
-  startManagerDetached({ space: m.space, server, runtime, launch: specPath });
-  console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime}) — see .cotal/manager.log`));
+  // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
+  // degraded control plane (announced above) means the agents are NOT coming up.
+  if (controlPlane) {
+    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime}) — see .cotal/manager.log`));
+  } else {
+    console.error(c.red(`✗ ${eff.agents.length} agent(s) NOT launched — the control plane did not come up (see above)`));
+  }
 
   // Loud summary: any persona-inherited access an `include` manifest dragged in, plus warnings.
   const inherited = renderInherited(eff);
@@ -259,15 +274,24 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
   };
 }
 
-/** Start the server-side delivery daemon alongside the broker (auth mode only): old-manager preflight
- *  first (so an old hosting manager can't double-bind), then the auth-gated daemon (a no-op in open
- *  mode). Coupled to the broker by the daemon's own broker-gone watchdog + the `up`/`down` teardown. */
-async function startDeliveryWithBroker(space: string, server: string): Promise<void> {
+/** Start the CONTROL PLANE alongside the broker: old-manager preflight → delivery daemon (auth
+ *  mode only) → detached manager. `up` is the launching command — since `setup` became
+ *  configure-only (stage 2b), the whole local stack comes up HERE, so `spawn --detach` /
+ *  cotal_spawn find a manager without any setup side effect. Coupled to the broker by the
+ *  daemon's watchdog + the `up`/`down` teardown. `mgr` rides through to the manager start — the
+ *  `up -f` path hands THE manager its runtime + resolved launch spec here (one manager per space,
+ *  so the launch can never be a second supervise). Returns whether the control plane came up, so a
+ *  caller whose output claims a manager (the `up -f` launching line) can tell the truth. */
+async function startDeliveryWithBroker(space: string, server: string, mgr?: { runtime?: string; launch?: string }): Promise<boolean> {
   try {
-    stopOldHostingManagerIfPresent();
-    await ensureDelivery({ space, server });
-  } catch {
-    /* non-fatal — durable delivery degrades, live delivery is unaffected */
+    await ensureControlPlane({ space, server, ...mgr });
+    return true;
+  } catch (e) {
+    // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
+    // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
+    // not as an unexplained "no manager reachable" later.
+    console.error(c.dim(`! control plane degraded: ${(e as Error).message} — durable delivery/manager may be down; start one with: cotal supervise`));
+    return false;
   }
 }
 
@@ -283,16 +307,22 @@ export interface DetachOpts {
   seed?: ChannelRegistryFile;
   /** Live boot lines, tailed from the server's log file (safe for a detached child). */
   onLine?: (line: string) => void;
+  /** Manifest launch (`cotal up -f`): the ONE control-plane manager started alongside the broker
+   *  carries this runtime + resolved launch-spec path — never a second supervise (singleton lease). */
+  runtime?: string;
+  launch?: string;
 }
 
 /**
  * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
- * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Shared by
- * `up --detach` and `cotal setup`. When `onLine` is given, boot output is tailed from the
+ * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Used by
+ * `up --detach`. When `onLine` is given, boot output is tailed from the
  * log file and forwarded — the child writes to the file (not a pipe), so it survives the
  * parent exiting.
  */
-export async function startMeshDetached(opts: DetachOpts = {}): Promise<{ server: string; pid: number; source: string }> {
+export async function startMeshDetached(
+  opts: DetachOpts = {},
+): Promise<{ server: string; pid: number; source: string; controlPlane: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   mkdirSync(storeDir, { recursive: true });
@@ -326,10 +356,10 @@ export async function startMeshDetached(opts: DetachOpts = {}): Promise<{ server
   writeFileSync(cotalPath("nats.pid"), String(child.pid));
   await postStart(server, space, setup, seedFile);
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
-  await startDeliveryWithBroker(space, server);
+  const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
   // Detached: the registry entry outlives this process — `cotal down` removes it.
   recordOurMesh({ space, server, root: cotalRoot(), mode: useAuth ? "auth" : "open", ts: new Date().toISOString() });
-  return { server, pid: child.pid ?? 0, source };
+  return { server, pid: child.pid ?? 0, source, controlPlane };
 }
 
 /** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so starting it

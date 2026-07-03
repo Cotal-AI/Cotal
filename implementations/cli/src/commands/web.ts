@@ -250,37 +250,6 @@ export function webUp(port: number = WEB_PORT): Promise<boolean> {
   });
 }
 
-/** Start the dashboard in the background (pid in `.cotal/web.pid`, output to `.cotal/web.log`),
- *  stopped by `cotal down`. Re-execs this same CLI — `process.execArgv` carries the tsx loader in
- *  dev, and is empty in prod where `node <entry.js> web …` runs the compiled binary. */
-export function startWebDetached(o: { space?: string; server?: string } = {}): { pid: number; url: string } {
-  const fd = openSync(cotalPath("web.log"), "a");
-  const [node, ...self] = selfArgv();
-  const args = [
-    ...self,
-    "web",
-    "--no-open",
-    "--port",
-    String(WEB_PORT),
-    "--space",
-    o.space ?? resolveSpace(process.cwd()),
-    ...(o.server ? ["--server", o.server] : []),
-  ];
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
-  child.unref();
-  writeFileSync(cotalPath("web.pid"), String(child.pid));
-  return { pid: child.pid ?? 0, url: WEB_URL };
-}
-
-/** Make the dashboard available: reuse one already listening, else start it detached and wait
- *  briefly for it to come up. Best-effort — callers treat a non-running result as non-fatal. */
-export async function ensureWeb(o: { space?: string; server?: string } = {}): Promise<{ url: string; running: boolean }> {
-  if (await webUp()) return { url: WEB_URL, running: true };
-  startWebDetached(o);
-  for (let i = 0; i < 20 && !(await webUp()); i++) await new Promise((r) => setTimeout(r, 150));
-  return { url: WEB_URL, running: await webUp() };
-}
 
 async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
   const chunks: Buffer[] = [];

@@ -34,30 +34,25 @@ happens to be on the mesh.
 
 ## Run it for your own project
 
-**One command, from inside a cmux pane:**
+**Two commands:**
 
 ```
-cotal go
+cotal setup      # one-time: installs the plugin, seeds personas — launches nothing
+cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
-It does the whole onboarding:
+`cotal setup` configures your machine — it installs the cotal plugin (so the repo's Claude
+sessions get the `cotal_*` tools) and seeds the demo personas — and launches nothing. `cotal up`
+then brings up the whole local stack: the broker, the delivery daemon, and a detached manager, so
+`cotal spawn --detach` / `cotal_spawn` work right away. Use `cotal_persona` to mint a teammate,
+`cotal_spawn` to bring it online, and `cotal_despawn` to tear it down. Re-running either is
+idempotent.
 
-- installs the cotal plugin if needed (`cotal setup`, so the repo's Claude sessions get the
-  `cotal_*` tools),
-- brings up the mesh (`cotal up --open`),
-- opens the manager in its own `cotal-manager` tab, and
-- opens a `cotal-<s>` workspace with the live console plus a ready driving session.
+Under the hood these are the existing pieces, so you can also run them by hand:
 
-Sessions auto-accept Claude's one-time dev-channels prompt (an Enter sent to their own cmux
-surface), so they join the mesh without a keypress. Switch to that pane and use
-`cotal_persona` to mint a teammate, `cotal_spawn` to bring it online, and `cotal_despawn` to
-tear it down. Re-running it is idempotent.
-
-Under the hood it is the existing pieces, so you can also run them by hand:
-
-- `cotal setup` (one-time plugin install)
-- `cotal up --open`
-- `cotal supervise --runtime cmux --space <s>` (the manager daemon, each teammate in its own cmux tab; drop `--runtime` for the default pty runtime)
+- `cotal setup` (one-time plugin install + persona seed)
+- `cotal up` (broker + delivery daemon + manager) — add `--open` for an unauthenticated dev mesh
+- `cotal supervise --runtime cmux --space <s>` (a manager with each teammate in its own cmux tab; drop `--runtime` for the default pty runtime)
 - `cotal spawn <name> --space <s>` (a foreground Claude on the mesh; a bare name with no
   agent file launches a personaless session)
 
@@ -573,7 +568,7 @@ Then mint and run:
 ```
 pnpm cotal mint feedback-intake --profile agent --out .cotal/auth/creds/feedback-intake.creds
 
-pnpm cotal feedback \
+pnpm cotal feedback-intake \
   --keys .cotal/feedback/keys.json \
   --creds .cotal/auth/creds/feedback-intake.creds \
   --space beta-feedback \
