@@ -1,4 +1,4 @@
-import type { Command, Registry } from "@cotal-ai/core";
+import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
 import { c } from "./ui.js";
 
 function help(commands: Command[]): void {
@@ -19,10 +19,20 @@ function help(commands: Command[]): void {
   console.log(out);
 }
 
-/** One-line help for a single command: its usage (or summary as fallback). */
+/** Full help for one command, generated from its declared specs: summary, usage line, and a
+ *  flag table (short, long, metavar, description). */
 function commandHelp(cmd: Command): void {
   console.log(`${c.bold(`cotal ${cmd.name}`)} — ${cmd.summary}`);
-  if (cmd.usage) console.log(c.dim(cmd.usage));
+  console.log(c.dim(`usage: ${commandUsage(cmd)}`));
+  const flags = cmd.flags ?? [];
+  if (!flags.length) return;
+  const left = flags.map((f) => {
+    const metavar = f.type === "string" ? ` ${f.value ?? "<value>"}` : "";
+    return `${f.short ? `-${f.short}, ` : "    "}--${f.name}${metavar}`;
+  });
+  const pad = Math.max(...left.map((s) => s.length));
+  console.log(c.bold("flags:"));
+  flags.forEach((f, i) => console.log(`  ${left[i].padEnd(pad)}  ${c.dim(f.description ?? "")}`));
 }
 
 /** node's parseArgs throws these for unknown/malformed flags; treat as a usage error. */
@@ -32,7 +42,8 @@ function isArgError(e: unknown): boolean {
 }
 
 /** Dispatch `argv` against the commands self-registered in a {@link Registry}.
- *  The single entry point a composition root calls — no hardcoded command list. */
+ *  The single entry point a composition root calls — no hardcoded command list.
+ *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
 export async function runCli(registry: Registry, argv: string[]): Promise<void> {
   const commands = registry.all<Command>("command");
   const [name, ...rest] = argv;
@@ -47,12 +58,12 @@ export async function runCli(registry: Registry, argv: string[]): Promise<void> 
     process.exit(1);
   }
   // `cotal <cmd> --help` / `-h` → that command's help, never run it.
-  if (rest.includes("--help") || rest.includes("-h")) {
+  if (!cmd.rawArgs && (rest.includes("--help") || rest.includes("-h"))) {
     commandHelp(cmd);
     return;
   }
   try {
-    await cmd.run(rest);
+    await cmd.run(parseCommandArgs(cmd, rest));
   } catch (e) {
     // A bad flag/arg prints the command's help, not a stack trace. Trim node's verbose
     // "To specify a positional argument starting with a '-' …" tail to the first sentence.

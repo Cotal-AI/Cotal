@@ -6,6 +6,7 @@ import {
   type Command,
   type CompletionItem,
   type CompletionResult,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { c } from "../ui.js";
 
@@ -37,9 +38,11 @@ function emit(items: CompletionItem[], directive: NonNullable<CompletionResult["
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-/** The hidden dispatcher the shell stubs call. `argv` is the words after `cotal`, up to and
- *  including the (possibly empty) word being completed. */
-export async function complete(argv: string[]): Promise<void> {
+/** The hidden dispatcher the shell stubs call (`rawArgs`: its argv is another command's
+ *  half-typed line, never parsed). The words after `cotal`, up to and including the (possibly
+ *  empty) word being completed, arrive as `args.positionals` verbatim. */
+export async function complete(args: ParsedArgs): Promise<void> {
+  const argv = args.positionals;
   // Mirror help()'s visibility: drop `__`-internal and `hidden` commands (e.g. `demo`) so the
   // completion surface matches the listed one.
   const commands = registry
@@ -51,6 +54,15 @@ export async function complete(argv: string[]): Promise<void> {
     return;
   }
   const cmd = commands.find((cmd) => cmd.name === argv[0]);
+  // A word starting with `-` completes against the command's DECLARED flags — generated from
+  // the specs, so it can never drift from what parsing accepts. Value/positional completion
+  // stays with the command's own `complete` hook below.
+  const word = argv[argv.length - 1];
+  if (cmd && word.startsWith("-")) {
+    const items = (cmd.flags ?? []).map((f) => ({ value: `--${f.name}`, description: f.description }));
+    emit(items, "nofiles");
+    return;
+  }
   if (!cmd?.complete) {
     emit([], "default"); // unknown command, or one with no completer → defer to the shell
     return;
@@ -133,7 +145,8 @@ const SCRIPTS: Record<string, string> = {
   ),
 };
 
-export async function completion(argv: string[]): Promise<void> {
+export async function completion(args: ParsedArgs): Promise<void> {
+  const argv = args.positionals;
   if (argv[0] === "install") return install(argv[1]);
   const script = argv[0] ? SCRIPTS[argv[0]] : undefined;
   if (!script) {

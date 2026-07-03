@@ -1,6 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { join, dirname } from "node:path";
-import { parseArgs } from "node:util";
 import {
   agentFilePath,
   connectorServers,
@@ -19,9 +18,10 @@ import {
   type AgentDef,
   type CompletionResult,
   type Connector,
+  type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { authDir, loadMeshes, resolveMeshTarget } from "@cotal-ai/workspace";
+import { authDir, loadMeshes, provenance, resolveMeshTarget } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { listPersonas } from "../lib/personas.js";
@@ -114,31 +114,9 @@ async function uniqueMeshName(
 }
 
 
-export async function spawn(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      name: { type: "string" },
-      config: { type: "string" },
-      space: { type: "string" },
-      server: { type: "string" },
-      agent: { type: "string" },
-      role: { type: "string" },
-      prompt: { type: "string" },
-      resume: { type: "string" }, // fork an existing session id into the mesh (host-local; claude only)
-      transcript: { type: "boolean" },
-      "no-transcript": { type: "boolean" },
-      "share-tools": { type: "string" },
-      subscribe: { type: "string" }, // read set override (comma-separated)
-      "allow-subscribe": { type: "string" }, // read ACL override
-      "allow-publish": { type: "string" }, // post ACL override
-      file: { type: "string", short: "f" }, // a mesh manifest (cotal.yaml) — deploy onto the running mesh
-      "dry-run": { type: "boolean" }, // with -f: print the plan, mutate nothing
-      "allow-stale": { type: "string" }, // with -f: waive named stale agents (apply-only)
-      runtime: { type: "string" }, // with -f: override the manifest's runtime (pty | tmux | cmux)
-    },
-  });
+export async function spawn(args: ParsedArgs): Promise<void> {
+  const positionals = args.positionals;
+  const values = args.values as { name?: string; config?: string; space?: string; server?: string; agent?: string; role?: string; prompt?: string; resume?: string; transcript?: boolean; "no-transcript"?: boolean; "share-tools"?: string; subscribe?: string; "allow-subscribe"?: string; "allow-publish"?: string; file?: string; "dry-run"?: boolean; "allow-stale"?: string; runtime?: string };
   const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
 
   // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
@@ -191,6 +169,10 @@ export async function spawn(argv: string[]): Promise<void> {
     }
     process.exit(1);
   }
+
+  // Provenance: say which persona file WON resolution (--config > positional > --name > default)
+  // — the user must never wonder which directory their agent's definition came from.
+  provenance.read("persona", path);
 
   // --name / --role override the file (name defaults from the file's frontmatter).
   const requested = values.name ?? def.name;
@@ -259,7 +241,7 @@ export async function spawn(argv: string[]): Promise<void> {
     mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
     writeSecretFile(credsPath, creds);
     id = identity.id;
-    console.error(`minted creds for ${name} (auth mode) → ${credsPath}`);
+    provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
   }
 
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal

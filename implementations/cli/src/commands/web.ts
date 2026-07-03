@@ -1,4 +1,3 @@
-import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect } from "node:net";
@@ -13,6 +12,7 @@ import {
   mintCreds,
   newIdentity,
   clearChannel,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { cotalPath } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -39,18 +39,8 @@ const PAGE: Record<string, { path: string; type: string }> = {
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
  *  and a live message stream — no manager required. Bound to loopback. */
-export async function web(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      space: { type: "string" },
-      server: { type: "string" },
-      port: { type: "string" },
-      "no-open": { type: "boolean" },
-      creds: { type: "string" },
-    },
-  });
+export async function web(args: ParsedArgs): Promise<void> {
+  const values = args.values as { space?: string; server?: string; port?: string; "no-open"?: boolean; creds?: string };
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
