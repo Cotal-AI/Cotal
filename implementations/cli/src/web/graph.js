@@ -302,14 +302,21 @@
     for (const e of edges.values()) { const h = hubs.get(e.chan); if (!filter.chat || !h || isHidden(h) || e.heat <= 0.02 || isHiddenMember(e)) continue; const lit = inFan(e, f); ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(h.x, h.y); ctx.strokeStyle = rgba(MODE.chat, Math.min(0.55, e.heat * 0.55) * (lit ? 1 : 0.35)); ctx.lineWidth = 1 + e.heat * 1.6; ctx.stroke(); }
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
   }
+  // Perpendicular control point for a DM arc, computed in a direction-INDEPENDENT canonical order (by id)
+  // so the traveling comet rides the exact same dashed curve no matter which peer sent this message — a
+  // reply in the opposite direction otherwise flips the bulge to the wrong side and the comet peels off.
+  function dmControl(a, b) {
+    const [p, q] = a.id < b.id ? [a, b] : [b, a];
+    const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2, nx = -(q.y - p.y), ny = q.x - p.x, len = Math.hypot(nx, ny) || 1;
+    return { x: mx + (nx / len) * 24, y: my + (ny / len) * 24 };
+  }
   function drawDmEdges() {
     if (!filter.unicast) return; // the `direct` chip filters DM traffic — including the persistent DM curves
     ctx.setLineDash([3, 4]);
     for (const d of dms.values()) {
       if (isHidden(d.a) || isHidden(d.b)) continue;
-      const mx = (d.a.x + d.b.x) / 2, my = (d.a.y + d.b.y) / 2, nx = -(d.b.y - d.a.y), ny = d.b.x - d.a.x, len = Math.hypot(nx, ny) || 1;
-      const cx = mx + (nx / len) * 24, cy = my + (ny / len) * 24;
-      ctx.beginPath(); ctx.moveTo(d.a.x, d.a.y); ctx.quadraticCurveTo(cx, cy, d.b.x, d.b.y);
+      const c = dmControl(d.a, d.b);
+      ctx.beginPath(); ctx.moveTo(d.a.x, d.a.y); ctx.quadraticCurveTo(c.x, c.y, d.b.x, d.b.y);
       ctx.strokeStyle = rgba(MODE.unicast, 0.5 + d.heat * 0.45); ctx.lineWidth = 1.7 + d.heat * 1.6; ctx.stroke();
     }
     ctx.setLineDash([]); ctx.globalAlpha = 1;
@@ -367,7 +374,7 @@
       // a fan-out comet to a hidden offline member would fly to empty space — still tick + retire it, just don't draw
       if (isHidden(p.a) || isHidden(p.b)) { if (p.t >= 1) { if (p.onArrive) p.onArrive(); particles.splice(i, 1); } continue; }
       const t = ease(Math.min(1, p.t)); let x, y;
-      if (p.curve) { const mx = (p.a.x + p.b.x) / 2, my = (p.a.y + p.b.y) / 2, nx = -(p.b.y - p.a.y), ny = p.b.x - p.a.x, len = Math.hypot(nx, ny) || 1, cx = mx + (nx / len) * 24, cy = my + (ny / len) * 24, u = 1 - t; x = u * u * p.a.x + 2 * u * t * cx + t * t * p.b.x; y = u * u * p.a.y + 2 * u * t * cy + t * t * p.b.y; }
+      if (p.curve) { const c = dmControl(p.a, p.b), u = 1 - t; x = u * u * p.a.x + 2 * u * t * c.x + t * t * p.b.x; y = u * u * p.a.y + 2 * u * t * c.y + t * t * p.b.y; }
       else { x = p.a.x + (p.b.x - p.a.x) * t; y = p.a.y + (p.b.y - p.a.y) * t; }
       if (!filter.paused) { p.trail.push(x, y); if (p.trail.length > 12) p.trail.splice(0, p.trail.length - 12); }
       const n = p.trail.length >> 1;
@@ -463,13 +470,22 @@
   }
 
   // ── events ──
-  function resize() { DPR = window.devicePixelRatio || 1; W = window.innerWidth; H = window.innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; if (!cam.ready) { cam.x = W / 2; cam.y = H / 2; cam.ready = true; } }
+  // A <canvas> is a REPLACED element: `inset:0` does NOT stretch it the way it stretches a block. Without
+  // an explicit CSS size it renders at its intrinsic (= backing) size — W*DPR × H*DPR — so on a retina Mac
+  // (DPR 2) it overflows the viewport at 2× and pointer coords no longer map to the drawing's coordinate
+  // space (zoom/hover/click anchor low-and-right of the cursor). Pin the CSS size to the viewport so backing
+  // stays crisp at DPR while clientX/clientY line up 1:1 with the world transform.
+  function resize() { DPR = window.devicePixelRatio || 1; W = window.innerWidth; H = window.innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + "px"; canvas.style.height = H + "px"; if (!cam.ready) { cam.x = W / 2; cam.y = H / 2; cam.ready = true; } }
   window.addEventListener("resize", resize);
   let drag = null;
   canvas.addEventListener("mousemove", (e) => { if (drag) { cam.x = drag.cx + (e.clientX - drag.sx); cam.y = drag.cy + (e.clientY - drag.sy); drag.moved = drag.moved || Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4; if (drag.moved) cam.user = true; return; } hover = pick(e.clientX, e.clientY); canvas.classList.toggle("hover", !!hover); });
   canvas.addEventListener("mousedown", (e) => { drag = { sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y, moved: false }; });
   window.addEventListener("mouseup", (e) => { if (drag && !drag.moved) { const n = pick(e.clientX, e.clientY); if (n) { sel = n; renderDetail(); $("hint").style.opacity = 0; } else closeDetail(); } drag = null; });
-  canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.user = true; const f = e.deltaY < 0 ? 1.1 : 1 / 1.1, ns = Math.max(0.3, Math.min(3, cam.scale * f)), w = toWorld(e.clientX, e.clientY); cam.scale = ns; cam.x = e.clientX - w.x * ns; cam.y = e.clientY - w.y * ns; }, { passive: false });
+  // Zoom-to-cursor. The factor is PROPORTIONAL to the wheel delta (exp), not a fixed step per event: a
+  // trackpad fires a burst of tiny wheel events per gesture, and a fixed 1.1×-each slammed the scale
+  // straight to the clamp — flinging the graph off-screen around the (correctly anchored) cursor. deltaMode
+  // is normalized to px so a mouse notch and a trackpad swipe both feel right.
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.user = true; const px = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H : 1), f = Math.exp(-px * 0.0015), ns = Math.max(0.3, Math.min(3, cam.scale * f)), w = toWorld(e.clientX, e.clientY); cam.scale = ns; cam.x = e.clientX - w.x * ns; cam.y = e.clientY - w.y * ns; }, { passive: false });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
   $("modes").onclick = (e) => { const c = e.target.closest(".chip"); if (!c) return; const m = c.dataset.mode; filter[m] = !filter[m]; c.classList.toggle("on", filter[m]); };
   $("pause").onclick = () => { filter.paused = !filter.paused; $("pause").classList.toggle("on", filter.paused); $("pause").textContent = filter.paused ? "▶ resume" : "⏸ pause"; };
