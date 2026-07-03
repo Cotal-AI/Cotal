@@ -1,0 +1,35 @@
+{
+  "name": "@cotal-ai/auth",
+  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 ↔ Plane 2).",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "implementations/auth"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "jose": "^6.2.3"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

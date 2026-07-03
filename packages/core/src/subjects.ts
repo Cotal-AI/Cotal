@@ -162,6 +162,31 @@ export function principalKey(owner: string, actor: string): { key: string; name:
   return { key: `${owner}.${actor}`, name: `${owner}-${actor}` };
 }
 
+/** Prefix of every **derived owner token** — see {@link assertDerivedOwnerToken}. */
+export const DERIVED_OWNER_PREFIX = "u_";
+
+/** Validate the structural format of a **derived owner token** — the opaque, per-space, non-PII
+ *  token the auth callout derives server-side for a human owner: `u_` + 26 lowercase base32
+ *  (`[a-z2-7]`) chars (128 keyed-HMAC bits; the derivation lives in `@cotal-ai/auth`, this is the
+ *  format contract). The format is **structurally disjoint from nkeys by construction** — the
+ *  owner+actor flip's acceptance criterion 2: an nkey public key is 56 chars of UPPERCASE base32
+ *  (`[A-Z2-7]`), while a derived token is 28 chars, contains `_`, and its body is lowercase — three
+ *  independent properties an nkey can never satisfy. So a pre-flip agent id (an nkey) can NEVER
+ *  parse as a valid new owner, which closes the old-shape-aliases-new-read lane
+ *  (`chat.<nkey>.team.backend` matching `chat.*.*.backend` cannot yield a plausible owner). Every
+ *  derived token also trivially passes {@link assertValidOwnerToken} (subset alphabet, no `-`).
+ *  Defined ahead of use: enforced at the callout/mint boundary when the cutover lands. Returns the
+ *  token unchanged when valid so callers can use it inline. */
+export function assertDerivedOwnerToken(owner: string): string {
+  if (!/^u_[a-z2-7]{26}$/.test(owner))
+    throw new Error(
+      `invalid derived owner token "${owner}": expected "${DERIVED_OWNER_PREFIX}" + 26 lowercase ` +
+        `base32 chars ([a-z2-7]). Owner tokens are derived server-side at the auth callout and are ` +
+        `structurally disjoint from nkeys; anything else at an owner boundary is rejected, not rewritten.`,
+    );
+  return owner;
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by

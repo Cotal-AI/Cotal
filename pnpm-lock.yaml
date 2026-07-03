@@ -215,6 +215,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
 
+  implementations/auth:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+
   implementations/cli:
     dependencies:
       '@clack/prompts':
