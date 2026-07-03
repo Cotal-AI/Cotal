@@ -54,7 +54,14 @@ const fakeHandle = (name: string): AgentHandle => ({
   kind: "fake",
   spawn: (name) => fakeHandle(name),
 };
-(mgr as unknown as { ep: { ref: () => { id: string } } }).ep = { ref: () => ({ id: "smoke-mgr" }) };
+(mgr as unknown as { ep: object }).ep = {
+  ref: () => ({ id: "smoke-mgr" }),
+  // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent
+  // joined — same fake as manifest-launch.smoke.ts, so a successful spawn resolves "started".
+  on: () => {},
+  off: () => {},
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+};
 
 let lastOpts: LaunchOpts | undefined;
 const recCon: Connector = {
