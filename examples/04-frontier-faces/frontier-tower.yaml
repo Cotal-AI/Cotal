@@ -23,23 +23,23 @@ agent: opencode
 agents:
   sven: agents/sven.md
   david: agents/david.md
+  rayan: agents/rayan.md
   garry: agents/garry.md
   steve: agents/steve.md
-  rayan: agents/rayan.md
   mira: agents/mira.md
 
 channels:
   # Everyone — the open broadcast panel.
   general:
     description: The whole panel. Open broadcast to every agent.
-    subscribe: [sven, david, garry, steve, rayan, mira]
-    allowPublish: [sven, david, garry, steve, rayan, mira]
+    subscribe: [sven, david, rayan, garry, steve, mira]
+    allowPublish: [sven, david, rayan, garry, steve, mira]
 
   # No hedging — the spiciest opinions on the panel.
   hot-takes:
     description: Unfiltered opinions, the spiciest takes on the panel.
-    subscribe: [sven, david, garry, steve, rayan, mira]
-    allowPublish: [sven, david, garry, steve, rayan, mira]
+    subscribe: [sven, david, rayan, garry, steve, mira]
+    allowPublish: [sven, david, rayan, garry, steve, mira]
 
   # The two founders — ask them about Cotal.
   cotal:

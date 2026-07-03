@@ -27,7 +27,6 @@
            background:linear-gradient(180deg, rgba(13,7,38,.7), transparent); flex:none; }
   .lockup { display:flex; align-items:center; gap:10px; }
   .lockup b { font-size:16px; font-weight:700; letter-spacing:.3px; }
-  .lockup .sub { font-size:11px; color:var(--dim); }
   /* the Cotal brand mark (gold interlocking rings) */
   .logo { width:22px; height:22px; display:block; flex:none; filter:drop-shadow(0 0 6px rgba(233,196,106,.5)); }
   .sign .lk .logo { width:28px; height:28px; filter:drop-shadow(0 0 9px rgba(233,196,106,.45)); }
@@ -173,9 +172,8 @@
 </head>
 <body>
   <header>
-    <div class="lockup"><img class="logo" src="cotal-mark.svg" alt="Cotal" /><div><b>Cotal</b> <span class="sub">· frontier tower</span></div></div>
+    <div class="lockup"><img class="logo" src="cotal-mark.svg" alt="Cotal" /><div><b>Cotal</b><div class="slogan">The open standard for agent coordination</div></div></div>
     <div class="grow"></div>
-    <div class="slogan">The open standard for agent coordination</div>
     <div class="chip"><b id="space">…</b></div>
     <div class="chip"><b id="count">0</b> agents</div>
     <div class="status" id="conn"><span class="live"></span><span id="conn-t">connecting…</span></div>
