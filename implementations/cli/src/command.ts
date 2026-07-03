@@ -55,7 +55,15 @@ export interface RunCliOptions {
  *  The single entry point a composition root calls — no hardcoded command list.
  *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
-  const commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
+  let commands: Command[];
+  try {
+    commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
+  } catch (e) {
+    // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
+    // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
   const [name, ...rest] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help") {

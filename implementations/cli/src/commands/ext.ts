@@ -89,7 +89,12 @@ async function add(spec: string): Promise<void> {
   }
 
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
-  const resolved = /^(\.|\/)/.test(spec) ? resolve(spec) : spec;
+  const isPath = /^(\.|\/)/.test(spec);
+  const resolved = isPath ? resolve(spec) : spec;
+  // The installed NAME is known BEFORE npm runs — never recovered afterwards by diffing the prefix
+  // dependencies (a heuristic that binds to the wrong key if the prefix ever drifted, and that made
+  // re-adding an installed extension impossible).
+  const pkg = packageNameFromSpec(resolved, isPath);
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --legacy-peer-deps: never auto-install the peer'd core from the registry — the add ALWAYS
   // links the running binary's copy below (one core instance is the whole point).
@@ -101,12 +106,10 @@ async function add(spec: string): Promise<void> {
     process.exit(1);
   }
 
-  // Which package did that spec install? npm records it in the prefix package.json dependencies.
+  // The spec's package must now be a prefix dependency — anything else is a failed install.
   const deps = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> }).dependencies ?? {};
-  const known = new Set(loadExtensionsManifest().extensions.map((e) => e.pkg));
-  const pkg = Object.keys(deps).find((k) => !known.has(k) && specMatches(deps[k], resolved)) ?? Object.keys(deps).find((k) => !known.has(k));
-  if (!pkg) {
-    console.error(c.red("✗ install succeeded but no new package appeared in the prefix — remove and retry"));
+  if (!deps[pkg]) {
+    console.error(c.red(`✗ npm install succeeded but "${pkg}" is not among the prefix dependencies — remove and retry`));
     process.exit(1);
   }
   const pkgDir = extensionPackageDir(pkg);
@@ -144,10 +147,18 @@ async function add(spec: string): Promise<void> {
     fail(pkg, `imported cleanly but registered no commands in THIS CLI's registry — if it bundles its own @cotal-ai/core, make core a peerDependency`);
   }
   // Builtin collisions can't happen here (registry.register throws on a duplicate, surfacing as
-  // failed-to-import above, naming the extension) — this is the belt to that suspender.
+  // failed-to-import above, naming the extension). OTHER installed extensions are invisible to the
+  // registry during this add (they aren't imported), so their CACHED names are checked explicitly —
+  // a duplicate fails the add under the same contract, naming both sides.
+  const manifest = loadExtensionsManifest();
+  for (const cm of contributed) {
+    const other = manifest.extensions.find((e) => e.pkg !== pkg && e.commands.some((oc) => oc.name === cm.name));
+    if (other) {
+      fail(pkg, `contributes "${cm.name}", already provided by installed extension ${other.pkg}@${other.version} — two extensions cannot claim one command; \`cotal ext remove ${other.pkg}\` first if you want this one`);
+    }
+  }
   const version = pkgMeta.version ?? "0.0.0";
   const entry: InstalledExtension = { pkg, version, spec: resolved, commands: contributed.map(cacheCommand) };
-  const manifest = loadExtensionsManifest();
   saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg), entry] });
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
   console.log(c.green(`✓ added ${pkg}@${version}`) + c.dim(` — commands: ${contributed.map((cm) => cm.name).join(", ")}`));
@@ -159,10 +170,27 @@ async function add(spec: string): Promise<void> {
   }
 }
 
-/** Loose match: is this recorded dep range plausibly the spec the user just passed? Used only to
- *  pick the NEW key out of the prefix dependencies; the fallback (any unknown key) covers ranges. */
-function specMatches(range: string, spec: string): boolean {
-  return range.includes(spec) || spec.includes(range.replace(/^file:/, ""));
+/** The package NAME a spec installs, known BEFORE npm runs: a path spec reads its package.json;
+ *  a registry spec carries the name (`name`, `name@range`, `@scope/name@range`). Exotic forms
+ *  (git / tarball URLs) are refused rather than guessed at — there is no reliable way to know
+ *  which prefix dependency such an install bound to. */
+function packageNameFromSpec(resolved: string, isPath: boolean): string {
+  if (isPath) {
+    let meta: { name?: string };
+    try {
+      meta = JSON.parse(readFileSync(join(resolved, "package.json"), "utf8")) as { name?: string };
+    } catch (e) {
+      console.error(c.red(`✗ can't read ${join(resolved, "package.json")}: ${(e as Error).message}`));
+      process.exit(1);
+    }
+    if (meta.name) return meta.name;
+    console.error(c.red(`✗ ${join(resolved, "package.json")} declares no "name"`));
+    process.exit(1);
+  }
+  const m = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/.exec(resolved);
+  if (m) return m[1];
+  console.error(c.red(`✗ unsupported extension spec "${resolved}" — use a local path or a registry name[@version]`));
+  process.exit(1);
 }
 
 async function remove(pkg: string): Promise<void> {

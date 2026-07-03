@@ -6,9 +6,11 @@
  *     registration LANDED, caches the command surface (+ provenance lines).
  *  B. cache-only surface: with the installed package's code made to THROW, `--help` and
  *     `__complete` still work (they never import); running the command fails LOUD.
- *  C. run: the real command executes with LIVE specs (flag + positional through the kernel).
+ *  C. run: the real command executes with LIVE specs (flag + positional through the kernel);
+ *     re-add is a clean refresh; a corrupt manifest is ONE red line, not a stack dump.
  *  D. version-skew: on-disk version ≠ manifest pin → loud error prescribing re-add.
- *  E. failed adds are loud AND rolled back: builtin name collision, core as a regular
+ *  E. failed adds are loud AND rolled back: builtin name collision, ext-vs-ext name collision
+ *     (checked against the manifest cache — the sibling is never imported), core as a regular
  *     dependency, missing core peerDep, zero registrations.
  *  F. remove: commands leave the surface; the manifest empties.
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
@@ -117,6 +119,26 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   ok("unknown flag on an extension command is a usage error (live specs)", bad.status === 1 && /Unknown option/.test(bad.stderr), bad.stderr.slice(0, 200));
 }
 
+// -- C2: re-adding an installed extension is a clean refresh (manifest keeps ONE entry) ------------
+{
+  const r = cotal(["ext", "add", join(sandbox, "cotal-ext-fixture")]);
+  ok("re-add of the same extension exits 0", r.status === 0, r.stderr.slice(-300));
+  const m = JSON.parse(readFileSync(manifestPath, "utf8"));
+  ok("re-add keeps one manifest entry at the same pin", m.extensions.length === 1 && m.extensions[0].version === "1.0.0", m.extensions);
+}
+
+// -- C3: a corrupt manifest is fatal-and-loud as ONE red line (never a stack dump, never a
+//        silently-shrunk surface) ------------------------------------------------------------------
+{
+  const good = readFileSync(manifestPath, "utf8");
+  writeFileSync(manifestPath, "{ not json");
+  const r = cotal(["--help"]);
+  ok("corrupt manifest fails every invocation", r.status === 1, r.status);
+  ok("...as one red line naming the manifest + the fix", /corrupt extensions manifest/.test(r.stderr) && /ext add/.test(r.stderr), r.stderr.slice(0, 300));
+  ok("...not an unhandled-rejection stack dump", !/ModuleJob|at async/.test(r.stderr), r.stderr.slice(0, 300));
+  writeFileSync(manifestPath, good);
+}
+
 // -- D: version skew -------------------------------------------------------------------------------
 {
   const meta = JSON.parse(readFileSync(installedPkg, "utf8"));
@@ -145,6 +167,18 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   const empty = fixture("cotal-ext-empty", "export {};\n");
   const r4 = cotal(["ext", "add", empty]);
   ok("zero registrations fails the add", r4.status === 1 && /registered no commands/.test(r4.stderr), r4.stderr.slice(-300));
+
+  // ext-vs-ext: another package contributing the installed fixture's command name. The registry
+  // can't see the installed (unimported) sibling, so add() must check the manifest cache.
+  const sibling = fixture("cotal-ext-sibling", GOOD);
+  const r5 = cotal(["ext", "add", sibling]);
+  ok(
+    "ext-vs-ext name collision fails the add, naming BOTH extensions",
+    r5.status === 1 && /cotal-ext-sibling/.test(r5.stderr) && /cotal-ext-fixture/.test(r5.stderr) && /hello-ext/.test(r5.stderr),
+    r5.stderr.slice(-400),
+  );
+  const r5b = cotal(["ext", "list"]);
+  ok("ext-vs-ext collision rolled back (not listed)", !/sibling/.test(r5b.stdout), r5b.stdout);
 }
 
 // -- F: remove -------------------------------------------------------------------------------------
