@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createRuntime } from "../src/index.js";
-import { detachKey } from "../src/attach-client.js";
+import { detachKey } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
 import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
 import type { LaunchSpec } from "@cotal-ai/core";

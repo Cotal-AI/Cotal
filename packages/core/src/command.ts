@@ -41,6 +41,13 @@ export interface ParsedArgs {
   readonly raw: readonly string[];
 }
 
+/** The values type DERIVED from a flag-spec tuple declared `as const` — so a command's one
+ *  `args.values as FlagValues<typeof FLAGS>` cast can never disagree with what the dispatcher
+ *  parses: add/retype/remove a flag in the spec and every stale use is a compile error. */
+export type FlagValues<F extends readonly FlagSpec[]> = {
+  [S in F[number] as S["name"]]?: S["type"] extends "boolean" ? boolean : string;
+};
+
 /**
  * The contract for a composable CLI command — an {@link Extension} of kind
  * `"command"`. An implementation (the mesh CLI, the manager …) self-registers its

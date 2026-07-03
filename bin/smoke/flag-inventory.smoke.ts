@@ -46,10 +46,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
   demo: { flags: [...TARGET, "interval:string", "once:boolean"], positionals: false },
   web: { flags: [...TARGET, "no-open:boolean", "port:string"], positionals: false },
+  // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
+  // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   spawn: {
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
-      "config:string", "dry-run:boolean", "file:string:f", "name:string", "no-transcript:boolean",
+      "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
+      "file:string:f", "model:string", "name:string", "no-transcript:boolean",
       "prompt:string", "resume:string", "role:string", "runtime:string", "server:string",
       "share-tools:string", "space:string", "subscribe:string", "transcript:boolean",
     ],
@@ -79,13 +82,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: ["console-port:string", "launch:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
     positionals: false,
   },
-  start: {
-    flags: [
-      ...TARGET, "agent:string", "config:string", "cwd:string", "model:string", "name:string",
-      "no-transcript:boolean", "resume:string", "role:string", "transcript:boolean",
-    ],
-    positionals: false,
-  },
+  // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
+  start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string"], positionals: false },
   ps: { flags: [...TARGET], positionals: false },
   attach: { flags: [...TARGET, "name:string"], positionals: false },

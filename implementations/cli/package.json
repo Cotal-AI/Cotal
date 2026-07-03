@@ -30,7 +30,8 @@
     "ink": "^6.0.0",
     "react": "^19.0.0",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "ws": "^8.21.0"
   },
   "optionalDependencies": {
     "@eplightning/nats-server-darwin-arm64": "^2.14.0",
@@ -41,7 +42,8 @@
     "@eplightning/nats-server-win32-x64": "^2.14.0"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0"
+    "@types/react": "^19.0.0",
+    "@types/ws": "^8.18.1"
   },
   "files": [
     "dist"

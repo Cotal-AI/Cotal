@@ -14,6 +14,7 @@ import {
   mintCreds,
   mkSecretDir,
   newIdentity,
+  parseShareSelection,
   provisionAgent,
   registry,
   saveAgentFile,
@@ -89,6 +90,10 @@ export interface StartAgentOpts {
   /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
    *  comes from that file's `name:`). The file must exist. */
   config?: string;
+  /** Presence-identity OVERRIDE (the `--name` flag with a positional/`--config` naming the file):
+   *  wins over the persona file's `name:`, exactly as in foreground `cotal spawn`. Imperative-only —
+   *  a manifest launch (`resolved`) is the identity authority and rejects it. */
+  identity?: string;
   /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
   model?: string;
   /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
@@ -98,6 +103,19 @@ export interface StartAgentOpts {
   /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
+  /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
+   *  the connector. Imperative-only: never set from `resolved` (a manifest carries no prompt). */
+  prompt?: string;
+  /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
+   *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
+   *  creds AND forwarded to the connector from ONE source. Imperative-only — a manifest launch
+   *  (`resolved`) is the access authority and rejects these. */
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+  /** `--share-tools` selection narrowing which of the operator's configured MCP servers this
+   *  agent gets (absent → all declared for the connector — the pre-merge manager behavior). */
+  shareTools?: string;
   /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
    *  `startAgent` takes identity/role/ACLs/capabilities/model from here — NOT from a persona file —
    *  and `config` points at the materialized transient persona the connector reads. The persona file
@@ -534,16 +552,38 @@ export class Manager {
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
     if (args.resume !== undefined && !String(args.resume).trim())
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
+    // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
+    // not something to coerce (no fallbacks).
+    const strList = (v: unknown, flag: string): string[] | undefined => {
+      if (v === undefined) return undefined;
+      if (!Array.isArray(v) || v.some((s) => typeof s !== "string"))
+        throw new Error(`${flag}: expected an array of strings`);
+      return v as string[];
+    };
+    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined;
+    try {
+      subscribe = strList(args.subscribe, "subscribe");
+      allowSubscribe = strList(args.allowSubscribe, "allowSubscribe");
+      allowPublish = strList(args.allowPublish, "allowPublish");
+    } catch (e) {
+      return Promise.resolve({ ok: false, error: (e as Error).message });
+    }
     return this.startAgent(
       {
         name: String(args.name ?? "").trim(),
         agent: args.agent ? String(args.agent) : undefined,
         role: args.role ? String(args.role) : undefined,
         config: args.config ? String(args.config) : undefined,
+        identity: args.identity ? String(args.identity) : undefined,
         model: args.model ? String(args.model) : undefined,
         resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
+        prompt: args.prompt ? String(args.prompt) : undefined,
+        subscribe,
+        allowSubscribe,
+        allowPublish,
+        shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
       },
       caller,
     );
@@ -658,6 +698,10 @@ export class Manager {
     let capabilities: string[] | undefined;
     let model = opts.model;
     if (opts.resolved) {
+      // A manifest launch is the access + identity authority: imperative overrides arriving
+      // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
+      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || opts.shareTools || opts.identity)
+        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/prompt/shareTools)" };
       const r = opts.resolved;
       identityName = r.name;
       role = opts.role ?? r.role;
@@ -673,13 +717,19 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      identityName = def.name;
+      // Identity: the `--name` override wins over the file's `name:` — foreground parity (there,
+      // `requested = values.name ?? def.name`). The override is minted into the creds and rides
+      // COTAL_NAME below, so the presence identity and its credential can't diverge.
+      identityName = opts.identity ?? def.name;
       role = opts.role ?? def.role;
-      subscribe = def.subscribe;
+      // Flags > persona file — the same precedence as foreground `cotal spawn`, so the two launch
+      // paths of the merged grammar can't diverge. One source feeds BOTH the minted creds and the
+      // connector env below.
+      subscribe = opts.subscribe ?? def.subscribe;
       // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
       // boundary); runtime durable joins are re-authorized against the committed ACL by the daemon.
-      allowSubscribe = def.allowSubscribe ?? def.subscribe ?? ["general"];
-      allowPublish = def.allowPublish;
+      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? ["general"];
+      allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
     }
     const idErr = this.nameError(identityName);
@@ -734,8 +784,13 @@ export class Manager {
         provisioned = { id: identity.id, name }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
-      // (cotal config; default none → isolated, the memory-safe default this guards).
-      const mcpServers = connectorServers(loadCotalConfig(this.workspaceRoot), agent);
+      // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
+      // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
+      const mcpServers = connectorServers(
+        loadCotalConfig(this.workspaceRoot),
+        agent,
+        parseShareSelection(opts.shareTools),
+      );
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
       // agent shares the workspace root (the prior, unchanged behavior).
@@ -753,6 +808,8 @@ export class Manager {
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
         resume: opts.resume,
+        // Initial prompt (imperative-only; the resolved guard above keeps manifests prompt-free).
+        prompt: opts.prompt,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) falls back to `["general"]`, which its

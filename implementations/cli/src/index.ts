@@ -9,7 +9,9 @@ import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { demo } from "./commands/demo.js";
 import { web } from "./commands/web.js";
-import { spawn, spawnComplete } from "./commands/spawn.js";
+import { spawn, spawnComplete, spawnFlags } from "./commands/spawn.js";
+import { attach, attachFlags, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
+import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, complete } from "./commands/completion.js";
 import { mint } from "./commands/mint.js";
@@ -168,30 +170,54 @@ const baseCommands: Command[] = [
     name: "spawn",
     group: "Agents",
     summary:
-      "launch an agent in this terminal from a file — spawn [<name-or-path>] (defaults to the `default` persona) | --name <n> --config <path> [--agent <a>] [--role <r>] [--resume <id>]",
+      "launch an agent from a persona file — spawn [<name-or-path>] (defaults to the `default` persona); foreground in this terminal, or --detach via the manager — one grammar for both",
     positionals: "[<name-or-path>]",
-    flags: [
-      { name: "space", type: "string", value: "<s>", description: "target space (default: the resolved mesh)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (overrides the mesh registry entry)" },
-      { name: "name", type: "string", value: "<n>", description: "presence name (defaults from the persona file)" },
-      { name: "config", type: "string", value: "<path>", description: "agent file path (for a file outside .cotal/agents)" },
-      { name: "agent", type: "string", value: "<a>", description: "connector type (claude, opencode, hermes …)" },
-      { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
-      { name: "prompt", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
-      { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (claude only)" },
-      { name: "transcript", type: "boolean", description: "mirror the session transcript to tr-<name>" },
-      { name: "no-transcript", type: "boolean", description: "explicit default: no transcript mirror" },
-      { name: "share-tools", type: "string", value: "<sel>", description: "share named operator MCP servers with the agent" },
-      { name: "subscribe", type: "string", value: "<a,b>", description: "channel read set override" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "post ACL override" },
-      { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "deploy a manifest onto the running mesh" },
-      { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
-      { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
-      { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
-    ],
+    flags: spawnFlags,
     run: spawn,
     complete: spawnComplete,
+  },
+  {
+    kind: "command",
+    name: "start",
+    group: "Agents",
+    // Tombstone (stage 2a): the verb is gone, the ability moved. Errors with the replacement —
+    // never a silent alias (no fallbacks). Hidden: not part of the surface, just a signpost.
+    hidden: true,
+    rawArgs: true,
+    positionals: "…",
+    summary: "(removed) `cotal start` was merged into `cotal spawn --detach`",
+    run: async () => {
+      console.error(
+        c.red(
+          "✗ `cotal start` was merged into `cotal spawn --detach` — one launch grammar for foreground and detached (persona positional or --name; --config/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
+        ),
+      );
+      process.exit(1);
+    },
+  },
+  {
+    kind: "command",
+    name: "stop",
+    group: "Agents",
+    summary: "ask the manager to stop an agent — --name <n>",
+    flags: stopFlags,
+    run: stop,
+  },
+  {
+    kind: "command",
+    name: "ps",
+    group: "Agents",
+    summary: "list managed agents + their mesh status",
+    flags: psFlags,
+    run: ps,
+  },
+  {
+    kind: "command",
+    name: "attach",
+    group: "Agents",
+    summary: "stream + drive an agent's terminal (pty runtime) — --name <n>",
+    flags: attachFlags,
+    run: attach,
   },
   {
     kind: "command",
@@ -311,3 +337,5 @@ registry.register(...baseCommands);
 
 export { runCli } from "./command.js";
 export { c, statusBadge } from "./ui.js";
+// The full spawn grammar, for the composition root's launch-parity smoke (grammar ⊆ start-op ⊆ MCP).
+export { spawnFlags } from "./commands/spawn.js";

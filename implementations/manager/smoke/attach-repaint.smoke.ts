@@ -20,7 +20,7 @@ import assert from "node:assert";
 import type { AddressInfo } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
 import { AttachEndpoint } from "../src/attach-endpoint.js";
-import { attachClient } from "../src/attach-client.js";
+import { attachClient } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
 import { PtyRuntime } from "../src/runtime/pty.js";
 import type { AttachSession, LaunchSpec } from "@cotal-ai/core";
 import type { AgentHandle } from "../src/runtime/index.js";
