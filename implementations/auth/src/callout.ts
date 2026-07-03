@@ -233,10 +233,10 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side:
         // the connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the
         // principal, so the membership feed (which keys CONNZ entries on the connection identity)
-        // needs owner+actor carried here. `tags` are the queryable, standard place; the JWT `name`
-        // is the principal dot-form for logs. NOTE: the feed-side re-key onto these — and the CONNZ
-        // proof of exactly which field surfaces — is the flip's membership-feed migration
-        // (Increment D), not wired here; this mint is the producing half.
+        // needs owner+actor carried here. `tags` are the queryable, standard place (incl. the
+        // `principal:` dot-form); the JWT `name` is the principal name-form (JetStream-safe). NOTE:
+        // the feed-side re-key onto these — and the CONNZ proof of exactly which field surfaces — is
+        // the flip's membership-feed migration (Increment D), not wired here; this is the producing half.
         const { key, name } = principalKey(validated.owner, validated.act.actor);
         const userJwt = await encodeUser(
           name,
