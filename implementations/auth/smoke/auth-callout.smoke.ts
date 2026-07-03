@@ -85,13 +85,17 @@ async function bearer(opts: { actor?: string; ver?: number; expiredBy?: number; 
 
 let calloutNc: NatsConnection | undefined;
 const conns: NatsConnection[] = [];
-async function tryConnect(token?: string): Promise<{ nc?: NatsConnection; err?: string }> {
+async function tryConnect(token?: string): Promise<{ nc?: NatsConnection; err?: string; nonce?: string }> {
   try {
+    // User-mode contract: the client picks a random inbox nonce and passes it as BOTH the connection
+    // `name` (the callout scopes `_INBOX_<nonce>.>` on it) and `inboxPrefix` (so its own request/reply
+    // lands on the granted subject). No wide `_INBOX.>` anywhere.
+    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
     const authenticators = [credsAuthenticator(enc(callout.sentinelCreds))];
     if (token) authenticators.push(tokenAuthenticator(token));
-    const nc = await connect({ servers: SERVERS, authenticator: authenticators, maxReconnectAttempts: 0, timeout: 4000 });
+    const nc = await connect({ servers: SERVERS, authenticator: authenticators, maxReconnectAttempts: 0, timeout: 4000, name: nonce, inboxPrefix: `_INBOX_${nonce}` });
     conns.push(nc);
-    return { nc };
+    return { nc, nonce };
   } catch (e) {
     return { err: e instanceof Error ? e.message : String(e) };
   }
@@ -118,35 +122,39 @@ try {
     authorizeActor: (t) => {
       if (t.act.actor !== "agent_1") throw new Error(`actor ${t.act.actor} not in the spawn ledger`);
     },
-    permissionsFor: () => ({
-      pub: { allow: ["smoke.allowed"] },
-      sub: { allow: ["smoke.allowed", "_INBOX.>"] },
+    // connId is the client's inbox nonce (req.connect_opts.name) — scope the reply inbox on it, NOT the
+    // wide `_INBOX.>`. This is the least-privilege user-mode grant the cutover requires.
+    permissionsFor: (_t, connId) => ({
+      pub: { allow: ["smoke.allowed", `_INBOX_${connId}.>`] },
+      sub: { allow: ["smoke.allowed", `_INBOX_${connId}.>`] },
     }),
     onMint: (info) => { minted = info; },
     log: () => {},
   });
 
-  // A DATA-account witness: a known connection minted directly against the data account's signing
-  // key (NOT via the callout). If the callout client can exchange with it on smoke.allowed, the
-  // callout REBOUND the client into the data account — a self round-trip alone couldn't prove that.
+  // A DATA-account witness: a known connection minted directly against the data account's signing key
+  // (NOT via the callout) that RESPONDS on smoke.allowed. If the callout client's request/reply with it
+  // completes, the callout REBOUND the client into the data account AND the client's SCOPED reply inbox
+  // (`_INBOX_<nonce>.>`, no wide `_INBOX.>`) round-trips — a self round-trip alone couldn't prove either.
+  // The witness replies onto the client's per-connection inbox nonce (unknown ahead of time), so it holds
+  // a broad reply-pub grant — acceptable for a trusted, directly-minted test double.
   const witnessId = newIdentity();
   const witnessJwt = await encodeUser("witness", fromPublic(witnessId.id), fromPublic(auth.account.pub), {
-    pub: { allow: ["smoke.witness"] },
-    sub: { allow: ["smoke.allowed", "_INBOX.>"] },
+    pub: { allow: [">"] },
+    sub: { allow: ["smoke.allowed"] },
   }, { signer: fromSeed(enc(auth.account.signingSeed)) });
   const witnessNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(fmtCreds(witnessJwt, fromSeed(enc(witnessId.seed)))) });
   conns.push(witnessNc);
-  const witnessSub = witnessNc.subscribe("smoke.allowed", { max: 1 });
+  (async () => { for await (const m of witnessNc.subscribe("smoke.allowed")) m.respond(enc(`ack:${new TextDecoder().decode(m.data)}`)); })();
 
   // A. valid bearer connects and carries the minted scoped permissions
   const goodBearer = await bearer();
   const good = await tryConnect(goodBearer);
   check("valid bearer connects via callout", !!good.nc, good.err);
   if (good.nc) {
-    good.nc.publish("smoke.allowed", enc("hi"));
     let got = false;
-    for await (const m of witnessSub) got = new TextDecoder().decode(m.data) === "hi";
-    check("callout client is REBOUND into the data account (reaches a known data-account witness)", got);
+    try { got = new TextDecoder().decode((await good.nc.request("smoke.allowed", enc("hi"), { timeout: 3000 })).data) === "ack:hi"; } catch { /* denied/timeout */ }
+    check("callout client is REBOUND into the data account AND its SCOPED reply inbox round-trips", got);
 
     // Revocation lever: the minted user JWT's exp must equal the bearer's exp end-to-end
     // (bearer.exp → callout's bound exp → the JWT the broker enforces disconnect on).
@@ -180,6 +188,17 @@ try {
   check("sentinel without a bearer refused", !noTok.nc);
   const badActor = await tryConnect(await bearer({ actor: "agent_2" }));
   check("ledger-denied actor refused", !badActor.nc);
+
+  // Inbox-escalation guard: a client that supplies a wildcard-bearing inbox nonce (connection `name`)
+  // to widen its `_INBOX_<nonce>.>` grant toward `_INBOX_>.>` is refused at connect — assertInboxConnId
+  // (core) throws, the callout turns it into a signed deny. Even a VALID bearer can't buy a wide inbox.
+  let evilErr: string | undefined;
+  try {
+    const nc = await connect({ servers: SERVERS, maxReconnectAttempts: 0, timeout: 4000, name: ">", inboxPrefix: "_INBOX_evil",
+      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(await bearer())] });
+    conns.push(nc);
+  } catch (e) { evilErr = e instanceof Error ? e.message : String(e); }
+  check("client-chosen wildcard inbox nonce refused (no _INBOX_>.> escalation)", !!evilErr, "(connected!)");
 
   console.log(`\nauth-callout smoke: ${pass} passed, ${fail} failed`);
   if (fail > 0) process.exitCode = 1;

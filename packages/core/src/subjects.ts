@@ -191,6 +191,23 @@ export function parsePrincipalKey(key: string): { owner: string; actor: string }
   return { owner, actor };
 }
 
+/** Validate a connection's **connId** — the single token that fills `_INBOX_<connId>.>`, the private
+ *  reply-inbox grant. In dev/static mode connId is the agent's own nkey (56 uppercase base32 chars); in
+ *  user mode it is a client-CHOSEN random inbox nonce (the auth callout can't know the NATS-minted
+ *  per-connection nkey pre-connect, and the client can't either, so the client picks its own nonce and
+ *  passes it via the connection `name`). Because that nonce is untrusted client input, the grant builder
+ *  MUST reject any subject metacharacter here: a connId of `>` would mint `_INBOX_>.>` (every inbox) and a
+ *  `*`/`.` would widen it too. `[A-Za-z0-9_-]{8,120}` admits nkeys and high-entropy nonces while barring
+ *  `* > . space` — so `_INBOX_<connId>.>` can never escalate past one connection's own inbox. Fail-loud. */
+export function assertInboxConnId(connId: string): string {
+  if (typeof connId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(connId))
+    throw new Error(
+      `invalid connId/inbox nonce ${JSON.stringify(connId)} — must match [A-Za-z0-9_-]{8,120} ` +
+        `(no subject metacharacters; guards the _INBOX_<connId>.> grant against wildcard escalation)`,
+    );
+  return connId;
+}
+
 /** The `tags` prefix carrying a connection's principal dot-form in its minted user JWT. Chosen because
  *  `tags` are the ONE identity field a NATS `$SYS` CONNZ record surfaces for a JWT-authed connection —
  *  empirically: `authorized_user` is the per-connect ephemeral nkey (NOT the principal, which the client

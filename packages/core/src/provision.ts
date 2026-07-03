@@ -30,6 +30,7 @@ import {
   channelInAllow,
   principalKey,
   principalTags,
+  assertInboxConnId,
   DEV_OWNER,
   unicastSubject,
   anycastSubject,
@@ -348,6 +349,10 @@ export function permissionsFor(
   pr: MintPrincipal,
   opts: MintOpts,
 ): Record<string, unknown> {
+  // Guard the connId BEFORE any profile builds `_INBOX_<connId>.>`: in user mode connId is a client-
+  // chosen nonce (untrusted), so a metacharacter here would escalate the inbox grant to every inbox.
+  // Assert once, for all profiles (each early-returning profile builds its own inbox from pr.connId).
+  assertInboxConnId(pr.connId);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)

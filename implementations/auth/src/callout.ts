@@ -32,7 +32,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { newIdentity, principalKey, principalTags, token, type SpaceAuth } from "@cotal-ai/core";
+import { assertInboxConnId, newIdentity, principalKey, principalTags, token, type SpaceAuth } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 
@@ -150,9 +150,11 @@ export interface StartAuthCalloutOpts {
    *  the list is safe today; startup logs a WARNING so the over-trust is never silent. */
   expectedServerIds?: string[];
   /** Permission builder for a validated principal (the flip feeds core's `permissionsFor` via a thin
-   *  `@cotal-ai/auth` adapter). `connId` is the connection's nkey (`req.user_nkey`) — the builder scopes
-   *  the private reply inbox `_INBOX_<connId>` on it (the owner is derived server-side, so it is not
-   *  known to the client pre-connect; the per-connection nkey always is). */
+   *  `@cotal-ai/auth` adapter). `connId` is the client-chosen inbox nonce (`req.connect_opts.name`), NOT
+   *  the NATS-minted `req.user_nkey` — the builder scopes the private reply inbox `_INBOX_<connId>.>` on
+   *  it. The client picks and passes this nonce because neither it nor this callout knows the per-connect
+   *  nkey pre-connect; core's `assertInboxConnId` rejects a nonce with subject metacharacters, so it
+   *  cannot widen the grant. An absent/invalid nonce makes the builder throw → a signed deny. */
   permissionsFor: (t: ValidatedUserToken, connId: string) => Record<string, unknown>;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. */
   log?: (line: string) => void;
@@ -243,7 +245,19 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           audience: opts.space,
         });
         await opts.authorizeActor(validated);
-        const perms = opts.permissionsFor(validated, req.user_nkey);
+        // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
+        // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so
+        // the client cannot set its `inboxPrefix` to match it. So the client picks its own random inbox
+        // nonce and passes it as the connection `name`; we scope the grant on THAT (empirically: a scoped
+        // `_INBOX_<nonce>.>` round-trips through the rebind, and the nonce is a per-connection secret, the
+        // same security model as NATS's default random mux inbox). core's `assertInboxConnId` (via
+        // permissionsFor) rejects a nonce carrying subject metacharacters, so a client cannot widen the
+        // grant to `_INBOX_>.>`; a missing/garbled name throws → this becomes a signed deny (fail-closed).
+        // Validate the nonce HERE, at the boundary where untrusted client input enters — not inside the
+        // injected permissionsFor hook (which could be any implementation). assertInboxConnId throws on a
+        // missing/wildcard name → the catch below turns it into a signed deny (fail-closed).
+        const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
+        const perms = opts.permissionsFor(validated, inboxNonce);
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
         // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
         // so the membership feed (which keys CONNZ entries on the connection identity) needs owner+actor
