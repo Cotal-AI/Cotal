@@ -66,16 +66,17 @@ const owner = tok;
 function baseClaims(): JWTPayload {
   return { sub: owner, scope: ["chat"], ver: USER_TOKEN_VER, act: { owner, actor: "agent_1" } };
 }
-async function mint(mutate: (p: JWTPayload) => void = () => {}, opts: { alg?: string; key?: CryptoKey; ttl?: number; header?: Record<string, unknown> } = {}) {
+async function mint(mutate: (p: JWTPayload) => void = () => {}, opts: { alg?: string; key?: CryptoKey; ttl?: number; header?: Record<string, unknown>; skewSec?: number; noNbf?: boolean } = {}) {
   const p = baseClaims();
   mutate(p);
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor(Date.now() / 1000) + (opts.skewSec ?? 0);
   const jwt = new SignJWT(p)
     .setProtectedHeader({ alg: opts.alg ?? "EdDSA", ...(opts.header ?? {}) })
     .setIssuer(ISS)
     .setAudience(SPACE)
     .setIssuedAt(now)
     .setExpirationTime(now + (opts.ttl ?? 300));
+  if (!opts.noNbf) jwt.setNotBefore(now);
   return jwt.sign(opts.key ?? privateKey);
 }
 const V = { key: publicKey as CryptoKey, issuer: ISS, audience: SPACE };
@@ -86,27 +87,51 @@ check("valid token accepted; owner/space/act round out", good.owner === owner &&
 await rejects("wrong signer rejected", async () => validateUserToken(await mint(() => {}, { key: roguePriv }), V));
 await rejects("wrong issuer rejected", async () => {
   const now = Math.floor(Date.now() / 1000);
-  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer("https://evil.test").setAudience(SPACE).setIssuedAt(now).setExpirationTime(now + 300).sign(privateKey);
+  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer("https://evil.test").setAudience(SPACE).setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 300).sign(privateKey);
   return validateUserToken(t, V);
 });
 await rejects("wrong audience (space) rejected", async () => {
   const now = Math.floor(Date.now() / 1000);
-  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience("otherspace").setIssuedAt(now).setExpirationTime(now + 300).sign(privateKey);
+  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience("otherspace").setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 300).sign(privateKey);
   return validateUserToken(t, V);
 });
 await rejects("expired token rejected", async () => {
   const now = Math.floor(Date.now() / 1000);
-  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(SPACE).setIssuedAt(now - 600).setExpirationTime(now - 300).sign(privateKey);
+  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(SPACE).setIssuedAt(now - 600).setNotBefore(now - 600).setExpirationTime(now - 300).sign(privateKey);
   return validateUserToken(t, V);
 });
 await rejects("missing exp rejected", async () => {
   const now = Math.floor(Date.now() / 1000);
-  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(SPACE).setIssuedAt(now).sign(privateKey);
+  const t = await new SignJWT(baseClaims()).setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(SPACE).setIssuedAt(now).setNotBefore(now).sign(privateKey);
   return validateUserToken(t, V);
 }, "exp");
+await rejects("missing nbf rejected", async () => validateUserToken(await mint(() => {}, { noNbf: true }), V), "nbf");
 await rejects("overlong TTL rejected (revocation lever)", async () => validateUserToken(await mint(() => {}, { ttl: 86400 }), V), "cap");
+// The panel-caught bypass: nbf = now (valid immediately) but iat/exp post-dated an hour out —
+// passes nbf/exp checks and the exp-iat span cap, yet its effective validity from NOW is far
+// beyond the cap. Only a clock-anchored iat guard kills this shape.
+await rejects("future-dated iat/exp window rejected (clock-anchored cap)", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const t = await new SignJWT(baseClaims())
+    .setProtectedHeader({ alg: "EdDSA" })
+    .setIssuer(ISS)
+    .setAudience(SPACE)
+    .setIssuedAt(now + 3600)
+    .setNotBefore(now)
+    .setExpirationTime(now + 3900)
+    .sign(privateKey);
+  return validateUserToken(t, V);
+}, "future");
 await rejects("stale ver rejected (downgrade defense)", async () => validateUserToken(await mint((p) => (p.ver = 0)), V), "ver");
 await rejects("missing act rejected", async () => validateUserToken(await mint((p) => delete p.act), V), "act");
+await rejects("non-string actor rejected (no coercion)", async () => validateUserToken(await mint((p) => ((p.act as { actor: unknown }).actor = 123)), V), "string token");
+await rejects("undotted act.parent rejected", async () => validateUserToken(await mint((p) => ((p.act as { parent?: string }).parent = "notaprincipal")), V), "not a principal");
+await rejects("3-token act.parent rejected", async () => validateUserToken(await mint((p) => ((p.act as { parent?: string }).parent = `${owner}.a.b`)), V), "not a principal");
+await rejects("nkey-owner act.parent rejected", async () => validateUserToken(await mint((p) => ((p.act as { parent?: string }).parent = `${NKEY}.agent_2`)), V), "derived owner");
+{
+  const withParent = await validateUserToken(await mint((p) => ((p.act as { parent?: string }).parent = `${owner}.spawner_1`)), V);
+  check("valid principal act.parent accepted and round-trips", withParent.act.parent === `${owner}.spawner_1`);
+}
 await rejects("act.owner != sub rejected", async () => validateUserToken(await mint((p) => ((p.act as { owner: string }).owner = "u_" + "z".repeat(26))), V), "inconsistent");
 await rejects("invalid actor rejected", async () => validateUserToken(await mint((p) => ((p.act as { actor: string }).actor = "a.b")), V));
 await rejects("nkey-shaped sub rejected", async () => validateUserToken(await mint((p) => {
@@ -119,6 +144,8 @@ await rejects("embedded jwk header rejected (key smuggling)", async () => {
   return validateUserToken(await mint(() => {}, { header: { jwk } }), V);
 }, "pinned");
 await rejects("jku header rejected (key smuggling)", async () => validateUserToken(await mint(() => {}, { header: { jku: "https://evil.test/jwks" } }), V), "pinned");
+await rejects("x5u header rejected (key smuggling)", async () => validateUserToken(await mint(() => {}, { header: { x5u: "https://evil.test/cert" } }), V), "pinned");
+await rejects("x5c header rejected (key smuggling)", async () => validateUserToken(await mint(() => {}, { header: { x5c: ["MIIB"] } }), V), "pinned");
 await rejects("non-EdDSA alg rejected", async () => {
   // HS256 token "signed" with a symmetric key — must die on the alg pin, never reach key use.
   const now = Math.floor(Date.now() / 1000);
