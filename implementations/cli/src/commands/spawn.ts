@@ -22,6 +22,7 @@ import {
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
+  CONTROL_PRIVILEGED,
 } from "@cotal-ai/core";
 import {
   authDir,
@@ -164,6 +165,7 @@ async function spawnDetached(
     "control-caller-privileged",
   );
   provenance.read("mesh", `${t.space} (${t.server})`);
+  console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome — join, exit, or ~30s) …"));
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
     identity: values.name,
@@ -180,7 +182,9 @@ async function spawnDetached(
     allowPublish: splitFlag(values["allow-publish"]),
     // Tri-state: true (--transcript), false (--no-transcript, explicit), absent → manager default.
     transcript,
-  }, t.creds);
+    // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
+    // readiness backstop) — the start request must outlive that window, not the 5s op default.
+  }, t.creds, CONTROL_PRIVILEGED, 40_000);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(

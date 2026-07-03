@@ -45,6 +45,7 @@ export async function askManager(
   args?: Record<string, unknown>,
   creds?: string,
   tier: ControlTier = CONTROL_PRIVILEGED,
+  timeoutMs?: number,
 ): Promise<ControlReply> {
   const ep = new CotalEndpoint({
     space,
@@ -59,7 +60,7 @@ export async function askManager(
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {
-    return await ep.requestControl(tier, { op, args });
+    return await ep.requestControl(tier, { op, args }, timeoutMs);
   } catch (e) {
     return { ok: false, error: `no manager reachable (${(e as Error).message})` };
   } finally {

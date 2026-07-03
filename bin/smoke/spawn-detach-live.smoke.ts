@@ -58,6 +58,18 @@ writeFileSync(
 // reports its ACTUAL cwd to a file, so `--cwd` is asserted end to end (it rides runtime.spawn,
 // not LaunchOpts — only the real process can prove it).
 const cwdReport = join(mkdtempSync(join(tmpdir(), "cotal-detach-out-")), "cwd.txt");
+// The child is a REAL mesh endpoint: it joins presence under the manager-assigned id (env), so the
+// #159 B1 readiness race resolves "started" — a bare keepalive would ride the 30s backstop into
+// an `uncertain` non-success and fail the spawn reply.
+const coreDist = join(import.meta.dirname, "..", "..", "packages", "core", "dist", "index.js");
+const CHILD = [
+  "const{pathToFileURL}=require('node:url');",
+  "import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "ep.on('error',()=>{});await ep.start();",
+  "require('fs').writeFileSync(process.env.CWD_OUT,process.cwd());",
+  "setInterval(()=>{},1000);});",
+].join("");
 let lastOpts: LaunchOpts | undefined;
 const e2eCon: Connector = {
   kind: "connector",
@@ -67,8 +79,16 @@ const e2eCon: Connector = {
     lastOpts = o;
     return {
       command: "node",
-      args: ["-e", "require('fs').writeFileSync(process.env.CWD_OUT, process.cwd()); setInterval(() => {}, 1000)"],
-      env: { PATH: process.env.PATH ?? "", CWD_OUT: cwdReport },
+      args: ["-e", CHILD],
+      env: {
+        PATH: process.env.PATH ?? "",
+        CWD_OUT: cwdReport,
+        CORE_DIST: coreDist,
+        COTAL_SPACE: o.space,
+        COTAL_SERVERS: o.servers ?? "",
+        COTAL_ID: o.id ?? "",
+        COTAL_NAME: o.name,
+      },
     };
   },
 };
