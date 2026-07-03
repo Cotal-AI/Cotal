@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parseArgs } from "node:util";
 import {
   agentFilePath,
   assertValidName,
@@ -9,6 +8,7 @@ import {
   saveAgentFile,
   type AgentDef,
   type CompletionResult,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { cotalRoot } from "../lib/paths.js";
 import { listPersonas, listPersonaNames, personasDir } from "../lib/personas.js";
@@ -31,23 +31,9 @@ import { c } from "../ui.js";
 /** Persona names are also filenames and spawn names — mirror the `cotal_persona` tool's pattern. */
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
-export async function personas(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      role: { type: "string" },
-      model: { type: "string" },
-      prompt: { type: "string" },
-      from: { type: "string" },
-      verbose: { type: "boolean", short: "v" },
-      force: { type: "boolean" },
-      running: { type: "boolean" },
-      space: { type: "string" },
-      server: { type: "string" },
-      creds: { type: "string" },
-    },
-  });
+export async function personas(args: ParsedArgs): Promise<void> {
+  const positionals = args.positionals;
+  const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
   switch (positionals[0] ?? "list") {
     case "list":

@@ -1,4 +1,4 @@
-import type { CompletionResult } from "@cotal-ai/core";
+import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
 import { findMesh, loadMeshes, setCurrent } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
@@ -6,8 +6,8 @@ import { pruneStaleMeshes } from "../lib/meshes.js";
 /** `cotal use <space>` — set the default mesh a bare `cotal spawn` (and friends) targets when more
  *  than one is running. The kubectl `use-context` analogue. Validated against the live registry, so
  *  you can't point `current` at a mesh that isn't up. */
-export async function use(argv: string[]): Promise<void> {
-  const space = argv[0];
+export async function use(args: ParsedArgs): Promise<void> {
+  const space = args.positionals[0];
   if (!space) {
     console.error(c.red("usage: cotal use <space>"));
     process.exit(1);

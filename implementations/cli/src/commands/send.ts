@@ -1,9 +1,9 @@
-import { parseArgs } from "node:util";
 import {
   resolvePeer,
   AmbiguousPeerError,
   type Presence,
   type CompletionResult,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { c } from "../ui.js";
 import { openTransient } from "../lib/transient.js";
@@ -16,12 +16,6 @@ import { mentionsIn } from "../lib/mentions.js";
  * `anycast`); each connects, sends one message, and exits. Fire-and-forget: no reply waiting.
  */
 
-const SEND_OPTS = {
-  space: { type: "string" },
-  server: { type: "string" },
-  creds: { type: "string" },
-} as const;
-
 type SendValues = { space?: string; server?: string; creds?: string };
 
 /** Split `<target> <text…>` positionals, stripping a leading `@`/`#` from the target. */
@@ -30,11 +24,12 @@ function targetAndText(positionals: string[], strip: RegExp): { target?: string;
 }
 
 /** `cotal send <dm|msg|ask> …` — dispatch one-shot send by delivery mode, then exit. */
-export async function send(argv: string[]): Promise<void> {
-  const [mode, ...rest] = argv;
-  if (mode === "dm") return dm(rest);
-  if (mode === "msg") return msg(rest);
-  if (mode === "ask") return ask(rest);
+export async function send(args: ParsedArgs): Promise<void> {
+  const { values, positionals } = args;
+  const [mode, ...rest] = positionals;
+  if (mode === "dm") return dm(values, rest);
+  if (mode === "msg") return msg(values, rest);
+  if (mode === "ask") return ask(values, rest);
   console.error(
     'usage: cotal send <dm <agent> | msg <channel> | ask <role>> "<text>"  [--space <s>] [--server <url>] [--creds <path>]',
   );
@@ -42,8 +37,7 @@ export async function send(argv: string[]): Promise<void> {
 }
 
 /** `cotal send dm <agent> "<text>"` — one unicast to a peer by name, then exit. */
-async function dm(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: SEND_OPTS });
+async function dm(values: ParsedArgs["values"], positionals: string[]): Promise<void> {
   const { target, text } = targetAndText(positionals, /^@/);
   if (!target || !text) {
     console.error('usage: cotal send dm <agent> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
@@ -77,8 +71,7 @@ async function dm(argv: string[]): Promise<void> {
 }
 
 /** `cotal send msg <channel> "<text>"` — one broadcast to a channel, then exit. */
-async function msg(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: SEND_OPTS });
+async function msg(values: ParsedArgs["values"], positionals: string[]): Promise<void> {
   const { target: channel, text } = targetAndText(positionals, /^#/);
   if (!channel || !text) {
     console.error('usage: cotal send msg <channel> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');
@@ -91,8 +84,7 @@ async function msg(argv: string[]): Promise<void> {
 }
 
 /** `cotal send ask <role> "<text>"` — one anycast to a role/service (exactly one instance), exit. */
-async function ask(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: SEND_OPTS });
+async function ask(values: ParsedArgs["values"], positionals: string[]): Promise<void> {
   const { target: role, text } = targetAndText(positionals, /^@/);
   if (!role || !text) {
     console.error('usage: cotal send ask <role> "<text>"  [--space <s>] [--server <url>] [--creds <path>]');

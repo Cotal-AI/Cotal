@@ -4,7 +4,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, type ParsedArgs } from "@cotal-ai/core";
 import { c } from "../ui.js";
 
 type FeedbackType = "bug" | "idea" | "friction" | "praise" | "other";
@@ -55,8 +55,11 @@ class HttpError extends Error {
 const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
 const PUBLIC_FEEDBACK_URL = "https://cotal.ai/v1/feedback";
 
-/** Dual-mode: `--keys` runs the self-hosted intake server; otherwise sends feedback. */
-export async function feedback(argv: string[]): Promise<void> {
+/** Dual-mode: `--keys` runs the self-hosted intake server; otherwise sends feedback. The two
+ *  modes parse DIFFERENT flag sets, so this command keeps its own parsing (`rawArgs` — the
+ *  dispatcher passes argv through verbatim) until the intake server is split out of the CLI. */
+export async function feedback(args: ParsedArgs): Promise<void> {
+  const argv = args.positionals;
   if (argv.includes("--keys")) return serve(argv);
   return send(argv);
 }

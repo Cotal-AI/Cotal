@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
-import { parseArgs } from "node:util";
 import {
   agentFilePath,
   loadAgentFile,
@@ -9,6 +8,7 @@ import {
   newIdentity,
   stripSpaceAuth,
   writeSecretFile,
+  type ParsedArgs,
   type Profile,
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
@@ -20,19 +20,9 @@ import { c } from "../ui.js";
  *  `--signer` instead emits a stripped signer file — only the account signing material
  *  (`space` + `account.pub` + `account.signingSeed`), no operator root-of-trust — to mount into a
  *  containerized manager so it can mint per-agent creds without holding the account-minting key. */
-export async function mint(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      profile: { type: "string" },
-      out: { type: "string" },
-      signer: { type: "boolean" }, // emit a stripped signer file instead of agent/observer creds
-      force: { type: "boolean" }, // (--signer) overwrite an existing signer file
-      "allow-subscribe": { type: "string" }, // read ACL override (comma-separated)
-      "allow-publish": { type: "string" }, // post ACL override (comma-separated)
-    },
-  });
+export async function mint(args: ParsedArgs): Promise<void> {
+  const positionals = args.positionals;
+  const values = args.values as { profile?: string; out?: string; signer?: boolean; force?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
   const dir = authDir(cotalRoot());
 
   // `--signer`: no identity, no name — strip this space's auth.json to its account signing material.

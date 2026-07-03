@@ -1,5 +1,5 @@
-import { parseArgs } from "node:util";
 import { resolve } from "node:path";
+import { type ParsedArgs } from "@cotal-ai/core";
 import { loadManifest, renderTopology, ManifestError } from "../lib/manifest/index.js";
 import { c } from "../ui.js";
 
@@ -9,18 +9,14 @@ import { c } from "../ui.js";
  * unmanaged scopes, and warnings. Read-only — it mutates nothing and needs no running broker, so
  * it's the safe way to see what `up -f` / `spawn -f` WOULD launch.
  */
-export async function topology(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
+export async function topology(args: ParsedArgs): Promise<void> {
+  const values = args.values as { file?: string };
+  const [sub, ...positionals] = args.positionals;
   if (sub !== "view") {
     console.error(c.red(`✗ unknown topology subcommand "${sub ?? ""}" — expected: view`));
     console.error(c.dim("cotal topology view -f <cotal.yaml>"));
     process.exit(1);
   }
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { file: { type: "string", short: "f" } },
-  });
   const file = values.file ?? positionals[0];
   if (!file) {
     console.error(c.red("✗ a manifest file is required — `cotal topology view -f <cotal.yaml>`"));

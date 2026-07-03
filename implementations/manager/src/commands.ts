@@ -1,4 +1,3 @@
-import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -15,6 +14,7 @@ import {
   type Command,
   type ControlReply,
   type ControlTier,
+  type ParsedArgs,
   type Profile,
 } from "@cotal-ai/core";
 import {
@@ -28,6 +28,7 @@ import {
   pruneStaleMeshes,
   removeMesh,
   renderWorkspaceError,
+  targetFlags,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -125,41 +126,8 @@ export async function resolveManagerTarget(
   return { space: target.space, server: target.server, creds };
 }
 
-function parse(argv: string[]): Values {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      space: { type: "string" },
-      server: { type: "string" },
-      name: { type: "string" },
-      role: { type: "string" },
-      agent: { type: "string" },
-      config: { type: "string" },
-      model: { type: "string" }, // start: model override, wins over the agent file's `model:`
-      resume: { type: "string" }, // start: fork an existing session id into the mesh (host-local; claude only)
-      roster: { type: "string" },
-      creds: { type: "string" },
-      runtime: { type: "string" }, // supervise: force pty | tmux | cmux (default pty)
-      "console-port": { type: "string" },
-      drive: { type: "boolean" },
-      transcript: { type: "boolean" },
-      "no-transcript": { type: "boolean" },
-      spawn: { type: "string" }, // comma-separated agent names to pre-spawn at startup
-      launch: { type: "string" }, // supervise: a resolved mesh-manifest launch spec (cotal up -f / spawn -f)
-      cwd: { type: "string" }, // working directory to root the spawned agent at
-    },
-  });
-  // These commands are flags-only — reject stray positionals instead of silently ignoring them
-  // (e.g. `cotal supervise up`, fat-fingering `cotal up`).
-  if (positionals.length) {
-    const x = positionals[0];
-    const hint = x === "up" ? " — did you mean `cotal up`?" : x === "go" ? " — did you mean `cotal go`?" : "";
-    console.error(c.red(`✗ unexpected argument: ${x}${hint}`));
-    process.exit(1);
-  }
-  return values as Values;
-}
+// Parsing lives in the dispatcher now, driven by each command's declared flags — these
+// commands declare no positionals, so a stray one (`cotal supervise up`) is a usage error there.
 
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
  *  disconnect. The target is already reachability- + auth-preflighted by {@link resolveManagerTarget}
@@ -205,8 +173,8 @@ function failIfNotOk(reply: ControlReply): void {
   }
 }
 
-async function start(argv: string[]): Promise<void> {
-  const v = parse(argv);
+async function start(args: ParsedArgs): Promise<void> {
+  const v = args.values as Values;
   if (!v.name) {
     console.error(c.red("--name is required"));
     process.exit(1);
@@ -236,8 +204,8 @@ async function start(argv: string[]): Promise<void> {
   );
 }
 
-async function stop(argv: string[]): Promise<void> {
-  const v = parse(argv);
+async function stop(args: ParsedArgs): Promise<void> {
+  const v = args.values as Values;
   if (!v.name) {
     console.error(c.red("--name is required"));
     process.exit(1);
@@ -254,8 +222,8 @@ async function stop(argv: string[]): Promise<void> {
   console.log(c.dim(`✓ stopped ${v.name}`));
 }
 
-async function ps(argv: string[]): Promise<void> {
-  const v = parse(argv);
+async function ps(args: ParsedArgs): Promise<void> {
+  const v = args.values as Values;
   const t = await resolveManagerTarget(v, "control-caller-privileged");
   const reply = await ask(t.space, t.server, "ps", undefined, t.creds);
   failIfNotOk(reply);
@@ -290,8 +258,8 @@ async function ps(argv: string[]): Promise<void> {
   }
 }
 
-async function attach(argv: string[]): Promise<void> {
-  const v = parse(argv);
+async function attach(args: ParsedArgs): Promise<void> {
+  const v = args.values as Values;
   if (!v.name) {
     console.error(c.red("--name is required"));
     process.exit(1);
@@ -318,8 +286,8 @@ async function attach(argv: string[]): Promise<void> {
 // contiguous, which is what `cmuxManagerRunning` pgreps for.
 const RUNTIME_OVERRIDES: readonly RuntimeMode[] = ["pty", "tmux", "cmux"];
 
-async function runManager(argv: string[], defaultRuntime: RuntimeMode): Promise<void> {
-  const v = parse(argv);
+async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promise<void> {
+  const v = args.values as Values;
   let runtime = defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
     if (!RUNTIME_OVERRIDES.includes(v.runtime as RuntimeMode)) {
@@ -434,7 +402,16 @@ const managerCommands: Command[] = [
     group: "Manager",
     summary:
       "run a manager — [--runtime <pty|tmux|cmux>] (default pty; tmux/cmux are explicit-only, each teammate in its own window/tab) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
-    run: (argv) => runManager(argv, "auto"),
+    flags: [
+      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "agent runtime (default pty; tmux/cmux are explicit-only)" },
+      { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
+      { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
+      { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
+      { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
+    ],
+    run: (args) => runManager(args, "auto"),
   },
   {
     kind: "command",
@@ -442,6 +419,18 @@ const managerCommands: Command[] = [
     group: "Control plane",
     summary:
       "ask the manager to spawn a persona — --name <persona> [--role <r>] [--agent <a>] [--config <file>] [--model <m>] [--cwd <dir>] [--resume <id> (pair with --cwd)] (loads .cotal/agents/<persona>.md; the peer joins under its name:)",
+    flags: [
+      ...targetFlags,
+      { name: "name", type: "string", value: "<persona>", description: "persona to spawn (required; loads .cotal/agents/<name>.md)" },
+      { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
+      { name: "agent", type: "string", value: "<a>", description: "connector type (claude, opencode, hermes …)" },
+      { name: "config", type: "string", value: "<file>", description: "agent file path (overrides --name resolution)" },
+      { name: "model", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },
+      { name: "cwd", type: "string", value: "<dir>", description: "working directory to root the spawned agent at" },
+      { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (pair with --cwd)" },
+      { name: "transcript", type: "boolean", description: "mirror the session transcript to tr-<name>" },
+      { name: "no-transcript", type: "boolean", description: "explicit default: no transcript mirror" },
+    ],
     run: start,
   },
   {
@@ -449,6 +438,7 @@ const managerCommands: Command[] = [
     name: "stop",
     group: "Control plane",
     summary: "ask the manager to stop an agent — --name <n>",
+    flags: [...targetFlags, { name: "name", type: "string", value: "<n>", description: "managed agent to stop (required)" }],
     run: stop,
   },
   {
@@ -456,6 +446,7 @@ const managerCommands: Command[] = [
     name: "ps",
     group: "Control plane",
     summary: "list managed agents + their mesh status",
+    flags: [...targetFlags],
     run: ps,
   },
   {
@@ -463,6 +454,7 @@ const managerCommands: Command[] = [
     name: "attach",
     group: "Control plane",
     summary: "stream + drive an agent's terminal (pty runtime) — --name <n>",
+    flags: [...targetFlags, { name: "name", type: "string", value: "<n>", description: "managed agent to attach to (required)" }],
     run: attach,
   },
 ];

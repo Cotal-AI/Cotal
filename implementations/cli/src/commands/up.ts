@@ -10,7 +10,6 @@ import {
   closeSync,
 } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgs } from "node:util";
 import {
   isReachable,
   DEFAULT_SERVER,
@@ -26,6 +25,7 @@ import {
   writeSecretFile,
   type SpaceAuth,
   type ChannelRegistryFile,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   authDir,
@@ -51,23 +51,8 @@ import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, wri
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
 
-export async function up(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      server: { type: "string" },
-      "store-dir": { type: "string" },
-      space: { type: "string" },
-      open: { type: "boolean" }, // disable auth — run an open dev mesh
-      channels: { type: "string" }, // seed the channel registry from this JSON file
-      detach: { type: "boolean" }, // run the server in the background (pid in .cotal/nats.pid)
-      host: { type: "string" }, // bind address (default 127.0.0.1 — loopback; 0.0.0.0 to expose with auth)
-      runtime: { type: "string" }, // with -f: override the manifest's runtime (pty | tmux | cmux)
-      file: { type: "string", short: "f" }, // a mesh manifest (cotal.yaml) — fresh broker + channels + agents
-      "dry-run": { type: "boolean" }, // with -f: print the plan, mutate nothing
-    },
-  });
+export async function up(args: ParsedArgs): Promise<void> {
+  const values = args.values as { server?: string; "store-dir"?: string; space?: string; open?: boolean; channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean };
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
@@ -134,7 +119,7 @@ export async function up(argv: string[]): Promise<void> {
   const seedFile = loadChannelsFile(values.channels);
   const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
   const port = Number(new URL(server).port) || 4222;
-  const args = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
+  const natsArgs = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
   const { bin, source } = await resolveNatsServer();
 
   console.log(
@@ -143,7 +128,7 @@ export async function up(argv: string[]): Promise<void> {
     ),
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
-  const child = spawn(bin, args, { stdio: "inherit" });
+  const child = spawn(bin, natsArgs, { stdio: "inherit" });
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     process.exit(1);

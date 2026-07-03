@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseArgs } from "node:util";
 import * as p from "@clack/prompts";
 import {
   DEFAULT_SERVER,
@@ -9,6 +8,7 @@ import {
   registry,
   type Connector,
   type Pane,
+  type ParsedArgs,
   type TerminalLayout,
 } from "@cotal-ai/core";
 import { authDir, homeCotalDir, loadSpaceAuth } from "@cotal-ai/workspace";
@@ -39,17 +39,8 @@ const NATS_RELEASES_URL = "https://github.com/nats-io/nats-server/releases";
 /** `cotal setup`: guided setup. First run (no `~/.cotal/onboarded.json`) gets the full
  *  narrated flow; later runs get a compact ensure+status. `--full` forces the full flow.
  *  Each failed step offers an interactive Claude handoff (COTAL_SKIP_ASSIST=1 disables). */
-export async function setup(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      full: { type: "boolean" },
-      yes: { type: "boolean", short: "y" },
-      auth: { type: "boolean" }, // (now the DEFAULT; kept for back-compat / explicitness)
-      open: { type: "boolean" }, // opt OUT of auth — a frictionless loopback-only open mesh (no JWT/ACLs, no durable backstop)
-    },
-  });
+export async function setup(args: ParsedArgs): Promise<void> {
+  const values = args.values as { full?: boolean; yes?: boolean; auth?: boolean; open?: boolean };
   // `--yes` (agents/CI) always runs the full flow non-interactively. The mesh is AUTHED by default
   // (JWT/ACLs — the trust-first default, and what the server-side delivery daemon needs to run); `--open`
   // opts out to a frictionless loopback-only open mesh with no auth (and so no durable backstop).
@@ -60,8 +51,8 @@ export async function setup(argv: string[]): Promise<void> {
 /** `cotal go` — open or resume your session. A friendlier-named alias of `cotal setup`: the first
  *  run installs (full guided flow), later runs fast-forward to the ensure path and reopen your
  *  cmux session. `cotal setup` stays the explicit install/update name. */
-export async function go(argv: string[]): Promise<void> {
-  return setup(argv);
+export async function go(args: ParsedArgs): Promise<void> {
+  return setup(args);
 }
 
 /** The full, narrated first-run experience. `yes` = non-interactive accept-all; `open` = run the mesh
@@ -342,7 +333,7 @@ async function offerDemo(haveClaude: boolean): Promise<void> {
         // terminal to the driving session. (auth → delivery daemon first, then the manager.)
         await ensureControlPlane({ space: resolveSpace(process.cwd()), server: DEFAULT_SERVER, spawn: [...DEMO_TEAM] });
         p.outro(brand("Launching your session... david and sven are warming up in the background."));
-        await spawn(["me", "--prompt", ME_GREETING]);
+        await spawn({ values: { prompt: ME_GREETING }, positionals: ["me"], raw: [] });
         process.exit(0);
       }
     }
@@ -503,7 +494,8 @@ async function runEnsure(): Promise<void> {
       // Match how the mesh last ran: open when this folder has no space auth (the frictionless
       // default), authed when it does — so restarting a downed open mesh doesn't come back JWT-authed.
       const authed = Boolean(loadSpaceAuth(authDir(cotalRoot())));
-      await up(authed ? ["--detach"] : ["--detach", "--open"]);
+      const upArgs = authed ? ["--detach"] : ["--detach", "--open"];
+      await up({ values: { detach: true, open: authed ? undefined : true }, positionals: [], raw: upArgs });
       s.stop("Web for agents started");
     } catch (e) {
       s.stop(`Couldn't start it: ${(e as Error).message}`);
