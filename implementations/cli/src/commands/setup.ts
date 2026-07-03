@@ -25,7 +25,8 @@ const NATS_RELEASES_URL = "https://github.com/nats-io/nats-server/releases";
  *  mesh mode is `cotal up [--open]`'s concern (where `--open` already lived; `--auth` simply died
  *  with the launch behavior). An unknown-option error rejects them, nothing silently. */
 export const setupFlags = [
-  { name: "full", type: "boolean", description: "redo the full guided flow" },
+  { name: "full", type: "boolean", description: "redo the full guided flow (implies --demo)" },
+  { name: "demo", type: "boolean", description: "also seed the guided expert team (david, sven, me)" },
   { name: "yes", type: "boolean", short: "y", description: "non-interactive accept-all (agents/CI)" },
 ] as const satisfies readonly FlagSpec[];
 
@@ -35,18 +36,21 @@ export const setupFlags = [
  * no web, no manager, no delivery daemon, no cmux/tmux session — launching is `cotal up` /
  * `cotal web` / `cotal supervise`). Every file it writes is announced (`→ wrote …`). First run
  * (no onboarded stamp) gets the full narrated flow; later runs get a status card. `--full`
- * forces the full flow. Each failed step offers an interactive Claude handoff
- * (COTAL_SKIP_ASSIST=1 disables).
+ * forces the full flow. By default it seeds ONE agent (the `default` persona a bare `cotal spawn`
+ * launches); the guided expert team (david/sven/me) is opt-in via `--demo` (and `--full`). Each
+ * failed step offers an interactive Claude handoff (COTAL_SKIP_ASSIST=1 disables).
  */
 export async function setup(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof setupFlags>;
-  if (!isOnboarded() || values.full || values.yes) await runFirstRun(Boolean(values.yes));
-  else await runEnsure();
+  const demo = Boolean(values.demo) || Boolean(values.full); // --full is the whole guided flow ⇒ team
+  if (!isOnboarded() || values.full || values.yes) await runFirstRun(Boolean(values.yes), demo);
+  else await runEnsure(demo);
 }
 
-/** The full, narrated first-run experience. `yes` = non-interactive accept-all. Configure-only:
- *  prerequisites are CHECKED (never started); the finale tells the user what to run. */
-async function runFirstRun(yes: boolean): Promise<void> {
+/** The full, narrated first-run experience. `yes` = non-interactive accept-all; `demo` also seeds
+ *  the guided expert team. Configure-only: prerequisites are CHECKED (never started); the finale
+ *  tells the user what to run. */
+async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   splash();
   p.intro(brandBold("Welcome to Cotal"));
   note(
@@ -98,16 +102,14 @@ async function runFirstRun(yes: boolean): Promise<void> {
     }
   }
 
-  // Two experts plus your own driving session, by default. These are setup-managed: refreshed when
-  // DEMO_AGENTS changes (so persona edits actually land), but a file you've taken ownership of is
-  // backed up first, never silently lost — see writeDemoAgent. Every write is announced.
-  mkdirSync(cotalPath("agents"), { recursive: true });
-  for (const [name, body] of Object.entries(DEMO_AGENTS)) {
-    writeDemoAgent(cotalPath("agents", `${name}.md`), body);
-  }
-  seedDefaultAgent(); // the generic persona `cotal spawn` (no name) launches
-  p.log.success("Added david (the engineer), sven (the guide), and your session (me); spawn them when your mesh is up");
-  log.line("demo-agents: wrote david + sven + me");
+  // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
+  // shape. This is the whole first-run default; the guided expert team is opt-in right below.
+  seedDefaultAgent();
+  p.log.success("Seeded your agent (.cotal/agents/default.md) — spawn it with `cotal spawn` once your mesh is up");
+  log.line("default-agent: wrote default.md");
+  // The guided expert team (david the engineer + sven the guide + me, your session) is opt-in:
+  // `cotal setup --demo` (or `--full`). Keeps the default first run to one agent, not a crowd.
+  if (demo) seedDemoTeam(log);
 
   await ensureWebExtension();
   await offerGlobalInstall(yes);
@@ -115,17 +117,35 @@ async function runFirstRun(yes: boolean): Promise<void> {
   markOnboarded(ONBOARD_VERSION);
   provenance.wrote("onboarded stamp", join(homeCotalDir(), "onboarded.json"));
   const cmd = displayCmd();
+  // The finale is the whole loop, minimal by default: start the mesh, talk to your one agent, stop.
+  // With --demo it names the team; without, it points at --demo (and the optional dashboard).
+  const driveLines = demo
+    ? [
+        `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
+        `${ok("✓")} drive a session     ${dim(`${cmd} spawn me`)}`,
+        `${ok("✓")} ask the experts     ${dim(`${cmd} spawn david · ${cmd} spawn sven`)}`,
+        `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
+        `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
+      ]
+    : [
+        `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
+        `${ok("✓")} talk to your agent  ${dim(`${cmd} spawn`)}`,
+        `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
+        `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
+      ];
+  const tail = demo
+    ? [dim(`Visual dashboard: ${cmd} ext add cotal-web · then ${cmd} web`)]
+    : [
+        dim(`Want a visual dashboard? ${cmd} ext add cotal-web · then ${cmd} web`),
+        dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
+      ];
   note(
     [
       "Everything is configured — nothing has been started. Bring your mesh up when you're ready:",
       "",
-      `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
-      `${ok("✓")} open the dashboard  ${dim(`${cmd} web`)}`,
-      `${ok("✓")} drive a session     ${dim(`${cmd} spawn me`)}`,
-      `${ok("✓")} ask the experts     ${dim(`${cmd} spawn david · ${cmd} spawn sven`)}`,
-      `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
-      `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
+      ...driveLines,
       "",
+      ...tail,
       dim(`Cotal not working? Tell your agent to send feedback (built-in cotal_feedback), or run ${cmd} feedback "<msg>".`),
     ].join("\n"),
     "You're set",
@@ -231,9 +251,11 @@ function claudePluginStep(): Step {
 }
 
 /** The compact repeat-run: a one-glance status card, plus re-seeding the default persona if it's
- *  missing (announced). Nothing is launched — the card tells you what's down and how to start it. */
-async function runEnsure(): Promise<void> {
+ *  missing (announced). Nothing is launched — the card tells you what's down and how to start it.
+ *  `--demo` here adds the guided team to an already-configured machine (no need to re-narrate). */
+async function runEnsure(demo: boolean): Promise<void> {
   seedDefaultAgent(); // ensure `cotal spawn` (no name) always has a default to launch
+  if (demo) seedDemoTeam(); // `cotal setup --demo` on a configured machine: add the team, then card
   await ensureWebExtension();
   await readyCard(process.cwd());
 }
@@ -283,6 +305,7 @@ async function readyCard(cwd: string): Promise<void> {
   const web = await webUp();
   const mgr = managerUp();
   const cmd = displayCmd();
+  const hasDemo = existsSync(cotalPath("agents", "david.md")); // the guided team is present ⇒ richer hint
   const line = (on: boolean, text: string) => `${on ? ok("✓") : dim("○")} ${text}`;
   note(
     [
@@ -293,7 +316,10 @@ async function readyCard(cwd: string): Promise<void> {
       line(mgr, `manager  ${dim(mgr ? "running" : `not running — start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,
-      `drive it:        ${dim(`${cmd} spawn me`)}   ${dim("(or david / sven)")}`,
+      // Match the hint to what's actually on disk: the guided team (with --demo) vs the one default agent.
+      hasDemo
+        ? `drive it:        ${dim(`${cmd} spawn me`)}   ${dim("(or david / sven)")}`
+        : `drive it:        ${dim(`${cmd} spawn`)}   ${dim("(talk to your agent · guided team: " + cmd + " setup --demo)")}`,
       `watch it:        ${dim(`${cmd} console`)}   ${dim("(live TUI in this terminal)")}`,
       `more:            ${dim(`${cmd} web · ${cmd} down · ${cmd} feedback "<msg>" · ${cmd} --help`)}`,
     ].join("\n"),
@@ -402,6 +428,20 @@ function seedDefaultAgent(): void {
   mkdirSync(cotalPath("agents"), { recursive: true });
   writeFileSync(path, DEFAULT_AGENT);
   provenance.wrote("default persona", path);
+}
+
+/** Seed the guided expert team — david (the engineer), sven (the guide), me (your session) — the
+ *  opt-in richer first experience (`cotal setup --demo` / `--full`). These are setup-managed, unlike
+ *  the seed-once default: refreshed when a DEMO_AGENTS body changes so persona edits actually land,
+ *  but a file you've taken ownership of is backed up first, never silently lost (see writeDemoAgent).
+ *  Every write is announced; `log` (present only in the narrated first run) also records it. */
+function seedDemoTeam(log?: { line(msg: string): void }): void {
+  mkdirSync(cotalPath("agents"), { recursive: true });
+  for (const [name, body] of Object.entries(DEMO_AGENTS)) {
+    writeDemoAgent(cotalPath("agents", `${name}.md`), body);
+  }
+  p.log.success("Added the guided team — david (the engineer), sven (the guide), and your session (me); spawn them when your mesh is up");
+  log?.line("demo-agents: wrote david + sven + me");
 }
 
 const DEMO_AGENTS: Record<string, string> = {

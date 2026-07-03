@@ -77,46 +77,59 @@ JetStream has run in production for years. We didn't invent the hard parts.
 
 ## Quick start
 
-One command configures your machine — plugin, personas, connector — then a second brings up the
-local mesh:
+Cotal installs one command, `cotal`, that runs your own local web for agents. Install it, then
+configure your machine once:
 
 ```bash
-npx cotal-ai setup   # configure: needs Node 20+; NATS ships bundled — installs the plugin, seeds personas
-npx cotal-ai up      # start the mesh + delivery daemon + a detached manager
+npm i -g cotal-ai    # needs Node 20+ (a nats-server ships bundled)
+cotal setup          # one-time: checks, installs the Claude plugin, seeds one agent — launches nothing
 ```
 
-Guided setup, **configure-only**. The **first run** checks prerequisites (locates
-`nats-server` — bundled, or your own on PATH), lets you pick connectors (Claude installs a
-plugin; Codex/OpenCode auto-wire at spawn), and adds two experts plus your session: **david**
-the engineer, **sven** the guide, and **me**, the one you drive. It **launches nothing** and
-prints the commands to start things. If a step fails, it hands you to an interactive Claude
-with the failure context, then retries.
+> Just kicking the tires? `npx cotal-ai setup` runs without installing, and offers to add the global
+> `cotal` at the end (default yes) — the everyday commands below assume it's on your PATH.
 
-Then bring the mesh up with `cotal up`. It is **JWT-authed** by default (sender authenticity +
-per-agent ACLs, with the server-side delivery daemon for the durable backstop) and starts a
-detached **manager** alongside, so `cotal spawn --detach` works right after; pass `cotal up --open`
-for a frictionless open, loopback-only, live-only mesh (no auth, no daemon).
+`cotal setup` is **configure-only**: it gets your machine ready and **starts nothing**. The first run
+checks prerequisites (locates `nats-server` — bundled, or your own on PATH), installs the connector
+you pick (Claude installs a plugin; OpenCode auto-wires at spawn), and seeds **one agent**
+(`.cotal/agents/default.md`). If a step fails, it hands you to an interactive Claude with the failure
+context, then retries.
+
+Now bring up a mesh and talk to an agent — the whole loop is three commands:
+
+```bash
+cotal up --detach    # start the mesh + delivery daemon + a manager, in the background
+cotal spawn          # launch your agent in this terminal and talk to it (Ctrl-C to leave)
+cotal down           # stop everything
+```
+
+`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, with the server-side
+delivery daemon for the durable backstop) and starts a detached **manager** alongside, so
+`cotal spawn --detach` / `cotal_spawn` work right after. Pass `cotal up --open` for a frictionless
+open, loopback-only, live-only mesh (no auth, no daemon).
+
+**The commands you'll use most:**
+
+```bash
+cotal spawn david    # a guided teammate (first: `cotal setup --demo` seeds david, sven, and me)
+cotal console        # watch the mesh live here: presence, channels, messages
+cotal web            # the same in the browser (setup installs the web extension)
+cotal down           # stop the background mesh, delivery daemon, and manager
+```
 
 > [!NOTE]
 > **Want each teammate in its own terminal?** Run the manager with `cotal supervise --runtime cmux`
 > (a **[cmux](https://cmux.com)** tab per agent) or `--runtime tmux` (a **[tmux](https://github.com/tmux/tmux/wiki)** window per agent). Otherwise they run in the
 > background on the same mesh, watched with `cotal console` or the dashboard.
 
-When you're all set up, here are the commands you'll use most:
-
-```bash
-cotal up --detach  # start the mesh (+ delivery daemon + manager)
-cotal spawn me     # drive a session: talk to your agent; it messages and spawns peers
-cotal spawn david  # bring in an expert teammate (also: sven, the guide)
-cotal console      # watch the mesh live: presence, channels, messages
-cotal web          # the same, in the browser (setup installs the web extension)
-cotal down         # stop everything
-```
-
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
 > pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
 > on the mesh via `cotal_spawn`. See [docs/claude-code-integration.md](docs/claude-code-integration.md).
+
+**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), agents in
+cmux/tmux panes, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
+instead of Claude, or the guided expert team (`cotal setup --demo`). Start at
+[docs/getting-started.md](docs/getting-started.md).
 
 ## Examples
 
