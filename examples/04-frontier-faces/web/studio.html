@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cotal · frontier tower — live mesh studio</title>
+<title>Cotal · frontier tower · live mesh studio</title>
 <style>
   :root {
     --bg:#06000f; --panel:#0b0420; --panel2:#0d0726; --side:#080216; --line:rgba(83,235,228,.13);
@@ -120,7 +120,10 @@
   .tile.flash { border-color:rgba(241,165,189,.7); box-shadow:0 0 22px rgba(241,165,189,.18); }
   .tile cotal-face { --cf-width:100%; --cf-caption-display:none; display:block; }
   .tile .lab { display:flex; align-items:center; gap:6px; margin-top:7px; font-size:11px; }
-  .tile .lab .nm { font-weight:600; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tile .lab .nm { font-weight:600; color:var(--ink); flex:none; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tile .lab .foundertag { flex:none; font-size:9px; font-weight:700; letter-spacing:.2px; color:var(--cyan);
+    background:rgba(83,235,228,.12); border:1px solid rgba(83,235,228,.4); border-radius:999px; padding:1px 6px; }
+  .tile .lab .grow { flex:1; }
   .tile .termbtn { font-family:inherit; font-size:10px; line-height:1; padding:3px 5px; border:1px solid var(--line);
                    border-radius:5px; background:transparent; color:var(--dim); transition:.15s; }
   .tile .termbtn:hover { color:var(--cyan); border-color:rgba(83,235,228,.4); background:rgba(83,235,228,.08); }
@@ -192,7 +195,7 @@
     <section class="convo">
       <div class="top"><div class="h" id="conv-h">#general</div><div class="s" id="conv-s"></div><div class="mem" id="conv-mem"></div></div>
       <div class="msgs" id="msgs"></div>
-      <div class="khint">💬 <b>Live AI panel</b> — type a question to join the conversation</div>
+      <div class="khint">💬 <b>Live AI panel</b> · type a question to join the conversation</div>
       <form class="composer" id="composer" autocomplete="off">
         <input id="say" maxlength="500" placeholder="type a question for the panel…" />
         <button type="submit" id="sendbtn">send</button>
@@ -318,8 +321,8 @@
     const box = $('msgs'); box.innerHTML = '';
     if (!c.messages.length) {
       box.innerHTML = `<div class="placeholder">${dm
-        ? `Message ${c.label} directly — only ${c.label} answers (the others stay out of it).`
-        : `Nothing in #${c.name} yet — type a question and the agents pick it up.`}</div>`;
+        ? `Message ${c.label} directly. Only ${c.label} answers (the others stay out of it).`
+        : `Nothing in #${c.name} yet. Type a question and the agents pick it up.`}</div>`;
     } else for (const m of c.messages) box.appendChild(msgRow(m));
     box.scrollTop = box.scrollHeight;
     const inActive = c.kind === 'channel' ? new Set(channelMembers(c.name)) : null;
@@ -376,7 +379,7 @@
       const tile = document.createElement('div');
       tile.className = 'tile';
       tile.innerHTML = `<cotal-face persona="${persona}" chrome="off"></cotal-face>
-        <div class="lab"><span class="nm">${labelOf(a)}</span><button class="termbtn" title="open ${labelOf(a)}'s messages">&gt;_</button><span class="sdot"></span></div>
+        <div class="lab"><span class="nm">${labelOf(a)}</span>${a.founder ? '<span class="foundertag">Cotal</span>' : ''}<span class="grow"></span><button class="termbtn" title="open ${labelOf(a)}'s messages">&gt;_</button><span class="sdot"></span></div>
         <div class="stat"><span class="act">idle</span><span class="sep">·</span><span class="emo neutral">neutral</span></div>`;
       tile.onclick = () => selectConv(convDM(a.name));
       grid.appendChild(tile);
@@ -425,7 +428,7 @@
       const dest = e.tool === 'cotal_dm' ? `dm → ${e.to}` : e.tool === 'cotal_anycast' ? `@${e.role}` : `#${e.channel || 'general'}`;
       return `→ ${dest}: ${stripTags(e.text)}`;
     }
-    if (e.kind === 'idle') return '— idle —';
+    if (e.kind === 'idle') return '· idle ·';
     if (e.kind === 'error') return '⚠ session error';
     return e.text || '';
   }

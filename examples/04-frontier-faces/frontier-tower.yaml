@@ -19,9 +19,10 @@ broker:
 agent: opencode
 
 # The cast — each entry points at its persona file (resolved relative to this manifest).
+# The two Cotal founders lead; the rest of the panel follows.
 agents:
-  david: agents/david.md
   sven: agents/sven.md
+  david: agents/david.md
   garry: agents/garry.md
   steve: agents/steve.md
   rayan: agents/rayan.md
@@ -30,18 +31,18 @@ agents:
 channels:
   # Everyone — the open broadcast panel.
   general:
-    description: The whole panel — open broadcast to every agent.
-    subscribe: [david, sven, garry, steve, rayan, mira]
-    allowPublish: [david, sven, garry, steve, rayan, mira]
+    description: The whole panel. Open broadcast to every agent.
+    subscribe: [sven, david, garry, steve, rayan, mira]
+    allowPublish: [sven, david, garry, steve, rayan, mira]
 
   # No hedging — the spiciest opinions on the panel.
   hot-takes:
-    description: Unfiltered opinions — the spiciest takes on the panel.
-    subscribe: [david, sven, garry, steve, rayan, mira]
-    allowPublish: [david, sven, garry, steve, rayan, mira]
+    description: Unfiltered opinions, the spiciest takes on the panel.
+    subscribe: [sven, david, garry, steve, rayan, mira]
+    allowPublish: [sven, david, garry, steve, rayan, mira]
 
-  # The two founders building Cotal.
+  # The two founders — ask them about Cotal.
   cotal:
-    description: Building Cotal — the founders on the wire protocol.
-    subscribe: [david, sven]
-    allowPublish: [david, sven]
+    description: Ask the founders about Cotal, the wire protocol they built.
+    subscribe: [sven, david]
+    allowPublish: [sven, david]
