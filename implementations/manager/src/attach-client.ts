@@ -1,7 +1,27 @@
 import WebSocket from "ws";
+import { c } from "./ui.js";
 
-/** Detach key — Ctrl-] (0x1d), as in telnet/ssh escape conventions. */
-const DETACH = 0x1d;
+/**
+ * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. `COTAL_DETACH_KEY`
+ * rebinds it to another control key when Ctrl-] clashes with a keybinding inside the agent's TUI;
+ * accepts `ctrl-<char>` or `^<char>` (e.g. `ctrl-b`, `^_`). Read at point of use, per the repo's
+ * `COTAL_*` convention. An unparseable value — including a set-but-empty or whitespace-only one —
+ * throws (named), never silently falling back; the caller turns that into a loud exit. Only an
+ * unset var = the Ctrl-] default.
+ */
+export function detachKey(): { byte: number; label: string; overridden: boolean } {
+  const spec = process.env.COTAL_DETACH_KEY;
+  if (spec === undefined) return { byte: 0x1d, label: "Ctrl-]", overridden: false };
+  const m = /^(?:ctrl-|\^)([a-z@[\\\]^_])$/i.exec(spec.trim());
+  if (!m) {
+    throw new Error(
+      `invalid COTAL_DETACH_KEY "${spec}" — expected ctrl-<char> or ^<char> for a control key ` +
+        `(a-z, or one of @ [ \\ ] ^ _), e.g. ctrl-b`,
+    );
+  }
+  const ch = m[1].toUpperCase();
+  return { byte: ch.charCodeAt(0) & 0x1f, label: `Ctrl-${ch}`, overridden: true };
+}
 
 /**
  * Terminal modes a full-screen child (a fullscreen TUI: OpenCode, or Claude under `/tui fullscreen`)
@@ -60,9 +80,18 @@ const lastIndexOfRe = (re: RegExp, s: string): number => {
 /**
  * Drive a manager's attach endpoint from the terminal: raw-mode stdin streams to
  * the PTY, PTY output streams to stdout, and SIGWINCH-style resizes are forwarded.
- * Ctrl-] detaches without killing the agent.
+ * The detach key (Ctrl-] by default, {@link detachKey}) detaches without killing the agent.
  */
 export function attachClient(url: string): Promise<void> {
+  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
+  // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
+  let detach: ReturnType<typeof detachKey>;
+  try {
+    detach = detachKey();
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   return new Promise<void>((resolve, reject) => {
     const ws = new WebSocket(url);
     const stdin = process.stdin;
@@ -106,7 +135,7 @@ export function attachClient(url: string): Promise<void> {
     const sendResize = () =>
       ws.send(`r:${process.stdout.columns ?? 80},${process.stdout.rows ?? 24}`);
     const onInput = (d: Buffer) => {
-      if (d.length === 1 && d[0] === DETACH) {
+      if (d.length === 1 && d[0] === detach.byte) {
         ws.close();
         return;
       }
@@ -162,6 +191,9 @@ export function attachClient(url: string): Promise<void> {
     };
 
     ws.on("open", () => {
+      // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
+      // default label). Only on override, so the default case stays free of duplicate noise.
+      if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));
       if (stdin.isTTY) stdin.setRawMode(true);
       stdin.resume();
       sendResize();

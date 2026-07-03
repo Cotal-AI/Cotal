@@ -330,7 +330,10 @@ dependency on them). Selectable backends:
   pseudo-terminal it owns via **`@lydell/node-pty`** (prebuilt binaries for mac/Linux/Windows ×
   x64/arm64: zero compiler, zero `node-gyp`, ABI-stable). A real native TUI. The human watches
   or types in via `cotal attach <name>` (stream the PTY), and the manager keeps full OS-signal
-  control (group-kill, restart). No external software to install.
+  control (group-kill, restart). No external software to install. Detach with **Ctrl-]** (the
+  agent keeps running); set **`COTAL_DETACH_KEY`** to `ctrl-<char>` (e.g. `ctrl-b`) to rebind it
+  when Ctrl-] clashes with a keybinding inside the agent's TUI — an unparseable value errors, and
+  attach prints the active key when it is overridden.
 - **`tmux` (integration).** Each agent gets its own window in a shared per-space [tmux](https://github.com/tmux/tmux/wiki) session.
   This is a true plug-in: the runtime lives in **`@cotal-ai/tmux`** and self-registers a
   `RuntimeProvider` on import (opt in with `import "@cotal-ai/tmux"`, which the `cotal` binary
