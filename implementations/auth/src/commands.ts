@@ -6,20 +6,30 @@
  * logged in as YOU across every repo on this box.
  */
 import { parseArgs } from "node:util";
-import { decodeJwt } from "jose";
 import { registry, type Command } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
-  deviceLogin,
-  fetchIdpJwt,
+  establishIdpSession,
   loadIdpSession,
   normalizeIdpUrl,
   revokeIdpSession,
-  saveIdpSession,
 } from "./login.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
+
+/** Every operational failure in these commands is a deliberately-legible thrown sentence
+ *  (a refused client id, a revoked session, a malformed IdP response …) — the CLI's generic
+ *  catch would re-throw it into a raw stack trace. Print the sentence, exit 1. parseArgs runs
+ *  OUTSIDE this wrapper so usage errors keep runCli's usage formatting. */
+async function legibly(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
+}
 
 async function runLogin(argv: string[]): Promise<void> {
   const { values } = parseArgs({
@@ -30,23 +40,25 @@ async function runLogin(argv: string[]): Promise<void> {
     console.error("usage: cotal login --idp <auth base URL> [--client-id <id>]   (Better Auth: <origin>/api/auth)");
     process.exit(1);
   }
-  const idp = normalizeIdpUrl(values.idp);
-  const session = await deviceLogin({
-    idpUrl: idp,
-    clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
-    onPrompt: (p) => {
-      console.log(`\nTo approve this sign-in, open:\n\n    ${p.verificationUriComplete}\n`);
-      console.log(`(or go to ${p.verificationUri} and enter the code ${p.userCode})\n`);
-      console.log(`Waiting for approval — the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
-    },
+  const idpArg = values.idp;
+  await legibly(async () => {
+    const idp = normalizeIdpUrl(idpArg);
+    // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
+    // proof leaves no cache entry to fool requireIdpSession later.
+    const { session, sub } = await establishIdpSession({
+      dir: homeCotalDir(),
+      idpUrl: idp,
+      clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
+      onPrompt: (p) => {
+        console.log(`\nTo approve this sign-in, open:\n\n    ${p.verificationUriComplete}\n`);
+        console.log(`(or go to ${p.verificationUri} and enter the code ${p.userCode})\n`);
+        console.log(`Waiting for approval — the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
+      },
+    });
+    console.log(
+      `\nLogged in to ${idp} as ${sub}. Session cached in ${homeCotalDir()} until ${new Date(session.expiresAt * 1000).toISOString()}.`,
+    );
   });
-  saveIdpSession(homeCotalDir(), idp, session);
-  // Prove the session mints user JWTs end-to-end before declaring success. `sub` here is
-  // display-only (verification is the bridge/callout's job, server-side).
-  const sub = String(decodeJwt(await fetchIdpJwt(idp, session.token)).sub ?? "<unknown>");
-  console.log(
-    `\nLogged in to ${idp} as ${sub}. Session cached in ${homeCotalDir()} until ${new Date(session.expiresAt * 1000).toISOString()}.`,
-  );
 }
 
 async function runLogout(argv: string[]): Promise<void> {
@@ -55,24 +67,27 @@ async function runLogout(argv: string[]): Promise<void> {
     console.error("usage: cotal logout --idp <auth base URL>");
     process.exit(1);
   }
-  const idp = normalizeIdpUrl(values.idp);
-  const dir = homeCotalDir();
-  const session = loadIdpSession(dir, idp);
-  if (!session) {
-    console.log(`not logged in to ${idp} — nothing to clear`);
-    return;
-  }
-  try {
-    await revokeIdpSession(idp, session.token);
-  } catch (e) {
-    // The local cache is cleared regardless — but a still-live server-side session is a real
-    // leak, so the failure is reported loudly, never swallowed.
+  const idpArg = values.idp;
+  await legibly(async () => {
+    const idp = normalizeIdpUrl(idpArg);
+    const dir = homeCotalDir();
+    const session = loadIdpSession(dir, idp);
+    if (!session) {
+      console.log(`not logged in to ${idp} — nothing to clear`);
+      return;
+    }
+    try {
+      await revokeIdpSession(idp, session.token);
+    } catch (e) {
+      // The local cache is cleared regardless — but a still-live server-side session is a real
+      // leak, so the failure is reported loudly, never swallowed.
+      deleteIdpSession(dir, idp);
+      console.error(`local session cleared, but: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
     deleteIdpSession(dir, idp);
-    console.error(`local session cleared, but: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
-  }
-  deleteIdpSession(dir, idp);
-  console.log(`Logged out of ${idp} — server-side session revoked, local cache cleared.`);
+    console.log(`Logged out of ${idp} — server-side session revoked, local cache cleared.`);
+  });
 }
 
 const authCommands: Command[] = [

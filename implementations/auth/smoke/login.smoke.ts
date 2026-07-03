@@ -29,6 +29,7 @@ import {
   deleteIdpSession,
   deriveOwnerToken,
   deviceLogin,
+  establishIdpSession,
   fetchIdpJwt,
   generateSigningKey,
   loadIdpSession,
@@ -151,6 +152,17 @@ const idpJwt = await fetchIdpJwt(base, session.token);
     v.owner === owner && v.owner === deriveOwnerToken(SECRET, JSON.stringify([origin, userId])) && v.act.actor === "agent_1");
 }
 
+{
+  // The whole login op in its safe order against the REAL IdP: prove via /token, then persist.
+  const estDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-est-"));
+  const est = await establishIdpSession({
+    dir: estDir, idpUrl: base, clientId: CLIENT_ID,
+    onPrompt: (p) => void decide(p.userCode, "approve"),
+  });
+  check("establishIdpSession: proves the session mints a JWT, THEN persists; sub is the signed-in user",
+    est.sub === userId && loadIdpSession(estDir, base)?.token === est.session.token);
+}
+
 // ---- the session cache ----
 console.log("B) the machine-local session cache");
 const dir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-"));
@@ -182,6 +194,12 @@ saveIdpSession(dir, `${base}/`, session); // trailing slash — must land on the
 }
 await rejects("a non-loopback http IdP url is refused", () => normalizeIdpUrl("http://auth.example.com/api/auth"), "https");
 await rejects("a garbage IdP url is refused", () => normalizeIdpUrl("not a url"), "not a valid URL");
+check("bracketed IPv6 loopback http is accepted (WHATWG hostname is \"[::1]\")",
+  normalizeIdpUrl("http://[::1]:4599/api/auth") === "http://[::1]:4599/api/auth");
+await rejects("a query on the IdP url is refused, not silently dropped",
+  () => normalizeIdpUrl("http://127.0.0.1/api/auth?tenant=a"), "query or fragment");
+await rejects("a fragment on the IdP url is refused, not silently dropped",
+  () => normalizeIdpUrl("http://127.0.0.1/api/auth#frag"), "query or fragment");
 
 // ---- the reject matrix ----
 console.log("C) denies, expiry, revocation");
@@ -206,6 +224,58 @@ await rejects("a deny at the verification page is a legible throw, not a retry l
   await rejects("an unapproved device code expires into a legible throw",
     () => deviceLogin({ idpUrl: `${origin2}/api/auth`, clientId: CLIENT_ID, onPrompt: () => {} }), "expired");
   s2.close();
+}
+
+// ---- a hostile / broken IdP: the client must refuse, never spin or cache ----
+console.log("D) hostile-IdP responses");
+{
+  // A minimal fake IdP whose responses the smoke scripts per-path — the surface a MALICIOUS
+  // (not merely misconfigured) IdP controls.
+  let script: Record<string, { status: number; body: unknown }> = {};
+  const fake = createServer((req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    const r = script[route] ?? { status: 404, body: {} };
+    res.writeHead(r.status, { "content-type": "application/json" });
+    res.end(JSON.stringify(r.body));
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  const fakeBase = `http://127.0.0.1:${(fake.address() as AddressInfo).port}/api/auth`;
+  const grantBody = (over: Record<string, unknown>) => ({
+    device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc",
+    expires_in: 60, interval: 1, ...over,
+  });
+
+  script = { "/api/auth/device/code": { status: 200, body: grantBody({ interval: "abc" }) } };
+  await rejects("a non-numeric poll interval is refused before any poll (no ~1ms tight loop)",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed device grant");
+  script = { "/api/auth/device/code": { status: 200, body: grantBody({ interval: 1e9 }) } };
+  await rejects("an absurd poll interval is refused, not obeyed as a silent hang",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed device grant");
+  script = { "/api/auth/device/code": { status: 200, body: grantBody({ expires_in: 1e12 }) } };
+  await rejects("an absurd device-code lifetime is refused (no unbounded poll loop)",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed device grant");
+  script = { "/api/auth/device/code": { status: 200, body: grantBody({ user_code: "" }) } };
+  await rejects("an empty user code is refused before the human is prompted with it",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed device grant");
+  script = {
+    "/api/auth/device/code": { status: 200, body: grantBody({}) },
+    "/api/auth/device/token": { status: 200, body: { access_token: "tok", expires_in: Number.POSITIVE_INFINITY } },
+  };
+  await rejects("a non-finite session lifetime in the token response is refused",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed token response");
+
+  // Prove-then-save: a device flow that "succeeds" but whose session can't mint a JWT must
+  // leave NO cache entry — otherwise requireIdpSession would pass the no-fallback gate on a dud.
+  const dudDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-dud-"));
+  script = {
+    "/api/auth/device/code": { status: 200, body: grantBody({}) },
+    "/api/auth/device/token": { status: 200, body: { access_token: "dud-session", expires_in: 3600 } },
+    "/api/auth/token": { status: 401, body: {} },
+  };
+  await rejects("establishIdpSession: a session that can't mint a JWT fails the login legibly",
+    () => establishIdpSession({ dir: dudDir, idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "run `cotal login");
+  check("… and leaves NO cache entry behind (prove-then-save)", loadIdpSession(dudDir, fakeBase) === undefined);
+  fake.close();
 }
 
 // ---- revocation: the whole point of caching the session, not the JWT ----

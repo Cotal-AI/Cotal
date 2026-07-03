@@ -39,6 +39,7 @@ export {
 } from "./idp.js";
 export {
   deviceLogin,
+  establishIdpSession,
   fetchIdpJwt,
   revokeIdpSession,
   loadIdpSession,

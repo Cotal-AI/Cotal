@@ -24,6 +24,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { decodeJwt } from "jose";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
@@ -61,9 +62,15 @@ export function normalizeIdpUrl(idpUrl: string): string {
   } catch {
     throw new Error(`idp url "${idpUrl}" is not a valid URL`);
   }
-  const loopback = u.hostname === "127.0.0.1" || u.hostname === "::1" || u.hostname === "localhost";
+  // WHATWG URL keeps the brackets on an IPv6 hostname — "[::1]", not "::1" (same set as the
+  // issuer's pinned-JWKS origin guard).
+  const loopback = u.hostname === "127.0.0.1" || u.hostname === "[::1]" || u.hostname === "localhost";
   if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback))
     throw new Error(`idp url must be https (or loopback http for local dev) — got "${idpUrl}"`);
+  // A query/hash would be silently DROPPED by the normalization below — and a silently altered
+  // auth base is a different IdP than the operator asked for. Refuse instead.
+  if (u.search !== "" || u.hash !== "")
+    throw new Error(`idp url must not carry a query or fragment — got "${idpUrl}"`);
   return u.origin + u.pathname.replace(/\/+$/, "");
 }
 
@@ -103,8 +110,21 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     expires_in: number;
     interval: number;
   };
-  if (typeof grant.device_code !== "string" || !grant.device_code || typeof grant.expires_in !== "number")
-    throw new Error(`idp login: ${base} returned a malformed device grant`);
+  // The WHOLE grant is shape-checked before anything is shown or polled — the timing fields
+  // especially: a malicious IdP handing back `interval: "abc"` or a non-finite/absurd
+  // `expires_in` would otherwise turn the poll loop into a tight (setTimeout coerces garbage to
+  // ~1ms) or unbounded one. Bounds: a device code living past 24h or a poll interval past 5min
+  // is not a sane grant — refuse, don't clamp.
+  const sane = (v: unknown, max: number): v is number => typeof v === "number" && Number.isFinite(v) && v > 0 && v <= max;
+  if (
+    typeof grant.device_code !== "string" || !grant.device_code ||
+    typeof grant.user_code !== "string" || !grant.user_code ||
+    typeof grant.verification_uri !== "string" || !grant.verification_uri ||
+    typeof grant.verification_uri_complete !== "string" || !grant.verification_uri_complete ||
+    !sane(grant.expires_in, 86_400) ||
+    (grant.interval !== undefined && !sane(grant.interval, 300))
+  )
+    throw new Error(`idp login: ${base} returned a malformed device grant — refusing to poll on it`);
   opts.onPrompt({
     verificationUri: grant.verification_uri,
     verificationUriComplete: grant.verification_uri_complete,
@@ -130,7 +150,8 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     });
     if (poll.ok) {
       const tok = (await poll.json()) as { access_token: string; expires_in: number };
-      if (typeof tok.access_token !== "string" || !tok.access_token || typeof tok.expires_in !== "number")
+      if (typeof tok.access_token !== "string" || !tok.access_token ||
+          typeof tok.expires_in !== "number" || !Number.isFinite(tok.expires_in) || tok.expires_in <= 0)
         throw new Error(`idp login: ${base} returned a malformed token response`);
       return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
     }
@@ -163,6 +184,23 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
   const body = (await res.json()) as { token?: string };
   if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
   return body.token;
+}
+
+/** The whole login operation, in the only safe order: device sign-in, then PROVE the session
+ *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
+ *  land on disk — it would pass {@link requireIdpSession}'s no-fallback gate as a dud and defer
+ *  the failure to some later connect. Returns the session plus the JWT's `sub` (display-only —
+ *  verification is the bridge/callout's job, server-side). */
+export async function establishIdpSession(
+  opts: DeviceLoginOpts & { dir: string },
+): Promise<{ session: IdpSession; sub: string }> {
+  const session = await deviceLogin(opts);
+  const jwt = await fetchIdpJwt(opts.idpUrl, session.token);
+  const sub = decodeJwt(jwt).sub;
+  if (typeof sub !== "string" || !sub)
+    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub — refusing to cache the session`);
+  saveIdpSession(opts.dir, opts.idpUrl, session);
+  return { session, sub };
 }
 
 /** Revoke the session server-side (sign out). A 401 back means the session is already dead —
