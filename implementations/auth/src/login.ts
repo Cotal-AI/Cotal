@@ -211,8 +211,11 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     });
     if (poll.ok) {
       const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll);
-      if (typeof tok.access_token !== "string" || !tok.access_token ||
-          typeof tok.expires_in !== "number" || !Number.isFinite(tok.expires_in) || tok.expires_in <= 0)
+      // Bound the session lifetime like the device grant's timing fields above (finite, positive,
+      // not past a year). `expiresAt` is advisory only — the server is the revocation authority —
+      // so this is a legibility/symmetry guard, not a security boundary: it refuses a hostile
+      // `expires_in: 1e12` rather than caching it and printing "Session cached … until <year 33000>".
+      if (typeof tok.access_token !== "string" || !tok.access_token || !sane(tok.expires_in, 31_536_000))
         throw new Error(`idp login: ${base} returned a malformed token response`);
       // Defense-in-depth for the revocation model: we cache the OPAQUE session handle precisely so
       // that IdP revocation bites at the next /token fetch. A JWT outlives its session, so if a

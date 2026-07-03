@@ -274,6 +274,12 @@ console.log("D) hostile-IdP responses");
   };
   await rejects("a non-finite session lifetime in the token response is refused",
     () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed token response");
+  script = {
+    "/api/auth/device/code": { status: 200, body: grantBody({}) },
+    "/api/auth/device/token": { status: 200, body: { access_token: "opaque-session", expires_in: 1e12 } },
+  };
+  await rejects("an absurd (finite but unbounded) session lifetime is refused, not echoed as 'until year 33000'",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "malformed token response");
 
   // Prove-then-save: a device flow that "succeeds" but whose session can't mint a JWT must
   // leave NO cache entry — otherwise requireIdpSession would pass the no-fallback gate on a dud.
@@ -350,6 +356,17 @@ console.log("D) hostile-IdP responses");
   check("revoking an already-dead session is idempotent (goal state reached)",
     await revokeIdpSession(base, session.token).then(() => true));
   await rejects("garbage bearer is the same legible 401 path", () => fetchIdpJwt(base, "not-a-session"), "run `cotal login");
+}
+{
+  // A non-401 sign-out failure is NOT the goal state (the server-side session may still be alive),
+  // so revokeIdpSession must throw loudly — this is the signal `cotal logout` keys off to KEEP the
+  // local session for a retry rather than silently dropping the handle.
+  const so = createServer((_req, res) => { res.writeHead(503, { "content-type": "application/json" }).end("{}"); });
+  await new Promise<void>((r) => so.listen(0, "127.0.0.1", r));
+  const soBase = `http://127.0.0.1:${(so.address() as AddressInfo).port}/api/auth`;
+  await rejects("a non-401 sign-out failure is a loud throw (server-side session may still be alive)",
+    () => revokeIdpSession(soBase, "sess"), "may still be alive");
+  so.close();
 }
 
 server.close();
