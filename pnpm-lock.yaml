@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:implementations/auth
       '@cotal-ai/cli':
         specifier: workspace:*
         version: link:implementations/cli
@@ -220,6 +223,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       '@nats-io/jwt':
         specifier: 0.0.10-5
         version: 0.0.10-5

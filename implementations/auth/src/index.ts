@@ -37,3 +37,17 @@ export {
   type ExchangeResult,
   type IdpBridge,
 } from "./idp.js";
+export {
+  deviceLogin,
+  fetchIdpJwt,
+  revokeIdpSession,
+  loadIdpSession,
+  saveIdpSession,
+  deleteIdpSession,
+  requireIdpSession,
+  normalizeIdpUrl,
+  type IdpSession,
+  type DeviceLoginOpts,
+  type DeviceLoginPrompt,
+} from "./login.js";
+import "./commands.js"; // self-registers `login` / `logout` into the core Registry

@@ -1,0 +1,223 @@
+/**
+ * `cotal login` client smoke — the device-authorization flow proven against a REAL Better Auth
+ * instance (jwt + deviceAuthorization + bearer plugins), end-to-end into the C2a bridge: device
+ * sign-in → cached session → fresh IdP JWT over `Authorization: Bearer` → bridge exchange →
+ * validated Cotal bearer. Plus the reject matrix a real operator hits: pinned client id, a deny
+ * at the verification page, an expired device code, a revoked session (the 401 → "run `cotal
+ * login` again" path — the revocation lever this client exists to preserve), and the session
+ * cache's hygiene (0600, session token only — never a JWT, version-guarded).
+ *
+ * Deliberately NOT covered live: `slow_down` back-off (+5s per RFC 8628 §3.5) — Better Auth only
+ * emits it on a faster-than-interval poll this client never sends; the handling is code-reviewed.
+ * Loopback HTTP only; broker-free. Run: pnpm smoke:auth-login
+ */
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { jwtVerify } from "jose";
+import { betterAuth } from "better-auth";
+import { memoryAdapter } from "better-auth/adapters/memory";
+import { jwt } from "better-auth/plugins/jwt";
+import { deviceAuthorization } from "better-auth/plugins/device-authorization";
+import { bearer } from "better-auth/plugins/bearer";
+import { toNodeHandler } from "better-auth/node";
+import {
+  createIdpBridge,
+  createUserTokenIssuer,
+  deleteIdpSession,
+  deriveOwnerToken,
+  deviceLogin,
+  fetchIdpJwt,
+  generateSigningKey,
+  loadIdpSession,
+  normalizeIdpUrl,
+  pinnedJwksResolver,
+  requireIdpSession,
+  revokeIdpSession,
+  saveIdpSession,
+  validateUserToken,
+  type DeviceLoginPrompt,
+} from "../src/index.js";
+
+let pass = 0, fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); }
+  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+async function rejects(name: string, fn: () => Promise<unknown> | unknown, needle?: string) {
+  try { await fn(); check(`${name} (expected rejection)`, false); }
+  catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    check(needle && !msg.includes(needle) ? `${name} (wrong reason: ${msg})` : name, !needle || msg.includes(needle));
+  }
+}
+
+const SPACE = "demo";
+const SECRET = "s".repeat(32);
+const CLIENT_ID = "cotal-cli";
+
+// ---------- the real Better Auth IdP ----------
+console.log("A) real Better Auth (jwt + deviceAuthorization + bearer), the happy chain");
+
+let handler: ReturnType<typeof toNodeHandler> | undefined;
+const server = createServer((req, res) => handler!(req, res));
+await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+const base = `${origin}/api/auth`;
+
+const auth = betterAuth({
+  baseURL: origin,
+  secret: "smoke-only-better-auth-secret-0123456789",
+  // The memory adapter throws on any missing model: BA's base four + the jwt plugin's `jwks` +
+  // the device plugin's `deviceCode`.
+  database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }),
+  emailAndPassword: { enabled: true },
+  plugins: [
+    jwt({ jwt: { issuer: origin, audience: origin } }),
+    // The operator PINS the client id — a wrong one must fail loud at /device/code.
+    deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id) => id === CLIENT_ID }),
+    // bearer() is what lets a CLI present the cached session token as `Authorization: Bearer`
+    // instead of juggling cookies — the login client's /token + /sign-out calls depend on it.
+    bearer(),
+  ],
+});
+handler = toNodeHandler(auth);
+
+// The approving browser: a real signed-up user with a real session cookie.
+const signup = await auth.api.signUpEmail({
+  body: { email: "human@example.test", password: "correct-horse-battery", name: "Human 42" },
+  returnHeaders: true,
+});
+const cookie = signup.headers.get("set-cookie")!.split(";")[0];
+const userId = signup.response.user.id;
+
+// Approve/deny the way the real verification page does, with the session cookie: first
+// `GET /device?user_code=…` (claims the code for the signed-in session), then the decision.
+async function decide(userCode: string, verb: "approve" | "deny") {
+  const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
+  if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status} ${await claim.text()}`);
+  const res = await fetch(`${base}/device/${verb}`, {
+    method: "POST",
+    // `origin` included: BA's CSRF guard requires it on cookie-authenticated state changes —
+    // exactly what the real verification page sends.
+    headers: { "content-type": "application/json", cookie, origin },
+    body: JSON.stringify({ userCode }),
+  });
+  if (!res.ok) throw new Error(`device/${verb} failed: HTTP ${res.status} ${await res.text()}`);
+}
+
+// Run one full device login, deciding as soon as the prompt appears.
+async function loginDeciding(verb: "approve" | "deny", clientId = CLIENT_ID) {
+  let prompt: DeviceLoginPrompt | undefined;
+  let prompts = 0;
+  const session = deviceLogin({
+    idpUrl: base,
+    clientId,
+    onPrompt: (p) => { prompt = p; prompts++; void decide(p.userCode, verb); },
+  });
+  return { session: await session, prompt: prompt!, prompts };
+}
+
+// ---- the happy chain ----
+const { session, prompt, prompts } = await loginDeciding("approve");
+check("prompt fired exactly once with the verification URL + user code",
+  prompts === 1 && prompt.verificationUri.startsWith(origin) &&
+  prompt.verificationUriComplete.includes(prompt.userCode) && prompt.userCode.length > 0 && prompt.expiresInSec > 0);
+check("device login returns an IdP session (opaque token, future expiry)",
+  session.token.length > 0 && !session.token.includes(".") && session.expiresAt > Math.floor(Date.now() / 1000));
+
+const idpJwt = await fetchIdpJwt(base, session.token);
+{
+  // The JWT is a real, verifiable IdP token for OUR user — checked against BA's live JWKS.
+  const { payload } = await jwtVerify(idpJwt, pinnedJwksResolver(`${base}/jwks`), {
+    issuer: origin, audience: origin,
+  });
+  check("cached session mints a fresh IdP JWT for the signed-in user (verified vs live JWKS)", payload.sub === userId);
+}
+
+{
+  // End-to-end into C2a: the login client's JWT is exactly what the bridge exchanges.
+  const issuer = createUserTokenIssuer({ issuer: "https://auth.cotal.test", key: await generateSigningKey() });
+  const bridge = createIdpBridge({
+    idp: { issuer: origin, audience: origin, key: pinnedJwksResolver(`${base}/jwks`) },
+    space: SPACE, spaceSecret: SECRET, issuer,
+    authorizeActor: () => ({ scope: ["chat"] }),
+  });
+  const { token, owner } = await bridge.exchange(idpJwt, { actor: "agent_1" });
+  const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE });
+  check("device-login JWT exchanges into a validated Cotal bearer (login → session → JWT → bridge → bearer)",
+    v.owner === owner && v.owner === deriveOwnerToken(SECRET, JSON.stringify([origin, userId])) && v.act.actor === "agent_1");
+}
+
+// ---- the session cache ----
+console.log("B) the machine-local session cache");
+const dir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-"));
+saveIdpSession(dir, `${base}/`, session); // trailing slash — must land on the normalized key
+{
+  const loaded = loadIdpSession(dir, base);
+  check("save/load round-trips (URL normalized: trailing slash is the same IdP)",
+    loaded?.token === session.token && loaded?.expiresAt === session.expiresAt);
+  const raw = readFileSync(join(dir, "idp-sessions.json"), "utf8");
+  check("cache holds the SESSION token only — no JWT ever lands on disk", !raw.includes("eyJ") && raw.includes(session.token));
+  if (process.platform !== "win32")
+    check("cache file is 0600", (statSync(join(dir, "idp-sessions.json")).mode & 0o777) === 0o600);
+  check("requireIdpSession returns the cached session", requireIdpSession(dir, base).token === session.token);
+  await rejects("requireIdpSession on a never-logged-in IdP is a legible no-fallback throw",
+    () => requireIdpSession(dir, "https://other.example.com"), "no anonymous fallback");
+  check("deleteIdpSession removes it (and says so)", deleteIdpSession(dir, base) === true && loadIdpSession(dir, base) === undefined);
+  check("deleting again reports nothing-to-do", deleteIdpSession(dir, base) === false);
+  saveIdpSession(dir, base, session); // restore for the logout leg below
+}
+{
+  const verDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-ver-"));
+  saveIdpSession(verDir, base, session);
+  const f = join(verDir, "idp-sessions.json");
+  const bumped = JSON.parse(readFileSync(f, "utf8"));
+  bumped.ver = 99;
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(f, JSON.stringify(bumped));
+  await rejects("an unknown cache version refuses to guess (no silent migration)", () => loadIdpSession(verDir, base), "version");
+}
+await rejects("a non-loopback http IdP url is refused", () => normalizeIdpUrl("http://auth.example.com/api/auth"), "https");
+await rejects("a garbage IdP url is refused", () => normalizeIdpUrl("not a url"), "not a valid URL");
+
+// ---- the reject matrix ----
+console.log("C) denies, expiry, revocation");
+await rejects("a client id the operator didn't pin is refused at /device/code",
+  () => loginDeciding("approve", "evil-cli"), "refused the device authorization");
+await rejects("a deny at the verification page is a legible throw, not a retry loop",
+  () => loginDeciding("deny"), "denied");
+
+{
+  // A second, short-fuse IdP instance: the device code dies before anyone approves.
+  let h2: ReturnType<typeof toNodeHandler> | undefined;
+  const s2 = createServer((req, res) => h2!(req, res));
+  await new Promise<void>((r) => s2.listen(0, "127.0.0.1", r));
+  const origin2 = `http://127.0.0.1:${(s2.address() as AddressInfo).port}`;
+  const auth2 = betterAuth({
+    baseURL: origin2,
+    secret: "smoke-only-better-auth-secret-0123456789",
+    database: memoryAdapter({ user: [], session: [], account: [], verification: [], deviceCode: [] }),
+    plugins: [deviceAuthorization({ expiresIn: "1s", interval: "1s" })],
+  });
+  h2 = toNodeHandler(auth2);
+  await rejects("an unapproved device code expires into a legible throw",
+    () => deviceLogin({ idpUrl: `${origin2}/api/auth`, clientId: CLIENT_ID, onPrompt: () => {} }), "expired");
+  s2.close();
+}
+
+// ---- revocation: the whole point of caching the session, not the JWT ----
+{
+  await revokeIdpSession(base, session.token);
+  await rejects("a revoked session can no longer mint JWTs — the 401 says exactly how to recover",
+    () => fetchIdpJwt(base, session.token), "run `cotal login");
+  check("revoking an already-dead session is idempotent (goal state reached)",
+    await revokeIdpSession(base, session.token).then(() => true));
+  await rejects("garbage bearer is the same legible 401 path", () => fetchIdpJwt(base, "not-a-session"), "run `cotal login");
+}
+
+server.close();
+console.log(`\nlogin smoke: ${pass} passed, ${fail} failed`);
+process.exit(fail > 0 ? 1 : 0);

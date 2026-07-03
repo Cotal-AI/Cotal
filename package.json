@@ -14,7 +14,7 @@
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "test": "pnpm -r --if-present test",
     "check": "pnpm typecheck && pnpm test && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:ci",
-    "smoke:ci": "pnpm smoke:principal-key && pnpm smoke:auth-owner-token && pnpm smoke:auth-issuer && pnpm smoke:auth-idp-bridge && pnpm smoke:callout-shape && pnpm smoke:auth-callout:auth && pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl",
+    "smoke:ci": "pnpm smoke:principal-key && pnpm smoke:auth-owner-token && pnpm smoke:auth-issuer && pnpm smoke:auth-idp-bridge && pnpm smoke:auth-login && pnpm smoke:callout-shape && pnpm smoke:auth-callout:auth && pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "clean": "git clean -fdX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "cotal": "tsx bin/cotal.ts",
@@ -96,10 +96,12 @@
     "smoke:auth-owner-token": "tsx implementations/auth/smoke/owner-token.smoke.ts",
     "smoke:auth-issuer": "tsx implementations/auth/smoke/issuer.smoke.ts",
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",
+    "smoke:auth-login": "tsx implementations/auth/smoke/login.smoke.ts",
     "smoke:auth-callout:auth": "tsx implementations/auth/smoke/auth-callout.smoke.ts",
     "smoke:callout-shape": "tsx implementations/auth/smoke/callout-shape.smoke.ts"
   },
   "dependencies": {
+    "@cotal-ai/auth": "workspace:*",
     "@cotal-ai/cli": "workspace:*",
     "@cotal-ai/cmux": "workspace:*",
     "@cotal-ai/connector-claude-code": "workspace:*",
