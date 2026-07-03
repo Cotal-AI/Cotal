@@ -1035,7 +1035,17 @@ export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Ide
 
 /** Render the `nats-server` config that trusts this space's operator and serves its
  *  accounts via the in-config MEMORY resolver. */
-export function serverConfig(auth: SpaceAuth, opts: { port?: number; host?: string; storeDir: string }): string {
+export function serverConfig(
+  auth: SpaceAuth,
+  opts: {
+    port?: number;
+    host?: string;
+    storeDir: string;
+    /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
+     *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
+    extraAccounts?: Array<{ pub: string; jwt: string }>;
+  },
+): string {
   const port = opts.port ?? 4222;
   const host = opts.host ?? "127.0.0.1";
   // A minted "agent" carries its full permission allow-list inline in its user JWT, which the
@@ -1055,7 +1065,7 @@ system_account: ${auth.sys.pub}
 resolver: MEMORY
 resolver_preload: {
   ${auth.account.pub}: ${auth.account.jwt}
-  ${auth.sys.pub}: ${auth.sys.jwt}
+  ${auth.sys.pub}: ${auth.sys.jwt}${(opts.extraAccounts ?? []).map((a) => `\n  ${a.pub}: ${a.jwt}`).join("")}
 }
 `;
 }

@@ -24,7 +24,12 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@nats-io/jwt": "0.0.10-5",
+    "@nats-io/nkeys": "^2.0.3",
     "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "@nats-io/transport-node": "^3.4.0"
   },
   "files": [
     "dist"

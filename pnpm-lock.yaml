@@ -220,9 +220,19 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@nats-io/jwt':
+        specifier: 0.0.10-5
+        version: 0.0.10-5
+      '@nats-io/nkeys':
+        specifier: ^2.0.3
+        version: 2.0.3
       jose:
         specifier: ^6.2.3
         version: 6.2.3
+    devDependencies:
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
 
   implementations/cli:
     dependencies:
