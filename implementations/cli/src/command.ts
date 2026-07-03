@@ -57,8 +57,10 @@ export async function runCli(registry: Registry, argv: string[]): Promise<void> 
     help(commands);
     process.exit(1);
   }
-  // `cotal <cmd> --help` / `-h` → that command's help, never run it.
-  if (!cmd.rawArgs && (rest.includes("--help") || rest.includes("-h"))) {
+  // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
+  // rawArgs commands (feedback) — only `__`-internal ones are exempt, because __complete's argv
+  // is ANOTHER command's half-typed line, where `--help` is a word being completed, not a request.
+  if (!cmd.name.startsWith("__") && (rest.includes("--help") || rest.includes("-h"))) {
     commandHelp(cmd);
     return;
   }

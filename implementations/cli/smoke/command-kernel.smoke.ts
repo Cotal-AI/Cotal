@@ -76,6 +76,21 @@ const noop = async (): Promise<void> => {};
   assert.equal(commandUsage(over), "custom usage");
 }
 
+// --- --help reaches rawArgs commands too (feedback), only __-internal is exempt -----------------
+{
+  const { runCli } = await import("../src/command.js");
+  let out = "";
+  const realLog = console.log;
+  console.log = (s?: unknown) => void (out += `${s}\n`);
+  try {
+    await runCli(registry, ["feedback", "--help"]);
+  } finally {
+    console.log = realLog;
+  }
+  assert.ok(out.includes("usage:"), "feedback --help prints its usage");
+  assert.ok(!out.includes("Unknown option"), "no usage error above the help");
+}
+
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");
