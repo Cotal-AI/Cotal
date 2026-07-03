@@ -149,8 +149,11 @@ export interface StartAuthCalloutOpts {
    *  `createServer()` key and matching sealing xkey. That isolation holds single-broker, so omitting
    *  the list is safe today; startup logs a WARNING so the over-trust is never silent. */
   expectedServerIds?: string[];
-  /** Permission builder for a validated principal (the flip feeds core's `permissionsFor`). */
-  permissionsFor: (t: ValidatedUserToken) => Record<string, unknown>;
+  /** Permission builder for a validated principal (the flip feeds core's `permissionsFor` via a thin
+   *  `@cotal-ai/auth` adapter). `connId` is the connection's nkey (`req.user_nkey`) — the builder scopes
+   *  the private reply inbox `_INBOX_<connId>` on it (the owner is derived server-side, so it is not
+   *  known to the client pre-connect; the per-connection nkey always is). */
+  permissionsFor: (t: ValidatedUserToken, connId: string) => Record<string, unknown>;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. */
   log?: (line: string) => void;
   /** Audit hook fired on each successful mint, BEFORE the response is sent — the minted user JWT
@@ -240,7 +243,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           audience: opts.space,
         });
         await opts.authorizeActor(validated);
-        const perms = opts.permissionsFor(validated);
+        const perms = opts.permissionsFor(validated, req.user_nkey);
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side:
         // the connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the
         // principal, so the membership feed (which keys CONNZ entries on the connection identity)

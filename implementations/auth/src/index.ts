@@ -51,4 +51,5 @@ export {
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";
+export { calloutPermissions, type AclResolver } from "./permissions.js";
 import "./commands.js"; // self-registers `login` / `logout` into the core Registry

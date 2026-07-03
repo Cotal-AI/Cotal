@@ -223,6 +223,30 @@ export function assertDerivedOwnerToken(owner: string): string {
   return owner;
 }
 
+/** Validate an owner token at a READ / persisted-owner TRUST boundary — STRICTER than
+ *  {@link assertValidOwnerToken}, which (by design) still accepts nkey-shaped uppercase tokens and so does
+ *  NOT by itself satisfy the flip's acceptance criterion 2. A *real* owner is EITHER a derived owner
+ *  ({@link assertDerivedOwnerToken}: `u_` + 26 lowercase base32, minted at the callout) OR — when
+ *  `allowLocal` — the reserved no-login dev owner {@link DEV_OWNER} (`"local"`). An nkey (56-char UPPERCASE
+ *  base32) satisfies neither, so a stray old-shape frame `chat.<nkey>.team.backend` can never be TRUSTED as
+ *  a valid owner even if it structurally parses — the belt to the from.id≠sender guard's braces and cred
+ *  death. Use at every boundary that reads an owner from a wire subject / persisted key and then trusts it
+ *  for keying, surfacing, or authorization (membership feed re-key, history surfacing). Actors stay on
+ *  {@link assertValidOwnerToken} — they are server-derived from the ledger, not disjointness-constrained.
+ *  User-mode MINT boundaries (callout/bridge) use {@link assertDerivedOwnerToken} directly (no `local`). */
+export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = {}): string {
+  if (opts.allowLocal && owner === DEV_OWNER) return owner;
+  try {
+    return assertDerivedOwnerToken(owner);
+  } catch {
+    throw new Error(
+      `invalid principal owner "${owner}" at a trust boundary: expected a derived owner (u_…)` +
+        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""} — an nkey-shaped or arbitrary ` +
+        `token is not a real owner (flip criterion 2: owners are nkey-disjoint).`,
+    );
+  }
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by
