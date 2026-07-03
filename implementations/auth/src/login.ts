@@ -121,6 +121,20 @@ async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
   }
 }
 
+/** Read a JSON body under the SAME normalization as {@link idpFetch}. The request timeout can fire
+ *  DURING the body read (an IdP that flushes headers then stalls or truncates the body), and that
+ *  abort is raised from `res.json()` — outside idpFetch's catch — so without this it would leak a
+ *  raw DOMException/parse error instead of the legible "idp request to …" sentence. */
+async function idpJson<T>(url: string, res: Response): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "TimeoutError")
+      throw new Error(`idp request to ${url} timed out reading the response body — the IdP flushed headers then stalled`);
+    throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
  *  The revocation model depends on the cached token being revocable; a JWT stays valid until it
  *  expires regardless of revocation, so one must never be cached as the session handle. */
@@ -149,14 +163,14 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }
-  const grant = (await res.json()) as {
+  const grant = await idpJson<{
     device_code: string;
     user_code: string;
     verification_uri: string;
     verification_uri_complete: string;
     expires_in: number;
     interval: number;
-  };
+  }>(`${base}/device/code`, res);
   // The WHOLE grant is shape-checked before anything is shown or polled — the timing fields
   // especially: a malicious IdP handing back `interval: "abc"` or a non-finite/absurd
   // `expires_in` would otherwise turn the poll loop into a tight (setTimeout coerces garbage to
@@ -196,7 +210,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
       }),
     });
     if (poll.ok) {
-      const tok = (await poll.json()) as { access_token: string; expires_in: number };
+      const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll);
       if (typeof tok.access_token !== "string" || !tok.access_token ||
           typeof tok.expires_in !== "number" || !Number.isFinite(tok.expires_in) || tok.expires_in <= 0)
         throw new Error(`idp login: ${base} returned a malformed token response`);
@@ -234,7 +248,7 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
       `idp session: ${base} rejected the cached session (expired or revoked) — run \`cotal login --idp ${base}\` to sign in again`,
     );
   if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
-  const body = (await res.json()) as { token?: string };
+  const body = await idpJson<{ token?: string }>(`${base}/token`, res);
   if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
   return body.token;
 }

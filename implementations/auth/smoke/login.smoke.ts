@@ -323,6 +323,24 @@ console.log("D) hostile-IdP responses");
   hang.closeAllConnections();
   hang.close();
 }
+{
+  // A subtler hang: headers flushed, then the BODY stalls — the abort fires inside res.json(),
+  // outside idpFetch's catch. It must still surface the legible "idp request to …" sentence.
+  const stall = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"token":"eyJ'); // partial JSON, deliberately never ended
+  });
+  await new Promise<void>((r) => stall.listen(0, "127.0.0.1", r));
+  const stallBase = `http://127.0.0.1:${(stall.address() as AddressInfo).port}/api/auth`;
+  const prev = process.env.COTAL_IDP_TIMEOUT_MS;
+  process.env.COTAL_IDP_TIMEOUT_MS = "300";
+  await rejects("an IdP that stalls mid-body is a legible timeout, not a raw body-read error",
+    () => fetchIdpJwt(stallBase, "sess"), "idp request to");
+  if (prev === undefined) delete process.env.COTAL_IDP_TIMEOUT_MS;
+  else process.env.COTAL_IDP_TIMEOUT_MS = prev;
+  stall.closeAllConnections();
+  stall.close();
+}
 
 // ---- revocation: the whole point of caching the session, not the JWT ----
 {
