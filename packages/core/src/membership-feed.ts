@@ -38,6 +38,7 @@ import {
   accountConnectSubject,
   accountDisconnectSubject,
   channelFromChatSubscription,
+  principalFromTags,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
 import { idFromCreds } from "./identity.js";
@@ -300,28 +301,34 @@ interface ConnzConnection {
   authorized_user?: string;
   subscriptions_list?: string[];
   name?: string;
+  tags?: string[];
 }
 interface ConnzReply {
   server?: { id?: string };
   data?: { server_id?: string; total?: number; offset?: number; limit?: number; connections?: ConnzConnection[] };
 }
 
-/** Fold one CONNZ connection into the live map: keyed by `authorized_user` (the nkey = `card.id`),
- *  unioning its chat-subscription patterns (wildcards kept, e.g. `team.>` or a whole-chat `>`).
+/** Fold one CONNZ connection into the live map: keyed by the connection's PRINCIPAL dot-form
+ *  (`<owner>.<actor>`), recovered from its stamped `principal:` tag ({@link principalFromTags}), unioning
+ *  its chat-subscription patterns (wildcards kept, e.g. `team.>` or a whole-chat `>`). NOT keyed by
+ *  `authorized_user`: that is the per-connect ephemeral nkey (owner+actor flip), and under the auth
+ *  callout the owner is derived server-side, so the nkey is not the identity the feed and its durable arm
+ *  agree on. A connection with NO `principal:` tag is DROPPED (fail-closed) — an unattributable connection
+ *  must never be silently keyed by its raw nkey, which would fork one agent into two graph nodes.
  *
  *  Infra taps SELF-EXCLUDE — no shape heuristic needed (review-general, socrates): the web dashboard taps
  *  `cotal.<space>.>` (spaceWildcard) and `cotal console` taps `cotal.<space>.chat.>` (chatWildcard), both
  *  of which {@link channelFromChatSubscription} maps to `null` (the former isn't `.chat.`-prefixed; the
  *  latter has no channel token after `chat.`), so they contribute zero channels here; conn B / the
  *  delivery cred / the manager hold no chat sub at all. The ONLY subscription that yields the whole-chat
- *  `>` pattern is an AGENT's own `chat.*.>` (allowSubscribe `[">"]` — e.g. the default persona), which is
+ *  `>` pattern is an AGENT's own `chat.*.*.>` (allowSubscribe `[">"]` — e.g. the default persona), which is
  *  a legitimate broad reader the feed MUST surface (the source-of-truth goal), NOT drop. So no shape-based
  *  exclusion: a `>` pattern is recorded as-is and the dashboard renders it as a "reads-all" node (a badge,
  *  not a spoke to every hub) rather than expanding it. */
 function addConn(space: string, live: Map<string, Set<string>>, c: ConnzConnection): void {
   const subs = c.subscriptions_list ?? [];
-  const id = c.authorized_user;
-  if (!id) return; // no authenticated identity (open mode) — best-effort handled at the dashboard, not here
+  const id = principalFromTags(c.tags);
+  if (!id) return; // no principal tag (open mode / legacy / infra) — not an attributable member here
   const patterns = subs
     .map((s) => channelFromChatSubscription(space, s))
     .filter((x): x is string => x !== null);

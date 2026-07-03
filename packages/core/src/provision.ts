@@ -29,6 +29,7 @@ import {
   assertValidChannel,
   channelInAllow,
   principalKey,
+  principalTags,
   DEV_OWNER,
   unicastSubject,
   anycastSubject,
@@ -312,12 +313,16 @@ export async function mintCreds(
   opts: MintOpts = {},
 ): Promise<string> {
   const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
-  const perms = permissionsFor(profile, auth.space, principalOf(identity, opts.principal), opts);
+  const pr = principalOf(identity, opts.principal);
+  const perms = permissionsFor(profile, auth.space, pr, opts);
   const userJwt = await encodeUser(
     profile,
     fromPublic(identity.id),
     fromPublic(auth.account.pub),
-    perms,
+    // Stamp the principal `tags` so this connection's identity is CONNZ-recoverable by the membership
+    // feed — the SAME tags the auth callout stamps (user mode), via core's single-source builder. The
+    // JWT `name` stays the profile label (a debug breadcrumb; not a surfaced/queryable CONNZ field).
+    { ...perms, tags: principalTags(pr.owner, pr.actor) },
     { signer },
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));

@@ -32,7 +32,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { newIdentity, principalKey, token, type SpaceAuth } from "@cotal-ai/core";
+import { newIdentity, principalKey, principalTags, token, type SpaceAuth } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 
@@ -244,19 +244,20 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         });
         await opts.authorizeActor(validated);
         const perms = opts.permissionsFor(validated, req.user_nkey);
-        // Stamp the principal into the minted JWT so the live identity is recoverable server-side:
-        // the connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the
-        // principal, so the membership feed (which keys CONNZ entries on the connection identity)
-        // needs owner+actor carried here. `tags` are the queryable, standard place (incl. the
-        // `principal:` dot-form); the JWT `name` is the principal name-form (JetStream-safe). NOTE:
-        // the feed-side re-key onto these — and the CONNZ proof of exactly which field surfaces — is
-        // the flip's membership-feed migration (Increment D), not wired here; this is the producing half.
+        // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
+        // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
+        // so the membership feed (which keys CONNZ entries on the connection identity) needs owner+actor
+        // carried here. `tags` are the ONE identity field CONNZ surfaces for a JWT-authed connection
+        // (proven empirically — `authorized_user` is the nkey, the JWT `name` claim is not surfaced), via
+        // core's single-source {@link principalTags}. The JWT `name` is the principal name-form
+        // (JetStream-safe), a stable label. The feed-side re-key onto the `principal:` tag ships with
+        // the membership-feed migration (Increment D).
         const { key, name } = principalKey(validated.owner, validated.act.actor);
         const userJwt = await encodeUser(
           name,
           fromPublic(req.user_nkey),
           fromPublic(opts.dataAccount.pub),
-          { ...perms, tags: [`owner:${validated.owner}`, `actor:${validated.act.actor}`, `principal:${key}`] },
+          { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
           { signer: userSigner, exp: validated.exp }, // NATS access dies with the bearer
         );
         opts.onMint?.({ jwt: userJwt, principal: key, exp: validated.exp });

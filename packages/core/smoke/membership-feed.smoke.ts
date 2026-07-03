@@ -34,6 +34,8 @@ import {
   channelFromChatSubscription,
   membershipBucket,
   membershipKey,
+  principalKey,
+  DEV_OWNER,
   MEMBERSHIP_FEED_KEY,
 } from "../src/index.js";
 import type { ChannelMembership, MembershipRecord } from "../src/index.js";
@@ -47,6 +49,10 @@ let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
 const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+// Dev/static principal for an agent nkey: owner=DEV_OWNER ("local"), actor=the nkey. The feed keys BOTH
+// arms by this dot-form — the live arm from the CONNZ `principal:` tag, the durable arm from the members
+// registry — so seeds + lookups here use it (mirrors plane3-auth). A raw nkey would fork one agent in two.
+const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 
 const space = `membership-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space); // sys.signingSeed lives in-memory here — mint the observer below
@@ -88,8 +94,8 @@ try {
   conns.push(seedNc);
   const members = await openMembersRegistry(seedNc, space);
   const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
-  await commitMember(members, rec("deploys", bob.id));
-  await commitMember(members, rec("general", alice.id)); // alice is ALSO a durable member of #general (live ∪ durable union)
+  await commitMember(members, rec("deploys", pkey(bob.id)));
+  await commitMember(members, rec("general", pkey(alice.id))); // alice is ALSO a durable member of #general (live ∪ durable union)
 
   // --- a god-view tap (the web dashboard / a core tap) — must be EXCLUDED from membership ---
   const adminId = newIdentity();
@@ -142,16 +148,16 @@ try {
   };
 
   let { out, asOf } = await readFeed();
-  const aliceRec = out.get(membershipKey(alice.id));
-  const bobRec = out.get(membershipKey(bob.id));
+  const aliceRec = out.get(membershipKey(pkey(alice.id)));
+  const bobRec = out.get(membershipKey(pkey(bob.id)));
 
   check("silent live subscriber appears (zero traffic)", !!aliceRec);
   check("live patterns unioned across an agent's connections (wildcards kept)", !!aliceRec && eq(aliceRec.live, ["general", "review.>", "logs"]), aliceRec?.live);
   check("alice's durable arm merged in (live ∪ durable)", !!aliceRec && eq(aliceRec.durable, ["general"]), aliceRec?.durable);
   check("durable-only member (no live conn) appears", !!bobRec && eq(bobRec.durable, ["deploys"]) && eq(bobRec.live, []), bobRec);
-  const daveRec = out.get(membershipKey(dave.id));
-  check("the web god-tap (whole-space sub) self-excludes (no membership record)", !out.has(membershipKey(adminId.id)), [...out.keys()]);
-  check("a console-style chat.> tap self-excludes (no phantom reads-all node)", !out.has(membershipKey(consoleId.id)), [...out.keys()]);
+  const daveRec = out.get(membershipKey(pkey(dave.id)));
+  check("the web god-tap (whole-space sub) self-excludes (no membership record)", !out.has(membershipKey(pkey(adminId.id))), [...out.keys()]);
+  check("a console-style chat.> tap self-excludes (no phantom reads-all node)", !out.has(membershipKey(pkey(consoleId.id))), [...out.keys()]);
   check("channelFromChatSubscription(chatWildcard) is null — pins the console parseSubject<5 branch", channelFromChatSubscription(space, chatWildcard(space)) === null);
   check("a broad-read agent (allowSubscribe '>') SURFACES as a `>` reader, not dropped", !!daveRec && daveRec.live.includes(">"), daveRec);
   check("only the three real agents have records (infra conns contribute nothing)", out.size === 3, [...out.keys()]);
@@ -163,7 +169,7 @@ try {
   await feed.poll();
   await wait(300);
   ({ out } = await readFeed());
-  const aliceAfter = out.get(membershipKey(alice.id));
+  const aliceAfter = out.get(membershipKey(pkey(alice.id)));
   check("a disconnected live subscriber keeps its durable membership", !!aliceAfter && eq(aliceAfter.durable, ["general"]), aliceAfter);
   check("a disconnected live subscriber's live set is pruned to empty", !!aliceAfter && eq(aliceAfter.live, []), aliceAfter?.live);
 

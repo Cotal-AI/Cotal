@@ -191,6 +191,35 @@ export function parsePrincipalKey(key: string): { owner: string; actor: string }
   return { owner, actor };
 }
 
+/** The `tags` prefix carrying a connection's principal dot-form in its minted user JWT. Chosen because
+ *  `tags` are the ONE identity field a NATS `$SYS` CONNZ record surfaces for a JWT-authed connection —
+ *  empirically: `authorized_user` is the per-connect ephemeral nkey (NOT the principal, which the client
+ *  never knows pre-connect under the callout), and the JWT `name` claim is not surfaced as a queryable
+ *  field. So the membership feed recovers the live principal from this tag. */
+export const PRINCIPAL_TAG_PREFIX = "principal:";
+
+/** The identity `tags` stamped into every minted user JWT (dev mint AND the auth callout, via this one
+ *  helper) so a connection's principal is recoverable server-side from its CONNZ record. `owner:`/`actor:`
+ *  are human/debug breadcrumbs; `principal:` (the dot-form {@link principalKey} `key`) is the one the
+ *  feed keys on. Single source of the tag format — never hand-join these elsewhere. */
+export function principalTags(owner: string, actor: string): string[] {
+  const { key } = principalKey(owner, actor);
+  return [`owner:${owner}`, `actor:${actor}`, `${PRINCIPAL_TAG_PREFIX}${key}`];
+}
+
+/** Recover a connection's principal dot-form from its CONNZ `tags`, or `null` if absent/malformed. The
+ *  membership feed calls this to key a live connection by its principal and **fails closed** on `null`
+ *  (it drops the connection rather than fall back to the ephemeral nkey — a tagless connection is not a
+ *  principal we can attribute). Validates via {@link parsePrincipalKey} so a forged/garbled tag can't
+ *  smuggle a non-principal string into the feed. */
+export function principalFromTags(tags: readonly string[] | undefined): string | null {
+  if (!tags) return null;
+  const tag = tags.find((t) => t.startsWith(PRINCIPAL_TAG_PREFIX));
+  if (!tag) return null;
+  const key = tag.slice(PRINCIPAL_TAG_PREFIX.length);
+  return parsePrincipalKey(key) ? key : null;
+}
+
 /** The reserved owner token for the **no-login local/dev path** — the static-creds default when there
  *  is no user identity (the plan's zero-login local default). A valid {@link assertValidOwnerToken}
  *  token, and — being lowercase-alpha with no `u_` prefix — trivially distinct from both nkeys and
