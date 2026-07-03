@@ -73,6 +73,9 @@ c("principalTags includes the principal dot-form", tags.includes("principal:loca
 c("principalFromTags recovers the principal", principalFromTags(tags) === "local.act1");
 c("principalFromTags(no tags) === null (fail-closed)", principalFromTags(undefined) === null);
 c("principalFromTags(non-principal tags) === null", principalFromTags(["owner:local", "actor:act1"]) === null);
+// Same trust boundary as message surfacing: a syntactically-valid but nkey-OWNER principal tag is dropped.
+c("principalFromTags(nkey-owner) === null (not just dot-form valid)", principalFromTags([`principal:${NKEY}.team`]) === null);
+c("principalFromTags(u_ owner) recovers", principalFromTags(["principal:u_nd77wkm3o3eyk6qvuwhy76b2nm.act1"]) === "u_nd77wkm3o3eyk6qvuwhy76b2nm.act1");
 
 console.log(`\nGRAMMAR SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);

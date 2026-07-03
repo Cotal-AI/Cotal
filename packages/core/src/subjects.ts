@@ -234,7 +234,12 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
   const tag = tags.find((t) => t.startsWith(PRINCIPAL_TAG_PREFIX));
   if (!tag) return null;
   const key = tag.slice(PRINCIPAL_TAG_PREFIX.length);
-  return parsePrincipalKey(key) ? key : null;
+  // Same trust boundary as the message-surfacing guards ({@link isPrincipalOwnerToken}): a recovered
+  // principal must have a REAL owner (derived `u_…` or `local`), not just valid dot-form syntax — else a
+  // `principal:<nkey>.team` tag would key a live feed entry on an nkey-shaped owner the surfacing path
+  // rejects. Fail closed on anything else.
+  const p = parsePrincipalKey(key);
+  return p && isPrincipalOwnerToken(p.owner) ? key : null;
 }
 
 /** The reserved owner token for the **no-login local/dev path** — the static-creds default when there
