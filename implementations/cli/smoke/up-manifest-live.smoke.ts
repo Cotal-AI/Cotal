@@ -109,11 +109,15 @@ try {
   ok("...and redirects to spawn -f", /spawn -f/.test(again.stderr), again.stderr);
 
   // 5) down tears the mesh down + clears the run dir — including the manager (nothing orphaned).
+  //    Poll: the SIGTERM'd manager shuts down gracefully, which can take a few seconds on slow CI.
   down();
-  await sleep(1000);
-  ok("broker is gone after down", !(await portOpen(PORT)));
+  let torn = false;
+  for (let i = 0; i < 24 && !torn; i++) {
+    await sleep(500);
+    torn = !(await portOpen(PORT)) && supervisors().length === 0;
+  }
+  ok("broker + manager are gone after down (no orphaned supervise)", torn, supervisors());
   ok("transient run dir cleaned by down", !existsSync(runDir));
-  ok("no supervise survives down (no orphaned manager)", supervisors().length === 0, supervisors());
 
   console.log(`\nUP-MANIFEST LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {

@@ -80,13 +80,17 @@ try {
   }
   ok("cotal ps is answered by the detached manager", answered, last);
 
-  // 3) down stops the whole stack, symmetric with up.
+  // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
+  //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
-  await sleep(1200);
+  let dead = false;
+  for (let i = 0; i < 24 && !dead; i++) {
+    await sleep(500);
+    dead = pids.every((p) => !alive(p)) && !(await portOpen());
+  }
   ok("all pid files removed by down", (["nats.pid", "delivery.pid", "manager.pid"] as const).every((f) => !existsSync(join(root, ".cotal", f))));
-  ok("all three processes are dead", pids.every((p) => !alive(p)), pids);
-  ok("broker port is closed", !(await portOpen()));
+  ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
