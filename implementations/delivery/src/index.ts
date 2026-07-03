@@ -7,6 +7,7 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { runDelivery } from "./delivery.js";
+import { runFeedbackIntake } from "./feedback-intake.js";
 
 const deliveryCommands: Command[] = [
   {
@@ -25,8 +26,29 @@ const deliveryCommands: Command[] = [
     ],
     run: (args) => runDelivery(args),
   },
+  {
+    kind: "command",
+    name: "feedback-intake",
+    group: "Manager",
+    summary:
+      "run the self-hosted feedback intake server — --keys <keys.json> [--port <n>] [--store <file>]",
+    flags: [
+      { name: "host", type: "string", value: "<addr>", description: "bind address (default: 127.0.0.1)" },
+      { name: "port", type: "string", value: "<n>", description: "listen port (default: 8787)" },
+      { name: "keys", type: "string", value: "<file>", description: "feedback keys file (required) — { keys: [{ key, tester, name? }] }" },
+      { name: "store", type: "string", value: "<file>", description: "append records here (default: .cotal/feedback/feedback.jsonl)" },
+      { name: "space", type: "string", value: "<s>", description: "space to announce feedback into (default: beta-feedback)" },
+      { name: "channel", type: "string", value: "<name>", description: "channel to multicast feedback to (default: feedback)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "creds", type: "string", value: "<file>", description: "scoped feedback-intake NATS cred (required)" },
+      { name: "max-bytes", type: "string", value: "<n>", description: "max request body size in bytes (default: 65536)" },
+      { name: "rate-limit", type: "string", value: "<n>", description: "max requests per tester per minute (default: 30)" },
+    ],
+    run: (args) => runFeedbackIntake(args),
+  },
 ];
 
 registry.register(...deliveryCommands);
 
 export { runDelivery };
+export { runFeedbackIntake };

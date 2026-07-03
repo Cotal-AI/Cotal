@@ -44,7 +44,7 @@ import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { ensureDelivery, stopDelivery, stopOldHostingManagerIfPresent } from "../lib/delivery-proc.js";
+import { ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
 import { startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -259,13 +259,14 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
   };
 }
 
-/** Start the server-side delivery daemon alongside the broker (auth mode only): old-manager preflight
- *  first (so an old hosting manager can't double-bind), then the auth-gated daemon (a no-op in open
- *  mode). Coupled to the broker by the daemon's own broker-gone watchdog + the `up`/`down` teardown. */
+/** Start the CONTROL PLANE alongside the broker: old-manager preflight → delivery daemon (auth
+ *  mode only) → detached manager. `up` is the launching command — since `setup` became
+ *  configure-only (stage 2b), the whole local stack comes up HERE, so `spawn --detach` /
+ *  cotal_spawn find a manager without any setup side effect. Coupled to the broker by the
+ *  daemon's watchdog + the `up`/`down` teardown. */
 async function startDeliveryWithBroker(space: string, server: string): Promise<void> {
   try {
-    stopOldHostingManagerIfPresent();
-    await ensureDelivery({ space, server });
+    await ensureControlPlane({ space, server });
   } catch {
     /* non-fatal — durable delivery degrades, live delivery is unaffected */
   }
@@ -287,8 +288,8 @@ export interface DetachOpts {
 
 /**
  * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
- * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Shared by
- * `up --detach` and `cotal setup`. When `onLine` is given, boot output is tailed from the
+ * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Used by
+ * `up --detach`. When `onLine` is given, boot output is tailed from the
  * log file and forwarded — the child writes to the file (not a pipe), so it survives the
  * parent exiting.
  */

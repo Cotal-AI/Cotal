@@ -341,8 +341,8 @@ dependency on them). Selectable backends:
   @<id>` for the agent's window); `cotal attach` points you there rather than streaming. Env is isolated (`env -i`) so the tmux server's environment
   doesn't reach agents. Teardown: `stop` types `/exit` for a clean mesh leave then kills the
   window (graceful) or kills immediately (hard). The package also self-registers a
-  **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session,
-  so `cotal setup` can lay out its tabs without cmux.
+  **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session
+  (host-side layout, no cmux needed).
 - **`cmux` (integration).** Each agent gets its own [cmux](https://cmux.com) tab. This is a
   true plug-in: the `cmux` runtime lives in **`@cotal-ai/cmux`** and self-registers a
   `RuntimeProvider` on import, so the manager spawns into tabs without depending on the package
@@ -355,10 +355,9 @@ dependency on them). Selectable backends:
   [`examples/02`](../examples/02-self-improving-console/README.md). The package also self-registers a
   **`TerminalLayout`** provider (a host-side extension contract, not wire protocol:
   open/close/list editor tabs). The caller hands it a backend-agnostic `Tab` (panes as argv plus
-  an optional split), and the provider builds the cmux-native layout, so `cotal setup` resolves
-  it from the registry (`registry.resolve("terminal","cmux")`) to lay out its
-  manager/console/`me` tabs with no cmux-specific shape (no layout JSON, no shell quoting)
-  leaking into the CLI.
+  an optional split), and the provider builds the cmux-native layout, so a host-side caller
+  resolves it from the registry (`registry.resolve("terminal","cmux")`) to lay out tabs with no
+  cmux-specific shape (no layout JSON, no shell quoting) leaking into the CLI.
 - **`byo` (floor).** The manager does not own the process; a human runs `cotal claude --role …`
   in their own terminal and the manager just tracks it via presence.
 - **`host` (upgrade).** Headless via the Agent SDK for structured control plus true mid-turn
@@ -367,9 +366,10 @@ dependency on them). Selectable backends:
 **Running one.** `cotal supervise` starts a manager; it defaults to the `pty` runtime, while
 `--runtime tmux` / `--runtime cmux` put each teammate in its own tmux window / cmux tab (explicit
 only — they throw if the matching extension isn't imported, never silently fall back to pty). The `cotal` binary aliases the Claude-Code connector as the default agent, so `cotal_spawn`
-/ `cotal_persona` / `cotal_despawn` work out of the box. For one-command onboarding, `cotal setup`
-(friendly alias `cotal go`) installs the plugin, brings up the mesh, and — inside a cmux pane —
-opens the manager plus console plus a driving session.
+/ `cotal_persona` / `cotal_despawn` work out of the box. `cotal setup` is configure-only (plugin
+install + persona seed, launches nothing); `cotal up` brings the local stack up alongside the
+broker — the delivery daemon plus a detached manager — so `cotal spawn --detach` and `cotal_spawn`
+work right after it.
 
 The PTY carries the agent's **terminal I/O only**. Its mesh traffic still flows agent↔NATS
 directly through the plugin, so owning the PTY does not put the manager on the message hot path.

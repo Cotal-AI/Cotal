@@ -44,48 +44,6 @@ export function managerHasDeliveryMarker(): boolean {
   return Number.isFinite(markerPid) && Number.isFinite(livePid) && markerPid === livePid;
 }
 
-/** True if any process's full command line matches `pattern` (`pgrep -f`). Detects processes that
- *  have no pid file — the cmux-tab manager and the driving session — which live in cmux tabs. */
-export function pgrepMatches(pattern: string): boolean {
-  return spawnSync("pgrep", ["-f", pattern], { stdio: "ignore" }).status === 0;
-}
-
-/** True if a cmux-runtime manager is live for this space. Its cmux tab persists after the process
- *  exits, so a workspace listing isn't proof — the process is. A cmux manager runs `… supervise
- *  --runtime cmux … --space <space> …`; match order-independently (the session launcher emits the
- *  two flags adjacent, but a hand-typed launch may reorder them) by narrowing to `--runtime cmux`
- *  processes, then confirming the exact `--space <space>` token in each one's argv. Works for prod
- *  `cotal.js` and dev `cotal.ts` alike. */
-export function cmuxManagerRunning(space: string): boolean {
-  // `--` so pgrep doesn't read the leading `--runtime` as one of its own options.
-  const r = spawnSync("pgrep", ["-f", "--", "--runtime cmux"], { encoding: "utf8" });
-  if (r.status !== 0) return false;
-  // Match the `--space` value as a whole token (space names can't contain whitespace), so `demo`
-  // never matches a process serving `demo2`. Both `--space <space>` and `--space=<space>` forms.
-  const servesSpace = (args: string): boolean => {
-    const tokens = args.split(/\s+/);
-    return tokens.some((t, i) => (t === "--space" && tokens[i + 1] === space) || t === `--space=${space}`);
-  };
-  return r.stdout
-    .split("\n")
-    .filter(Boolean)
-    .some((pid) => servesSpace(spawnSync("ps", ["-p", pid, "-o", "args="], { encoding: "utf8" }).stdout));
-}
-
-/** True if a tmux-runtime manager is live for this space. Same matching logic as cmuxManagerRunning. */
-export function tmuxManagerRunning(space: string): boolean {
-  const r = spawnSync("pgrep", ["-f", "--", "--runtime tmux"], { encoding: "utf8" });
-  if (r.status !== 0) return false;
-  const servesSpace = (args: string): boolean => {
-    const tokens = args.split(/\s+/);
-    return tokens.some((t, i) => (t === "--space" && tokens[i + 1] === space) || t === `--space=${space}`);
-  };
-  return r.stdout
-    .split("\n")
-    .filter(Boolean)
-    .some((pid) => servesSpace(spawnSync("ps", ["-p", pid, "-o", "args="], { encoding: "utf8" }).stdout));
-}
-
 /** Start the control-plane manager detached (pid in `.cotal/manager.pid`, output to
  *  `.cotal/manager.log`), stopped by `cotal down`. Re-execs this same CLI's `supervise` — the
  *  composed `cotal` binary registers it; `process.execArgv` carries the tsx loader in dev and is

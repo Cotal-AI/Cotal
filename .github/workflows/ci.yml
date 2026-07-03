@@ -59,7 +59,7 @@ jobs:
         # gated here AND in `pnpm check` deliberately: CLI smoke files are outside package typecheck, so
         # a dynamic `await import()` boundary regression in a live smoke escapes tsc — only running it catches it.
         # nats-server installed above.
-        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:setup-pure:live
 
       - name: Manager lifecycle e2e (real broker + real agents)
         # Real end-to-end for #159 Part B: the startAgent presence-race (started via real presence / failed

@@ -23,8 +23,9 @@ import "@cotal-ai/delivery"; // registers deliver
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
-  setup: { flags: ["auth:boolean", "full:boolean", "open:boolean", "yes:boolean:y"], positionals: false },
-  go: { flags: ["auth:boolean", "full:boolean", "open:boolean", "yes:boolean:y"], positionals: false },
+  // Stage 2b: setup is configure-only — --auth/--open moved to their real home (`cotal up`);
+  // `go` (a pure alias of setup) is deleted outright.
+  setup: { flags: ["full:boolean", "yes:boolean:y"], positionals: false },
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
@@ -77,7 +78,15 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
-  feedback: { flags: [], positionals: true, rawArgs: true },
+  // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server
+  // moved to implementations/delivery as `feedback-intake`.
+  feedback: {
+    flags: [
+      "area:string", "details:string", "email:string", "key:string", "name:string",
+      "severity:string", "type:string", "url:string",
+    ],
+    positionals: true,
+  },
   supervise: {
     flags: ["console-port:string", "launch:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
     positionals: false,
@@ -89,6 +98,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   attach: { flags: [...TARGET, "name:string"], positionals: false },
   deliver: {
     flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string"],
+    positionals: false,
+  },
+  "feedback-intake": {
+    flags: [
+      "channel:string", "creds:string", "host:string", "keys:string", "max-bytes:string",
+      "port:string", "rate-limit:string", "server:string", "space:string", "store:string",
+    ],
     positionals: false,
   },
 };
