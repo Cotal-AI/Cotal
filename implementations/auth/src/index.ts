@@ -16,3 +16,16 @@ export {
   type ValidatedUserToken,
   type ValidateUserTokenOpts,
 } from "./token.js";
+export {
+  USER_TOKEN_ALG,
+  createUserTokenIssuer,
+  generateSigningKey,
+  exportSigningKey,
+  importSigningKey,
+  pinnedJwksResolver,
+  type SigningKey,
+  type SerializedSigningKey,
+  type IssueClaims,
+  type UserTokenIssuer,
+  type CreateIssuerOpts,
+} from "./issuer.js";
