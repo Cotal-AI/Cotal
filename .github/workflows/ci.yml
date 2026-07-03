@@ -58,8 +58,10 @@ jobs:
         # spawn-from-anywhere registry/auth-path e2e (smoke:spawn-from-anywhere:live). The last one is
         # gated here AND in `pnpm check` deliberately: CLI smoke files are outside package typecheck, so
         # a dynamic `await import()` boundary regression in a live smoke escapes tsc — only running it catches it.
-        # nats-server installed above.
-        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:setup-pure:live
+        # smoke:up-stack:live / smoke:up-manifest:live e2e the full `up --detach` stack (broker +
+        # delivery + manager, real `cotal ps`) and the one-manager-carries-the-launch invariant of
+        # `up -f` (the singleton-lease race regression). nats-server installed above.
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live
 
       - name: Manager lifecycle e2e (real broker + real agents)
         # Real end-to-end for #159 Part B: the startAgent presence-race (started via real presence / failed

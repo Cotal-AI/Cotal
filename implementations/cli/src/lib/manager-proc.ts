@@ -77,8 +77,12 @@ export function startManagerDetached(
 }
 
 /** Make the control plane available: reuse a manager already running for this folder, else start
- *  one detached. Best-effort — callers treat it as non-fatal. */
-export function ensureManager(o: { space?: string; server?: string; spawn?: string[] } = {}): { running: boolean } {
+ *  one detached. Best-effort — callers treat it as non-fatal. A caller that needs THE manager to
+ *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
+ *  taken as-is. */
+export function ensureManager(
+  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string } = {},
+): { running: boolean } {
   if (managerUp()) return { running: true };
   startManagerDetached(o);
   return { running: true };
