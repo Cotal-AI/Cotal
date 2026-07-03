@@ -4,7 +4,23 @@
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-06-21.
+> **Editors:** Cotal maintainers. **Last updated:** 2026-07-03.
+>
+> **v0.3 binding revision — owner+actor identity.** An instance's wire identity moves from a single
+> id (the connection nkey, used as the sender token everywhere) to a two-token **principal**
+> `(owner, actor)` (§2): the human/account owner and the agent actor become distinct routing tokens,
+> so every subject carries the sender as `<owner>.<actor>` (§3), and grants, durables, presence, and
+> `from.id` re-key onto the principal (§6, §8, §9). The connection nkey survives only as the transport
+> credential, keying the per-connection reply inbox `_INBOX_<connId>` (§2, §10) — the wire identity and
+> the connection credential are now distinct. Cross-owner **and** same-owner cross-actor forge/read
+> isolation is a normative confinement property (§9). `parseSubject` splits the tokens; a well-formed
+> split is necessary but not sufficient — a reader additionally rejects a non-principal owner token
+> (e.g. an old-shape alias carrying a raw nkey) at the surfacing boundary (§3, §9). The owner-token
+> *format* (`u_` + 26 base32-lower) is normative; its *derivation* from an owner's identity (login →
+> auth callout, or another identity adapter) is a pluggable edge, not fixed by this contract. This
+> supersedes the v0.2/early-v0.3 single-id grammar. As with the live-delivery revision, the advertised
+> wire `protocolVersion` (§6, §11) is the migration's normative target, not a claim that every surface
+> has cut over.
 >
 > **v0.3 binding revision — channel live delivery.** Channel *live* delivery moves from a single
 > mediated JetStream live-tail durable (`chat_<id>`) to native core-NATS subscriptions bounded by
@@ -50,16 +66,41 @@ as lateral peers in a shared pub/sub space, not as nodes in an orchestrator tree
 
 ## 2. Identity
 
-- In the authenticated NATS binding, an instance id is an Ed25519 nkey public key: base32,
-  56 chars, prefix `U` (for example `UAQG...`). It is REQUIRED to be stable for the
-  lifetime of the connection.
-- The same id MUST be used identically as: the `AgentCard.id` (§6), the sender token in
-  subjects (§3), the authenticating user subject (§9), and the per-instance durable names
-  (§8).
-- A client that authenticates with a credential MUST adopt the id bound to that credential;
-  if an id is also set explicitly it MUST match, else the client MUST fail before publish.
-- Open dev mode MAY use an opaque stable id, but open mode is outside the security claims
-  in §9 and is not a conformant authenticated deployment.
+An instance's wire identity is a **principal** = a pair of routing tokens `(owner, actor)`:
+
+- **`owner`** — the account that owns the instance: the human (or organization) an agent acts on
+  behalf of. In an authenticated deployment it is a derived **owner token** — `u_` followed by 26
+  base32-lower characters — a namespaced, nkey-disjoint token deterministically derived from the
+  owner's stable identity (e.g. an IdP subject) by the deployment's identity adapter; the wire
+  contract fixes the token *format*, not the derivation mechanism, which is a pluggable edge. In open
+  dev mode the owner is the literal `local`.
+- **`actor`** — the instance's own handle within that owner (its agent id). Distinct actors under one
+  owner are distinct principals and are confined from one another (§9), so one human's two agents
+  cannot forge or read as each other.
+
+Each token is sanitized to `[A-Za-z0-9_]` (see §3) with `-` additionally reserved as the form
+separator, so a principal has two unambiguous serializations: the **dot-form** `<owner>.<actor>` and
+the **dash-form** `<owner>-<actor>`. The same principal MUST appear identically as: the
+`AgentCard.id` (§6, dot-form), the sender tokens in subjects (§3), the message `from.id` (§5,
+dot-form), the presence key (§6, dot-form), and the per-instance durable names (§8, dash-form).
+
+**The principal is distinct from the connection credential.** In the authenticated NATS binding the
+connecting user is still an Ed25519 nkey (base32, 56 chars, prefix `U`, e.g. `UAQG...`), stable for
+the lifetime of the connection — but it is **not** the wire identity. The nkey authenticates the
+transport and scopes only the per-connection reply inbox `_INBOX_<connId>.>` (§10); the principal
+that keys every subject, grant, and durable is carried by the minted grant, not by the nkey. This
+separation is what lets a login (§9) mint a fresh connection whose nkey the client never sees while
+the principal stays stable across reconnects.
+
+- A client that authenticates with a static credential MUST adopt the principal that credential's
+  grant names; if a principal is also set explicitly (via the card) it MUST match, else the client
+  MUST fail before publish.
+- A client that authenticates through the auth callout (user mode, §9) cannot know its connection
+  nkey before connecting, so it chooses its own reply-inbox nonce (`connId`) and derives its
+  principal from its bearer; the broker's minted grant — not the client's self-read — is the
+  boundary.
+- Open dev mode MAY use `local` as the owner and an opaque stable actor, but open mode is outside
+  the security claims in §9 and is not a conformant authenticated deployment.
 
 Future binding, not v0: portable `did:key` identity plus signed envelopes so authenticity
 survives an untrusted relay. See the threat model in [docs/security.md](docs/security.md).
@@ -72,26 +113,37 @@ Every wire subject is rooted at `cotal.<space>`. `<space>` and every routing tok
 sanitized: any character outside `[A-Za-z0-9_-]` maps to `_`. Sanitization is lossy; tokens
 MUST NOT be decoded back into display names.
 
-| Purpose | Subject | Sender position | Delivery |
+The **sender** of every delivery is a principal (§2), carried as **two adjacent tokens**
+`<owner>.<actor>`. Routed kinds (`inst`) also carry the recipient principal as two tokens.
+
+| Purpose | Subject | Sender tokens | Delivery |
 | --- | --- | --- | --- |
-| Multicast | `cotal.<space>.chat.<sender>.<channel...>` | token 3 | §4 multicast |
-| Unicast | `cotal.<space>.inst.<target>.<sender>` | token 4 | §4 unicast |
-| Anycast | `cotal.<space>.svc.<role>.<sender>` | token 4 | §4 anycast |
-| Control | `cotal.<space>.ctl.<service>.<sender>` | token 4 | §5 control |
+| Multicast | `cotal.<space>.chat.<owner>.<actor>.<channel...>` | 3–4 | §4 multicast |
+| Unicast | `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` | 5–6 | §4 unicast |
+| Anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` | 4–5 | §4 anycast |
+| Control | `cotal.<space>.ctl.<service>.<owner>.<actor>` | 4–5 | §5 control |
 | Trace | `cotal.<space>.trace.<instance>` | n/a | reserved |
 | Control-plane | `cotal.<space>.control.<instance>` | n/a | reserved |
 
 Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1,
-`<kind>` = 2.
+`<kind>` = 2. The sender principal is recovered as the dot-form `<owner>.<actor>` (= the message
+`from.id`, §5), so a guard comparing `from.id` to the subject sender uses one value.
 
-**Sender-position asymmetry.** A reader MUST locate the sender by kind:
+**Two-token sender, and its asymmetry.** A reader MUST locate the sender by kind:
 
-- `chat`: sender at token 3; the channel is everything after it, tokens 4+, so it may be
-  hierarchical (`team.backend`).
-- `inst`, `svc`, `ctl`: sender at token 4; the route target at token 3.
+- `chat`: sender owner at token 3, actor at token 4; the channel is everything after, tokens 5+,
+  so it may be hierarchical (`team.backend`).
+- `svc`, `ctl`: route target at token 3; sender owner at token 4, actor at token 5.
+- `inst`: recipient owner+actor at tokens 3–4; sender owner+actor at tokens 5–6.
 
-A subject that does not match one of these shapes MUST be treated as having no sender and
-MUST NOT be read as a delivery. Reference implementation: `parseSubject` in
+The two-token sender is what lets a native publish grant **forge-lock** the sender suffix — e.g.
+`inst.*.*.<myOwner>.<myActor>` permits a DM to anyone but only *as me* — so the broker enforces
+sender authenticity and a receiver need not re-verify a payload claim. A subject that does not match
+one of these shapes (wrong prefix or wrong per-kind arity) MUST be treated as having no sender and
+MUST NOT be read as a delivery. `parseSubject` **splits only** — it recovers the tokens but does not
+validate that `<owner>` is a well-formed owner token; trust comes from the broker's forge-locked
+grant, and a reader that surfaces content additionally rejects a non-principal owner token at the
+surfacing boundary (§9). Reference implementation: `parseSubject` in
 `packages/core/src/subjects.ts`.
 
 **Channel tokens.** A channel is dotted; each segment is sanitized. The literal wildcards
@@ -378,19 +430,20 @@ mode.
 | `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
-Channel **live** delivery is a native core-NATS subscription to `cotal.<space>.chat.*.<channel>`
-bounded by `sub.allow` (§9), not a durable consumer; join/leave is the subscribe/unsubscribe and
-needs no privileged mediation. The legacy v0.2 `chat_<id>` live-tail durable is removed from this
-binding (it MAY coexist transiently during migration behind `id` dedup, but is not part of the
-contract).
+Channel **live** delivery is a native core-NATS subscription to `cotal.<space>.chat.*.*.<channel>`
+(wildcard sender owner+actor) bounded by `sub.allow` (§9), not a durable consumer; join/leave is the
+subscribe/unsubscribe and needs no privileged mediation. The legacy v0.2 `chat_<owner>-<actor>`
+live-tail durable is removed from this binding (it MAY coexist transiently during migration behind
+`id` dedup, but is not part of the contract).
 
-Durable consumers:
+Durable consumers. Per-instance durables are keyed on the principal's **dash-form** `<owner>-<actor>`
+(a `.` is illegal in a durable name; see §2), so a durable name-scopes to exactly one principal:
 
 | Durable | Stream | Filter | Policy |
 | --- | --- | --- | --- |
-| `chathist_<id>` | CHAT | one `cotal.<space>.chat.*.<channel>` per read | transient single-filter consumer for history reads (join-backfill / focus-recall); created per read scoped to one channel in `allowSubscribe`, then deleted; `AckNone`. History is ACL-bounded by the pinned filter, not membership-gated (§7, §9) |
-| `dm_<id>` | DM | `cotal.<space>.inst.<id>.*` | provisioner-created in auth mode; bind only; `DeliverPolicy.All`; `AckExplicit`; `ack_wait=60000ms` |
-| `svc_<role>` | TASK | `cotal.<space>.svc.<role>.*` | provisioner-created in auth mode; bind only; `AckExplicit`; `ack_wait=60000ms` |
+| `chathist_<owner>-<actor>` | CHAT | one `cotal.<space>.chat.*.*.<channel>` per read | transient single-filter consumer for history reads (join-backfill / focus-recall); created per read scoped to one channel in `allowSubscribe`, then deleted; `AckNone`. History is ACL-bounded by the pinned filter, not membership-gated (§7, §9) |
+| `dm_<owner>-<actor>` | DM | `cotal.<space>.inst.<owner>.<actor>.>` | provisioner-created in auth mode; bind only; `DeliverPolicy.All`; `AckExplicit`; `ack_wait=60000ms` |
+| `svc_<role>` | TASK | `cotal.<space>.svc.<role>.>` | provisioner-created in auth mode; bind only; `AckExplicit`; `ack_wait=60000ms` |
 
 Durable names use sanitized tokens. For authenticated ids this does not change the nkey.
 
@@ -428,7 +481,7 @@ backstop): receivers MUST ack only after a message has actually been surfaced or
 transient failures, and MUST term permanently invalid messages. The at-most-once `live` copy is not
 acked.
 
-History on join uses the pinned single-filter `chathist_<id>` consumer create above, bounded to
+History on join uses the pinned single-filter `chathist_<owner>-<actor>` consumer create above, bounded to
 `allowSubscribe`; agents are not granted unfiltered Direct Get. DM and TASK MUST NOT enable Direct Get
 because it would bypass the consumer-create deny that is part of the confidentiality boundary.
 
@@ -467,32 +520,38 @@ dev mode is available but out of scope for the security claims here.
   (now native core subscriptions; mutable at runtime by direct subscribe/unsubscribe with no
   mediation); it MUST be a subset of `allowSubscribe`. `allowSubscribe` — the read **ACL**, the
   channels it MAY read (default = `subscribe`), minted as native `sub.allow` subscribe grants over
-  `cotal.<space>.chat.*.<channel>` (wildcards preserved, so an open ACL needs no enumeration) and
+  `cotal.<space>.chat.*.*.<channel>` (wildcards preserved, so an open ACL needs no enumeration) and
   as the matching per-channel history-consumer create grants. `allowPublish` — the post **ACL**,
   the channels it may publish to; **default-deny** (a chat publish grant is minted only for a
   declared channel).
 
+Every grant below is keyed on the agent's **principal** `<owner>.<actor>` (§2), except the reply
+inbox, which is keyed on the **connection** `<connId>` — the connection nkey (static mode) or the
+client-chosen nonce (user mode, §9). This is the one place the wire identity and the connection
+credential diverge (§2): the principal keys subjects/durables/presence; the connId keys the inbox.
+
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<id>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.<id>`, `svc.*.<id>`, `ctl.<manager>.<id>`; own presence key | own `_INBOX_<id>.>`; channel live tail via native `sub.allow` subscriptions to `chat.*.<channel>` per `allowSubscribe` (wildcards preserved); CHAT history via single-filter `chathist_<id>` creates, one per `allowSubscribe` channel (ACL-bounded); own `dm_<id>` and `svc_<role>` bind-only; **no** backstop read grant — durable copies arrive via a trusted reader on `_INBOX_<id>` | read bounded by `allowSubscribe`; durable copies re-checked by the trusted reader (current ACL + membership) before delivery; no Direct Get; DM/TASK/backstop create denied |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`, `ctl.<manager>.<owner>.<actor>`; own presence key | own `_INBOX_<connId>.>`; channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); CHAT history via single-filter `chathist_<owner>-<actor>` creates, one per `allowSubscribe` channel (ACL-bounded); own `dm_<owner>-<actor>` and `svc_<role>` bind-only; **no** backstop read grant — durable copies arrive via a trusted reader on `_INBOX_<connId>` | read bounded by `allowSubscribe`; durable copies re-checked by the trusted reader (current ACL + membership) before delivery; no Direct Get; DM/TASK/backstop create denied |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `manager` | broad | broad | provisioner host; SHOULD be scoped in a future version |
 
 DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
 
-1. Replies, pull responses, and trusted-reader durable copies (§8) ride a per-identity inbox prefix,
-   `_INBOX_<id>.>`, which `sub.allow` permits alongside the agent's channel read grants (next item)
-   and nothing else.
+1. Replies, pull responses, and trusted-reader durable copies (§8) ride a per-connection inbox prefix,
+   `_INBOX_<connId>.>`, which `sub.allow` permits alongside the agent's channel read grants (next item)
+   and nothing else. In user mode the client picks `<connId>` (a nonce) and the callout scopes the
+   inbox to it, so a wildcard-inbox subscribe that would sniff peers' DM deliveries is refused.
 2. **Channel live reads are bounded by `sub.allow`.** `allowSubscribe` is minted as native subscribe
-   grants over `cotal.<space>.chat.*.<channel>` (wildcards preserved); the broker refuses, per
+   grants over `cotal.<space>.chat.*.*.<channel>` (wildcards preserved); the broker refuses, per
    subscribe, any channel subject outside the ACL. There is no per-channel consumer name to confine,
    so an open ACL (`team.>`, `>`) grants selective single-channel join with no enumeration and no
    read-breakout. A `>` grant is read-all chat in the space by design — credential compromise reads
    all chat — so it suits trusted/local deployments, not least privilege.
 3. A consumer create on the bare/multi-filter subject is not ACL-constrainable, so the provisioner
-   pre-creates `dm_<id>`, `svc_<role>`, and the per-subscriber durable backstop. Agents bind
-   `dm_<id>`/`svc_<role>` only; the backstop is read by a trusted reader, not the agent (§8, item 5).
+   pre-creates `dm_<owner>-<actor>`, `svc_<role>`, and the per-subscriber durable backstop. Agents bind
+   `dm_<owner>-<actor>`/`svc_<role>` only; the backstop is read by a trusted reader, not the agent (§8, item 5).
    Those bare/multi-filter create forms are not granted to agents (default-deny), with explicit
    create-denies on `DM_<space>`, `TASK_<space>`, and the backstop stream; on `CHAT_<space>` the only
    consumer-create an agent holds is the pinned single-filter history create (next item), so a broad
@@ -548,8 +607,10 @@ cotal://user:pass@host/space                         user/password auth
 - Bare `userinfo` with no `:` is a token. `user:pass` is username/password.
 - `cotals://` means `nats://host:port` plus TLS-required connect options.
 - Credentials (`creds`) are mutually exclusive with token and username/password auth.
-- A client MUST set `inboxPrefix` to `_INBOX_<id>` before any request, pull consumer, or KV
-  watch operation.
+- A client MUST set `inboxPrefix` to `_INBOX_<connId>` before any request, pull consumer, or KV
+  watch operation, where `<connId>` is the connection identifier (the connection nkey in static
+  mode; the client-chosen nonce in user mode, §2/§9) — NOT the owner+actor principal, which the
+  client may not know pre-connect.
 
 Auth-callout onboarding, where a bootstrap token mints per-agent creds at connect time, is
 reserved for a later version. v0 authenticated onboarding is out-of-band credential minting.
@@ -595,12 +656,16 @@ federated/untrusted relay bindings.
 
 A conformant authenticated NATS client MUST:
 
-1. Use one stable authenticated id everywhere (§2).
-2. Publish only on subjects whose sender token is its own id (§3).
+1. Use one stable principal `<owner>.<actor>` as its wire identity everywhere — subject sender
+   tokens (§3), `from.id` (§5), presence key (§6), durable names (dash-form, §8) — and treat the
+   connection credential (nkey) as distinct, keying only its reply inbox (§2).
+2. Publish only on subjects whose sender tokens are its own principal `<owner>.<actor>` (§3).
 3. Publish delivery messages as UTF-8 JSON through JetStream with `msgID = id` (§8).
 4. Set exactly one routing field on each delivery message (§5).
-5. Reject any received delivery message whose `from.id` does not match the subject sender
-   (§5).
+5. Reject any received delivery message whose `from.id` does not match the subject sender, and whose
+   subject `<owner>` is not a well-formed principal owner token — a subject that split-parses but
+   carries a non-owner in the owner slot (e.g. a raw nkey, an old-shape alias) MUST NOT be surfaced
+   as a delivery (§3, §5).
 6. Derive delivery kind (channel/dm/anycast) from the subject, not payload routing fields (§4).
 7. Ack only surfaced/handled messages and terminate permanent anomalies (§4, §8).
 8. Write only its own presence key on the heartbeat interval (§6).
@@ -620,21 +685,26 @@ A conformant authenticated NATS client MUST:
     against the current read ACL (and, for `durable`-channel entries, membership) before surfacing
     content, treating a leave as a hard read boundary on the backstop (§7, §9).
 
-Test vectors use these sample ids:
+Test vectors use these sample principals (`<owner>.<actor>`); `<ownerA>` = `u_aaaaaaaaaaaaaaaaaaaaaaaaaa`,
+`<ownerB>` = `u_bbbbbbbbbbbbbbbbbbbbbbbbbb` (owner tokens are `u_` + 26 base32-lower, §2):
 
-- Alice: `UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD`
-- Bob: `UDI36ZKVNUM5WMO4QQ6HDQU7F4OH2RCXOJRX6GAIOS5SKVNNSKCDNLJA`
+- Alice: `<ownerA>.alice`
+- Bob: `<ownerB>.bob`
 - Reviewer role: `reviewer`
 
-Subject parsing:
+Subject parsing. `parseSubject` **splits only** (§3): it recovers tokens by prefix and per-kind arity
+but does NOT validate the owner token — a well-formed *split* is necessary, not sufficient, for a
+subject to be surfaced as a delivery. The last row shows an old-shape alias that split-parses yet MUST
+be dropped at the surfacing boundary (§9):
 
 | Subject | Result |
 | --- | --- |
-| `cotal.main.chat.UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD.team.backend` | `kind=chat`, `sender=UAQ...QCAD`, `rest=team.backend` |
-| `cotal.main.inst.UDI36ZKVNUM5WMO4QQ6HDQU7F4OH2RCXOJRX6GAIOS5SKVNNSKCDNLJA.UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD` | `kind=inst`, `sender=UAQ...QCAD`, `rest=UDI...NLJA` |
-| `cotal.main.svc.reviewer.UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD` | `kind=svc`, `sender=UAQ...QCAD`, `rest=reviewer` |
-| `cotal.main.ctl.manager.UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD` | `kind=ctl`, `sender=UAQ...QCAD`, `rest=manager` |
-| `cotal.main.chat.UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD` | no sender; malformed chat subject |
+| `cotal.main.chat.<ownerA>.alice.team.backend` | `kind=chat`, `sender=<ownerA>.alice`, `rest=team.backend` |
+| `cotal.main.inst.<ownerB>.bob.<ownerA>.alice` | `kind=inst`, `sender=<ownerA>.alice`, `rest=<ownerB>.bob` (recipient) |
+| `cotal.main.svc.reviewer.<ownerA>.alice` | `kind=svc`, `sender=<ownerA>.alice`, `rest=reviewer` |
+| `cotal.main.ctl.manager.<ownerA>.alice` | `kind=ctl`, `sender=<ownerA>.alice`, `rest=manager` |
+| `cotal.main.chat.<ownerA>.alice` | no sender; malformed (owner+actor but no channel token) |
+| `cotal.main.chat.UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD.team.backend` | split-parses (`kind=chat`, `owner=UAQ...QCAD`, `actor=team`, `rest=backend`) but MUST be dropped: `UAQ...QCAD` is not a principal owner token (§3, §9) |
 
 Sample multicast message:
 
@@ -644,7 +714,7 @@ Sample multicast message:
   "ts": 1710000000000,
   "space": "main",
   "from": {
-    "id": "UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD",
+    "id": "u_aaaaaaaaaaaaaaaaaaaaaaaaaa.alice",
     "name": "alice",
     "role": "planner"
   },
@@ -663,10 +733,10 @@ Sample unicast message changes only the routing field:
   "ts": 1710000001000,
   "space": "main",
   "from": {
-    "id": "UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD",
+    "id": "u_aaaaaaaaaaaaaaaaaaaaaaaaaa.alice",
     "name": "alice"
   },
-  "to": "UDI36ZKVNUM5WMO4QQ6HDQU7F4OH2RCXOJRX6GAIOS5SKVNNSKCDNLJA",
+  "to": "u_bbbbbbbbbbbbbbbbbbbbbbbbbb.bob",
   "parts": [{ "kind": "text", "text": "Direct note." }]
 }
 ```
@@ -674,7 +744,7 @@ Sample unicast message changes only the routing field:
 Interop scenario:
 
 1. Provision a space and credentials for Alice and Bob.
-2. Alice and Bob connect with inbox prefixes `_INBOX_<id>`.
+2. Alice and Bob connect with inbox prefixes `_INBOX_<connId>` (per-connection, §2).
 3. Both write presence and join `team.backend`.
 4. Alice multicasts on `team.backend`; Bob receives with `kind=channel`.
 5. Alice unicasts to Bob; Bob receives with `kind=dm`.
@@ -703,10 +773,11 @@ This appendix is normative for the NATS binding. Names below use these placehold
 - `CHAT = CHAT_<space>`, `DM = DM_<space>`, `TASK = TASK_<space>`, `BSTOP = INBOX_<space>` (durable backstop stream; reference name, §8)
 - `KV = KV_cotal_presence_<space>`
 - `CHKV = KV_cotal_channels_<space>`
-- `id = authenticated instance id`
+- `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
+- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode) — distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
-- `chatHistD = chathist_<id>`, `dmD = dm_<id>`, `svcD = svc_<role>` (the per-subscriber durable backstop `chatinbox_<id>` is read by the trusted reader, not the agent, so it has no agent-profile placeholder; §8)
-- `inbox = _INBOX_<id>.>`
+- `chatHistD = chathist_<owner>-<actor>`, `dmD = dm_<owner>-<actor>`, `svcD = svc_<role>` (the per-subscriber durable backstop, keyed on the principal dash-form, is read by the trusted reader, not the agent, so it has no agent-profile placeholder; §8)
+- `inbox = _INBOX_<connId>.>`
 
 Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per listed token.
 
@@ -715,17 +786,17 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 `sub.allow`:
 
 - `inbox`
-- `P.chat.*.<ch>` for every `allowSubscribe` channel — the **live read boundary**: native core-sub join/leave is a `sub.allow`-bounded subscribe to this subject, so an agent whose ACL permits a channel joins it alone with no manager. Wildcards preserved (e.g. `P.chat.*.team.>` for `allowSubscribe: team.>`); a `team.>` grant matches strictly deeper channels, not the bare `team`; a `>` grant is read-all chat in the space on credential compromise
+- `P.chat.*.*.<ch>` for every `allowSubscribe` channel — the **live read boundary**: native core-sub join/leave is a `sub.allow`-bounded subscribe to this subject (wildcard sender owner+actor), so an agent whose ACL permits a channel joins it alone with no manager. Wildcards preserved (e.g. `P.chat.*.*.team.>` for `allowSubscribe: team.>`); a `team.>` grant matches strictly deeper channels, not the bare `team`; a `>` grant is read-all chat in the space on credential compromise
 
 `pub.allow`:
 
-- `P.chat.<id>.<ch>` for every `allowPublish` channel (post ACL; none by default)
-- `P.inst.*.<id>`
-- `P.svc.*.<id>`
-- `P.ctl.<manager>.<id>`
+- `P.chat.<owner>.<actor>.<ch>` for every `allowPublish` channel (post ACL; none by default)
+- `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
+- `P.svc.*.<owner>.<actor>`
+- `P.ctl.<manager>.<owner>.<actor>`
 - `$JS.API.INFO`
 - `$JS.API.STREAM.INFO.<CHAT|DM|TASK|KV|CHKV>`
-- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body — the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
+- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body — the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
 - `$JS.API.CONSUMER.INFO.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.DELETE.<CHAT>.<chatHistD>`
@@ -736,7 +807,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
 - `$JS.FC.>`
-- `$KV.cotal_presence_<space>.<id>`
+- `$KV.cotal_presence_<space>.<owner>.<actor>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
@@ -802,7 +873,7 @@ Admin still has no application publish grants.
 ### Manager
 
 Manager is allow-all in v0. It is the provisioner host and is responsible for pre-creating
-`dm_<id>`, `svc_<role>`, and per-subscriber durable-backstop (`chatinbox_<id>`) durables, for
+`dm_<owner>-<actor>`, `svc_<role>`, and per-subscriber durable-backstop (`chatinbox_<owner>-<actor>`) durables, for
 writing the privileged channel-membership records the durable backstop authorizes against (§7),
 and for minting scoped credentials. The live channel subscribe does not depend on the manager — it
 is broker-enforced via `sub.allow` — so self-serve live join works with no manager present; only
