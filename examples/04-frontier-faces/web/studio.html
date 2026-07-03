@@ -32,6 +32,7 @@
   .logo { width:22px; height:22px; display:block; flex:none; filter:drop-shadow(0 0 6px rgba(233,196,106,.5)); }
   .sign .lk .logo { width:28px; height:28px; filter:drop-shadow(0 0 9px rgba(233,196,106,.45)); }
   .grow { flex:1; }
+  .slogan { font-size:11px; color:var(--dim); white-space:nowrap; }
   .chip { font-size:11px; color:var(--cyan); border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:rgba(83,235,228,.05); }
   .chip b { color:var(--ink); }
   .status { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); }
@@ -171,7 +172,8 @@
   <header>
     <div class="lockup"><img class="logo" src="cotal-mark.svg" alt="Cotal" /><div><b>Cotal</b> <span class="sub">· frontier tower</span></div></div>
     <div class="grow"></div>
-    <div class="chip">space <b id="space">…</b></div>
+    <div class="slogan">The open standard for agent coordination</div>
+    <div class="chip"><b id="space">…</b></div>
     <div class="chip"><b id="count">0</b> agents</div>
     <div class="status" id="conn"><span class="live"></span><span id="conn-t">connecting…</span></div>
   </header>
@@ -596,7 +598,7 @@
       return;
     }
     try {
-      $('space').textContent = state.space;
+      $('space').textContent = state.space === 'frontier' ? 'Frontier Tower' : state.space;
       $('count').textContent = state.agents.length;
       drawQR();
       buildFaces();
