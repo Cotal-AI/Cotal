@@ -54,7 +54,10 @@ writeFileSync(
 );
 
 // The e2e connector: a REAL long-lived child (node keepalive) through the REAL pty runtime — no
-// Claude cold-start, but a genuine process the manager supervises and attach streams.
+// Claude cold-start, but a genuine process the manager supervises and attach streams. The child
+// reports its ACTUAL cwd to a file, so `--cwd` is asserted end to end (it rides runtime.spawn,
+// not LaunchOpts — only the real process can prove it).
+const cwdReport = join(mkdtempSync(join(tmpdir(), "cotal-detach-out-")), "cwd.txt");
 let lastOpts: LaunchOpts | undefined;
 const e2eCon: Connector = {
   kind: "connector",
@@ -62,7 +65,11 @@ const e2eCon: Connector = {
   requires: ["node"],
   buildLaunch: (o) => {
     lastOpts = o;
-    return { command: "node", args: ["-e", "setInterval(() => {}, 1000)"], env: { PATH: process.env.PATH ?? "" } };
+    return {
+      command: "node",
+      args: ["-e", "require('fs').writeFileSync(process.env.CWD_OUT, process.cwd()); setInterval(() => {}, 1000)"],
+      env: { PATH: process.env.PATH ?? "", CWD_OUT: cwdReport },
+    };
   },
 };
 registry.register(e2eCon);
@@ -102,17 +109,42 @@ try {
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
 
-  // A — detached spawn with overrides, through the real kernel parse + control plane.
-  await run("spawn", ["poet", "--detach", "--agent", "e2e", "--space", SPACE, "--prompt", "compose", "--subscribe", "ops,ops.x", "--share-tools", "alpha"]);
+  // A — detached spawn with the FULL override set (incl. identity: `--name bard` beside the
+  // positional ref — the review-1 fix), through the real kernel parse + control plane.
+  const agentCwd = mkdtempSync(join(tmpdir(), "cotal-detach-cwd-"));
+  const spawnOut = await capture(() =>
+    run("spawn", [
+      "poet", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "bard",
+      "--prompt", "compose", "--subscribe", "ops,ops.x", "--allow-subscribe", "ops,ops.>",
+      "--allow-publish", "ops", "--model", "fancy", "--cwd", agentCwd, "--share-tools", "alpha",
+    ]),
+  );
   ok("detached spawn reached the connector", lastOpts !== undefined);
+  ok("identity override joined as bard, not the file's poet", /spawned .*bard/.test(spawnOut) && lastOpts?.name === "bard", { spawnOut, name: lastOpts?.name });
   ok("prompt rode the control plane", lastOpts?.prompt === "compose", lastOpts?.prompt);
   ok("subscribe override beat the persona file", JSON.stringify(lastOpts?.subscribe) === JSON.stringify(["ops", "ops.x"]), lastOpts?.subscribe);
+  ok("allow-subscribe override arrived", JSON.stringify(lastOpts?.allowSubscribe) === JSON.stringify(["ops", "ops.>"]), lastOpts?.allowSubscribe);
+  ok("allow-publish override arrived", JSON.stringify(lastOpts?.allowPublish) === JSON.stringify(["ops"]), lastOpts?.allowPublish);
+  ok("model override arrived", lastOpts?.model === "fancy", lastOpts?.model);
   ok("share-tools narrowed the config servers", JSON.stringify(Object.keys(lastOpts?.mcpServers ?? {})) === JSON.stringify(["alpha"]), lastOpts?.mcpServers);
   ok("persona role survived (no override given)", lastOpts?.role === "writer", lastOpts?.role);
+  // --cwd is proven by the real child: it wrote its actual working directory.
+  {
+    const { readFileSync, realpathSync } = await import("node:fs");
+    let reported = "";
+    for (let i = 0; i < 50 && !reported; i++) {
+      try {
+        reported = readFileSync(cwdReport, "utf8");
+      } catch {
+        await sleep(100);
+      }
+    }
+    ok("--cwd rooted the real process there", realpathSync(reported) === realpathSync(agentCwd), { reported, agentCwd });
+  }
 
   // B — ps shows it; stop tears it down; ps empties.
   const psOut = await capture(() => run("ps", ["--space", SPACE]));
-  ok("ps lists the detached agent", /poet/.test(psOut), psOut);
+  ok("ps lists the detached agent under its OVERRIDDEN identity", /bard/.test(psOut) && !/poet/.test(psOut), psOut);
 
   // C — attach replies the pinned ws:// contract and the socket opens. One-shot control client
   // over core (the same wire the CLI's askManager uses).
@@ -128,7 +160,7 @@ try {
   await ep.start();
   let attachReply: ControlReply;
   try {
-    attachReply = await ep.requestControl(CONTROL_ADMIN, { op: "attach", args: { name: "poet" } });
+    attachReply = await ep.requestControl(CONTROL_ADMIN, { op: "attach", args: { name: "bard" } });
   } finally {
     await ep.stop();
   }
@@ -144,8 +176,8 @@ try {
   ok("attach socket opens", opened);
   sock.close();
 
-  const stopOut = await capture(() => run("stop", ["--name", "poet", "--space", SPACE]));
-  ok("stop reports ✓", /stopped poet/.test(stopOut), stopOut);
+  const stopOut = await capture(() => run("stop", ["--name", "bard", "--space", SPACE]));
+  ok("stop reports ✓", /stopped bard/.test(stopOut), stopOut);
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", /no managed agents/.test(psAfter), psAfter);
 

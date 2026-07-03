@@ -143,19 +143,22 @@ export const spawnFlags = [
   { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
 ] as const satisfies readonly FlagSpec[];
 
+/** Comma-list flag → string[] (shared by both spawn modes). */
+const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
+
 /** The `--detach` mode: hand the launch to the running manager over the control plane. One grammar
  *  with the foreground path; the persona file is resolved (and is the access default) manager-side,
  *  overridden by the same flags, which ride the `start` op. Replaces the removed `cotal start`. */
 async function spawnDetached(
   values: FlagValues<typeof spawnFlags>,
   positionals: string[],
-  transcript: boolean,
+  transcript: boolean | undefined,
 ): Promise<void> {
-  const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
-  // The persona REF the manager loads: the positional (or --name), falling back to `default` like
-  // the foreground path; an explicit --config path overrides which FILE is loaded (identity still
-  // comes from the file's `name:`). Mirrors the foreground `ref` resolution 1:1.
-  const ref = positionals[0] ?? values.name ?? values.config ?? "default";
+  // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
+  // `--name` > `default`); `--name` doubles as the ref fallback there too. Identity is separate:
+  // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
+  // as the op's `identity` so it is never silently dropped in detached mode.
+  const ref = values.config ?? positionals[0] ?? values.name ?? "default";
   const t = await resolveControlTarget(
     { space: values.space, server: values.server, creds: values.creds },
     "control-caller-privileged",
@@ -163,6 +166,7 @@ async function spawnDetached(
   provenance.read("mesh", `${t.space} (${t.server})`);
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
+    identity: values.name,
     role: values.role,
     agent: values.agent,
     config: values.config,
@@ -175,7 +179,7 @@ async function spawnDetached(
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
     // Tri-state: true (--transcript), false (--no-transcript, explicit), absent → manager default.
-    transcript: transcript ? true : values["no-transcript"] ? false : undefined,
+    transcript,
   }, t.creds);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
@@ -188,7 +192,6 @@ async function spawnDetached(
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const values = args.values as FlagValues<typeof spawnFlags>;
-  const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
 
   // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
   // ownership-scoped). The broker must already be reachable; bringing up a fresh mesh is `up -f`.
@@ -208,9 +211,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error("--resume needs a session id (got an empty value)");
     process.exit(1);
   }
-  // Transcript mirroring to `tr-<name>` is OFF by default; `--transcript` opts in
-  // (`--no-transcript` is accepted too, to be explicit about the default).
-  const transcript = values.transcript ? true : values["no-transcript"] ? false : false;
+  // Transcript mirroring to `tr-<name>` is OFF by default. Tri-state: true (--transcript),
+  // false (--no-transcript, explicit), undefined (absent). Foreground treats absent as off;
+  // detached forwards the tri-state so absent defers to the manager's default.
+  const transcript = values.transcript ? true : values["no-transcript"] ? false : undefined;
 
   // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control

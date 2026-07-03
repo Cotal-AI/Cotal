@@ -90,6 +90,10 @@ export interface StartAgentOpts {
   /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
    *  comes from that file's `name:`). The file must exist. */
   config?: string;
+  /** Presence-identity OVERRIDE (the `--name` flag with a positional/`--config` naming the file):
+   *  wins over the persona file's `name:`, exactly as in foreground `cotal spawn`. Imperative-only —
+   *  a manifest launch (`resolved`) is the identity authority and rejects it. */
+  identity?: string;
   /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
   model?: string;
   /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
@@ -570,6 +574,7 @@ export class Manager {
         agent: args.agent ? String(args.agent) : undefined,
         role: args.role ? String(args.role) : undefined,
         config: args.config ? String(args.config) : undefined,
+        identity: args.identity ? String(args.identity) : undefined,
         model: args.model ? String(args.model) : undefined,
         resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
@@ -693,10 +698,10 @@ export class Manager {
     let capabilities: string[] | undefined;
     let model = opts.model;
     if (opts.resolved) {
-      // A manifest launch is the access authority: imperative overrides arriving alongside
-      // `resolved` are a caller contract error, not something to merge (no fallbacks).
-      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || opts.shareTools)
-        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (subscribe/allow*/prompt/shareTools)" };
+      // A manifest launch is the access + identity authority: imperative overrides arriving
+      // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
+      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || opts.shareTools || opts.identity)
+        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/prompt/shareTools)" };
       const r = opts.resolved;
       identityName = r.name;
       role = opts.role ?? r.role;
@@ -712,7 +717,10 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      identityName = def.name;
+      // Identity: the `--name` override wins over the file's `name:` — foreground parity (there,
+      // `requested = values.name ?? def.name`). The override is minted into the creds and rides
+      // COTAL_NAME below, so the presence identity and its credential can't diverge.
+      identityName = opts.identity ?? def.name;
       role = opts.role ?? def.role;
       // Flags > persona file — the same precedence as foreground `cotal spawn`, so the two launch
       // paths of the merged grammar can't diverge. One source feeds BOTH the minted creds and the

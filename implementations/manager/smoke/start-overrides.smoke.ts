@@ -123,7 +123,21 @@ const j = (v: unknown) => JSON.stringify(v);
   check("undeclared share-tools name fails loud", bad.ok === false && /gamma/.test(bad.error ?? ""), bad);
 }
 
-// 6 — a manifest launch (resolved) rejects imperative overrides (access authority stays with it).
+// 6 — the identity override (`--name` alongside a ref) wins over the file's `name:` and threads
+// into both the reply and LaunchOpts (foreground's `requested = values.name ?? def.name` parity).
+{
+  lastOpts = undefined;
+  const r = await mgr.startAgent({ name: "team", agent: "smoke-ov", identity: "scout" });
+  check("identity override spawns", r.ok === true, r);
+  check("identity override wins over file name:", (r.data as { name?: string })?.name === "scout", r.data);
+  check("identity threads into LaunchOpts.name", lastOpts?.name === "scout", lastOpts?.name);
+  lastOpts = undefined;
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
+  // Earlier sections spawned `plain` repeatedly — uniqueName auto-numbers, so match the series.
+  check("no identity override → file name: (auto-numbered)", /^plain(-\d+)?$/.test(lastOpts?.name ?? ""), lastOpts?.name);
+}
+
+// 7 — a manifest launch (resolved) rejects imperative overrides (access + identity authority).
 {
   const resolved: MeshLaunchAgent = {
     name: "mfst",
@@ -137,6 +151,8 @@ const j = (v: unknown) => JSON.stringify(v);
   check("resolved + prompt rejected", r1.ok === false && /rejects imperative overrides/.test(r1.error ?? ""), r1);
   const r2 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, subscribe: ["x"] });
   check("resolved + subscribe rejected", r2.ok === false && /rejects imperative overrides/.test(r2.error ?? ""), r2);
+  const r3 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, identity: "x" });
+  check("resolved + identity rejected", r3.ok === false && /rejects imperative overrides/.test(r3.error ?? ""), r3);
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");

@@ -24,12 +24,15 @@ process.env.COTAL_CAPABILITIES = "spawn";
  *  Types are erased at runtime, so this list is the golden — a StartAgentOpts change must
  *  consciously edit it. */
 const START_OP_KEYS = new Set([
-  "name", "agent", "role", "config", "model", "resume", "transcript", "cwd",
+  "name", "identity", "agent", "role", "config", "model", "resume", "transcript", "cwd",
   "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
 ]);
 
-/** CLI kebab flag → op key. `no-transcript` folds into the `transcript` tri-state. */
+/** CLI kebab flag → op key. `no-transcript` folds into the `transcript` tri-state; `--name` is
+ *  the presence-identity OVERRIDE (op `identity`) — the persona REF rides the positional as op
+ *  `name`. */
 const flagToOpKey: Record<string, string> = {
+  name: "identity",
   "share-tools": "shareTools",
   "allow-subscribe": "allowSubscribe",
   "allow-publish": "allowPublish",
