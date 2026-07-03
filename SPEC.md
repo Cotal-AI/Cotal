@@ -445,23 +445,25 @@ Durable consumers. Per-instance durables are keyed on the principal's **dash-for
 | `dm_<owner>-<actor>` | DM | `cotal.<space>.inst.<owner>.<actor>.>` | provisioner-created in auth mode; bind only; `DeliverPolicy.All`; `AckExplicit`; `ack_wait=60000ms` |
 | `svc_<role>` | TASK | `cotal.<space>.svc.<role>.>` | provisioner-created in auth mode; bind only; `AckExplicit`; `ack_wait=60000ms` |
 
-Durable names use sanitized tokens. For authenticated ids this does not change the nkey.
+Per-instance durable names use the principal's dash-form `<owner>-<actor>` (both tokens
+fail-loud-validated, not lossily sanitized), so a durable name-scopes to exactly one principal (§2).
+The authenticated wire identity is the principal, not the connection nkey.
 
 **Durable backstop (§4).** The per-subscriber durable copy is a delivery contract, not a pinned
 layout: each member has a private durable store, written on publish for a `durable` channel's current
 members — and, for an `@mention` on a `live` channel, for each mentioned target authorized to read that
 channel (its `allowSubscribe` covers it), so an authorized but offline target still receives it. The
-agent holds **no content-bearing read** on this mixed store. A **trusted reader** (the privileged
-provisioner) pulls each pending entry, re-authorizes `(instance, channel, message)` against the
+agent holds **no content-bearing read** on this mixed store. A **trusted reader** (the server-side
+delivery daemon) pulls each pending entry, re-authorizes `(instance, channel, message)` against the
 member's **current read ACL** — and, for `durable`-channel fan-out entries, its **membership interval**
 (the message's CHAT sequence is `> joinCursor` and `≤ leaveCursor`; §7), not a current-member boolean,
 so a pre-leave entry stays deliverable and a post-`leaveCursor` one does not —
-and delivers each authorized copy to the member over an **at-least-once** handoff (e.g. its `inbox`,
-carrying the same ack semantics — not a fire-and-forget publish). The trusted reader MUST NOT ack or
+and delivers each authorized copy to the member over an **at-least-once** handoff (its own
+`dlv_<owner>-<actor>` DELIVER consumer, carrying the same ack semantics — not a fire-and-forget publish). The trusted reader MUST NOT ack or
 delete the backstop entry until the member has confirmed the copy was surfaced or handled (or it has
 been transferred to an equivalent per-member at-least-once mechanism with the same ack semantics); on a
 downstream nak, timeout, or crash before that confirmation, the entry remains pending and redelivers — so
-a crash between the inbox publish and the member surfacing the message cannot lose it, and `durable`
+a crash between the `dlv` handoff and the member surfacing the message cannot lose it, and `durable`
 stays at-least-once end-to-end, not maybe-once. Content
 for a channel dropped from the ACL, or (for a durable channel) left, is never surfaced (at-least-once for
 the member within retention; **leave is a hard read boundary for the backstop**); a `live`-channel
@@ -532,17 +534,19 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`, `ctl.<manager>.<owner>.<actor>`; own presence key | own `_INBOX_<connId>.>`; channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); CHAT history via single-filter `chathist_<owner>-<actor>` creates, one per `allowSubscribe` channel (ACL-bounded); own `dm_<owner>-<actor>` and `svc_<role>` bind-only; **no** backstop read grant — durable copies arrive via a trusted reader on `_INBOX_<connId>` | read bounded by `allowSubscribe`; durable copies re-checked by the trusted reader (current ACL + membership) before delivery; no Direct Get; DM/TASK/backstop create denied |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`, `ctl.self.<owner>.<actor>` + `ctl.delivery.<owner>.<actor>` (and `ctl.<manager>.<owner>.<actor>` only with the `spawn` capability); own presence key | own `_INBOX_<connId>.>` + own control-reply subtrees; channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); CHAT history via single-filter `chathist_<owner>-<actor>` creates, one per `allowSubscribe` channel (ACL-bounded); own `dm_<owner>-<actor>` and `svc_<role>` bind-only; durable backstop via own bind-only `dlv_<owner>-<actor>` DELIVER consumer (the trusted reader's re-authorized handoff) — **no** grant on the mixed pre-auth fan-out stream | read bounded by `allowSubscribe`; durable copies re-authorized (current ACL + membership) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
-| `manager` | broad | broad | provisioner host; SHOULD be scoped in a future version |
+| scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Full per-profile grants: Appendix B / `provision.ts`. |
 
 DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
 
-1. Replies, pull responses, and trusted-reader durable copies (§8) ride a per-connection inbox prefix,
-   `_INBOX_<connId>.>`, which `sub.allow` permits alongside the agent's channel read grants (next item)
-   and nothing else. In user mode the client picks `<connId>` (a nonce) and the callout scopes the
-   inbox to it, so a wildcard-inbox subscribe that would sniff peers' DM deliveries is refused.
+1. Replies and pull responses ride a per-connection inbox prefix, `_INBOX_<connId>.>`, which
+   `sub.allow` permits alongside the agent's channel read grants (next item) and nothing else. In user
+   mode the client picks `<connId>` (a nonce) and the callout scopes the inbox to it, so a
+   wildcard-inbox subscribe that would sniff peers' DM deliveries is refused. Re-authorized durable
+   copies do NOT ride the inbox — they ride the agent's own `dlv_<owner>-<actor>` DELIVER consumer
+   (item 5, §8).
 2. **Channel live reads are bounded by `sub.allow`.** `allowSubscribe` is minted as native subscribe
    grants over `cotal.<space>.chat.*.*.<channel>` (wildcards preserved); the broker refuses, per
    subscribe, any channel subject outside the ACL. There is no per-channel consumer name to confine,
@@ -550,10 +554,11 @@ DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
    read-breakout. A `>` grant is read-all chat in the space by design — credential compromise reads
    all chat — so it suits trusted/local deployments, not least privilege.
 3. A consumer create on the bare/multi-filter subject is not ACL-constrainable, so the provisioner
-   pre-creates `dm_<owner>-<actor>`, `svc_<role>`, and the per-subscriber durable backstop. Agents bind
-   `dm_<owner>-<actor>`/`svc_<role>` only; the backstop is read by a trusted reader, not the agent (§8, item 5).
+   pre-creates `dm_<owner>-<actor>`, `svc_<role>`, and the per-member `dlv_<owner>-<actor>` handoff
+   durables. Agents bind their own `dm_<owner>-<actor>`/`svc_<role>`/`dlv_<owner>-<actor>` only (never
+   create); the mixed pre-auth fan-out store is read by a trusted reader, not the agent (§8, item 5).
    Those bare/multi-filter create forms are not granted to agents (default-deny), with explicit
-   create-denies on `DM_<space>`, `TASK_<space>`, and the backstop stream; on `CHAT_<space>` the only
+   create-denies on `DM_<space>`, `TASK_<space>`, and the `DLV` stream; on `CHAT_<space>` the only
    consumer-create an agent holds is the pinned single-filter history create (next item), so a broad
    CHAT create-deny is intentionally absent — it would also deny that pinned create.
 4. CHAT history reads are bounded to `allowSubscribe`: a consumer create on the extended subject
@@ -561,9 +566,10 @@ DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
    request body, so an agent is granted exactly one such create-subject per `allowSubscribe` channel
    and can read history of no other channel. The unfiltered Direct Get grant is not given to agents.
 5. **The durable backstop is read by a trusted reader, not the agent.** The agent holds no
-   content-bearing read on the mixed backstop store; a trusted reader (the provisioner) MUST
-   re-authorize `(instance, channel, message)` against the member's current read ACL — and, for
-   `durable`-channel fan-out entries, its current membership — before delivering content to the member:
+   content-bearing read on the mixed pre-auth fan-out store; a trusted reader (the server-side delivery
+   daemon) MUST re-authorize `(instance, channel, message)` against the member's current read ACL —
+   and, for `durable`-channel fan-out entries, its current membership — before handing the authorized
+   copy off to the member's own `dlv_<owner>-<actor>` DELIVER consumer:
    broker ownership of an inbox ("this is agent A's") is not authorization, since the store can hold
    messages for channels A has since dropped from its ACL or left, and a self-bound consumer cannot
    filter per-message on membership. Fan-out-on-write is routing, not an authorization check; for a
@@ -612,8 +618,13 @@ cotal://user:pass@host/space                         user/password auth
   mode; the client-chosen nonce in user mode, §2/§9) — NOT the owner+actor principal, which the
   client may not know pre-connect.
 
-Auth-callout onboarding, where a bootstrap token mints per-agent creds at connect time, is
-reserved for a later version. v0 authenticated onboarding is out-of-band credential minting.
+Authenticated onboarding has two bindings. **Out-of-band credential minting** provisions a per-agent
+credential ahead of connect (the static path). **Auth-callout onboarding** validates a user bearer at
+connect time and mints the scoped data-account JWT then (user mode, §2/§10): the client presents a
+deny-all sentinel credential plus its bearer, the callout derives the owner+actor principal and grants,
+and re-binds the connection into the data account. The owner-token *derivation* — how a bearer maps to
+an owner token — is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
+contract; the callout *mechanism* and the resulting grants are.
 
 ---
 
@@ -770,13 +781,14 @@ Interop scenario:
 This appendix is normative for the NATS binding. Names below use these placeholders:
 
 - `P = cotal.<space>`
-- `CHAT = CHAT_<space>`, `DM = DM_<space>`, `TASK = TASK_<space>`, `BSTOP = INBOX_<space>` (durable backstop stream; reference name, §8)
+- `CHAT = CHAT_<space>`, `DM = DM_<space>`, `TASK = TASK_<space>`
+- `DLV = <Plane-3 per-member delivery stream>`; `INBOX = <mixed pre-auth fan-out stream>` (the durable-backstop handoff, §8): fan-out writes `INBOX` (`dinbox.<owner>.<actor>`), the trusted reader re-authorizes and transfers to `DLV` (`dlv.<owner>.<actor>`), and the agent binds its own `DLV` DELIVER consumer. An agent gets **no** grant on `INBOX` (the mixed pre-auth store).
 - `KV = KV_cotal_presence_<space>`
-- `CHKV = KV_cotal_channels_<space>`
+- `CHKV = KV_cotal_channels_<space>`; `DLVKV = <delivery lease/readiness KV>`
 - `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
 - `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode) — distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
-- `chatHistD = chathist_<owner>-<actor>`, `dmD = dm_<owner>-<actor>`, `svcD = svc_<role>` (the per-subscriber durable backstop, keyed on the principal dash-form, is read by the trusted reader, not the agent, so it has no agent-profile placeholder; §8)
+- `chatHistD = chathist_<owner>-<actor>`, `dmD = dm_<owner>-<actor>`, `dlvD = dlv_<owner>-<actor>`, `svcD = svc_<role>` (all keyed on the principal dash-form; §8)
 - `inbox = _INBOX_<connId>.>`
 
 Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per listed token.
@@ -786,24 +798,31 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 `sub.allow`:
 
 - `inbox`
+- `P.ctl.delivery.<owner>.<actor>.>` (the delivery daemon's replies to this agent's durable join/leave/list requests — replies ride the request subtree, not the per-connection `inbox`)
+- `P.ctl.self.<owner>.<actor>.reply.>` (self-tier control replies — every agent)
+- `P.ctl.<manager>.<owner>.<actor>.reply.>` **only if the agent has the `spawn` capability** (the privileged-tier replies, granted with the request publish above)
 - `P.chat.*.*.<ch>` for every `allowSubscribe` channel — the **live read boundary**: native core-sub join/leave is a `sub.allow`-bounded subscribe to this subject (wildcard sender owner+actor), so an agent whose ACL permits a channel joins it alone with no manager. Wildcards preserved (e.g. `P.chat.*.*.team.>` for `allowSubscribe: team.>`); a `team.>` grant matches strictly deeper channels, not the bare `team`; a `>` grant is read-all chat in the space on credential compromise
 
 `pub.allow`:
 
 - `P.chat.<owner>.<actor>.<ch>` for every `allowPublish` channel (post ACL; none by default)
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
-- `P.svc.*.<owner>.<actor>`
-- `P.ctl.<manager>.<owner>.<actor>`
+- `P.svc.*.<owner>.<actor>` (anycast any role, as me)
+- `P.ctl.self.<owner>.<actor>` (self stop/despawn — granted to every agent)
+- `P.ctl.delivery.<owner>.<actor>` (durable join/leave/list to the delivery daemon — every agent)
+- `P.ctl.<manager>.<owner>.<actor>` **only if the agent has the `spawn` capability** (privileged lifecycle: start/purge/definePersona/named stop-despawn); default-deny otherwise
 - `$JS.API.INFO`
-- `$JS.API.STREAM.INFO.<CHAT|DM|TASK|KV|CHKV>`
+- `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>` — CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/TASK (agents bind those by name and never inspect them, so INFO there would only leak inbox/task metadata)
 - `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body — the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
 - `$JS.API.CONSUMER.INFO.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.DELETE.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.INFO.<DM>.<dmD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.<dmD>`
-- `$JS.ACK.<DM>.<dmD>.>`
-- (no durable-backstop read grant: the agent does NOT bind the mixed backstop store; a trusted reader re-checks each entry and delivers authorized durable copies to the agent's `inbox`, §8)
+- `$JS.ACK.<DM>.<dmD>.>` (DM inbox: BIND-ONLY its own pre-created `dmD`, never create)
+- `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`
+- `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`
+- `$JS.ACK.<DLV>.<dlvD>.>` — the **durable backstop**: BIND-ONLY its own pre-created per-member DELIVER consumer `dlvD` (the trusted reader's re-authorized handoff, §8). The agent holds NO grant on the mixed pre-auth `INBOX` fan-out stream.
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
 - `$JS.FC.>`
@@ -811,6 +830,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
+- `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness — read-only, non-gating)
 - if `role` is set: `$JS.API.CONSUMER.INFO.<TASK>.<svcD>`,
   `$JS.API.CONSUMER.MSG.NEXT.<TASK>.<svcD>`, `$JS.ACK.<TASK>.<svcD>.>`
 
@@ -822,9 +842,9 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.CREATE.<TASK>`
 - `$JS.API.CONSUMER.CREATE.<TASK>.>`
 - `$JS.API.CONSUMER.DURABLE.CREATE.<TASK>.>`
-- `$JS.API.CONSUMER.CREATE.<BSTOP>`
-- `$JS.API.CONSUMER.CREATE.<BSTOP>.>`
-- `$JS.API.CONSUMER.DURABLE.CREATE.<BSTOP>.>`
+- `$JS.API.CONSUMER.CREATE.<DLV>`
+- `$JS.API.CONSUMER.CREATE.<DLV>.>`
+- `$JS.API.CONSUMER.DURABLE.CREATE.<DLV>.>`
 
 A bare/multi-filter consumer create on `CHAT` is **not** explicitly denied — that would also deny the
 pinned `chatHistD` create the agent needs — so it is default-denied (the agent holds no such allow),
@@ -870,15 +890,25 @@ Admin has observer grants, with `sub.allow = [P.>, inbox]`, plus DM history read
 
 Admin still has no application publish grants.
 
-### Manager
+### Scoped host profiles (formerly `manager`)
 
-Manager is allow-all in v0. It is the provisioner host and is responsible for pre-creating
-`dm_<owner>-<actor>`, `svc_<role>`, and per-subscriber durable-backstop (`chatinbox_<owner>-<actor>`) durables, for
-writing the privileged channel-membership records the durable backstop authorizes against (§7),
-and for minting scoped credentials. The live channel subscribe does not depend on the manager — it
-is broker-enforced via `sub.allow` — so self-serve live join works with no manager present; only
-the durable backstop and its membership writes require this privileged host. It MUST NOT be issued
-to ordinary agents.
+There is **no allow-all credential**. The privileged host duties are split into scoped,
+single-function profiles, each granting only the verbs its function needs and none other:
+
+- `provisioner` — pre-creates the per-instance durables (`dm_<owner>-<actor>`, `svc_<role>`, the
+  per-member `dlv_<owner>-<actor>` handoff) and mints scoped credentials; ephemeral onboarding authority.
+- `supervisor` — the always-on agent-lifecycle daemon (the manager process's own connection).
+- `delivery` — the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
+  membership/ACL records the durable backstop authorizes against (§7).
+- `membership-rw` — the derived channel-membership graph feed reader/writer.
+- `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe` — the
+  human-CLI and maintenance surfaces, each scoped to its verbs.
+
+The live channel subscribe depends on none of these — it is broker-enforced via `sub.allow`, so
+self-serve live join works with no host present; only the durable backstop and its membership writes
+require a privileged host. None of these profiles is ever issued to ordinary agents. Full per-profile
+grant lists are enumerated in `provision.ts` (`permissionsFor`); this appendix documents the `agent`,
+`observer`, and `admin` profiles that make up the wire-facing security claim.
 
 ## Appendix C: Normative references
 
