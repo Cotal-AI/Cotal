@@ -537,7 +537,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`, `ctl.self.<owner>.<actor>` + `ctl.delivery.<owner>.<actor>` (and `ctl.<manager>.<owner>.<actor>` only with the `spawn` capability); own presence key | own `_INBOX_<connId>.>` + own control-reply subtrees; channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); CHAT history via single-filter `chathist_<owner>-<actor>` creates, one per `allowSubscribe` channel (ACL-bounded); own `dm_<owner>-<actor>` and `svc_<role>` bind-only; durable backstop via own bind-only `dlv_<owner>-<actor>` DELIVER consumer (the trusted reader's re-authorized handoff) — **no** grant on the mixed pre-auth fan-out stream | read bounded by `allowSubscribe`; durable copies re-authorized (current ACL + membership) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
-| scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Full per-profile grants: Appendix B / `provision.ts`. |
+| scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; concrete grant lists live in `provision.ts` until the host-profile docs increment. |
 
 DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
 
@@ -630,8 +630,11 @@ contract; the callout *mechanism* and the resulting grants are.
 
 ## 11. Versioning and extensibility
 
-- Wire contract version is v0.2. It is pre-1.0 (the v0.x line) and may still change.
-  `AgentCard.protocolVersion` (§6) carries this string.
+- The advertised wire contract version is v0.2; `AgentCard.protocolVersion` (§6) carries this string.
+  It is pre-1.0 (the v0.x line) and may still change. The two v0.3 binding revisions (channel live
+  delivery and owner+actor identity, see the header) are the normative targets the reference
+  implementation is converging to; the advertised `protocolVersion` stays `0.2` through the cutover
+  and bumps only once the migration completes — a version string is not a per-surface cutover claim.
 - v0 has no in-band capability negotiation. Deployments MUST agree on the binding and
   version out of band. A participant MAY advertise the version it speaks via
   `AgentCard.protocolVersion` (§6) as a one-way change signal; v0 defines no behavior on a
