@@ -26,7 +26,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable, loadAgentFile,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, CotalEndpoint,
-  CONTROL_SELF_SERVICE, channelInAllow, chatStream, chatSubject, chatHistDurable,
+  CONTROL_SELF_SERVICE, channelInAllow, chatStream, chatSubject, chatHistDurable, DEV_OWNER,
   type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
 } from "../src/index.js";
 
@@ -136,7 +136,9 @@ try {
     const def = agentFile(name, fm);
     const ident = newIdentity();
     const allowSubscribe = def.allowSubscribe ?? def.subscribe ?? ["general"];
-    allowById.set(ident.id, allowSubscribe);
+    // Dev/static principal: owner=DEV_OWNER ("local"), actor=the nkey. req.from.id / the Plane-3 aclFor
+    // key are the principal DOT-FORM `local.<nkey>` under the owner+actor grammar, so key the ACL map by it.
+    allowById.set(`${DEV_OWNER}.${ident.id}`, allowSubscribe);
     const creds = await provisionAgent(mgr, auth, ident, { subscribe: def.subscribe, allowSubscribe, allowPublish: def.allowPublish });
     return { name, ident, creds, def };
   };
@@ -188,7 +190,7 @@ try {
   check("carol's post raised a permission error (default-deny)", C.errors.some((e) => /permission|authorization/i.test(e)), C.errors);
   check("nobody received carol's blocked post", !B.got.concat(A.got).some((g) => g.text === "carol should not post"), "leaked");
   // Same boundary, broker-direct + deterministic: a raw publish with carol's creds is denied.
-  check("carol's RAW publish to chat.<id>.general is broker-denied", await rawPubDenied(carol.creds, carol.ident.id, chatSubject(space, carol.ident.id, "general")));
+  check("carol's RAW publish to chat.<o>.<a>.general is broker-denied", await rawPubDenied(carol.creds, carol.ident.id, chatSubject(space, DEV_OWNER, carol.ident.id, "general")));
 
   // (4) alice mediated-joins #ops (∈ her allowSubscribe) → success + backfills #ops history.
   console.log("[4] mediated join within allowSubscribe");
@@ -217,8 +219,8 @@ try {
   const bobNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(bob.creds)), inboxPrefix: `_INBOX_${bob.ident.id}`, maxReconnectAttempts: 0 });
   let rawDenied = false;
   try {
-    const subj = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(bob.ident.id)}.${chatSubject(space, "*", "ops")}`;
-    const m = await bobNc.request(subj, enc(JSON.stringify({ stream_name: chatStream(space), config: { name: chatHistDurable(bob.ident.id), filter_subject: chatSubject(space, "*", "ops"), ack_policy: "none", deliver_policy: "all" }, action: "create" })), { timeout: 1500 });
+    const subj = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, bob.ident.id)}.${chatSubject(space, "*", "*", "ops")}`;
+    const m = await bobNc.request(subj, enc(JSON.stringify({ stream_name: chatStream(space), config: { name: chatHistDurable(DEV_OWNER, bob.ident.id), filter_subject: chatSubject(space, "*", "*", "ops"), ack_policy: "none", deliver_policy: "all" }, action: "create" })), { timeout: 1500 });
     const r = m.json<any>();
     rawDenied = !!r?.error; // if it somehow responded, only an error reply counts as denied
   } catch { rawDenied = true; } // permission violation / no responder
