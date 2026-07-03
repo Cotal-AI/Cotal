@@ -62,7 +62,7 @@ jobs:
         # delivery + manager, real `cotal ps`) and the one-manager-carries-the-launch invariant of
         # `up -f` (the singleton-lease race regression). smoke:ext:live e2es the operator-installed
         # extension lifecycle (cotal ext) through the real binary. nats-server installed above.
-        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
 
       - name: Manager lifecycle e2e (real broker + real agents)
         # Real end-to-end for #159 Part B: the startAgent presence-race (started via real presence / failed

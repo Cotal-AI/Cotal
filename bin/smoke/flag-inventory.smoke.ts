@@ -6,7 +6,7 @@
  *
  * Deliberate deltas from main, reviewed with the migration (see PR):
  *  - commands whose positionals were accepted-but-ignored now reject them
- *    (setup/go/up/down/join/console/demo/web);
+ *    (setup/go/up/down/join/console);
  *  - manager commands accepted the UNION of all manager flags; each now accepts exactly its own
  *    (e.g. `stop --model` was accepted-and-ignored, now a usage error); the dead `--drive` flag
  *    is gone;
@@ -45,8 +45,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   send: { flags: [...TARGET], positionals: true },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
-  demo: { flags: [...TARGET, "interval:string", "once:boolean"], positionals: false },
-  web: { flags: [...TARGET, "no-open:boolean", "port:string"], positionals: false },
+  // web + demo moved out to the cotal-web / @cotal-ai/demo extension packages (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   spawn: {

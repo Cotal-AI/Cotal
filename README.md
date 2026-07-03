@@ -109,7 +109,7 @@ cotal up --detach  # start the mesh (+ delivery daemon + manager)
 cotal spawn me     # drive a session: talk to your agent; it messages and spawns peers
 cotal spawn david  # bring in an expert teammate (also: sven, the guide)
 cotal console      # watch the mesh live: presence, channels, messages
-cotal web          # the same, in the browser
+cotal web          # the same, in the browser (once: cotal ext add cotal-web)
 cotal down         # stop everything
 ```
 

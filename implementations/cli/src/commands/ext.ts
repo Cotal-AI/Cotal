@@ -24,9 +24,10 @@ import { c } from "../ui.js";
  * dispatch imports the package lazily to run one of its commands with LIVE specs.
  *
  * Add-time guarantees (design-review conditions — each converts a silent failure into a loud one):
- *  - `@cotal-ai/core` must be a PEER dependency of the extension, and the prefix's copy is
- *    replaced with a link to the running binary's core — otherwise the extension registers into
- *    ITS OWN module's registry singleton and the binary never sees the commands.
+ *  - shared `@cotal-ai/*` packages must be PEER dependencies of the extension; each is linked to
+ *    the running binary's copy (core is mandatory — otherwise the extension registers into ITS
+ *    OWN module's registry singleton and the binary never sees the commands; others, e.g.
+ *    `@cotal-ai/workspace`, would silently drift from the binary's).
  *  - after import, the expected commands must have appeared in OUR registry, else the add fails.
  *  - a contributed name colliding with an existing command fails the add (builtins win).
  */
@@ -42,16 +43,18 @@ export async function ext(args: ParsedArgs): Promise<void> {
 
 /** Resolve the running binary's @cotal-ai/core package dir — the ONE core instance every
  *  extension must share. Resolved from this module's own import graph (so dev workspace links
- *  and installed node_modules both work) by walking up from core's resolved ENTRY to the
- *  directory holding its package.json — core's `exports` map doesn't expose "./package.json",
- *  so the subpath can't be resolved directly. */
-function ourCoreDir(): string {
-  let dir = dirname(fileURLToPath(import.meta.resolve("@cotal-ai/core")));
+ *  and installed node_modules both work) by walking up from the package's resolved ENTRY to the
+ *  directory holding its package.json — the `exports` maps don't expose "./package.json",
+ *  so the subpath can't be resolved directly. NOTE: resolution runs from @cotal-ai/cli's graph,
+ *  so only shared packages the CLI itself carries (core, workspace) are linkable today; an
+ *  extension peering any other @cotal-ai/* package fails its add loudly. */
+function ourPackageDir(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.resolve(name)));
   for (;;) {
     const pj = join(dir, "package.json");
-    if (existsSync(pj) && (JSON.parse(readFileSync(pj, "utf8")) as { name?: string }).name === "@cotal-ai/core") return dir;
+    if (existsSync(pj) && (JSON.parse(readFileSync(pj, "utf8")) as { name?: string }).name === name) return dir;
     const parent = dirname(dir);
-    if (parent === dir) throw new Error("couldn't locate @cotal-ai/core's package root from its resolved entry");
+    if (parent === dir) throw new Error(`couldn't locate ${name}'s package root from its resolved entry`);
     dir = parent;
   }
 }
@@ -119,21 +122,33 @@ async function add(spec: string): Promise<void> {
     peerDependencies?: Record<string, string>;
   };
 
-  // Core must be a PEER dependency — a regular dependency vendors a second core, whose module-level
-  // registry singleton would swallow the registration invisibly. Fail the add with the exact reason.
-  if (pkgMeta.dependencies?.["@cotal-ai/core"]) {
-    fail(pkg, `declares @cotal-ai/core as a regular dependency — it must be a peerDependency, or its commands would register into its own core copy and never reach this CLI`);
+  // Shared @cotal-ai/* packages must be PEER dependencies — a regular dependency vendors a second
+  // copy: core's would swallow the extension's registrations into its own registry singleton, and
+  // any other shared package would silently drift from the binary's. Fail with the exact reason.
+  const vendored = Object.keys(pkgMeta.dependencies ?? {}).filter((d) => d.startsWith("@cotal-ai/"));
+  if (vendored.length) {
+    fail(pkg, `declares ${vendored.join(", ")} as a regular dependency — shared @cotal-ai/* packages must be peerDependencies, or the extension runs its own copy (core's would swallow its command registrations; any other's drifts from this CLI's)`);
   }
   if (!pkgMeta.peerDependencies?.["@cotal-ai/core"]) {
     fail(pkg, `does not declare @cotal-ai/core as a peerDependency — a cotal CLI extension must (its extension objects register into core's registry)`);
   }
-  // Link the prefix's core to the RUNNING binary's copy, so the extension's
-  // `import "@cotal-ai/core"` lands on our registry singleton.
-  const prefixCore = join(dir, "node_modules", "@cotal-ai", "core");
-  rmSync(prefixCore, { recursive: true, force: true });
-  mkdirSync(dirname(prefixCore), { recursive: true });
-  symlinkSync(ourCoreDir(), prefixCore, "junction");
-  provenance.wrote("core link (extension → this CLI's core)", prefixCore);
+  // Link every shared @cotal-ai/* peer to the RUNNING binary's copy, so the extension's imports
+  // land on our singletons — core's registry above all. npm ignored the peers at install
+  // (--legacy-peer-deps), so this link is the ONLY resolution they get: core is mandatory, and any
+  // other @cotal-ai/* peer must be one the binary carries, else the add fails loud.
+  for (const peer of Object.keys(pkgMeta.peerDependencies ?? {}).filter((d) => d.startsWith("@cotal-ai/"))) {
+    let src: string;
+    try {
+      src = ourPackageDir(peer);
+    } catch {
+      fail(pkg, `peer-depends on ${peer}, which this cotal binary does not carry — the peer can't be linked, so the extension could never resolve it`);
+    }
+    const dest = join(dir, "node_modules", ...peer.split("/"));
+    rmSync(dest, { recursive: true, force: true });
+    mkdirSync(dirname(dest), { recursive: true });
+    symlinkSync(src, dest, "junction");
+    provenance.wrote(`${peer} link (extension → this CLI's copy)`, dest);
+  }
 
   // Import once; the registration must LAND IN OUR REGISTRY — zero new commands is a failed add.
   const before = new Set(registry.all<Command>("command").map((cm) => cm.name));

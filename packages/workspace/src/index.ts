@@ -1,5 +1,7 @@
 export * from "./auth-paths.js";
 export * from "./bin-path.js";
+export * from "./colors.js";
+export * from "./connect.js";
 export * from "./extensions.js";
 export * from "./flags.js";
 export * from "./provenance.js";
@@ -7,3 +9,4 @@ export * from "./mesh-registry.js";
 export * from "./mesh-target.js";
 export * from "./preflight.js";
 export * from "./render.js";
+export * from "./space.js";

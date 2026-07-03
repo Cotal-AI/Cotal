@@ -179,10 +179,12 @@ landed, and caches the contributed command metadata into a manifest. From then o
 shell completion read the **cache** (a `<TAB>` never imports an extension); *running* one of its
 commands imports the package lazily and parses with its **live** specs — the cache is a display
 surface, never the parse authority. The pinned `name@version` is verified before every import
-(skew → a loud error prescribing re-add), extensions must declare `@cotal-ai/core` as a
-**peerDependency** (the prefix's copy is linked to the binary's, so there is exactly one
-registry singleton), and a name collision — with a built-in or with another installed
-extension — fails the add; built-ins always win. Moving or reinstalling the binary (e.g. a Node
+(skew → a loud error prescribing re-add), extensions must declare every shared `@cotal-ai/*`
+package as a **peerDependency** — core is mandatory, and each declared peer is linked to the
+binary's own copy at add time (one registry singleton; no drifting second copies; npm never
+resolves the peers itself) — and a name collision — with a built-in or with another installed
+extension — fails the add; built-ins always win. The mechanism is dogfooded by the repo's own
+`cotal-web` (browser dashboard) and `@cotal-ai/demo` (trace generator) packages. Moving or reinstalling the binary (e.g. a Node
 version switch) can strand the prefix's core link: every such path fails **loud** at dispatch
 with a `cotal ext add` re-add prescription, never a silently missing command.
 Library composition roots (examples) are unaffected: explicit imports stay the model there.

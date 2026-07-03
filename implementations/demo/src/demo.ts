@@ -6,8 +6,7 @@ import {
   type ParsedArgs,
   type PresenceStatus,
 } from "@cotal-ai/core";
-import { resolveSpace } from "../lib/status.js";
-import { c } from "../ui.js";
+import { c, resolveSpace } from "@cotal-ai/workspace";
 
 /**
  * `cotal demo` — spin up a handful of mock agents and replay a scripted trace that exercises

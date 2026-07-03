@@ -16,7 +16,7 @@ re-implements the wire semantics. The wire is the source of truth; these are ren
 |---|---|---|---|
 | **console** | `cotal console` | interactive terminal: drive it, drill in | Ink / React (TTY) |
 | **stream** | `cotal console --plain`, pipes | passive line log: tail it, grep it, CI | plain ANSI |
-| **web** | `cotal web` | operator dashboard: see what needs you | HTTP + SSE, vanilla JS |
+| **web** | `cotal web` (via `cotal ext add cotal-web`) | operator dashboard: see what needs you | HTTP + SSE, vanilla JS |
 
 `console` auto-selects: a real TTY gets the Ink TUI, a pipe or `--plain` gets the stream.
 The web dashboard is a **god-view** (it self-mints an
@@ -29,7 +29,8 @@ first: every space on the server (enumerated from its `CHAT_*` streams plus pres
 `b` returns to the overview. `--space X` skips the picker. Under auth a server hosts a single
 space, so the console enters it directly (no overview).
 
-**Generate traffic to test them:** `cotal demo --space demo` spins up a handful of mock agents
+**Generate traffic to test them:** `cotal demo --space demo` (via the `@cotal-ai/demo` extension:
+`cotal ext add ./implementations/demo`) spins up a handful of mock agents
 that loop a scripted trace hitting every message type (multicast across channels plus mentions,
 peer DMs, a coalesced burst, an unclaimed anycast) and every presence state. Run it next to
 `cotal console` / `cotal web`.

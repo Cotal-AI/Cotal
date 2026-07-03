@@ -10,8 +10,9 @@
  *     re-add is a clean refresh; a corrupt manifest is ONE red line, not a stack dump.
  *  D. version-skew: on-disk version ≠ manifest pin → loud error prescribing re-add.
  *  E. failed adds are loud AND rolled back: builtin name collision, ext-vs-ext name collision
- *     (checked against the manifest cache — the sibling is never imported), core as a regular
- *     dependency, missing core peerDep, zero registrations.
+ *     (checked against the manifest cache — the sibling is never imported), @cotal-ai/* as a
+ *     regular dependency, missing core peerDep, an @cotal-ai/* peer the binary doesn't carry,
+ *     zero registrations. A multi-peer extension gets BOTH core and workspace linked (E2).
  *  F. remove: commands leave the surface; the manifest empties.
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
@@ -93,7 +94,7 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   ok("add exits 0", r.status === 0, r.stderr.slice(-400));
   ok("add names the contributed command", /hello-ext/.test(r.stdout), r.stdout);
   ok("manifest written + announced", existsSync(manifestPath) && /→ wrote extensions manifest/.test(r.stderr), r.stderr.slice(-300));
-  ok("core is linked to OUR copy", /→ wrote core link/.test(r.stderr));
+  ok("core is linked to OUR copy", /→ wrote @cotal-ai\/core link/.test(r.stderr));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("manifest pins name@version + caches flags", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout", m.extensions[0]);
 }
@@ -170,6 +171,16 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
 
   // ext-vs-ext: another package contributing the installed fixture's command name. The registry
   // can't see the installed (unimported) sibling, so add() must check the manifest cache.
+  // Peer generalization (stage 4): ANY @cotal-ai/* regular dep fails; an @cotal-ai/* peer the
+  // binary doesn't carry fails; a workspace peer is LINKED and importable.
+  const wsdep = fixture("cotal-ext-wsdep", GOOD, { dependencies: { "@cotal-ai/workspace": "*" } });
+  const r6 = cotal(["ext", "add", wsdep]);
+  ok("@cotal-ai/* as a regular dependency fails with the exact reason", r6.status === 1 && /must be peerDependencies/.test(r6.stderr), r6.stderr.slice(-300));
+
+  const alien = fixture("cotal-ext-alien", GOOD, { peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/nonexistent": "*" } });
+  const r7 = cotal(["ext", "add", alien]);
+  ok("an @cotal-ai/* peer the binary doesn't carry fails loud", r7.status === 1 && /@cotal-ai\/nonexistent/.test(r7.stderr) && /does not carry/.test(r7.stderr), r7.stderr.slice(-300));
+
   const sibling = fixture("cotal-ext-sibling", GOOD);
   const r5 = cotal(["ext", "add", sibling]);
   ok(
@@ -179,6 +190,28 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   );
   const r5b = cotal(["ext", "list"]);
   ok("ext-vs-ext collision rolled back (not listed)", !/sibling/.test(r5b.stdout), r5b.stdout);
+}
+
+// -- E2: a multi-peer extension — the linked workspace peer is importable at run time -------------
+{
+  const GOODWS = `import { registry } from "@cotal-ai/core";
+import { c } from "@cotal-ai/workspace";
+registry.register({
+  kind: "command",
+  name: "ws-ext",
+  group: "Extensions",
+  summary: "fixture using a linked workspace peer",
+  run: async () => { console.log(c.bold("WS-OK")); },
+});
+`;
+  const wspeer = fixture("cotal-ext-wspeer", GOODWS, {
+    peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/workspace": "*" },
+  });
+  const r = cotal(["ext", "add", wspeer]);
+  ok("multi-peer add exits 0 (core + workspace linked)", r.status === 0 && /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
+  const run = cotal(["ws-ext"]);
+  ok("the extension imports the LINKED workspace peer at run time", run.status === 0 && run.stdout.includes("WS-OK"), run.stdout + run.stderr.slice(-200));
+  ok("remove cleans it up", cotal(["ext", "remove", "cotal-ext-wspeer"]).status === 0);
 }
 
 // -- F: remove -------------------------------------------------------------------------------------

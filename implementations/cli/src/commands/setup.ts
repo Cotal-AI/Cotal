@@ -3,15 +3,14 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { registry, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir, provenance } from "@cotal-ai/workspace";
+import { homeCotalDir, loadExtensionsManifest, provenance } from "@cotal-ai/workspace";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { machineStatus, meshStatus, onPath } from "../lib/status.js";
-import { webUp, WEB_URL } from "./web.js";
+import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx } from "../lib/self-exec.js";
 import { cotalPath } from "../lib/paths.js";
@@ -237,6 +236,16 @@ async function runEnsure(): Promise<void> {
   await readyCard(process.cwd());
 }
 
+/** True when an installed extension contributes the `web` command (the dashboard moved out to
+ *  `cotal-web` in stage 4) — decides whether the ready-card says "start it" or "install it". */
+function webInstalled(): boolean {
+  try {
+    return loadExtensionsManifest().extensions.some((e) => e.commands.some((cm) => cm.name === "web"));
+  } catch {
+    return false; // corrupt manifest — the card stays honest ("not installed"); `ext` commands surface the error
+  }
+}
+
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
  *  probes — displaying state is not depending on it), plus the key commands. */
 async function readyCard(cwd: string): Promise<void> {
@@ -251,7 +260,7 @@ async function readyCard(cwd: string): Promise<void> {
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
       line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down — start: ${cmd} up --detach`)}`),
-      line(web, `web      ${dim(web ? WEB_URL : `down — start: ${cmd} web`)}`),
+      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down — start: ${cmd} web` : `not installed — add: ${cmd} ext add cotal-web`)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running — start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,
