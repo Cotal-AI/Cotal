@@ -14,7 +14,7 @@
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "test": "pnpm -r --if-present test",
     "check": "pnpm typecheck && pnpm test && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:ci",
-    "smoke:ci": "pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl",
+    "smoke:ci": "pnpm smoke:principal-key && pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "clean": "git clean -fdX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "cotal": "tsx bin/cotal.ts",
@@ -91,7 +91,8 @@
     "smoke:delivery-boot-retry:auth": "tsx packages/core/smoke/delivery-boot-retry.smoke.ts",
     "smoke:delivery-old-manager": "tsx implementations/cli/smoke/delivery-old-manager-preflight.smoke.ts",
     "smoke:delivery-reconnect:auth": "tsx packages/core/smoke/delivery-reconnect.smoke.ts",
-    "smoke:delivery-broker-coupling": "tsx implementations/delivery/smoke/delivery-broker-coupling.smoke.ts"
+    "smoke:delivery-broker-coupling": "tsx implementations/delivery/smoke/delivery-broker-coupling.smoke.ts",
+    "smoke:principal-key": "tsx packages/core/smoke/principal-key.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "workspace:*",

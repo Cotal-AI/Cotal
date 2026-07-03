@@ -119,23 +119,47 @@ export function assertValidChannel(channel: string): string {
   return channel;
 }
 
-/** Validate an **owner token** — the broker-authenticated, cross-user lane boundary that the
- *  owner+actor grammar adds to the wire subjects and that already keys every persisted owner-bearing
- *  KV record ({@link memberKey}, {@link aclKey}, {@link dinboxSubject}, {@link dlvSubject}). STRICTER
- *  than {@link assertValidChannel}: an owner is exactly ONE NATS-safe token — `[A-Za-z0-9_-]+`, with
- *  NO dots, NO `*`, NO `>`. A separator or wildcard in a user id is lane breakout or aliasing (it would
- *  let one owner's grant span, or collide with, another's), so this FAILS LOUD rather than sanitizing.
- *  Do NOT substitute {@link token}/`routeToken` here: they silently rewrite illegal characters — safe
- *  for nkeys (already base32), unsafe for human-owner ids where a rewrite hides an aliasing attempt.
- *  Returns the token unchanged when valid so callers can use it inline. */
+/** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
+ *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
+ *  ({@link memberKey}, {@link aclKey}, {@link dinboxSubject}, {@link dlvSubject}) still ride raw
+ *  nkeys through `token()`/`routeToken()` (a no-op on base32) — the cutover wires this in at every
+ *  mint/callout boundary and persisted owner/actor-bearing key. STRICTER than
+ *  {@link assertValidChannel}: a token is exactly ONE NATS-safe segment — `[A-Za-z0-9_]+`, with NO
+ *  dots, NO `*`, NO `>`, and NO `-`. Dots/wildcards in an id are lane breakout or aliasing (they would
+ *  let one owner's grant span, or collide with, another's); `-` is excluded because it is reserved as
+ *  the sole separator of {@link principalKey}'s JetStream-name form — a `-` *inside* a token would
+ *  make `<owner>-<actor>` ambiguous. The ASCII-only alphabet also makes NFC-normalization trivially
+ *  hold (any non-ASCII input fails). FAILS LOUD rather than sanitizing — do NOT substitute
+ *  {@link token}/`routeToken` here: they silently rewrite illegal characters, and a rewrite hides an
+ *  aliasing attempt. Returns the token unchanged when valid so callers can use it inline. */
 export function assertValidOwnerToken(owner: string): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(owner))
+  if (!/^[A-Za-z0-9_]+$/.test(owner))
     throw new Error(
-      `invalid owner token "${owner}": an owner must be a single NATS-safe token ([A-Za-z0-9_-]) — ` +
-        `no dots, '*', or '>'. A separator or wildcard in an owner id is lane breakout or aliasing, ` +
-        `so it is rejected rather than silently rewritten.`,
+      `invalid owner/actor token "${owner}": must be a single NATS-safe token ([A-Za-z0-9_]) — ` +
+        `no dots, '*', '>', or '-'. A separator or wildcard in an id is lane breakout or aliasing, ` +
+        `and '-' is reserved as the principal name-form separator, so it is rejected rather than ` +
+        `silently rewritten.`,
     );
   return owner;
+}
+
+/** The canonical serialization of a **principal** (`owner`+`actor`) — the key every authority that
+ *  enforces per-agent grants checks against. It is TWO forms, not one, because the same principal
+ *  lands in two namespaces with incompatible rules:
+ *    - `key`  — the subject / KV-key dot-form `<owner>.<actor>`, for wire subjects and KV keys,
+ *      where `.` is the token boundary;
+ *    - `name` — the JetStream-name form `<owner>-<actor>`, for durable / consumer / stream and
+ *      chat-history names, where JetStream forbids `.` `*` `>` `/` and whitespace, so the dot-form
+ *      is illegal.
+ *  Both tokens are {@link assertValidOwnerToken}-validated, and `-` is banned *inside* tokens and
+ *  reserved as the sole name separator, so both forms are collision-free — distinct (owner, actor)
+ *  pairs can never serialize to the same string. All principal serialization goes through here: no
+ *  ad-hoc string joins, and never a `<owner>.<actor>` fed to a JetStream name. Defined ahead of the
+ *  owner+actor cutover — call sites (durables, member/acl keys, grants) arrive with the flip. */
+export function principalKey(owner: string, actor: string): { key: string; name: string } {
+  assertValidOwnerToken(owner);
+  assertValidOwnerToken(actor);
+  return { key: `${owner}.${actor}`, name: `${owner}-${actor}` };
 }
 
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
