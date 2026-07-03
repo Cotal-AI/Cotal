@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import {
   connect,
   credsAuthenticator,
+  tokenAuthenticator,
   nanos,
   AuthorizationError,
   PermissionViolationError,
@@ -101,6 +102,7 @@ import {
   normalizeMentions,
   parseSubject,
   isPrincipalOwnerToken,
+  assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
   membershipBucket,
@@ -137,6 +139,14 @@ export interface EndpointOptions {
   /** NATS user creds file *content* (JWT + nkey seed). When set, the endpoint
    *  authenticates as that user and adopts the creds' identity as its card.id. */
   creds?: string;
+  /** USER-MODE auth: a validated Cotal user bearer (the JWT from `cotal login` → the IdP bridge). When
+   *  set, the endpoint connects through the auth callout — presenting {@link sentinelCreds} + this bearer,
+   *  the broker mints its scoped data-account JWT — and derives its owner+actor PRINCIPAL from the bearer
+   *  (`owner`, `act.actor`). Mutually exclusive with `creds`/`token`/`user`/`pass`; requires `sentinelCreds`. */
+  bearer?: string;
+  /** The shared, deny-all auth-account sentinel creds presented alongside {@link bearer} so the connect
+   *  lands in the callout account (`createCalloutAuth().sentinelCreds`). Powerless on its own. */
+  sentinelCreds?: string;
   /** Require a TLS connection to the server. */
   tls?: boolean;
   /** Channels to subscribe to; the first is the default broadcast target. */
@@ -207,6 +217,8 @@ export class CotalEndpoint extends EventEmitter {
   private readonly user?: string;
   private readonly pass?: string;
   private readonly creds?: string;
+  private readonly bearer?: string;
+  private readonly sentinelCreds?: string;
   private readonly tls: boolean;
   private readonly heartbeatMs: number;
   private readonly ttlMs: number;
@@ -327,20 +339,43 @@ export class CotalEndpoint extends EventEmitter {
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through.
     assertValidName(opts.card.name);
-    // Connection identity precedence: an explicit card.id, else the creds' identity, else a random
-    // (dash-free, so it is a valid actor token) id. When both an id and creds are given they MUST name
-    // the same nkey — else the connection would authenticate as one user while its grants name another.
-    const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
-    if (opts.card.id && credId && opts.card.id !== credId)
-      throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
-    this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
-    // The owner+actor PRINCIPAL. Dev/no-login default: owner = DEV_OWNER ("local"), actor = the
-    // connection id (so `local.<connId>` is the agent's lane). User mode supplies both explicitly (the
-    // callout-derived owner + ledger actor), passed on the card by the connect path. `card.id` is the
-    // principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries; principalKey
-    // validates both tokens.
-    this.owner = opts.card.owner ?? DEV_OWNER;
-    this.actor = opts.card.actor ?? this.connId;
+    // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
+    if (opts.bearer) {
+      if (opts.creds || opts.token || opts.user || opts.pass)
+        throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
+      if (!opts.sentinelCreds)
+        throw new Error("user-mode bearer requires sentinelCreds (the shared auth-account creds presented alongside it)");
+    }
+    if (opts.bearer) {
+      // USER MODE. The owner+actor PRINCIPAL comes from the bearer (server-authored: owner is callout-
+      // derived, actor is the spawn-ledger actor) — never from the card. The connection nkey is minted
+      // per-connect by NATS and is unknown to the client pre-connect, so the client cannot key its inbox
+      // on it; instead it picks its OWN random inbox NONCE (the connId), passes it as the connect `name`,
+      // and the callout scopes `_INBOX_<connId>.>` on that. `card.id`, if given, must match the bearer.
+      const claims = decodeBearerPrincipal(opts.bearer);
+      if (opts.card.owner && opts.card.owner !== claims.owner)
+        throw new Error(`card.owner ${opts.card.owner} != bearer owner ${claims.owner}`);
+      if (opts.card.actor && opts.card.actor !== claims.actor)
+        throw new Error(`card.actor ${opts.card.actor} != bearer actor ${claims.actor}`);
+      this.owner = claims.owner;
+      this.actor = claims.actor;
+      this.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
+      this.bearer = opts.bearer;
+      this.sentinelCreds = opts.sentinelCreds;
+    } else {
+      // DEV / STATIC. Connection identity precedence: an explicit card.id, else the creds' identity, else
+      // a random (dash-free, valid-actor-token) id. When both an id and creds are given they MUST name the
+      // same nkey — else the connection would authenticate as one user while its grants name another. The
+      // owner+actor PRINCIPAL defaults to owner = DEV_OWNER ("local"), actor = the connection id.
+      const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
+      if (opts.card.id && credId && opts.card.id !== credId)
+        throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
+      this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
+      this.owner = opts.card.owner ?? DEV_OWNER;
+      this.actor = opts.card.actor ?? this.connId;
+    }
+    // `card.id` is the principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries;
+    // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
     this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
     this.servers = opts.servers ?? DEFAULT_SERVER;
@@ -384,7 +419,9 @@ export class CotalEndpoint extends EventEmitter {
     this.clearConnectionScoped();
     this.nc = await connect({
       servers: this.servers,
-      name: `cotal:${this.card.name}`,
+      // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
+      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
+      name: this.bearer ? this.connId : `cotal:${this.card.name}`,
       // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
       // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
       // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
@@ -393,7 +430,7 @@ export class CotalEndpoint extends EventEmitter {
       // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
       // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
       inboxPrefix: `_INBOX_${this.connId}`,
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.creds, tls: this.tls }),
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.creds, bearer: this.bearer, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     this.watchStatus();
     this.js = jetstream(this.nc);
@@ -2671,11 +2708,26 @@ interface AuthOpts {
   user?: string;
   pass?: string;
   creds?: string;
+  bearer?: string;
+  sentinelCreds?: string;
   tls?: boolean;
 }
 
 function authOpts(a: AuthOpts) {
   const tls = a.tls ? {} : undefined;
+  // USER MODE: present the shared auth-account sentinel creds AND the user bearer as `auth_token` (an
+  // authenticator ARRAY — nats.js merges them into one CONNECT). The connect lands in the callout
+  // account, which validates the bearer and re-binds the client into the data account with a scoped JWT.
+  if (a.bearer) {
+    if (a.creds || a.token || a.user || a.pass)
+      throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
+    if (!a.sentinelCreds)
+      throw new Error("user-mode bearer requires sentinelCreds");
+    return {
+      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      tls,
+    };
+  }
   // creds (JWT/nkey) are mutually exclusive with token/user/pass — reject rather than
   // silently pick one, so a misconfigured caller fails loud.
   if (a.creds) {
@@ -2684,6 +2736,26 @@ function authOpts(a: AuthOpts) {
     return { authenticator: credsAuthenticator(new TextEncoder().encode(a.creds)), tls };
   }
   return { token: a.token, user: a.user, pass: a.pass, tls };
+}
+
+/** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
+ *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the
+ *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
+ *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
+ *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
+function decodeBearerPrincipal(bearer: string): { owner: string; actor: string } {
+  const payload = bearer.split(".")[1];
+  if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
+  let claims: { sub?: unknown; act?: { actor?: unknown } };
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("user-mode bearer payload is not valid base64url JSON");
+  }
+  const owner = claims.sub, actor = claims.act?.actor;
+  if (typeof owner !== "string" || typeof actor !== "string")
+    throw new Error("user-mode bearer is missing a string sub (owner) / act.actor claim");
+  return { owner, actor };
 }
 
 /** Turn a raw async-status error into one whose message says *why* — a permission
