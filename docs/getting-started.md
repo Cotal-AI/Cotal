@@ -131,6 +131,14 @@ CI job can check the result. It launches nothing. `cotal up --detach` then bring
 delivery daemon, and the background **manager**, so an agent can use the `cotal_*` tools —
 spawn/despawn/persona — right away. `cotal down` stops the background processes.
 
+## Extending the CLI
+
+Installed packages can add their own commands: `cotal ext add <npm-package>` installs it into a
+cotal-owned prefix (never your project) and its commands appear in `cotal --help` and shell
+completion like any built-in. `cotal ext list` shows what's installed; `cotal ext remove <name>`
+takes it out. See [architecture](architecture.md) for the guarantees (one shared registry, cached
+help surface, live parsing, loud failures).
+
 ## Troubleshooting
 
 - The full log is at `.cotal/setup.log` (and `.cotal/nats.log` for the server).

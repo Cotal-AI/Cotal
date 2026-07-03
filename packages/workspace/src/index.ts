@@ -1,5 +1,6 @@
 export * from "./auth-paths.js";
 export * from "./bin-path.js";
+export * from "./extensions.js";
 export * from "./flags.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";

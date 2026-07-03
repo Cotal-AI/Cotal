@@ -32,6 +32,8 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
 // rides the MANAGER side of the control plane, not the removed CLI verb.
 registry.register({ ...claudeConnector, name: "cotal" });
 
-// Bare `cotal` prints help; explicit `cotal setup` runs guided setup.
+// Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
+// the ONE composition root that loads operator-installed extensions (`cotal ext add …`) —
+// library roots keep the explicit-import model.
 const argv = process.argv.slice(2);
-await runCli(registry, argv);
+await runCli(registry, argv, { extensions: true });

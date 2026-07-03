@@ -2,12 +2,12 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  registry,
   type Command,
   type CompletionItem,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
+import { commandSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 
 /**
@@ -43,11 +43,10 @@ function emit(items: CompletionItem[], directive: NonNullable<CompletionResult["
  *  empty) word being completed, arrive as `args.positionals` verbatim. */
 export async function complete(args: ParsedArgs): Promise<void> {
   const argv = args.positionals;
-  // Mirror help()'s visibility: drop `__`-internal and `hidden` commands (e.g. `demo`) so the
-  // completion surface matches the listed one.
-  const commands = registry
-    .all<Command>("command")
-    .filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
+  // Mirror help()'s visibility: the SAME surface runCli resolved (registered commands plus
+  // extension stubs when the root opted in), minus `__`-internal and `hidden` ones. Extension
+  // candidates come from the manifest CACHE — a <TAB> never imports an extension.
+  const commands = commandSurface().filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
   // Word 0 (the command name itself): offer the command names.
   if (argv.length <= 1) {
     emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");

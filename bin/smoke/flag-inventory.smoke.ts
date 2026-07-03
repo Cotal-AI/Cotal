@@ -67,6 +67,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: [], positionals: true },
+  ext: { flags: [], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
     flags: ["allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string", "signer:boolean"],

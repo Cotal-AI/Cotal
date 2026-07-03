@@ -19,6 +19,7 @@ import { channels } from "./commands/channels.js";
 import { history } from "./commands/history.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
+import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
@@ -37,6 +38,15 @@ const baseCommands: Command[] = [
     summary: "guided setup (configure-only: installs + seeds, launches nothing) — --yes non-interactive, --full to redo",
     flags: setupFlags,
     run: setup,
+  },
+  {
+    kind: "command",
+    name: "ext",
+    group: "Setup",
+    summary: "operator-installed CLI extensions — add an npm package's commands to this CLI",
+    usage: "ext <add <npm-package> | remove <name> | list>",
+    positionals: "<add <npm-package> | remove <name> | list>",
+    run: ext,
   },
   {
     kind: "command",

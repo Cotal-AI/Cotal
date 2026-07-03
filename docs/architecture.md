@@ -170,6 +170,23 @@ Implementations stay self-contained and never import each other: the `cli` drive
 purely over the mesh (`start`/`stop`/`ps` control requests), so neither imports the other. Only
 the example wires them together.
 
+**Operator-installed CLI extensions (`cotal ext`).** The published binary is one composition
+root among many — and the only one that also loads extensions the *operator* installed:
+`cotal ext add <npm-package>` installs into a cotal-owned prefix
+(`$XDG_CONFIG_HOME/cotal/extensions/`, never your project), imports the package once so it
+self-registers into the same `Registry` every built-in uses, verifies the registration actually
+landed, and caches the contributed command metadata into a manifest. From then on `--help` and
+shell completion read the **cache** (a `<TAB>` never imports an extension); *running* one of its
+commands imports the package lazily and parses with its **live** specs — the cache is a display
+surface, never the parse authority. The pinned `name@version` is verified before every import
+(skew → a loud error prescribing re-add), extensions must declare `@cotal-ai/core` as a
+**peerDependency** (the prefix's copy is linked to the binary's, so there is exactly one
+registry singleton), and a name collision — with a built-in or with another installed
+extension — fails the add; built-ins always win. Moving or reinstalling the binary (e.g. a Node
+version switch) can strand the prefix's core link: every such path fails **loud** at dispatch
+with a `cotal ext add` re-add prescription, never a silently missing command.
+Library composition roots (examples) are unaffected: explicit imports stay the model there.
+
 ## Integration surfaces (Claude Code + OpenCode)
 
 Each target agent exposes the same four surfaces. The adapters share one runtime

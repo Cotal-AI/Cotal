@@ -1,5 +1,6 @@
 import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
 import { c } from "./ui.js";
+import { isExtensionStub, materializeExtensionCommand, overlayExtensions, setCommandSurface } from "./ext-loader.js";
 
 function help(commands: Command[]): void {
   // `__`-prefixed commands are internal (e.g. `__complete`, the completion dispatcher); `hidden`
@@ -41,28 +42,57 @@ function isArgError(e: unknown): boolean {
   return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS");
 }
 
+/** Options a composition root passes to {@link runCli}. */
+export interface RunCliOptions {
+  /** Load operator-installed extensions (`cotal ext add …`) into the surface: help/completion see
+   *  manifest-cached stubs (no import), dispatch imports the owning package lazily with LIVE
+   *  specs. OFF by default — library composition roots keep the explicit-import model; only the
+   *  published binary opts in. */
+  extensions?: boolean;
+}
+
 /** Dispatch `argv` against the commands self-registered in a {@link Registry}.
  *  The single entry point a composition root calls — no hardcoded command list.
  *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
-export async function runCli(registry: Registry, argv: string[]): Promise<void> {
-  const commands = registry.all<Command>("command");
+export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  let commands: Command[];
+  try {
+    commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
+  } catch (e) {
+    // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
+    // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
   const [name, ...rest] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help") {
     help(commands);
     return;
   }
-  const cmd = commands.find((c) => c.name === name);
+  let cmd = commands.find((c) => c.name === name);
   if (!cmd) {
     console.error(c.red(`unknown command: ${name}`));
     help(commands);
     process.exit(1);
   }
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
-  // rawArgs commands (feedback) — only `__`-internal ones are exempt, because __complete's argv
-  // is ANOTHER command's half-typed line, where `--help` is a word being completed, not a request.
+  // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
+  // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
+  // line, where `--help` is a word being completed, not a request.
   if (!cmd.name.startsWith("__") && (rest.includes("--help") || rest.includes("-h"))) {
     commandHelp(cmd);
     return;
+  }
+  // An extension stub materializes before parsing: verify the version pin, import the package
+  // (self-registers), and parse with the LIVE specs — the cache never drives run's input.
+  if (isExtensionStub(cmd)) {
+    try {
+      cmd = await materializeExtensionCommand(cmd);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
   }
   try {
     await cmd.run(parseCommandArgs(cmd, rest));
