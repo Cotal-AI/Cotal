@@ -6,6 +6,9 @@
  * (@cotal-ai/manager). The root just picks which surfaces to pull in; `runCli` resolves
  * whatever registered. A new surface (another connector, a control client …) is one more import line.
  */
+// NOTE: registration order across these imports is NOT guaranteed (tsx's entry interop can
+// evaluate the smaller daemon graphs first) — display order is a non-goal here; `help` ranks
+// its groups explicitly (GROUP_ORDER in @cotal-ai/cli).
 import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
 import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
