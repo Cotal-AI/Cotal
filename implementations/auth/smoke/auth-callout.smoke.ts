@@ -6,7 +6,9 @@
  * creds, and proves the full bridge against live broker behavior:
  *
  *   A. a VALID bearer (sentinel creds + auth_token) connects, lands in the DATA account with the
- *      minted scoped permissions (allowed pub/sub round-trips; forbidden pub is a violation);
+ *      minted scoped permissions (allowed pub/sub round-trips; forbidden pub is a violation), and
+ *      the minted user JWT's expiry is BOUND to the bearer's (decoded end-to-end — the revocation
+ *      lever, so a regression that dropped `exp` from the mint fails loud here);
  *   B. the deny matrix holds AT CONNECT: expired bearer / stale `ver` / rogue-signed bearer /
  *      missing bearer / ledger-denied actor — all refused by the broker;
  *   C. the sentinel alone is powerless (deny-all).
@@ -26,8 +28,8 @@ import {
   tokenAuthenticator,
   type NatsConnection,
 } from "@nats-io/transport-node";
-import { SignJWT, generateKeyPair } from "jose";
-import { encodeUser, fmtCreds } from "@nats-io/jwt";
+import { SignJWT, decodeJwt, generateKeyPair } from "jose";
+import { decode, encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { createSpaceAuth, isReachable, newIdentity, serverConfig } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
@@ -101,6 +103,11 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
 
   // ---- start the callout service on its own creds (auth account) ----
+  // Capture the most recent mint so we can prove the minted user JWT's expiry is BOUND to the
+  // bearer's — the v1 revocation lever. Without this, a future edit that dropped `exp` from the
+  // mint would pass every connect-time check (connect succeeds either way) yet silently disable
+  // revocation. Decoding the JWT here is deterministic (no disconnect-timing flake).
+  let minted: { jwt: string; principal: string; exp: number } | undefined;
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
   startAuthCallout(calloutNc as never, {
     xkeySeed: callout.xkey.seed,
@@ -115,6 +122,7 @@ try {
       pub: { allow: ["smoke.allowed"] },
       sub: { allow: ["smoke.allowed", "_INBOX.>"] },
     }),
+    onMint: (info) => { minted = info; },
     log: () => {},
   });
 
@@ -131,13 +139,24 @@ try {
   const witnessSub = witnessNc.subscribe("smoke.allowed", { max: 1 });
 
   // A. valid bearer connects and carries the minted scoped permissions
-  const good = await tryConnect(await bearer());
+  const goodBearer = await bearer();
+  const good = await tryConnect(goodBearer);
   check("valid bearer connects via callout", !!good.nc, good.err);
   if (good.nc) {
     good.nc.publish("smoke.allowed", enc("hi"));
     let got = false;
     for await (const m of witnessSub) got = new TextDecoder().decode(m.data) === "hi";
     check("callout client is REBOUND into the data account (reaches a known data-account witness)", got);
+
+    // Revocation lever: the minted user JWT's exp must equal the bearer's exp end-to-end
+    // (bearer.exp → callout's bound exp → the JWT the broker enforces disconnect on).
+    const bearerExp = decodeJwt(goodBearer).exp;
+    const mintedJwtExp = minted ? (decode(minted.jwt) as { exp?: number }).exp : undefined;
+    check(
+      "minted user JWT exp is bound to the bearer exp (revocation lever, decoded end-to-end)",
+      !!minted && typeof mintedJwtExp === "number" && mintedJwtExp === bearerExp && minted.exp === bearerExp,
+      { bearerExp, mintedJwtExp, boundExp: minted?.exp },
+    );
 
     let violation = false;
     const errWatch = (async () => {

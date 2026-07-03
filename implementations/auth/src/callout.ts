@@ -140,14 +140,23 @@ export interface StartAuthCalloutOpts {
   /** The spawn-ledger hook: THROW to deny. Client-supplied actor claims are only as good as this
    *  server-side check — the flip wires the manager's authenticated spawn ledger in here. */
   authorizeActor: (t: ValidatedUserToken) => void | Promise<void>;
-  /** Optional allow-list of trusted nats-server ids (`server_id.id`). When set, a request whose
-   *  server id is not listed is dropped (no response) — the tightest request-provenance pin. When
-   *  omitted, provenance still requires `iss === server_id.id` and a server-prefixed (`N…`) issuer. */
+  /** Allow-list of trusted nats-server ids (`server_id.id`) — the tightest request-provenance pin:
+   *  a request whose server id is not listed is dropped (no response). STRONGLY RECOMMENDED for any
+   *  hardened / multi-server deploy. When omitted, the ONLY barrier left is NATS $SYS system-subject
+   *  isolation (no in-account user can publish `$SYS.REQ.USER.AUTH`, and the callout user is even
+   *  explicitly pub-denied it) — the app-layer `iss === server_id.id` + `N…`-prefix check is NOT
+   *  independently sufficient, since an attacker who could reach the subject could present their own
+   *  `createServer()` key and matching sealing xkey. That isolation holds single-broker, so omitting
+   *  the list is safe today; startup logs a WARNING so the over-trust is never silent. */
   expectedServerIds?: string[];
   /** Permission builder for a validated principal (the flip feeds core's `permissionsFor`). */
   permissionsFor: (t: ValidatedUserToken) => Record<string, unknown>;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. */
   log?: (line: string) => void;
+  /** Audit hook fired on each successful mint, BEFORE the response is sent — the minted user JWT
+   *  plus its principal and bound expiry. For metering/audit and for asserting the revocation lever
+   *  (the mint's `exp` is bound to the bearer's, so broker access dies with the bearer). */
+  onMint?: (info: { jwt: string; principal: string; exp: number }) => void;
 }
 
 /** Serve the auth callout on an existing (auth-account) connection. Resolves setup synchronously —
@@ -161,6 +170,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const log = opts.log ?? ((l: string) => console.error(l));
   const enc = (s: string) => new TextEncoder().encode(s);
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+  if (!opts.expectedServerIds?.length)
+    log("auth callout: WARNING — no expectedServerIds allow-list set; request provenance rests on $SYS system-subject isolation alone (safe single-broker, but set expectedServerIds for hardened/multi-server deploys)");
 
   const sub = nc.subscribe(AUTH_CALLOUT_SUBJECT, { queue: "cotal-auth-callout" });
 
@@ -245,6 +256,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           { ...perms, tags: [`owner:${validated.owner}`, `actor:${validated.act.actor}`, `principal:${key}`] },
           { signer: userSigner, exp: validated.exp }, // NATS access dies with the bearer
         );
+        opts.onMint?.({ jwt: userJwt, principal: key, exp: validated.exp });
         await respond({ jwt: userJwt });
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

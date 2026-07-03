@@ -106,7 +106,8 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   if (payload.ver !== USER_TOKEN_VER)
     throw new Error(`user token: ver ${String(payload.ver)} != ${USER_TOKEN_VER} — stale or unknown token shape (downgrade defense)`);
 
-  const owner = assertDerivedOwnerToken(String(payload.sub ?? ""));
+  if (typeof payload.sub !== "string") throw new Error("user token: sub must be a string token — no coercion at a trust boundary");
+  const owner = assertDerivedOwnerToken(payload.sub);
 
   const act = payload.act as UserTokenActor | undefined;
   if (!act || typeof act !== "object") throw new Error("user token: act claim is required (server-authored owner/actor)");
