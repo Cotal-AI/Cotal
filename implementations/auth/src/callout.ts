@@ -92,12 +92,15 @@ export async function createCalloutAuth(auth: SpaceAuth): Promise<CalloutAuth> {
 
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
   const signer = askp;
-  // The callout user: subscribe ONLY the callout subject; publish free within the quarantine
-  // account (its replies go to server-chosen inboxes). The sentinel: deny-all both ways — it
-  // exists only so a connect can carry a bearer; any capability here would be pre-auth surface.
+  // The callout user: subscribe ONLY the callout subject; publish everywhere it might need to send
+  // a reply (server-chosen inbox) EXCEPT the callout subject itself — denying pub on
+  // $SYS.REQ.USER.AUTH means even a leaked callout cred cannot inject a forged auth request into
+  // its own service (defense-in-depth behind the iss/server-id provenance check in the handler).
+  // The sentinel: deny-all both ways — it exists only so a connect can carry a bearer; any
+  // capability here would be pre-auth surface.
   const calloutJwt = await encodeUser("callout", fromPublic(callout.id), fromPublic(akp.getPublicKey()), {
     sub: { allow: [AUTH_CALLOUT_SUBJECT] },
-    pub: { allow: [">"] },
+    pub: { allow: [">"], deny: [AUTH_CALLOUT_SUBJECT] },
   }, { signer });
   const sentinelJwt = await encodeUser("sentinel", fromPublic(sentinel.id), fromPublic(akp.getPublicKey()), {
     sub: { deny: [">"] },
@@ -137,6 +140,10 @@ export interface StartAuthCalloutOpts {
   /** The spawn-ledger hook: THROW to deny. Client-supplied actor claims are only as good as this
    *  server-side check — the flip wires the manager's authenticated spawn ledger in here. */
   authorizeActor: (t: ValidatedUserToken) => void | Promise<void>;
+  /** Optional allow-list of trusted nats-server ids (`server_id.id`). When set, a request whose
+   *  server id is not listed is dropped (no response) — the tightest request-provenance pin. When
+   *  omitted, provenance still requires `iss === server_id.id` and a server-prefixed (`N…`) issuer. */
+  expectedServerIds?: string[];
   /** Permission builder for a validated principal (the flip feeds core's `permissionsFor`). */
   permissionsFor: (t: ValidatedUserToken) => Record<string, unknown>;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. */
@@ -179,6 +186,21 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         log("auth callout: dropped a request without user_nkey/server_id");
         continue;
       }
+      // Request provenance — prove nats-server sent this, not an in-account publisher. `decode()`
+      // verified the signature against the embedded `iss`, but that alone accepts ANY self-signed
+      // JWT; without pinning, a holder of callout creds could publish a sealed forged request to a
+      // reply subject it controls and be minted a data-account JWT. So: the issuer must be the
+      // request's own server id AND a server-prefixed (`N…`) nkey, and — when configured — one of
+      // the trusted server ids.
+      const issuer = (claims as { iss?: string }).iss;
+      if (issuer !== req.server_id.id || !req.server_id.id.startsWith("N")) {
+        log("auth callout: dropped a request whose issuer is not its own server identity (forgery guard)");
+        continue;
+      }
+      if (opts.expectedServerIds && !opts.expectedServerIds.includes(req.server_id.id)) {
+        log(`auth callout: dropped a request from an untrusted server id ${req.server_id.id}`);
+        continue;
+      }
       if (req.server_id.xkey !== serverXkey) {
         // The signed payload must vouch for the key that sealed it — otherwise a relay could
         // re-seal someone else's request under its own key.
@@ -208,11 +230,19 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         });
         await opts.authorizeActor(validated);
         const perms = opts.permissionsFor(validated);
+        // Stamp the principal into the minted JWT so the live identity is recoverable server-side:
+        // the connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the
+        // principal, so the membership feed (which keys CONNZ entries on the connection identity)
+        // needs owner+actor carried here. `tags` are the queryable, standard place; the JWT `name`
+        // is the principal dot-form for logs. NOTE: the feed-side re-key onto these — and the CONNZ
+        // proof of exactly which field surfaces — is the flip's membership-feed migration
+        // (Increment D), not wired here; this mint is the producing half.
+        const { key, name } = principalKey(validated.owner, validated.act.actor);
         const userJwt = await encodeUser(
-          principalKey(validated.owner, validated.act.actor).key,
+          name,
           fromPublic(req.user_nkey),
           fromPublic(opts.dataAccount.pub),
-          perms,
+          { ...perms, tags: [`owner:${validated.owner}`, `actor:${validated.act.actor}`, `principal:${key}`] },
           { signer: userSigner, exp: validated.exp }, // NATS access dies with the bearer
         );
         await respond({ jwt: userJwt });

@@ -27,7 +27,9 @@ import {
   type NatsConnection,
 } from "@nats-io/transport-node";
 import { SignJWT, generateKeyPair } from "jose";
-import { createSpaceAuth, isReachable, serverConfig } from "@cotal-ai/core";
+import { encodeUser, fmtCreds } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
+import { createSpaceAuth, isReachable, newIdentity, serverConfig } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -116,15 +118,26 @@ try {
     log: () => {},
   });
 
+  // A DATA-account witness: a known connection minted directly against the data account's signing
+  // key (NOT via the callout). If the callout client can exchange with it on smoke.allowed, the
+  // callout REBOUND the client into the data account — a self round-trip alone couldn't prove that.
+  const witnessId = newIdentity();
+  const witnessJwt = await encodeUser("witness", fromPublic(witnessId.id), fromPublic(auth.account.pub), {
+    pub: { allow: ["smoke.witness"] },
+    sub: { allow: ["smoke.allowed", "_INBOX.>"] },
+  }, { signer: fromSeed(enc(auth.account.signingSeed)) });
+  const witnessNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(fmtCreds(witnessJwt, fromSeed(enc(witnessId.seed)))) });
+  conns.push(witnessNc);
+  const witnessSub = witnessNc.subscribe("smoke.allowed", { max: 1 });
+
   // A. valid bearer connects and carries the minted scoped permissions
   const good = await tryConnect(await bearer());
   check("valid bearer connects via callout", !!good.nc, good.err);
   if (good.nc) {
-    const sub = good.nc.subscribe("smoke.allowed", { max: 1 });
     good.nc.publish("smoke.allowed", enc("hi"));
     let got = false;
-    for await (const m of sub) got = new TextDecoder().decode(m.data) === "hi";
-    check("minted permissions allow the granted subject (pub+sub round-trip)", got);
+    for await (const m of witnessSub) got = new TextDecoder().decode(m.data) === "hi";
+    check("callout client is REBOUND into the data account (reaches a known data-account witness)", got);
 
     let violation = false;
     const errWatch = (async () => {
