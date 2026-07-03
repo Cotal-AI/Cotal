@@ -49,6 +49,12 @@ const invalid = [
 ];
 for (const t of invalid) check(`rejects ${JSON.stringify(t)}`, throws(() => assertValidOwnerToken(t)));
 
+// Non-string input must throw, not coerce: RegExp.test() stringifies, so without the typeof guard
+// assertValidOwnerToken(123) would pass and return a NUMBER through a trust boundary.
+const nonStrings: unknown[] = [123, null, undefined, ["a"], { a: 1 }, true];
+for (const t of nonStrings)
+  check(`rejects non-string ${JSON.stringify(t) ?? String(t)}`, throws(() => assertValidOwnerToken(t as string)));
+
 // ---- principalKey: the two forms ----
 const p = principalKey("alice", "agent_1");
 check(`dot-form is "alice.agent_1"`, p.key === "alice.agent_1");

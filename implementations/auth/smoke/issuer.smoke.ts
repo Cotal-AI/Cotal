@@ -101,6 +101,22 @@ await rejects("a raw nkey owner is refused at mint",
 await rejects("a dotted actor is refused at mint", () => issuer.issue({ owner, space: SPACE, actor: "a.b" }));
 await rejects("a non-principal parent is refused at mint", () => issuer.issue({ owner, space: SPACE, actor: "agent_1", parent: "nope" }), "principal");
 await rejects("a missing space is refused at mint", () => issuer.issue({ owner, space: "", actor: "agent_1" }), "space");
+// Untyped-caller matrix: TS types don't guard a JSON/IdP boundary — every mis-shaped claim must
+// fail at MINT, never sign a bearer the validator would reject (the inverse holds at runtime).
+await rejects("a non-string actor is refused at mint (RegExp.test coercion closed)",
+  () => issuer.issue({ owner, space: SPACE, actor: 123 as unknown as string }));
+await rejects("a non-string owner is refused at mint",
+  () => issuer.issue({ owner: 123 as unknown as string, space: SPACE, actor: "agent_1" }));
+await rejects("a scope with a non-string entry is refused at mint",
+  () => issuer.issue({ owner, space: SPACE, actor: "agent_1", scope: ["ok", 123] as unknown as string[] }), "scope");
+await rejects("a non-array scope is refused at mint",
+  () => issuer.issue({ owner, space: SPACE, actor: "agent_1", scope: "chat" as unknown as string[] }), "scope");
+await rejects("a non-string parent is refused at mint",
+  () => issuer.issue({ owner, space: SPACE, actor: "agent_1", parent: 123 as unknown as string }), "parent");
+await rejects("a non-numeric ttl is refused at mint",
+  () => issuer.issue({ owner, space: SPACE, actor: "agent_1", ttlSec: "5" as unknown as number }), "range");
+await rejects("a non-string space is refused at mint",
+  () => issuer.issue({ owner, space: 123 as unknown as string, actor: "agent_1" }), "space");
 check("issued owner is a well-formed derived token", assertDerivedOwnerToken(v1.owner) === v1.owner);
 
 // ---- pinned JWKS resolver origin guard ----

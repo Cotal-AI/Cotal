@@ -133,7 +133,9 @@ export function assertValidChannel(channel: string): string {
  *  {@link token}/`routeToken` here: they silently rewrite illegal characters, and a rewrite hides an
  *  aliasing attempt. Returns the token unchanged when valid so callers can use it inline. */
 export function assertValidOwnerToken(owner: string): string {
-  if (!/^[A-Za-z0-9_]+$/.test(owner))
+  // typeof guard is load-bearing at JS/JSON boundaries: RegExp.test() coerces its argument, so
+  // without it a number like 123 stringifies, matches, and is returned UN-coerced.
+  if (typeof owner !== "string" || !/^[A-Za-z0-9_]+$/.test(owner))
     throw new Error(
       `invalid owner/actor token "${owner}": must be a single NATS-safe token ([A-Za-z0-9_]) — ` +
         `no dots, '*', '>', or '-'. A separator or wildcard in an id is lane breakout or aliasing, ` +
@@ -178,7 +180,7 @@ export const DERIVED_OWNER_PREFIX = "u_";
  *  Defined ahead of use: enforced at the callout/mint boundary when the cutover lands. Returns the
  *  token unchanged when valid so callers can use it inline. */
 export function assertDerivedOwnerToken(owner: string): string {
-  if (!/^u_[a-z2-7]{26}$/.test(owner))
+  if (typeof owner !== "string" || !/^u_[a-z2-7]{26}$/.test(owner))
     throw new Error(
       `invalid derived owner token "${owner}": expected "${DERIVED_OWNER_PREFIX}" + 26 lowercase ` +
         `base32 chars ([a-z2-7]). Owner tokens are derived server-side at the auth callout and are ` +

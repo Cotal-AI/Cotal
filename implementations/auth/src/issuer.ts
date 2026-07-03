@@ -129,17 +129,25 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
   let active = opts.key.kid;
 
   const issue = async (claims: IssueClaims): Promise<string> => {
+    // Every claim is RUNTIME-shape-checked, not just TS-typed: C2 feeds this from IdP/session JSON,
+    // and a mis-shaped claim must fail HERE — signing it would mint a dead bearer the validator
+    // rejects, silently breaking the issuer ↔ validator inverse.
     assertDerivedOwnerToken(claims.owner);
     assertValidOwnerToken(claims.actor);
-    if (!claims.space) throw new Error("issue: space (aud) is required");
+    if (typeof claims.space !== "string" || !claims.space)
+      throw new Error("issue: space (aud) must be a non-empty string");
+    if (claims.scope !== undefined && !(Array.isArray(claims.scope) && claims.scope.every((s) => typeof s === "string")))
+      throw new Error("issue: scope must be a string list when present");
     if (claims.parent !== undefined) {
+      if (typeof claims.parent !== "string")
+        throw new Error("issue: parent must be a string principal (<owner>.<actor>)");
       const parts = claims.parent.split(".");
       if (parts.length !== 2) throw new Error(`issue: parent "${claims.parent}" is not a principal (<owner>.<actor>)`);
       assertDerivedOwnerToken(parts[0]);
       assertValidOwnerToken(parts[1]);
     }
     const ttl = claims.ttlSec ?? MAX_TOKEN_TTL_SEC;
-    if (!(ttl > 0) || ttl > MAX_TOKEN_TTL_SEC)
+    if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > MAX_TOKEN_TTL_SEC)
       throw new Error(`issue: ttlSec ${ttl} out of range (0, ${MAX_TOKEN_TTL_SEC}] — the cap is the revocation lever`);
     const signer = keys.get(active);
     if (!signer) throw new Error("issue: no active signing key");
