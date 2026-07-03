@@ -27,6 +27,7 @@ import {
   setupSpaceStreams,
   controlServiceSubject,
   CONTROL_DELIVERY,
+  DEV_OWNER,
 } from "../src/index.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -85,14 +86,14 @@ try {
   // Victim listens on its OWN reply subtree.
   const vnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(vCreds)), inboxPrefix: `_INBOX_${victim.id}`, maxReconnectAttempts: 0 });
   let victimGot = false;
-  const vsub = vnc.subscribe(`${controlServiceSubject(space, CONTROL_DELIVERY, victim.id)}.>`, { callback: (err, m) => { if (!err && m) victimGot = true; } });
+  const vsub = vnc.subscribe(`${controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, victim.id)}.>`, { callback: (err, m) => { if (!err && m) victimGot = true; } });
   await vnc.flush();
 
   // Attacker connects and publishes a request on its OWN allowed subject, but with a FORGED reply target
   // under the victim's reply subtree.
   const anc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(aCreds)), inboxPrefix: `_INBOX_${attacker.id}`, maxReconnectAttempts: 0 });
-  const attackerReq = controlServiceSubject(space, CONTROL_DELIVERY, attacker.id);
-  const forgedReply = `${controlServiceSubject(space, CONTROL_DELIVERY, victim.id)}.reply.${randomUUID()}`;
+  const attackerReq = controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, attacker.id);
+  const forgedReply = `${controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, victim.id)}.reply.${randomUUID()}`;
   const body = JSON.stringify({ op: "durableJoin", args: { channel: "general" }, from: { id: attacker.id, name: "attacker", kind: "agent" } });
   anc.publish(attackerReq, new TextEncoder().encode(body), { reply: forgedReply });
   await anc.flush();

@@ -24,6 +24,8 @@ import {
   newIdentity,
   setupSpaceStreams,
   membersBucket,
+  principalKey,
+  DEV_OWNER,
 } from "../src/index.js";
 import type { Identity } from "../src/index.js";
 
@@ -121,7 +123,8 @@ try {
   // Host Plane-3 so provisionAgent's boot membership write (durable-class boot channels → durable-active
   // records) lands — channelMembers reads that registry.
   const agentId = newIdentity();
-  await dlv.startPlane3((id) => (id === agentId.id ? ["general"] : undefined));
+  // Plane-3's ACL resolver is keyed by the agent PRINCIPAL (dot-form `local.<nkey>`), not the raw nkey.
+  await dlv.startPlane3((id) => (id === principalKey(DEV_OWNER, agentId.id).key ? ["general"] : undefined));
 
   // An agent: provision its bind-only durables + boot membership, mint scoped creds, join #general.
   const agentCreds = await provisionAgent(mgr, auth, agentId, { subscribe: ["general"], allowPublish: ["general"], role: "worker" });
@@ -143,7 +146,7 @@ try {
   // (`dlv`, watchPresence:true) holds both grants; the provisioner cred (`mgr`) holds neither.
   const members = await dlv.channelMembers("general");
   check("manager channelMembers sees ag1 live", members.some((m) => m.name === "ag1" && m.live), members);
-  check("agent id is the real cred identity", members.some((m) => m.id === agentId.id));
+  check("agent id is the real cred identity (principal dot-form)", members.some((m) => m.id === principalKey(DEV_OWNER, agentId.id).key));
 
   console.log("\n[AUTH] the membership read is capability-gated (delivery-served; others can't enumerate)");
   // The privileged membership read now rides the members-KV grant (channelMembers → the members
