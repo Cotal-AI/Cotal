@@ -192,6 +192,15 @@ saveIdpSession(dir, `${base}/`, session); // trailing slash — must land on the
   writeFileSync(f, JSON.stringify(bumped));
   await rejects("an unknown cache version refuses to guess (no silent migration)", () => loadIdpSession(verDir, base), "version");
 }
+{
+  // A torn write / hand-edit must reach the no-fallback gate as a legible sentence, never jose/JSON raw.
+  const badDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-bad-"));
+  saveIdpSession(badDir, base, session);
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(badDir, "idp-sessions.json"), "{ this is not json");
+  await rejects("a corrupt (non-JSON) cache is a legible throw, not a raw SyntaxError",
+    () => requireIdpSession(badDir, base), "not valid JSON");
+}
 await rejects("a non-loopback http IdP url is refused", () => normalizeIdpUrl("http://auth.example.com/api/auth"), "https");
 await rejects("a garbage IdP url is refused", () => normalizeIdpUrl("not a url"), "not a valid URL");
 check("bracketed IPv6 loopback http is accepted (WHATWG hostname is \"[::1]\")",
@@ -200,6 +209,8 @@ await rejects("a query on the IdP url is refused, not silently dropped",
   () => normalizeIdpUrl("http://127.0.0.1/api/auth?tenant=a"), "query or fragment");
 await rejects("a fragment on the IdP url is refused, not silently dropped",
   () => normalizeIdpUrl("http://127.0.0.1/api/auth#frag"), "query or fragment");
+await rejects("an IdP url with embedded credentials (@-confusion host spoof) is refused",
+  () => normalizeIdpUrl("https://real-idp.example@evil.example/api/auth"), "embed credentials");
 
 // ---- the reject matrix ----
 console.log("C) denies, expiry, revocation");
@@ -275,7 +286,42 @@ console.log("D) hostile-IdP responses");
   await rejects("establishIdpSession: a session that can't mint a JWT fails the login legibly",
     () => establishIdpSession({ dir: dudDir, idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "run `cotal login");
   check("… and leaves NO cache entry behind (prove-then-save)", loadIdpSession(dudDir, fakeBase) === undefined);
+
+  // A JWT handed back as the device access token breaks the revocation model — refuse it (DiD).
+  const jwtish = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+  script = {
+    "/api/auth/device/code": { status: 200, body: grantBody({}) },
+    "/api/auth/device/token": { status: 200, body: { access_token: jwtish, expires_in: 3600 } },
+  };
+  await rejects("a JWT returned as the device access token is refused (revocation-model DiD)",
+    () => deviceLogin({ idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "opaque revocable handle");
+
+  // /token 200 with a non-JWT body must be a legible refusal, not jose's raw "Invalid JWT".
+  const garbageDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-garbage-"));
+  script = {
+    "/api/auth/device/code": { status: 200, body: grantBody({}) },
+    "/api/auth/device/token": { status: 200, body: { access_token: "opaque-session", expires_in: 3600 } },
+    "/api/auth/token": { status: 200, body: { token: "not-a-jwt" } },
+  };
+  await rejects("a /token value that isn't a JWT is refused legibly (not a raw jose error)",
+    () => establishIdpSession({ dir: garbageDir, idpUrl: fakeBase, clientId: CLIENT_ID, onPrompt: () => {} }), "not a decodable JWT");
+  check("… and the garbage /token session leaves no cache entry", loadIdpSession(garbageDir, fakeBase) === undefined);
   fake.close();
+}
+
+// ---- a hung IdP: the per-request timeout is what makes "never a silent hang" true ----
+{
+  const hang = createServer(() => { /* accept the connection, never respond */ });
+  await new Promise<void>((r) => hang.listen(0, "127.0.0.1", r));
+  const hangBase = `http://127.0.0.1:${(hang.address() as AddressInfo).port}/api/auth`;
+  const prev = process.env.COTAL_IDP_TIMEOUT_MS;
+  process.env.COTAL_IDP_TIMEOUT_MS = "300";
+  await rejects("a hung IdP times out instead of stalling fetchIdpJwt forever (the non-interactive gate)",
+    () => fetchIdpJwt(hangBase, "sess"), "timed out");
+  if (prev === undefined) delete process.env.COTAL_IDP_TIMEOUT_MS;
+  else process.env.COTAL_IDP_TIMEOUT_MS = prev;
+  hang.closeAllConnections();
+  hang.close();
 }
 
 // ---- revocation: the whole point of caching the session, not the JWT ----

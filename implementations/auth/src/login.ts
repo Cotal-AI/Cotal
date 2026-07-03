@@ -20,7 +20,12 @@
  *
  * `idpUrl` throughout is the IdP's AUTH BASE URL — every endpoint resolves under it (Better
  * Auth: `<origin>/api/auth`). Same origin posture as the JWKS pin: https, or loopback http for
- * local dev.
+ * local dev; embedded `user:pass@` credentials are refused (the @-confusion host spoof).
+ *
+ * Every IdP request carries a hard per-request timeout ({@link idpFetch}) — Node's global fetch
+ * has none, and the poll deadline is only checked between polls, so a hung IdP would otherwise
+ * stall a login (or a non-interactive `requireIdpSession`→`fetchIdpJwt` on an agent connect)
+ * forever. Override the 30s default with `COTAL_IDP_TIMEOUT_MS` for a slow IdP.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -71,6 +76,11 @@ export function normalizeIdpUrl(idpUrl: string): string {
   // auth base is a different IdP than the operator asked for. Refuse instead.
   if (u.search !== "" || u.hash !== "")
     throw new Error(`idp url must not carry a query or fragment — got "${idpUrl}"`);
+  // Same class: `--idp https://real-idp.example@evil.example/api/auth` parses to host
+  // evil.example, so an operator who eyeballed "real-idp.example" would sign in against evil.
+  // The normalization below drops the userinfo silently — refuse it (don't echo the password).
+  if (u.username !== "" || u.password !== "")
+    throw new Error(`idp url must not embed credentials before the host — the host it would actually contact is "${u.host}"`);
   return u.origin + u.pathname.replace(/\/+$/, "");
 }
 
@@ -86,12 +96,49 @@ async function oauthError(res: Response): Promise<OAuthError> {
   }
 }
 
+/** Per-request timeout budget (ms). Default 30s; `COTAL_IDP_TIMEOUT_MS` overrides for a slow IdP
+ *  (or a test). A malformed override fails loud rather than silently reverting to the default. */
+function idpTimeoutMs(): number {
+  const raw = process.env.COTAL_IDP_TIMEOUT_MS;
+  if (raw === undefined) return 30_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0)
+    throw new Error(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds — got "${raw}"`);
+  return n;
+}
+
+/** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
+ *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
+ *  legible sentence rather than a raw DOMException/TypeError. */
+async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
+  const ms = idpTimeoutMs();
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "TimeoutError")
+      throw new Error(`idp request to ${url} timed out after ${ms}ms — the IdP is unreachable or not responding`);
+    throw new Error(`idp request to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
+ *  The revocation model depends on the cached token being revocable; a JWT stays valid until it
+ *  expires regardless of revocation, so one must never be cached as the session handle. */
+function looksLikeJwt(s: string): boolean {
+  try {
+    decodeJwt(s);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Sign in via the RFC 8628 device flow and return the IdP session. Fail-loud on every non-happy
  *  path: a deny, an expiry, or an unknown poll error is a thrown human sentence, never a retry
  *  loop. Blocks (polling at the server's stated interval) until the human approves. */
 export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   const base = normalizeIdpUrl(opts.idpUrl);
-  const res = await fetch(`${base}/device/code`, {
+  const res = await idpFetch(`${base}/device/code`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_id: opts.clientId }),
@@ -139,7 +186,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     await new Promise((r) => setTimeout(r, intervalSec * 1000));
     if (Date.now() > deadline)
       throw new Error(`idp login: the device code expired after ${grant.expires_in}s without approval — run \`cotal login\` again`);
-    const poll = await fetch(`${base}/device/token`, {
+    const poll = await idpFetch(`${base}/device/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -153,6 +200,12 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
       if (typeof tok.access_token !== "string" || !tok.access_token ||
           typeof tok.expires_in !== "number" || !Number.isFinite(tok.expires_in) || tok.expires_in <= 0)
         throw new Error(`idp login: ${base} returned a malformed token response`);
+      // Defense-in-depth for the revocation model: we cache the OPAQUE session handle precisely so
+      // that IdP revocation bites at the next /token fetch. A JWT outlives its session, so if a
+      // misconfigured IdP hands one back as the device token, refuse rather than silently cache a
+      // credential that can't be revoked.
+      if (looksLikeJwt(tok.access_token))
+        throw new Error(`idp login: ${base} returned a JWT as the device access token — the session token must be an opaque revocable handle, refusing to cache it`);
       return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
     }
     const e = await oauthError(poll);
@@ -175,7 +228,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
  *  how to recover. The JWT is returned, never stored. */
 export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise<string> {
   const base = normalizeIdpUrl(idpUrl);
-  const res = await fetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } });
+  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } });
   if (res.status === 401)
     throw new Error(
       `idp session: ${base} rejected the cached session (expired or revoked) — run \`cotal login --idp ${base}\` to sign in again`,
@@ -196,7 +249,14 @@ export async function establishIdpSession(
 ): Promise<{ session: IdpSession; sub: string }> {
   const session = await deviceLogin(opts);
   const jwt = await fetchIdpJwt(opts.idpUrl, session.token);
-  const sub = decodeJwt(jwt).sub;
+  let sub: unknown;
+  try {
+    sub = decodeJwt(jwt).sub;
+  } catch {
+    // fetchIdpJwt only guarantees a non-empty string; a hostile IdP returning /token 200 with a
+    // non-JWT body would otherwise surface jose's raw "Invalid JWT" here.
+    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} returned a /token value that is not a decodable JWT — refusing to cache the session`);
+  }
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub — refusing to cache the session`);
   saveIdpSession(opts.dir, opts.idpUrl, session);
@@ -208,7 +268,7 @@ export async function establishIdpSession(
  *  server-side session is a real leak the operator must hear about. */
 export async function revokeIdpSession(idpUrl: string, sessionToken: string): Promise<void> {
   const base = normalizeIdpUrl(idpUrl);
-  const res = await fetch(`${base}/sign-out`, {
+  const res = await idpFetch(`${base}/sign-out`, {
     method: "POST",
     headers: { authorization: `Bearer ${sessionToken}`, "content-type": "application/json" },
     body: "{}",
@@ -233,7 +293,16 @@ interface SessionsFile {
 function readSessionsFile(dir: string): SessionsFile {
   const f = join(dir, SESSIONS_FILE);
   if (!existsSync(f)) return { ver: SESSIONS_VER, sessions: {} };
-  const parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
+  // A torn write or a hand-edit must not reach requireIdpSession (the no-fallback gate) as a raw
+  // "SyntaxError: Unexpected token" — say what's wrong and how to recover, like everywhere else.
+  let parsed: SessionsFile;
+  try {
+    parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
+  } catch (e) {
+    throw new Error(`${f}: the session cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) — delete it and run \`cotal login\` again`);
+  }
+  if (parsed === null || typeof parsed !== "object")
+    throw new Error(`${f}: the session cache is not a JSON object — delete it and run \`cotal login\` again`);
   if (parsed.ver !== SESSIONS_VER)
     throw new Error(`${f}: unknown version ${String(parsed.ver)} (expected ${SESSIONS_VER}) — refusing to guess at a credential file`);
   if (parsed.sessions === null || typeof parsed.sessions !== "object" || Array.isArray(parsed.sessions))

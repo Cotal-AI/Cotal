@@ -79,11 +79,14 @@ async function runLogout(argv: string[]): Promise<void> {
     try {
       await revokeIdpSession(idp, session.token);
     } catch (e) {
-      // The local cache is cleared regardless — but a still-live server-side session is a real
-      // leak, so the failure is reported loudly, never swallowed.
-      deleteIdpSession(dir, idp);
-      console.error(`local session cleared, but: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
+      // KEEP the local session on a failed revoke: the cached token is the only handle that can
+      // retry the revoke from the CLI, and a still-live server-side session that can no longer be
+      // revoked is worse than a lingering local cache. Fail loud with the recourse; the operator
+      // re-runs `cotal logout`.
+      throw new Error(
+        `could not revoke the server-side session at ${idp} (${e instanceof Error ? e.message : String(e)}). ` +
+          `Your local login is kept so you can retry \`cotal logout --idp ${idp}\`; if it keeps failing, revoke the session from the IdP directly.`,
+      );
     }
     deleteIdpSession(dir, idp);
     console.log(`Logged out of ${idp} — server-side session revoked, local cache cleared.`);
