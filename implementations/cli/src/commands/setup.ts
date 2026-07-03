@@ -22,8 +22,9 @@ const CC_DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/claude-cod
 const NATS_RELEASES_URL = "https://github.com/nats-io/nats-server/releases";
 
 /** `cotal setup`'s grammar — configure-only knobs. The old `--auth`/`--open` flags configured the
- *  MESH MODE at setup-launch time; setup no longer launches anything, so they moved to their real
- *  home (`cotal up [--open]`) and are gone here (an unknown-option error names nothing silently). */
+ *  MESH MODE at setup-launch time; setup no longer launches anything, so both are gone here —
+ *  mesh mode is `cotal up [--open]`'s concern (where `--open` already lived; `--auth` simply died
+ *  with the launch behavior). An unknown-option error rejects them, nothing silently. */
 export const setupFlags = [
   { name: "full", type: "boolean", description: "redo the full guided flow" },
   { name: "yes", type: "boolean", short: "y", description: "non-interactive accept-all (agents/CI)" },
@@ -251,7 +252,7 @@ async function readyCard(cwd: string): Promise<void> {
       line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
       line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down — start: ${cmd} up --detach`)}`),
       line(web, `web      ${dim(web ? WEB_URL : `down — start: ${cmd} web`)}`),
-      line(mgr, `manager  ${dim(mgr ? "running" : `not running — spawns start it, or: ${cmd} supervise`)}`),
+      line(mgr, `manager  ${dim(mgr ? "running" : `not running — start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,
       `drive it:        ${dim(`${cmd} spawn me`)}   ${dim("(or david / sven)")}`,

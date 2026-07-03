@@ -30,8 +30,7 @@ function spaceFor(v: Values): string {
  *  request/reply commands, not daemon code. This package registers only the daemon runner. */
 // `--runtime` forces the manager runtime; honored only on the `supervise` path (default
 // pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
-// the cmux-tab manager. The session machinery launches it with `--runtime cmux --space <space>`
-// contiguous, which is what `cmuxManagerRunning` pgreps for.
+// the cmux-tab manager.
 const RUNTIME_OVERRIDES: readonly RuntimeMode[] = ["pty", "tmux", "cmux"];
 
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promise<void> {

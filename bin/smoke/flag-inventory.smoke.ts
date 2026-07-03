@@ -23,8 +23,8 @@ import "@cotal-ai/delivery"; // registers deliver
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
-  // Stage 2b: setup is configure-only — --auth/--open moved to their real home (`cotal up`);
-  // `go` (a pure alias of setup) is deleted outright.
+  // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
+  // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.
   setup: { flags: ["full:boolean", "yes:boolean:y"], positionals: false },
   up: {
     flags: [
