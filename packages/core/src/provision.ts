@@ -48,6 +48,7 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  aclKey,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -71,6 +72,7 @@ export type Profile =
   | "admin"
   | "supervisor"
   | "provisioner"
+  | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "operator"
   | "purger"
   | "delivery"
@@ -193,6 +195,12 @@ export interface MintOpts {
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
   shard?: number;
   shards?: number;
+  /** The departed agent's id whose id-keyed footprint a `deprovisioner` cred may tear down. REQUIRED
+   *  for that profile (it throws without one): the grants are pinned to exactly this target's `dm_<id>`
+   *  / `dlv_<id>` durables + ACL row, so a leaked deprovisioner cred can delete ONE dead agent's
+   *  footprint and nothing else — never a peer's, never the role-shared `svc_<role>`. Ignored by every
+   *  other profile. */
+  deprovisionTarget?: string;
 }
 
 /** Options for {@link provisionAgent} — {@link MintOpts} plus the active read set. */
@@ -307,6 +315,13 @@ function permissionsFor(
   if (profile === "membership-rw") return membershipRwPermissions(space, id); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, id); // always-on daemon (closure (ii) gate)
   if (profile === "provisioner") return provisionerPermissions(space, id); // ephemeral onboarding authority (closure (ii))
+  if (profile === "deprovisioner") {
+    // Ephemeral, TARGET-PINNED teardown (#159 B) — the counterpart to `provisioner`. It deletes exactly
+    // ONE departed agent's id-keyed footprint, so the target id is REQUIRED and baked into the grants.
+    if (!opts.deprovisionTarget)
+      throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget (the departed agent's id)");
+    return deprovisionerPermissions(space, id, opts.deprovisionTarget);
+  }
   if (profile === "purger") return purgerPermissions(space, id); // ephemeral history-purge (closure (ii))
   if (profile === "operator") return operatorPermissions(space, id); // human-CLI client (send/dm/ask) (closure (ii))
   if (profile === "probe") return probePermissions(id); // connect-only liveness/auth preflight (PR 1.5)
@@ -889,6 +904,47 @@ function provisionerPermissions(space: string, id: string): Record<string, unkno
     },
     // Replies only: every stream/consumer/KV-create PubAck and JS API response lands on the per-id inbox.
     // NO chat/inst/dlv/ctl subscription — the provisioner never serves control nor reads any feed.
+    sub: { allow: [`_INBOX_${id}.>`] },
+  };
+}
+
+/** The ephemeral, TARGET-PINNED DEPROVISIONER permission set (#159 Part B) — the teardown counterpart
+ *  to {@link provisionerPermissions}, minted per departed agent inside the manager's `deprovision` tail
+ *  (`withProvisioner`-style: a fresh scoped cred per teardown is cheap). It deletes exactly the id-keyed
+ *  footprint the provisioner created for ONE agent: that agent's two bind-only durables (`dm_<id>`,
+ *  `dlv_<id>`) and its read-ACL row — pinned BY NAME to the `target` id, so a leaked deprovisioner cred
+ *  can tear down that one (already-dead) agent and NOTHING else.
+ *
+ *  Deliberately NOT granted (least-privilege / correctness): the role-SHARED `svc_<role>` TASK durable
+ *  (one consumer for ALL agents of a role — deleting it on one agent's exit would break its siblings; it
+ *  lives until space teardown), any peer's `dm_`/`dlv_`/ACL (the grants are target-name-pinned, never
+ *  `.>`), any MSG.NEXT/MSG.GET/ACK (it deletes mailboxes, never reads a body), and any STREAM
+ *  DELETE/PURGE (it removes per-agent consumers, never a stream). The `chathist_<id>` history consumers
+ *  need no grant here — they are ephemeral (`mem_storage`, 30s inactive threshold) and agent-deleted
+ *  after each read, so they self-clean on the agent's disconnect.
+ *
+ *  Blast radius of a leaked cred (minted for target T): it can delete T's `dm_<T>`/`dlv_<T>` durables +
+ *  purge T's ACL row — a denial-of-DELIVERY for T (broken DM/DLV bind + the reader DEFERs on the absent
+ *  ACL) if fired while T is still alive. It CANNOT read T's bodies, impersonate T, reach any peer, or
+ *  delete a stream — and it is ephemeral (one per-exit teardown, minted then dropped). Contained and
+ *  recoverable (re-provision T). */
+function deprovisionerPermissions(space: string, id: string, target: string): Record<string, unknown> {
+  const DM = dmStream(space), DLV = dlvStream(space);
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO", // jetstreamManager bootstrap
+        // Delete the target's two bind-only durables BY EXACT NAME (id-keyed) — no `.>`, no cross-agent reach.
+        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(target)}`,
+        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(target)}`,
+        // Purge the target's read-ACL row (own-target key only — the reader then treats it as an unknown
+        // owner). `kvm.open` binds the pre-created bucket; the purge rides `$KV.<aclBucket>.<key>`.
+        `$JS.API.STREAM.INFO.KV_${aclBucket(space)}`,
+        `$KV.${aclBucket(space)}.${aclKey(target)}`,
+      ],
+    },
+    // Replies only: the CONSUMER.DELETE PubAcks + KV purge ack land on the per-id inbox. NO chat/DM/ctl
+    // subscription — the deprovisioner serves nothing and reads no feed.
     sub: { allow: [`_INBOX_${id}.>`] },
   };
 }

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -7,6 +7,7 @@ import {
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
+  deprovisionAgent,
   firstFreeName,
   loadAgentFile,
   loadCotalConfig,
@@ -23,7 +24,7 @@ import {
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
-import type { AgentDef, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
+import type { AgentDef, AttachSession, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -41,6 +42,28 @@ const MAX_AGENTS = 50;
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
 const MIN_LIFETIME = 10_000;
+/** Backstop for the detached-launch readiness race (#159 B1). `startAgent` waits on two REAL outcomes —
+ *  the assigned id joining the mesh (presence) = started, the child process exiting = failed — NOT a
+ *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
+ *  is then reported UNCERTAIN (a non-success reply that does NOT deprovision — it may still be booting, or
+ *  stuck before connector startup). Generous, since a real cold agent join can take several seconds. Held
+ *  as an instance field ({@link Manager.readinessTimeoutMs}) so a test can shorten it. */
+const READINESS_TIMEOUT_MS = 30_000;
+/** Upper bound on a detached agent-exit deprovision (#159 B2). A wedged broker must not leave the
+ *  fire-and-forget teardown pending forever with no log — past this it rejects into freeSlot's fail-loud
+ *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
+ *  + drain on a healthy-but-slow broker. */
+const DEPROVISION_TIMEOUT_MS = 15_000;
+
+/** Reject `p` with `Error(msg)` if it hasn't settled within `ms`; clears the timer when `p` settles so it
+ *  never keeps the loop alive. Used to bound the detached deprovision so its fail-loud log is guaranteed. */
+function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(msg)), ms);
+  });
+  return Promise.race([p.finally(() => clearTimeout(timer)), timeout]);
+}
 
 export interface ManagerOptions {
   space: string;
@@ -131,6 +154,10 @@ export class Manager {
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
    *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
   private auth?: SpaceAuth;
+  /** Readiness-race backstop (#159 B1) — the {@link READINESS_TIMEOUT_MS} constant, held as an instance
+   *  field so a test can shorten it (the join/exit signals are event-driven; only the backstop is timed).
+   *  Production leaves it at the constant. */
+  private readinessTimeoutMs = READINESS_TIMEOUT_MS;
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
@@ -236,8 +263,34 @@ export class Manager {
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
   }
 
+  /** Tear down every managed agent's footprint — the shared teardown for EVERY manager-exit path (#159
+   *  B2): graceful {@link stop} AND the fail-closed lease-loss exit ({@link renewLease}). A manager exit is
+   *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
+   *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
+   *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
+   *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
+   *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
+   *  touches NEITHER the lease NOR the endpoints — the caller owns those (and lease loss must NOT release
+   *  the key, which may now belong to a replacement holder). */
+  private async teardownManagedAgents(): Promise<void> {
+    const managed = [...this.agents.values()];
+    for (const a of managed) {
+      // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
+      // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
+      this.agents.delete(a.name);
+      this.stopHandle(a, false);
+    }
+    // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
+    await Promise.allSettled(
+      managed.map((a) =>
+        this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
+      ),
+    );
+  }
+
   async stop(): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
+    await this.teardownManagedAgents(); // reap agents BEFORE releasing the lease/endpoints (#159 B2)
     await this.ep.releaseManagerLease(this.leaseRevision);
     await this.ep.stop();
     await this.attach.stop();
@@ -254,6 +307,9 @@ export class Manager {
     } catch (e) {
       console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) — shutting down to avoid two managers serving it`);
       if (this.leaseTimer) clearInterval(this.leaseTimer);
+      // Tear down our managed agents' footprints too (#159 B2) — this exit path leaks them otherwise. Do
+      // NOT release the lease key (it may belong to the replacement holder). Best-effort, like ep/attach.
+      try { await this.teardownManagedAgents(); } catch { /* best effort */ }
       try { await this.ep.stop(); } catch { /* best effort */ }
       try { await this.attach.stop(); } catch { /* best effort */ }
       process.exit(1);
@@ -353,10 +409,20 @@ export class Manager {
    *  exit handlers / leaves the mesh), so first send a cooperative `{op:"shutdown"}` over its authed
    *  control endpoint; the agent exits cleanly and the runtime hard-kills as a fallback after its
    *  grace window. POSIX delivers SIGTERM→SIGKILL natively, so it keeps the signal path. A hard stop
-   *  (`graceful:false`, e.g. emergency reap) skips the cooperative step on every platform. */
+   *  (`graceful:false`, e.g. emergency reap) skips the cooperative step on every platform.
+   *
+   *  BEST-EFFORT / never throws (#159 B2): a runtime hard-stop CAN throw (tmux `closeWindow` / cmux
+   *  `closeWorkspace` are direct calls), and every caller (despawn / self-stop / reap / shutdown) frees the
+   *  slot + deprovisions RIGHT AFTER — so a throwing stop must not abort that cleanup and leak the agent's
+   *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged loudly,
+   *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
   private stopHandle(a: ManagedAgent, graceful: boolean): void {
-    if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
-    a.handle.stop({ graceful });
+    try {
+      if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
+      a.handle.stop({ graceful });
+    } catch (e) {
+      console.error(`stop ${a.name} (${a.id}): ${(e as Error).message}`);
+    }
   }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
@@ -368,6 +434,41 @@ export class Manager {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     this.agents.delete(a.name);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
+    // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
+    // process is already gone, so this must never block the slot free or throw into the caller — it runs
+    // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
+    // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
+    void this.deprovision(a).catch((e) =>
+      console.error(`deprovision ${a.name} (${a.id}): ${(e as Error).message}`));
+  }
+
+  /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its id-keyed durables
+   *  (`dm_<id>`, `dlv_<id>`), its read-ACL row, and its creds file — everything the spawn's
+   *  `provisionAgent` + creds-write left behind. Mints an EPHEMERAL, TARGET-PINNED `deprovisioner` cred
+   *  (mirrors the ephemeral `provisioner`/`purger`): it can delete only THIS agent's id-keyed footprint,
+   *  never a peer's and never the role-shared `svc_<role>` (which its siblings still bind). Open mesh →
+   *  no-op (nothing was minted). Idempotent at the broker (missing consumer / ACL row = no-op) and on
+   *  disk (`force` tolerates an absent creds file, e.g. a ledgered deploy that wrote none).
+   *
+   *  Removing the creds file is footprint REDUCTION, not revocation: a JWT copied off disk before exit
+   *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
+   *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
+   *  delivery surface a stale copy could use. */
+  private async deprovision(a: { id: string; name: string }): Promise<void> {
+    if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
+    // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
+    // departed agent, so it must not survive even if the broker teardown below fails or times out. The
+    // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
+    rmSync(join(authDir(this.workspaceRoot), "creds", `${a.name}.creds`), { force: true });
+    const creds = await mintCreds(this.auth, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
+    // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
+    // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
+    // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
+    await withTimeout(
+      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, creds }),
+      DEPROVISION_TIMEOUT_MS,
+      `deprovision ${a.name} (${a.id}): broker teardown timed out`,
+    );
   }
 
   /** Reap a parent's children on its exit (P4b): stop + free every agent whose `spawner` is the
@@ -601,6 +702,10 @@ export class Manager {
       }
       allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
     }
+    // Set once the agent's creds + durables are minted; cleared the moment a live slot takes ownership
+    // (`agents.set`, after which freeSlot deprovisions on exit). If it survives to `finally`, the spawn
+    // threw AFTER minting (buildLaunch / runtime.spawn) — tear the orphan down so no footprint leaks (#159 B).
+    let provisioned: { id: string; name: string } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -626,6 +731,7 @@ export class Manager {
         credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
         mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
         writeSecretFile(credsPath, creds);
+        provisioned = { id: identity.id, name }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards).
@@ -674,9 +780,19 @@ export class Manager {
         control: spec.control,
       };
       this.agents.set(name, managed);
-      // Wire the runtime exit signal so a natural exit (crash / /exit / finished) frees the slot
-      // (rate-floored) and reaps any children — keeps the ceiling from ratcheting shut with orphans.
+      // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
+      // orphan-rollback in `finally` no longer applies to it.
+      provisioned = undefined;
+      // #159 B1: reply on a REAL outcome, not a timer. Wait for the agent to actually join the mesh
+      // (presence) → started, the child to exit → failed (with its last output; already reaped), or
+      // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
+      // launched".
+      const readiness = await this.awaitReadiness(managed);
+      if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail }; // failed → already reaped
+      // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
+      // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
+      if (!readiness.ok) return { ok: false, error: readiness.detail }; // uncertain — non-success, but kept
       return { ok: true, data: { name, role, agent, id: identity.id, mode: handle.kind } };
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
@@ -684,7 +800,97 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     } finally {
       this.reserved.delete(name);
+      // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
+      // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
+      if (provisioned) {
+        const orphan = provisioned;
+        void this.deprovision(orphan).catch((e) =>
+          console.error(`deprovision (orphaned spawn) ${orphan.name}: ${(e as Error).message}`));
+      }
     }
+  }
+
+  /** #159 B1: wait for a detached launch to reach a REAL outcome before replying — never a liveness-
+   *  inferring timer. Races three:
+   *   • the assigned id joins presence (live) → **started** — the honest signal (the manager owns mesh
+   *     lifecycle, not app health, so `ok:true` means "it joined the mesh", not "fully healthy");
+   *   • the child process exits → **failed** — surface its last output and reap the slot;
+   *   • neither within {@link readinessTimeoutMs} → **uncertain** — a non-success diagnostic that does NOT
+   *     deprovision (it may still be booting; the caller keeps {@link watchExit} wired so a later death is
+   *     still reaped).
+   *  Presence is keyed on the EXACT freshly-minted id, never the name — a fresh id has no prior record, so
+   *  any live presence for it is from THIS launch (stale/same-name records can't false-start it). The
+   *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
+   *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (tmux/cmux,
+   *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
+  private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; detail: string }> {
+    let session: AttachSession | undefined;
+    try {
+      session = a.handle.attach();
+    } catch {
+      /* tmux/cmux stream no exit — presence-or-backstop only */
+    }
+    const s = session;
+    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === a.id && p.status !== "offline");
+
+    return await new Promise((resolve) => {
+      let done = false;
+      let timer: ReturnType<typeof setTimeout>;
+      let unsubExit = (): void => {};
+      const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; detail: string }): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        this.ep.off("presence", onPresence);
+        unsubExit();
+        resolve(r);
+      };
+      const onPresence = (): void => {
+        if (joined()) finish({ ok: true });
+      };
+      // Process exit → failed. Clear the backstop FIRST (synchronously) so it can't resolve UNCERTAIN while
+      // the backlog reads async — the process is known dead, that's a failure, not an unknown. Reap through
+      // onAgentExit so a child the launcher spawned in the window is reaped too.
+      const onExit = (): void => {
+        if (done || !s) return;
+        clearTimeout(timer);
+        void (async () => {
+          const tail = this.tail(await s.backlog());
+          this.onAgentExit(a);
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` — last output: ${tail}` : ""}` });
+        })();
+      };
+      timer = setTimeout(
+        () =>
+          finish({
+            ok: false,
+            uncertain: true,
+            detail: `${a.name} (${a.id}): launch status uncertain — no process exit and no mesh presence within ${Math.round(this.readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`, or stop it to clean up.`,
+          }),
+        this.readinessTimeoutMs,
+      );
+      unsubExit = s ? s.onExit(onExit) : (): void => {};
+      this.ep.on("presence", onPresence);
+      // Subscribe-then-check (TOCTOU): a join or an exit that already landed before we subscribed.
+      if (s && a.handle.status() === "exited") onExit();
+      else onPresence();
+    });
+  }
+
+  /** Last non-empty line of terminal output as a single trimmed, control-char-stripped snippet
+   *  (≤160 chars) — a readable one-line cause for an early-exit diagnostic, never the raw ANSI
+   *  scrollback. */
+  private tail(buf: Buffer): string {
+    const text =
+      buf
+        .toString("utf8")
+        .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "") // strip CSI escape sequences
+        .replace(/[^\x20-\x7e\n]/g, "") // drop other control / non-printable bytes
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .pop() ?? "";
+    return text.length > 160 ? `…${text.slice(-160)}` : text;
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
@@ -695,7 +901,13 @@ export class Manager {
    *  per-runtime `status()` → exited-sweep at the availability gate) is a tracked follow-up. */
   private watchExit(a: ManagedAgent): void {
     try {
-      a.handle.attach().onExit(() => this.onAgentExit(a));
+      const session = a.handle.attach();
+      session.onExit(() => this.onAgentExit(a));
+      // Close the TOCTOU between the early-exit probe's unsubscribe and this subscribe: if the child
+      // exited in that gap, the `onExit` above never fires (a late subscriber can't hear a past event),
+      // so the agent would leak (never reaped, never deprovisioned). Re-check status right after
+      // subscribing and reap it now if it already went. onAgentExit is idempotent (freeSlot's guard).
+      if (a.handle.status() === "exited") this.onAgentExit(a);
     } catch {
       /* runtime doesn't stream an exit signal (tmux/cmux) — nothing to wire */
     }

@@ -172,13 +172,22 @@ whose `~/.claude` holds that transcript.
   front of you and the command exits non-zero — never flattened into a generic "spawn failed".
 - `cotal start --resume <id>` works too, but the manager is detached, so two things differ.
   **Locality:** the id resolves against the **manager host's** `~/.claude`, and you practically need
-  `--cwd` to point at the original project directory. **Async failure (less obvious):** the manager
-  reports `✓ started` the moment the process launches — *before* Claude runs — so a missing id or an
-  old CLI rejecting `--fork-session` makes Claude exit inside its PTY and the error is **not** reported
-  at the call site. The symptom is a peer that "started" but never appears in `cotal ps` / the roster;
-  diagnose with `cotal attach`. Prefer foreground `spawn` unless you know the manager shares your
-  session state. (The *unsupported-connector* case is still inline — `cotal start --agent opencode
-  --resume …` fails with `✗ …` before launching; only the claude-exits-after-launch case is async.)
+  `--cwd` to point at the original project directory. **Failure reporting:** the manager can't inherit
+  your terminal, so it waits for a **real outcome** before replying — not a timer — resolving on whichever
+  comes first:
+    - the agent **joins the mesh** (registers presence under its assigned id) → `✓ started`. That means it
+      launched, authenticated, connected, and joined — *not* that it's fully healthy (the manager owns mesh
+      lifecycle, not app self-test).
+    - the child **exits** → `✗ … exited on launch — <Claude's last output>` (a missing id, an old CLI
+      rejecting `--fork-session`), and its minted footprint (creds + durables) is torn down, not orphaned.
+    - **neither** within a generous backstop (~30 s) → `✗ … launch status uncertain — may still be booting
+      or stuck before connector startup`. Uncertain does **not** tear the agent down (it may still come up);
+      inspect with `cotal attach` / `cotal ps`, or stop it to clean up. A launch that joins and *then* dies
+      is reaped by the manager's exit watch (freed + deprovisioned).
+
+  So `✓ started` means it *joined*, never just "a process launched". Prefer foreground `spawn` when you can
+  (its errors are fully inline). (The *unsupported-connector* case fails earlier still — `cotal start --agent
+  opencode --resume …` is rejected before any launch or mint.)
 - Resume is an **operator surface only** — it is deliberately **not** exposed on MCP `cotal_spawn`.
   Forking a host-local `~/.claude` transcript is operator-local intent; letting a spawn-capable mesh
   *peer* name a host session id would widen the `spawn` capability into host-transcript disclosure with
@@ -190,8 +199,8 @@ whose `~/.claude` holds that transcript.
   an existing session"*).
 - Needs a `claude` new enough to know `--resume ... --fork-session` (verified on **2.1.197**). Cotal
   only co-emits the flags; it can't force an old binary to honor them — an old `claude` rejects
-  `--fork-session` with its own error (surfaced inline on foreground `spawn`, async on detached
-  `start`, per above).
+  `--fork-session` with its own error (surfaced inline on foreground `spawn`; on detached `start`, the
+  child exits, so `start` reports the failure at the call site, per the readiness outcomes above).
 
 **Manage the catalog from the CLI.** `cotal personas` is the operator-side counterpart to the
 runtime `cotal_persona` tool. It reads and writes the same `.cotal/agents/*.md` files

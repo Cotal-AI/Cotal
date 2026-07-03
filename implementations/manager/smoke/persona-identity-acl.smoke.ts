@@ -66,7 +66,14 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   kind: "fake",
   spawn: (name) => fakeHandle(name),
 };
-(mgr as unknown as { ep: Record<string, unknown> }).ep = { ref: () => ({ id: "smoke-mgr" }) };
+// ref().id (spawner audit) + on/off/getRoster for the #159 B1 readiness race — getRoster reports every
+// managed agent as joined so a spawn resolves "started".
+(mgr as unknown as { ep: Record<string, unknown> }).ep = {
+  ref: () => ({ id: "smoke-mgr" }),
+  on: () => {},
+  off: () => {},
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+};
 
 const recCon: Connector = { kind: "connector", name: "smoke-rec2", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) };
 registry.register(recCon);

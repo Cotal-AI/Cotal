@@ -38,6 +38,8 @@
   },
   "devDependencies": {
     "@cotal-ai/connector-core": "workspace:*",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
     "@types/ws": "^8.18.1"
   },
   "files": [

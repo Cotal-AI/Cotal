@@ -61,6 +61,13 @@ jobs:
         # nats-server installed above.
         run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live
 
+      - name: Manager lifecycle e2e (real broker + real agents)
+        # Real end-to-end for #159 Part B: the startAgent presence-race (started via real presence / failed
+        # on process exit), deprovision-on-despawn, and shutdown teardown — verified against a real JWT-auth
+        # broker with real agent processes and direct broker-footprint inspection (durables/ACL/creds). Uses
+        # real pty processes, so Linux-only (not in the cross-platform smoke:ci). nats-server installed above.
+        run: pnpm smoke:lifecycle-e2e
+
       - name: Runtime smoke tests (tmux)
         # Exercises the tmux Runtime + TerminalLayout end to end (driver, lifecycle by stable
         # @window_id/%pane_id, P3 env -i isolation, attach hints). dist is built by Typecheck above.
