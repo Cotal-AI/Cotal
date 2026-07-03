@@ -88,7 +88,7 @@ import {
   dlvSubject,
   dinboxSubject,
   inboxStream,
-  parseDinboxOwner,
+  parseDinboxPrincipal,
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
   leaseKey,
@@ -104,6 +104,9 @@ import {
   presenceBucket,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
+  principalKey,
+  parsePrincipalKey,
+  DEV_OWNER,
   spacePrefix,
   spaceWildcard,
   subjectMatches,
@@ -111,6 +114,7 @@ import {
   taskDurable,
   token,
   unicastSubject,
+  unicastRecvFilter,
 } from "./subjects.js";
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
@@ -305,6 +309,15 @@ export class CotalEndpoint extends EventEmitter {
   private backoffTimer?: ReturnType<typeof setTimeout>;
   private readonly retryMs = 3000;
 
+  /** The connection's authenticated nkey — dev: the creds' identity; user mode: the per-connection
+   *  ephemeral. Distinct from the {@link owner}+{@link actor} principal: it names the CONNECTION (the
+   *  broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
+   *  equality check. The principal (owner+actor) is what the WIRE grammar and every per-agent key use. */
+  private readonly connId: string;
+  /** This endpoint's owner token (principal half 1) — `"local"` in the dev default. */
+  private readonly owner: string;
+  /** This endpoint's actor token (principal half 2) — the connection id in the dev default. */
+  private readonly actor: string;
 
   constructor(opts: EndpointOptions) {
     super();
@@ -313,15 +326,22 @@ export class CotalEndpoint extends EventEmitter {
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through.
     assertValidName(opts.card.name);
-    // Identity precedence: an explicit card.id, else the creds' identity, else a random
-    // uuid. When both an id and creds are given they MUST name the same nkey — otherwise
-    // the subject sender token wouldn't match the authenticated user and every publish
-    // would be denied (a silent-failure class).
+    // Connection identity precedence: an explicit card.id, else the creds' identity, else a random
+    // (dash-free, so it is a valid actor token) id. When both an id and creds are given they MUST name
+    // the same nkey — else the connection would authenticate as one user while its grants name another.
     const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
     if (opts.card.id && credId && opts.card.id !== credId)
       throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
-    const id = opts.card.id ?? credId ?? randomUUID();
-    this.card = { ...opts.card, id };
+    this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
+    // The owner+actor PRINCIPAL. Dev/no-login default: owner = DEV_OWNER ("local"), actor = the
+    // connection id (so `local.<connId>` is the agent's lane). User mode supplies both explicitly (the
+    // callout-derived owner + ledger actor), passed on the card by the connect path. `card.id` is the
+    // principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries; principalKey
+    // validates both tokens.
+    this.owner = opts.card.owner ?? DEV_OWNER;
+    this.actor = opts.card.actor ?? this.connId;
+    const principal = principalKey(this.owner, this.actor);
+    this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
@@ -364,12 +384,14 @@ export class CotalEndpoint extends EventEmitter {
     this.nc = await connect({
       servers: this.servers,
       name: `cotal:${this.card.name}`,
-      // Per-identity inbox namespace (the "Private Inbox" pattern). nats.js routes ALL
-      // generated inboxes — request replies, JetStream pull delivery, kv.watch ordered-
-      // consumer delivery — through this prefix. Paired with sub.allow=[_INBOX_<id>.>]
-      // (auth mode) it stops a peer from subscribing the wildcard inbox to sniff others'
-      // DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
-      inboxPrefix: `_INBOX_${this.card.id}`,
+      // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
+      // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
+      // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
+      // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
+      // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
+      // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
+      // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
+      inboxPrefix: `_INBOX_${this.connId}`,
       ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.creds, tls: this.tls }),
     });
     this.watchStatus();
@@ -661,7 +683,7 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.space, this.card.id, channel), msg);
+    await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
     return msg;
   }
 
@@ -681,7 +703,14 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(unicastSubject(this.space, instanceId, this.card.id), msg);
+    // The recipient id is a principal dot-form `<owner>.<actor>` (owner+actor grammar); the 4-token DM
+    // subject forge-locks recipient AND sender, so both are split into their tokens here.
+    const recip = parsePrincipalKey(instanceId);
+    if (!recip) throw new Error(`unicast: "${instanceId}" is not a valid recipient principal <owner>.<actor>`);
+    await this.publishMsg(
+      unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor),
+      msg,
+    );
     return msg;
   }
 
@@ -701,7 +730,7 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(anycastSubject(this.space, service, this.card.id), msg);
+    await this.publishMsg(anycastSubject(this.space, service, this.owner, this.actor), msg);
     return msg;
   }
 
@@ -747,7 +776,7 @@ export class CotalEndpoint extends EventEmitter {
     opts: { boundReply?: boolean } = {},
   ): import("@nats-io/transport-node").Subscription {
     if (!this.nc) throw new Error("endpoint not started");
-    const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*"), {
+    const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*", "*"), {
       queue: service,
     });
     this.subs.push(sub);
@@ -810,7 +839,7 @@ export class CotalEndpoint extends EventEmitter {
     timeoutMs = 5000,
   ): Promise<ControlReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = controlServiceSubject(this.space, service, this.card.id);
+    const reqSubject = controlServiceSubject(this.space, service, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
     const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
@@ -824,7 +853,7 @@ export class CotalEndpoint extends EventEmitter {
    *  caller can fail-closed vs. degrade to live-only when no daemon is present). */
   private async requestDelivery(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.card.id); // ctl.delivery.<id>
+    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.owner, this.actor); // ctl.delivery.<owner>.<actor>
     // Reply rides the sender's OWN subtree so the daemon's serveControl boundReply guard accepts it
     // (`${reqSubject}.reply.…`). The sender-bound guard is the COMPLETE confused-deputy closure. The
     // random suffix is genuine defense-in-depth (NOT cosmetic): `noMux` subscribes this SPECIFIC named
@@ -941,7 +970,7 @@ export class CotalEndpoint extends EventEmitter {
       this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", channel));
+    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
@@ -1140,7 +1169,7 @@ export class CotalEndpoint extends EventEmitter {
     // history from any sender
     return this.streamHistory(
       chatStream(this.space),
-      chatSubject(this.space, "*", channel),
+      chatSubject(this.space, "*", "*", channel),
       opts?.limit ?? 100,
     );
   }
@@ -1149,10 +1178,10 @@ export class CotalEndpoint extends EventEmitter {
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
    *  skips for them — only an `admin`-profile cred can read it. */
   async dmHistory(opts?: { limit?: number }): Promise<CotalMessage[]> {
-    // every inst.<target>.<sender> DM
+    // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
     return this.streamHistory(
       dmStream(this.space),
-      unicastSubject(this.space, "*", "*"),
+      `${spacePrefix(this.space)}.inst.>`,
       opts?.limit ?? 100,
     );
   }
@@ -1248,9 +1277,9 @@ export class CotalEndpoint extends EventEmitter {
    * creating a durable filtered to someone else's inbox. Idempotent (byte-identical config),
    * safe to call again on manager restart. The caller must be permissive on DM_<space>.
    */
-  async provisionDmInbox(targetId: string): Promise<void> {
+  async provisionDmInbox(owner: string, actor: string): Promise<void> {
     const jsm = await this.manager();
-    await jsm.consumers.add(dmStream(this.space), dmDurableConfig(this.space, targetId));
+    await jsm.consumers.add(dmStream(this.space), dmDurableConfig(this.space, owner, actor));
   }
 
   /**
@@ -1260,9 +1289,9 @@ export class CotalEndpoint extends EventEmitter {
    * the agent never does. The trusted reader transfers re-authorized copies onto `dlv.<id>`; the agent
    * acks them via native JetStream (SPEC §8). Idempotent. The caller must be permissive on DLV.
    */
-  async provisionDlvInbox(targetId: string): Promise<void> {
+  async provisionDlvInbox(owner: string, actor: string): Promise<void> {
     const jsm = await this.manager();
-    await jsm.consumers.add(dlvStream(this.space), dlvDurableConfig(this.space, targetId));
+    await jsm.consumers.add(dlvStream(this.space), dlvDurableConfig(this.space, owner, actor));
   }
 
   /**
@@ -1460,12 +1489,15 @@ export class CotalEndpoint extends EventEmitter {
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
-  /** Publish one fan-out entry into an owner's mixed inbox, idempotent via `Nats-Msg-Id`
-   *  (`<msgId>:<owner>:<generation>`) so a catch-up copy and a racing fan-out copy collapse. */
-  private async publishDinbox(owner: string, entry: Plane3Entry): Promise<void> {
+  /** Publish one fan-out entry into a member principal's mixed inbox, idempotent via `Nats-Msg-Id`
+   *  (`<msgId>:<principal>:<generation>`) so a catch-up copy and a racing fan-out copy collapse. The
+   *  `principal` is the member's owner+actor dot-form (dinbox is per-agent); split for the subject. */
+  private async publishDinbox(principal: string, entry: Plane3Entry): Promise<void> {
     if (!this.js) return;
-    await this.js.publish(dinboxSubject(this.space, owner), JSON.stringify(entry), {
-      msgID: `${entry.msg.id}:${owner}:${entry.generation}`,
+    const p = parsePrincipalKey(principal);
+    if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
+    await this.js.publish(dinboxSubject(this.space, p.owner, p.actor), JSON.stringify(entry), {
+      msgID: `${entry.msg.id}:${principal}:${entry.generation}`,
     });
   }
 
@@ -1557,14 +1589,19 @@ export class CotalEndpoint extends EventEmitter {
     owner: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<{ copied: number; evicted: boolean }> {
     if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return { copied: 0, evicted: false };
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     // Eviction = a message in `(joinCursor, …]` on THIS channel's subject aged out under discard=Old.
     // Judged PER-SUBJECT (reuse channelDropped: oldest-retained-for-subject vs the watermark, only at
     // the per-subject cap), NOT against the stream-global joinCursor+1 — other channels' traffic
     // inflates the global seq, so a naive "first delivered seq > joinCursor+1" false-positives on any
     // busy multi-channel space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
     const evicted = await this.channelDropped(subject, fromSeqExcl);
-    const name = `cu_${token(owner)}_${generation}`;
+    // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
+    // (`<owner>-<actor>`, `-` reserved as the sole separator), NOT `token(owner)` — `token()` maps the
+    // dot-form `.`→`_`, which is NOT collision-free (`_` is legal inside a token, so `a.b_c` and `a_b.c`
+    // would both underscore to `a_b_c`).
+    const cuP = parsePrincipalKey(owner);
+    const name = `cu_${cuP ? principalKey(cuP.owner, cuP.actor).name : token(owner)}_${generation}`;
     try { await this.jsm.consumers.delete(chatStream(this.space), name); } catch { /* none */ }
     await this.jsm.consumers.add(chatStream(this.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
@@ -1760,8 +1797,9 @@ export class CotalEndpoint extends EventEmitter {
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
   private async readerHandle(m: JsMsg): Promise<void> {
-    const owner = parseDinboxOwner(m.subject);
-    if (!owner) { m.ack(); return; } // unparseable subject — not a real entry
+    const pr = parseDinboxPrincipal(m.subject);
+    if (!pr) { m.ack(); return; } // unparseable subject — not a real entry
+    const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
     const redeliveries = m.info?.deliveryCount ?? 1; // JsMsg delivery attempts (1 on first delivery)
@@ -1791,7 +1829,7 @@ export class CotalEndpoint extends EventEmitter {
       if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
     }
     try {
-      await this.js!.publish(dlvSubject(this.space, owner), JSON.stringify(entry.msg), {
+      await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor), JSON.stringify(entry.msg), {
         msgID: `${entry.msg.id}:${owner}:${entry.generation}`,
       });
     } catch {
@@ -1816,7 +1854,7 @@ export class CotalEndpoint extends EventEmitter {
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     let consumer;
-    try { consumer = await this.js.consumers.get(dlvStream(this.space), dlvDurable(this.card.id)); }
+    try { consumer = await this.js.consumers.get(dlvStream(this.space), dlvDurable(this.owner, this.actor)); }
     catch { return; } // no DLV durable — Plane-3 not active for us
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -1978,21 +2016,20 @@ export class CotalEndpoint extends EventEmitter {
   /** Bind this endpoint's durable consumers: DM inbox, chat, and (if a role) the task queue. */
   private async startConsumers(): Promise<void> {
     if (!this.jsm) throw new Error("endpoint not started");
-    const id = this.card.id;
 
-    // Unicast: this instance's private DM inbox. Open mode self-creates; auth mode BINDS a
-    // durable the provisioner pre-created (agents are denied CONSUMER.CREATE on DM_<space>,
-    // since the create-time filter_subject is the attack surface — see provisionDmInbox).
+    // Unicast: this instance's private DM inbox, keyed on this endpoint's owner+actor principal. Open
+    // mode self-creates; auth mode BINDS a durable the provisioner pre-created (agents are denied
+    // CONSUMER.CREATE on DM_<space>, since the create-time filter_subject is the attack surface).
     if (!this.creds) {
       await this.jsm.consumers.add(
         dmStream(this.space),
-        dmDurableConfig(this.space, id, {
+        dmDurableConfig(this.space, this.owner, this.actor, {
           ackWaitMs: this.ackWaitMs,
           inactiveThresholdMs: this.inactiveThresholdMs,
         }),
       );
     }
-    await this.pump(dmStream(this.space), dmDurable(id));
+    await this.pump(dmStream(this.space), dmDurable(this.owner, this.actor));
 
     // Plane-3 (SPEC §8): bind + pump our per-member DELIVER durable (`dlv_<id>`) — the re-authorized
     // durable-backstop channel copies the trusted reader transfers to us. No-op when it isn't present
@@ -2014,7 +2051,7 @@ export class CotalEndpoint extends EventEmitter {
       const armed = this.firstConnect ? await this.armJoin(this.channels) : undefined;
       for (const ch of this.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", ch));
+      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", ch));
       if (armed) await this.backfillArmed(armed);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
@@ -2110,7 +2147,7 @@ export class CotalEndpoint extends EventEmitter {
   private subscribeChat(channel: string): void {
     if (!this.nc || this.chatSubs.has(channel)) return;
     this.chatSubDenied.delete(channel);
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     this.confirmingChatSubs.add(subject);
     const sub = this.nc.subscribe(subject, {
       callback: (err, m) => {
@@ -2166,7 +2203,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Close a channel's core subscription (manager-free leave). */
   private unsubscribeChat(channel: string): void {
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", channel));
+    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     const sub = this.chatSubs.get(channel);
     if (sub) {
       try {
@@ -2291,7 +2328,7 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<JsMsg[]> {
     if (!this.jsm || !this.js) throw new Error("endpoint not started");
     const stream = chatStream(this.space);
-    const name = chatHistDurable(this.card.id);
+    const name = chatHistDurable(this.owner, this.actor);
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
@@ -2336,7 +2373,7 @@ export class CotalEndpoint extends EventEmitter {
    *  `start_time` (now − window); unset ⇒ the full retained window. New messages (`seq > upToSeq`)
    *  are skipped — the live tail owns them. Reads through the contained {@link collectHistory}. */
   private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number): Promise<number> {
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     const start = sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
     let msgs: JsMsg[];
     try {
@@ -2384,7 +2421,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!isConcreteChannel(channel)) return { messages: [], dropped: false };
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], dropped: false };
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {
       raw = await this.collectHistory(subject, { seq: sinceSeq + 1 });

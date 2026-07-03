@@ -18,10 +18,10 @@ import {
   isConcreteChannel,
   dmStream,
   dmDurable,
-  unicastSubject,
+  unicastRecvFilter,
   taskStream,
   taskDurable,
-  anycastSubject,
+  anycastServeFilter,
   presenceBucket,
   channelBucket,
   membersBucket,
@@ -181,12 +181,13 @@ export async function createSpaceStreams(
  */
 export function dmDurableConfig(
   space: string,
-  id: string,
+  owner: string,
+  actor: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dmDurable(id),
-    filter_subject: unicastSubject(space, id, "*"),
+    durable_name: dmDurable(owner, actor),
+    filter_subject: unicastRecvFilter(space, owner, actor), // inst.<owner>.<actor>.> — every DM to me
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -209,7 +210,7 @@ export function taskDurableConfig(
 ): Partial<ConsumerConfig> {
   return {
     durable_name: taskDurable(role),
-    filter_subject: anycastSubject(space, role, "*"),
+    filter_subject: anycastServeFilter(space, role), // svc.<role>.> — every anycast to the role
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
   };
@@ -244,11 +245,12 @@ export function inboxReaderConfig(
 export function dlvDurableConfig(
   space: string,
   owner: string,
+  actor: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dlvDurable(owner),
-    filter_subject: dlvSubject(space, owner),
+    durable_name: dlvDurable(owner, actor),
+    filter_subject: dlvSubject(space, owner, actor),
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -354,7 +356,7 @@ export async function clearChannel(opts: {
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
-      filter: chatSubject(opts.space, "*", opts.channel),
+      filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));

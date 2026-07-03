@@ -56,16 +56,28 @@ function channelPath(channel: string): string {
     .join(".");
 }
 
-/** A routing token (sender, target, role, service), preserving the literal `*` wildcard
- *  used on the subscribe/allow side but sanitizing everything else. A no-op on real ids
- *  (nkey public keys are base32 [A-Z0-9]) and equal to `token()` on every concrete value —
- *  it only additionally lets `*` through, e.g. for `inst.*.<id>` / `svc.*.<id>` allow rules. */
+/** A routing token (target, role, service), preserving the literal `*` wildcard used on the
+ *  subscribe/allow side but sanitizing everything else. A no-op on real ids and equal to `token()`
+ *  on every concrete value — it only additionally lets `*` through, e.g. for `svc.*.…` allow rules.
+ *  Used for the *service/role* slots (`svc.<role>`, `ctl.<tier>`); the owner/actor identity slots go
+ *  through {@link ownerToken} (fail-loud, never rewritten). */
 function routeToken(s: string): string {
   return s === "*" ? "*" : token(s);
 }
 
-export function chatSubject(space: string, sender: string, channel: string): string {
-  return `${spacePrefix(space)}.chat.${routeToken(sender)}.${channelPath(channel)}`;
+/** An owner/actor identity token in a wire subject: the literal `*` wildcard passes through (for
+ *  allow/subscribe rules like `chat.*.*.<ch>`), and every concrete value is {@link assertValidOwnerToken}-
+ *  validated (fail loud — a `.`/`*`/`>`/`-` in an id is lane breakout, NEVER silently rewritten the way
+ *  `token()`/`routeToken()` would). The owner+actor grammar's per-subject enforcement point. */
+function ownerToken(s: string): string {
+  return s === "*" ? "*" : assertValidOwnerToken(s);
+}
+
+/** Multicast: `chat.<owner>.<actor>.<channel…>` — the publishing principal (owner+actor) precedes the
+ *  channel (owner+actor grammar, Shape A). Either identity slot may be `*` for subscribe/allow rules
+ *  (`chat.*.*.<ch>` = read a channel from any principal). */
+export function chatSubject(space: string, owner: string, actor: string, channel: string): string {
+  return `${spacePrefix(space)}.chat.${ownerToken(owner)}.${ownerToken(actor)}.${channelPath(channel)}`;
 }
 
 /** True if a channel names a concrete sub-channel (no `*`/`>`) — i.e. it can be
@@ -164,6 +176,28 @@ export function principalKey(owner: string, actor: string): { key: string; name:
   return { key: `${owner}.${actor}`, name: `${owner}-${actor}` };
 }
 
+/** Inverse of {@link principalKey}'s dot-form `key`: split a principal `<owner>.<actor>` back into its
+ *  two tokens, or `null` if it isn't a valid one. Owner/actor tokens are `[A-Za-z0-9_]+` (dot-free), so a
+ *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
+ *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
+ *  subject builders (e.g. fan-out → `dinboxSubject`). */
+export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
+  if (typeof key !== "string") return null;
+  const dot = key.indexOf(".");
+  if (dot <= 0 || dot >= key.length - 1) return null;
+  const owner = key.slice(0, dot);
+  const actor = key.slice(dot + 1);
+  if (!/^[A-Za-z0-9_]+$/.test(owner) || !/^[A-Za-z0-9_]+$/.test(actor)) return null;
+  return { owner, actor };
+}
+
+/** The reserved owner token for the **no-login local/dev path** — the static-creds default when there
+ *  is no user identity (the plan's zero-login local default). A valid {@link assertValidOwnerToken}
+ *  token, and — being lowercase-alpha with no `u_` prefix — trivially distinct from both nkeys and
+ *  {@link assertDerivedOwnerToken} `u_…` owners, so a dev agent can never collide with a real owner
+ *  lane. In dev the actor is the connection id, so `local.<id>` is the agent's principal. */
+export const DEV_OWNER = "local";
+
 /** Prefix of every **derived owner token** — see {@link assertDerivedOwnerToken}. */
 export const DERIVED_OWNER_PREFIX = "u_";
 
@@ -208,20 +242,43 @@ export function collapseFilterSubjects(subjects: string[]): string[] {
   return uniq.filter((x) => !uniq.some((y) => y !== x && subjectMatches(y, x)));
 }
 
-/** Unicast: a specific instance's inbox, tagged with the sender. (Either position may be
- *  `*` for subscribe/allow rules: `inst.<myId>.*` to receive, `inst.*.<myId>` to send as me.) */
-export function unicastSubject(space: string, target: string, sender: string): string {
-  return `${spacePrefix(space)}.inst.${routeToken(target)}.${routeToken(sender)}`;
+/** Unicast: `inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` — the recipient principal, then the
+ *  sender principal (owner+actor grammar). The 4-token form is deliberate: it lets a native publish grant
+ *  forge-lock the sender suffix (`inst.*.*.<myOwner>.<myActor>`), so the daemon needn't re-verify a
+ *  payload sender claim. Any slot may be `*` for allow rules (`inst.*.*.<o>.<a>` to send as me;
+ *  {@link unicastRecvFilter} for the receive side). */
+export function unicastSubject(
+  space: string,
+  recipOwner: string,
+  recipActor: string,
+  sndOwner: string,
+  sndActor: string,
+): string {
+  return `${spacePrefix(space)}.inst.${ownerToken(recipOwner)}.${ownerToken(recipActor)}.${ownerToken(sndOwner)}.${ownerToken(sndActor)}`;
 }
 
-/** Anycast: a service (role), tagged with the sender. Subscribers join a queue group so one instance receives. */
-export function anycastSubject(space: string, service: string, sender: string): string {
-  return `${spacePrefix(space)}.svc.${routeToken(service)}.${routeToken(sender)}`;
+/** The receive-side DM filter/grant for a recipient principal: `inst.<owner>.<actor>.>` — every DM
+ *  addressed to me, from any sender. (The send side is the 4-token {@link unicastSubject}.) */
+export function unicastRecvFilter(space: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.inst.${ownerToken(owner)}.${ownerToken(actor)}.>`;
 }
 
-/** Control request/reply to a service (e.g. the manager), tagged with the sender; anycast via queue group. */
-export function controlServiceSubject(space: string, service: string, sender: string): string {
-  return `${spacePrefix(space)}.ctl.${routeToken(service)}.${routeToken(sender)}`;
+/** Anycast: `svc.<service>.<owner>.<actor>` — a service (role), tagged with the sender principal.
+ *  Subscribers join a queue group so one instance receives. Identity slots accept `*`. */
+export function anycastSubject(space: string, service: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.svc.${routeToken(service)}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** The serve-side TASK filter/grant for a role: `svc.<role>.>` — every anycast to the role, from any
+ *  sender principal (the sender slot widened from one token to two, so the tail is `.>`). */
+export function anycastServeFilter(space: string, service: string): string {
+  return `${spacePrefix(space)}.svc.${routeToken(service)}.>`;
+}
+
+/** Control request/reply to a service (e.g. the manager): `ctl.<service>.<owner>.<actor>` — tagged with
+ *  the caller principal; anycast via queue group. Identity slots accept `*` (serve side: `ctl.<tier>.*.*`). */
+export function controlServiceSubject(space: string, service: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.ctl.${routeToken(service)}.${ownerToken(owner)}.${ownerToken(actor)}`;
 }
 
 /** Control-plane service names — the three-tier split (P2a). The manager subscribes to ALL
@@ -271,36 +328,49 @@ export function chatWildcard(space: string): string {
 /** The three peer-message delivery modes (control/trace/presence are not deliveries). */
 export type DeliveryMode = "chat" | "anycast" | "unicast";
 
-/** A subject parsed into its routing parts. `sender` is the publishing agent's id;
- *  `rest` is the channel (chat) or the routed target/role/service (inst/svc/ctl). */
+/** A subject parsed into its routing parts (owner+actor grammar, Shape A). `owner`/`actor` are the
+ *  publishing principal's two tokens; `sender` is their canonical dot-form `<owner>.<actor>` (=
+ *  {@link principalKey}`.key`), so guards that compare `msg.from.id === parsed.sender` keep working
+ *  verbatim once `from.id` carries the principal dot-form. `rest` is the channel (chat) or the routed
+ *  target/role/service (inst → recipient principal dot-form; svc → role; ctl → service). */
 export interface ParsedSubject {
   kind: "chat" | "inst" | "svc" | "ctl";
+  owner: string;
+  actor: string;
+  /** The sender principal in canonical dot-form `<owner>.<actor>`. */
   sender: string;
-  /** chat → channel (possibly hierarchical); inst → target; svc → role; ctl → service. */
+  /** chat → channel (possibly hierarchical); inst → recipient principal `<owner>.<actor>`; svc → role; ctl → service. */
   rest: string;
 }
 
 /**
- * The single authority on the subject layout — every reader of a wire subject goes
- * through this, so the sender-position asymmetry lives in exactly one place:
- *   chat.<sender>.<channel…>   sender at [3], channel is everything after
- *   inst.<target>.<sender>     sender at [4]
- *   svc.<role>.<sender>        sender at [4]
- *   ctl.<service>.<sender>     sender at [4]
- * Validates the prefix and per-kind shape first and returns `null` on anything else,
- * so a malformed subject can never be read as if it carried a sender.
+ * The single authority on the subject layout — every reader of a wire subject goes through this, so the
+ * owner+actor sender positions live in exactly one place (`kind` stays at [2]):
+ *   chat.<owner>.<actor>.<channel…>              sender owner[3] actor[4], channel is everything after
+ *   inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>   sender owner[5] actor[6], recipient = [3].[4]
+ *   svc.<role>.<owner>.<actor>                   sender owner[4] actor[5], role = [3]
+ *   ctl.<service>.<owner>.<actor>                sender owner[4] actor[5], service = [3]
+ * Validates the prefix and per-kind arity first and returns `null` on anything else, so a malformed
+ * subject can never be read as if it carried a principal. This SPLITS ONLY (no owner-token validation)
+ * — the broker already forge-locked the identity slots via the minted grant; a reader recovers them.
  */
 export function parseSubject(subject: string): ParsedSubject | null {
   const parts = subject.split(".");
   if (parts[0] !== ROOT) return null; // cotal.<space>.<kind>.…
   const kind = parts[2];
+  const mk = (kind: ParsedSubject["kind"], owner: string, actor: string, rest: string): ParsedSubject =>
+    ({ kind, owner, actor, sender: `${owner}.${actor}`, rest });
   if (kind === "chat") {
-    if (parts.length < 5) return null; // cotal.<space>.chat.<sender>.<channel…>
-    return { kind, sender: parts[3], rest: parts.slice(4).join(".") };
+    if (parts.length < 6) return null; // cotal.<space>.chat.<owner>.<actor>.<channel…>
+    return mk(kind, parts[3], parts[4], parts.slice(5).join("."));
   }
-  if (kind === "inst" || kind === "svc" || kind === "ctl") {
-    if (parts.length !== 5) return null; // cotal.<space>.<kind>.<route>.<sender>
-    return { kind, sender: parts[4], rest: parts[3] };
+  if (kind === "inst") {
+    if (parts.length !== 7) return null; // cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>
+    return mk(kind, parts[5], parts[6], `${parts[3]}.${parts[4]}`);
+  }
+  if (kind === "svc" || kind === "ctl") {
+    if (parts.length !== 6) return null; // cotal.<space>.<kind>.<route>.<owner>.<actor>
+    return mk(kind, parts[4], parts[5], parts[3]);
   }
   return null;
 }
@@ -339,21 +409,23 @@ export function membersBucket(space: string): string {
   return `cotal_members_${token(space)}`;
 }
 
-/** KV key for one membership record: `<channel>/<owner>`. The channel is concrete (no `*`/`>`,
- *  validated at the write path) so it is dotted-but-`/`-free, and an owner id is an nkey
- *  (`[A-Z0-9]`, also `/`-free), so the single `/` separates them unambiguously — both halves
- *  recover via {@link parseMemberKey}. `/`, `.`, and `[A-Za-z0-9_-]` are all legal KV-key chars
- *  (`/^[-/=.\w]+$/`), so no encoding is needed. */
-export function memberKey(channel: string, owner: string): string {
-  return `${channel}/${owner}`;
+/** KV key for one membership record: `<channel>/<principal>`, where `principal` is the member's
+ *  owner+actor dot-form (`<owner>.<actor>` = {@link principalKey}`.key`) — membership is per-agent
+ *  (owner+actor), not per-owner-shared. The channel is concrete (no `*`/`>`, validated at the write
+ *  path) so it is dotted-but-`/`-free, and a principal dot-form is `[A-Za-z0-9_.]` (also `/`-free), so
+ *  the single `/` separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`,
+ *  `.`, and `[A-Za-z0-9_]` are all legal KV-key chars (`/^[-/=.\w]+$/`), so no encoding is needed. */
+export function memberKey(channel: string, principal: string): string {
+  return `${channel}/${principal}`;
 }
 
-/** Inverse of {@link memberKey}: split a member key back into `{ channel, owner }`, or `null` if
- *  it isn't one (no `/`). Splits on the single separator — channels and owner ids are both `/`-free. */
-export function parseMemberKey(key: string): { channel: string; owner: string } | null {
+/** Inverse of {@link memberKey}: split a member key back into `{ channel, principal }`, or `null` if
+ *  it isn't one (no `/`). Splits on the single separator — channels and principal dot-forms are both
+ *  `/`-free (the `.` inside a principal is not a `/`). */
+export function parseMemberKey(key: string): { channel: string; principal: string } | null {
   const i = key.indexOf("/");
   if (i <= 0 || i >= key.length - 1) return null;
-  return { channel: key.slice(0, i), owner: key.slice(i + 1) };
+  return { channel: key.slice(0, i), principal: key.slice(i + 1) };
 }
 
 /** Name of the KV bucket holding the durable read-ACL registry (Plane-3) for a space — a
@@ -366,10 +438,12 @@ export function aclBucket(space: string): string {
   return `cotal_acl_${token(space)}`;
 }
 
-/** KV key for one owner's read-ACL record: the owner id (an nkey — `[A-Z0-9]`, `/`-free, a `token()`
- *  no-op; keyed like presence, which uses the bare id). */
-export function aclKey(owner: string): string {
-  return token(owner);
+/** KV key for one principal's read-ACL record: the member's owner+actor dot-form (`<owner>.<actor>` =
+ *  {@link principalKey}`.key`) — the read ACL is per-agent (owner+actor), like membership. The dot-form
+ *  is a legal KV key (`/^[-/=.\w]+$/`); pass it through UNCHANGED — do NOT run it through `token()`,
+ *  which rewrites `.`→`_` and would alias distinct principals onto one key. */
+export function aclKey(principal: string): string {
+  return principal;
 }
 
 // ---- Authoritative channel membership (broker CONNZ → derived feed) ----
@@ -388,10 +462,13 @@ export function membershipBucket(space: string): string {
   return `cotal_membership_${token(space)}`;
 }
 
-/** KV key for one agent's membership record: the agent id (an nkey — `[A-Z0-9]`, dot-free, a `token()`
- *  no-op; keyed like presence/acl, which use the bare id). */
-export function membershipKey(id: string): string {
-  return token(id);
+/** KV key for one agent's membership-feed record: the agent's owner+actor dot-form (`<owner>.<actor>` =
+ *  {@link principalKey}`.key`) — one record per agent (owner+actor), keyed like acl/members. Pass the
+ *  dot-form through UNCHANGED — do NOT run it through `token()` (which rewrites `.`→`_` and would alias
+ *  distinct principals). Both feed sources (the CONNZ live side and the durable members side) must
+ *  resolve to this same dot-form so the union does not double-key one agent. */
+export function membershipKey(principal: string): string {
+  return principal;
 }
 
 /** Reserved membership-bucket key for the feed's freshness heartbeat — the daemon re-stamps it every
@@ -427,17 +504,19 @@ export function accountDisconnectSubject(accountId: string): string {
 }
 
 /** Extract the channel pattern from a live chat SUBSCRIPTION subject in this space, or `null` if it
- *  isn't one. A subscription's sender slot is `*` (an agent's `sub.allow` is `chat.*.<channel>`), so the
- *  channel portion (wildcards preserved, e.g. `team.>`) is everything after. This is the ALLOWLIST the
- *  membership daemon uses to turn a connection's subscription list into its channel-subscription set —
- *  matched against the chat grammar (not a denylist of known plumbing, which rots when a new plumbing
- *  subject is added). Drops `_INBOX`, JetStream API, other-space, and non-chat subjects. The whole-chat
- *  god-view (`chat.*.>` → rest `">"`) IS returned here; the caller excludes such taps separately.
+ *  isn't one. A subscription's sender slots are `*` (an agent's `sub.allow` is `chat.*.*.<channel>`), so
+ *  the channel portion (wildcards preserved, e.g. `team.>`) is everything after the two identity tokens.
+ *  This is the ALLOWLIST the membership daemon uses to turn a connection's subscription list into its
+ *  channel-subscription set — matched against the chat grammar (not a denylist of known plumbing, which
+ *  rots when a new plumbing subject is added). Drops `_INBOX`, JetStream API, other-space, and non-chat
+ *  subjects. The whole-chat god-view (`chat.*.*.>` → rest `">"`) IS returned here; the SHORT-wildcard
+ *  taps (`chat.>`, `chat.*.>`) fail the ≥6-token arity and return `null` — the caller's god-tap detector
+ *  must surface those as reads-all separately (a length-checking parse must not let them vanish).
  *
  *  COUPLING (mitnick): both this extraction AND the membership daemon's god-tap detection ride
- *  {@link parseSubject}'s sender-at-[3] chat layout. The deferred read-containment grammar reorder
- *  (sender out of the subject) would move where the channel portion begins and silently break both —
- *  revisit this + the daemon's exclusion (and their tests) if that grammar ships. */
+ *  {@link parseSubject}'s owner+actor chat layout (channel after [4]). A future grammar reorder would move
+ *  where the channel portion begins and silently break both — revisit this + the daemon's exclusion
+ *  (and their tests) together. */
 export function channelFromChatSubscription(space: string, subject: string): string | null {
   if (!subject.startsWith(`${spacePrefix(space)}.chat.`)) return null;
   const p = parseSubject(subject);
@@ -521,28 +600,34 @@ export function dlvStream(space: string): string {
   return `DLV_${token(space)}`;
 }
 
-/** Subject of an owner's mixed durable inbox: `cotal.<space>.dinbox.<owner>` (one per owner). */
-export function dinboxSubject(space: string, owner: string): string {
-  return `${spacePrefix(space)}.dinbox.${routeToken(owner)}`;
+/** Subject of a principal's mixed durable inbox: `cotal.<space>.dinbox.<owner>.<actor>` (one per agent —
+ *  the fan-out delivers a per-member copy, and a member is a principal). Either identity slot accepts `*`
+ *  for the daemon's fan-out write grant (`dinbox.*.*`). */
+export function dinboxSubject(space: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.dinbox.${ownerToken(owner)}.${ownerToken(actor)}`;
 }
 
-/** Subject of an owner's post-auth delivery: `cotal.<space>.dlv.<owner>` (one per owner). */
-export function dlvSubject(space: string, owner: string): string {
-  return `${spacePrefix(space)}.dlv.${routeToken(owner)}`;
+/** Subject of a principal's post-auth delivery: `cotal.<space>.dlv.<owner>.<actor>` (one per agent). */
+export function dlvSubject(space: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.dlv.${ownerToken(owner)}.${ownerToken(actor)}`;
 }
 
-/** Parse the owner id out of an owner's mixed-inbox subject `cotal.<space>.dinbox.<owner>`, or null.
- *  The trusted reader is a SINGLE consumer over `dinbox.>` (all owners), so it recovers the per-message
- *  owner from the subject (the routing token is `routeToken(owner)` — an nkey, a `token()` no-op). */
-export function parseDinboxOwner(subject: string): string | null {
+/** Parse the principal out of a mixed-inbox subject `cotal.<space>.dinbox.<owner>.<actor>`, or null.
+ *  The trusted reader is a SINGLE consumer over `dinbox.>` (all principals), so it recovers the
+ *  per-message owner+actor from the subject (split only — the broker forge-locked the slots at write). */
+export function parseDinboxPrincipal(subject: string): { owner: string; actor: string } | null {
   const parts = subject.split(".");
-  // cotal.<space>.dinbox.<owner>
-  return parts.length === 4 && parts[0] === ROOT && parts[2] === "dinbox" ? parts[3] : null;
+  // cotal.<space>.dinbox.<owner>.<actor>
+  return parts.length === 5 && parts[0] === ROOT && parts[2] === "dinbox"
+    ? { owner: parts[3], actor: parts[4] }
+    : null;
 }
 
-/** An agent's bind-only per-owner consumer on {@link dlvStream} (filter `dlv.<owner>`). */
-export function dlvDurable(owner: string): string {
-  return `dlv_${token(owner)}`;
+/** An agent's bind-only per-member consumer on {@link dlvStream} (filter `dlv.<owner>.<actor>`). The
+ *  durable NAME is the principal's JetStream-safe dash-form (`dlv_<owner>-<actor>`) — a `.` is illegal
+ *  in a durable name, so this uses {@link principalKey}`.name`, never the dot-form. */
+export function dlvDurable(owner: string, actor: string): string {
+  return `dlv_${principalKey(owner, actor).name}`;
 }
 
 /** The single privileged fan-out consumer on the CHAT stream (delivery-daemon-pumped; routing, not
@@ -568,22 +653,23 @@ export function readerDurable(shard = 0, shards = 1): string {
 
 /** Name of the REMOVED per-instance chat live-tail durable. Retained only as the canonical name the
  *  read-ACL conformance test asserts an agent can NOT create — it has no live callers, the live read is
- *  now a native core subscription. */
-export function chatDurable(instance: string): string {
-  return `chat_${token(instance)}`;
+ *  now a native core subscription. Principal name-form (`chat_<owner>-<actor>`) for namespace consistency. */
+export function chatDurable(owner: string, actor: string): string {
+  return `chat_${principalKey(owner, actor).name}`;
 }
 
-/** Consumer name for an instance's short-lived chat **history** reads (join-backfill, focus-recall,
- *  drop-marker). A single per-instance name, scoped to the agent's own id so its create/info/fetch/
- *  delete grants name-scope to that id — a peer can never bind it — while the per-read single
- *  `filter_subject` is what the create-time ACL pins to `allowSubscribe`. */
-export function chatHistDurable(instance: string): string {
-  return `chathist_${token(instance)}`;
+/** Consumer name for an agent's short-lived chat **history** reads (join-backfill, focus-recall,
+ *  drop-marker). A single per-agent name in the principal's JetStream-safe dash-form
+ *  (`chathist_<owner>-<actor>`) so its create/info/fetch/delete grants name-scope to that principal —
+ *  a peer can never bind it — while the per-read single `filter_subject` is what the create-time ACL
+ *  pins to `allowSubscribe`. */
+export function chatHistDurable(owner: string, actor: string): string {
+  return `chathist_${principalKey(owner, actor).name}`;
 }
 
-/** Durable consumer name for an instance's private DM inbox. */
-export function dmDurable(instance: string): string {
-  return `dm_${token(instance)}`;
+/** Durable consumer name for an agent's private DM inbox — the principal's dash-form (`dm_<owner>-<actor>`). */
+export function dmDurable(owner: string, actor: string): string {
+  return `dm_${principalKey(owner, actor).name}`;
 }
 
 /** Durable consumer name (shared across instances of a role) for the task queue. */
