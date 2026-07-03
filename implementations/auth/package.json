@@ -29,7 +29,8 @@
     "jose": "^6.2.3"
   },
   "devDependencies": {
-    "@nats-io/transport-node": "^3.4.0"
+    "@nats-io/transport-node": "^3.4.0",
+    "better-auth": "^1.6.23"
   },
   "files": [
     "dist"

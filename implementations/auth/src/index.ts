@@ -29,3 +29,11 @@ export {
   type UserTokenIssuer,
   type CreateIssuerOpts,
 } from "./issuer.js";
+export {
+  createIdpBridge,
+  type IdpConfig,
+  type ActorGrant,
+  type CreateIdpBridgeOpts,
+  type ExchangeResult,
+  type IdpBridge,
+} from "./idp.js";
