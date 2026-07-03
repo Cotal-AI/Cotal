@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { c } from "./ui.js";
+import { c } from "../ui.js";
 
 /**
  * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. `COTAL_DETACH_KEY`

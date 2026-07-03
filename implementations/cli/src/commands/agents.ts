@@ -2,7 +2,7 @@ import { CONTROL_ADMIN, type FlagSpec, type FlagValues, type ParsedArgs } from "
 import { targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
-import { attachClient } from "../lib/attach-client.js";
+import { attachClient, detachKey } from "../lib/attach-client.js";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -82,7 +82,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.creds, CONTROL_ADMIN);
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
-  console.error(c.dim(`attached to ${v.name} — Ctrl-] to detach`));
+  console.error(c.dim(`attached to ${v.name} — ${detachKey().label} to detach`));
   await attachClient(ws);
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
