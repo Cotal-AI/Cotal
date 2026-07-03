@@ -8,7 +8,7 @@
  * and the pinned resolver rejects a non-https non-loopback origin.
  * Run: pnpm smoke:auth-issuer
  */
-import { decodeProtectedHeader } from "jose";
+import { SignJWT, decodeProtectedHeader } from "jose";
 import { assertDerivedOwnerToken } from "@cotal-ai/core";
 import {
   MAX_TOKEN_TTL_SEC,
@@ -118,6 +118,18 @@ await rejects("a non-numeric ttl is refused at mint",
 await rejects("a non-string space is refused at mint",
   () => issuer.issue({ owner, space: 123 as unknown as string, actor: "agent_1" }), "space");
 check("issued owner is a well-formed derived token", assertDerivedOwnerToken(v1.owner) === v1.owner);
+
+// ---- exact-audience: a multi-aud bearer signed by the REAL active key must still be rejected ----
+{
+  const t = Math.floor(Date.now() / 1000);
+  const multiAud = await new SignJWT({ scope: [], ver: USER_TOKEN_VER, act: { owner, actor: "agent_1" } })
+    .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: key2.kid })
+    .setSubject(owner).setIssuer(ISS).setAudience([SPACE, "other-space"])
+    .setIssuedAt(t).setNotBefore(t).setExpirationTime(t + 60)
+    .sign(key2.privateKey);
+  await rejects("a multi-audience bearer is rejected — aud must be exactly the space, not contain it",
+    () => validateUserToken(multiAud, V), "aud");
+}
 
 // ---- pinned JWKS resolver origin guard ----
 check("pinned resolver accepts https", !!pinnedJwksResolver("https://auth.cotal.test/.well-known/jwks.json"));

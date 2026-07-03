@@ -86,6 +86,11 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     clockTolerance: opts.clockToleranceSec ?? 5,
   });
 
+  // jose's `audience` option is SET-MEMBERSHIP (an aud array containing the space passes) — the
+  // bearer must be scoped to EXACTLY this space: the plain string, or a singleton array of it. A
+  // multi-audience bearer would be replayable across spaces.
+  if (payload.aud !== opts.audience && !(Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === opts.audience))
+    throw new Error("user token: aud must be exactly the space — a multi-audience bearer is rejected");
   if (typeof payload.exp !== "number") throw new Error("user token: exp is required (tokens must be short-lived)");
   if (typeof payload.iat !== "number") throw new Error("user token: iat is required");
   if (typeof payload.nbf !== "number") throw new Error("user token: nbf is required");

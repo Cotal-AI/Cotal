@@ -190,6 +190,14 @@ await rejects("wrong iss is rejected",
   async () => synth.exchange(await mintIdp((j) => baseIdp(j).setIssuer("https://other.example")), { actor: "agent_1" }));
 await rejects("wrong aud is rejected",
   async () => synth.exchange(await mintIdp((j) => baseIdp(j).setAudience("https://other.example")), { actor: "agent_1" }));
+await rejects("a MULTI-audience token is rejected — exact aud, not set-membership",
+  async () => synth.exchange(await mintIdp((j) => baseIdp(j).setAudience([IDP_ISS, "https://other.example"])), { actor: "agent_1" }), "aud");
+check("a singleton-array aud equal to the configured audience is accepted (RFC 7519 array form)",
+  (await synth.exchange(await mintIdp((j) => baseIdp(j).setAudience([IDP_ISS])), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, `${IDP_ISS}|human-42`));
+await rejects("a missing iat is rejected",
+  async () => synth.exchange(await mintIdp((j) => j.setSubject("human-42").setIssuer(IDP_ISS).setAudience(IDP_ISS).setExpirationTime(now() + 300)), { actor: "agent_1" }), "iat");
+await rejects("an embedded jwk header is rejected outright",
+  async () => synth.exchange(await mintIdp(baseIdp, { jwk: { kty: "OKP", crv: "Ed25519", x: "AA" } }), { actor: "agent_1" }), "jwk");
 await rejects("an expired IdP token is rejected",
   async () => synth.exchange(await mintIdp((j) => j.setSubject("human-42").setIssuer(IDP_ISS).setAudience(IDP_ISS).setIssuedAt(now() - 600).setExpirationTime(now() - 300)), { actor: "agent_1" }));
 await rejects("a post-dated (future-iat) IdP token is rejected",

@@ -100,6 +100,12 @@ async function verifyIdpToken(token: string, idp: IdpConfig): Promise<string> {
     clockTolerance: tol,
   });
 
+  // jose's `audience` option is SET-MEMBERSHIP (an aud array containing the expected value
+  // passes) — exact means the token's audience set is exactly {configured}: the plain string, or
+  // a singleton array of it. A multi-audience session proof minted for other services too must
+  // not be exchangeable here.
+  if (payload.aud !== idp.audience && !(Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === idp.audience))
+    throw new Error("idp token: aud must be exactly the configured audience — a multi-audience session proof is rejected");
   if (typeof payload.exp !== "number") throw new Error("idp token: exp is required — an IdP session proof must expire");
   if (typeof payload.iat !== "number") throw new Error("idp token: iat is required");
   if (payload.iat > Math.floor(Date.now() / 1000) + tol) throw new Error("idp token: iat is in the future");
