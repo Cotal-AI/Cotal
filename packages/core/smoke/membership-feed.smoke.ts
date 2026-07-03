@@ -71,12 +71,12 @@ try {
   const aliceCreds = await provisionAgent(noop, auth, alice, { subscribe: ["general"], allowSubscribe: ["general", "review.>", "logs"] });
   const a1 = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(aliceCreds)), name: "cotal:alice" });
   conns.push(a1);
-  a1.subscribe(chatSubject(space, "*", "general"));
-  a1.subscribe(chatSubject(space, "*", "review.>")); // wildcard pattern preserved
+  a1.subscribe(chatSubject(space, "*", "*", "general"));
+  a1.subscribe(chatSubject(space, "*", "*", "review.>")); // wildcard pattern preserved
   await a1.flush();
   const a1b = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(aliceCreds)), name: "cotal:alice" });
   conns.push(a1b);
-  a1b.subscribe(chatSubject(space, "*", "logs")); // a second conn for the SAME nkey
+  a1b.subscribe(chatSubject(space, "*", "*", "logs")); // a second conn for the SAME nkey
   await a1b.flush();
 
   // --- bob: a durable member of #deploys (no live conn), written straight to the members registry ---
@@ -119,7 +119,7 @@ try {
   const daveCreds = await provisionAgent(noop, auth, dave, { subscribe: ["general"], allowSubscribe: [">"] });
   const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:dave" });
   conns.push(dnc);
-  dnc.subscribe(chatSubject(space, "*", ">")); // chat.*.> — reads everything
+  dnc.subscribe(chatSubject(space, "*", "*", ">")); // chat.*.> — reads everything
   await dnc.flush();
 
   // --- run the feed and force a reconcile ---

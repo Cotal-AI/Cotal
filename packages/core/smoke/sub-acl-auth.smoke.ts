@@ -128,25 +128,25 @@ try {
   // ALLOWED — a concrete channel under the wildcard ACL (the self-serve live join subject).
   check(
     "A: subscribe chat.*.review.alpha (in review.>) is allowed",
-    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "review.alpha"))) === "allowed",
+    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "*", "review.alpha"))) === "allowed",
   );
   check(
     "A: subscribe chat.*.review.deep.nested (in review.>) is allowed",
-    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "review.deep.nested"))) === "allowed",
+    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "*", "review.deep.nested"))) === "allowed",
   );
   // DENIED — out-of-ACL channels.
   check(
     "A: subscribe chat.*.secret (out of ACL) is DENIED",
-    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "secret"))) === "denied",
+    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "*", "secret"))) === "denied",
   );
   check(
     "A: subscribe chat.*.general (out of ACL) is DENIED",
-    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "general"))) === "denied",
+    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "*", "general"))) === "denied",
   );
   // DENIED — bare `review` is NOT covered by `review.>` (one-or-more-tokens wildcard semantics).
   check(
     "A: subscribe chat.*.review (bare root, NOT in review.>) is DENIED",
-    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "review"))) === "denied",
+    (await trySubscribe(aCreds, a.id, chatSubject(space, "*", "*", "review"))) === "denied",
   );
   // DENIED — the space firehose escape hatch.
   check(
@@ -162,11 +162,11 @@ try {
   });
   check(
     "B: subscribe chat.*.ops (in its ACL) is allowed",
-    (await trySubscribe(bCreds, b.id, chatSubject(space, "*", "ops"))) === "allowed",
+    (await trySubscribe(bCreds, b.id, chatSubject(space, "*", "*", "ops"))) === "allowed",
   );
   check(
     "B: subscribe chat.*.review.alpha (A's channel, out of B's ACL) is DENIED",
-    (await trySubscribe(bCreds, b.id, chatSubject(space, "*", "review.alpha"))) === "denied",
+    (await trySubscribe(bCreds, b.id, chatSubject(space, "*", "*", "review.alpha"))) === "denied",
   );
 
   console.log(`\nSUB-ACL SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
