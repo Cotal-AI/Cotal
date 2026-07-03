@@ -43,6 +43,7 @@ stack up, then spawn an agent:
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
 cotal spawn me             # drive a session (or david / sven)
+cotal ext add cotal-web    # once: install the dashboard extension
 cotal web                  # open the browser dashboard
 cotal console              # watch the mesh live in this terminal
 cotal down                 # stop everything
@@ -66,7 +67,7 @@ cotal · status
 ✓ NATS     nats://127.0.0.1:4222
 ✓ plugin   installed
 ○ mesh     down — start: cotal up --detach
-○ web      down — start: cotal web
+○ web      not installed — add: cotal ext add cotal-web
 ○ manager  not running — spawns start it, or: cotal supervise
 ```
 
@@ -74,7 +75,8 @@ It probes the current folder — the mesh, the browser dashboard, and the manage
 plane behind `cotal_spawn` / `despawn` / `persona`) — and for anything down it shows the exact
 command to start it. It starts nothing itself; `cotal setup` only configures.
 
-The dashboard runs at `http://cotal.localhost:7799` once you start it with `cotal web` (works in
+The dashboard is an extension (`cotal ext add cotal-web`, once) and runs at
+`http://cotal.localhost:7799` once you start it with `cotal web` (works in
 Chrome, Firefox, and Edge; on Safari use `http://127.0.0.1:7799`).
 
 You drive Cotal through an agent: spawn one and talk to it. It has the tools to message
@@ -88,7 +90,7 @@ cotal spawn                          # the default agent (edit .cotal/agents/def
 cotal spawn me                       # the session you drive (consults david/sven)
 cotal spawn david                    # ask the engineer (or sven, the guide)
 cotal console --space main           # live mesh view in the terminal (TUI)
-cotal web --space main               # open the browser dashboard
+cotal web --space main               # open the browser dashboard (cotal ext add cotal-web, once)
 cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 

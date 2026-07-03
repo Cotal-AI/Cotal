@@ -1,0 +1,36 @@
+{
+  "name": "@cotal-ai/demo",
+  "description": "Cotal demo traffic generator — adds the hidden `demo` command to the cotal CLI (dev aid; install by path: cotal ext add ./implementations/demo).",
+  "version": "0.9.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "implementations/demo"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": "*",
+    "@cotal-ai/workspace": "*"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ]
+}

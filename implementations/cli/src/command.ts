@@ -2,6 +2,12 @@ import { commandUsage, parseCommandArgs, type Command, type Registry } from "@co
 import { c } from "./ui.js";
 import { isExtensionStub, materializeExtensionCommand, overlayExtensions, setCommandSurface } from "./ext-loader.js";
 
+/** Display order for the help groups — an explicit ranking, NOT registration order: modules
+ *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
+ *  order, so the daemon surface could otherwise print above Setup. Groups not listed here
+ *  (e.g. an extension's custom group) follow, in first-registered order. */
+const GROUP_ORDER = ["Setup", "Mesh", "Messaging", "Agents", "Observe", "Extensions", "Manager"];
+
 function help(commands: Command[]): void {
   // `__`-prefixed commands are internal (e.g. `__complete`, the completion dispatcher); `hidden`
   // ones are runnable dev/test aids (e.g. `demo`) kept off the surface — hide both.
@@ -11,9 +17,14 @@ function help(commands: Command[]): void {
     const g = cmd.group ?? "Commands";
     (groups.get(g) ?? groups.set(g, []).get(g)!).push(cmd);
   }
+  const rank = (g: string) => {
+    const i = GROUP_ORDER.indexOf(g);
+    return i === -1 ? GROUP_ORDER.length : i;
+  };
+  const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
   const pad = Math.max(...visible.map((c) => c.name.length));
   let out = `${c.bold("cotal")} — lateral agent coordination over NATS\n`;
-  for (const [group, cmds] of groups) {
+  for (const [group, cmds] of ordered) {
     out += `\n${c.bold(group)}\n`;
     for (const cmd of cmds) out += `  ${cmd.name.padEnd(pad)}  ${c.dim(cmd.summary)}\n`;
   }

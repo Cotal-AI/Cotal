@@ -88,7 +88,8 @@ processes, all stopped by `cotal down`:
   (`cotal_spawn`/`despawn`/`purge`/`persona`). Writes `.cotal/manager.pid` and
   `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
 
-The **web dashboard** is *not* part of `cotal up` — start it with `cotal web` (re-execs the CLI
+The **web dashboard** is *not* part of `cotal up` — it ships as the `cotal-web` extension
+(`cotal ext add cotal-web`); start it with `cotal web` (re-execs the CLI
 detached; `.cotal/web.pid` / `.cotal/web.log`), addressed as `http://cotal.localhost:7799` (binds
 loopback; `*.localhost` resolves in Chrome/Firefox/Edge, Safari may need plain `127.0.0.1`).
 `webUp()` probes the port for setup's status card.

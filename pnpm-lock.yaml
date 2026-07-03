@@ -283,6 +283,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
 
+  implementations/demo:
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
+
   implementations/manager:
     dependencies:
       '@cotal-ai/core':
@@ -331,6 +340,15 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+
+  implementations/web:
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
 
   packages/core:
     dependencies:

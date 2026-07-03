@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { connect } from "node:net";
-import { readFileSync, writeFileSync, openSync, closeSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -14,11 +13,7 @@ import {
   clearChannel,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cotalPath } from "../lib/paths.js";
-import { resolveSpace } from "../lib/status.js";
-import { connectOrExit } from "../lib/connect.js";
-import { c } from "../ui.js";
-import { selfArgv } from "../lib/self-exec.js";
+import { c, connectOrExit } from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -30,10 +25,10 @@ export const WEB_PORT = 7799;
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
 
 const PAGE: Record<string, { path: string; type: string }> = {
-  "/": { path: join(here, "../web/index.html"), type: "text/html; charset=utf-8" },
-  "/app.js": { path: join(here, "../web/app.js"), type: "text/javascript; charset=utf-8" },
-  "/graph": { path: join(here, "../web/graph.html"), type: "text/html; charset=utf-8" },
-  "/graph.js": { path: join(here, "../web/graph.js"), type: "text/javascript; charset=utf-8" },
+  "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
+  "/app.js": { path: join(here, "web/app.js"), type: "text/javascript; charset=utf-8" },
+  "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
+  "/graph.js": { path: join(here, "web/graph.js"), type: "text/javascript; charset=utf-8" },
 };
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
@@ -234,22 +229,6 @@ function debounce(fn: () => void, ms: number): () => void {
     t = setTimeout(fn, ms);
   };
 }
-
-/** True if something is already listening on the dashboard port (loopback). */
-export function webUp(port: number = WEB_PORT): Promise<boolean> {
-  return new Promise((res) => {
-    const sock = connect(port, "127.0.0.1");
-    sock.setTimeout(400);
-    const done = (up: boolean) => {
-      sock.destroy();
-      res(up);
-    };
-    sock.once("connect", () => done(true));
-    sock.once("timeout", () => done(false));
-    sock.once("error", () => done(false));
-  });
-}
-
 
 async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
   const chunks: Buffer[] = [];

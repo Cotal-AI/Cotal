@@ -7,8 +7,6 @@ import { meshes } from "./commands/meshes.js";
 import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
-import { demo } from "./commands/demo.js";
-import { web } from "./commands/web.js";
 import { spawn, spawnComplete, spawnFlags } from "./commands/spawn.js";
 import { attach, attachFlags, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { c } from "./ui.js";
@@ -304,33 +302,9 @@ const baseCommands: Command[] = [
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
     run: console_,
   },
-  {
-    kind: "command",
-    name: "web",
-    group: "Observe",
-    summary: "browser observability dashboard — presence, channels, live feed",
-    flags: [
-      ...targetFlags,
-      { name: "port", type: "string", value: "<n>", description: "HTTP port (default 7799)" },
-      { name: "no-open", type: "boolean", description: "don't open the browser" },
-    ],
-    run: web,
-  },
-  {
-    kind: "command",
-    name: "demo",
-    group: "Observe",
-    // A dev/test traffic generator (see docs/protocol-view.md) — runnable, but kept off the
-    // top-level help so it doesn't clutter the user-facing surface.
-    hidden: true,
-    summary: "replay a scripted multi-agent trace to exercise the console/web",
-    flags: [
-      ...targetFlags,
-      { name: "interval", type: "string", value: "<ms>", description: "delay between messages" },
-      { name: "once", type: "boolean", description: "one pass, then exit" },
-    ],
-    run: demo,
-  },
+  // `web` (dashboard) and `demo` (trace generator) moved out to the `cotal-web` and
+  // `@cotal-ai/demo` extension packages (stage 4) — installed via `cotal ext add`, they
+  // self-register here and appear in this same surface.
 ];
 
 registry.register(...baseCommands);
