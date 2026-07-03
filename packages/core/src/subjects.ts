@@ -293,6 +293,20 @@ export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: bo
   }
 }
 
+/** Non-throwing {@link assertPrincipalOwnerToken} for hot per-message drop guards — true iff `owner` is a
+ *  real principal owner (a derived `u_…`, or `local` when `allowLocal`). The message-surfacing paths call
+ *  this on `parsed.owner` alongside the `from.id === parsed.sender` check, so a structurally-valid old-shape
+ *  alias (`chat.<nkey>.team.backend`, owner = an nkey) is DROPPED at read time — belt to cred death, not a
+ *  dependency on it. `allowLocal` defaults true: the dev/static path is a legitimate live sender. */
+export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = { allowLocal: true }): boolean {
+  try {
+    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by

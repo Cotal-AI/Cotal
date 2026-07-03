@@ -100,6 +100,7 @@ import {
   isConcreteChannel,
   normalizeMentions,
   parseSubject,
+  isPrincipalOwnerToken,
   type ParsedSubject,
   presenceBucket,
   membershipBucket,
@@ -796,7 +797,7 @@ export class CotalEndpoint extends EventEmitter {
           // the server policed who could publish; the payload `from` is advisory and must
           // match. Reject before the handler acts on a request claiming a forged sender.
           const parsed = parseSubject(m.subject);
-          if (!parsed || req.from?.id !== parsed.sender) {
+          if (!parsed || req.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
             this.emit(
               "error",
               new Error(
@@ -1621,7 +1622,7 @@ export class CotalEndpoint extends EventEmitter {
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
-          if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === owner) continue;
+          if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === owner) continue;
           await this.publishDinbox(owner, { msg, channel, seq: m.seq, reason: "durable-channel", generation });
           copied++;
         }
@@ -1757,7 +1758,7 @@ export class CotalEndpoint extends EventEmitter {
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
-    if (!msg.from || msg.from.id !== parsed.sender) { m.ack(); return; } // authenticity
+    if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
     const seq = m.seq;
     if ((await this.deliveryClassFresh(channel)) === "durable") {
       for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
@@ -2096,7 +2097,7 @@ export class CotalEndpoint extends EventEmitter {
         // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
         // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
         const parsed = parseSubject(m.subject);
-        if (!parsed || !msg.from || msg.from.id !== parsed.sender) {
+        if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
           m.term();
           this.emit(
             "error",
@@ -2189,7 +2190,7 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", e as Error);
           return;
         }
-        if (!msg.from || msg.from.id !== parsed.sender) return; // spoof/malformed — drop (at-most-once)
+        if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", msg, delivery, {
@@ -2393,7 +2394,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Same authenticity guard as the tail; skip our own echoes in history.
       const parsed = parseSubject(sm.subject);
-      if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
+      if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
       this.emit("message", msg, noop, { historical: true, kind: "channel" } satisfies MessageMeta);
       n++;
@@ -2439,7 +2440,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Same authenticity guard as the tail/backfill; skip our own echoes.
       const parsed = parseSubject(sm.subject);
-      if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
+      if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       collected.push(msg);
     }
     const dropped = await this.channelDropped(subject, sinceSeq);
