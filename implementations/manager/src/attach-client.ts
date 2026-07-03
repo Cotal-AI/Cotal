@@ -4,12 +4,14 @@ import WebSocket from "ws";
 const DETACH = 0x1d;
 
 /**
- * Terminal modes a full-screen child (e.g. Claude's TUI) commonly turns on but that we must undo
- * locally on detach/exit: the agent keeps running after Ctrl-], so it never restores OUR terminal.
- * Without this, detaching from a mouse-tracking TUI leaves the terminal reporting every cursor move
- * as input (a stream of `ESC[<…M` escape codes), or its focus in/out as `ESC[I`/`ESC[O`. Disables
- * all mouse-report modes + focus reporting + bracketed paste, resets the keypad/cursor-key modes,
- * shows the cursor, and resets attributes. Deliberately does NOT toggle the alternate screen.
+ * Terminal modes a full-screen child (a fullscreen TUI: OpenCode, or Claude under `/tui fullscreen`)
+ * commonly turns on but that we must undo locally on detach/exit: the agent keeps running after
+ * Ctrl-], so it never restores OUR terminal. Without this, detaching from a mouse-tracking TUI leaves
+ * the terminal reporting every cursor move as input (a stream of `ESC[<…M` escape codes), or its
+ * focus in/out as `ESC[I`/`ESC[O`. Disables all mouse-report modes + focus reporting + bracketed
+ * paste, resets the keypad/cursor-key modes, shows the cursor, and resets attributes. Leaving the
+ * alternate screen is handled separately (ALT_LEAVE_SEQ), only when we actually entered it — see
+ * cleanup().
  */
 const MOUSE_OFF = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l"; // all mouse tracking off
 const RESTORE =
@@ -21,14 +23,24 @@ const RESTORE =
   "\x1b[?25h" + // show cursor
   "\x1b[0m"; // reset attributes
 
-// Wheel-scroll for full-screen children. A full-screen TUI (e.g. OpenCode) runs in the alternate
-// screen — where the terminal's native scrollback is dead — and scrolls its content itself off mouse
-// reports. But it enables that mouse capture on ITS pty, and the enable doesn't reliably survive the
-// attach hop (backlog eviction / nested pty), so our terminal never reports the wheel and scrolling
-// dies. So while the child is in the alternate screen we enable SGR mouse reporting on OUR terminal
-// and translate each wheel tick into PageUp/PageDown — the keystrokes every full-screen TUI treats
-// as "scroll the view" (OpenCode: `messages_page_up`/`_down`). Inline children (Claude) never enter
-// the alt-screen, so this stays off and their native terminal-scrollback wheel is untouched.
+// Leave the alternate screen on detach, but ONLY if the child put us there (altScreen). The attach
+// snapshot faithfully re-enters the child's alt-screen (`?1049h`) on our terminal; without a matching
+// leave we strand it in the alt buffer, which has no scrollback and — with xterm alt-scroll — turns
+// the wheel into ↑/↓ that walk shell history. Leaving the alt buffer IS the whole fix: alt-scroll
+// (`?1007`) only acts inside the alt buffer, so `?1049l` alone makes it inert. We deliberately don't
+// send `?1007l` — nothing on this path ever enabled it (unlike console.ts, which sets `?1007h` on
+// entry), so disabling it would clobber the operator's own alternate-scroll preference for later apps.
+const ALT_LEAVE_SEQ = "\x1b[?1049l"; // leave alt-screen — alt-scroll is inert once back in the main buffer
+
+// Wheel-scroll for full-screen children. A fullscreen TUI (OpenCode, or Claude under `/tui
+// fullscreen`) runs in the alternate screen — where the terminal's native scrollback is dead — and
+// scrolls its content itself off mouse reports. But it enables that mouse capture on ITS pty, and the
+// enable doesn't reliably survive the attach hop (backlog eviction / nested pty), so our terminal
+// never reports the wheel and scrolling dies. So while the child is in the alternate screen we enable
+// SGR mouse reporting on OUR terminal and translate each wheel tick into PageUp/PageDown — the
+// keystrokes a fullscreen TUI treats as "scroll the view" (OpenCode: `messages_page_up`/`_down`;
+// Claude's fullscreen binds PageUp/PageDown too). A child in the normal screen (inline Claude) keeps
+// altScreen=false, so this stays off and its native terminal-scrollback wheel is untouched.
 const MOUSE_ON = "\x1b[?1002h\x1b[?1006h"; // button+drag tracking, SGR encoding
 const PAGE_UP = "\x1b[5~";
 const PAGE_DOWN = "\x1b[6~";
@@ -142,7 +154,9 @@ export function attachClient(url: string): Promise<void> {
       stdin.off("data", onInput);
       process.stdout.off("resize", sendResize);
       // Undo terminal modes the (still-running) agent's TUI enabled — it won't restore us on detach.
-      if (process.stdout.isTTY) process.stdout.write(RESTORE);
+      // If the child put us in its alternate screen (altScreen), leave it too so the terminal isn't
+      // stranded in the alt buffer; an inline child (altScreen=false) keeps its scrollback.
+      if (process.stdout.isTTY) process.stdout.write(RESTORE + (altScreen ? ALT_LEAVE_SEQ : ""));
       if (stdin.isTTY) stdin.setRawMode(wasRaw);
       stdin.pause();
     };
