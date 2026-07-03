@@ -36,7 +36,7 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
+import { askManager, failIfNotOk, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 
@@ -184,7 +184,7 @@ async function spawnDetached(
     transcript,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
-  }, t.creds, CONTROL_PRIVILEGED, 40_000);
+  }, t.creds, CONTROL_PRIVILEGED, START_TIMEOUT_MS);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(

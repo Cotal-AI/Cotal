@@ -23,6 +23,13 @@ import type { AgentConfig } from "./config.js";
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
 export type { AttentionMode, ChannelMode };
 
+/** Client-side request window for the manager's readiness-waiting `start` op (#159 B1): the manager
+ *  replies only on a REAL outcome — presence join, process exit, or its ~30s readiness backstop —
+ *  so a spawn request must OUTLIVE that window, not the 5s op default. The tier rule forbids
+ *  importing the manager's READINESS_TIMEOUT_MS here; the launch-parity smoke enforces the
+ *  relation by test. */
+export const SPAWN_TIMEOUT_MS = 40_000;
+
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
 function buildMeta(config: AgentConfig): Record<string, string> | undefined {
@@ -487,6 +494,9 @@ export class MeshAgent extends EventEmitter {
   // ---- supervision ---------------------------------------------------------
 
   /** Ask the manager to spawn a new teammate into this space (its `start` op).
+   *  #159 B1: the manager replies to `start` only on a REAL outcome — presence join, process exit,
+   *  or its ~30s readiness backstop — so the request must outlive that window ({@link SPAWN_TIMEOUT_MS}),
+   *  not the 5s op default.
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (default the manager's `cotal`/Claude), `opts.model` overrides the
@@ -500,7 +510,7 @@ export class MeshAgent extends EventEmitter {
     return this.ep.requestControl(CONTROL_PRIVILEGED, {
       op: "start",
       args: { name, role, agent: opts?.agent, model: opts?.model, cwd: opts?.cwd },
-    });
+    }, SPAWN_TIMEOUT_MS);
   }
 
   /** Ask the manager to tear a teammate down (its `stop` op). Graceful by default —
