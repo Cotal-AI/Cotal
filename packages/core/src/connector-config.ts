@@ -54,14 +54,20 @@ export interface CotalConfig {
   connectors?: Record<string, ConnectorConfig>;
 }
 
-/** Operator-level config path: `$XDG_CONFIG_HOME/cotal/config.json`; else `%APPDATA%\Cotal\config.json`
- *  on Windows (the platform's per-user roaming config dir) or `~/.config/cotal/config.json` on POSIX. */
-export function globalConfigPath(): string {
+/** Operator-level config dir: `$XDG_CONFIG_HOME/cotal`; else `%APPDATA%\Cotal` on Windows (the
+ *  platform's per-user roaming config dir) or `~/.config/cotal` on POSIX. Holds `config.json`
+ *  and the installed-extensions prefix. */
+export function globalConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  if (xdg) return join(xdg, "cotal", "config.json");
+  if (xdg) return join(xdg, "cotal");
   if (process.platform === "win32" && process.env.APPDATA?.trim())
-    return join(process.env.APPDATA.trim(), "Cotal", "config.json");
-  return join(homedir(), ".config", "cotal", "config.json");
+    return join(process.env.APPDATA.trim(), "Cotal");
+  return join(homedir(), ".config", "cotal");
+}
+
+/** Operator-level config path: `<globalConfigDir()>/config.json`. */
+export function globalConfigPath(): string {
+  return join(globalConfigDir(), "config.json");
 }
 
 /** Space-local config path: `<root>/.cotal/config.json`. */
