@@ -11,7 +11,7 @@ const MAIN = fileURLToPath(new URL(`./main${ext}`, import.meta.url));
 
 /** Provider API keys pi resolves from the environment (AuthStorage falls back to env).
  *  Forwarded when present so a spawned peer has credentials for its model. */
-const PROVIDER_KEYS = [
+export const PROVIDER_KEYS = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "GEMINI_API_KEY",
