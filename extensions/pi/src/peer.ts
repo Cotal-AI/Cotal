@@ -1,5 +1,5 @@
 import { MeshAgent, InboxTurn, configFromEnv } from "@cotal-ai/connector-core";
-import type { InboxItem } from "@cotal-ai/connector-core";
+import type { InboxItem, AgentConfig } from "@cotal-ai/connector-core";
 import {
   AuthStorage,
   ModelRegistry,
@@ -104,8 +104,8 @@ function turnReplyText(messages: readonly unknown[]): string | undefined {
  * stays on the stream and becomes the next turn's origin — so a private DM is never folded
  * into a channel broadcast.
  */
-export async function runPiPeer(): Promise<void> {
-  const mesh = new MeshAgent(configFromEnv());
+export async function runPiPeer(config: AgentConfig = configFromEnv()): Promise<void> {
+  const mesh = new MeshAgent(config);
   mesh.start();
 
   const authStorage = AuthStorage.create();

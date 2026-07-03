@@ -44,6 +44,10 @@ export const piConnector: Connector = {
       const value = process.env[key];
       if (value) env[key] = value;
     }
+    // The connector's own launch-mode knob (headless embedded loop vs. interactive
+    // TUI host). pi-connector-owned: forwarded by NAME the same way as the model
+    // keys above, never via ...process.env. See main.ts for the dispatch.
+    if (process.env.PI_PEER_MODE) env.PI_PEER_MODE = process.env.PI_PEER_MODE;
     return { command: TSX, args: [MAIN], env };
   },
 };
