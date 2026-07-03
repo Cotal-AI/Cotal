@@ -53,7 +53,7 @@ fit lateral pub/sub.
   wildcard.
 - **Delivery classes + self-serve join + durable backstop (SPEC v0.3 rebuild — the current model).**
   Channel delivery is two wire-observable classes (SPEC §4/§7). **`live`** is a native core-NATS
-  subscription to `cotal.<space>.chat.*.<channel>` bounded by the agent's `sub.allow`: **join =
+  subscription to `cotal.<space>.chat.*.*.<channel>` bounded by the agent's `sub.allow`: **join =
   subscribe, leave = unsubscribe, no manager**, at-most-once. **`durable`** is `live` plus a
   per-subscriber durable backstop ("Plane-3"), so a post still reaches a busy/offline agent on its
   next turn (SPEC §8): a privileged **fan-out writer** copies each post into every eligible member's
@@ -571,35 +571,39 @@ when it frees up, with nothing missed and no interruption required. One mechanis
 three things at once: live delivery, the inbound buffer, and late-join history.
 
 - **Subjects (delivery modes).** The **sender is encoded in the subject**, a server-policeable
-  fact, not a self-asserted payload field. `parseSubject()` is the single authority on the layout
-  (the sender position is asymmetric: `[3]` for chat, `[4]` for the rest; read it through
-  `parseSubject`, never index a subject directly).
-  - multicast → `cotal.<space>.chat.<sender>.<channel…>` (broadcast to a channel)
-  - unicast → `cotal.<space>.inst.<target>.<sender>` (one specific endpoint)
-  - anycast → `cotal.<space>.svc.<role>.<sender>` (any one instance of a service, i.e. role)
-  - control → `cotal.<space>.ctl.<service>.<sender>` (request/reply to a service)
+  fact, not a self-asserted payload field. The sender is a **principal** — an `<owner>.<actor>` pair
+  (the human/account owner and the agent actor; see *Identity and authorization*), carried as two
+  adjacent tokens. `parseSubject()` is the single authority on the layout (the sender's two tokens
+  sit at `[3][4]` for chat, `[4][5]` for svc/ctl, `[5][6]` for inst; read it through `parseSubject`,
+  never index a subject directly).
+  - multicast → `cotal.<space>.chat.<owner>.<actor>.<channel…>` (broadcast to a channel)
+  - unicast → `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` (one specific endpoint)
+  - anycast → `cotal.<space>.svc.<role>.<owner>.<actor>` (any one instance of a service, i.e. role)
+  - control → `cotal.<space>.ctl.<service>.<owner>.<actor>` (request/reply to a service)
   - Receivers read the sender **from the subject**; the payload `from` is advisory and is
     rejected on mismatch (fail-closed, on every receive path, see *Identity and authorization*).
   - The message *class* (channel/dm/anycast) is likewise **derived from the delivering subject**
     and surfaced to listeners as `MessageMeta.kind`: authenticated, **not** read from the
     forgeable payload `to`/`toService`. A peer publishing a broadcast with payload `{to:victim}`
     can no longer make it classify as a DM.
-  - `*` matches one token, `>` matches trailing tokens. Subscribers wildcard the sender position
-    (`chat.*.<channel>`, `inst.<myId>.*`); an observer taps `cotal.<space>.chat.>`.
+  - `*` matches one token, `>` matches trailing tokens. Subscribers wildcard the sender principal
+    (`chat.*.*.<channel>`, `inst.<myOwner>.<myActor>.>`); an observer taps `cotal.<space>.chat.>`.
+    The two-token sender lets a publish grant forge-lock the sender suffix (`inst.*.*.<me>` = DM
+    anyone, but only *as me*), so cross-owner **and** same-owner cross-actor forgery is broker-denied.
 - **Streams (one model, three read patterns).**
   - **`CHAT_<space>`** (multicast) captures `chat.>`, with **Limits** retention and
     `MaxMsgsPerSubject` (a capped per-channel backlog). **Every** agent reads **every** message
     via its **own** consumer/bookmark, at its own pace; a late joiner replays the window. This
     *is* both the inbound channel buffer and history.
   - **`DM_<space>`** (unicast) captures `inst.>`, with **Limits** retention. Each agent has a
-    **per-instance durable consumer** (durable name = instance id, filter `inst.<id>.*`): its
+    **per-instance durable consumer** (durable name = principal dash-form `dm_<owner>-<actor>`, filter `inst.<owner>.<actor>.>`): its
     private inbox. Retained for **session length** (an `InactiveThreshold` retires the consumer
     when the context ends, mirroring the *Instance continuity* rule). Under auth this durable is
     **pre-created by the provisioner** and the agent only binds it (see *Identity and
     authorization*; the create-time filter is the DM confidentiality surface). `cotal_inbox`
     pulls the unread batch; push is the consumer delivering on attach.
   - **`TASK_<space>`** (anycast) captures `svc.>`, with **WorkQueuePolicy**. A **shared pull
-    consumer per role** (durable `svc_<role>`, filter `svc.<role>.*`): a task with no worker
+    consumer per role** (durable `svc_<role>`, filter `svc.<role>.>`): a task with no worker
     online *waits*; the first available instance of the role grabs it; multiple online instances
     load-balance; the task is removed once acked. Under auth this durable is **pre-created
     per-role by the provisioner** and agents bind it (same create-time-filter reason as DM, to
