@@ -1,0 +1,47 @@
+# Frontier Tower faces — the six-face kiosk panel.
+#
+#   cotal up -f frontier-tower.yaml            # fresh broker + channels + the six-face panel
+#   cotal up -f frontier-tower.yaml --dry-run  # validate + print the plan, change nothing
+#
+# A tighter cast than cotal.yaml (six faces, three channels) for the Frontier Tower kiosk.
+# Channel membership lives here, not in a launcher script: `subscribe` is who reads a
+# channel, `allowPublish` is who may post to it (`allowSubscribe` defaults to `subscribe`).
+apiVersion: cotal/v1
+kind: Mesh
+space: frontier
+
+# A fresh OPEN broker on its own port — the default :4222 is usually taken by another mesh.
+broker:
+  servers: nats://127.0.0.1:4299
+  auth: false
+
+# Every agent is an OpenCode-hosted persona; model/role/face come from the .md frontmatter.
+agent: opencode
+
+# The cast — each entry points at its persona file (resolved relative to this manifest).
+agents:
+  david: agents/david.md
+  sven: agents/sven.md
+  garry: agents/garry.md
+  steve: agents/steve.md
+  rayan: agents/rayan.md
+  mira: agents/mira.md
+
+channels:
+  # Everyone — the open broadcast panel.
+  general:
+    description: The whole panel — open broadcast to every agent.
+    subscribe: [david, sven, garry, steve, rayan, mira]
+    allowPublish: [david, sven, garry, steve, rayan, mira]
+
+  # No hedging — the spiciest opinions on the panel.
+  hot-takes:
+    description: Unfiltered opinions — the spiciest takes on the panel.
+    subscribe: [david, sven, garry, steve, rayan, mira]
+    allowPublish: [david, sven, garry, steve, rayan, mira]
+
+  # The two founders building Cotal.
+  cotal:
+    description: Building Cotal — the founders on the wire protocol.
+    subscribe: [david, sven]
+    allowPublish: [david, sven]
