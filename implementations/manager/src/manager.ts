@@ -24,7 +24,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
+import { authDir, defaultAgentType, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -86,7 +86,7 @@ export interface StartAgentOpts {
    *  `.cotal/agents/<name>.md`. NOT the mesh identity: the spawned peer presents under the file's
    *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback). */
   name: string;
-  /** Connector / agent type — resolved from the registry. Defaults to `"cotal"`. */
+  /** Connector / agent type — resolved from the registry. Defaults to `COTAL_DEFAULT_AGENT`, else `"cotal"`. */
   agent?: string;
   role?: string;
   /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
@@ -645,7 +645,7 @@ export class Manager {
       const refErr = this.nameError(ref);
       if (refErr) return { ok: false, error: refErr };
     }
-    const agent = opts.agent ?? "cotal";
+    const agent = opts.agent ?? defaultAgentType("cotal");
 
     // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
     // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays

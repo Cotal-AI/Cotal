@@ -40,7 +40,7 @@ check("model forwarded", rec?.req.args?.model === "sonnet", rec?.req.args?.model
 // backstop) — the request must carry the long spawn window, not fall back to the 5s op default.
 check("request outlives the readiness wait (SPAWN_TIMEOUT_MS, not the 5s default)", rec?.timeoutMs === SPAWN_TIMEOUT_MS, rec?.timeoutMs);
 
-// Name-only: agent/model absent → undefined, so the manager applies its defaults (Claude, file model).
+// Name-only: agent/model absent → undefined, so the manager applies its defaults (env/Claude, file model).
 await a.spawn("plain");
 check("name-only: agent undefined", rec?.req.args?.agent === undefined);
 check("name-only: model undefined", rec?.req.args?.model === undefined);

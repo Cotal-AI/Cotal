@@ -74,6 +74,10 @@ old-manager preflight → **delivery daemon** (auth mode only) → **manager** �
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The detached
 processes, all stopped by `cotal down`:
 
+With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker
+address is already held by another root or an unrecorded broker; an explicit `--server` remains
+fail-loud on collision.
+
 - **Mesh:** `startMeshDetached`
   ([`commands/up.ts`](../implementations/cli/src/commands/up.ts)) is the one place that boots a
   background nats-server (foreground `up` and `up --detach` both route through it). Writes
