@@ -77,26 +77,25 @@ JetStream has run in production for years. We didn't invent the hard parts.
 
 ## Quick start
 
-Cotal installs one command, `cotal`, for your local agent mesh. Install it, configure once,
-then start the mesh and watch an agent join:
+Cotal's guided setup is one command on a fresh machine:
 
 ```bash
-npm i -g cotal-ai  # needs Node 20+; a nats-server ships bundled
-cotal setup        # one-time configure: plugin, web dashboard, one default agent; starts nothing
+npx cotal-ai setup  # checks your machine, installs `cotal`, and configures your first agent mesh
+```
+
+It gets your machine ready and **starts nothing**: checks Node/NATS, lets you pick connectors
+(Claude installs a plugin; OpenCode auto-wires at spawn), installs the web dashboard extension,
+seeds one default agent, and offers to put `cotal` on your PATH. Then run:
+
+```bash
 cotal up --detach  # start the local mesh + delivery daemon + manager
 cotal web          # open the browser view of the mesh
 cotal spawn        # launch your default agent here and talk to it (Ctrl-C to leave)
 cotal down         # stop the mesh, delivery daemon, manager, and web
 ```
 
-> Just kicking the tires? `npx cotal-ai setup` runs without installing, and offers to add the global
-> `cotal` at the end (default yes) — the everyday commands below assume it's on your PATH.
-
-`cotal setup` is **configure-only**: it gets your machine ready and **starts nothing**. The first run
-checks prerequisites (locates `nats-server` — bundled, or your own on PATH), installs the connector
-you pick (Claude installs a plugin; OpenCode auto-wires at spawn), installs the dashboard extension,
-and seeds **one agent** (`.cotal/agents/default.md`). If a step fails, it hands you to an interactive
-Claude with the failure context, then retries.
+If setup hits a step it cannot finish, it hands you to an interactive Claude with the failure
+context, then retries.
 
 Once the mesh is up, `cotal web` and `cotal console` watch the same live space; `cotal spawn`
 launches the default agent in this terminal. `cotal up` is **JWT-authed** by default (sender

@@ -11,9 +11,9 @@ cotal setup                # one-time, configure-only — launches nothing
 ```
 
 Bare `cotal` prints help; `cotal setup` runs guided setup. Prefer `npx`? `npx cotal-ai setup`
-works too, and offers to install the global `cotal` at the end (default yes) so you can just type
-`cotal`. Decline and the hints stay `npx cotal-ai …`; everything still works, because the background
-processes `cotal up` starts invoke their own resolved path, not a global `cotal`.
+works too, and offers to install the global `cotal` at the end so you can just type `cotal`.
+Decline and the hints stay `npx cotal-ai …`; everything still works, because the background processes
+`cotal up` starts invoke their own resolved path, not a global `cotal`.
 
 Requirements:
 
@@ -39,7 +39,7 @@ and **starts nothing**. The first time, it walks you through:
    `cotal ext add cotal-web`, so `cotal web` is available after setup. If npm or the
    registry is unavailable, setup warns and tells you the retry command.
 5. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
-   `npm i -g cotal-ai` so you can just type `cotal` (default yes).
+   `npm i -g cotal-ai` so you can just type `cotal`.
 
 When it finishes, **nothing is running** — it prints the commands to start things. Bring the
 mesh up and talk to your agent — the whole loop is three commands:
