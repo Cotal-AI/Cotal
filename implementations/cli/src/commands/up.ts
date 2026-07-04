@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import {
   mkdirSync,
   writeFileSync,
@@ -68,32 +69,36 @@ export async function up(args: ParsedArgs): Promise<void> {
     });
     return;
   }
-  const server = values.server ?? DEFAULT_SERVER;
+  let server = values.server ?? DEFAULT_SERVER;
   const host = values.host ?? "127.0.0.1";
   if (await isReachable(server)) {
     const space = values.space ?? resolveSpace(process.cwd());
     const root = cotalRoot();
-    // A broker is already on this port. Only treat it as a no-op refresh when the registry confirms
-    // it's THIS exact mesh (same server + root + space). Anything else — a different space/root, or a
-    // broker we never recorded — we must NOT adopt: recording our space over it would let a later
-    // `spawn --space <s>` load the wrong root's creds. Today one broker serves one space (auth binds
-    // them), so a different space on this port can't be added to it yet — fail loudly and tell the
-    // user to free the port. (Hosting several spaces on one broker is the planned multi-space work.)
+    // A broker is already on this port. Same root means "this project is already up" unless the
+    // operator explicitly asked for a second space in the same `.cotal/` root (unsupported today: pid,
+    // auth, and logs are root-scoped). Different root / unrecorded broker on the implicit default port
+    // gets a fresh free port instead of making the user hunt for one.
     const held = loadMeshes().find((m) => m.server === server);
-    if (held && held.root === root && held.space === space) {
+    if (held && held.root === root && (held.space === space || values.space === undefined)) {
       // A refresh of the SAME already-running mesh — its mode is fixed by how the live broker was
       // started; preserve `held.mode` rather than relabel it from this invocation's `--open`.
-      recordOurMesh({ space, server, root, mode: held.mode, ts: new Date().toISOString() });
-      console.log(c.green(`✓ NATS already running at ${server}`));
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ts: new Date().toISOString() });
+      console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
-    console.error(
-      c.red(
-        `✗ ${server} is already in use by ${who} — to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
-      ),
-    );
-    process.exit(1);
+    if (values.server === undefined && (!held || held.root !== root)) {
+      const next = await serverWithFreePort(server, host);
+      console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
+      server = next;
+    } else {
+      console.error(
+        c.red(
+          `✗ ${server} is already in use by ${who} — to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+        ),
+      );
+      process.exit(1);
+    }
   }
 
   if (values.detach) {
@@ -444,6 +449,29 @@ async function waitReady(server: string, creds?: string): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
+}
+
+async function serverWithFreePort(server: string, host: string): Promise<string> {
+  const url = new URL(server);
+  url.port = String(await freePort(host));
+  return url.toString();
+}
+
+function freePort(host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.unref();
+    srv.once("error", reject);
+    srv.listen(0, host, () => {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : undefined;
+      srv.close((err) => {
+        if (err) reject(err);
+        else if (port) resolve(port);
+        else reject(new Error("could not allocate a free port"));
+      });
+    });
+  });
 }
 
 /** One-time space infrastructure once the server accepts connections: pre-create the space's
