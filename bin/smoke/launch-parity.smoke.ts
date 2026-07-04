@@ -7,12 +7,17 @@
  *   2. Every launch flag maps onto a manager `start`-op key (the golden op vocabulary).
  *   3. Every MCP `cotal_spawn` schema param IS one of those op keys (subset — the tool may
  *      expose less, e.g. no `resume` by design, but never a divergent name).
+ *   4. Every launch client's request window OUTLIVES the manager's readiness wait (#159 B1) —
+ *      the manager replies to `start`/`launch` only on a real outcome, so a client timeout at or
+ *      under that window kills real spawns while the launch proceeds.
  * Run: pnpm smoke:launch-parity
  */
 import assert from "node:assert/strict";
 import { launchFlags } from "@cotal-ai/workspace";
-import { spawnFlags } from "@cotal-ai/cli";
-import { configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
+import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
+import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
+import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
+import type { CotalEndpoint, ControlReply, ControlRequestInit } from "@cotal-ai/core";
 
 // cotalToolSpecs is capability-gated: cotal_spawn only renders for a spawn-capable agent.
 process.env.COTAL_SPACE ||= "parity";
@@ -64,4 +69,26 @@ for (const p of toolParams) {
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
 
-console.log(`✓ launch-parity smoke passed (${launchFlags.length} grammar flags · ${toolParams.length} MCP params)`);
+// 4 — every launch client outlives the manager's readiness wait (#159 B1). The tier rule forbids
+// the clients importing READINESS_TIMEOUT_MS, so the relation is enforced here, by test.
+assert.ok(
+  START_TIMEOUT_MS > READINESS_TIMEOUT_MS,
+  `CLI START_TIMEOUT_MS (${START_TIMEOUT_MS}) must outlive the manager's readiness wait (${READINESS_TIMEOUT_MS})`,
+);
+assert.ok(
+  SPAWN_TIMEOUT_MS > READINESS_TIMEOUT_MS,
+  `connector SPAWN_TIMEOUT_MS (${SPAWN_TIMEOUT_MS}) must outlive the manager's readiness wait (${READINESS_TIMEOUT_MS})`,
+);
+// …and the manifest `launch` client actually PASSES that window (fake ep, no NATS) — `launch`
+// funnels into the same startAgent readiness wait as `start`, so the 5s op default kills it too.
+let launchTimeout: number | undefined;
+const fakeEp = {
+  requestControl: (_t: string, _r: ControlRequestInit, ms?: number): Promise<ControlReply> => {
+    launchTimeout = ms;
+    return Promise.resolve({ ok: true });
+  },
+} as unknown as CotalEndpoint;
+await launchAgent(fakeEp, "run", "agent");
+assert.equal(launchTimeout, START_TIMEOUT_MS, "launchAgent must send the launch op with START_TIMEOUT_MS");
+
+console.log(`✓ launch-parity smoke passed (${launchFlags.length} grammar flags · ${toolParams.length} MCP params · readiness window ${READINESS_TIMEOUT_MS}ms < clients ${START_TIMEOUT_MS}/${SPAWN_TIMEOUT_MS}ms)`);

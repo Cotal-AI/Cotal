@@ -5,7 +5,7 @@
  * No NATS: the MeshAgent constructor builds an endpoint but never connects, so we swap in a
  * recording `ep` and mark connected. Run with: pnpm smoke:spawn-args
  */
-import { MeshAgent } from "../src/agent.js";
+import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { CONTROL_PRIVILEGED, type ControlReply, type ControlRequest, type ControlTier } from "@cotal-ai/core";
 
@@ -22,9 +22,9 @@ const cfg: AgentConfig = {
 const a = new MeshAgent(cfg);
 
 // Record the control request instead of sending it; mark connected so assertConnected() passes.
-let rec: { tier: ControlTier; req: ControlRequest } | undefined;
-(a as unknown as { ep: { requestControl: (t: ControlTier, r: ControlRequest) => Promise<ControlReply> } }).ep = {
-  requestControl: (tier, req) => { rec = { tier, req }; return Promise.resolve({ ok: true, data: { name: req.args?.name } }); },
+let rec: { tier: ControlTier; req: ControlRequest; timeoutMs?: number } | undefined;
+(a as unknown as { ep: { requestControl: (t: ControlTier, r: ControlRequest, ms?: number) => Promise<ControlReply> } }).ep = {
+  requestControl: (tier, req, timeoutMs) => { rec = { tier, req, timeoutMs }; return Promise.resolve({ ok: true, data: { name: req.args?.name } }); },
 };
 (a as unknown as { _connected: boolean })._connected = true;
 
@@ -36,6 +36,9 @@ check("name forwarded", rec?.req.args?.name === "rev");
 check("role forwarded", rec?.req.args?.role === "reviewer");
 check("agent (harness) forwarded", rec?.req.args?.agent === "opencode", rec?.req.args?.agent);
 check("model forwarded", rec?.req.args?.model === "sonnet", rec?.req.args?.model);
+// #159 B1: the manager replies to `start` only on a real outcome (join / exit / ~30s readiness
+// backstop) — the request must carry the long spawn window, not fall back to the 5s op default.
+check("request outlives the readiness wait (SPAWN_TIMEOUT_MS, not the 5s default)", rec?.timeoutMs === SPAWN_TIMEOUT_MS, rec?.timeoutMs);
 
 // Name-only: agent/model absent → undefined, so the manager applies its defaults (Claude, file model).
 await a.spawn("plain");

@@ -4,6 +4,7 @@
  * manager's `launch` op. (Channel-registry reads use `readChannelRegistry`, which connects itself.)
  */
 import { CotalEndpoint, CONTROL_ADMIN, type ControlReply, type Presence } from "@cotal-ai/core";
+import { START_TIMEOUT_MS } from "../control.js";
 
 export interface MeshConn {
   space: string;
@@ -76,5 +77,7 @@ export async function waitLeaseGone(ep: CotalEndpoint, timeoutMs: number): Promi
  *  `launch` op is operator-only — a spawn-capable agent must not reach it). The manager derives
  *  `.cotal/run/<runId>.json` itself; we pass the runId, never a path. */
 export async function launchAgent(ep: CotalEndpoint, runId: string, name: string): Promise<ControlReply> {
-  return ep.requestControl(CONTROL_ADMIN, { op: "launch", args: { runId, name } });
+  // #159 B1: `launch` funnels into the same startAgent readiness wait as `start` — the manager
+  // replies only on a real outcome (join / exit / ~30s backstop), so the request must outlive it.
+  return ep.requestControl(CONTROL_ADMIN, { op: "launch", args: { runId, name } }, START_TIMEOUT_MS);
 }

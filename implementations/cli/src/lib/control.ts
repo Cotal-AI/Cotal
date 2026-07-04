@@ -10,6 +10,14 @@ import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, type ConnectFlags } from "./connect.js";
 
+/** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
+ *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
+ *  replies only on a REAL outcome — presence join, process exit, or its ~30s readiness backstop —
+ *  so these requests must OUTLIVE that window, not the 5s op default. The tier rule forbids
+ *  importing the manager's READINESS_TIMEOUT_MS here; the launch-parity smoke enforces the
+ *  relation by test. */
+export const START_TIMEOUT_MS = 40_000;
+
 /**
  * Resolve which running mesh a control command (`spawn --detach` / `stop` / `ps` / `attach`)
  * targets. Exactly {@link connectOrExit}'s precedence (--creds raw > --server+unregistered-space
