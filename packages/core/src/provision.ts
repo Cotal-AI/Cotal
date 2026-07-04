@@ -198,6 +198,25 @@ export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<Spac
   };
 }
 
+/** Rotate the SYSTEM account and re-issue the operator JWT so persisted system-account users (currently
+ * `membership-observer`) become broker-dead once the broker loads the returned auth. The fresh
+ * `sys.signingSeed` is intentionally in-memory only; callers must mint replacement observer creds before
+ * persisting via `saveSpaceAuth`, which strips the seed again. */
+export async function rotateSystemAccount(auth: SpaceAuth): Promise<SpaceAuth> {
+  if (!auth.operator.seed)
+    throw new Error("rotateSystemAccount: operator seed material is required (a stripped auth cannot rotate the system account)");
+  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+  const syskp = createAccount();
+  const sysPub = syskp.getPublicKey();
+  const operatorJwt = await encodeOperator(`cotal-${token(auth.space)}`, okp, { system_account: sysPub });
+  const sysJwt = await encodeAccount("SYS", syskp, { limits: SYS_LIMITS }, { signer: okp });
+  return {
+    ...auth,
+    operator: { ...auth.operator, jwt: operatorJwt },
+    sys: { pub: sysPub, jwt: sysJwt, signingSeed: new TextDecoder().decode(syskp.getSeed()) },
+  };
+}
+
 /** Generate a fresh operator → account(+signing key) → system-account chain for a space. */
 export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
   const okp = createOperator();
