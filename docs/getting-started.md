@@ -34,7 +34,10 @@ and **starts nothing**. The first time, it walks you through:
 3. **Adds two experts plus your own session.** By default: **david**, the engineer (how
    Cotal works); **sven**, the guide (what to build); and **me**, the session you drive. It also
    seeds a generic `default` persona. Every file it writes is announced with a `→ wrote …` line.
-4. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
+4. **Installs the dashboard extension.** It runs the same installer as
+   `cotal ext add cotal-web`, so `cotal web` is available after setup. If npm or the
+   registry is unavailable, setup warns and tells you the retry command.
+5. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
    `npm i -g cotal-ai` so you can just type `cotal` (default yes).
 
 When it finishes, **nothing is running** — it prints the commands to start things. Bring the
@@ -43,7 +46,6 @@ stack up, then spawn an agent:
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
 cotal spawn me             # drive a session (or david / sven)
-cotal ext add cotal-web    # once: install the dashboard extension
 cotal web                  # open the browser dashboard
 cotal console              # watch the mesh live in this terminal
 cotal down                 # stop everything
@@ -67,7 +69,7 @@ cotal · status
 ✓ NATS     nats://127.0.0.1:4222
 ✓ plugin   installed
 ○ mesh     down — start: cotal up --detach
-○ web      not installed — add: cotal ext add cotal-web
+○ web      down — start: cotal web
 ○ manager  not running — spawns start it, or: cotal supervise
 ```
 
@@ -75,9 +77,10 @@ It probes the current folder — the mesh, the browser dashboard, and the manage
 plane behind `cotal_spawn` / `despawn` / `persona`) — and for anything down it shows the exact
 command to start it. It starts nothing itself; `cotal setup` only configures.
 
-The dashboard is an extension (`cotal ext add cotal-web`, once) and runs at
-`http://cotal.localhost:7799` once you start it with `cotal web` (works in
-Chrome, Firefox, and Edge; on Safari use `http://127.0.0.1:7799`).
+The dashboard is an extension that setup installs automatically. It runs at
+`http://cotal.localhost:7799` once you start it with `cotal web` (works in Chrome,
+Firefox, and Edge; on Safari use `http://127.0.0.1:7799`). If setup could not
+install it, retry with `cotal ext add cotal-web`.
 
 You drive Cotal through an agent: spawn one and talk to it. It has the tools to message
 peers, spawn teammates, and send feedback.
@@ -90,7 +93,7 @@ cotal spawn                          # the default agent (edit .cotal/agents/def
 cotal spawn me                       # the session you drive (consults david/sven)
 cotal spawn david                    # ask the engineer (or sven, the guide)
 cotal console --space main           # live mesh view in the terminal (TUI)
-cotal web --space main               # open the browser dashboard (cotal ext add cotal-web, once)
+cotal web --space main               # open the browser dashboard
 cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 

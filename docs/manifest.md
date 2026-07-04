@@ -52,7 +52,7 @@ Save it as `cotal.yaml` and run:
 cotal topology view -f cotal.yaml      # validate + render the access graph (no broker needed)
 cotal up -f cotal.yaml                 # broker + channels + agents, all fresh
 cotal ps --space main                  # see the agents the manager booted
-cotal web --space main                 # ...or in the browser (once: cotal ext add cotal-web)
+cotal web --space main                 # ...or in the browser
 cotal down                             # stop the whole mesh
 ```
 

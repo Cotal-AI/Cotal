@@ -16,7 +16,7 @@ re-implements the wire semantics. The wire is the source of truth; these are ren
 |---|---|---|---|
 | **console** | `cotal console` | interactive terminal: drive it, drill in | Ink / React (TTY) |
 | **stream** | `cotal console --plain`, pipes | passive line log: tail it, grep it, CI | plain ANSI |
-| **web** | `cotal web` (via `cotal ext add cotal-web`) | operator dashboard: see what needs you | HTTP + SSE, vanilla JS |
+| **web** | `cotal web` (setup-installed extension) | operator dashboard: see what needs you | HTTP + SSE, vanilla JS |
 
 `console` auto-selects: a real TTY gets the Ink TUI, a pipe or `--plain` gets the stream.
 The web dashboard is a **god-view** (it self-mints an

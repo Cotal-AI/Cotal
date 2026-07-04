@@ -3,18 +3,19 @@
  * REAL subprocess in a sandboxed COTAL_HOME with claude/opencode OFF the PATH, and must:
  *   A. exit 0 — configuring a machine never depends on (or mutates) running state;
  *   B. LAUNCH NOTHING — no broker appears on the default port, no manager pid file lands;
- *   C. WRITE the personas (david/sven/me/default) + the onboarded stamp, each announced with a
- *      provenance `→ wrote` line on stderr;
+ *   C. WRITE the personas (david/sven/me/default), install cotal-web in a sandboxed config dir,
+ *      and write the onboarded stamp, with persona/stamp writes announced on stderr;
  *   D. a REPEAT run (now onboarded) prints the status card, still launches nothing, and exits 0;
  *   E. the removed `--open` flag and the deleted `go` command fail loud.
  * Run: pnpm smoke:setup-pure:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-home-"));
+const configHome = mkdtempSync(join(tmpdir(), "cotal-setup-config-"));
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -23,14 +24,16 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-// A minimal PATH: node reachable, but NO claude/opencode (setup must skip connector installs,
+// A minimal PATH: node/npm reachable, but NO claude/opencode (setup must skip connector installs,
 // not launch or prompt) and NO nats-server (locating falls back to the bundled binary; setup
 // must NOT need a runnable broker — it never starts one). The CLI is invoked by absolute
 // node + tsx entry, so the stripped PATH can't break the runner itself.
 const binDir = mkdtempSync(join(tmpdir(), "cotal-setup-bin-"));
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
+const realNpm = spawnSync("which", ["npm"], { encoding: "utf8" }).stdout.trim();
 symlinkSync(realNode, join(binDir, "node"));
-const env = { ...process.env, COTAL_HOME: home, PATH: binDir, COTAL_SKIP_ASSIST: "1" };
+symlinkSync(realNpm, join(binDir, "npm"));
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configHome, PATH: binDir, COTAL_SKIP_ASSIST: "1" };
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
 
@@ -56,6 +59,8 @@ for (const f of ["david.md", "sven.md", "me.md", "default.md"]) {
   ok(`persona ${f} written`, existsSync(join(proj, ".cotal", "agents", f)));
 }
 ok("onboarded stamp written", existsSync(join(home, "onboarded.json")));
+const extManifest = JSON.parse(readFileSync(join(configHome, "cotal", "extensions", "extensions.json"), "utf8"));
+ok("web extension installed in sandboxed config", extManifest.extensions?.some((e: { commands?: { name?: string }[] }) => e.commands?.some((c) => c.name === "web")) === true);
 ok("provenance announces persona writes", /→ wrote persona: .*david\.md/.test(first.stderr), first.stderr.slice(-500));
 ok("provenance announces the onboarded stamp", /→ wrote onboarded stamp/.test(first.stderr));
 
