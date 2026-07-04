@@ -11,6 +11,7 @@
  *      spawn loudly (no silent drop).
  *   4. RESOLVED GUARD — a manifest launch (`resolved`) REJECTS imperative overrides.
  *   5. allowSubscribe default follows an overridden subscribe (override → creds source is one).
+ *   6. COTAL_DEFAULT_AGENT picks the manager's default harness when opts.agent is absent.
  * Run: pnpm smoke:start-overrides
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -160,6 +161,22 @@ const j = (v: unknown) => JSON.stringify(v);
   check("resolved + subscribe rejected", r2.ok === false && /rejects imperative overrides/.test(r2.error ?? ""), r2);
   const r3 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, identity: "x" });
   check("resolved + identity rejected", r3.ok === false && /rejects imperative overrides/.test(r3.error ?? ""), r3);
+}
+
+// 8 — COTAL_DEFAULT_AGENT supplies the manager-side default harness.
+{
+  const prev = process.env.COTAL_DEFAULT_AGENT;
+  process.env.COTAL_DEFAULT_AGENT = "smoke-ov";
+  try {
+    lastOpts = undefined;
+    const r = await mgr.startAgent({ name: "plain" });
+    check("COTAL_DEFAULT_AGENT spawn succeeds", r.ok === true, r);
+    check("COTAL_DEFAULT_AGENT used as manager default", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
+    check("env default reaches LaunchOpts", lastOpts?.space === "smoke" && /^plain(-\d+)?$/.test(lastOpts?.name ?? ""), lastOpts);
+  } finally {
+    if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
+    else process.env.COTAL_DEFAULT_AGENT = prev;
+  }
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");

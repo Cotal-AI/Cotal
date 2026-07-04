@@ -345,7 +345,8 @@ like `Connector`/`Command`: `pty` ships with the manager; `tmux` and `cmux` are 
 a `RuntimeProvider` on import (the manager resolves them from the registry, with no compile-time
 dependency on them). Selectable backends:
 
-- **`pty` (default).** The manager spawns the real `claude` (plugin plus env) in a
+- **`pty` (default).** The manager spawns the default agent harness (`COTAL_DEFAULT_AGENT`, or
+  Claude when unset) in a
   pseudo-terminal it owns via **`@lydell/node-pty`** (prebuilt binaries for mac/Linux/Windows ×
   x64/arm64: zero compiler, zero `node-gyp`, ABI-stable). A real native TUI. The human watches
   or types in via `cotal attach <name>` (stream the PTY), and the manager keeps full OS-signal

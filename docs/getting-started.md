@@ -94,6 +94,10 @@ cotal web --space main               # open the browser dashboard (cotal ext add
 cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 
+By default, `cotal spawn` and `cotal_spawn` launch Claude. Set `COTAL_DEFAULT_AGENT=opencode`
+or `COTAL_DEFAULT_AGENT=hermes` to change the default harness for spawns that do not pass
+`--agent` / `agent`. An explicit `--agent` always wins.
+
 Feedback flows through your agent too: tell it "send feedback: ..." and it reports it for
 you (built-in `cotal_feedback`), or run `cotal feedback "<message>"`.
 

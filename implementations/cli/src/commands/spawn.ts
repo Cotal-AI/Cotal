@@ -27,6 +27,8 @@ import {
 import {
   authDir,
   credsFlag,
+  defaultAgentOverride,
+  defaultAgentType,
   launchFlags,
   loadMeshes,
   provenance,
@@ -170,7 +172,7 @@ async function spawnDetached(
     name: ref,
     identity: values.name,
     role: values.role,
-    agent: values.agent,
+    agent: values.agent ?? defaultAgentOverride(),
     config: values.config,
     model: values.model,
     cwd: values.cwd,
@@ -339,7 +341,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
   // config (global ~/.config/cotal + the target mesh's .cotal), narrowed by an optional
   // --share-tools selection. Default (no config) is none — the connector launches isolated.
-  const agentType = values.agent ?? "claude";
+  const agentType = values.agent ?? defaultAgentType("claude");
   const mcpServers = connectorServers(
     loadCotalConfig(target.root),
     agentType,
