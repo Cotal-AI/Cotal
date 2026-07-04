@@ -280,7 +280,13 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         const reason = e instanceof Error ? e.message : String(e);
         log(`auth callout: denied ${req.user_nkey}: ${reason}`);
         try {
-          await respond({ error: reason });
+          // The deny response MUST always encode: a denied connect that can't be answered TIMES OUT
+          // instead of getting a legible signed refusal, which breaks the fail-closed "refuse, never
+          // hang" contract. The auth-response JWT claim encoder is Latin1-limited (btoa-style — a
+          // non-ASCII char like the em-dash in many of our throw messages raises "Invalid character"),
+          // so coerce the reason to ASCII at this boundary. It is a human-readable hint, not a security
+          // token, so lossy folding (em-dash → "-", smart quotes → ASCII, else "?") is fine.
+          await respond({ error: asciiFold(reason) });
         } catch (re) {
           log(`auth callout: failed to send deny response: ${re instanceof Error ? re.message : String(re)}`);
         }
@@ -289,4 +295,16 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   })();
 
   return { done };
+}
+
+/** Fold a string to ASCII so the Latin1-limited auth-response encoder can always send it (a denied
+ *  connect must get a legible signed refusal, never hang). Common Unicode punctuation maps to its ASCII
+ *  stand-in; anything else outside 0x20–0x7E becomes "?". Used only for the human-readable deny reason. */
+function asciiFold(s: string): string {
+  return s
+    .replace(/[‐-―]/g, "-") // hyphens/dashes incl. em-dash
+    .replace(/[‘’‛]/g, "'") // single smart quotes
+    .replace(/[“”‟]/g, '"') // double smart quotes
+    .replace(/…/g, "...") // ellipsis
+    .replace(/[^\x20-\x7E]/g, "?"); // any remaining non-ASCII-printable
 }
