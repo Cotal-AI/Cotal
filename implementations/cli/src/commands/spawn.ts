@@ -29,6 +29,8 @@ import {
   credsFlag,
   defaultAgentOverride,
   defaultAgentType,
+  defaultPersonaOverride,
+  defaultPersonaRef,
   launchFlags,
   loadMeshes,
   provenance,
@@ -55,7 +57,15 @@ export function spawnComplete(argv: string[]): CompletionResult {
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")
     return { items: listDeclaredRoles().map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
-  if (flag?.name === "config") return { items: [], directive: "default" };
+  if (flag?.name === "config") {
+    const current = argv[argv.length - 1] ?? "";
+    if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
+    try {
+      return { items: personaItems(argv), directive: "nofiles" };
+    } catch {
+      return { items: [], directive: "nofiles" };
+    }
+  }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
     return { items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
   if (flag && ["cwd", "file", "creds"].includes(flag.name)) return { items: [], directive: "default" };
@@ -82,6 +92,11 @@ function personaItems(argv: string[]) {
     server: completedFlagValue(argv, spawnFlags, "server"),
   });
   return listPersonas(target.root).map((p) => ({ value: p.name }));
+}
+
+/** Persona selection precedence shared by foreground and detached spawn. */
+export function spawnPersonaRef(configFlag: string | undefined, positionals: readonly string[], env: NodeJS.ProcessEnv = process.env): string {
+  return configFlag ?? positionals[0] ?? defaultPersonaRef("default", env);
 }
 
 /**
@@ -179,10 +194,12 @@ async function spawnDetached(
   transcript: boolean | undefined,
 ): Promise<void> {
   // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
-  // `--name` > `default`); `--name` doubles as the ref fallback there too. Identity is separate:
+  // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const ref = values.config ?? positionals[0] ?? values.name ?? "default";
+  const defaultPersona = defaultPersonaOverride();
+  const ref = spawnPersonaRef(values.config, positionals);
+  const managerConfigRef = values.config ?? (!positionals[0] && defaultPersona ? ref : undefined);
   const t = await resolveControlTarget(
     { space: values.space, server: values.server, creds: values.creds },
     "control-caller-privileged",
@@ -194,7 +211,7 @@ async function spawnDetached(
     identity: values.name,
     role: values.role,
     agent: values.agent ?? defaultAgentOverride(),
-    config: values.config,
+    config: managerConfigRef,
     model: values.model,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
@@ -261,10 +278,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
   const { space, server, auth } = target;
 
-  // Where the config lives: --config, else the positional <name-or-path>, else --name
+  const defaultPersona = defaultPersonaOverride();
+  // Where the config lives: --config, else the positional <persona>, else COTAL_DEFAULT_PERSONA
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
-  const ref = values.config ?? positionals[0] ?? values.name ?? "default";
+  const ref = spawnPersonaRef(values.config, positionals);
   const path = agentFilePath(target.root, ref);
   let def: AgentDef;
   try {
@@ -274,9 +292,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (code === "ENOENT") {
       console.error(
         c.red(
-          ref === "default"
+          ref === "default" && !defaultPersona
             ? "✗ no default persona yet — run `cotal setup` to seed one, or name a persona: `cotal spawn <name>`"
-            : `✗ no persona "${ref}" in ${target.space}'s ${target.personaRoot} — use \`--config <path>\` for a file elsewhere`,
+            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${target.space}'s ${target.personaRoot} — pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );
     } else {
@@ -285,7 +303,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  // Provenance: say which persona file WON resolution (--config > positional > --name > default)
+  // Provenance: say which persona file WON resolution (--config > positional > COTAL_DEFAULT_PERSONA > default)
   // — the user must never wonder which directory their agent's definition came from.
   provenance.read("persona", path);
 

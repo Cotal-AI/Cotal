@@ -24,8 +24,8 @@ export const targetFlags = [spaceFlag, serverFlag, credsFlag] as const satisfies
  * keeps it honest.
  */
 export const launchFlags = [
-  { name: "name", type: "string", value: "<n>", description: "presence name (defaults from the persona file)" },
-  { name: "config", type: "string", value: "<path>", description: "agent file path (for a file outside .cotal/agents)" },
+  { name: "name", type: "string", value: "<n>", description: "presence name override; does not choose the persona" },
+  { name: "config", type: "string", value: "<persona-or-path>", description: "persona catalog name or file path; defaults from COTAL_DEFAULT_PERSONA" },
   { name: "agent", type: "string", value: "<a>", description: "connector type (claude, opencode, hermes …); defaults from COTAL_DEFAULT_AGENT" },
   { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
   { name: "model", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },

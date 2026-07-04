@@ -223,8 +223,8 @@ const baseCommands: Command[] = [
     name: "spawn",
     group: "Agents",
     summary:
-      "launch an agent from a persona file — spawn [<name-or-path>] (defaults to the `default` persona); foreground in this terminal, or --detach via the manager — one grammar for both",
-    positionals: "[<name-or-path>]",
+      "launch an agent from a persona — spawn [<persona>] (defaults to COTAL_DEFAULT_PERSONA or `default`); --config accepts a persona name or path; foreground here, or --detach via the manager",
+    positionals: "[<persona>]",
     flags: spawnFlags,
     run: spawn,
     complete: spawnComplete,
@@ -242,7 +242,7 @@ const baseCommands: Command[] = [
     run: async () => {
       console.error(
         c.red(
-          "✗ `cotal start` was merged into `cotal spawn --detach` — one launch grammar for foreground and detached (persona positional or --name; --config/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
+          "✗ `cotal start` was merged into `cotal spawn --detach` — one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
         ),
       );
       process.exit(1);

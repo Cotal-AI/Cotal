@@ -94,6 +94,10 @@ cotal web --space main               # open the browser dashboard (cotal ext add
 cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 
+By default, a bare `cotal spawn` uses `.cotal/agents/default.md`. Set
+`COTAL_DEFAULT_PERSONA=<name-or-path>` to change that fallback for spawns that do not pass a
+persona positional or `--config`. An explicit persona always wins.
+
 By default, `cotal spawn` and `cotal_spawn` launch Claude. Set `COTAL_DEFAULT_AGENT=opencode`
 or `COTAL_DEFAULT_AGENT=hermes` to change the default harness for spawns that do not pass
 `--agent` / `agent`. An explicit `--agent` always wins.

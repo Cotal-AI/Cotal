@@ -7,8 +7,9 @@
  *     spawns it; the overrides arrive in the connector's LaunchOpts (flags > persona, e2e).
  *  B. `ps` lists the managed agent; `stop --name` tears it down; `ps` is empty again.
  *  C. `attach` replies a loopback ws:// URL and the socket actually opens (the pinned contract).
- *  D. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
- *  E. foreground `--creds` (no --detach) fails loud (subprocess).
+ *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
+ *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
+ *  F. foreground `--creds` (no --detach) fails loud (subprocess).
  *
  * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
@@ -201,7 +202,29 @@ try {
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", /no managed agents/.test(psAfter), psAfter);
 
-  // D — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
+  // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still
+  // comes from --name, so this proves persona selection and identity override stay separate.
+  {
+    const prev = process.env.COTAL_DEFAULT_PERSONA;
+    process.env.COTAL_DEFAULT_PERSONA = "poet";
+    try {
+      lastOpts = undefined;
+      const envOut = await capture(() => run("spawn", ["--detach", "--agent", "e2e", "--space", SPACE, "--name", "envbard"]));
+      ok("COTAL_DEFAULT_PERSONA bare detached spawn reached the connector", lastOpts !== undefined);
+      ok(
+        "COTAL_DEFAULT_PERSONA picked poet while --name set identity",
+        /spawned .*envbard/.test(envOut) && lastOpts?.name === "envbard" && lastOpts?.role === "writer",
+        { envOut, name: lastOpts?.name, role: lastOpts?.role },
+      );
+      const envStop = await capture(() => run("stop", ["--name", "envbard", "--space", SPACE]));
+      ok("COTAL_DEFAULT_PERSONA spawned agent stops", /stopped envbard/.test(envStop), envStop);
+    } finally {
+      if (prev === undefined) delete process.env.COTAL_DEFAULT_PERSONA;
+      else process.env.COTAL_DEFAULT_PERSONA = prev;
+    }
+  }
+
+  // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
   const tomb = spawnSync("npx", ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
     encoding: "utf8",
     env: { ...process.env, COTAL_HOME: home },
@@ -209,7 +232,7 @@ try {
   ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
   ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
 
-  // E — foreground --creds fails loud.
+  // F — foreground --creds fails loud.
   const fg = spawnSync("npx", ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
     encoding: "utf8",
     env: { ...process.env, COTAL_HOME: home },

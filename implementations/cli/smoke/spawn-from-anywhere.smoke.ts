@@ -29,7 +29,7 @@ const {
   resolveMeshTarget,
   setCurrent,
 } = await import("@cotal-ai/workspace");
-const { spawnComplete } = await import("../src/commands/spawn.js");
+const { spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js");
 const { listPersonas } = await import("../src/lib/personas.js");
 const { pruneStaleMeshes } = await import("../src/lib/meshes.js");
 
@@ -73,6 +73,11 @@ try {
 
   // 1 mesh → used automatically (source 'registry'), with its root + personas.
   recordMesh(entry("teamA", projA));
+  check("default persona: product fallback is default", spawnPersonaRef(undefined, [], {}) === "default");
+  check("default persona: blank env is ignored", spawnPersonaRef(undefined, [], { COTAL_DEFAULT_PERSONA: "  " }) === "default");
+  check("default persona: env overrides product fallback", spawnPersonaRef(undefined, [], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "reviewer");
+  check("default persona: positional wins over env", spawnPersonaRef(undefined, ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "researcher");
+  check("default persona: --config wins over positional/env", spawnPersonaRef("builder", ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "builder");
   // Hardening: the registry dir is 0700 — its filenames are space names, so it must not be
   // world-traversable even though the file contents are already 0600.
   check(
@@ -188,6 +193,8 @@ try {
   try {
     const personas = spawnComplete([""]); // CompletionResult, not a Promise
     check("completion: lists the resolved mesh's personas (not cwd's)", personas.items.map((i) => i.value).join(",") === "builder", personas.items);
+    const configFlag = spawnComplete(["--config", ""]);
+    check("completion: --config lists the resolved mesh's personas", configFlag.items.map((i) => i.value).join(",") === "builder", configFlag.items);
     const spaces = spawnComplete(["--space", ""]);
     check("completion: --space lists the running spaces", spaces.items.map((i) => i.value).sort().join(",") === "teamA,teamB", spaces.items);
   } finally {
