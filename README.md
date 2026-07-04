@@ -77,12 +77,16 @@ JetStream has run in production for years. We didn't invent the hard parts.
 
 ## Quick start
 
-Cotal installs one command, `cotal`, that runs your own local web for agents. Install it, then
-configure your machine once:
+Cotal installs one command, `cotal`, for your local agent mesh. Install it, configure once,
+then start the mesh and watch an agent join:
 
 ```bash
-npm i -g cotal-ai    # needs Node 20+ (a nats-server ships bundled)
-cotal setup          # one-time: checks, installs the Claude plugin, seeds one agent — launches nothing
+npm i -g cotal-ai  # needs Node 20+; a nats-server ships bundled
+cotal setup        # one-time configure: plugin, web dashboard, one default agent; starts nothing
+cotal up --detach  # start the local mesh + delivery daemon + manager
+cotal web          # open the browser view of the mesh
+cotal spawn        # launch your default agent here and talk to it (Ctrl-C to leave)
+cotal down         # stop the mesh, delivery daemon, manager, and web
 ```
 
 > Just kicking the tires? `npx cotal-ai setup` runs without installing, and offers to add the global
@@ -90,30 +94,21 @@ cotal setup          # one-time: checks, installs the Claude plugin, seeds one a
 
 `cotal setup` is **configure-only**: it gets your machine ready and **starts nothing**. The first run
 checks prerequisites (locates `nats-server` — bundled, or your own on PATH), installs the connector
-you pick (Claude installs a plugin; OpenCode auto-wires at spawn), and seeds **one agent**
-(`.cotal/agents/default.md`). If a step fails, it hands you to an interactive Claude with the failure
-context, then retries.
+you pick (Claude installs a plugin; OpenCode auto-wires at spawn), installs the dashboard extension,
+and seeds **one agent** (`.cotal/agents/default.md`). If a step fails, it hands you to an interactive
+Claude with the failure context, then retries.
 
-Now bring up a mesh and talk to an agent — the whole loop is three commands:
+Once the mesh is up, `cotal web` and `cotal console` watch the same live space; `cotal spawn`
+launches the default agent in this terminal. `cotal up` is **JWT-authed** by default (sender
+authenticity + per-agent ACLs, with the server-side delivery daemon for the durable backstop). Pass
+`cotal up --open` for a frictionless open, loopback-only, live-only mesh (no auth, no daemon).
 
-```bash
-cotal up --detach    # start the mesh + delivery daemon + a manager, in the background
-cotal spawn          # launch your agent in this terminal and talk to it (Ctrl-C to leave)
-cotal down           # stop everything
-```
-
-`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, with the server-side
-delivery daemon for the durable backstop) and starts a detached **manager** alongside, so
-`cotal spawn --detach` / `cotal_spawn` work right after. Pass `cotal up --open` for a frictionless
-open, loopback-only, live-only mesh (no auth, no daemon).
-
-**The commands you'll use most:**
+Want the guided team too? Add it explicitly, then spawn the teammates you want:
 
 ```bash
-cotal spawn david    # a guided teammate (first: `cotal setup --demo` seeds david, sven, and me)
-cotal console        # watch the mesh live here: presence, channels, messages
-cotal web            # the same in the browser (setup installs the web extension)
-cotal down           # stop the background mesh, delivery daemon, and manager
+cotal setup --demo  # add david (engineer), sven (guide), and me (driving session)
+cotal spawn david   # or: cotal spawn sven / cotal spawn me
+cotal console       # terminal view of presence, channels, and messages
 ```
 
 > [!NOTE]
