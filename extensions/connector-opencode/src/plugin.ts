@@ -176,6 +176,10 @@ export const cotal: Plugin = async () => {
     return !intent.sessionID || !sessionID || intent.sessionID === sessionID;
   }
 
+  function isMessageAbortedError(error: unknown): boolean {
+    return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "MessageAbortedError";
+  }
+
   function scheduleErrorRetry(): void {
     if (errorRetryTimer || pendingForWake() === 0) return;
     const delay = errorRetryMs;
@@ -432,7 +436,7 @@ export const cotal: Plugin = async () => {
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
           if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
-          const interrupted = consumeInterruptIntent(event.properties.sessionID);
+          const interrupted = consumeInterruptIntent(event.properties.sessionID) || isMessageAbortedError(event.properties.error);
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;
