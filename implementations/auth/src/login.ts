@@ -30,7 +30,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -340,7 +340,7 @@ export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession)
   const file = readSessionsFile(dir);
   file.sessions[normalizeIdpUrl(idpUrl)] = { token: session.token, expiresAt: session.expiresAt };
   mkSecretDir(dir); // harden the dir BEFORE the secret lands (0700 POSIX, private ACL win32)
-  writeSecretFile(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));
+  writeSecretFileAtomic(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));
 }
 
 /** Remove the cached session. Returns false when there was nothing to remove. */
@@ -350,7 +350,7 @@ export function deleteIdpSession(dir: string, idpUrl: string): boolean {
   if (!(key in file.sessions)) return false;
   delete file.sessions[key];
   mkSecretDir(dir);
-  writeSecretFile(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));
+  writeSecretFileAtomic(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));
   return true;
 }
 
