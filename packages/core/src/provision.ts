@@ -11,8 +11,8 @@
  * `cotal mint` and the manager load that material and mint per-agent creds files. There
  * is no connect-time token exchange yet (that's the later auth-callout stage).
  *
- * NOT yet provided (our job, not nsc's): credential revocation and an issuance audit
- * trail. Revocation is deferred past Demo 1; minted creds currently have no TTL.
+ * D5 adds the first credential-death primitive: profile-classified user-JWT lifetimes. Full revocation,
+ * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
 import { join } from "node:path";
 import {
@@ -62,10 +62,7 @@ import {
 } from "./subjects.js";
 import type { Identity } from "./identity.js";
 
-/** Cred profiles (per the plan's class table). Demo-1 mints all permissively; steps 5–7
- *  scope each one — at which point the manager MUST already hold its own privileged
- *  profile (broad: pre-create others' DM durables, serve ctl), not "agent", or it
- *  silently loses those powers the moment "agent" is tightened. */
+/** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
 export type Profile =
   | "agent"
   | "observer"
@@ -87,6 +84,46 @@ export type Profile =
   | "control-caller-privileged" // ps/start → ctl.<privileged>.<id> only (no cross-agent reach)
   | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
   | "deployer"; // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+
+export type CredentialLifetimeClass = "standing-renewable" | "one-shot" | "static-operator-managed" | "mixed";
+export type CredentialKind = Profile | "membership-observer";
+
+export interface CredentialLifetimePolicy {
+  class: CredentialLifetimeClass;
+  /** Default max age for profiles safe to expire before the renewal slice. Undefined = no default exp yet. */
+  defaultTtlSeconds?: number;
+  renewalOwner?: string;
+  note: string;
+}
+
+const FIVE_MINUTES = 5 * 60;
+
+/** D5 profile matrix. This is intentionally centralized so every new mint profile must classify its
+ * credential-death behavior instead of silently inheriting non-expiring static creds. */
+export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
+  agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
+  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
+  supervisor: { class: "standing-renewable", renewalOwner: "manager", note: "manager's always-on endpoint; renewal slice required before default exp" },
+  delivery: { class: "standing-renewable", renewalOwner: "delivery launcher", note: "server-side Plane-3 daemon; renewal slice required before default exp" },
+  "membership-rw": { class: "standing-renewable", renewalOwner: "delivery launcher", note: "membership feed writer; renewal slice required before default exp" },
+  provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
+  deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
+  operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
+  purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
+  probe: { class: "one-shot", defaultTtlSeconds: 60, note: "connect-only preflight" },
+  "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
+  "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },
+  teardown: { class: "one-shot", note: "space teardown can be long/destructive; needs TTL budget/remint guard before default exp" },
+  "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
+  "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
+  deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
+  "membership-observer": { class: "standing-renewable", renewalOwner: "delivery launcher", note: "system-account CONNZ observer persisted beside membership-rw; renewal slice required before default exp" },
+};
+
+export function credentialLifetime(kind: CredentialKind): CredentialLifetimePolicy {
+  return CREDENTIAL_LIFETIMES[kind];
+}
 
 /** A space's persisted trust material. The `signingSeed` is the sensitive provisioner
  *  secret; everything else is public (JWTs) or recoverable. The system-account `signingSeed` is the ONE
@@ -131,6 +168,33 @@ export function stripSpaceAuth(auth: SpaceAuth): SpaceAuth {
       signingPub: "",
     },
     sys: { pub: "", jwt: "" },
+  };
+}
+
+/** Rotate the DATA-account signing key and re-issue the data-account JWT so the old data signer is no
+ * longer trusted by the broker once it loads the returned auth. This does NOT rotate the system account:
+ * persisted `membership-observer` creds remain valid until the system-account renewal/rotation slice. */
+export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<SpaceAuth> {
+  if (!auth.operator.seed || !auth.account.seed)
+    throw new Error("rotateDataAccountSigningKey: full operator/account seed material is required (a stripped signer cannot rotate trust)");
+  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+  const akp = fromSeed(new TextEncoder().encode(auth.account.seed));
+  const askp = createAccount();
+  const signingPub = askp.getPublicKey();
+  const accountJwt = await encodeAccount(
+    token(auth.space),
+    akp,
+    { signing_keys: [signingPub], limits: DATA_LIMITS },
+    { signer: okp },
+  );
+  return {
+    ...auth,
+    account: {
+      ...auth.account,
+      jwt: accountJwt,
+      signingSeed: new TextDecoder().decode(askp.getSeed()),
+      signingPub,
+    },
   };
 }
 
@@ -201,6 +265,25 @@ export interface MintOpts {
    *  footprint and nothing else — never a peer's, never the role-shared `svc_<role>`. Ignored by every
    *  other profile. */
   deprovisionTarget?: string;
+  /** Override the profile default lifetime. Internal/test hook; command surfaces should prefer the
+   * centralized {@link CREDENTIAL_LIFETIMES} defaults so profile behavior stays auditable. */
+  expiresInSeconds?: number;
+  /** Absolute JWT `exp` timestamp in seconds. Used by cutover/test code that needs already-expired creds. */
+  expiresAt?: number;
+}
+
+function userValidDates(profile: Profile, opts: MintOpts): { exp?: number } {
+  if (opts.expiresAt !== undefined && opts.expiresInSeconds !== undefined)
+    throw new Error("mintCreds: pass only one of expiresAt or expiresInSeconds");
+  if (opts.expiresAt !== undefined) {
+    if (!Number.isInteger(opts.expiresAt) || opts.expiresAt < 0)
+      throw new Error("mintCreds: expiresAt must be a non-negative integer timestamp (seconds)");
+    return { exp: opts.expiresAt };
+  }
+  const ttl = opts.expiresInSeconds ?? CREDENTIAL_LIFETIMES[profile].defaultTtlSeconds;
+  if (ttl === undefined) return {};
+  if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("mintCreds: expiresInSeconds must be a positive integer");
+  return { exp: Math.floor(Date.now() / 1000) + ttl };
 }
 
 /** Options for {@link provisionAgent} — {@link MintOpts} plus the active read set. */
@@ -289,12 +372,13 @@ export async function mintCreds(
 ): Promise<string> {
   const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
   const perms = permissionsFor(profile, auth.space, identity.id, opts);
+  const validDates = userValidDates(profile, opts);
   const userJwt = await encodeUser(
     profile,
     fromPublic(identity.id),
     fromPublic(auth.account.pub),
     perms,
-    { signer },
+    { signer, ...validDates },
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
@@ -850,7 +934,8 @@ function purgerPermissions(space: string, id: string): Record<string, unknown> {
  *  create a DM/DLV consumer can stream the bodies). That is exactly why it is split OFF the always-on
  *  supervisor and made EPHEMERAL: the daemon opens a provisioner connection per spawn and drains it
  *  immediately, so the surface exists only for the provisioning window, not as a standing target. The
- *  cred is MEMORY-ONLY (never written to `.cotal`); short-`exp`/revocation is the auth-callout follow-up.
+ *  cred is MEMORY-ONLY (never written to `.cotal`) and now carries a short profile-default `exp`; signer
+ *  rotation, live eviction, and full revocation are later D5 slices.
  *
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
