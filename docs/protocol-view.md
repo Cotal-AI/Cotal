@@ -29,12 +29,6 @@ first: every space on the server (enumerated from its `CHAT_*` streams plus pres
 `b` returns to the overview. `--space X` skips the picker. Under auth a server hosts a single
 space, so the console enters it directly (no overview).
 
-**Generate traffic to test them:** `cotal demo --space demo` (via the `@cotal-ai/demo` extension:
-`cotal ext add ./implementations/demo`) spins up a handful of mock agents
-that loop a scripted trace hitting every message type (multicast across channels plus mentions,
-peer DMs, a coalesced burst, an unclaimed anycast) and every presence state. Run it next to
-`cotal console` / `cotal web`.
-
 ## The shared model: `MeshView` (`@cotal-ai/cli`)
 
 One class consumes the observer and emits a normalized, render-agnostic model: no ANSI, no

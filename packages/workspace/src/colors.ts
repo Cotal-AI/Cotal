@@ -1,5 +1,5 @@
 /** ANSI color helpers for operator-facing terminal output — shared by every command surface
- *  (@cotal-ai/cli, cotal-web, @cotal-ai/demo) so they render identically. Workstation-layer
+ *  (@cotal-ai/cli, cotal-web) so they render identically. Workstation-layer
  *  concern: the wire protocol in core never prints. */
 export const c = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,

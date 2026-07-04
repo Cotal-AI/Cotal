@@ -1,6 +1,6 @@
 /**
- * DOGFOOD LIVE e2e (stage 4): the REAL `cotal-web` + `@cotal-ai/demo` packages installed through
- * the REAL `cotal ext` mechanism and exercised against a REAL mesh — the full operator journey:
+ * DOGFOOD LIVE e2e: the REAL `cotal-web` package installed through the REAL `cotal ext`
+ * mechanism and exercised against a REAL mesh — the full operator journey:
  *
  *  A. `web` left the core surface (unknown command; the built-in count shrank).
  *  B. `cotal ext add ./implementations/web` — the first real MULTI-PEER extension: BOTH
@@ -9,9 +9,7 @@
  *  C. `cotal up --detach` (JWT auth) then `cotal web`: the dashboard serves /, /app.js (packaged
  *     assets) and /api/meta over HTTP against the live mesh — the admin-mint + purger-pre-mint
  *     path, exactly as an operator runs it.
- *  D. `@cotal-ai/demo` on an OPEN mesh: `cotal demo --once` replays the scripted trace; the
- *     traffic LANDS in real channel history.
- *  E. `ext remove` both; `web` is unknown again.
+ *  D. `ext remove cotal-web`; `web` is unknown again.
  *
  * Needs dist built (the packages install per their `files: ["dist"]`), `nats-server` + npm on
  * PATH. Sandboxes COTAL_HOME/XDG_CONFIG_HOME + a temp root; kills only its own pids.
@@ -23,7 +21,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const AUTH_PORT = 14361;
-const OPEN_PORT = 14363;
 const WEB_PORT = 14371;
 const REPO = resolve(import.meta.dirname, "..", "..");
 
@@ -110,39 +107,9 @@ try {
     ok("down stops the auth mesh", down.status === 0, down.stderr.slice(-200));
   }
 
-  // -- D: the demo trace generator on an OPEN mesh ---------------------------------------------------
-  {
-    const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${OPEN_PORT}`]);
-    ok("up --detach --open exits 0", up.status === 0, (up.stdout + up.stderr).slice(-400));
-    const add = cotal(["ext", "add", join(REPO, "implementations", "demo")]);
-    ok("ext add @cotal-ai/demo exits 0 (private package, by path)", add.status === 0, (add.stdout + add.stderr).slice(-400));
-    const r = cotal(["demo", "--once", "--interval", "25", "--server", `nats://127.0.0.1:${OPEN_PORT}`], 240_000);
-    ok("cotal demo --once completes a full trace", r.status === 0, (r.stdout + r.stderr).slice(-400));
-    ok("demo announced its agents", /agents live in space/.test(r.stdout), r.stdout.slice(0, 300));
-    // The trace really landed on the mesh: read channel history through the wire protocol.
-    const { CotalEndpoint } = await import("@cotal-ai/core");
-    const ep = new CotalEndpoint({
-      space: "main",
-      servers: `nats://127.0.0.1:${OPEN_PORT}`,
-      channels: [],
-      consume: false,
-      registerPresence: false,
-      watchPresence: false,
-      card: { name: "probe", kind: "endpoint" },
-    });
-    ep.on("error", () => {});
-    await ep.start();
-    const hist = await ep.channelHistory("general", { limit: 50 });
-    await ep.stop();
-    ok("demo traffic landed in real channel history", hist.length > 0, hist.length);
-    const down = cotal(["down"]);
-    ok("down stops the open mesh", down.status === 0, down.stderr.slice(-200));
-  }
-
-  // -- E: remove both; the surface shrinks back ------------------------------------------------------
+  // -- D: remove the extension; the surface shrinks back ---------------------------------------------
   {
     ok("ext remove cotal-web exits 0", cotal(["ext", "remove", "cotal-web"]).status === 0);
-    ok("ext remove @cotal-ai/demo exits 0", cotal(["ext", "remove", "@cotal-ai/demo"]).status === 0);
     const r = cotal(["web"]);
     ok("`cotal web` is unknown again after remove", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
   }

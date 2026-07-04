@@ -26,7 +26,7 @@ import {
 // run) collides with — or serves stale JetStream state to — every subsequent run, which reads as a
 // flaky gate. Randomizing isolates each run even if teardown ever leaks. Paired with an await-exit in
 // `finally` (a SIGKILLed child does not release the socket synchronously) so a clean run never leaks.
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = 12000 + Math.floor(Math.random() * 8000);
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "chansmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

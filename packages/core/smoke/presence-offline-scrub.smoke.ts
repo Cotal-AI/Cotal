@@ -15,7 +15,7 @@ import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, presenceBucket, type Presence } from "../src/index.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = 12000 + Math.floor(Math.random() * 8000);
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "scrubsmoke";
 const id = "otto_scrub";

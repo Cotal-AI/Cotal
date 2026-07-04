@@ -29,7 +29,7 @@ import {
 // Fresh random port per run: a fixed port lets a leaked broker from a crashed prior run serve stale
 // JetStream state to the next run (reads as a flaky gate). Randomizing isolates each run even if
 // teardown ever leaks; the await-exit in `finally` keeps a clean run from ever leaking.
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = 12000 + Math.floor(Math.random() * 8000);
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "wbksmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
