@@ -136,13 +136,17 @@ run`). They differ only in how they *run* the spec:
 
 | Launcher | How to point at a file |
 |---|---|
-| Manager (supervised PTY) | `cotal spawn --detach dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <path>`; the SAME grammar as the foreground launch — `--model`, `--cwd`, `--prompt`, ACL overrides, `--share-tools` all apply. View via console / `cotal attach`. |
-| Foreground (`cotal spawn`) | `cotal spawn <name-or-path>`. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
+| Manager (supervised PTY) | `cotal spawn --detach dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <persona-or-path>` for an explicit persona ref/file; the SAME grammar as the foreground launch — `--model`, `--cwd`, `--prompt`, ACL overrides, `--share-tools` all apply. View via console / `cotal attach`. |
+| Foreground (`cotal spawn`) | `cotal spawn <persona>` for `.cotal/agents/<persona>.md`, or `--config <persona-or-path>` when a flag is clearer. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
 
 `.cotal/` is gitignored (user-local, like `.claude/`). The demo ships committed example
 files under
 [`examples/01-lateral-coordination/agents/`](../examples/01-lateral-coordination/agents/) to
 point at with `--config`.
+
+**Default persona.** A bare `cotal spawn` uses the `default` persona unless
+`COTAL_DEFAULT_PERSONA=<name-or-path>` is set. The env value accepts the same catalog name or path
+as `--config`; an explicit positional persona or `--config` wins.
 
 **Default harness.** If no launcher passes `--agent` / `agent`, Cotal uses
 `COTAL_DEFAULT_AGENT` when set, otherwise Claude. For example, start the stack with
