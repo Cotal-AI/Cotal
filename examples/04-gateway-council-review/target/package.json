@@ -1,0 +1,11 @@
+{
+  "name": "agentgw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Demo LLM gateway for a coding agent. Purpose-built, deliberately flawed review target modeled on glock by smundhra (used with permission). Not for production.",
+  "scripts": {
+    "start": "bun run server.ts",
+    "check": "tsc --noEmit"
+  }
+}

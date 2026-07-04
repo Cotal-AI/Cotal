@@ -11,3 +11,4 @@ one-way: `examples → implementations → packages`, never back.
 |---|---|
 | [01: Lateral Coordination](../examples/01-lateral-coordination/README.md) | Role-specialized endpoints join one shared space and coordinate laterally: presence, all three addressing modes, live state, observability, graceful leave, late join. |
 | [02: Self-improving Console](../examples/02-self-improving-console/README.md) | A swarm of four real Claude Code agents in cmux tabs rebuilds Cotal's own console as a lazygit-style Ink/React TUI, coordinating as lateral peers over the mesh. |
+| [04: Gateway Council Review](../examples/04-gateway-council-review/README.md) | A Glock-style review council implemented as real Cotal personas: nine focused reviewers, one OpenCode/GPT security reviewer, deterministic gate JSON, vetoes, triggered debate, and final verdict channels. |

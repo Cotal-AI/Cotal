@@ -111,6 +111,10 @@ importers:
         specifier: ^4.22.4
         version: 4.22.4
 
+  examples/04-gateway-council-review: {}
+
+  examples/04-gateway-council-review/target: {}
+
   extensions/cmux:
     dependencies:
       '@cotal-ai/core':

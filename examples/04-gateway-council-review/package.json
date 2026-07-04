@@ -1,0 +1,12 @@
+{
+  "name": "@cotal-ai/example-04-gateway-council-review",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "topology": "pnpm --dir ../.. cotal topology view -f examples/04-gateway-council-review/cotal.yaml",
+    "check-gates": "bun check-gates.ts",
+    "target:check": "cd target && bunx tsc --noEmit",
+    "target:start": "bun run target/server.ts"
+  }
+}

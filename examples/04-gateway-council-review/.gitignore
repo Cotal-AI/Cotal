@@ -1,0 +1,3 @@
+gates.*.json
+target/bun.lock
+target/node_modules/

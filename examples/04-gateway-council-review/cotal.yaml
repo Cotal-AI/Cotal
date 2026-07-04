@@ -1,0 +1,66 @@
+apiVersion: cotal/v1
+kind: Mesh
+space: gateway-review
+runtime: cmux
+agent: claude
+personaPermissions: reject
+
+agents:
+  orchestrator:
+    persona: ./agents/orchestrator.md
+    role: host
+    capabilities: [spawn]
+  synthesizer:
+    persona: ./agents/synthesizer.md
+    role: verdict-synthesizer
+  review-correctness:
+    persona: ./agents/review-correctness.md
+    role: correctness-reviewer
+  review-security:
+    persona: ./agents/review-security.md
+    agent: opencode
+    model: openai/gpt-5.5
+    role: security-reviewer
+  review-edge-cases:
+    persona: ./agents/review-edge-cases.md
+    role: edge-case-reviewer
+  review-performance:
+    persona: ./agents/review-performance.md
+    role: performance-reviewer
+  review-simplicity:
+    persona: ./agents/review-simplicity.md
+    role: simplicity-reviewer
+  review-maintainability:
+    persona: ./agents/review-maintainability.md
+    role: maintainability-reviewer
+  review-data-integrity:
+    persona: ./agents/review-data-integrity.md
+    role: data-integrity-reviewer
+  review-attack-surface:
+    persona: ./agents/review-attack-surface.md
+    role: attack-surface-reviewer
+  review-testing:
+    persona: ./agents/review-testing.md
+    role: testing-reviewer
+
+channels:
+  general:
+    description: Operator and coordination channel for the gateway review run.
+    subscribe: [orchestrator]
+    allowSubscribe: [orchestrator]
+    allowPublish: [orchestrator]
+  review.gateway:
+    description: Main review room for the agentgw gateway packet, findings, fix diff, and signoff.
+    subscribe: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
+    allowSubscribe: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
+    allowPublish: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
+  review.debate:
+    description: Debate room opened only for vetoes or concrete disagreements.
+    subscribe: [orchestrator, synthesizer]
+    allowSubscribe: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
+    allowPublish: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
+  review.verdict:
+    description: Structured final votes, vetoes, deterministic check results, and signoff.
+    subscribe: [orchestrator, synthesizer]
+    allowSubscribe: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
+    allowPublish: [orchestrator, synthesizer, review-correctness, review-security, review-edge-cases, review-performance, review-simplicity, review-maintainability, review-data-integrity, review-attack-surface, review-testing]
