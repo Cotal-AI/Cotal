@@ -17,7 +17,7 @@
  * per-launch `OPENCODE_SERVER_PASSWORD` in the child env; the poke and the attach TUI present it as
  * HTTP basic auth. Bind stays loopback; no CORS / mDNS.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
@@ -73,6 +73,41 @@ async function killServe(serve: ChildProcess): Promise<void> {
   }
 }
 
+function processCommand(pid: number): string | undefined {
+  try {
+    if (process.platform === "win32") {
+      return execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`,
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    }
+    return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function isLiveOpencodeServe(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+
+  const cmd = processCommand(pid);
+  if (!cmd) return true; // If the platform cannot inspect it, keep the old fail-closed behavior.
+  return /\bserve\b/.test(cmd) && (
+    /(?:^|[\\/\s])opencode(?:\.exe)?(?:\s|$)/i.test(cmd) ||
+    (/--hostname\s+127\.0\.0\.1\b/.test(cmd) && /--port\s+\d+\b/.test(cmd))
+  );
+}
+
 async function main(): Promise<void> {
   const port = process.env.COTAL_OPENCODE_PORT?.trim() || String(await freePort());
   const url = `http://127.0.0.1:${port}`;
@@ -91,14 +126,8 @@ async function main(): Promise<void> {
   const pidFile = join(agentHome, "serve.pid");
   if (existsSync(pidFile)) {
     const pid = Number(readFileSync(pidFile, "utf8"));
-    let alive = false;
-    try {
-      process.kill(pid, 0);
-      alive = true;
-    } catch {
-      /* stale pidfile */
-    }
-    if (alive) throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
+    if (isLiveOpencodeServe(pid))
+      throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
     rmSync(pidFile);
   }
 
