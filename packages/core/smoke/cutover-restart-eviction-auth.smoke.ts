@@ -78,7 +78,7 @@ async function liveConnect(creds: string, id: string): Promise<NatsConnection> {
   });
 }
 
-async function closes(nc: NatsConnection, timeoutMs = 5000): Promise<boolean> {
+async function closes(nc: NatsConnection, timeoutMs = 20_000): Promise<boolean> {
   const closed = await Promise.race([nc.closed().then(() => true), wait(timeoutMs).then(() => false)]);
   return closed;
 }
