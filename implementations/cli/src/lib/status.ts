@@ -6,8 +6,7 @@ import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { resolveNatsServer } from "./nats-bin.js";
 
-// Moved into `@cotal-ai/workspace` (stage 4, shared with @cotal-ai/demo); re-exported for the
-// CLI's many importers.
+// Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
 export { resolveSpace } from "@cotal-ai/workspace";
 
 export interface MeshStatus {

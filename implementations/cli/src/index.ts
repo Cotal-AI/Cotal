@@ -304,9 +304,8 @@ const baseCommands: Command[] = [
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
     run: console_,
   },
-  // `web` (dashboard) and `demo` (trace generator) moved out to the `cotal-web` and
-  // `@cotal-ai/demo` extension packages (stage 4) — installed via `cotal ext add`, they
-  // self-register here and appear in this same surface.
+  // `web` (dashboard) moved out to the `cotal-web` extension package (stage 4) — installed via
+  // `cotal ext add`, it self-registers here and appears in this same surface.
 ];
 
 registry.register(...baseCommands);
