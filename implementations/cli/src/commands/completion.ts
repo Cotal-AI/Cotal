@@ -47,27 +47,38 @@ export async function complete(args: ParsedArgs): Promise<void> {
   // extension stubs when the root opted in), minus `__`-internal and `hidden` ones. Extension
   // candidates come from the manifest CACHE — a <TAB> never imports an extension.
   const commands = commandSurface().filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
-  // Word 0 (the command name itself): offer the command names.
-  if (argv.length <= 1) {
+  // No command word yet: offer the command names. If the lone word is an exact command, many
+  // shells omitted the trailing empty cursor word; complete inside that command instead.
+  if (argv.length === 0) {
     emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");
     return;
   }
   const cmd = commands.find((cmd) => cmd.name === argv[0]);
+  if (argv.length === 1 && cmd) return emitCommandCompletion(cmd, [""]);
+  if (argv.length === 1) {
+    emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");
+    return;
+  }
+  return emitCommandCompletion(cmd, argv.slice(1));
+}
+
+async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): Promise<void> {
   // A word starting with `-` completes against the command's DECLARED flags — generated from
   // the specs, so it can never drift from what parsing accepts. Value/positional completion
   // stays with the command's own `complete` hook below.
   const word = argv[argv.length - 1];
-  if (cmd && word.startsWith("-")) {
+  if (cmd && word.startsWith("-") && !word.includes("=")) {
     const items = (cmd.flags ?? []).map((f) => ({ value: `--${f.name}`, description: f.description }));
     emit(items, "nofiles");
     return;
   }
   if (!cmd?.complete) {
-    emit([], "default"); // unknown command, or one with no completer → defer to the shell
+    const items = (cmd?.flags ?? []).map((f) => ({ value: `--${f.name}`, description: f.description }));
+    emit(items, items.length ? "nofiles" : "default");
     return;
   }
   try {
-    const res = await cmd.complete(argv.slice(1));
+    const res = await cmd.complete(argv);
     emit(res.items, res.directive ?? "nofiles");
   } catch (e) {
     // No fallback: a completer that can't produce its authoritative set (e.g. a malformed agent
