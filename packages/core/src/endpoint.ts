@@ -1087,7 +1087,11 @@ export class CotalEndpoint extends EventEmitter {
       if (info.state.subjects) {
         for (const [subject, count] of Object.entries(info.state.subjects)) {
           const p = parseSubject(subject);
-          if (p?.kind === "chat") counts.set(p.rest, (counts.get(p.rest) ?? 0) + count);
+          // Same surfacing-boundary defense as the message guards: parseSubject splits only, so an
+          // old-shape alias (`chat.<nkey>.team.backend`) structurally parses with a raw-nkey owner and a
+          // misattributed channel. Reject a non-principal owner token here too, or retained pre-flip
+          // subjects would inflate this channel-count surface with phantom channels.
+          if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner)) counts.set(p.rest, (counts.get(p.rest) ?? 0) + count);
         }
       }
     } catch {

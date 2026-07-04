@@ -18,7 +18,9 @@ export type AclResolver = (
 
 /**
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
- * `permissionsFor("agent", …)`. `connId` (the connection nkey `req.user_nkey`) scopes the reply inbox.
+ * `permissionsFor("agent", …)`. `connId` here is the CLIENT-CHOSEN inbox nonce the callout reads from
+ * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect); it scopes the
+ * reply inbox `_INBOX_<connId>.>`.
  *
  * Invariants enforced HERE (not in core):
  *  - the owner is a DERIVED owner (`u_…`) — user mode never accepts the reserved dev `local` owner;
