@@ -10,6 +10,18 @@ import { complete } from "../src/commands/completion.js";
 
 const noop = async (): Promise<void> => {};
 
+async function completionOut(positionals: string[]): Promise<string> {
+  let out = "";
+  const realWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((s: string) => ((out += s), true)) as typeof process.stdout.write;
+  try {
+    await complete({ values: {}, positionals, raw: positionals });
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  return out;
+}
+
 // --- flags parse strictly: strings, booleans, shorts -------------------------------------------
 {
   const cmd: Command = {
@@ -95,17 +107,35 @@ const noop = async (): Promise<void> => {};
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");
   assert.ok(spawnCmd?.flags?.length, "spawn declares flags");
-  let out = "";
-  const realWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((s: string) => ((out += s), true)) as typeof process.stdout.write;
-  try {
-    await complete({ values: {}, positionals: ["spawn", "--"], raw: ["spawn", "--"] });
-  } finally {
-    process.stdout.write = realWrite;
-  }
+  const out = await completionOut(["spawn", "--"]);
   assert.ok(out.includes("--space"), "flag completion lists --space");
   assert.ok(out.includes("--config"), "flag completion lists --config");
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
+}
+
+// --- exact commands and flags-before-positionals stay inside the command grammar -----------------
+{
+  const exactSend = await completionOut(["send"]);
+  assert.ok(exactSend.includes("dm\tunicast to a peer"), "exact send completes send subcommands");
+  assert.ok(!exactSend.includes("spawn\t"), "exact send does not fall back to top-level commands");
+
+  const flaggedSend = await completionOut(["send", "--space", "demo", ""]);
+  assert.ok(flaggedSend.includes("msg\tbroadcast to a channel"), "flags before send subcommands are ignored");
+  assert.ok(!flaggedSend.includes("spawn\t"), "flagged send does not fall back to top-level commands");
+
+  const flaggedPersonas = await completionOut(["personas", "--space", "demo", ""]);
+  assert.ok(flaggedPersonas.includes("show\tprint a persona's card"), "flags before personas subcommands are ignored");
+
+  const exactUp = await completionOut(["up"]);
+  assert.ok(exactUp.includes("--space"), "exact flag-only commands offer their flags");
+  assert.ok(!exactUp.includes("setup\t"), "exact flag-only commands do not fall back to top-level commands");
+
+  const exactAttach = await completionOut(["attach", ""]);
+  assert.ok(exactAttach.includes("--name"), "attach with an empty next word offers flags");
+
+  const attachName = await completionOut(["attach", "--name", ""]);
+  assert.ok(!attachName.includes("--space"), "attach --name value completion does not fall back to flags");
+  assert.ok(attachName.trimEnd().endsWith(":nofiles"), "attach --name suppresses filename fallback");
 }
 
 console.log("✓ command-kernel smoke passed");

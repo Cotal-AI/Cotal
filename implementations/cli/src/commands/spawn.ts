@@ -35,9 +35,10 @@ import {
   spaceFlag,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
-import { listPersonas } from "../lib/personas.js";
+import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
@@ -45,13 +46,25 @@ import { spawnManifest } from "./spawn-manifest.js";
  *  probe — a <TAB> must stay cheap and never open the network), so it lists the *target* mesh's
  *  personas, not the cwd's. */
 export function spawnComplete(argv: string[]): CompletionResult {
-  if (argv[argv.length - 2] === "--space")
+  const flag = completingFlagValue(argv, spawnFlags);
+  if (flag?.name === "space")
     return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (flag?.name === "agent")
+    return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
+  if (flag?.name === "role")
+    return { items: listDeclaredRoles().map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
+  if (flag?.name === "config") return { items: [], directive: "default" };
+  if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
+    return { items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
+  if (flag && ["cwd", "file", "creds"].includes(flag.name)) return { items: [], directive: "default" };
+  if (flag?.name === "runtime")
+    return { items: ["pty", "tmux", "cmux"].map((value) => ({ value })), directive: "nofiles" };
+
+  const positionals = positionalsForCompletion(argv, spawnFlags);
   // Only the first word after `spawn` is the persona positional; once it's typed, defer to the shell.
-  if (argv.length <= 1) {
+  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config")) {
     try {
-      const target = resolveMeshTarget(process.cwd());
-      return { items: listPersonas(target.root).map((p) => ({ value: p.name })), directive: "nofiles" };
+      return { items: personaItems(argv), directive: "nofiles" };
     } catch {
       // No single target (no mesh, or several with no `current`) — fail CLOSED: offer no personas
       // rather than throw. `cotal spawn --space <TAB>` still lists the running meshes.
@@ -59,6 +72,14 @@ export function spawnComplete(argv: string[]): CompletionResult {
     }
   }
   return { items: [], directive: "nofiles" };
+}
+
+function personaItems(argv: string[]) {
+  const target = resolveMeshTarget(process.cwd(), {
+    space: completedFlagValue(argv, spawnFlags, "space"),
+    server: completedFlagValue(argv, spawnFlags, "server"),
+  });
+  return listPersonas(target.root).map((p) => ({ value: p.name }));
 }
 
 /**
