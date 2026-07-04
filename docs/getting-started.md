@@ -137,7 +137,7 @@ created). See
 A coding agent can set Cotal up for you with two non-interactive commands:
 
 ```bash
-npx cotal-ai setup --yes     # configure: install the plugin + seed personas (launches nothing)
+npx cotal-ai setup --yes     # configure: install the plugin + seed one agent (launches nothing)
 npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
 ```
 

@@ -3,10 +3,11 @@
  * REAL subprocess in a sandboxed COTAL_HOME with claude/opencode OFF the PATH, and must:
  *   A. exit 0 — configuring a machine never depends on (or mutates) running state;
  *   B. LAUNCH NOTHING — no broker appears on the default port, no manager pid file lands;
- *   C. WRITE the personas (david/sven/me/default), install cotal-web in a sandboxed config dir,
- *      and write the onboarded stamp, with persona/stamp writes announced on stderr;
- *   D. a REPEAT run (now onboarded) prints the status card, still launches nothing, and exits 0;
- *   E. the removed `--open` flag and the deleted `go` command fail loud.
+ *   C. WRITE the default persona, install cotal-web in a sandboxed config dir, and write the
+ *      onboarded stamp, with persona/stamp writes announced on stderr;
+ *   D. `setup --demo` on an onboarded machine writes the guided team;
+ *   E. a REPEAT run (now onboarded) prints the status card, still launches nothing, and exits 0;
+ *   F. the removed `--open` flag and the deleted `go` command fail loud.
  * Run: pnpm smoke:setup-pure:live
  */
 import { spawnSync } from "node:child_process";
@@ -54,23 +55,33 @@ ok("no manager pid file", !existsSync(join(home, "manager.pid")));
 ok("no nats/delivery logs (nothing started)", !existsSync(join(home, "nats.log")) && !existsSync(join(home, "delivery.log")));
 ok("output never claims to start anything", !/running at|manager up|mesh running/i.test(first.stdout + first.stderr), (first.stdout + first.stderr).slice(-300));
 
-// C — the writes happened (in the INVOKING folder's .cotal) and were announced.
-for (const f of ["david.md", "sven.md", "me.md", "default.md"]) {
-  ok(`persona ${f} written`, existsSync(join(proj, ".cotal", "agents", f)));
+// C — the default persona write happened (in the INVOKING folder's .cotal) and was announced.
+ok("default persona written", existsSync(join(proj, ".cotal", "agents", "default.md")));
+for (const f of ["david.md", "sven.md", "me.md"]) {
+  ok(`demo persona ${f} not written by default`, !existsSync(join(proj, ".cotal", "agents", f)));
 }
 ok("onboarded stamp written", existsSync(join(home, "onboarded.json")));
 const extManifest = JSON.parse(readFileSync(join(configHome, "cotal", "extensions", "extensions.json"), "utf8"));
 ok("web extension installed in sandboxed config", extManifest.extensions?.some((e: { commands?: { name?: string }[] }) => e.commands?.some((c) => c.name === "web")) === true);
-ok("provenance announces persona writes", /→ wrote persona: .*david\.md/.test(first.stderr), first.stderr.slice(-500));
+ok("provenance announces default persona write", /→ wrote default persona: .*default\.md/.test(first.stderr), first.stderr.slice(-500));
 ok("provenance announces the onboarded stamp", /→ wrote onboarded stamp/.test(first.stderr));
 
-// D — repeat run: status card, still nothing launched, exit 0.
+// D — `--demo` on an already-configured machine adds the guided team without launching anything.
+const demo = cotal(["setup", "--demo"], proj);
+ok("demo setup exits 0", demo.status === 0, { status: demo.status, err: demo.stderr.slice(-300) });
+for (const f of ["david.md", "sven.md", "me.md"]) {
+  ok(`demo persona ${f} written`, existsSync(join(proj, ".cotal", "agents", f)));
+}
+ok("demo provenance announces persona writes", /→ wrote persona: .*david\.md/.test(demo.stderr), demo.stderr.slice(-500));
+ok("demo setup still launches nothing", !existsSync(join(home, "manager.pid")) && !existsSync(join(home, "nats.log")));
+
+// E — repeat run: status card, still nothing launched, exit 0.
 const second = cotal(["setup"], proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
 ok("repeat run shows the status card", /cotal · status/.test(second.stdout + second.stderr), (second.stdout + second.stderr).slice(-300));
 ok("repeat run still launches nothing", !existsSync(join(home, "manager.pid")) && !existsSync(join(home, "nats.log")));
 
-// E — removed surface fails loud.
+// F — removed surface fails loud.
 const open = cotal(["setup", "--open"], proj);
 ok("removed --open flag errors", open.status === 1 && /Unknown option/.test(open.stderr), open.stderr.slice(0, 200));
 const go = cotal(["go"], proj);
