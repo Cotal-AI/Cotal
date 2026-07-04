@@ -21,12 +21,15 @@ import { join, resolve } from "node:path";
 
 const PORT = 14341; // unique across the live smokes (no back-to-back port collision)
 const SERVER = `nats://127.0.0.1:${PORT}`;
+const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const WT = resolve(import.meta.dirname, "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-upstack-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-upstack-root-"));
+const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
+const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
 const env = { ...process.env, COTAL_HOME: home };
 
 let pass = 0;
@@ -46,15 +49,34 @@ const alive = (pid: number) => {
   }
 };
 const pidOf = (file: string) => Number(readFileSync(join(root, ".cotal", file), "utf8").trim());
-const portOpen = () =>
+const portOpenAt = (port: number) =>
   new Promise<boolean>((res) => {
-    const s = createConnection({ host: "127.0.0.1", port: PORT }, () => { s.destroy(); res(true); });
+    const s = createConnection({ host: "127.0.0.1", port }, () => { s.destroy(); res(true); });
     s.on("error", () => res(false));
     s.setTimeout(400, () => { s.destroy(); res(false); });
   });
+const portOpen = () => portOpenAt(PORT);
+const cliIn = (cwd: string, ...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
 
 const pids: number[] = [];
+let startedOccupant = false;
 try {
+  // Default-port collision: `up` without an explicit `--server` should allocate a free port and
+  // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
+  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
+  if (!(await portOpenAt(4222))) {
+    const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
+    ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
+    startedOccupant = true;
+  }
+  const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
+  ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
+  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", `${encodeURIComponent("auto")}.json`), "utf8")) as { server: string };
+  ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
+  ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
+  cliIn(autoRoot, "down");
+  if (startedOccupant) cliIn(occupantRoot, "down");
+
   // 1) the full stack comes up from ONE command, JWT-authed by default.
   const up = cli("up", "--detach", "--server", SERVER);
   ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
@@ -95,7 +117,9 @@ try {
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
   spawnSync(TSX, [CLI, "down"], { cwd: root, env, encoding: "utf8" });
+  spawnSync(TSX, [CLI, "down"], { cwd: autoRoot, env, encoding: "utf8" });
+  if (startedOccupant) spawnSync(TSX, [CLI, "down"], { cwd: occupantRoot, env, encoding: "utf8" });
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  for (const d of [root, autoRoot, occupantRoot]) rmSync(d, { recursive: true, force: true });
 }
