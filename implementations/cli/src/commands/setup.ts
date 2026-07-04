@@ -12,7 +12,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
-import { cotalOnPath, displayCmd, isNpx } from "../lib/self-exec.js";
+import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { cotalPath } from "../lib/paths.js";
 
 const ONBOARD_VERSION = "2";
@@ -109,6 +109,7 @@ async function runFirstRun(yes: boolean): Promise<void> {
   p.log.success("Added david (the engineer), sven (the guide), and your session (me); spawn them when your mesh is up");
   log.line("demo-agents: wrote david + sven + me");
 
+  await ensureWebExtension();
   await offerGlobalInstall(yes);
 
   markOnboarded(ONBOARD_VERSION);
@@ -233,6 +234,7 @@ function claudePluginStep(): Step {
  *  missing (announced). Nothing is launched — the card tells you what's down and how to start it. */
 async function runEnsure(): Promise<void> {
   seedDefaultAgent(); // ensure `cotal spawn` (no name) always has a default to launch
+  await ensureWebExtension();
   await readyCard(process.cwd());
 }
 
@@ -244,6 +246,33 @@ function webInstalled(): boolean {
   } catch {
     return false; // corrupt manifest — the card stays honest ("not installed"); `ext` commands surface the error
   }
+}
+
+/** Install the dashboard extension once, without turning setup into a launch command. This reuses the
+ *  public `ext add` path in a child process so package install, peer linking, command verification,
+ *  and manifest writes stay identical to an explicit `cotal ext add cotal-web`. Best-effort: setup is
+ *  still useful on locked-down machines where npm/registry access is unavailable. */
+async function ensureWebExtension(): Promise<void> {
+  if (webInstalled()) return;
+  const spec = defaultWebExtensionSpec();
+  const s = p.spinner();
+  s.start("Installing the web dashboard extension");
+  const [bin, ...argv] = selfArgv();
+  const r = spawnSync(bin, [...argv, "ext", "add", spec], { encoding: "utf8" });
+  if (r.status === 0) {
+    s.stop("Installed the web dashboard extension");
+    if (r.stderr) process.stderr.write(r.stderr);
+    if (r.stdout) process.stdout.write(r.stdout);
+    return;
+  }
+  s.stop("Couldn't install the web dashboard extension");
+  const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-6).join("\n");
+  p.log.warn(`${tail ? `${tail}\n\n` : ""}Install it later with ${dim(`${displayCmd()} ext add cotal-web`)}.`);
+}
+
+function defaultWebExtensionSpec(): string {
+  const local = join(import.meta.dirname, "..", "..", "..", "web");
+  return existsSync(join(local, "package.json")) ? local : "cotal-web";
 }
 
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
@@ -260,7 +289,7 @@ async function readyCard(cwd: string): Promise<void> {
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
       line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down — start: ${cmd} up --detach`)}`),
-      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down — start: ${cmd} web` : `not installed — add: ${cmd} ext add cotal-web`)}`),
+      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down — start: ${cmd} web` : `not installed — retry: ${cmd} setup`)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running — start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,

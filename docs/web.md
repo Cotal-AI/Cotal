@@ -1,7 +1,7 @@
 # `cotal web`: observability dashboard
 
-The dashboard ships as the `cotal-web` extension — install it once with
-`cotal ext add cotal-web` and the `web` command appears in the CLI.
+The dashboard ships as the `cotal-web` extension. `cotal setup` installs it automatically;
+if that failed, run `cotal ext add cotal-web` and the `web` command appears in the CLI.
 
 > A read-only browser **god-view** of one space: who is online, what they are doing, the
 > channels, the direct messages, and the live feed. It sees everything (chat, DMs, anycast),
