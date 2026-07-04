@@ -19,6 +19,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
+import "@cotal-ai/auth"; // registers login/logout
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
@@ -107,6 +108,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: false,
   },
+  login: { flags: ["client-id:string", "idp:string"], positionals: false },
+  logout: { flags: ["idp:string"], positionals: false },
 };
 
 const commands = registry.all<Command>("command");

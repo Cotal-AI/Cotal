@@ -54,6 +54,9 @@ importers:
 
   bin:
     dependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../implementations/auth
       '@cotal-ai/cli':
         specifier: workspace:*
         version: link:../implementations/cli
