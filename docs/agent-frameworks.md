@@ -45,10 +45,11 @@ into a *live* one (true mid-turn drive, before the next LLM call; a different-sc
 waits for its own turn, so a private DM is never folded into a channel reply), with `abort()`
 to interrupt. No external
 channel, host process, or keystrokes — inbound `"incoming"` calls a method on the embedded
-session. pi has no built-in permission gate, but in TUI mode (`PI_PEER_MODE=tui`) any pi
-extension that calls `ctx.ui.*` (approval gates, prompts, selects, editors) is rendered
-live in the peer's tmux pane and becomes operator-answerable per-pane (e.g. an edit-approval
-gate); headless peers run unattended (sandbox/containerize per pi's own guidance). It needs
+session. pi has no built-in permission gate, but in TUI mode (`PI_PEER_MODE=tui`, or the
+agent file's `peerMode: tui` frontmatter hint) any pi extension that calls `ctx.ui.*`
+(approval gates, prompts, selects, editors) is rendered live in the peer's tmux pane and
+becomes operator-answerable per-pane (e.g. an edit-approval gate); headless peers
+(unset/`headless`) run unattended (sandbox/containerize per pi's own guidance). It needs
 Node ≥22.19 and a provider key in the env.
 
 A `Connector` extension (`buildLaunch`) lets the manager spawn it: it launches the peer via

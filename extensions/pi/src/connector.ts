@@ -38,9 +38,9 @@ export const PROVIDER_KEYS = [
  * launch (so a malformed persona fails loud at `cotal start`, matching the sibling
  * connectors) and forwards the resolved model (`COTAL_MODEL`); the runtime path reads
  * the persona body from the agent file and injects it as the system prompt, so a
- * spawned peer runs as its declared persona. `PI_PEER_MODE=tui` selects the
- * interactive per-pane host (operator-answerable `ctx.ui.*` dialogs); unset runs the
- * headless embedded loop. Self-registers on import; the manager resolves it by
+ * spawned peer runs as its declared persona. `PI_PEER_MODE=tui` (or the agent file's `peerMode: tui` frontmatter hint)
+ * selects the interactive per-pane host (operator-answerable `ctx.ui.*` dialogs);
+ * unset/`headless` runs the headless embedded loop. Self-registers on import; the manager resolves it by
  * agent type "pi".
  */
 export const piConnector: Connector = {
@@ -63,14 +63,24 @@ export const piConnector: Connector = {
       const def = loadAgentFile(opts.configPath);
       const model = opts.model ?? def.model;
       if (model) env.COTAL_MODEL = model;
+      // Launch mode (headless embedded loop vs. interactive TUI host). The agent
+      // file's `peerMode:` frontmatter key is the persistent per-agent knob — an
+      // unmodelled scalar swept into AgentDef.meta, the same passthrough the
+      // OpenCode connector uses for `face:`, so core stays ignorant of it. An
+      // operator one-off still wins: `PI_PEER_MODE` env overrides the file and is
+      // forwarded verbatim (the peer validates it, see main.ts). Only "tui" is
+      // worth forwarding — "headless"/unset leave the var absent so the peer
+      // defaults to headless; an invalid file value fails loud here, not silently.
+      const peerMode = def.meta?.peerMode;
+      if (peerMode !== undefined && peerMode !== "tui" && peerMode !== "headless")
+        throw new Error(`agent file ${opts.configPath}: peerMode must be "tui" or "headless" (got ${JSON.stringify(peerMode)})`);
+      if (!process.env.PI_PEER_MODE && peerMode === "tui") env.PI_PEER_MODE = "tui";
     }
     for (const key of PROVIDER_KEYS) {
       const value = process.env[key];
       if (value) env[key] = value;
     }
-    // The connector's own launch-mode knob (headless embedded loop vs. interactive
-    // TUI host). pi-connector-owned: forwarded by NAME the same way as the model
-    // keys above, never via ...process.env. See main.ts for the dispatch.
+    // Operator one-off override, forwarded by NAME (never via ...process.env).
     if (process.env.PI_PEER_MODE) env.PI_PEER_MODE = process.env.PI_PEER_MODE;
     return { command: CMD, args: [MAIN], env };
   },
