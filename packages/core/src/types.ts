@@ -150,7 +150,10 @@ export type MembershipState = "live-confirmed" | "durable-active";
 export interface MembershipRecord {
   /** Concrete channel (never a wildcard — wildcard ACLs grant live breadth, durable is per-channel). */
   channel: string;
-  /** Owner agent id (nkey). */
+  /** The subscribing **principal** in dot-form `<owner>.<actor>` (= `principalKey().key`) under the
+   *  owner+actor grammar. NB: the field NAME is legacy — it holds the full principal (both tokens), not
+   *  just the owner token and not an nkey. Membership is per-principal (a human's two agents are distinct
+   *  members). Renaming the serialized field to `principal` is a KV-record migration, deliberately deferred. */
   owner: string;
   state: MembershipState;
   /** CHAT stream seq captured at join — durable eligibility is `seq > joinCursor`. */

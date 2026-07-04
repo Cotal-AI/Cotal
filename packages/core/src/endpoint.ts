@@ -240,7 +240,7 @@ export class CotalEndpoint extends EventEmitter {
   private aclKv?: KV;
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
-  private membershipKv?: KV;
+  private membershipFeedKv?: KV;
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
@@ -1156,12 +1156,14 @@ export class CotalEndpoint extends EventEmitter {
     return map;
   }
 
-  /** Lazily open the derived membership feed KV (admin/observer read; the delivery daemon writes it).
-   *  Read-only here — the dashboard consumes it; agents hold no grant and never call this. */
-  private async membershipRegistry(): Promise<KV> {
+  /** Lazily open the DERIVED membership FEED KV (`cotal_membership_<space>`; admin/observer read, the
+   *  delivery daemon writes it) — the display-only who-is-subscribed view. Distinct from the authoritative
+   *  {@link membersRegistry} (`cotal_members_<space>`, the Plane-3 durable-membership source of truth): the
+   *  two names look alike, so this one is explicitly "feed". Read-only here; agents hold no grant. */
+  private async membershipFeedRegistry(): Promise<KV> {
     if (!this.nc) throw new Error("endpoint not started");
-    this.membershipKv ??= await new Kvm(this.nc).open(membershipBucket(this.space));
-    return this.membershipKv;
+    this.membershipFeedKv ??= await new Kvm(this.nc).open(membershipBucket(this.space));
+    return this.membershipFeedKv;
   }
 
   /**
@@ -1172,7 +1174,7 @@ export class CotalEndpoint extends EventEmitter {
    * when the feed has never been written (no daemon → the dashboard degrades to traffic-only).
    */
   async readMembership(): Promise<MembershipSnapshot> {
-    const kv = await this.membershipRegistry();
+    const kv = await this.membershipFeedRegistry();
     const members: MembershipEntry[] = [];
     let asOf: number | undefined;
     for await (const key of await kv.keys()) {
@@ -1195,7 +1197,7 @@ export class CotalEndpoint extends EventEmitter {
    *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
    *  the dashboard keeps its last snapshot. */
   async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
-    const kv = await this.membershipRegistry();
+    const kv = await this.membershipFeedRegistry();
     const iter = await kv.watch();
     void (async () => {
       for await (const _ of iter) onChange();
