@@ -5,7 +5,9 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
+import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
@@ -102,7 +104,13 @@ async function ask(values: ParsedArgs["values"], positionals: string[]): Promise
  *  decline rather than offer a silently-partial set; see {@link listDeclaredChannels}). `dm` offers
  *  nothing: peer presence is live, so it can't be completed offline. */
 export function sendComplete(argv: string[]): CompletionResult {
-  if (argv.length <= 1)
+  const flag = completingFlagValue(argv, targetFlags);
+  if (flag?.name === "creds") return { items: [], directive: "default" };
+  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (flag) return { items: [], directive: "nofiles" };
+
+  const positionals = positionalsForCompletion(argv, targetFlags);
+  if (positionals.length <= 1)
     return {
       items: [
         { value: "dm", description: "unicast to a peer" },
@@ -111,7 +119,7 @@ export function sendComplete(argv: string[]): CompletionResult {
       ],
       directive: "nofiles",
     };
-  const [mode, ...rest] = argv;
+  const [mode, ...rest] = positionals;
   if (mode === "msg" && rest.length <= 1)
     return {
       items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })),

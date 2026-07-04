@@ -8,7 +8,7 @@ import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags } from "./commands/spawn.js";
-import { attach, attachFlags, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
+import { attach, attachFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, complete } from "./commands/completion.js";
@@ -255,6 +255,7 @@ const baseCommands: Command[] = [
     summary: "ask the manager to stop an agent — --name <n>",
     flags: stopFlags,
     run: stop,
+    complete: managedAgentComplete,
   },
   {
     kind: "command",
@@ -271,6 +272,7 @@ const baseCommands: Command[] = [
     summary: "stream + drive an agent's terminal (pty runtime) — --name <n>",
     flags: attachFlags,
     run: attach,
+    complete: managedAgentComplete,
   },
   {
     kind: "command",

@@ -10,7 +10,9 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
+import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames, personasDir } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
@@ -53,6 +55,21 @@ export async function personas(args: ParsedArgs): Promise<void> {
 
 /** Argument completion: subcommands, then persona names for `show`/`rm`. */
 export function personasComplete(argv: string[]): CompletionResult {
+  const flags = [
+    ...targetFlags,
+    { name: "role", type: "string" },
+    { name: "model", type: "string" },
+    { name: "prompt", type: "string" },
+    { name: "from", type: "string" },
+    { name: "verbose", type: "boolean", short: "v" },
+    { name: "running", type: "boolean" },
+    { name: "force", type: "boolean" },
+  ] as const;
+  const flag = completingFlagValue(argv, flags);
+  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (flag?.name === "from" || flag?.name === "creds") return { items: [], directive: "default" };
+
+  const positionals = positionalsForCompletion(argv, flags);
   const subs: CompletionResult = {
     items: [
       { value: "list", description: "list the persona catalog" },
@@ -63,8 +80,8 @@ export function personasComplete(argv: string[]): CompletionResult {
     ],
     directive: "nofiles",
   };
-  if (argv.length <= 1) return subs; // completing the subcommand
-  if (argv[0] === "show" || argv[0] === "edit" || argv[0] === "rm")
+  if (positionals.length <= 1) return subs; // completing the subcommand
+  if (positionals[0] === "show" || positionals[0] === "edit" || positionals[0] === "rm")
     return { items: listPersonaNames().map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }

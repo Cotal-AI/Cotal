@@ -1,8 +1,9 @@
-import { CONTROL_ADMIN, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { targetFlags } from "@cotal-ai/workspace";
+import { CONTROL_ADMIN, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
 import { attachClient, detachKey } from "../lib/attach-client.js";
+import { completingFlagValue } from "../lib/completion.js";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -17,6 +18,16 @@ const nameFlag = (what: string) =>
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)")] as const satisfies readonly FlagSpec[];
 export const psFlags = [...targetFlags] as const satisfies readonly FlagSpec[];
 export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)")] as const satisfies readonly FlagSpec[];
+
+export function managedAgentComplete(argv: string[]): CompletionResult {
+  const flag = completingFlagValue(argv, attachFlags);
+  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (flag?.name === "creds") return { items: [], directive: "default" };
+  if (flag?.name === "name") return { items: [], directive: "nofiles" };
+  if (argv.length <= 1)
+    return { items: attachFlags.map((f) => ({ value: `--${f.name}`, description: f.description })), directive: "nofiles" };
+  return { items: [], directive: "nofiles" };
+}
 
 export async function stop(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof stopFlags>;
