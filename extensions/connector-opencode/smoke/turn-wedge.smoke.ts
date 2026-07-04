@@ -183,9 +183,9 @@ try {
   await waitForPrompts(4);
   check("a channel message STILL drives after a human turn (no busy wedge)", prompts.length === 4, prompts);
 
-  // (7) Explicit user Stop/Cancel is not a model/provider failure. The surfaced Cotal batch is already
-  //     in the agent window, so cancelling it should dismiss/ack it and must NOT keep replaying it.
-  await fire(hooks, { type: "tui.command.execute", properties: { command: "session.interrupt", sessionID: SID } });
+  // (7) Explicit user Stop/Cancel is not a model/provider failure. Real OpenCode aborts can arrive as
+  //     MessageAbortedError without a preceding TUI command event, so that error itself must dismiss/ack
+  //     the surfaced Cotal batch instead of replaying it.
   await fire(hooks, {
     type: "session.error",
     properties: {
