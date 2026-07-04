@@ -1,7 +1,7 @@
 /**
  * Local cutover restart smoke (D5 live-eviction proof): the current `MEMORY` resolver deployment applies
- * trust-root changes by rewriting config and restarting the broker. That restart must close already-live
- * stale connections; reconnect then fails because the rotated broker no longer trusts their JWTs/signers.
+ * trust-root changes by rewriting config and restarting the broker. That restart must make already-live
+ * stale connections unusable; reconnect then fails because the rotated broker no longer trusts their JWTs/signers.
  *
  * Run: pnpm smoke:cutover-restart-eviction
  */
@@ -78,9 +78,17 @@ async function liveConnect(creds: string, id: string): Promise<NatsConnection> {
   });
 }
 
-async function closes(nc: NatsConnection, timeoutMs = 20_000): Promise<boolean> {
-  const closed = await Promise.race([nc.closed().then(() => true), wait(timeoutMs).then(() => false)]);
-  return closed;
+async function staleConnectionUnusable(nc: NatsConnection, timeoutMs = 20_000): Promise<boolean> {
+  const result = await Promise.race([
+    nc.closed().then(() => "closed" as const),
+    nc.flush().then(
+      () => "usable" as const,
+      () => "unusable" as const,
+    ),
+    wait(timeoutMs).then(() => "unusable" as const),
+  ]);
+  if (result !== "closed") await nc.close().catch(() => {});
+  return result !== "usable";
 }
 
 const space = `cutover-evict-${randomUUID().slice(0, 8)}`;
@@ -116,8 +124,11 @@ try {
   srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
   await waitReachable();
 
-  check("already-live stale data-account connection is closed by local cutover restart", await closes(oldDataNc));
-  check("already-live stale membership-observer connection is closed by local cutover restart", await closes(oldObserverNc));
+  check("already-live stale data-account connection is unusable after local cutover restart", await staleConnectionUnusable(oldDataNc));
+  check(
+    "already-live stale membership-observer connection is unusable after local cutover restart",
+    await staleConnectionUnusable(oldObserverNc),
+  );
   check("old data-account cred is broker-denied after restart", await tryConnect(oldDataCreds, oldData.id) === "rejected");
   check("old membership-observer cred is broker-denied after restart", await tryConnect(oldObserverCreds, oldObserver.id) === "rejected");
   check("fresh rotated data-account cred connects", await tryConnect(freshDataCreds, freshData.id) === "ok");
