@@ -30,6 +30,7 @@ Known demo stubs, OUT of scope, do not report these:
 Lanes:
 - `review-correctness`: correctness and architecture. Has veto power for proved correctness failures.
 - `review-security`: adversarial security. Has veto power for proved security failures.
+- `review-fact`: validate claims in README, comments, gate JSON, and peer findings. No veto power.
 - `review-edge-cases`: boundary cases, outages, restarts, horizontal scale, malformed inputs, expired tokens.
 - `review-performance`: measurable scaling and resource behavior.
 - `review-simplicity`: simpler safer fixes for misleading or over-complex designs.

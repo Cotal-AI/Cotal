@@ -7,7 +7,7 @@ The target is `agentgw`, a small purpose-built gateway for a coding-agent CLI. I
 ## What it shows
 
 - A manifest-defined team in `cotal.yaml`.
-- Nine focused review personas, modeled after Glock's council perspectives.
+- Nine focused review personas, modeled after Glock's council perspectives, plus a David-style fact checker.
 - One OpenCode reviewer on `openai/gpt-5.5` in the same mesh as Claude reviewers.
 - Deterministic gate JSON from `check-gates.ts` before and after a fix.
 - Veto power limited to security and correctness.
@@ -51,7 +51,7 @@ Paste `GOAL.md` to `orchestrator`, and paste or send `gates.before.json` into `r
 ## Expected arc
 
 1. Orchestrator posts the review packet to `review.gateway`.
-2. Reviewers post independent findings.
+2. Reviewers and the fact checker post independent findings.
 3. Synthesizer writes a verdict table to `review.verdict`.
 4. Debate opens only if a valid veto or concrete conflict appears.
 5. Orchestrator fixes one highest-severity valid issue.
