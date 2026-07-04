@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 
 /** The peer loop runs via tsx when launched from source (.ts, dev) or via node directly
  *  when launched from built dist (.js). Using node for the built artifact matters: the
@@ -34,8 +34,14 @@ export const PROVIDER_KEYS = [
  * The pi connector: launches an embedded Cotal peer that runs the pi coding-agent SDK
  * loop and answers mesh traffic as a lateral peer. Inbound drives the loop directly
  * (prompt to wake, steer to interject mid-turn). Forwards the launcher's identity +
- * minted creds so the peer authenticates as `id` under auth. Self-registers on import;
- * the manager resolves it by agent type "pi".
+ * minted creds so the peer authenticates as `id` under auth. Parses the agent file at
+ * launch (so a malformed persona fails loud at `cotal start`, matching the sibling
+ * connectors) and forwards the resolved model (`COTAL_MODEL`); the runtime path reads
+ * the persona body from the agent file and injects it as the system prompt, so a
+ * spawned peer runs as its declared persona. `PI_PEER_MODE=tui` selects the
+ * interactive per-pane host (operator-answerable `ctx.ui.*` dialogs); unset runs the
+ * headless embedded loop. Self-registers on import; the manager resolves it by
+ * agent type "pi".
  */
 export const piConnector: Connector = {
   kind: "connector",
@@ -46,7 +52,18 @@ export const piConnector: Connector = {
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
-    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
+    if (opts.configPath) {
+      env.COTAL_AGENT_FILE = opts.configPath;
+      // Parse the persona file here (not in the child) so a malformed persona
+      // fails loud at `cotal start` (matching the sibling connectors) and so the
+      // `cotal start --model` flag precedence over the file's `model:` resolves
+      // once, here. Forward only the short resolved model string; the persona
+      // body is read from disk by whichever runtime path runs (TUI/headless), so
+      // a large persona never rides in env (ARG_MAX ceiling on spawn).
+      const def = loadAgentFile(opts.configPath);
+      const model = opts.model ?? def.model;
+      if (model) env.COTAL_MODEL = model;
+    }
     for (const key of PROVIDER_KEYS) {
       const value = process.env[key];
       if (value) env[key] = value;

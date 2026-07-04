@@ -1,14 +1,18 @@
 import { MeshAgent, InboxTurn, configFromEnv } from "@cotal-ai/connector-core";
 import type { InboxItem, AgentConfig } from "@cotal-ai/connector-core";
+import { loadAgentFile } from "@cotal-ai/core";
 import {
   AuthStorage,
+  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
+  SettingsManager,
   createAgentSession,
   defineTool,
+  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { Type } from "@earendil-works/pi-ai";
+import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 
 function log(e: unknown): void {
   process.stderr.write(`[pi-peer] ${e instanceof Error ? e.message : String(e)}\n`);
@@ -89,6 +93,40 @@ function turnReplyText(messages: readonly unknown[]): string | undefined {
 }
 
 /**
+ * Resolve a persona's pinned `model:` string to a pi {@link Model} object using
+ * only public API (`ModelRegistry.getAvailable` + the public `Model.provider`/
+ * `Model.id` fields). Exact-match only — mirrors pi's internal
+ * `findExactModelReferenceMatch` contract: canonical `provider/id`, then a split
+ * `provider`+`id`, then a bare `id` (rejected if ambiguous across providers). No
+ * fuzzy/partial matching: that is pi's CLI convenience (internal, not exported)
+ * and not appropriate for a declarative persona pin. Throws on not-found/
+ * ambiguous so a bad pin fails loud at startup instead of silently falling back
+ * to pi's default model. (TUI mode passes the string to pi's CLI which fuzzy-
+ * resolves it; headless runs in-process where only exact resolution is public.)
+ */
+function resolveModel(ref: string, registry: ModelRegistry): Model<Api> {
+  const avail = registry.getAvailable();
+  const r = ref.trim().toLowerCase();
+  if (!r) throw new Error("pi peer: empty persona model");
+  // canonical "provider/id"
+  let m = avail.find((x) => `${x.provider}/${x.id}`.toLowerCase() === r);
+  // split provider + id
+  if (!m && r.includes("/")) {
+    const slash = ref.indexOf("/");
+    const provider = ref.slice(0, slash).trim().toLowerCase();
+    const id = ref.slice(slash + 1).trim().toLowerCase();
+    if (provider && id) m = avail.find((x) => x.provider.toLowerCase() === provider && x.id.toLowerCase() === id);
+  }
+  // bare id — must be unique across providers
+  if (!m) {
+    const ids = avail.filter((x) => x.id.toLowerCase() === r);
+    if (ids.length === 1) m = ids[0];
+  }
+  if (!m) throw new Error(`pi peer: persona model "${ref}" not found or ambiguous — use provider/id`);
+  return m;
+}
+
+/**
  * Embed a pi coding-agent session in-process and drive it from mesh traffic. This is the
  * native-embed pattern (cf. docs/agent-frameworks.md): MeshAgent owns the NATS connection,
  * presence, and a stream-backed inbox; pi's loop is driven straight off that inbox via an
@@ -109,12 +147,38 @@ export async function runPiPeer(config: AgentConfig = configFromEnv()): Promise<
   mesh.start();
 
   const authStorage = AuthStorage.create();
+  const modelRegistry = ModelRegistry.create(authStorage);
+
+  // Persona + model from the agent file. buildLaunch already parsed the file for
+  // launch-time validation + `--model` precedence and forwarded COTAL_MODEL (the
+  // resolved model string). The persona body is read here, in-process, and handed
+  // to the ResourceLoader as appendSystemPrompt — the in-process equivalent of
+  // TUI's --append-system-prompt. Construct the loader with the same defaults
+  // createAgentSession would have used (cwd/agentDir/settingsManager) so passing
+  // our own doesn't silently drop extension/skill/theme loading.
+  const def = process.env.COTAL_AGENT_FILE ? loadAgentFile(process.env.COTAL_AGENT_FILE) : undefined;
+  const cwd = process.cwd();
+  const agentDir = getAgentDir();
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager,
+    appendSystemPrompt: def?.persona ? [def.persona] : undefined,
+  });
+  await resourceLoader.reload();
+  const model = process.env.COTAL_MODEL ? resolveModel(process.env.COTAL_MODEL, modelRegistry) : undefined;
+
   const { session } = await createAgentSession({
-    cwd: process.cwd(),
+    cwd,
+    agentDir,
     authStorage,
-    modelRegistry: ModelRegistry.create(authStorage),
+    modelRegistry,
+    settingsManager,
     sessionManager: SessionManager.inMemory(),
     customTools: buildTools(mesh),
+    resourceLoader,
+    model,
   });
 
   const turn = new InboxTurn(mesh);

@@ -1,5 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadAgentFile } from "@cotal-ai/core";
 import { MeshAgent, configFromEnv, launchEnv, type AgentConfig, type InboxItem } from "@cotal-ai/connector-core";
 import { writeRpc, readJsonLines } from "./rpc-frames.js";
 import { PROVIDER_KEYS } from "./connector.js";
@@ -11,11 +15,12 @@ import { createTuiRenderer, type TuiRenderer } from "./tui-render.js";
 // how the connector spawns TSX as the command.
 const PI_CLI = fileURLToPath(new URL("../node_modules/.bin/pi", import.meta.url));
 
-// ---- helpers duplicated from peer.ts (per blueprint: "duplicate first, then
-// extract `peer-util.ts` only after both paths are stable and byte-identical").
-// Keeping the duplication inline here keeps the bridge from dragging in a
-// share-it-later utility file; the helpers are small and the contract is
-// identical to peer.ts.
+// ---- helpers duplicated from peer.ts. Kept inline rather than shared via a
+// `peer-util.ts` because the two paths diverge in places (e.g. `actionable`
+// writes `mentionsMe === true` here vs bare `mentionsMe` in peer.ts, and `framed`
+// is a top-level function here vs an inline arrow there) — forcing a shared module
+// would paper over those intentional differences. Small, contract-stable helpers;
+// revisit the extraction only if both paths converge to byte-identical bodies.
 
 /** Actionable = a DM, an anycast to our role, or a channel message that names us. */
 function actionable(mesh: MeshAgent, item: InboxItem): boolean {
@@ -67,7 +72,33 @@ export async function runTuiClient(config: AgentConfig = configFromEnv()): Promi
   const renderer: TuiRenderer & { _setStreaming?: (on: boolean) => void } = createTuiRenderer();
   renderer.start();
 
-  const child = spawn(PI_CLI, ["--mode", "rpc", "--no-session"], {
+  // Persona body → tempfile → --append-system-prompt <path>. pi reads the file
+  // contents (resource-loader resolvePromptInput: existsSync → readFileSync), so
+  // only the short temp path rides in argv — no ARG_MAX ceiling for a large
+  // persona. The body is frontmatter-stripped via loadAgentFile; the raw persona
+  // file has `---` metadata that must not enter the system prompt. The resolved
+  // model string (COTAL_MODEL) is forwarded by buildLaunch; pi's CLI resolves it
+  // (exact + fuzzy) the same as any `pi --model` invocation.
+  let personaDir: string | undefined;
+  const agentFile = process.env.COTAL_AGENT_FILE;
+  if (agentFile) {
+    const def = loadAgentFile(agentFile);
+    if (def.persona) {
+      personaDir = mkdtempSync(join(tmpdir(), "cotal-persona-"));
+      writeFileSync(join(personaDir, "persona.md"), def.persona, { mode: 0o600 });
+    }
+  }
+  const cleanupPersona = (): void => {
+    if (personaDir) {
+      try { rmSync(personaDir, { recursive: true, force: true }); } catch { /* */ }
+      personaDir = undefined;
+    }
+  };
+
+  const childArgs = ["--mode", "rpc", "--no-session"];
+  if (personaDir) childArgs.push("--append-system-prompt", join(personaDir, "persona.md"));
+  if (process.env.COTAL_MODEL) childArgs.push("--model", process.env.COTAL_MODEL);
+  const child = spawn(PI_CLI, childArgs, {
     cwd: process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],
     env: launchEnv({ providerKeys: PROVIDER_KEYS }),
@@ -120,6 +151,7 @@ export async function runTuiClient(config: AgentConfig = configFromEnv()): Promi
   child.on("exit", (code) => {
     if (stderrBuf) renderer.pushError(`child stderr: ${stderrBuf}`);
     renderer.pushError(`child exit ${code}`);
+    cleanupPersona();
     renderer.stop();
     process.exit(code ?? 1);
   });
@@ -355,13 +387,14 @@ export async function runTuiClient(config: AgentConfig = configFromEnv()): Promi
     if (shuttingDown) return;
     shuttingDown = true;
     renderer.stop();
+    cleanupPersona();
     try { child.kill("SIGTERM"); } catch { /* */ }
     try { await mesh.stop(); } catch { /* */ }
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
-  process.on("exit", () => renderer.stop());
+  process.on("exit", () => { cleanupPersona(); renderer.stop(); });
 
   // Drain anything already buffered before the listeners were attached.
   pump();
