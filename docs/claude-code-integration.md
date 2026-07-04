@@ -144,6 +144,12 @@ files under
 [`examples/01-lateral-coordination/agents/`](../examples/01-lateral-coordination/agents/) to
 point at with `--config`.
 
+**Default harness.** If no launcher passes `--agent` / `agent`, Cotal uses
+`COTAL_DEFAULT_AGENT` when set, otherwise Claude. For example, start the stack with
+`COTAL_DEFAULT_AGENT=opencode cotal up --detach` to make later `cotal_spawn(...)` calls launch
+OpenCode by default. Foreground `cotal spawn` reads the same variable. An explicit per-spawn
+`--agent claude` / `agent: "claude"` still wins.
+
 **Define one at runtime.** `cotal_persona(name, prompt, model?)` sends the persona to the
 manager, which writes the same `.cotal/agents/<name>.md` file (via `saveAgentFile`) and
 announces it on the mesh. A later `cotal_spawn(name, role?, agent?, model?)` auto-discovers it, so

@@ -29,10 +29,10 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
   throw e;
 });
 
-// The manager's default agent type is "cotal" (StartAgentOpts.agent ?? "cotal"); make it a real
-// Claude coder so a bare cotal_spawn / `cotal spawn --detach <persona>` (no --agent) brings up a
-// Claude Code session. Revisited at the start→spawn merge (stage 2a): still needed — the default
-// rides the MANAGER side of the control plane, not the removed CLI verb.
+// The manager's built-in default agent type is "cotal" (when COTAL_DEFAULT_AGENT is unset); make it
+// a real Claude coder so a bare cotal_spawn / `cotal spawn --detach <persona>` (no --agent) brings
+// up a Claude Code session. Revisited at the start→spawn merge (stage 2a): still needed — the
+// default rides the MANAGER side of the control plane, not the removed CLI verb.
 registry.register({ ...claudeConnector, name: "cotal" });
 
 // Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is

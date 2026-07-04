@@ -2,6 +2,7 @@ export * from "./auth-paths.js";
 export * from "./bin-path.js";
 export * from "./colors.js";
 export * from "./connect.js";
+export * from "./default-agent.js";
 export * from "./extensions.js";
 export * from "./flags.js";
 export * from "./provenance.js";

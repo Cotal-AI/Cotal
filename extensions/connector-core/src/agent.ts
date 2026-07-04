@@ -499,7 +499,7 @@ export class MeshAgent extends EventEmitter {
    *  not the 5s op default.
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
-   *  the harness (default the manager's `cotal`/Claude), `opts.model` overrides the
+   *  the harness (default the manager's `COTAL_DEFAULT_AGENT`, else `cotal`/Claude), `opts.model` overrides the
    *  persona file's `model:`, and `opts.cwd` roots the new peer at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is

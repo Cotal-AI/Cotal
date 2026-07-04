@@ -476,7 +476,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         agent: z
           .string()
           .optional()
-          .describe("Optional harness the new peer runs on — the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's default (Claude)."),
+          .describe("Optional harness the new peer runs on — the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's COTAL_DEFAULT_AGENT, else Claude."),
         model: z
           .string()
           .optional()
