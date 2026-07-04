@@ -1,13 +1,20 @@
 import { fileURLToPath } from "node:url";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 
-/** The peer loop runs via tsx (resolved from this extension's own node_modules, so it works
- *  regardless of the spawned process's PATH/cwd). `main` is loaded with the same extension as
- *  this module — `main.ts` when running from source (dev), `main.js` when running from built
- *  `dist/` — so the entrypoint resolves to a file that actually exists in either mode. */
+/** The peer loop runs via tsx when launched from source (.ts, dev) or via node directly
+ *  when launched from built dist (.js). Using node for the built artifact matters: the
+ *  manager's pty runtime sends SIGTERM to the spawned command on `cotal stop`, and a
+ *  tsx wrapper does not forward that signal to its node child (the child is SIGKILLed
+ *  after the grace window instead of running its shutdown handler). Running the built
+ *  .js with node lets the peer's SIGTERM/SIGINT handlers fire for a clean mesh
+ *  disconnect + raw-mode restore. `main` is loaded with the same extension as this
+ *  module — `main.ts` in dev, `main.js` from built `dist/` — so the entrypoint
+ *  resolves to a file that actually exists in either mode. */
 const ext = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
-const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 const MAIN = fileURLToPath(new URL(`./main${ext}`, import.meta.url));
+const CMD = ext === ".ts"
+  ? fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url)) // dev: tsx transpiles .ts
+  : process.execPath;                                                   // built: node runs .js + forwards signals
 
 /** Provider API keys pi resolves from the environment (AuthStorage falls back to env).
  *  Forwarded when present so a spawned peer has credentials for its model. */
@@ -48,7 +55,7 @@ export const piConnector: Connector = {
     // TUI host). pi-connector-owned: forwarded by NAME the same way as the model
     // keys above, never via ...process.env. See main.ts for the dispatch.
     if (process.env.PI_PEER_MODE) env.PI_PEER_MODE = process.env.PI_PEER_MODE;
-    return { command: TSX, args: [MAIN], env };
+    return { command: CMD, args: [MAIN], env };
   },
 };
 
