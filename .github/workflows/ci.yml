@@ -58,8 +58,20 @@ jobs:
         # spawn-from-anywhere registry/auth-path e2e (smoke:spawn-from-anywhere:live). The last one is
         # gated here AND in `pnpm check` deliberately: CLI smoke files are outside package typecheck, so
         # a dynamic `await import()` boundary regression in a live smoke escapes tsc — only running it catches it.
-        # nats-server installed above.
-        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live
+        # smoke:up-stack:live / smoke:up-manifest:live e2e the full `up --detach` stack (broker +
+        # delivery + manager, real `cotal ps`) and the one-manager-carries-the-launch invariant of
+        # `up -f` (the singleton-lease race regression). smoke:ext:live e2es the operator-installed
+        # extension lifecycle (cotal ext) through the real binary. smoke:readiness:live e2es the
+        # #159 B1 launch readiness window with a real slow-joining agent (spawn/launch clients must
+        # outlive the manager's real-outcome reply). nats-server installed above.
+        run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
+
+      - name: Manager lifecycle e2e (real broker + real agents)
+        # Real end-to-end for #159 Part B: the startAgent presence-race (started via real presence / failed
+        # on process exit), deprovision-on-despawn, and shutdown teardown — verified against a real JWT-auth
+        # broker with real agent processes and direct broker-footprint inspection (durables/ACL/creds). Uses
+        # real pty processes, so Linux-only (not in the cross-platform smoke:ci). nats-server installed above.
+        run: pnpm smoke:lifecycle-e2e
 
       - name: Runtime smoke tests (tmux)
         # Exercises the tmux Runtime + TerminalLayout end to end (driver, lifecycle by stable

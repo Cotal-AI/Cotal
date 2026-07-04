@@ -476,7 +476,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         agent: z
           .string()
           .optional()
-          .describe("Optional harness the new peer runs on — the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's default (Claude)."),
+          .describe("Optional harness the new peer runs on — the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's COTAL_DEFAULT_AGENT, else Claude."),
         model: z
           .string()
           .optional()
@@ -490,8 +490,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // NOTE: session `resume` is deliberately NOT exposed here. Forking a host-local `~/.claude`
         // transcript is an operator-local intent; letting a spawn-capable mesh PEER name a host
         // session id would expand `spawn` into host-transcript disclosure with no broker-enforced
-        // boundary. Resume lives only on the operator CLI (`cotal spawn --resume` / `cotal start
-        // --resume`); a peer-facing, capability-gated resume is deferred (see #159).
+        // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
+        // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
       async run(agent, _config, { name, role, agent: agentType, model, cwd }: { name: string; role?: string; agent?: string; model?: string; cwd?: string }) {
         try {

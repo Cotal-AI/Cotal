@@ -118,12 +118,12 @@ Role + identity + a persona can come from an [agent file](./agents/) instead of 
 frontmatter is the identity, the Markdown body is the system prompt:
 
 ```
-cotal start --agent claude --name dave --config examples/01-lateral-coordination/agents/dave.md  # manager, detached PTY
-cotal spawn --agent claude --name dave --config examples/01-lateral-coordination/agents/dave.md  # foreground, in this terminal
-cotal spawn dave                                                                                 # …or the shorthand (./.cotal/agents/dave.md)
+cotal spawn --detach --agent claude --name dave --config examples/01-lateral-coordination/agents/dave.md  # manager, detached PTY
+cotal spawn --agent claude --name dave --config examples/01-lateral-coordination/agents/dave.md           # foreground, in this terminal
+cotal spawn dave                                                                                         # …or the shorthand (./.cotal/agents/dave.md)
 ```
 
-A bare `cotal start --name dave` also auto-discovers `.cotal/agents/dave.md` in the manager's
+A bare `cotal spawn --detach dave` also auto-discovers `.cotal/agents/dave.md` in the manager's
 workspace (gitignored, user-local). See [agent files](../../docs/claude-code-integration.md#agent-files-persona--identity).
 
 The bundled plugin reads `COTAL_*` from the env at spawn and auto-joins the mesh; the manager

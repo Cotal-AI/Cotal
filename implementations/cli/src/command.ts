@@ -1,5 +1,12 @@
-import type { Command, Registry } from "@cotal-ai/core";
+import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
 import { c } from "./ui.js";
+import { isExtensionStub, materializeExtensionCommand, overlayExtensions, setCommandSurface } from "./ext-loader.js";
+
+/** Display order for the help groups — an explicit ranking, NOT registration order: modules
+ *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
+ *  order, so the daemon surface could otherwise print above Setup. Groups not listed here
+ *  (e.g. an extension's custom group) follow, in first-registered order. */
+const GROUP_ORDER = ["Setup", "Mesh", "Messaging", "Agents", "Observe", "Extensions", "Manager"];
 
 function help(commands: Command[]): void {
   // `__`-prefixed commands are internal (e.g. `__complete`, the completion dispatcher); `hidden`
@@ -10,19 +17,34 @@ function help(commands: Command[]): void {
     const g = cmd.group ?? "Commands";
     (groups.get(g) ?? groups.set(g, []).get(g)!).push(cmd);
   }
+  const rank = (g: string) => {
+    const i = GROUP_ORDER.indexOf(g);
+    return i === -1 ? GROUP_ORDER.length : i;
+  };
+  const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
   const pad = Math.max(...visible.map((c) => c.name.length));
   let out = `${c.bold("cotal")} — lateral agent coordination over NATS\n`;
-  for (const [group, cmds] of groups) {
+  for (const [group, cmds] of ordered) {
     out += `\n${c.bold(group)}\n`;
     for (const cmd of cmds) out += `  ${cmd.name.padEnd(pad)}  ${c.dim(cmd.summary)}\n`;
   }
   console.log(out);
 }
 
-/** One-line help for a single command: its usage (or summary as fallback). */
+/** Full help for one command, generated from its declared specs: summary, usage line, and a
+ *  flag table (short, long, metavar, description). */
 function commandHelp(cmd: Command): void {
   console.log(`${c.bold(`cotal ${cmd.name}`)} — ${cmd.summary}`);
-  if (cmd.usage) console.log(c.dim(cmd.usage));
+  console.log(c.dim(`usage: ${commandUsage(cmd)}`));
+  const flags = cmd.flags ?? [];
+  if (!flags.length) return;
+  const left = flags.map((f) => {
+    const metavar = f.type === "string" ? ` ${f.value ?? "<value>"}` : "";
+    return `${f.short ? `-${f.short}, ` : "    "}--${f.name}${metavar}`;
+  });
+  const pad = Math.max(...left.map((s) => s.length));
+  console.log(c.bold("flags:"));
+  flags.forEach((f, i) => console.log(`  ${left[i].padEnd(pad)}  ${c.dim(f.description ?? "")}`));
 }
 
 /** node's parseArgs throws these for unknown/malformed flags; treat as a usage error. */
@@ -31,28 +53,60 @@ function isArgError(e: unknown): boolean {
   return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS");
 }
 
+/** Options a composition root passes to {@link runCli}. */
+export interface RunCliOptions {
+  /** Load operator-installed extensions (`cotal ext add …`) into the surface: help/completion see
+   *  manifest-cached stubs (no import), dispatch imports the owning package lazily with LIVE
+   *  specs. OFF by default — library composition roots keep the explicit-import model; only the
+   *  published binary opts in. */
+  extensions?: boolean;
+}
+
 /** Dispatch `argv` against the commands self-registered in a {@link Registry}.
- *  The single entry point a composition root calls — no hardcoded command list. */
-export async function runCli(registry: Registry, argv: string[]): Promise<void> {
-  const commands = registry.all<Command>("command");
+ *  The single entry point a composition root calls — no hardcoded command list.
+ *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
+export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  let commands: Command[];
+  try {
+    commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
+  } catch (e) {
+    // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
+    // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
   const [name, ...rest] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help") {
     help(commands);
     return;
   }
-  const cmd = commands.find((c) => c.name === name);
+  let cmd = commands.find((c) => c.name === name);
   if (!cmd) {
     console.error(c.red(`unknown command: ${name}`));
     help(commands);
     process.exit(1);
   }
-  // `cotal <cmd> --help` / `-h` → that command's help, never run it.
-  if (rest.includes("--help") || rest.includes("-h")) {
+  // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
+  // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
+  // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
+  // line, where `--help` is a word being completed, not a request.
+  if (!cmd.name.startsWith("__") && (rest.includes("--help") || rest.includes("-h"))) {
     commandHelp(cmd);
     return;
   }
+  // An extension stub materializes before parsing: verify the version pin, import the package
+  // (self-registers), and parse with the LIVE specs — the cache never drives run's input.
+  if (isExtensionStub(cmd)) {
+    try {
+      cmd = await materializeExtensionCommand(cmd);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
   try {
-    await cmd.run(rest);
+    await cmd.run(parseCommandArgs(cmd, rest));
   } catch (e) {
     // A bad flag/arg prints the command's help, not a stack trace. Trim node's verbose
     // "To specify a positional argument starting with a '-' …" tail to the first sentence.

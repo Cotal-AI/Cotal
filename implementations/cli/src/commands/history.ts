@@ -1,22 +1,12 @@
-import { parseArgs } from "node:util";
-import { clearSpaceHistory } from "@cotal-ai/core";
+import { clearSpaceHistory, type ParsedArgs } from "@cotal-ai/core";
 import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /** Administrative history operations. Purges JetStream backlog only; live in-process
  *  agent buffers may still contain messages already delivered before the purge. */
-export async function history(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      server: { type: "string" },
-      space: { type: "string" },
-      creds: { type: "string" },
-      dms: { type: "boolean" },
-      force: { type: "boolean" },
-    },
-  });
+export async function history(args: ParsedArgs): Promise<void> {
+  const positionals = args.positionals;
+  const values = args.values as { server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean };
 
   if (positionals[0] !== "clear") return usage();
   if (!values.force) {

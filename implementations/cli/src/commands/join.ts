@@ -1,4 +1,3 @@
-import { parseArgs } from "node:util";
 import { userInfo } from "node:os";
 import { readFileSync } from "node:fs";
 import * as readline from "node:readline";
@@ -15,6 +14,7 @@ import {
   type EndpointKind,
   type PresenceStatus,
   type CotalMessage,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
@@ -43,23 +43,8 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
   return false;
 }
 
-export async function join(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      space: { type: "string" },
-      name: { type: "string" },
-      role: { type: "string" },
-      channel: { type: "string" },
-      server: { type: "string" },
-      kind: { type: "string" },
-      link: { type: "string" },
-      token: { type: "string" },
-      creds: { type: "string" },
-      tls: { type: "boolean" },
-    },
-  });
+export async function join(args: ParsedArgs): Promise<void> {
+  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; tls?: boolean };
 
   // A join link carries server + auth + space; explicit flags still override it.
   const link = values.link ? parseJoinLink(values.link) : undefined;

@@ -1,13 +1,12 @@
-import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import {
   CotalEndpoint,
   isReachable,
   DEFAULT_SERVER,
+  type ParsedArgs,
   type PresenceStatus,
 } from "@cotal-ai/core";
-import { resolveSpace } from "../lib/status.js";
-import { c } from "../ui.js";
+import { c, resolveSpace } from "@cotal-ai/workspace";
 
 /**
  * `cotal demo` — spin up a handful of mock agents and replay a scripted trace that exercises
@@ -66,18 +65,8 @@ const SCRIPT: Act[] = [
   { t: "chat", who: "linus", channel: "team.frontend", text: "frontend review queue is clear ✓" },
 ];
 
-export async function demo(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      space: { type: "string" },
-      server: { type: "string" },
-      interval: { type: "string" },
-      once: { type: "boolean" },
-      creds: { type: "string" },
-    },
-  });
+export async function demo(args: ParsedArgs): Promise<void> {
+  const values = args.values as { space?: string; server?: string; interval?: string; once?: boolean; creds?: string };
   const space = values.space ?? resolveSpace(process.cwd());
   const server = values.server ?? DEFAULT_SERVER;
   const interval = values.interval ? Number(values.interval) : 1200;

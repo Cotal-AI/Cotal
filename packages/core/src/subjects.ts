@@ -176,6 +176,16 @@ export function principalKey(owner: string, actor: string): { key: string; name:
   return { key: `${owner}.${actor}`, name: `${owner}-${actor}` };
 }
 
+/** Principal key form for subjects and KV keys. Alias for callers/tests that need one form explicitly. */
+export function principalSubjectKey(owner: string, actor: string): string {
+  return principalKey(owner, actor).key;
+}
+
+/** Principal key form for JetStream names. Alias for callers/tests that need one form explicitly. */
+export function principalNameKey(owner: string, actor: string): string {
+  return principalKey(owner, actor).name;
+}
+
 /** Inverse of {@link principalKey}'s dot-form `key`: split a principal `<owner>.<actor>` back into its
  *  two tokens, or `null` if it isn't a valid one. Owner/actor tokens are `[A-Za-z0-9_]+` (dot-free), so a
  *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.

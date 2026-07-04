@@ -20,6 +20,24 @@
  *   6. RESUME CAPABILITY PREFLIGHT (issue #159 Part A) — a resume request for a connector that doesn't
  *      declare `supportsResume` is rejected BEFORE any provisioning side effect (no mint, no
  *      buildLaunch), mirroring the harness preflight; `supportsResume` matrix across the connectors.
+ *   7. LAUNCH-FAILURE SURFACING (issue #159 Part B1) — the readiness race reports a detached spawn that
+ *      dies on arrival (an already-exited handle, the shape a bad `--resume` id produces) as a FAILURE with
+ *      the child's last output as the cause, and records no live agent — never a false `✓ started`.
+ *   8. MISSED-EXIT REAP (issue #159 B1, review hardening) — an agent that joins presence (→ started) then
+ *      dies just as watchExit subscribes (onExit never fires for a late subscriber) is still reaped:
+ *      watchExit re-checks status() right after subscribing and removes the leaked agent.
+ *   9. SHUTDOWN TEARDOWN (issue #159 B2, review blocker) — Manager.stop() reaps EVERY managed agent (hard-
+ *      stops the child + clears the map), not just the lease/endpoints, so a manager shutdown doesn't
+ *      orphan their footprints. (The broker-side deprovision is a no-op in open mode — proven under auth in
+ *      deprovision-agent-auth.smoke — so this covers the stop() wiring.)
+ *  10. LEASE-LOSS TEARDOWN (issue #159 B2, review re-check) — the fail-closed lease-loss exit reaps agents
+ *      through the SAME shared teardownManagedAgents() helper as stop(), so it can't exit leaving footprints.
+ *  11. BEST-EFFORT STOP ON REAP (issue #159 B2, review round 5) — stopHandle() (the single stop chokepoint)
+ *      never throws, so a throwing runtime hard-stop on despawn/self-stop/reap can't abort the freeSlot that
+ *      follows; reapChildrenOf continues over every sibling even when one child's stop throws.
+ *  12. UNCERTAIN READINESS (issue #159 B1, review design) — when neither presence nor exit is observed
+ *      within the backstop, the launch is reported UNCERTAIN: a non-success reply that KEEPS the agent (no
+ *      deprovision — it may still be booting), distinct from both started and failed.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,7 +68,7 @@ const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnect
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-start-ws-"));
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
 mkdirSync(agentsDir, { recursive: true });
-for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
+for (const n of ["reject1", "rec1", "rec2", "rrec1", "rrec2", "norsm1", "norsm2", "dead1", "missed1", "shut1", "shut2", "lease1", "lease2", "unc1"]) writeFileSync(join(agentsDir, `${n}.md`), `---\nname: ${n}\n---\n`);
 // rec3 carries an explicit access policy — its frontmatter ACL must thread through to LaunchOpts.
 writeFileSync(join(agentsDir, "rec3.md"), `---\nname: rec3\nsubscribe: [team]\nallowSubscribe: [team, team.>]\nallowPublish: [team]\n---\n`);
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
@@ -69,8 +87,20 @@ let lastSpec: LaunchSpec | undefined;
   kind: "fake",
   spawn: (name, spec) => { lastSpec = spec; return fakeHandle(name); },
 };
-(mgr as unknown as { ep: { ref: () => { id: string } } }).ep = { ref: () => ({ id: "smoke-mgr" }) };
-const agentCount = () => (mgr as unknown as { agents: Map<string, unknown> }).agents.size;
+const agentsMap = () => (mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents;
+// Fake `ep` for the #159 B1 readiness race: getRoster() reports every currently-managed agent as LIVE, so
+// a just-spawned agent (already in `agents` when awaitReadiness runs) resolves "started" via the subscribe-
+// then-check — no timer wait. The "presence" event is only a wake, so on/off are no-ops. A custom `roster`
+// overrides the reported set (the UNCERTAIN test reports nobody). `extra` adds ep methods stop() needs.
+const fakeEp = (extra: Record<string, unknown> = {}, roster?: () => Array<{ card: { id: string; name: string }; status: string }>) => ({
+  ref: () => ({ id: "smoke-mgr" }),
+  on: () => {},
+  off: () => {},
+  getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" }))),
+  ...extra,
+});
+(mgr as unknown as { ep: unknown }).ep = fakeEp();
+const agentCount = () => agentsMap().size;
 
 // A recording connector that requires `node` (present whenever this smoke runs) — captures the
 // LaunchOpts the manager hands it, so we can assert the model threads through verbatim. Declares
@@ -286,6 +316,150 @@ registry.register(recNoResumeCon);
   const ok = await mgr.startAgent({ name: "norsm2", agent: "smoke-norsm" });
   check("no resume → unsupported-resume connector still spawns", ok.ok === true, ok);
   check("no resume → buildLaunch reached", noResumeBuilt === true);
+}
+
+// 7 — LAUNCH-FAILURE SURFACING (#159 B1): a detached spawn that dies on arrival must be reported as a
+// FAILURE, not `✓ started`. Swap in a runtime whose handle is already exited (the dead-on-arrival shape
+// a bad `--resume` id produces — `status()==="exited"`, backlog carrying the error); the readiness race
+// takes the exit branch and startAgent returns {ok:false} with the child's last output + records no live
+// agent. The STARTED path (joins presence) is exercised by every ok spawn above — the fake ep reports
+// managed agents as joined, so readiness resolves started at once.
+{
+  const deadSession = {
+    cols: 80, rows: 24,
+    backlog: () => Buffer.from("\x1b[2mstarting…\x1b[0m\nError: No conversation found with session ID sess-x\n", "utf8"),
+    onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
+  };
+  const deadHandle = (name: string): AgentHandle => ({
+    name, kind: "fake", status: () => "exited", stop: () => {}, interrupt: () => {}, attach: () => deadSession,
+  });
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => deadHandle(name),
+  };
+  const before = agentCount();
+  const reply = await mgr.startAgent({ name: "dead1", agent: "smoke-rec" });
+  check("dead-on-arrival spawn reported as failure (not ✓ started)", reply.ok === false, reply);
+  check("early-exit error names 'exited on launch'", /exited on launch/.test(reply.error ?? ""), reply.error);
+  check("early-exit surfaces the child's last output as the cause", /No conversation found/.test(reply.error ?? ""), reply.error);
+  check("early-exit strips ANSI from the surfaced output", !/\x1b\[/.test(reply.error ?? ""), reply.error);
+  check("dead-on-arrival records no live agent", agentCount() === before, agentCount());
+}
+
+// 8 — MISSED-EXIT REAP (#159 B1, review hardening): an agent that joins presence (→ started) then dies in
+// the window before watchExit subscribes would leak — a late onExit subscriber never hears the past event.
+// watchExit re-checks status() right after subscribing and reaps it. Fake handle: status() reports
+// "running" for the readiness race's single check (so it isn't seen as exited → resolves started via
+// presence), then "exited" for watchExit's check (the missed exit); its onExit never fires — exactly the
+// race. The agent must be removed, not left in the map.
+{
+  const goneSession = {
+    cols: 80, rows: 24, backlog: () => Buffer.alloc(0),
+    onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
+  };
+  const missedHandle = (name: string): AgentHandle => {
+    let statusCalls = 0;
+    return {
+      name, kind: "fake",
+      status: () => (++statusCalls <= 1 ? "running" : "exited"), // running for the readiness check, exited for watchExit
+      stop: () => {}, interrupt: () => {}, attach: () => goneSession,
+    };
+  };
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => missedHandle(name),
+  };
+  const before = agentCount();
+  const reply = await mgr.startAgent({ name: "missed1", agent: "smoke-rec" });
+  check("missed-exit: spawn joins presence (reports started)", reply.ok === true, reply);
+  check("missed-exit: watchExit status-check reaps the leaked agent (not left in the map)", agentCount() === before, agentCount());
+}
+
+// 9 — SHUTDOWN TEARDOWN (#159 B2, review blocker): Manager.stop() must reap every managed agent — not just
+// release the lease + stop endpoints — or a manager Ctrl-C/SIGTERM orphans their footprints (creds/durables/
+// ACL). Spawn two survivors, then stop(): both children must be hard-stopped and the managed-agents map
+// emptied. Broker deprovision is a no-op in open mode (its footprint teardown is proven under auth in
+// deprovision-agent-auth.smoke); this proves the stop() wiring. Stub ep/attach so stop() has no live mesh.
+{
+  const stopped: string[] = [];
+  const liveHandle = (name: string): AgentHandle => ({
+    name, kind: "fake", status: () => "running",
+    stop: () => { stopped.push(name); }, interrupt: () => {}, attach: () => fakeSession,
+  });
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => liveHandle(name),
+  };
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, stop: async () => {} });
+  (mgr as unknown as { attach: { stop: () => Promise<void> } }).attach = { stop: async () => {} };
+  await mgr.startAgent({ name: "shut1", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "shut2", agent: "smoke-rec" });
+  check("shutdown: two managed agents present before stop", agentCount() >= 2, agentCount());
+  await mgr.stop();
+  check("shutdown: stop() hard-stops every managed child", stopped.includes("shut1") && stopped.includes("shut2"), stopped);
+  check("shutdown: stop() empties the managed-agents map (no orphaned footprint)", agentCount() === 0, agentCount());
+}
+
+// 10 — LEASE-LOSS TEARDOWN (#159 B2, review re-check): the fail-closed lease-loss exit (renewLease's catch)
+// reaps managed agents through the SAME `teardownManagedAgents()` helper as stop(), so it can't process.exit
+// while leaving footprints. renewLease's catch calls process.exit(1) (untestable inline), so assert the
+// shared helper directly: it hard-stops every child + empties the map, touching no lease/endpoint.
+{
+  // First child's hard-stop THROWS (the tmux `closeWindow` / cmux `closeWorkspace` failure the panel
+  // named) — the teardown must be best-effort per agent: still stop + free + deprovision the rest and
+  // empty the map, never abort on one throw.
+  const stopped: string[] = [];
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => ({
+      name, kind: "fake", status: () => "running",
+      stop: () => { stopped.push(name); if (name === "lease1") throw new Error("simulated runtime close failure"); },
+      interrupt: () => {}, attach: () => fakeSession,
+    }),
+  };
+  await mgr.startAgent({ name: "lease1", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "lease2", agent: "smoke-rec" });
+  await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents();
+  check("lease-loss: a throwing hard-stop doesn't abort teardown (every child attempted)", stopped.includes("lease1") && stopped.includes("lease2"), stopped);
+  check("lease-loss: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
+}
+
+// 11 — BEST-EFFORT STOP ON REAP (#159 B2, review round 5): the per-agent stop paths (despawn/self-stop/reap)
+// call stopHandle() then freeSlot(); a throwing runtime hard-stop must not abort that cleanup or (in
+// reapChildrenOf) the reap of later siblings. stopHandle is now the best-effort chokepoint. Inject a parent
+// + two children (the FIRST child's stop throws), reap the parent, and assert every child is stopped + freed.
+{
+  const stopped: string[] = [];
+  const handle = (name: string, throws: boolean): AgentHandle => ({
+    name, kind: "fake", status: () => "running",
+    stop: () => { stopped.push(name); if (throws) throw new Error("simulated runtime close failure"); },
+    interrupt: () => {}, attach: () => fakeSession,
+  });
+  const agents = (mgr as unknown as { agents: Map<string, unknown> }).agents;
+  const mk = (name: string, id: string, spawner: string, throws: boolean) =>
+    ({ name, agent: "smoke", id, seed: "s", spawner, startedAt: Date.now(), handle: handle(name, throws), control: undefined });
+  agents.set("parentR", mk("parentR", "idP", "mgr", false));
+  agents.set("childR1", mk("childR1", "idC1", "idP", true)); // this child's stop THROWS
+  agents.set("childR2", mk("childR2", "idC2", "idP", false));
+  (mgr as unknown as { reapChildrenOf: (id: string) => void }).reapChildrenOf("idP");
+  check("round5: a throwing child stop doesn't abort reap of siblings", stopped.includes("childR1") && stopped.includes("childR2"), stopped);
+  check("round5: both children freed despite the throwing stop", !agents.has("childR1") && !agents.has("childR2"), [...agents.keys()]);
+}
+
+// 12 — UNCERTAIN READINESS (#159 B1): when neither presence nor exit is observed within the backstop, the
+// launch is UNCERTAIN — a non-success reply that KEEPS the agent (it may still be booting), never a
+// deprovision. Fake ep reports NOBODY joined; the handle stays running and never exits; short backstop.
+{
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({}, () => []); // roster reports nobody → never "joins"
+  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 40;
+  (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession }),
+  };
+  const reply = await mgr.startAgent({ name: "unc1", agent: "smoke-rec" });
+  check("uncertain: neither presence nor exit → non-success reply", reply.ok === false, reply);
+  check("uncertain: reply names it 'uncertain'", /uncertain/i.test(reply.error ?? ""), reply.error);
+  check("uncertain: the agent is KEPT (not deprovisioned — may still be booting)", agentsMap().has("unc1"), [...agentsMap().keys()]);
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

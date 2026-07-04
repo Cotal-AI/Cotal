@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseArgs } from "node:util";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -9,6 +8,7 @@ import {
   mintCreds,
   newIdentity,
   type MembershipFeedHandle,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
@@ -41,21 +41,7 @@ async function loadDeliveryCreds(v: Values): Promise<string> {
   );
 }
 
-function parse(argv: string[]): Values {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: false,
-    options: {
-      space: { type: "string" },
-      server: { type: "string" },
-      creds: { type: "string" },
-      shard: { type: "string" },
-      shards: { type: "string" },
-      "dev-mint": { type: "boolean" }, // standalone dev: mint a scoped delivery cred from the local signer
-    },
-  });
-  return values as Values;
-}
+// Parsing lives in the dispatcher now, driven by the `deliver` command's declared flags.
 
 /**
  * Run the delivery daemon: the server-side Plane-3 durable backstop. A thin composition root that
@@ -66,8 +52,8 @@ function parse(argv: string[]): Values {
  * for standalone dev). N=1 only — `shards > 1` (or a non-zero shard) is HARD-REJECTED (the partition
  * seam ships, operating sharded delivery is deferred to the channel-prefix grammar; see core-sub-fabric.md).
  */
-export async function runDelivery(argv: string[]): Promise<void> {
-  const v = parse(argv);
+export async function runDelivery(args: ParsedArgs): Promise<void> {
+  const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
   if (shards !== 1 || shard !== 0)

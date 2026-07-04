@@ -2,11 +2,12 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  registry,
   type Command,
   type CompletionItem,
   type CompletionResult,
+  type ParsedArgs,
 } from "@cotal-ai/core";
+import { commandSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 
 /**
@@ -37,26 +38,47 @@ function emit(items: CompletionItem[], directive: NonNullable<CompletionResult["
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-/** The hidden dispatcher the shell stubs call. `argv` is the words after `cotal`, up to and
- *  including the (possibly empty) word being completed. */
-export async function complete(argv: string[]): Promise<void> {
-  // Mirror help()'s visibility: drop `__`-internal and `hidden` commands (e.g. `demo`) so the
-  // completion surface matches the listed one.
-  const commands = registry
-    .all<Command>("command")
-    .filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
-  // Word 0 (the command name itself): offer the command names.
-  if (argv.length <= 1) {
+/** The hidden dispatcher the shell stubs call (`rawArgs`: its argv is another command's
+ *  half-typed line, never parsed). The words after `cotal`, up to and including the (possibly
+ *  empty) word being completed, arrive as `args.positionals` verbatim. */
+export async function complete(args: ParsedArgs): Promise<void> {
+  const argv = args.positionals;
+  // Mirror help()'s visibility: the SAME surface runCli resolved (registered commands plus
+  // extension stubs when the root opted in), minus `__`-internal and `hidden` ones. Extension
+  // candidates come from the manifest CACHE — a <TAB> never imports an extension.
+  const commands = commandSurface().filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
+  // No command word yet: offer the command names. If the lone word is an exact command, many
+  // shells omitted the trailing empty cursor word; complete inside that command instead.
+  if (argv.length === 0) {
     emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");
     return;
   }
   const cmd = commands.find((cmd) => cmd.name === argv[0]);
+  if (argv.length === 1 && cmd) return emitCommandCompletion(cmd, [""]);
+  if (argv.length === 1) {
+    emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");
+    return;
+  }
+  return emitCommandCompletion(cmd, argv.slice(1));
+}
+
+async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): Promise<void> {
+  // A word starting with `-` completes against the command's DECLARED flags — generated from
+  // the specs, so it can never drift from what parsing accepts. Value/positional completion
+  // stays with the command's own `complete` hook below.
+  const word = argv[argv.length - 1];
+  if (cmd && word.startsWith("-") && !word.includes("=")) {
+    const items = (cmd.flags ?? []).map((f) => ({ value: `--${f.name}`, description: f.description }));
+    emit(items, "nofiles");
+    return;
+  }
   if (!cmd?.complete) {
-    emit([], "default"); // unknown command, or one with no completer → defer to the shell
+    const items = (cmd?.flags ?? []).map((f) => ({ value: `--${f.name}`, description: f.description }));
+    emit(items, items.length ? "nofiles" : "default");
     return;
   }
   try {
-    const res = await cmd.complete(argv.slice(1));
+    const res = await cmd.complete(argv);
     emit(res.items, res.directive ?? "nofiles");
   } catch (e) {
     // No fallback: a completer that can't produce its authoritative set (e.g. a malformed agent
@@ -133,7 +155,8 @@ const SCRIPTS: Record<string, string> = {
   ),
 };
 
-export async function completion(argv: string[]): Promise<void> {
+export async function completion(args: ParsedArgs): Promise<void> {
+  const argv = args.positionals;
   if (argv[0] === "install") return install(argv[1]);
   const script = argv[0] ? SCRIPTS[argv[0]] : undefined;
   if (!script) {

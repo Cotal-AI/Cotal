@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parseArgs } from "node:util";
 import {
   agentFilePath,
   assertValidName,
@@ -9,8 +8,11 @@ import {
   saveAgentFile,
   type AgentDef,
   type CompletionResult,
+  type ParsedArgs,
 } from "@cotal-ai/core";
+import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames, personasDir } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
@@ -31,23 +33,9 @@ import { c } from "../ui.js";
 /** Persona names are also filenames and spawn names — mirror the `cotal_persona` tool's pattern. */
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
-export async function personas(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      role: { type: "string" },
-      model: { type: "string" },
-      prompt: { type: "string" },
-      from: { type: "string" },
-      verbose: { type: "boolean", short: "v" },
-      force: { type: "boolean" },
-      running: { type: "boolean" },
-      space: { type: "string" },
-      server: { type: "string" },
-      creds: { type: "string" },
-    },
-  });
+export async function personas(args: ParsedArgs): Promise<void> {
+  const positionals = args.positionals;
+  const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
   switch (positionals[0] ?? "list") {
     case "list":
@@ -67,6 +55,21 @@ export async function personas(argv: string[]): Promise<void> {
 
 /** Argument completion: subcommands, then persona names for `show`/`rm`. */
 export function personasComplete(argv: string[]): CompletionResult {
+  const flags = [
+    ...targetFlags,
+    { name: "role", type: "string" },
+    { name: "model", type: "string" },
+    { name: "prompt", type: "string" },
+    { name: "from", type: "string" },
+    { name: "verbose", type: "boolean", short: "v" },
+    { name: "running", type: "boolean" },
+    { name: "force", type: "boolean" },
+  ] as const;
+  const flag = completingFlagValue(argv, flags);
+  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (flag?.name === "from" || flag?.name === "creds") return { items: [], directive: "default" };
+
+  const positionals = positionalsForCompletion(argv, flags);
   const subs: CompletionResult = {
     items: [
       { value: "list", description: "list the persona catalog" },
@@ -77,8 +80,8 @@ export function personasComplete(argv: string[]): CompletionResult {
     ],
     directive: "nofiles",
   };
-  if (argv.length <= 1) return subs; // completing the subcommand
-  if (argv[0] === "show" || argv[0] === "edit" || argv[0] === "rm")
+  if (positionals.length <= 1) return subs; // completing the subcommand
+  if (positionals[0] === "show" || positionals[0] === "edit" || positionals[0] === "rm")
     return { items: listPersonaNames().map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }

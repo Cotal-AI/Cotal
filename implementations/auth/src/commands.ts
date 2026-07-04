@@ -5,8 +5,7 @@
  * (`~/.cotal`, `COTAL_HOME`-overridable) — per human, per machine, NOT per checkout: you are
  * logged in as YOU across every repo on this box.
  */
-import { parseArgs } from "node:util";
-import { registry, type Command } from "@cotal-ai/core";
+import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
@@ -20,8 +19,7 @@ const DEFAULT_CLIENT_ID = "cotal-cli";
 
 /** Every operational failure in these commands is a deliberately-legible thrown sentence
  *  (a refused client id, a revoked session, a malformed IdP response …) — the CLI's generic
- *  catch would re-throw it into a raw stack trace. Print the sentence, exit 1. parseArgs runs
- *  OUTSIDE this wrapper so usage errors keep runCli's usage formatting. */
+ *  catch would re-throw it into a raw stack trace. Print the sentence, exit 1. */
 async function legibly(fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
@@ -31,11 +29,8 @@ async function legibly(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-async function runLogin(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    options: { idp: { type: "string" }, "client-id": { type: "string" } },
-  });
+async function runLogin(args: ParsedArgs): Promise<void> {
+  const values = args.values as { idp?: string; "client-id"?: string };
   if (!values.idp) {
     console.error("usage: cotal login --idp <auth base URL> [--client-id <id>]   (Better Auth: <origin>/api/auth)");
     process.exit(1);
@@ -61,8 +56,8 @@ async function runLogin(argv: string[]): Promise<void> {
   });
 }
 
-async function runLogout(argv: string[]): Promise<void> {
-  const { values } = parseArgs({ args: argv, options: { idp: { type: "string" } } });
+async function runLogout(args: ParsedArgs): Promise<void> {
+  const values = args.values as { idp?: string };
   if (!values.idp) {
     console.error("usage: cotal logout --idp <auth base URL>");
     process.exit(1);
@@ -100,6 +95,10 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "sign in to a space's IdP (device code) and cache the session --idp <auth base URL> [--client-id <id>]",
     usage: "login --idp <auth base URL> [--client-id <id>]",
+    flags: [
+      { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "client-id", type: "string", value: "<id>", description: "OAuth device-flow client id" },
+    ],
     run: runLogin,
   },
   {
@@ -108,6 +107,9 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "revoke the IdP session and clear the cached login --idp <auth base URL>",
     usage: "logout --idp <auth base URL>",
+    flags: [
+      { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+    ],
     run: runLogout,
   },
 ];

@@ -6,8 +6,11 @@
  * (@cotal-ai/manager). The root just picks which surfaces to pull in; `runCli` resolves
  * whatever registered. A new surface (another connector, a control client …) is one more import line.
  */
-import { runCli } from "@cotal-ai/cli"; // self-registers up / down / join / watch / spawn / console / setup
-import "@cotal-ai/manager"; // self-registers supervise / cmux / start / stop / ps / attach
+// NOTE: registration order across these imports is NOT guaranteed (tsx's entry interop can
+// evaluate the smaller daemon graphs first) — display order is a non-goal here; `help` ranks
+// its groups explicitly (GROUP_ORDER in @cotal-ai/cli).
+import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
+import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
 import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
@@ -27,10 +30,14 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
   throw e;
 });
 
-// The manager's default agent type is "cotal"; make it a real Claude coder so a bare
-// cotal_spawn / `cotal start --name x` (no --agent) brings up a Claude Code session.
+// The manager's built-in default agent type is "cotal" (when COTAL_DEFAULT_AGENT is unset); make it
+// a real Claude coder so a bare cotal_spawn / `cotal spawn --detach <persona>` (no --agent) brings
+// up a Claude Code session. Revisited at the start→spawn merge (stage 2a): still needed — the
+// default rides the MANAGER side of the control plane, not the removed CLI verb.
 registry.register({ ...claudeConnector, name: "cotal" });
 
-// Bare `cotal` prints help; explicit `cotal setup` runs guided setup.
+// Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
+// the ONE composition root that loads operator-installed extensions (`cotal ext add …`) —
+// library roots keep the explicit-import model.
 const argv = process.argv.slice(2);
-await runCli(registry, argv);
+await runCli(registry, argv, { extensions: true });

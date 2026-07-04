@@ -64,7 +64,7 @@ The rest:
 
 - **Observability.** Traces and presence live on the mesh, so any observer can render
   them: `cotal console` (terminal) or `cotal web` (browser dashboard with presence,
-  channels, and a live feed; see [web.md](web.md)).
+  installed automatically by `cotal setup` — channels, and a live feed; see [web.md](web.md)).
 - **History & late join.** A late participant replays recent messages and the current
   roster, then goes live.
 - **Isolation.** Spaces do not see each other; many can run on one machine.

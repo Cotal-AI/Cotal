@@ -170,6 +170,25 @@ Implementations stay self-contained and never import each other: the `cli` drive
 purely over the mesh (`start`/`stop`/`ps` control requests), so neither imports the other. Only
 the example wires them together.
 
+**Operator-installed CLI extensions (`cotal ext`).** The published binary is one composition
+root among many — and the only one that also loads extensions the *operator* installed:
+`cotal ext add <npm-package>` installs into a cotal-owned prefix
+(`$XDG_CONFIG_HOME/cotal/extensions/`, never your project), imports the package once so it
+self-registers into the same `Registry` every built-in uses, verifies the registration actually
+landed, and caches the contributed command metadata into a manifest. From then on `--help` and
+shell completion read the **cache** (a `<TAB>` never imports an extension); *running* one of its
+commands imports the package lazily and parses with its **live** specs — the cache is a display
+surface, never the parse authority. The pinned `name@version` is verified before every import
+(skew → a loud error prescribing re-add), extensions must declare every shared `@cotal-ai/*`
+package as a **peerDependency** — core is mandatory, and each declared peer is linked to the
+binary's own copy at add time (one registry singleton; no drifting second copies; npm never
+resolves the peers itself) — and a name collision — with a built-in or with another installed
+extension — fails the add; built-ins always win. The mechanism is dogfooded by the repo's own
+`cotal-web` (browser dashboard) and `@cotal-ai/demo` (trace generator) packages. Moving or reinstalling the binary (e.g. a Node
+version switch) can strand the prefix's core link: every such path fails **loud** at dispatch
+with a `cotal ext add` re-add prescription, never a silently missing command.
+Library composition roots (examples) are unaffected: explicit imports stay the model there.
+
 ## Integration surfaces (Claude Code + OpenCode)
 
 Each target agent exposes the same four surfaces. The adapters share one runtime
@@ -326,11 +345,15 @@ like `Connector`/`Command`: `pty` ships with the manager; `tmux` and `cmux` are 
 a `RuntimeProvider` on import (the manager resolves them from the registry, with no compile-time
 dependency on them). Selectable backends:
 
-- **`pty` (default).** The manager spawns the real `claude` (plugin plus env) in a
+- **`pty` (default).** The manager spawns the default agent harness (`COTAL_DEFAULT_AGENT`, or
+  Claude when unset) in a
   pseudo-terminal it owns via **`@lydell/node-pty`** (prebuilt binaries for mac/Linux/Windows ×
   x64/arm64: zero compiler, zero `node-gyp`, ABI-stable). A real native TUI. The human watches
   or types in via `cotal attach <name>` (stream the PTY), and the manager keeps full OS-signal
-  control (group-kill, restart). No external software to install.
+  control (group-kill, restart). No external software to install. Detach with **Ctrl-]** (the
+  agent keeps running); set **`COTAL_DETACH_KEY`** to `ctrl-<char>` (e.g. `ctrl-b`) to rebind it
+  when Ctrl-] clashes with a keybinding inside the agent's TUI — an unparseable value errors, and
+  attach prints the active key when it is overridden.
 - **`tmux` (integration).** Each agent gets its own window in a shared per-space [tmux](https://github.com/tmux/tmux/wiki) session.
   This is a true plug-in: the runtime lives in **`@cotal-ai/tmux`** and self-registers a
   `RuntimeProvider` on import (opt in with `import "@cotal-ai/tmux"`, which the `cotal` binary
@@ -338,8 +361,8 @@ dependency on them). Selectable backends:
   @<id>` for the agent's window); `cotal attach` points you there rather than streaming. Env is isolated (`env -i`) so the tmux server's environment
   doesn't reach agents. Teardown: `stop` types `/exit` for a clean mesh leave then kills the
   window (graceful) or kills immediately (hard). The package also self-registers a
-  **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session,
-  so `cotal setup` can lay out its tabs without cmux.
+  **`TerminalLayout`** provider that opens/closes tmux windows from the ambient `$TMUX` session
+  (host-side layout, no cmux needed).
 - **`cmux` (integration).** Each agent gets its own [cmux](https://cmux.com) tab. This is a
   true plug-in: the `cmux` runtime lives in **`@cotal-ai/cmux`** and self-registers a
   `RuntimeProvider` on import, so the manager spawns into tabs without depending on the package
@@ -352,10 +375,9 @@ dependency on them). Selectable backends:
   [`examples/02`](../examples/02-self-improving-console/README.md). The package also self-registers a
   **`TerminalLayout`** provider (a host-side extension contract, not wire protocol:
   open/close/list editor tabs). The caller hands it a backend-agnostic `Tab` (panes as argv plus
-  an optional split), and the provider builds the cmux-native layout, so `cotal setup` resolves
-  it from the registry (`registry.resolve("terminal","cmux")`) to lay out its
-  manager/console/`me` tabs with no cmux-specific shape (no layout JSON, no shell quoting)
-  leaking into the CLI.
+  an optional split), and the provider builds the cmux-native layout, so a host-side caller
+  resolves it from the registry (`registry.resolve("terminal","cmux")`) to lay out tabs with no
+  cmux-specific shape (no layout JSON, no shell quoting) leaking into the CLI.
 - **`byo` (floor).** The manager does not own the process; a human runs `cotal claude --role …`
   in their own terminal and the manager just tracks it via presence.
 - **`host` (upgrade).** Headless via the Agent SDK for structured control plus true mid-turn
@@ -364,9 +386,10 @@ dependency on them). Selectable backends:
 **Running one.** `cotal supervise` starts a manager; it defaults to the `pty` runtime, while
 `--runtime tmux` / `--runtime cmux` put each teammate in its own tmux window / cmux tab (explicit
 only — they throw if the matching extension isn't imported, never silently fall back to pty). The `cotal` binary aliases the Claude-Code connector as the default agent, so `cotal_spawn`
-/ `cotal_persona` / `cotal_despawn` work out of the box. For one-command onboarding, `cotal setup`
-(friendly alias `cotal go`) installs the plugin, brings up the mesh, and — inside a cmux pane —
-opens the manager plus console plus a driving session.
+/ `cotal_persona` / `cotal_despawn` work out of the box. `cotal setup` is configure-only (plugin
+install + persona seed, launches nothing); `cotal up` brings the local stack up alongside the
+broker — the delivery daemon plus a detached manager — so `cotal spawn --detach` and `cotal_spawn`
+work right after it.
 
 The PTY carries the agent's **terminal I/O only**. Its mesh traffic still flows agent↔NATS
 directly through the plugin, so owning the PTY does not put the manager on the message hot path.
@@ -389,6 +412,14 @@ browser).
   (`@xterm/headless` + `addon-serialize`) and, on attach, replays a serialized snapshot of it —
   including a full-screen TUI's alternate-screen buffer — so a late or concurrent attach repaints
   the current screen in full rather than a partial frame.
+- **The attach contract (pinned).** Since the control *clients* moved into the CLI (the manager
+  keeps only `supervise`), the attach hop is cross-implementation wire and must not drift:
+  the `attach` control op replies `ControlReply.data.ws` — a loopback `ws://` URL for that
+  agent's PTY. On the socket, **binary frames** carry terminal bytes in both directions (PTY
+  output to the client; client bytes are keystrokes), and a **text frame** `r:<cols>,<rows>`
+  resizes. On connect the server replays a serialized full-screen snapshot first (see above).
+  Both ends — the manager's attach endpoint and the CLI's `attach`/web clients — implement
+  exactly this; a change is a coordinated, versioned edit to both plus this paragraph.
 - **Topology:** the manager hosts the attach endpoint (it holds the PTYs); the **console** runs
   **in-process** today, so the manager serves the page itself (`GET /` console, `GET /agents`
   the managed roster, `/assets/*` the vendored xterm bundles, `WS /attach/<name>` the PTY
@@ -416,7 +447,7 @@ the **manager** to start an agent (over the control plane) and it performs the l
 owns (default `pty` runtime, see *Manager*):
 
 ```
-cotal start --role planner --name alice      # CLI → control msg → manager spawns it
+cotal spawn --detach alice --role planner    # CLI → control msg → manager spawns it
 ```
 
 Under the hood the manager runs the *real* `claude` with the plugin attached and identity in the
@@ -719,6 +750,10 @@ later).
       `STREAM.CREATE/DELETE/PURGE`, or chat publish.
     - **provisioner** — the *signer capability* (holds the account signing key), ephemeral and
       **create-only**: pre-creates the per-agent DM/TASK/history durables at spawn.
+    - **deprovisioner** — the teardown counterpart, ephemeral and **target-pinned**: when an agent
+      exits the manager tears down *that one* agent's id-keyed footprint (its `dm_<id>`/`dlv_<id>`
+      durables + read-ACL row + creds file) and nothing else — never a peer's, never the role-shared
+      `svc_<role>` its siblings still bind.
     - **teardown** — the **sole `STREAM.DELETE` holder** (`down -f`), scoped to the space's own
       streams; **channel-purger** / **purger** hold only `STREAM.PURGE` (channel-delete /
       history-clear).

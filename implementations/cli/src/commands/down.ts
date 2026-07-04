@@ -1,25 +1,17 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { parseArgs } from "node:util";
+import { type ParsedArgs } from "@cotal-ai/core";
 import { clearCurrent, getCurrent, removeMesh } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalPath } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 
-/** Stop the background processes started by `cotal up --detach` / `cotal setup`: the manager, the
+/** Stop the background processes started by `cotal up --detach`: the manager, the
  *  delivery daemon, the web dashboard, and the mesh. With `-f <cotal.yaml>` (or `--run <id>`) it does
  *  an ownership-scoped teardown of a `spawn -f` deploy instead — removing ONLY what that run created
  *  (its agents + the channels it added), from the ledger, never the whole shared mesh. */
-export async function down(argv: string[] = []): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      file: { type: "string", short: "f" }, // ownership-scoped teardown of a spawn -f deploy
-      run: { type: "string" }, // tear down by run id (when the manifest was edited since spawn -f)
-      "dry-run": { type: "boolean" }, // print what would be removed, change nothing
-    },
-  });
+export async function down(args: ParsedArgs): Promise<void> {
+  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean };
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;

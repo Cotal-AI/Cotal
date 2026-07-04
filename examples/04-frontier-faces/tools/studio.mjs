@@ -138,7 +138,9 @@ function agentMeta(name) {
   const face = head.match(/^face:\s*(\S+)/m)?.[1] || name;
   const role = head.match(/^role:\s*(.+)$/m)?.[1]?.trim() || "";
   const model = MODEL || head.match(/^model:\s*(\S+)/m)?.[1] || "";
-  return { file, persona: face, role, model };
+  const tags = head.match(/^tags:\s*\[([^\]]*)\]/m)?.[1] || "";
+  const founder = /\bfounder\b/.test(tags); // a Cotal-founder persona → gets the "Cotal" badge in the studio
+  return { file, persona: face, role, model, founder };
 }
 
 // ---- mesh + agent lifecycle -----------------------------------------------------------------
@@ -214,7 +216,7 @@ const liveAgentNames = () => agents.filter((a) => !a.dead).map((a) => a.name); /
 
 /** Spawn ONE real mesh agent headlessly and resolve once its OpenCode handshake lands. */
 function spawnAgent(name) {
-  const { file, persona, role, model } = agentMeta(name);
+  const { file, persona, role, model, founder } = agentMeta(name);
   const env = {
     ...cleanEnv(),
     COTAL_SERVE_HEADLESS: "1",
@@ -256,7 +258,7 @@ function spawnAgent(name) {
       } catch (e) {
         return reject(new Error(`agent "${name}" sent a bad handshake: ${e.message}`));
       }
-      const rec = { name, persona, role, model: model || "default", child, ...hs };
+      const rec = { name, persona, role, model: model || "default", founder, child, ...hs };
       agents.push(rec);
       log(`agent ${name} joined (face=${persona}, opencode :${hs.port}, session ${hs.session.slice(0, 12)}…)`);
       resolve(rec);
@@ -611,7 +613,9 @@ function startHttp() {
           channels: manifest.channels.map((c) => ({ name: c.name, description: c.description, members: c.subscribe })),
           agents: agents
             .filter((a) => !a.dead)
-            .map((a) => ({ name: a.name, persona: a.persona, role: a.role, model: a.model, session: a.session })),
+            // Deterministic manifest order (founders first), not spawn-completion order.
+            .sort((a, b) => roster.indexOf(a.name) - roster.indexOf(b.name))
+            .map((a) => ({ name: a.name, persona: a.persona, role: a.role, model: a.model, session: a.session, founder: a.founder })),
         }),
       );
       return;

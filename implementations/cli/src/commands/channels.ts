@@ -1,4 +1,3 @@
-import { parseArgs } from "node:util";
 import {
   seedChannelRegistry,
   readChannelRegistry,
@@ -6,6 +5,7 @@ import {
   type ChannelConfig,
   type ChannelDefaults,
   type ChannelRegistryFile,
+  type ParsedArgs,
 } from "@cotal-ai/core";
 import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
@@ -21,21 +21,9 @@ import { c } from "../ui.js";
  *   cotal channels set <name> [--replay|--no-replay] [--desc <s>] [--instructions <s>]
  *   cotal channels default --replay|--no-replay
  */
-export async function channels(argv: string[]): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      server: { type: "string" },
-      space: { type: "string" },
-      creds: { type: "string" },
-      replay: { type: "boolean" },
-      "no-replay": { type: "boolean" },
-      window: { type: "string" }, // backfill window, e.g. 24h / 30m / 7d
-      desc: { type: "string" },
-      instructions: { type: "string" },
-    },
-  });
+export async function channels(args: ParsedArgs): Promise<void> {
+  const positionals = args.positionals;
+  const values = args.values as { server?: string; space?: string; creds?: string; replay?: boolean; "no-replay"?: boolean; window?: string; desc?: string; instructions?: string };
   // Validate the subcommand BEFORE connecting, so a typo (or a bare `cotal channels`) prints usage,
   // not "no mesh running" — the same validate-first order as `history`.
   const sub = positionals[0];

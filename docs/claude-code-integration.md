@@ -34,30 +34,25 @@ happens to be on the mesh.
 
 ## Run it for your own project
 
-**One command, from inside a cmux pane:**
+**Two commands:**
 
 ```
-cotal go
+cotal setup      # one-time: installs the plugin, seeds personas — launches nothing
+cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
-It does the whole onboarding:
+`cotal setup` configures your machine — it installs the cotal plugin (so the repo's Claude
+sessions get the `cotal_*` tools) and seeds the demo personas — and launches nothing. `cotal up`
+then brings up the whole local stack: the broker, the delivery daemon, and a detached manager, so
+`cotal spawn --detach` / `cotal_spawn` work right away. Use `cotal_persona` to mint a teammate,
+`cotal_spawn` to bring it online, and `cotal_despawn` to tear it down. Re-running either is
+idempotent.
 
-- installs the cotal plugin if needed (`cotal setup`, so the repo's Claude sessions get the
-  `cotal_*` tools),
-- brings up the mesh (`cotal up --open`),
-- opens the manager in its own `cotal-manager` tab, and
-- opens a `cotal-<s>` workspace with the live console plus a ready driving session.
+Under the hood these are the existing pieces, so you can also run them by hand:
 
-Sessions auto-accept Claude's one-time dev-channels prompt (an Enter sent to their own cmux
-surface), so they join the mesh without a keypress. Switch to that pane and use
-`cotal_persona` to mint a teammate, `cotal_spawn` to bring it online, and `cotal_despawn` to
-tear it down. Re-running it is idempotent.
-
-Under the hood it is the existing pieces, so you can also run them by hand:
-
-- `cotal setup` (one-time plugin install)
-- `cotal up --open`
-- `cotal supervise --runtime cmux --space <s>` (the manager daemon, each teammate in its own cmux tab; drop `--runtime` for the default pty runtime)
+- `cotal setup` (one-time plugin install + persona seed)
+- `cotal up` (broker + delivery daemon + manager) — add `--open` for an unauthenticated dev mesh
+- `cotal supervise --runtime cmux --space <s>` (a manager with each teammate in its own cmux tab; drop `--runtime` for the default pty runtime)
 - `cotal spawn <name> --space <s>` (a foreground Claude on the mesh; a bare name with no
   agent file launches a personaless session)
 
@@ -141,19 +136,29 @@ run`). They differ only in how they *run* the spec:
 
 | Launcher | How to point at a file |
 |---|---|
-| Manager (supervised PTY) | `cotal start --name dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <path>`; `--model <m>` overrides the file's `model:` for this launch. Detached; view via console / `cotal attach`. |
-| Foreground (`cotal spawn`) | `cotal spawn <name-or-path>`. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
+| Manager (supervised PTY) | `cotal spawn --detach dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <persona-or-path>` for an explicit persona ref/file; the SAME grammar as the foreground launch — `--model`, `--cwd`, `--prompt`, ACL overrides, `--share-tools` all apply. View via console / `cotal attach`. |
+| Foreground (`cotal spawn`) | `cotal spawn <persona>` for `.cotal/agents/<persona>.md`, or `--config <persona-or-path>` when a flag is clearer. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
 
 `.cotal/` is gitignored (user-local, like `.claude/`). The demo ships committed example
 files under
 [`examples/01-lateral-coordination/agents/`](../examples/01-lateral-coordination/agents/) to
 point at with `--config`.
 
+**Default persona.** A bare `cotal spawn` uses the `default` persona unless
+`COTAL_DEFAULT_PERSONA=<name-or-path>` is set. The env value accepts the same catalog name or path
+as `--config`; an explicit positional persona or `--config` wins.
+
+**Default harness.** If no launcher passes `--agent` / `agent`, Cotal uses
+`COTAL_DEFAULT_AGENT` when set, otherwise Claude. For example, start the stack with
+`COTAL_DEFAULT_AGENT=opencode cotal up --detach` to make later `cotal_spawn(...)` calls launch
+OpenCode by default. Foreground `cotal spawn` reads the same variable. An explicit per-spawn
+`--agent claude` / `agent: "claude"` still wins.
+
 **Define one at runtime.** `cotal_persona(name, prompt, model?)` sends the persona to the
 manager, which writes the same `.cotal/agents/<name>.md` file (via `saveAgentFile`) and
 announces it on the mesh. A later `cotal_spawn(name, role?, agent?, model?)` auto-discovers it, so
 a peer can mint a teammate's persona on the fly and bring it online with no hand-written file. The
-agent spawn door carries the same knobs as the operator's `cotal start` — `role`, `agent` (harness)
+agent spawn door carries the same knobs as the operator's `cotal spawn --detach` — `role`, `agent` (harness)
 and `model` (overrides the persona file's `model:`) — set at spawn because they are policy, not
 persona content.
 
@@ -170,15 +175,24 @@ whose `~/.claude` holds that transcript.
   (the forked context runs under the current mesh persona). Because it launches in your own terminal
   (inherited stdio), a bad id / missing session / old-`claude` error is Claude's own stderr right in
   front of you and the command exits non-zero — never flattened into a generic "spawn failed".
-- `cotal start --resume <id>` works too, but the manager is detached, so two things differ.
+- `cotal spawn --detach --resume <id>` works too, but the manager is detached, so two things differ.
   **Locality:** the id resolves against the **manager host's** `~/.claude`, and you practically need
-  `--cwd` to point at the original project directory. **Async failure (less obvious):** the manager
-  reports `✓ started` the moment the process launches — *before* Claude runs — so a missing id or an
-  old CLI rejecting `--fork-session` makes Claude exit inside its PTY and the error is **not** reported
-  at the call site. The symptom is a peer that "started" but never appears in `cotal ps` / the roster;
-  diagnose with `cotal attach`. Prefer foreground `spawn` unless you know the manager shares your
-  session state. (The *unsupported-connector* case is still inline — `cotal start --agent opencode
-  --resume …` fails with `✗ …` before launching; only the claude-exits-after-launch case is async.)
+  `--cwd` to point at the original project directory. **Failure reporting:** the manager can't inherit
+  your terminal, so it waits for a **real outcome** before replying — not a timer — resolving on whichever
+  comes first:
+    - the agent **joins the mesh** (registers presence under its assigned id) → `✓ started`. That means it
+      launched, authenticated, connected, and joined — *not* that it's fully healthy (the manager owns mesh
+      lifecycle, not app self-test).
+    - the child **exits** → `✗ … exited on launch — <Claude's last output>` (a missing id, an old CLI
+      rejecting `--fork-session`), and its minted footprint (creds + durables) is torn down, not orphaned.
+    - **neither** within a generous backstop (~30 s) → `✗ … launch status uncertain — may still be booting
+      or stuck before connector startup`. Uncertain does **not** tear the agent down (it may still come up);
+      inspect with `cotal attach` / `cotal ps`, or stop it to clean up. A launch that joins and *then* dies
+      is reaped by the manager's exit watch (freed + deprovisioned).
+
+  So `✓ started` means it *joined*, never just "a process launched". Prefer foreground `spawn` when you can
+  (its errors are fully inline). (The *unsupported-connector* case fails earlier still — `cotal spawn --detach
+  --agent opencode --resume …` is rejected before any launch or mint.)
 - Resume is an **operator surface only** — it is deliberately **not** exposed on MCP `cotal_spawn`.
   Forking a host-local `~/.claude` transcript is operator-local intent; letting a spawn-capable mesh
   *peer* name a host session id would widen the `spawn` capability into host-transcript disclosure with
@@ -190,8 +204,8 @@ whose `~/.claude` holds that transcript.
   an existing session"*).
 - Needs a `claude` new enough to know `--resume ... --fork-session` (verified on **2.1.197**). Cotal
   only co-emits the flags; it can't force an old binary to honor them — an old `claude` rejects
-  `--fork-session` with its own error (surfaced inline on foreground `spawn`, async on detached
-  `start`, per above).
+  `--fork-session` with its own error (surfaced inline on foreground `spawn`; on detached `start`, the
+  child exits, so `start` reports the failure at the call site, per the readiness outcomes above).
 
 **Manage the catalog from the CLI.** `cotal personas` is the operator-side counterpart to the
 runtime `cotal_persona` tool. It reads and writes the same `.cotal/agents/*.md` files
@@ -343,7 +357,7 @@ Hermes has no MCP), so it lives in connector settings, not the
   fine with that teammate holding the key.
 - **Per-spawn override.** `cotal spawn <name> --share-tools tavily,figma` shares only those
   (they must be declared); `--share-tools none` shares nothing. Absent, all declared servers are
-  shared. Manager-spawned agents (`cotal start`) use the config as-is. Default — no config file —
+  shared. Manager-spawned agents (`cotal spawn --detach`, which honors `--share-tools` too) default to the config as-is. Default — no config file —
   is unchanged: a spawned agent gets only cotal.
 - **Mind the memory.** Sharing re-opens the cost isolation guards: a heavy server booted once per
   spawn multiplies across a team. Share lean servers; keep the Chromium-class ones out.
@@ -564,7 +578,7 @@ Then mint and run:
 ```
 pnpm cotal mint feedback-intake --profile agent --out .cotal/auth/creds/feedback-intake.creds
 
-pnpm cotal feedback \
+pnpm cotal feedback-intake \
   --keys .cotal/feedback/keys.json \
   --creds .cotal/auth/creds/feedback-intake.creds \
   --space beta-feedback \

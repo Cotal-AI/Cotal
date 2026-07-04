@@ -11,8 +11,8 @@
  * `cotal mint` and the manager load that material and mint per-agent creds files. There
  * is no connect-time token exchange yet (that's the later auth-callout stage).
  *
- * NOT yet provided (our job, not nsc's): credential revocation and an issuance audit
- * trail. Revocation is deferred past Demo 1; minted creds currently have no TTL.
+ * D5 adds the first credential-death primitive: profile-classified user-JWT lifetimes. Full revocation,
+ * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
 import { join } from "node:path";
 import {
@@ -52,6 +52,7 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  aclKey,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -65,16 +66,14 @@ import {
 } from "./subjects.js";
 import type { Identity } from "./identity.js";
 
-/** Cred profiles (per the plan's class table). Demo-1 mints all permissively; steps 5–7
- *  scope each one — at which point the manager MUST already hold its own privileged
- *  profile (broad: pre-create others' DM durables, serve ctl), not "agent", or it
- *  silently loses those powers the moment "agent" is tightened. */
+/** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
 export type Profile =
   | "agent"
   | "observer"
   | "admin"
   | "supervisor"
   | "provisioner"
+  | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "operator"
   | "purger"
   | "delivery"
@@ -89,6 +88,46 @@ export type Profile =
   | "control-caller-privileged" // ps/start → ctl.<privileged>.<id> only (no cross-agent reach)
   | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
   | "deployer"; // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+
+export type CredentialLifetimeClass = "standing-renewable" | "one-shot" | "static-operator-managed" | "mixed";
+export type CredentialKind = Profile | "membership-observer";
+
+export interface CredentialLifetimePolicy {
+  class: CredentialLifetimeClass;
+  /** Default max age for profiles safe to expire before the renewal slice. Undefined = no default exp yet. */
+  defaultTtlSeconds?: number;
+  renewalOwner?: string;
+  note: string;
+}
+
+const FIVE_MINUTES = 5 * 60;
+
+/** D5 profile matrix. This is intentionally centralized so every new mint profile must classify its
+ * credential-death behavior instead of silently inheriting non-expiring static creds. */
+export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
+  agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
+  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
+  supervisor: { class: "standing-renewable", renewalOwner: "manager", note: "manager's always-on endpoint; renewal slice required before default exp" },
+  delivery: { class: "standing-renewable", renewalOwner: "delivery launcher", note: "server-side Plane-3 daemon; renewal slice required before default exp" },
+  "membership-rw": { class: "standing-renewable", renewalOwner: "delivery launcher", note: "membership feed writer; renewal slice required before default exp" },
+  provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
+  deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
+  operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
+  purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
+  probe: { class: "one-shot", defaultTtlSeconds: 60, note: "connect-only preflight" },
+  "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
+  "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },
+  teardown: { class: "one-shot", note: "space teardown can be long/destructive; needs TTL budget/remint guard before default exp" },
+  "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
+  "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
+  deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
+  "membership-observer": { class: "standing-renewable", renewalOwner: "delivery launcher", note: "system-account CONNZ observer persisted beside membership-rw; renewal slice required before default exp" },
+};
+
+export function credentialLifetime(kind: CredentialKind): CredentialLifetimePolicy {
+  return CREDENTIAL_LIFETIMES[kind];
+}
 
 /** A space's persisted trust material. The `signingSeed` is the sensitive provisioner
  *  secret; everything else is public (JWTs) or recoverable. The system-account `signingSeed` is the ONE
@@ -133,6 +172,52 @@ export function stripSpaceAuth(auth: SpaceAuth): SpaceAuth {
       signingPub: "",
     },
     sys: { pub: "", jwt: "" },
+  };
+}
+
+/** Rotate the DATA-account signing key and re-issue the data-account JWT so the old data signer is no
+ * longer trusted by the broker once it loads the returned auth. This does NOT rotate the system account:
+ * persisted `membership-observer` creds remain valid until the system-account renewal/rotation slice. */
+export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<SpaceAuth> {
+  if (!auth.operator.seed || !auth.account.seed)
+    throw new Error("rotateDataAccountSigningKey: full operator/account seed material is required (a stripped signer cannot rotate trust)");
+  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+  const akp = fromSeed(new TextEncoder().encode(auth.account.seed));
+  const askp = createAccount();
+  const signingPub = askp.getPublicKey();
+  const accountJwt = await encodeAccount(
+    token(auth.space),
+    akp,
+    { signing_keys: [signingPub], limits: DATA_LIMITS },
+    { signer: okp },
+  );
+  return {
+    ...auth,
+    account: {
+      ...auth.account,
+      jwt: accountJwt,
+      signingSeed: new TextDecoder().decode(askp.getSeed()),
+      signingPub,
+    },
+  };
+}
+
+/** Rotate the SYSTEM account and re-issue the operator JWT so persisted system-account users (currently
+ * `membership-observer`) become broker-dead once the broker loads the returned auth. The fresh
+ * `sys.signingSeed` is intentionally in-memory only; callers must mint replacement observer creds before
+ * persisting via `saveSpaceAuth`, which strips the seed again. */
+export async function rotateSystemAccount(auth: SpaceAuth): Promise<SpaceAuth> {
+  if (!auth.operator.seed)
+    throw new Error("rotateSystemAccount: operator seed material is required (a stripped auth cannot rotate the system account)");
+  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+  const syskp = createAccount();
+  const sysPub = syskp.getPublicKey();
+  const operatorJwt = await encodeOperator(`cotal-${token(auth.space)}`, okp, { system_account: sysPub });
+  const sysJwt = await encodeAccount("SYS", syskp, { limits: SYS_LIMITS }, { signer: okp });
+  return {
+    ...auth,
+    operator: { ...auth.operator, jwt: operatorJwt },
+    sys: { pub: sysPub, jwt: sysJwt, signingSeed: new TextDecoder().decode(syskp.getSeed()) },
   };
 }
 
@@ -200,6 +285,31 @@ export interface MintOpts {
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
   shard?: number;
   shards?: number;
+  /** The departed agent's id whose id-keyed footprint a `deprovisioner` cred may tear down. REQUIRED
+   *  for that profile (it throws without one): the grants are pinned to exactly this target's `dm_<id>`
+   *  / `dlv_<id>` durables + ACL row, so a leaked deprovisioner cred can delete ONE dead agent's
+   *  footprint and nothing else — never a peer's, never the role-shared `svc_<role>`. Ignored by every
+   *  other profile. */
+  deprovisionTarget?: string;
+  /** Override the profile default lifetime. Internal/test hook; command surfaces should prefer the
+   * centralized {@link CREDENTIAL_LIFETIMES} defaults so profile behavior stays auditable. */
+  expiresInSeconds?: number;
+  /** Absolute JWT `exp` timestamp in seconds. Used by cutover/test code that needs already-expired creds. */
+  expiresAt?: number;
+}
+
+function userValidDates(profile: Profile, opts: MintOpts): { exp?: number } {
+  if (opts.expiresAt !== undefined && opts.expiresInSeconds !== undefined)
+    throw new Error("mintCreds: pass only one of expiresAt or expiresInSeconds");
+  if (opts.expiresAt !== undefined) {
+    if (!Number.isInteger(opts.expiresAt) || opts.expiresAt < 0)
+      throw new Error("mintCreds: expiresAt must be a non-negative integer timestamp (seconds)");
+    return { exp: opts.expiresAt };
+  }
+  const ttl = opts.expiresInSeconds ?? CREDENTIAL_LIFETIMES[profile].defaultTtlSeconds;
+  if (ttl === undefined) return {};
+  if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("mintCreds: expiresInSeconds must be a positive integer");
+  return { exp: Math.floor(Date.now() / 1000) + ttl };
 }
 
 /** Options for {@link provisionAgent} — {@link MintOpts} plus the active read set. */
@@ -316,6 +426,7 @@ export async function mintCreds(
   const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
   const pr = principalOf(identity, opts.principal);
   const perms = permissionsFor(profile, auth.space, pr, opts);
+  const validDates = userValidDates(profile, opts);
   const userJwt = await encodeUser(
     profile,
     fromPublic(identity.id),
@@ -324,7 +435,7 @@ export async function mintCreds(
     // feed — the SAME tags the auth callout stamps (user mode), via core's single-source builder. The
     // JWT `name` stays the profile label (a debug breadcrumb; not a surfaced/queryable CONNZ field).
     { ...perms, tags: principalTags(pr.owner, pr.actor) },
-    { signer },
+    { signer, ...validDates },
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
@@ -357,6 +468,14 @@ export function permissionsFor(
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority (closure (ii))
+  if (profile === "deprovisioner") {
+    // Ephemeral, TARGET-PINNED teardown (#159 B) — the counterpart to `provisioner`. Static/dev agents
+    // are keyed as local.<actor>, so the target id is the actor under DEV_OWNER until user-mode manager
+    // launch supplies a derived owner explicitly.
+    if (!opts.deprovisionTarget)
+      throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget (the departed agent's actor id)");
+    return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
+  }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
   if (profile === "operator") return operatorPermissions(space, pr); // human-CLI client (send/dm/ask) (closure (ii))
   if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight (PR 1.5)
@@ -888,7 +1007,8 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  create a DM/DLV consumer can stream the bodies). That is exactly why it is split OFF the always-on
  *  supervisor and made EPHEMERAL: the daemon opens a provisioner connection per spawn and drains it
  *  immediately, so the surface exists only for the provisioning window, not as a standing target. The
- *  cred is MEMORY-ONLY (never written to `.cotal`); short-`exp`/revocation is the auth-callout follow-up.
+ *  cred is MEMORY-ONLY (never written to `.cotal`) and now carries a short profile-default `exp`; signer
+ *  rotation, live eviction, and full revocation are later D5 slices.
  *
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
@@ -942,6 +1062,49 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     },
     // Replies only: every stream/consumer/KV-create PubAck and JS API response lands on the per-id inbox.
     // NO chat/inst/dlv/ctl subscription — the provisioner never serves control nor reads any feed.
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The ephemeral, TARGET-PINNED DEPROVISIONER permission set (#159 Part B) — the teardown counterpart
+ *  to {@link provisionerPermissions}, minted per departed agent inside the manager's `deprovision` tail
+ *  (`withProvisioner`-style: a fresh scoped cred per teardown is cheap). It deletes exactly the
+ *  dev/static principal footprint the provisioner created for ONE agent: that agent's two bind-only
+ *  durables (`dm_local-<actor>`, `dlv_local-<actor>`) and its read-ACL row — pinned BY NAME to the target
+ *  actor under {@link DEV_OWNER}, so a leaked deprovisioner cred can tear down that one already-dead
+ *  agent and NOTHING else.
+ *
+ *  Deliberately NOT granted (least-privilege / correctness): the role-SHARED `svc_<role>` TASK durable
+ *  (one consumer for ALL agents of a role — deleting it on one agent's exit would break its siblings; it
+ *  lives until space teardown), any peer's `dm_`/`dlv_`/ACL (the grants are target-name-pinned, never
+ *  `.>`), any MSG.NEXT/MSG.GET/ACK (it deletes mailboxes, never reads a body), and any STREAM
+ *  DELETE/PURGE (it removes per-agent consumers, never a stream). The `chathist_<id>` history consumers
+ *  need no grant here — they are ephemeral (`mem_storage`, 30s inactive threshold) and agent-deleted
+ *  after each read, so they self-clean on the agent's disconnect.
+ *
+ *  Blast radius of a leaked cred (minted for target T): it can delete T's `dm_local-<T>`/`dlv_local-<T>`
+ *  durables + purge T's ACL row — a denial-of-DELIVERY for T (broken DM/DLV bind + the reader DEFERs on
+ *  the absent ACL) if fired while T is still alive. It CANNOT read T's bodies, impersonate T, reach any peer, or
+ *  delete a stream — and it is ephemeral (one per-exit teardown, minted then dropped). Contained and
+ *  recoverable (re-provision T). */
+function deprovisionerPermissions(space: string, pr: MintPrincipal, targetActor: string): Record<string, unknown> {
+  const DM = dmStream(space), DLV = dlvStream(space);
+  const target = principalKey(DEV_OWNER, targetActor);
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO", // jetstreamManager bootstrap
+        // Delete the target's two bind-only durables BY EXACT NAME — no `.>`, no cross-agent reach.
+        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(DEV_OWNER, targetActor)}`,
+        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(DEV_OWNER, targetActor)}`,
+        // Purge the target's read-ACL row (own-target key only — the reader then treats it as an unknown
+        // owner). `kvm.open` binds the pre-created bucket; the purge rides `$KV.<aclBucket>.<key>`.
+        `$JS.API.STREAM.INFO.KV_${aclBucket(space)}`,
+        `$KV.${aclBucket(space)}.${aclKey(target.key)}`,
+      ],
+    },
+    // Replies only: the CONSUMER.DELETE PubAcks + KV purge ack land on the per-connection inbox. NO chat/DM/ctl
+    // subscription — the deprovisioner serves nothing and reads no feed.
     sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
 }

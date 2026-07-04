@@ -12,7 +12,8 @@
  *   4. if that native turn errors, the injected batch is NOT acked and can be injected again;
  *   5. a directed DM that auto-drives and errors is retried after a bounded delay;
  *   6. a HUMAN turn still clears busy, then a second normal channel message MUST drive a turn
- *      (prompt_async #2) — the original wedge fix still holds.
+ *      (prompt_async #2) — the original wedge fix still holds;
+ *   7. a user interrupt consumes the surfaced peer batch instead of redriving it.
  * Run: pnpm smoke:opencode
  */
 import { strict as assert } from "node:assert";
@@ -185,6 +186,26 @@ try {
   await pub.multicast("still there?", { channel: "team" });
   await waitForPrompts(4);
   check("a channel message STILL drives after a human turn (no busy wedge)", prompts.length === 4, prompts);
+
+  // (7) Explicit user Stop/Cancel is not a model/provider failure. Real OpenCode aborts can arrive as
+  //     MessageAbortedError without a preceding TUI command event, so that error itself must dismiss/ack
+  //     the surfaced Cotal batch instead of replaying it.
+  await fire(hooks, {
+    type: "session.error",
+    properties: {
+      sessionID: SID,
+      error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } },
+    },
+  });
+  await sleep(1_200);
+  check("explicit user interrupt does not retry-drive cancelled peer traffic", prompts.length === 4, prompts);
+  await pub.multicast("after cancel", { channel: "team" });
+  await waitForPrompts(5);
+  check(
+    "new peer traffic still drives after interrupt without replaying the cancelled batch",
+    prompts.length === 5 && promptText(prompts[4]).includes("after cancel") && !promptText(prompts[4]).includes("still there?"),
+    prompts,
+  );
 
   console.log(`\nOPENCODE TURN-WEDGE TEST PASSED ✅  (${pass} checks)`);
 } finally {

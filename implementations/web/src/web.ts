@@ -1,8 +1,6 @@
-import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { connect } from "node:net";
-import { readFileSync, writeFileSync, openSync, closeSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -13,12 +11,9 @@ import {
   mintCreds,
   newIdentity,
   clearChannel,
+  type ParsedArgs,
 } from "@cotal-ai/core";
-import { cotalPath } from "../lib/paths.js";
-import { resolveSpace } from "../lib/status.js";
-import { connectOrExit } from "../lib/connect.js";
-import { c } from "../ui.js";
-import { selfArgv } from "../lib/self-exec.js";
+import { c, connectOrExit } from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -30,27 +25,17 @@ export const WEB_PORT = 7799;
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
 
 const PAGE: Record<string, { path: string; type: string }> = {
-  "/": { path: join(here, "../web/index.html"), type: "text/html; charset=utf-8" },
-  "/app.js": { path: join(here, "../web/app.js"), type: "text/javascript; charset=utf-8" },
-  "/graph": { path: join(here, "../web/graph.html"), type: "text/html; charset=utf-8" },
-  "/graph.js": { path: join(here, "../web/graph.js"), type: "text/javascript; charset=utf-8" },
+  "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
+  "/app.js": { path: join(here, "web/app.js"), type: "text/javascript; charset=utf-8" },
+  "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
+  "/graph.js": { path: join(here, "web/graph.js"), type: "text/javascript; charset=utf-8" },
 };
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
  *  and a live message stream — no manager required. Bound to loopback. */
-export async function web(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      space: { type: "string" },
-      server: { type: "string" },
-      port: { type: "string" },
-      "no-open": { type: "boolean" },
-      creds: { type: "string" },
-    },
-  });
+export async function web(args: ParsedArgs): Promise<void> {
+  const values = args.values as { space?: string; server?: string; port?: string; "no-open"?: boolean; creds?: string };
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
@@ -243,53 +228,6 @@ function debounce(fn: () => void, ms: number): () => void {
     if (t) clearTimeout(t);
     t = setTimeout(fn, ms);
   };
-}
-
-/** True if something is already listening on the dashboard port (loopback). */
-export function webUp(port: number = WEB_PORT): Promise<boolean> {
-  return new Promise((res) => {
-    const sock = connect(port, "127.0.0.1");
-    sock.setTimeout(400);
-    const done = (up: boolean) => {
-      sock.destroy();
-      res(up);
-    };
-    sock.once("connect", () => done(true));
-    sock.once("timeout", () => done(false));
-    sock.once("error", () => done(false));
-  });
-}
-
-/** Start the dashboard in the background (pid in `.cotal/web.pid`, output to `.cotal/web.log`),
- *  stopped by `cotal down`. Re-execs this same CLI — `process.execArgv` carries the tsx loader in
- *  dev, and is empty in prod where `node <entry.js> web …` runs the compiled binary. */
-export function startWebDetached(o: { space?: string; server?: string } = {}): { pid: number; url: string } {
-  const fd = openSync(cotalPath("web.log"), "a");
-  const [node, ...self] = selfArgv();
-  const args = [
-    ...self,
-    "web",
-    "--no-open",
-    "--port",
-    String(WEB_PORT),
-    "--space",
-    o.space ?? resolveSpace(process.cwd()),
-    ...(o.server ? ["--server", o.server] : []),
-  ];
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
-  child.unref();
-  writeFileSync(cotalPath("web.pid"), String(child.pid));
-  return { pid: child.pid ?? 0, url: WEB_URL };
-}
-
-/** Make the dashboard available: reuse one already listening, else start it detached and wait
- *  briefly for it to come up. Best-effort — callers treat a non-running result as non-fatal. */
-export async function ensureWeb(o: { space?: string; server?: string } = {}): Promise<{ url: string; running: boolean }> {
-  if (await webUp()) return { url: WEB_URL, running: true };
-  startWebDetached(o);
-  for (let i = 0; i < 20 && !(await webUp()); i++) await new Promise((r) => setTimeout(r, 150));
-  return { url: WEB_URL, running: await webUp() };
 }
 
 async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {

@@ -44,6 +44,7 @@ function log(msg: string): void {
 const guard = globalThis as { __cotalOpencodeHooks?: Hooks };
 const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
+const INTERRUPT_INTENT_TTL_MS = 30_000;
 
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
@@ -95,6 +96,7 @@ export const cotal: Plugin = async () => {
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  let interruptIntent: { sessionID?: string; expires: number } | undefined;
   // Transcript mirror → `tr-<name>`: opt-in via COTAL_TRANSCRIPT (the connector's buildLaunch / the
   // manager set it for managed sessions; a personal opencode never mirrors). EVENT-DRIVEN — fed from
   // the OpenCode event hook below (message.updated → assistant roles, message.part.updated → parts)
@@ -158,6 +160,26 @@ export const cotal: Plugin = async () => {
     if (resetDelay) errorRetryMs = ERROR_RETRY_INITIAL_MS;
   }
 
+  function markInterruptIntent(sessionID?: string): void {
+    if (!busy && !awaitingTurnEnd) return;
+    interruptIntent = { sessionID, expires: Date.now() + INTERRUPT_INTENT_TTL_MS };
+  }
+
+  function clearInterruptIntent(): void {
+    interruptIntent = undefined;
+  }
+
+  function consumeInterruptIntent(sessionID?: string): boolean {
+    const intent = interruptIntent;
+    interruptIntent = undefined;
+    if (!intent || Date.now() > intent.expires) return false;
+    return !intent.sessionID || !sessionID || intent.sessionID === sessionID;
+  }
+
+  function isMessageAbortedError(error: unknown): boolean {
+    return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "MessageAbortedError";
+  }
+
   function scheduleErrorRetry(): void {
     if (errorRetryTimer || pendingForWake() === 0) return;
     const delay = errorRetryMs;
@@ -180,6 +202,7 @@ export const cotal: Plugin = async () => {
     briefed = false;
     surfaced = [];
     awaitingTurnEnd = false;
+    clearInterruptIntent();
     clearErrorRetry(true);
     transcript?.reset(); // hard session boundary: drop any buffered parts so `/new` never mirrors them
     if (previous) {
@@ -318,6 +341,7 @@ export const cotal: Plugin = async () => {
       awaitingTurnEnd = false;
       ackSurfaced(); // our driven turn: ack the surfaced batch (the sole ack site)
     }
+    clearInterruptIntent();
     clearErrorRetry(true);
     if (pendingForWake() > 0) void drive();
   }
@@ -412,14 +436,22 @@ export const cotal: Plugin = async () => {
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
           if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
+          const interrupted = consumeInterruptIntent(event.properties.sessionID) || isMessageAbortedError(event.properties.error);
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;
-            abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
+            if (interrupted) ackSurfaced(); // explicit user Stop/Cancel: treat the surfaced batch as dismissed, not failed
+            else abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
           }
           await safeStatus("idle");
-          scheduleErrorRetry();
+          if (!interrupted) scheduleErrorRetry();
+          else clearErrorRetry(true);
           break;
+        case "tui.command.execute": {
+          const p = event.properties as { command?: string; sessionID?: string };
+          if (p.command === "session.interrupt") markInterruptIntent(p.sessionID);
+          break;
+        }
         case "session.deleted":
           if (!ours(event.properties.info.id)) return;
           await safeStatus("offline");

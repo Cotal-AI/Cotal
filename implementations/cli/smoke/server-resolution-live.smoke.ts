@@ -1,10 +1,10 @@
 /**
- * LIVE-broker e2e for the manager control commands' target resolution (`resolveManagerTarget`, used
+ * LIVE-broker e2e for the control commands' target resolution (`resolveControlTarget`, used
  * by `ps`/`start`/`stop`/`attach`). Proves they resolve their broker from the mesh registry — the
  * same way the rest of the CLI does — instead of silently assuming `DEFAULT_SERVER` (:4222), the
  * original bug: `ps --space <mesh>` for a mesh on another port hit :4222 and got an auth violation.
  *
- * This is the LIVE counterpart to the workspace preflight unit smoke: since `resolveManagerTarget`
+ * This is the LIVE counterpart to the workspace preflight unit smoke: since `resolveControlTarget`
  * now PREFLIGHTS (probe + stale-prune, shared with `connectOrExit`), its success paths can only be
  * exercised against REAL brokers — a registered mesh on a dead port would (correctly) be pruned. So
  * the pure decision tree lives in `smoke:preflight` (broker-free); the resolve+preflight wiring is
@@ -28,7 +28,7 @@ process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls 
 
 const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
 const { recordMesh, loadMeshes, resolveMeshTarget } = await import("@cotal-ai/workspace");
-const { resolveManagerTarget } = await import("../src/commands.js");
+const { resolveControlTarget } = await import("../src/lib/control.js");
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -64,7 +64,7 @@ try {
   recordMesh({ space: "team-alpha", server: OTHER, root: projectRoot, mode: "open", ts });
 
   // 1. The fix: `--space` resolves the registry-recorded broker (and PREFLIGHTS it live), NOT :4222.
-  const bySpace = await resolveManagerTarget({ space: "team-alpha" });
+  const bySpace = await resolveControlTarget({ space: "team-alpha" }, "control-caller-privileged");
   ok("--space resolves the registry-recorded broker", bySpace.server === OTHER, bySpace.server);
   ok("did NOT fall back to DEFAULT_SERVER (:4222)", bySpace.server !== DEFAULT_SERVER, bySpace.server);
   ok("open mesh ⇒ no creds minted", bySpace.creds === undefined, bySpace.creds);
@@ -73,10 +73,10 @@ try {
   ok("live registered entry survives the preflight prune sweep", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
 
   // 2. Bare (no flags) with a single registered mesh → still that mesh's broker.
-  ok("bare resolves the single registered mesh", (await resolveManagerTarget({})).server === OTHER);
+  ok("bare resolves the single registered mesh", (await resolveControlTarget({}, "control-caller-privileged")).server === OTHER);
 
   // 3. `--server` stays an explicit override (preflighted against the override broker).
-  ok("--server overrides the registry", (await resolveManagerTarget({ space: "team-alpha", server: OVERRIDE })).server === OVERRIDE);
+  ok("--server overrides the registry", (await resolveControlTarget({ space: "team-alpha", server: OVERRIDE }, "control-caller-privileged")).server === OVERRIDE);
 
   // 3b. B1 prune-authority: an explicit `--server` override of a registered `--space` is the operator's
   //     endpoint, marked `flag-space-override` — so a probe failure there can NEVER prune the recorded
@@ -88,7 +88,7 @@ try {
 
   // 4. Raw OPEN off-registry escape hatch (parity with connectOrExit): `--server` + an UNregistered
   //    `--space` → a bare connection, no registry lookup, no creds (reachability-checked live).
-  const rawOpen = await resolveManagerTarget({ server: OVERRIDE, space: "not-registered" });
+  const rawOpen = await resolveControlTarget({ server: OVERRIDE, space: "not-registered" }, "control-caller-privileged");
   ok(
     "--server + unregistered --space → raw open (no creds, no registry)",
     rawOpen.server === OVERRIDE && rawOpen.space === "not-registered" && rawOpen.creds === undefined,
@@ -102,14 +102,14 @@ try {
   for (let i = 0; i < 50 && kids[0]!.exitCode === null && kids[0]!.signalCode === null; i++) await sleep(100);
   const dead = await probeConnect(OTHER, { timeoutMs: 800 });
   ok("recorded broker is now dead", !dead.ok && dead.reason === "unreachable", dead);
-  const recovered = await resolveManagerTarget({ space: "team-alpha", server: OVERRIDE });
+  const recovered = await resolveControlTarget({ space: "team-alpha", server: OVERRIDE }, "control-caller-privileged");
   ok("--space (dead recorded) + live --server override resolves (recovery path)", recovered.server === OVERRIDE, recovered);
   ok("recovery did NOT pre-prune the named --space entry", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
 
   // 6. Bare resolution DOES run the global sweep: with a live survivor registered, a bare (no-flags)
   //    resolve prunes the dead team-alpha and returns the survivor.
   recordMesh({ space: "survivor", server: OVERRIDE, root: projectRoot, mode: "open", ts });
-  const bareAfter = await resolveManagerTarget({});
+  const bareAfter = await resolveControlTarget({}, "control-caller-privileged");
   ok("bare resolve prunes the dead entry (global sweep)", !loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
   ok("bare resolve returns the surviving live mesh", bareAfter.server === OVERRIDE, bareAfter);
 

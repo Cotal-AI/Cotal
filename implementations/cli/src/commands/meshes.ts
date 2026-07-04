@@ -1,3 +1,4 @@
+import type { ParsedArgs } from "@cotal-ai/core";
 import { getCurrent, loadMeshes } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
@@ -5,7 +6,7 @@ import { pruneStaleMeshes } from "../lib/meshes.js";
 /** `cotal meshes` — list the running meshes (one `cotal up` each), with a `*` on the `current`
  *  default. The kubectl `get-contexts` analogue: how you see what a bare `cotal spawn` would join,
  *  and which `--space` names are available. Prunes dead entries first. */
-export async function meshes(): Promise<void> {
+export async function meshes(args: ParsedArgs): Promise<void> {
   await pruneStaleMeshes();
   const all = loadMeshes();
   if (all.length === 0) {

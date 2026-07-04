@@ -13,6 +13,9 @@
  *                 DM-lane tap (sub), chat publish, ACL write, peer-presence forge: DENIED.
  *   provisioner — stream/bucket create + DM/DLV/TASK consumer-create + ACL/channel write+read: ALLOWED.
  *                 STREAM.DELETE/PURGE, DM body read (MSG.NEXT), chat publish, lease write: DENIED.
+ *   deprovisioner — TARGET-PINNED delete of ITS agent's dm_local-<id>/dlv_local-<id> durable + ACL row: ALLOWED.
+ *                 a PEER's durable/ACL (target-pinned), role-shared svc_<role>, DM create/read, STREAM
+ *                 DELETE/PURGE, chat publish: DENIED (#159 B).
  *   purger      — STREAM.PURGE on CHAT + DM: ALLOWED.
  *                 DM consumer-create / read, STREAM.DELETE, chat publish, ACL write: DENIED.
  *   operator    — post chat/DM AS SELF + read roster: ALLOWED.
@@ -44,6 +47,9 @@ import {
   dlvStream,
   taskStream,
   dmDurable,
+  dlvDurable,
+  taskDurable,
+  aclKey,
   unicastSubject,
   unicastRecvFilter,
   principalKey,
@@ -170,6 +176,10 @@ try {
   const provCreds = await mintCreds(auth, prov, "provisioner");
   const pur = newIdentity();
   const purCreds = await mintCreds(auth, pur, "purger");
+  // Deprovisioner (#159 B): ephemeral, TARGET-PINNED teardown — minted for ONE departed agent (`dpvTarget`).
+  const dpv = newIdentity();
+  const dpvTarget = newIdentity();
+  const dpvCreds = await mintCreds(auth, dpv, "deprovisioner", { deprovisionTarget: dpvTarget.id });
   const op = newIdentity();
   const opCreds = await mintCreds(auth, op, "operator");
   // PR 1.5 CLI-surface profiles (the last `manager` mints, now scoped).
@@ -186,9 +196,9 @@ try {
   // The DM/DLV consumer-create push-bypass (the create-time deliver_subject isn't ACL-constrained, so a
   // consumer-create = body read). The supervisor MUST NOT have it; the provisioner must.
   const dmCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable(DEV_OWNER, "victim")}`;
-  const dlvCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.dlv_victim`;
+  const dlvCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.${dlvDurable(DEV_OWNER, "victim")}`;
   const dmRead = `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, "victim")}`;
-  const dlvRead = `$JS.API.CONSUMER.MSG.NEXT.${DLV}.dlv_victim`;
+  const dlvRead = `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvDurable(DEV_OWNER, "victim")}`;
   // Body reads also ride the direct STREAM.MSG.GET path — assert both DM and DLV are denied there too,
   // so the matrix mirrors the DM AND DLV confidentiality claim directly (review-security), not by omission.
   const dmGet = `$JS.API.STREAM.MSG.GET.${DM}`, dlvGet = `$JS.API.STREAM.MSG.GET.${DLV}`;
@@ -232,6 +242,34 @@ try {
   check("STREAM.PURGE the DM stream DENIED (not a purger)", await tryPublish(provCreds, `$JS.API.STREAM.PURGE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, prov.id) === "denied");
+
+  console.log("deprovisioner (ephemeral, TARGET-PINNED teardown — deletes ONE agent's local-principal footprint, nothing else):");
+  const dpvTargetPrincipal = principalKey(DEV_OWNER, dpvTarget.id).key;
+  const supPrincipal = principalKey(DEV_OWNER, sup.id).key;
+  const tgtDm = `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(DEV_OWNER, dpvTarget.id)}`;
+  const tgtDlv = `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(DEV_OWNER, dpvTarget.id)}`;
+  const tgtAcl = `$KV.${aclBucket(space)}.${aclKey(dpvTargetPrincipal)}`;
+  check("DELETE the TARGET's dm_local-<id> durable ALLOWED", await tryPublish(dpvCreds, tgtDm, dpv.id) === "allowed");
+  check("DELETE the TARGET's dlv_local-<id> durable ALLOWED", await tryPublish(dpvCreds, tgtDlv, dpv.id) === "allowed");
+  check("purge the TARGET's ACL row ($KV.<acl>.<id>) ALLOWED", await tryPublish(dpvCreds, tgtAcl, dpv.id) === "allowed");
+  // Target-PINNED: a PEER's local-principal footprint (durable + ACL row) is out of reach — the grants name the target.
+  check("DELETE a PEER's dm_local-<id> durable DENIED (target-pinned)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(DEV_OWNER, sup.id)}`, dpv.id) === "denied");
+  check("DELETE a PEER's dlv_local-<id> durable DENIED (target-pinned)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(DEV_OWNER, sup.id)}`, dpv.id) === "denied");
+  check("purge a PEER's ACL row DENIED (target-pinned)", await tryPublish(dpvCreds, `$KV.${aclBucket(space)}.${aclKey(supPrincipal)}`, dpv.id) === "denied");
+  // NEVER the role-SHARED svc_<role> (deleting it would break the role's other agents) — no TASK reach at all.
+  check("DELETE the role-shared svc_<role> durable DENIED", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${TASK}.${taskDurable("worker")}`, dpv.id) === "denied");
+  // It DELETES mailboxes; it never CREATES one (not a provisioner) nor READS a body, nor tears a stream down.
+  check("CREATE the target's DM consumer DENIED (deprovisions, never provisions)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable(DEV_OWNER, dpvTarget.id)}`, dpv.id) === "denied");
+  check("read the target's DM body (MSG.NEXT) DENIED", await tryPublish(dpvCreds, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, dpvTarget.id)}`, dpv.id) === "denied");
+  check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(dpvCreds, dmGet, dpv.id) === "denied");
+  check("STREAM.DELETE the DM stream DENIED (removes consumers, never a stream)", await tryPublish(dpvCreds, `$JS.API.STREAM.DELETE.${DM}`, dpv.id) === "denied");
+  check("STREAM.PURGE the chat stream DENIED (not a purger)", await tryPublish(dpvCreds, `$JS.API.STREAM.PURGE.${CHAT}`, dpv.id) === "denied");
+  check("publish chat DENIED", await tryPublish(dpvCreds, chatSubject(space, DEV_OWNER, dpvTarget.id, "general"), dpv.id) === "denied");
+  // Cross-bucket: the KV grant is the acl bucket ONLY (the target's key). Purging the SAME target key in a
+  // DIFFERENT bucket, or STREAM.INFO on a different bucket, must be denied — so a future regression that
+  // broadened the grant to `$KV.>` / a bare bucket wouldn't slip through green.
+  check("purge the target's key in a DIFFERENT bucket ($KV.<members>.<id>) DENIED", await tryPublish(dpvCreds, `$KV.${membersBucket(space)}.${aclKey(dpvTargetPrincipal)}`, dpv.id) === "denied");
+  check("STREAM.INFO a different bucket (KV_<members>) DENIED", await tryPublish(dpvCreds, `$JS.API.STREAM.INFO.KV_${membersBucket(space)}`, dpv.id) === "denied");
 
   console.log("purger (ephemeral history-purge — purges, never reads):");
   check("STREAM.PURGE on CHAT ALLOWED", await tryPublish(purCreds, `$JS.API.STREAM.PURGE.${CHAT}`, pur.id) === "allowed");

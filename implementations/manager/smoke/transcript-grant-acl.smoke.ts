@@ -63,9 +63,15 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
 (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
-// Only `ref().id` is read from the endpoint on the spawn path (the spawner audit id); provisioning runs
-// on the real ephemeral provisioner conn (withProvisioner), not this endpoint.
-(mgr as unknown as { ep: Record<string, unknown> }).ep = { ref: () => ({ id: "smoke-mgr" }) };
+// The spawn path reads `ref().id` (spawner audit id) plus, for the #159 B1 readiness race, `on`/`off`/
+// `getRoster` — the fake reports every managed agent as joined so a spawn resolves "started". Provisioning
+// runs on the real ephemeral provisioner conn (withProvisioner), not this endpoint.
+(mgr as unknown as { ep: Record<string, unknown> }).ep = {
+  ref: () => ({ id: "smoke-mgr" }),
+  on: () => {},
+  off: () => {},
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+};
 
 // The exact `tr-<name>` sanitizer the real connectors use (connector-core); the manager grants whatever
 // the connector returns, so a mirroring connector hands back this and a non-mirroring one omits the method.

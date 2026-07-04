@@ -1,9 +1,8 @@
-import { parseArgs } from "node:util";
 import { writeSync } from "node:fs";
 import { userInfo } from "node:os";
 import { createElement } from "react";
 import { render } from "ink";
-import { chatWildcard } from "@cotal-ai/core";
+import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
 import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { runLog } from "../render.js";
@@ -15,17 +14,8 @@ import { Root, makeObserver } from "../console/root.js";
  * overview of every space first (pick one to drill in, `b` to come back); `--space X` goes straight
  * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/protocol-view.md.
  */
-export async function console_(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      space: { type: "string" },
-      server: { type: "string" },
-      plain: { type: "boolean" },
-      creds: { type: "string" },
-    },
-  });
+export async function console_(args: ParsedArgs): Promise<void> {
+  const values = args.values as { space?: string; server?: string; plain?: boolean; creds?: string };
   // Resolve WHICH running mesh (server + trust material) from any directory — same as `spawn`/`web`.
   // Auth mode self-mints an admin god-view cred (the console shows DMs/anycast, which the narrower
   // `observer` profile denies → NATS Authorization Violation); an authed server hosts exactly one
