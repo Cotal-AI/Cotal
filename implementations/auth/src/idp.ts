@@ -29,6 +29,7 @@ import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerToken } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
+import { MAX_TOKEN_TTL_SEC } from "./token.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
  *  ever read from a presented token. */
@@ -83,11 +84,11 @@ export interface IdpBridge {
   exchange(idpToken: string, req: { actor: string; ttlSec?: number }): Promise<ExchangeResult>;
 }
 
-/** Verify an external IdP JWT against the pinned config and return its `sub`. Same pinning
- *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`;
- *  its lifetime is the IdP's session policy, so no cap — but it must expire and must not be
- *  post-dated). */
-async function verifyIdpToken(token: string, idp: IdpConfig): Promise<string> {
+/** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
+ *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
+ *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
+ *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life. */
+async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected — keys resolve only via the pinned JWKS");
@@ -112,7 +113,7 @@ async function verifyIdpToken(token: string, idp: IdpConfig): Promise<string> {
   if (payload.iat > Math.floor(Date.now() / 1000) + tol) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
     throw new Error("idp token: sub must be a non-empty string user id — no coercion at a trust boundary");
-  return payload.sub;
+  return { sub: payload.sub, exp: payload.exp };
 }
 
 /** Build an {@link IdpBridge}. Misconfig fails HERE, at construction — an empty pin would
@@ -129,7 +130,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
   return {
     exchange: async (idpToken, req) => {
       assertValidOwnerToken(req.actor);
-      const sub = await verifyIdpToken(idpToken, opts.idp);
+      const { sub, exp: idpExp } = await verifyIdpToken(idpToken, opts.idp);
       // JSON-array encoding, NOT `${issuer}|${sub}`: a bare-delimiter concat is non-injective
       // (("a","b|c") and ("a|b","c") would hash the same input). Safe-by-luck today (one fixed
       // issuer per bridge), but the derivation input is frozen once real owners exist — an
@@ -138,13 +139,22 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const grant = await opts.authorizeActor(owner, req.actor);
       if (grant === null || typeof grant !== "object" || Array.isArray(grant))
         throw new Error("idp bridge: authorizeActor must return a grant object — anything else is a deny");
+      // Cap the minted bearer's lifetime to the IdP proof's REMAINING life: the Cotal bearer must not
+      // outlive the session proof it rests on. Otherwise a near-expired (or stolen just-before-expiry)
+      // IdP JWT would exchange for a full MAX_TOKEN_TTL_SEC bearer, widening authority past the upstream
+      // proof and defeating the "revocation bites when the IdP session lapses" model. An already-lapsed
+      // proof cannot mint anything (fail-loud).
+      const idpRemaining = idpExp - Math.floor(Date.now() / 1000);
+      if (idpRemaining <= 0)
+        throw new Error("idp bridge: the IdP session proof has expired — cannot mint a bearer");
+      const ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
       const token = await opts.issuer.issue({
         owner,
         space: opts.space,
         actor: req.actor,
         scope: grant.scope,
         parent: grant.parent,
-        ttlSec: req.ttlSec,
+        ttlSec,
       });
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp — issuer contract violated");

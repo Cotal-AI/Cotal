@@ -172,6 +172,17 @@ check("an empty grant object mints a scopeless bearer (explicit allow, no scope)
   (await validateUserToken((await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).token,
     { key: cotalIssuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE })).scope.length === 0);
 
+// The minted Cotal bearer must NOT outlive the IdP proof it rests on: request the max TTL against a
+// near-expiry IdP JWT and assert the bearer exp is capped to the IdP's remaining life (~30s), not now+900.
+{
+  const idpExp = now() + 30;
+  const nearExpiry = await mintIdp((j) =>
+    j.setSubject("human-42").setIssuer(IDP_ISS).setAudience(IDP_ISS).setIssuedAt(now()).setExpirationTime(idpExp));
+  const capped = await synth.exchange(nearExpiry, { actor: "agent_1", ttlSec: 900 });
+  check("a near-expiry IdP proof caps the bearer to its remaining life, not the full TTL",
+    capped.exp <= idpExp + 2 && capped.exp > now() + 20, { bearerExp: capped.exp, idpExp });
+}
+
 await rejects("HS256 alg confusion is rejected at the header", async () => {
   const hs = await new SignJWT({}).setProtectedHeader({ alg: "HS256" }).setSubject("human-42")
     .setIssuer(IDP_ISS).setAudience(IDP_ISS).setIssuedAt(now()).setExpirationTime(now() + 300)

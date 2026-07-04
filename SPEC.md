@@ -357,9 +357,9 @@ same (the client subscribes directly). Leaving the last channel is permitted: un
 binding an empty subscription set subscribes to nothing (the v0.2 "empty filter subscribes to all"
 hazard and its last-channel-leave refusal were artifacts of the multi-filter durable and no longer
 apply). On a `durable` channel, join additionally establishes durable membership — a separate
-**privileged** step: the instance requests durable membership from the provisioner (a `ctl.<manager>`
-durable-join op carrying the channel and its captured join cursor) and the provisioner writes the
-membership record. This is decoupled from the live subscribe, so a self-serve live join never depends
+**privileged** step: the instance requests durable membership from the server-side delivery daemon (a
+`ctl.delivery` durable-join op carrying the channel and its captured join cursor) and the daemon writes
+the membership record. This is decoupled from the live subscribe, so a self-serve live join never depends
 on it: a `durable` channel still delivers live with no privileged writer present, and only its
 durable backstop requires one. A locally created subscription that the
 broker later refuses (the permission violation is asynchronous in the NATS binding) is NOT a
@@ -393,7 +393,7 @@ confinement. In the NATS binding, membership is a privileged-written record in t
 plane under a key the agent's profile cannot write (NOT the agent's presence key), carrying per-member
 join/leave cursors so a publish concurrent with a join or leave orders deterministically; it is NOT
 derived from consumer topology, and an agent MUST NOT self-assert its own membership. It is written by
-the provisioner in response to a `ctl.<manager>` durable-join request (§8, Appendix B), distinct from
+the server-side delivery daemon in response to a `ctl.delivery` durable-join request (§8, Appendix B), distinct from
 and not required by the self-serve live subscribe. The implementation MUST re-authorize every
 **durable-backstop** read of `(instance, channel, message)` against the instance's current read ACL
 and membership before surfacing content, so a channel dropped from the ACL or **left** is no longer
