@@ -198,11 +198,21 @@ export const opencodeConnector: Connector = {
       env.COTAL_VARIANT = variant;
       cotalAgent.variant = variant;
     }
-    // Opaque connector options → config for the cotal agent (the session the plugin drives). `mode`,
-    // `model`, and `variant` are set by the connector and refused as a passthrough. opencode validates
-    // the merged keys against its own config schema.
+    // Opaque connector options → config for the cotal agent (the session the plugin drives). Unlike
+    // claude's open-ended CLI, opencode's per-agent config is a small fixed schema, so the keys that
+    // would breach the launch boundary are nameable in full and refused as a deny-list: `mode`/`model`/
+    // `variant` (set by the connector); the policy keys `tools`/`permission`/`mcp`/`plugin`/`prompt`/
+    // `instructions`/`disable` (a per-agent `permission`/`tools`/`mcp`/`plugin` overrides the operator's
+    // global opencode config — tool/permission/server injection); and the structural `agent`/
+    // `default_agent` (would nest or re-point the agent tree). Everything else — model-tuning knobs like
+    // `temperature`/`topP`/`reasoningEffort` — passes and is validated by opencode's own config schema.
+    const OPENCODE_RESERVED = [
+      "mode", "model", "variant",
+      "tools", "permission", "mcp", "plugin", "prompt", "instructions", "disable",
+      "agent", "default_agent",
+    ];
     let hasLaunchOptions = false;
-    for (const [k, v] of connectorLaunchOptions("opencode", opts.launchOptions, ["mode", "model", "variant"])) {
+    for (const [k, v] of connectorLaunchOptions("opencode", opts.launchOptions, { reserved: OPENCODE_RESERVED })) {
       cotalAgent[k] = v;
       hasLaunchOptions = true;
     }

@@ -1,8 +1,10 @@
 import { spawn as spawnProcess } from "node:child_process";
+import { rmSync } from "node:fs";
 import { join, dirname, resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
   connectorServers,
+  deprovisionAgent,
   firstFreeName,
   isReachable,
   loadAgentFile,
@@ -20,6 +22,7 @@ import {
   type Connector,
   type FlagSpec,
   type FlagValues,
+  type LaunchSpec,
   type ParsedArgs,
   type SpaceAuth,
   CONTROL_PRIVILEGED,
@@ -418,29 +421,52 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     parseShareSelection(values["share-tools"]),
   );
 
-  const spec = connector.buildLaunch({
-    space,
-    name,
-    role,
-    id,
-    creds: credsPath,
-    servers: server,
-    configPath: path,
-    // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
-    model: values.model,
-    variant,
-    // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
-    launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
-    subscribe,
-    allowSubscribe,
-    allowPublish,
-    prompt: values.prompt,
-    // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
-    // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
-    resume: values.resume,
-    transcript,
-    mcpServers,
-  });
+  // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
+  // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. If either
+  // fails the agent never joins the mesh, so roll the provision back — mirror the manager's
+  // `deprovision`: drop the creds file and tear down the broker footprint (durables + ACL) with an
+  // ephemeral, target-pinned deprovisioner cred. A no-op in open mode (nothing was minted).
+  const rollbackProvision = async (why: string): Promise<void> => {
+    if (!auth || !id || !credsPath) return;
+    rmSync(credsPath, { force: true });
+    console.error(`  ↩ rolled back creds for ${name} (${why})`);
+    try {
+      const dc = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: id });
+      await deprovisionAgent({ servers: server, space, targetId: id, creds: dc });
+    } catch (e) {
+      console.error(`! rollback: broker teardown for ${name} failed: ${(e as Error).message}`);
+    }
+  };
+
+  let spec: LaunchSpec;
+  try {
+    spec = connector.buildLaunch({
+      space,
+      name,
+      role,
+      id,
+      creds: credsPath,
+      servers: server,
+      configPath: path,
+      // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
+      model: values.model,
+      variant,
+      // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+      launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
+      subscribe,
+      allowSubscribe,
+      allowPublish,
+      prompt: values.prompt,
+      // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
+      // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
+      resume: values.resume,
+      transcript,
+      mcpServers,
+    });
+  } catch (e) {
+    await rollbackProvision("launch build failed");
+    throw e;
+  }
 
   console.error(
     `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
@@ -456,9 +482,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   });
   await new Promise<void>((resolve) => {
     child.on("error", (e) => {
+      // The exec never started, so the just-provisioned identity is orphaned too — roll it back.
       console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
-      process.exitCode = 1;
-      resolve();
+      void rollbackProvision("exec failed").finally(() => {
+        process.exitCode = 1;
+        resolve();
+      });
     });
     child.on("exit", (code) => {
       process.exitCode = code ?? 0;

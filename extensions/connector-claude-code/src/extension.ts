@@ -138,13 +138,21 @@ export const claudeConnector: Connector = {
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
 
     // Opaque connector options → native `claude` flags: `key=value` renders `--key value`, and an
-    // empty value (`--opt foo=`) renders a bare boolean `--foo`. The connector-managed flags below
-    // are refused so a passthrough can't relax the MCP isolation, model, or session it pins.
-    const RESERVED = [
-      "model", "mcp-config", "strict-mcp-config", "append-system-prompt", "resume", "fork-session",
-      "dangerously-load-development-channels", "dangerously-skip-permissions", "allowedTools", "add-dir", "permission-mode",
-    ];
-    for (const [k, v] of connectorLaunchOptions("claude", opts.launchOptions, RESERVED)) {
+    // empty value (`--opt foo=`) renders a bare boolean `--foo`. This is an ALLOW-LIST, not a
+    // deny-list: `claude` has ~50 flags and most touch the launch boundary the connector owns — the
+    // model (--model/--fallback-model), MCP + tool policy (--mcp-config/--settings/--tools/--allowed-tools),
+    // permissions (--permission-mode/--dangerously-skip-permissions), config-file loading
+    // (--settings/--setting-sources), the persona/system prompt (--append-system-prompt/--system-prompt/
+    // --file), the session/identity (--resume/--session-id/--fork-session), the filesystem scope
+    // (--add-dir/--worktree), plugins (--plugin-dir/--plugin-url) and subagents (--agent/--agents). The
+    // list also grows across `claude` releases, so a fixed deny-list can never stay complete. We instead
+    // forward only a small set of flags known to tune behavior without touching that boundary, and refuse
+    // everything else (fail closed). Deliberately NOT here: `--betas`, whose value is an opaque name that
+    // opts the child into experimental behavior which may itself reach tools/MCP/permissions/prompts/
+    // plugins/session — an indirection this connector can't review, so it stays refused. Widen this list
+    // only for a flag whose every value is known not to affect launch isolation.
+    const CLAUDE_PASSTHROUGH = ["verbose", "debug", "effort", "max-budget-usd"];
+    for (const [k, v] of connectorLaunchOptions("claude", opts.launchOptions, { allow: CLAUDE_PASSTHROUGH })) {
       const val = String(v);
       if (val === "") args.push(`--${k}`);
       else args.push(`--${k}`, val);
