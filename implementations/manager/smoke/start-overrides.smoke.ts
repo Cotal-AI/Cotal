@@ -18,7 +18,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle, type MeshLaunchAgent } from "@cotal-ai/core";
+import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle, type MeshLaunchAgent } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -61,7 +61,7 @@ const fakeHandle = (name: string): AgentHandle => ({
   // joined — same fake as manifest-launch.smoke.ts, so a successful spawn resolves "started".
   on: () => {},
   off: () => {},
-  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" })),
 };
 
 let lastOpts: LaunchOpts | undefined;

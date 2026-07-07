@@ -208,6 +208,14 @@ try {
   const staticMint = await cotal(["mint", "flip-probe", "--profile", "agent"]);
   check("the flip: `cotal mint` on a user mesh is refused, naming user-mode recourse", staticMint.status !== 0 && staticMint.out.includes("retired") && staticMint.out.includes("cotal spawn"), staticMint.out);
   check("the flip: no creds file was written by the refused mint", !existsSync(join(root, ".cotal", "auth", "creds", "flip-probe.creds")));
+  // observer/admin are retired too, as explicit POLICY (no static dashboard/audit creds on a
+  // user-auth mesh) — the copy says so instead of misdirecting to the agent recourse.
+  const observerMint = await cotal(["mint", "flip-observer", "--profile", "observer"]);
+  check(
+    "the flip: `mint --profile observer` is refused naming the dashboard/audit policy",
+    observerMint.status !== 0 && observerMint.out.includes("static dashboard/audit creds are not supported"),
+    observerMint.out,
+  );
   const oldCredsDir = join(root, ".cotal", "auth", "creds");
   mkdirSync(oldCredsDir, { recursive: true });
   const oldStaticCreds = join(oldCredsDir, "old-static.creds");
