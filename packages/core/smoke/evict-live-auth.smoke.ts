@@ -14,10 +14,12 @@
  * `mintConnectionEvictorCreds` (`$SYS.REQ.SERVER.*.KICK` only) — mintable ONLY at the `up` that provisions
  * the account (in-memory `$SYS` signing seed), so they are minted right after createSpaceAuth here.
  *
- * The user connection P is CALLOUT-MINTED (sentinel + bearer), so its CONNZ record carries the
- * `principal:<owner>.<actor>` tag the eviction keys on — a static cred would not model the real
- * user-mode connection. Deny-new is a real ledger `revokeActor` (the mandatory precondition the module's
- * name carries), committed before the KICK.
+ * The user connection P is CALLOUT-MINTED (sentinel + bearer) — the real user-mode shape, which a static
+ * cred would NOT model. This smoke is exactly what disproved the design's premise: a callout connection
+ * does NOT carry a `principal:` tag in CONNZ; nats-server surfaces its JWT name-form as `authorized_user`
+ * instead. So eviction attributes via `principalFromConnz` (tag for static mints, authorized_user name-form
+ * for callout), NOT tags-only. Deny-new is a real ledger `revokeActor` (the mandatory precondition the
+ * module's name carries), committed before the KICK.
  *
  * COTAL_HOME-free; kills only the nats-server it starts, by exact PID (never pkill).
  * Run: npx tsx packages/core/smoke/evict-live-auth.smoke.ts   (needs nats-server on PATH)
@@ -186,6 +188,46 @@ try {
     "fail-closed: a CONNZ scan that under-reports is verifiedGone:false, scanComplete:false, note flags UNKNOWN (never silent success)",
     blind.verifiedGone === false && blind.scanComplete === false && /under-report|unknown/i.test(blind.note ?? ""),
     blind,
+  );
+
+  // ---------- MALFORMED CONNZ projection fails closed (mock — a real broker never sends these) ----------
+  // A CONNZ reply that names an ATTRIBUTABLE principal but omits the route (server_id) or the cid can't
+  // be KICKed — the scan must report UNKNOWN, never collapse the unkickable-but-live target into the
+  // healthy not-live no-op. A real nats-server always sends both, so this is pinned with a tiny mock
+  // connection that injects one synthetic reply into the scan's reply inbox.
+  const mockObserver = (reply: unknown): NatsConnection => {
+    const subs = new Map<string, (err: unknown, msg: { json: () => unknown }) => void>();
+    return {
+      subscribe: (subject: string, o: { callback: (err: unknown, msg: { json: () => unknown }) => void }) => {
+        subs.set(subject, o.callback);
+        return { unsubscribe() { subs.delete(subject); } };
+      },
+      publish: (_subject: string, _payload: unknown, o?: { reply?: string }) => {
+        const cb = o?.reply ? subs.get(o.reply) : undefined;
+        if (cb) cb(null, { json: () => reply });
+      },
+    } as unknown as NatsConnection;
+  };
+  const attributableName = `${principalP.split(".")[0]}-${principalP.split(".")[1]}`; // name-form authorized_user
+  // (a) principal present, NO server_id → unroutable
+  const noServer = await evictDeniedPrincipal(
+    mockObserver({ data: { total: 1, connections: [{ cid: 7, authorized_user: attributableName }] } }),
+    evictorNc, auth.account.pub, principalP, EVICT_OPTS,
+  );
+  check(
+    "malformed fail-closed: an attributable connection with NO server_id → verifiedGone:false, scanComplete:false",
+    noServer.verifiedGone === false && noServer.scanComplete === false,
+    noServer,
+  );
+  // (b) principal present + server_id, but NO numeric cid → unroutable
+  const noCid = await evictDeniedPrincipal(
+    mockObserver({ data: { server_id: "SERVER1", total: 1, connections: [{ authorized_user: attributableName }] } }),
+    evictorNc, auth.account.pub, principalP, EVICT_OPTS,
+  );
+  check(
+    "malformed fail-closed: an attributable connection with NO numeric cid → verifiedGone:false, scanComplete:false",
+    noCid.verifiedGone === false && noCid.scanComplete === false,
+    noCid,
   );
 
   console.log(`\nEVICT-LIVE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

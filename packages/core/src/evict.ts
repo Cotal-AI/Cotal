@@ -121,7 +121,15 @@ async function scanLive(
         // Attribute across BOTH cred shapes — a callout user surfaces its principal as the
         // `authorized_user` name-form (no tags), a static user surfaces the `principal:` tag.
         const principal = principalFromConnz(c);
-        if (typeof c.cid === "number" && principal) conns.push({ cid: c.cid, serverId, principal });
+        if (!principal) continue; // un-attributable (infra/open/nkey) — not a target, safe to ignore
+        if (typeof c.cid !== "number") {
+          // An ATTRIBUTABLE connection with no usable cid can't be KICK-routed — same fail-closed
+          // posture as a missing server id: mark the scan incomplete so a still-live-but-unkickable
+          // target is never read as "gone". (A non-attributable row without a cid is just infra.)
+          unroutable = true;
+          continue;
+        }
+        conns.push({ cid: c.cid, serverId, principal });
       }
       const total = r.data?.total ?? 0;
       if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
