@@ -4,10 +4,18 @@
 // a classified + burst-coalesced + windowed feed, channel counts, a msgs/s rate, and the
 // derived operator signals (status counts, who's waiting, a per-peer DM roll-up). No ANSI,
 // no React, no HTML, no color — a surface only lays this out, it never re-derives it.
-// See docs/protocol-view.md.
+// See docs/mesh-view.md.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, Presence, PresenceStatus } from "@cotal-ai/core";
+import type {
+  CotalEndpoint,
+  CotalMessage,
+  DeliveryMode,
+  EndpointRef,
+  Presence,
+  PresenceStatus,
+  ViewSpec,
+} from "@cotal-ai/core";
 import { deliveryOf, chatWildcard } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -27,6 +35,17 @@ export interface FeedEntry {
   toNames?: string[]; // unicast targets, resolved off the roster
   count?: number; // burst multiplicity for coalesced unicast
   text: string;
+}
+
+/** A view a peer published — a renderable json-render spec, surfaced for the console's view lens.
+ *  Deduped by message id and windowed (newest last), same as the feed. */
+export interface ViewItem {
+  id: string;
+  ts: number;
+  from: EndpointRef;
+  delivery: FeedDelivery;
+  channel?: string; // multicast
+  spec: ViewSpec;
 }
 
 export interface StatusCounts {
@@ -75,7 +94,10 @@ export interface MeshSnapshot {
   endpoints: Presence[]; // everything else
   channels: { channel: string; messages: number }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
-  rates: { msgsPerSec: number };
+  views: ViewItem[]; // peer-published renderable views, newest last
+  // msgsPerSec: rolling 1s rate. activity: fixed 15-bucket message-volume series over the last
+  // 60s (one ~4s bucket each), oldest→newest, raw counts — the sparkline's source.
+  rates: { msgsPerSec: number; activity: number[] };
   status: { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals: MeshSignals;
   nameOf: (id: string) => string; // unicast target id → display name
@@ -96,11 +118,17 @@ const BURST_MS = 400; // unicast burst-coalescing window
 const TICK_MS = 75; // batch every source into one "change"
 const CHANNELS_MS = 2000; // listChannels() refresh
 const DEFAULT_WINDOW = 300;
+const VIEW_WINDOW = 50; // peer-published views retained
 const HISTORY_LIMIT = 50; // per-channel prefill depth
 const DM_LOG_CAP = 1000; // raw DMs retained for the roll-up
+const BUCKET_MS = 4000; // activity series bucket width
+const BUCKET_COUNT = 15; // activity series length → 15×4s = 60s window
 
 function bodyText(msg: CotalMessage): string {
-  return msg.parts.map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ");
+  return msg.parts
+    .map((p) => (p.kind === "text" ? p.text : p.kind === "view" ? "" : JSON.stringify(p.data)))
+    .join(" ")
+    .trim();
 }
 
 function sortRoster(r: Presence[]): Presence[] {
@@ -140,10 +168,14 @@ export class MeshView extends EventEmitter {
   private channelCounts = new Map<string, number>();
   private feed: FeedEntry[] = [];
   private seen = new Set<string>(); // feed ids, for prefill ∪ live dedupe-by-id
+  private views: ViewItem[] = [];
+  private viewSeen = new Set<string>(); // view message ids, dedupe-by-id
   private pending = new Map<string, Burst>();
   private dmLog: RawDm[] = []; // raw unicast for the DM roll-up
   private recentTs: number[] = []; // tap arrivals in the last 1s → msgs/s
   private msgsPerSec = 0;
+  private bucketCounts: number[] = new Array(BUCKET_COUNT).fill(0); // 60s volume series, oldest→newest
+  private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
   private connected = false;
   private error?: string;
   private dirty = true;
@@ -212,7 +244,8 @@ export class MeshView extends EventEmitter {
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
       feed: this.feed.slice(),
-      rates: { msgsPerSec: this.msgsPerSec },
+      views: this.views.slice(),
+      rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
         connected: this.connected,
         space: this.ep.space,
@@ -239,8 +272,13 @@ export class MeshView extends EventEmitter {
   private ingest(subject: string, msg: CotalMessage): void {
     const kind = deliveryOf(subject);
     if (!kind) return;
-    this.recentTs.push(Date.now());
+    const now = Date.now();
+    this.recentTs.push(now);
+    this.roll(now);
+    this.bucketCounts[BUCKET_COUNT - 1]++; // count into the newest bucket
     if (msg.from?.id && msg.from.name) this.byId.set(msg.from.id, msg.from.name); // sharpen id→name
+    // A view rides any delivery as a `view` part — capture it before the unicast early-return.
+    for (const p of msg.parts) if (p.kind === "view") this.recordView(msg, kind, p.spec);
     if (kind === "unicast") return this.coalesce(msg);
     this.push({
       id: msg.id,
@@ -313,6 +351,23 @@ export class MeshView extends EventEmitter {
     if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
   }
 
+  /** Retain a peer-published view, deduped by message id and windowed (newest last). */
+  private recordView(msg: CotalMessage, kind: DeliveryMode, spec: ViewSpec): void {
+    if (this.viewSeen.has(msg.id)) return;
+    this.viewSeen.add(msg.id);
+    this.views.push({
+      id: msg.id,
+      ts: msg.ts,
+      from: msg.from,
+      delivery: kind === "anycast" ? "anycast" : kind === "unicast" ? "unicast" : "multicast",
+      channel: kind === "chat" ? msg.channel : undefined,
+      spec,
+    });
+    if (this.views.length > VIEW_WINDOW)
+      for (const d of this.views.splice(0, this.views.length - VIEW_WINDOW)) this.viewSeen.delete(d.id);
+    this.dirty = true;
+  }
+
   /** One-shot backlog: prefill each channel's history (multicast), plus the DM backlog when DMs
    *  are visible (god-view — `dmHistory` needs an admin cred), deduped by id, oldest-first. */
   private async prefill(): Promise<void> {
@@ -349,8 +404,10 @@ export class MeshView extends EventEmitter {
     if (!this.chatOnly) await this.prefillDms();
   }
 
-  /** Best-effort DM backlog for the roll-up — only meaningful for a god-view cred; a non-admin
-   *  observer's `dmHistory` throws (ACL), which just leaves the DM lens live-only. */
+  /** Best-effort DM backlog — only meaningful for a god-view cred; a non-admin observer's `dmHistory`
+   *  throws (ACL), which just leaves the DM lens and the feed's DM rows live-only. Feeds both the
+   *  per-peer roll-up (`dmLog`) and the main feed, so a console opened mid/post-run shows the DM
+   *  handshake instead of only DMs tapped live. */
   private async prefillDms(): Promise<void> {
     let msgs: CotalMessage[];
     try {
@@ -372,6 +429,26 @@ export class MeshView extends EventEmitter {
     }
     this.dmLog.sort((a, b) => a.ts - b.ts);
     if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
+    // Also surface recent DMs in the feed (god-view only). Dedupe by message id against the live tap;
+    // history is one row per message — no burst-coalescing — ordered into the feed by ts.
+    const dmFeed: FeedEntry[] = [];
+    for (const m of msgs) {
+      if (!m.to || this.seen.has(m.id)) continue;
+      this.seen.add(m.id);
+      dmFeed.push({
+        id: m.id,
+        ts: m.ts,
+        from: m.from,
+        delivery: "unicast",
+        toNames: [this.nameOf(m.to)],
+        count: 1,
+        text: bodyText(m),
+      });
+    }
+    if (dmFeed.length) {
+      this.feed = [...this.feed, ...dmFeed].sort((a, b) => a.ts - b.ts);
+      this.trim();
+    }
     this.dirty = true;
   }
 
@@ -415,7 +492,7 @@ export class MeshView extends EventEmitter {
       const b = this.nameOf(d.toId);
       if (!a || !b || a === b) continue;
       const parts = [a, b].sort() as [string, string];
-      const k = parts.join(" ");
+      const k = parts.join(" ");
       let c = conv.get(k);
       if (!c) conv.set(k, (c = { parts, msgs: [], last: 0 }));
       c.msgs.push({ ts: d.ts, from: a, to: b, text: d.text });
@@ -438,10 +515,32 @@ export class MeshView extends EventEmitter {
     return [...peers.values()].sort((a, b) => b.lastTs - a.lastTs);
   }
 
+  /** Advance the activity ring to `now`: shift past buckets out the left, fill the gap with zeros,
+   *  so idle time decays the series. The newest (last) bucket is always the current ~4s window. */
+  private roll(now: number): void {
+    const epoch = Math.floor(now / BUCKET_MS);
+    if (this.bucketEpoch === 0) {
+      this.bucketEpoch = epoch;
+      return;
+    }
+    const advance = epoch - this.bucketEpoch;
+    if (advance <= 0) return;
+    if (advance >= BUCKET_COUNT) {
+      this.bucketCounts.fill(0);
+    } else {
+      this.bucketCounts.splice(0, advance);
+      while (this.bucketCounts.length < BUCKET_COUNT) this.bucketCounts.push(0);
+    }
+    this.bucketEpoch = epoch;
+    this.dirty = true;
+  }
+
   /** The single batch point: recompute the rolling rate, then emit one snapshot if dirty. */
   private flush(): void {
-    const cutoff = Date.now() - 1000;
+    const now = Date.now();
+    const cutoff = now - 1000;
     while (this.recentTs.length && this.recentTs[0] < cutoff) this.recentTs.shift();
+    this.roll(now); // decay the activity window even when no message arrived
     if (this.recentTs.length !== this.msgsPerSec) {
       this.msgsPerSec = this.recentTs.length;
       this.dirty = true;

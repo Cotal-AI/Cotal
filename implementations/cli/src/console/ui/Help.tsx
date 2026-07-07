@@ -47,6 +47,7 @@ export function Help({
     ["n", "toggle needs-you rail"],
     ["d", "direct-message lens"],
     ["t", "topology lens (v / 1-3 variants)"],
+    ["V", "views lens (peer-pushed views)"],
     [":", "command palette (send / call / ask)"],
     ["c", "compose to channel / DM selected agent"],
     ["r", "reply to current message"],

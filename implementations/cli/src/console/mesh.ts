@@ -10,7 +10,7 @@ import type { MeshSnapshot, MeshViewOptions } from "../view/mesh-view.js";
 import { MeshView } from "../view/mesh-view.js";
 
 // Re-exported so the UI components keep importing the model shape from one place.
-export type { FeedEntry, MeshViewOptions, FeedDelivery } from "../view/mesh-view.js";
+export type { FeedEntry, MeshViewOptions, FeedDelivery, ViewItem } from "../view/mesh-view.js";
 export type MeshState = MeshSnapshot;
 
 /** Focusable panes across the console (normal panels + the DM and topology lenses). */

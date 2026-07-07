@@ -232,6 +232,12 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
+      '@json-render/core':
+        specifier: 0.19.0
+        version: 0.19.0(zod@4.4.3)
+      '@json-render/ink':
+        specifier: 0.19.0
+        version: 0.19.0(ink@6.8.0(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)(zod@4.4.3)
       ink:
         specifier: ^6.0.0
         version: 6.8.0(@types/react@19.2.17)(react@19.2.7)
@@ -800,6 +806,17 @@ packages:
     peerDependenciesMeta:
       '@types/node':
         optional: true
+
+  '@json-render/core@0.19.0':
+    resolution: {integrity: sha512-vvcyZ+10EDZKbEyB1J2kXOGfDaiZR2LurZGSqi2r5STHyKr+Te85DWaBxTwRGgM7U1LtIvNx85BzzjElRKoAIg==}
+    peerDependencies:
+      zod: ^4.0.0
+
+  '@json-render/ink@0.19.0':
+    resolution: {integrity: sha512-RPS321EW4MVKBnD6Y531h4lzXnYN+fj4nxfEcmFkJiLGxoZAr9PYOrotgwNzNIcsIyvNaZcgHGvYf7EhhGWDtw==}
+    peerDependencies:
+      ink: ^6.0.0
+      react: ^19.0.0
 
   '@lydell/node-pty-darwin-arm64@1.2.0-beta.12':
     resolution: {integrity: sha512-tqaifcY9Cr41SblO1+FLzh8oxxtkNhuW9Dhl22lKme9BreYvKvxEZcdPIXTuqkJc5tagOEC4QHShKmJjLyLXLQ==}
@@ -1460,6 +1477,11 @@ packages:
   lru-cache@11.5.1:
     resolution: {integrity: sha512-RPimw/7aMdv2oqRrxKwvZXcPfwBrn/JZ2xYcY9Hus/6LaS3VOAKVWKWgNLCFSiOm1ESXinjsDlidVU7JlnCN2A==}
     engines: {node: 20 || >=22}
+
+  marked@17.0.6:
+    resolution: {integrity: sha512-gB0gkNafnonOw0obSTEGZTT86IuhILt2Wfx0mWH/1Au83kybTayroZ/V6nS25mN7u8ASy+5fMhgB3XPNrOZdmA==}
+    engines: {node: '>= 20'}
+    hasBin: true
 
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
@@ -2254,6 +2276,19 @@ snapshots:
     optionalDependencies:
       '@types/node': 22.20.0
 
+  '@json-render/core@0.19.0(zod@4.4.3)':
+    dependencies:
+      zod: 4.4.3
+
+  '@json-render/ink@0.19.0(ink@6.8.0(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)(zod@4.4.3)':
+    dependencies:
+      '@json-render/core': 0.19.0(zod@4.4.3)
+      ink: 6.8.0(@types/react@19.2.17)(react@19.2.7)
+      marked: 17.0.6
+      react: 19.2.7
+    transitivePeerDependencies:
+      - zod
+
   '@lydell/node-pty-darwin-arm64@1.2.0-beta.12':
     optional: true
 
@@ -2958,6 +2993,8 @@ snapshots:
   lodash.startcase@4.4.0: {}
 
   lru-cache@11.5.1: {}
+
+  marked@17.0.6: {}
 
   math-intrinsics@1.1.0: {}
 

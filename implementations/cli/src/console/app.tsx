@@ -3,7 +3,6 @@ import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { Tabs } from "./ui/Tabs.js";
-import { Tiles } from "./ui/Tiles.js";
 import { Roster } from "./ui/Roster.js";
 import { Feed } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
@@ -16,6 +15,9 @@ import { CommandPalette } from "./ui/CommandPalette.js";
 import { Confirm, type ConfirmTarget } from "./ui/Confirm.js";
 import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
+import { Views } from "./ui/Views.js";
+import { SpecView } from "./render/SpecView.js";
+import { tilesSpec } from "./render/spec.js";
 import { runCommand, type CommandCtx } from "./commands.js";
 import { mentionsIn } from "../lib/mentions.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
@@ -55,7 +57,7 @@ export function App({
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState({ active: false, query: "" });
   const [focusedId, setFocusedId] = useState<FocusId>("feed");
-  const [mode, setMode] = useState<"normal" | "dm" | "topo">("normal");
+  const [mode, setMode] = useState<"normal" | "dm" | "topo" | "views">("normal");
   const [topoVariant, setTopoVariant] = useState<TopoVariant>(0);
   const [railOpen, setRailOpen] = useState(false);
   const [palette, setPalette] = useState({ active: false, query: "" });
@@ -104,6 +106,7 @@ export function App({
     if (railOverlay) focus("needsyou");
     else if (mode === "dm") focus("dmpeers");
     else if (mode === "topo") focus("topo");
+    else if (mode === "views") return; // the view lens has no focusable child
     else focus(normalFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [helpOpen, detail, mode, railOpen, confirm]);
@@ -217,7 +220,7 @@ export function App({
       if (input === ":") return setPalette({ active: true, query: "" });
       if (key.escape) {
         // lazygit-style "back": pop one level per press, then return to the space overview.
-        if (mode === "dm" || mode === "topo") return setMode("normal");
+        if (mode === "dm" || mode === "topo" || mode === "views") return setMode("normal");
         if (railOverlay) return setRailOpen(false);
         if (search.query) return setSearch({ active: false, query: "" });
         if (onBack) return onBack();
@@ -227,6 +230,7 @@ export function App({
       if (onBack && input === "b" && mode === "normal") return onBack(); // quick back to the overview
       if (input === "d" && !key.ctrl) return setMode((m) => (m === "dm" ? "normal" : "dm")); // Ctrl-d = scroll
       if (input === "t") return setMode((m) => (m === "topo" ? "normal" : "topo"));
+      if (input === "V") return setMode((m) => (m === "views" ? "normal" : "views")); // peer-pushed views
       if (input === "v" && mode === "topo") return setTopoVariant((v) => ((v + 1) % 3) as TopoVariant);
       if (mode === "topo" && input >= "1" && input <= "3")
         return setTopoVariant((Number(input) - 1) as TopoVariant);
@@ -267,8 +271,12 @@ export function App({
   return (
     <Box flexDirection="column" width={size.cols} height={size.rows}>
       <Tabs tabs={tabs} active={activeChannel} counts={counts} width={size.cols} />
-      <Tiles counts={mesh.signals.counts} oldestWaitingTs={mesh.signals.oldestWaitingTs} width={size.cols} />
-      {mode === "dm" ? (
+      {/* Golden-signal strip — rendered through json-render's Ink catalog (dogfoods the same
+          renderer that paints peer-pushed views). */}
+      <SpecView spec={tilesSpec(mesh.signals.counts, mesh.signals.oldestWaitingTs, size.cols)} />
+      {mode === "views" ? (
+        <Views views={mesh.views} width={size.cols} height={bodyH} />
+      ) : mode === "dm" ? (
         <Dm
           dms={mesh.signals.dms}
           dmVisible={mesh.status.dmVisible}

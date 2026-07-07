@@ -281,7 +281,7 @@ export class MeshAgent extends EventEmitter {
    *  focus recall ({@link recallAmbient}). */
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
     const text = m.parts
-      .map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data)))
+      .map((p) => (p.kind === "text" ? p.text : p.kind === "view" ? "[view]" : JSON.stringify(p.data)))
       .join(" ");
     return {
       id: m.id,

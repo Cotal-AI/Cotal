@@ -164,7 +164,7 @@ export async function join(args: ParsedArgs): Promise<void> {
 
   ep.on("message", (m: CotalMessage, d: Delivery) => {
     const text = m.parts
-      .map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data)))
+      .map((p) => (p.kind === "text" ? p.text : p.kind === "view" ? "[view]" : JSON.stringify(p.data)))
       .join(" ");
     if (m.to === me)
       print(`${c.magenta("(DM)")} ${who(m.from)} ${c.dim("→ you:")} ${text}`);

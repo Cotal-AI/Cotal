@@ -57,6 +57,7 @@ interface MeshSnapshot {
   endpoints: Presence[];        // everything else
   channels:  { channel: string; messages: number }[];
   feed:      FeedEntry[];       // classified + coalesced + windowed
+  views:     ViewItem[];        // peer-published renderable views (json-render specs), newest last
   rates:     { msgsPerSec: number };
   status:    { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals:   MeshSignals;       // derived operator signals (below)
@@ -101,14 +102,18 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
 | topology (who-talks-to-whom) | `feed` + `agents` (derived) | ✓ lens (`t`, 3 variants) |  |  |
+| peer-pushed views (json-render) | `views` | ✓ lens (`V`) |  |  |
 | message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
-| msgs/s, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
+| msgs/s + activity sparkline, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
 
 Both interactive surfaces render every model field. The console adds the signals as an always-on
 tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) folds the feed
 plus roster into a who-talks-to-whom graph client-side and renders it three switchable ways
-(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. The stream is
+(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. The views
+lens (`V`) shows the latest peer-published json-render view, validated against the console's
+fixed Ink component catalog (an invalid spec shows its rejection reason instead); the tiles strip
+renders through the same catalog, so the console dogfoods its own guardrail. The stream is
 line-oriented, so the signals stay out of it.
 
 ## Future: not yet on the wire

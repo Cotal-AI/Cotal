@@ -52,6 +52,13 @@ the reasoning: [presence & delivery](presence-and-delivery.md)). Isolation is on
 ACLs ([identity & auth](identity-and-auth.md)). Large artifacts are reserved for a
 per-space Object Store ([roadmap](roadmap.md)).
 
+A message part can also be a renderable **view**: a json-render spec that rides the normal
+delivery modes (`endpoint.publishView`, no new subject) and is painted against the viewer's
+own fixed component catalog (declared components with validated props, never code), with a
+plain-text label alongside so text-only consumers still see something
+([SPEC §5](../SPEC.md#5-envelopes)). Core owns the wire shape; each renderer owns its
+catalog.
+
 Whether any of this *requires* NATS is answered in
 [transport vs protocol](transport.md): the contract is transport-agnostic; NATS/JetStream
 is the reference binding.
