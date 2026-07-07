@@ -7,7 +7,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import { authDir, findCotalRoot, homeCotalDir, loadMeshes, loadSpaceAuth, resolveSpace, userAuthStateDir, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { authDir, CLI_USER_ACTOR, findCotalRoot, homeCotalDir, loadMeshes, loadSpaceAuth, resolveSpace, userAuthStateDir, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -60,6 +60,11 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     const who = label ? `${label} (${sub})` : sub;
     console.log(
       `\nLogged in to ${idp} as ${who}. Session cached in ${homeCotalDir()} until ${new Date(session.expiresAt * 1000).toISOString()}.`,
+    );
+    // Signing in proves WHO you are; each mesh separately lets you in. Hand the human the exact
+    // next step — their sub is the one thing the operator needs from them.
+    console.log(
+      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (add --scope spawn to allow spawning agents)`,
     );
   });
 }

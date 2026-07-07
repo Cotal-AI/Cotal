@@ -256,7 +256,9 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
     if (!row) {
       if (findManagedActor(dir, owner, actor))
         throw new Error(`actor "${actor}" is a managed agent — it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
-      throw new Error(`actor "${actor}" is not granted for this owner — grant it with \`cotal actor grant\``);
+      throw new Error(
+        `actor "${actor}" is not granted for this user — the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`)`,
+      );
     }
     return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}) };
   };
