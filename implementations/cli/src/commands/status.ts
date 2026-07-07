@@ -20,6 +20,7 @@ import {
   resolveMeshTarget,
   serverFlag,
   spaceFlag,
+  userAuthStateDir,
 } from "@cotal-ai/workspace";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, webUp, WEB_URL } from "../lib/status.js";
@@ -59,11 +60,13 @@ async function printMachine(): Promise<void> {
 
 function printProject(root: string): void {
   const auth = loadSpaceAuth(authDir(root));
+  const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
   section("This Folder");
   row("root", root);
-  row("auth", auth ? c.green(`space ${auth.space}`) : c.dim("none (open/local only)"));
+  row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
   row("nats", formatProc(proc(root, "nats.pid")));
+  if (userDisk) row("auth-service", formatProc(proc(root, `auth-service.${encodeURIComponent(auth.space)}.pid`)));
   row("delivery", formatProc(proc(root, "delivery.pid")));
   const mgr = proc(root, "manager.pid");
   row("manager", `${formatProc(mgr)}${mgr.live ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build") : ""}`);
@@ -112,9 +115,19 @@ async function printTarget(
 
   row("space", target.space);
   row("server", target.server);
-  row("mode", target.auth ? "auth" : "open");
+  row("mode", target.mode);
+  if (target.userAuth) row("idp", target.userAuth.idp.url);
   row("source", target.source);
   row("root", target.root);
+
+  if (target.mode === "user") {
+    // Status holds no user bearer and must never static-mint on a user-auth mesh, so the only
+    // identity-free read is INFO-level liveness — no preflight, no snapshot.
+    const live = await isReachable(target.server);
+    row("connection", live ? c.green("reachable (liveness only)") : c.red("unreachable"));
+    row("live snapshot", c.dim("skipped on a user-auth mesh — connect as a user via `cotal send`"));
+    return;
+  }
 
   const preflight = await preflightTarget(target);
   if (!preflight.ok) {
