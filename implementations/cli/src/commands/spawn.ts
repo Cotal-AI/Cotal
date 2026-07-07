@@ -352,6 +352,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   let id: string | undefined;
   let credsPath: string | undefined;
   let userAuth: LaunchOpts["userAuth"];
+  let userCleanup: (() => Promise<void>) | undefined;
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
@@ -364,13 +365,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer
     // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
     // dead auth plane.
-    userAuth = await provisionUserForeground(target, name, ref, {
+    ({ userAuth, cleanup: userCleanup } = await provisionUserForeground(target, name, ref, {
       subscribe,
       allowSubscribe,
       allowPublish,
       role,
       capabilities: def.capabilities,
-    });
+    }));
   } else if (auth) {
     const identity = newIdentity();
     const prov = new CotalEndpoint({
@@ -464,6 +465,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       resolve();
     });
   });
+  // USER MODE: the runtime-grant invariant applies to the foreground departure too — the agent is
+  // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
+  // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
+  // on failure, never blocking the exit code already set above.
+  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
 }
 
 /** Foreground USER-MODE onboarding — the CLI-side twin of the manager's user spawn provisioning:
@@ -477,7 +483,7 @@ async function provisionUserForeground(
   name: string,
   ref: string,
   opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[] },
-): Promise<NonNullable<LaunchOpts["userAuth"]>> {
+): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void> }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
   const fail = (msg: string): never => {
@@ -561,7 +567,17 @@ async function provisionUserForeground(
         res();
       });
     });
-    return { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd };
+    return {
+      userAuth: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
+      // The foreground departure's half of the runtime-grant invariant: the caller runs this when
+      // the agent process exits — revoke the row, shred the secret material.
+      cleanup: async () => {
+        await provider.revokeAgent({ dir, owner, actor: name });
+        rmSync(tokenPath, { force: true });
+        rmSync(sentinelPath, { force: true });
+        rmSync(healthPath, { force: true });
+      },
+    };
   } catch (e) {
     await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
     rmSync(tokenPath, { force: true });
