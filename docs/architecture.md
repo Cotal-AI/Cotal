@@ -879,7 +879,8 @@ files to hand out, and revocation actually bites.
 - **Composition, not coupling:** `@cotal-ai/auth` self-registers a core `auth-provider`
   extension; the CLI resolves it generically (`bin/cotal.ts` is the one root that imports the
   package). Static and user auth coexist on one broker today (infra daemons stay on scoped static
-  creds); the cutover that kills static agent creds is the flip, later.
+  creds); user-auth spaces now refuse new static user-facing creds, while static-auth meshes keep
+  static creds by design.
 
 **Known limitations (Demo 1):**
 
