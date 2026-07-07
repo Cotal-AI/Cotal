@@ -37,6 +37,7 @@ import {
   readerDurable,
   DEV_OWNER,
   principalKey,
+  deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
@@ -401,10 +402,14 @@ export async function deprovisionAgent(opts: {
     timeout: 5_000,
   });
   try {
+    // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
+    // local owner — the SAME resolution the deprovisioner cred's permission pin used, so the delete
+    // names and the grant can't diverge.
+    const t = deprovisionTargetPrincipal(opts.targetId);
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(DEV_OWNER, opts.targetId));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(DEV_OWNER, opts.targetId));
-    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(DEV_OWNER, opts.targetId).key);
+    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor));
+    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor));
+    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key);
   } finally {
     await nc.drain();
   }

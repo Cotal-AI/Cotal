@@ -38,6 +38,9 @@ import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 export interface IdpSession {
   token: string;
   expiresAt: number;
+  /** The IdP subject this session proved at login (display + local owner derivation). Absent only
+   *  in caches written by older builds — consumers that need it fail loud naming `cotal login`. */
+  sub?: string;
 }
 
 /** What the human must be shown to approve the sign-in. */
@@ -279,6 +282,7 @@ export async function establishIdpSession(
   const sub = claims.sub;
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub — refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
+  session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
   saveIdpSession(opts.dir, opts.idpUrl, session);
   const label = [claims.email, claims.name, claims.preferred_username].find(
     (c): c is string => typeof c === "string" && c.length > 0,

@@ -1,4 +1,4 @@
-import type { Extension } from "./registry.js";
+import { registry, type Extension } from "./registry.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -37,6 +37,60 @@ export interface AuthProvider extends Extension {
    * other auth mode.
    */
   userCredentials(opts: { dir: string; space: string; actor: string }): Promise<{ bearer: string; sentinelCreds: string }>;
+  /**
+   * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
+   * offline from the login session + the space's local user-auth material (no IdP round trip).
+   * The spawn paths use it to answer "whose agents are these": a foreground/manifest spawn runs
+   * the agents under the OPERATOR's owner. MUST fail loud when not logged in (naming the exact
+   * `cotal login --idp …` line) or when the space has no user-auth material under `dir`.
+   */
+  ownerForLogin(opts: { dir: string; space: string }): Promise<string>;
+  /**
+   * SERVER side, agent lifecycle: author an agent grant for `(owner, actor)` in this space's
+   * ledger — the spawn path's half of "actors are server-ledger-authorized, never taken from
+   * connect payloads". Returns the ONE-TIME plaintext agent secret (persisted only as a hash;
+   * the caller delivers it to the agent process via a 0600 file and never sees it again) plus
+   * the sentinel creds the agent presents alongside its bearers. Upsert — re-granting an actor
+   * rotates its secret. MUST fail loud when the space has no user-auth material under `dir`.
+   */
+  grantAgent(opts: {
+    dir: string;
+    space: string;
+    owner: string;
+    actor: string;
+    scope: string[];
+    allowSubscribe: string[];
+    allowPublish: string[];
+    role?: string;
+    /** The spawning principal (`<owner>.<actor>` dot-form) — the grant's audit link. */
+    parent?: string;
+    label?: string;
+  }): Promise<{ actorToken: string; sentinelCreds: string }>;
+  /** Revoke an agent grant. False when there was nothing to revoke. New exchanges and new
+   *  connects die immediately (both boundaries read the ledger fresh); an already-live
+   *  connection dies at its bearer-bound JWT expiry (live eviction is a separate lever). */
+  revokeAgent(opts: { dir: string; owner: string; actor: string }): Promise<boolean>;
+  /**
+   * Registry name of the provider's self-registered {@link Command} that prints ONE fresh agent
+   * bearer to stdout and exits (flags: `--dir <state-dir> --space <space> --owner <o> --actor <a>
+   * --token-file <path>`). A long-lived agent endpoint execs it per refresh — the exchange
+   * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
+   * runtime only runs an argv and reads a line. */
+  readonly agentBearerCommand: string;
+}
+
+/** The ONE registered auth provider, or a thrown sentence naming the fix. More than one registered
+ *  is ambiguous and refuses just as loudly — there is no pick-the-first fallback. Lives in core so
+ *  every surface that resolves the provider generically (CLI, manager) shares one resolution. */
+export function resolveAuthProvider(): AuthProvider {
+  const providers = registry.all<AuthProvider>("auth-provider");
+  if (providers.length === 0)
+    throw new Error(
+      "no auth provider is registered in this build — user auth needs one (the `cotal` binary registers @cotal-ai/auth; a custom composition root must import an auth package)",
+    );
+  if (providers.length > 1)
+    throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) — cannot choose between them`);
+  return providers[0];
 }
 
 /** The provisioning input — deliberately NARROW (a capability boundary, not a convenience): the

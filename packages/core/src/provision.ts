@@ -29,6 +29,8 @@ import {
   assertValidChannel,
   channelInAllow,
   principalKey,
+  parsePrincipalKey,
+  deprovisionTargetPrincipal,
   principalTags,
   assertInboxConnId,
   DEV_OWNER,
@@ -383,6 +385,20 @@ export async function provisionAgent(
   identity: Identity,
   opts: ProvisionOpts = {},
 ): Promise<string> {
+  const allowSubscribe = await provisionAgentDurables(provisioner, principalOf(identity, opts.principal), opts);
+  return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
+}
+
+/** The DURABLE half of agent onboarding, principal-keyed and credential-agnostic: pre-create the
+ *  bind-only DM + DELIVER durables, record the read ACL, ensure the role TASK queue. The static
+ *  path ({@link provisionAgent}) follows it with a mint; the USER-MODE spawn path runs it alone —
+ *  a user agent's credential is its bearer (callout-minted per connect), never a static cred.
+ *  Returns the resolved read ACL so both callers scope from the same computed set. */
+export async function provisionAgentDurables(
+  provisioner: DurableProvisioner,
+  pr: { owner: string; actor: string },
+  opts: ProvisionOpts = {},
+): Promise<string[]> {
   const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
   // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
@@ -395,7 +411,6 @@ export async function provisionAgent(
       throw new Error(
         `provisionAgent: subscribe "${ch}" is not within allowSubscribe [${allowSubscribe.join(", ")}]`,
       );
-  const pr = principalOf(identity, opts.principal);
   await provisioner.provisionDmInbox(pr.owner, pr.actor);
   await provisioner.provisionDlvInbox(pr.owner, pr.actor);
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
@@ -407,8 +422,9 @@ export async function provisionAgent(
   // ACL is keyed by the agent's owner+actor principal dot-form (per-agent read authority).
   if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, allowSubscribe);
   if (opts.role) await provisioner.provisionTaskQueue(opts.role);
-  return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
+  return allowSubscribe;
 }
+
 
 /** Mint a user creds file for an agent {@link Identity} (its stable id+seed from
  *  {@link newIdentity}). The account signing key signs over ONLY the public key
@@ -469,9 +485,9 @@ export function permissionsFor(
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority (closure (ii))
   if (profile === "deprovisioner") {
-    // Ephemeral, TARGET-PINNED teardown (#159 B) — the counterpart to `provisioner`. Static/dev agents
-    // are keyed as local.<actor>, so the target id is the actor under DEV_OWNER until user-mode manager
-    // launch supplies a derived owner explicitly.
+    // Ephemeral, TARGET-PINNED teardown (#159 B) — the counterpart to `provisioner`. The target is a
+    // full principal dot-form for user-mode agents, or a bare static/dev actor id (keyed under
+    // DEV_OWNER) — see {@link deprovisionTargetPrincipal}.
     if (!opts.deprovisionTarget)
       throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget (the departed agent's actor id)");
     return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
@@ -654,6 +670,12 @@ export function permissionsFor(
     // The self-service subject above is granted to all regardless of capability.
     pubAllow.push(controlServiceSubject(space, manager, pr.owner, pr.actor));
   }
+  if (opts.capabilities?.includes("admin")) {
+    // Admin capability → the ADMIN control tier (cross-agent stop/attach, manifest launch). In user
+    // mode this arrives via the ledger row's scope (`cotal actor grant … --scope admin`) — the
+    // broker-enforced half of the tier split; the manager's per-op checks stay on top of it.
+    pubAllow.push(controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor));
+  }
   // Explicit create-deny (defense-in-depth over default-deny) on the two streams whose
   // create-time filter_subject is the attack surface — DM (private content) and TASK
   // (cross-role work-stealing). Covers the bare ephemeral form (no trailing token), the
@@ -683,12 +705,14 @@ export function permissionsFor(
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
   // Bounded control replies (closure (i)): the manager's lifecycle tiers now reply on
   // `ctl.<tier>.<id>.reply.>` (not the per-id `_INBOX`), so each agent must subscribe the reply subtree
-  // for the tiers it may call. Every agent can self-stop ⇒ always grant the self tier; the privileged
-  // tier's reply is granted only with the spawn capability (which also grants the request publish above).
-  // Admin is manager-only — agents never call it, so no admin reply sub.
+  // for the tiers it may call. Every agent can self-stop ⇒ always grant the self tier; the privileged /
+  // admin tiers' replies are granted only with the matching capability (which also grants the request
+  // publish above).
   const controlReplies = [`${controlServiceSubject(space, CONTROL_SELF_SERVICE, pr.owner, pr.actor)}.reply.>`];
   if (opts.capabilities?.includes("spawn"))
     controlReplies.push(`${controlServiceSubject(space, CONTROL_PRIVILEGED, pr.owner, pr.actor)}.reply.>`);
+  if (opts.capabilities?.includes("admin"))
+    controlReplies.push(`${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`);
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat] } };
 }
 
@@ -1089,14 +1113,15 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
  *  recoverable (re-provision T). */
 function deprovisionerPermissions(space: string, pr: MintPrincipal, targetActor: string): Record<string, unknown> {
   const DM = dmStream(space), DLV = dlvStream(space);
-  const target = principalKey(DEV_OWNER, targetActor);
+  const t = deprovisionTargetPrincipal(targetActor);
+  const target = principalKey(t.owner, t.actor);
   return {
     pub: {
       allow: [
         "$JS.API.INFO", // jetstreamManager bootstrap
         // Delete the target's two bind-only durables BY EXACT NAME — no `.>`, no cross-agent reach.
-        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(DEV_OWNER, targetActor)}`,
-        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(DEV_OWNER, targetActor)}`,
+        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(t.owner, t.actor)}`,
+        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(t.owner, t.actor)}`,
         // Purge the target's read-ACL row (own-target key only — the reader then treats it as an unknown
         // owner). `kvm.open` binds the pre-created bucket; the purge rides `$KV.<aclBucket>.<key>`.
         `$JS.API.STREAM.INFO.KV_${aclBucket(space)}`,

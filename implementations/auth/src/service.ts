@@ -41,11 +41,18 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { isReachable, type ParsedArgs } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir } from "@cotal-ai/workspace";
+import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, type IdpBridge } from "./idp.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
-import { ledgerAclResolver, ledgerAuthorizeConnect, ledgerAuthorizeGrant } from "./ledger.js";
+import {
+  AGENT_BEARER_TTL_SEC,
+  ledgerAclResolver,
+  ledgerAuthorizeAgentExchange,
+  ledgerAuthorizeConnect,
+  ledgerAuthorizeGrant,
+} from "./ledger.js";
 import {
   clearAuthServiceInfo,
   loadCalloutAuth,
@@ -136,7 +143,7 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps }));
+  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps, space, dir }));
   await new Promise<void>((resolvePort, reject) => {
     http.once("error", reject);
     http.listen(port, "127.0.0.1", () => resolvePort());
@@ -176,6 +183,9 @@ interface HandlerCtx {
   cap: string;
   failures: number[];
   badCaps: number[];
+  space: string;
+  /** The provider state dir — the AGENT grant type reads its ledger rows fresh per exchange. */
+  dir: string;
 }
 
 /** Route one HTTP request. Local-only surface: /jwks (public keys, cacheable), /exchange (IdP JWT →
@@ -220,10 +230,43 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
       if (ctx.failures.length >= FAILED_EXCHANGE_PER_MIN)
         return send(429, { error: "too many refused exchanges — wait a minute and retry" });
       const body = await readJsonBody(req);
-      const { idpToken, actor, ttlSec } = body as { idpToken?: unknown; actor?: unknown; ttlSec?: unknown };
+      const { idpToken, actor, actorToken, owner, ttlSec } = body as {
+        idpToken?: unknown;
+        actor?: unknown;
+        actorToken?: unknown;
+        owner?: unknown;
+        ttlSec?: unknown;
+      };
+      if (ttlSec !== undefined && typeof ttlSec !== "number") return send(400, { error: "ttlSec must be a number" });
+      // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
+      // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
+      // A request presenting both is malformed — refuse rather than pick.
+      if (idpToken !== undefined && actorToken !== undefined)
+        return send(400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
+      if (actorToken !== undefined) {
+        if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
+          return send(400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
+        try {
+          const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
+          const token = await ctx.issuer.issue({
+            owner,
+            space: ctx.space,
+            actor,
+            scope: grant.scope,
+            parent: grant.parent,
+            ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
+          });
+          const { exp } = decodeJwt(token);
+          return send(200, { token, owner, exp });
+        } catch (e) {
+          ctx.failures.push(Date.now());
+          const reason = e instanceof Error ? e.message : String(e);
+          console.error(`auth-service: refused an agent exchange: ${reason}`);
+          return send(401, { error: reason });
+        }
+      }
       if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
         return send(400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number }" });
-      if (ttlSec !== undefined && typeof ttlSec !== "number") return send(400, { error: "ttlSec must be a number" });
       try {
         const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec });
         return send(200, r);

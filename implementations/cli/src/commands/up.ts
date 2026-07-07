@@ -333,13 +333,29 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     process.exit(1);
   }
 
+  // USER-AUTH manifest: the agents run under the LOGGED-IN operator's owner, and the launch spec
+  // (consumed by the manager at boot) must carry it — so resolve it NOW. On a fresh mesh the
+  // derivation material doesn't exist yet; ensure it just-in-time (authSetup + prepareServer are
+  // idempotent ensure-* — the same contract the refresh-heal path already rides). Not logged in /
+  // no provider = the exact recovery sentence, before anything boots.
+  let owner: string | undefined;
+  if (userAuth) {
+    try {
+      mkdirSync(cotalPath("nats"), { recursive: true });
+      const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth);
+      owner = await resolveAuthProvider().ownerForLogin({ dir: setup.stateDir!, space: m.space });
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
   // The resolved launch spec is written FIRST so the ONE control-plane manager that comes up with
   // the broker (inside startMeshDetached) carries it. Exactly one manager serves a space (the
   // singleton lease): a second `supervise` started here for the launch would race the plain one for
   // the lease — the loser refuses, so either the agents never boot or the incumbent is orphaned
   // behind an overwritten pid file. The manager materializes each transient persona and mints creds
   // from the resolved policy — never re-reading a file for authority.
-  const specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, genRunId()));
+  const specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, genRunId(), owner));
   // A leftover detached manager (its broker is gone — the reachability check above proved nothing
   // lives at this address) would win the fresh mesh's lease and the launch manager would refuse.
   // Stop it, so the manager started below WITH the launch spec is THE manager.
@@ -358,7 +374,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
   // degraded control plane (announced above) means the agents are NOT coming up.
   if (controlPlane) {
-    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime}) — see .cotal/manager.log`));
+    // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
+    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} — see .cotal/manager.log`));
   } else {
     console.error(c.red(`✗ ${eff.agents.length} agent(s) NOT launched — the control plane did not come up (see above)`));
   }

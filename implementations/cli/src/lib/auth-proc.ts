@@ -8,7 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { registry, type AuthPrepared, type AuthProvider } from "@cotal-ai/core";
+import { type AuthPrepared } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
@@ -24,18 +24,9 @@ function alive(pid: number): boolean {
   }
 }
 
-/** The ONE registered auth provider, or a thrown sentence naming the fix. More than one registered
- *  is ambiguous and refuses just as loudly — there is no pick-the-first fallback. */
-export function resolveAuthProvider(): AuthProvider {
-  const providers = registry.all<AuthProvider>("auth-provider");
-  if (providers.length === 0)
-    throw new Error(
-      "no auth provider is registered in this build — user auth needs one (the `cotal` binary registers @cotal-ai/auth; a custom composition root must import an auth package)",
-    );
-  if (providers.length > 1)
-    throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) — cannot choose between them`);
-  return providers[0];
-}
+// Provider resolution now lives in core (the manager needs the identical resolution); re-exported
+// so existing CLI imports keep working.
+export { resolveAuthProvider } from "@cotal-ai/core";
 
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
 export function authServiceUp(space: string): boolean {

@@ -191,6 +191,13 @@ export function principalNameKey(owner: string, actor: string): string {
  *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
  *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
  *  subject builders (e.g. fan-out → `dinboxSubject`). */
+/** Resolve a deprovision target: a full principal dot-form (`u_….<actor>`, user-mode agents) or a
+ *  bare static/dev actor id (an nkey pub — never contains a dot), keyed under {@link DEV_OWNER}.
+ *  Shared by the deprovisioner permission pin and the teardown helper so they can't diverge. */
+export function deprovisionTargetPrincipal(target: string): { owner: string; actor: string } {
+  return parsePrincipalKey(target) ?? { owner: DEV_OWNER, actor: target };
+}
+
 export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
   if (typeof key !== "string") return null;
   const dot = key.indexOf(".");

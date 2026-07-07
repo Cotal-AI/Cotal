@@ -87,7 +87,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     if (target.mode === "user") {
       console.error(
         c.red(
-          `✗ interactive join is not yet supported on user-auth space "${space}" — sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`), have the operator grant your actor (\`cotal actor grant\`), then use \`cotal send\`/agent connects`,
+          `✗ interactive join is not yet supported on user-auth space "${space}" — sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`) and use \`cotal send\`, or run agents properly: \`cotal spawn <persona>\` (they get their own managed identity under you)`,
         ),
       );
       process.exit(1);

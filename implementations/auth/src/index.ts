@@ -74,14 +74,24 @@ export {
 } from "./store.js";
 export {
   actorLedgerDir,
-  findActor,
+  managedActorLedgerDir,
+  findInteractiveActor,
+  findManagedActor,
+  findActorUnified,
   grantActor,
+  grantManagedActor,
   ledgerAclResolver,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
+  ledgerAuthorizeAgentExchange,
   ledgerRowFilename,
   loadActorLedger,
   revokeActor,
+  revokeManagedActor,
+  newActorToken,
+  hashActorToken,
+  AGENT_BEARER_TTL_SEC,
+  type ActorKind,
   type ActorRow,
 } from "./ledger.js";
 export { runAuthService, JWKS_MAX_AGE_SEC } from "./service.js";

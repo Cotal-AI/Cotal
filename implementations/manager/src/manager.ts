@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -14,9 +15,13 @@ import {
   mintCreds,
   mkSecretDir,
   newIdentity,
+  parsePrincipalKey,
   parseShareSelection,
+  principalKey,
   provisionAgent,
+  provisionAgentDurables,
   registry,
+  resolveAuthProvider,
   saveAgentFile,
   writeSecretFile,
   subjectMatches,
@@ -24,7 +29,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { authDir, defaultAgentType, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, resolveOnPath, userAuthStateDir } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -57,6 +62,18 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+
+/** Run the agent's bearer argv once, pre-launch — the end-to-end auth preflight (state dir, daemon,
+ *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
+ *  verbatim as the spawn refusal. */
+function execBearerPreflight(argv: string[]): Promise<void> {
+  return new Promise((res, rej) => {
+    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
+      if (err) return rej(new Error(stderr.trim() || err.message));
+      res();
+    });
+  });
+}
 
 /** Reject `p` with `Error(msg)` if it hasn't settled within `ms`; clears the timer when `p` settles so it
  *  never keeps the loop alive. Used to bound the detached deprovision so its fail-loud log is guaranteed. */
@@ -98,6 +115,10 @@ export interface StartAgentOpts {
   identity?: string;
   /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
   model?: string;
+  /** USER-MESH manifest launches only: the derived owner (`u_…`) from the launch spec (the
+   *  logged-in operator who applied it). Imperative spawns resolve the owner from the ctl
+   *  CALLER's principal instead — never from a payload field. */
+  owner?: string;
   /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
@@ -133,10 +154,15 @@ interface ManagedAgent {
   name: string;
   role?: string;
   agent: string;
-  /** Stable id (nkey public key) the manager assigned this agent at spawn. */
+  /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
+   *  the owner+actor principal dot-form (user mode). */
   id: string;
-  /** Private nkey seed, kept so a later step can mint matching creds for this id. */
-  seed: string;
+  /** Private nkey seed, kept so a later step can mint matching creds for this id. Static auth
+   *  only — a user-mode agent has no static identity (its credential is its bearer). */
+  seed?: string;
+  /** Set for a USER-MODE agent: its derived owner. Marks the slot for user-mode teardown (ledger
+   *  revoke + token/sentinel/health file removal) and the auth-health read in {@link list}. */
+  userOwner?: string;
   /** Authenticated id of the peer that requested this spawn (the control-plane `req.from.id`),
    *  or the manager's own id for roster/pre-spawn. Non-forgeable — set by `handle()`. The spawner
    *  ledger (P4b) keys own-children despawn + reap-on-parent-exit off this. */
@@ -178,6 +204,9 @@ export class Manager {
    *  field so a test can shorten it (the join/exit signals are event-driven; only the backstop is timed).
    *  Production leaves it at the constant. */
   private readinessTimeoutMs = READINESS_TIMEOUT_MS;
+  /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
+   *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
+  private userMode = false;
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
@@ -211,6 +240,20 @@ export class Manager {
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns.
     this.auth = loadSpaceAuth(authDir(this.workspaceRoot));
+    // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
+    // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
+    // take the static self-mint branch. A marker/registry disagreement is a refused start with the
+    // repair, not a guess.
+    this.userMode = existsSync(userAuthStateDir(this.workspaceRoot, this.space));
+    const recorded = loadMeshes().find((m) => m.space === this.space);
+    if (recorded && (recorded.mode === "user") !== this.userMode)
+      throw new Error(
+        `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) — \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
+      );
+    if (this.userMode && !this.auth)
+      throw new Error(
+        `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} — the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
+      );
     let creds: string | undefined;
     let id: string | undefined;
     if (this.auth) {
@@ -445,6 +488,104 @@ export class Manager {
     }
   }
 
+  /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
+   *  OWNER (ctl caller's principal, or the manifest's stamped owner — never a payload field),
+   *  pre-create the principal-keyed durables + ACL row on the ephemeral provisioner, author the
+   *  ledger grant (the upsert ROTATES the per-agent secret on every start — a non-running agent
+   *  never holds a standing mint secret), materialize the 0600 secret/sentinel files, and
+   *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
+   *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
+   *  rolled back. */
+  private async provisionUserAgent(
+    name: string,
+    opts: {
+      spawner?: string;
+      specOwner?: string;
+      subscribe?: string[];
+      allowSubscribe: string[];
+      allowPublish?: string[];
+      role?: string;
+      capabilities?: string[];
+      label: string;
+    },
+  ): Promise<{ owner: string; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+    const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
+    const owner = opts.specOwner ?? (spawnerPr && spawnerPr.owner.startsWith("u_") ? spawnerPr.owner : undefined);
+    if (!owner)
+      return {
+        error: `user-auth space "${this.space}": no owner for this spawn — call it from a user-mode session (\`cotal login\` then \`cotal spawn\`), or apply a manifest as a logged-in operator`,
+      };
+    let provider;
+    try {
+      provider = resolveAuthProvider();
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+    const dir = userAuthStateDir(this.workspaceRoot, this.space);
+    // The agent's capability scope rides its ledger row (act.scope in every bearer) — same
+    // vocabulary as static capabilities; the broker maps them to the ctl tiers.
+    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin");
+    const credsDir = join(authDir(this.workspaceRoot), "creds");
+    const tokenPath = join(credsDir, `${name}.actor-token`);
+    const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
+    const healthPath = join(credsDir, `${name}.auth-health.json`);
+    try {
+      // Durables + ACL row, principal-keyed — the same onboarding as static agents minus the mint
+      // (a user agent's credential is its bearer, minted by the callout per connect).
+      await this.withProvisioner((prov) =>
+        provisionAgentDurables(prov, { owner, actor: name }, {
+          subscribe: opts.subscribe,
+          allowSubscribe: opts.allowSubscribe,
+          role: opts.role,
+        }),
+      );
+      const grant = await provider.grantAgent({
+        dir,
+        space: this.space,
+        owner,
+        actor: name,
+        scope,
+        allowSubscribe: opts.allowSubscribe,
+        allowPublish: opts.allowPublish ?? [],
+        role: opts.role,
+        parent: spawnerPr ? opts.spawner : undefined,
+        label: opts.label,
+      });
+      mkSecretDir(credsDir);
+      writeSecretFile(tokenPath, grant.actorToken);
+      writeSecretFile(sentinelPath, grant.sentinelCreds);
+      rmSync(healthPath, { force: true }); // a fresh start opens a fresh health window
+      const bearerCmd = [
+        // The manager's own invocation prefix (node + loader flags + the cotal entry) — the agent
+        // process execs this argv for every bearer, so it must resolve from ANY cwd. Correct
+        // whenever the manager runs under a real `cotal` entry (supervise/up); a test constructing
+        // Manager directly never reaches this branch (user meshes boot through the CLI).
+        process.execPath,
+        ...process.execArgv,
+        process.argv[1],
+        provider.agentBearerCommand,
+        "--dir", dir,
+        "--space", this.space,
+        "--owner", owner,
+        "--actor", name,
+        "--token-file", tokenPath,
+        "--health-file", healthPath,
+      ];
+      await execBearerPreflight(bearerCmd);
+      return { owner, launch: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd } };
+    } catch (e) {
+      // Roll back everything this attempt materialized — a refused spawn must leave no standing
+      // secret, no ledger row, no durable footprint.
+      await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+      rmSync(tokenPath, { force: true });
+      rmSync(sentinelPath, { force: true });
+      rmSync(healthPath, { force: true });
+      void this.deprovision({ id: principalKey(owner, name).key, name, userOwner: owner }).catch((err) =>
+        console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
+    }
+  }
+
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
    *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
    *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
@@ -474,12 +615,30 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; userOwner?: string }): Promise<void> {
     if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
     // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
     rmSync(join(authDir(this.workspaceRoot), "creds", `${a.name}.creds`), { force: true });
+    if (a.userOwner) {
+      // USER MODE: this teardown IS revocation, not just footprint reduction — the ledger row is
+      // the agent's standing mint authority, so delete it (next exchange refused, next connect
+      // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
+      // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
+      const credsDir = join(authDir(this.workspaceRoot), "creds");
+      for (const f of [`${a.name}.actor-token`, `${a.name}.sentinel.creds`, `${a.name}.auth-health.json`])
+        rmSync(join(credsDir, f), { force: true });
+      try {
+        await resolveAuthProvider().revokeAgent({
+          dir: userAuthStateDir(this.workspaceRoot, this.space),
+          owner: a.userOwner,
+          actor: a.name,
+        });
+      } catch (e) {
+        console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
+      }
+    }
     const creds = await mintCreds(this.auth, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
@@ -766,7 +925,27 @@ export class Manager {
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
       let credsPath: string | undefined;
-      if (this.auth) {
+      let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
+      let userOwner: string | undefined;
+      if (this.userMode) {
+        const prep = await this.provisionUserAgent(name, {
+          spawner,
+          specOwner: opts.owner,
+          subscribe,
+          allowSubscribe,
+          allowPublish,
+          role,
+          capabilities,
+          label: ref,
+        });
+        if ("error" in prep) {
+          this.reserved.delete(name);
+          return { ok: false, error: prep.error };
+        }
+        userLaunch = prep.launch;
+        userOwner = prep.owner;
+        provisioned = { id: principalKey(prep.owner, name).key, name };
+      } else if (this.auth) {
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
         // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
@@ -801,8 +980,11 @@ export class Manager {
         space: this.space,
         name,
         role,
-        id: identity.id,
+        // User mode: the principal IS the identity (the endpoint derives card.id from owner+actor);
+        // no nkey id, no static creds.
+        id: userLaunch ? undefined : identity.id,
         creds: credsPath,
+        userAuth: userLaunch,
         servers: this.servers,
         configPath,
         model,
@@ -831,8 +1013,8 @@ export class Manager {
         name,
         role,
         agent,
-        id: identity.id,
-        seed: identity.seed,
+        id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
+        ...(userLaunch ? { userOwner } : { seed: identity.seed }),
         spawner: spawner ?? this.ep.ref().id,
         startedAt: Date.now(),
         handle,
@@ -1110,18 +1292,29 @@ export class Manager {
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */
   private list() {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
-    return [...this.agents.values()].map((a) => ({
-      name: a.name,
-      // The spawned agent's nkey — lets an operator tool (e.g. `cotal down -f`) match a ledger entry
-      // by name AND id before stopping, so it never stops a same-named foreign agent.
-      id: a.id,
-      role: a.role,
-      agent: a.agent,
-      space: this.space,
-      mode: a.handle.kind,
-      status: a.handle.status(),
-      uptimeMs: Date.now() - a.startedAt,
-      mesh: roster.get(a.name)?.status ?? "absent",
-    }));
+    return [...this.agents.values()].map((a) => {
+      // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
+      // bearer command writes each attempt's outcome to the health file, and `ps` renders it
+      // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
+      // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
+      const health = a.userOwner
+        ? agentAuthState(join(authDir(this.workspaceRoot), "creds", `${a.name}.auth-health.json`))
+        : undefined;
+      return {
+        name: a.name,
+        // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
+        // `cotal down -f`) match a ledger entry by name AND id before stopping, so it never stops a
+        // same-named foreign agent.
+        id: a.id,
+        role: a.role,
+        agent: a.agent,
+        space: this.space,
+        mode: a.handle.kind,
+        status: a.handle.status(),
+        uptimeMs: Date.now() - a.startedAt,
+        mesh: roster.get(a.name)?.status ?? "absent",
+        ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
+      };
+    });
   }
 }

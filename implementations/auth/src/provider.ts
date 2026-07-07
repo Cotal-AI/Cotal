@@ -16,6 +16,8 @@
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider } from "@cotal-ai/core";
 import { assertUserAuthInfo, homeCotalDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { fetchIdpJwt, requireIdpSession } from "./login.js";
+import { deriveOwnerForIdpSubject } from "./derive.js";
+import { grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import {
   ensureCalloutAuth,
   ensureIssuer,
@@ -23,6 +25,7 @@ import {
   ensurePinnedIdp,
   loadAuthServiceInfo,
   loadCalloutAuth,
+  loadOwnerSecret,
   loadPinnedIdp,
   saveServiceKeys,
 } from "./store.js";
@@ -139,6 +142,48 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error(`the auth service's exchange returned no token — its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
   },
+
+  /** WHO the local login is, as this space's derived owner — offline (cached session sub + the
+   *  space's owner secret; no IdP round trip). The spawn paths' "whose agents are these" answer. */
+  async ownerForLogin({ dir, space }) {
+    const idp = loadPinnedIdp(dir);
+    const secret = loadOwnerSecret(dir);
+    if (!idp || !secret)
+      throw new Error(`space "${space}" has no user-auth material on this machine — spawns for a user-auth space run where \`cotal up --user-auth\` provisioned it`);
+    const session = requireIdpSession(homeCotalDir(), idp.url);
+    if (!session.sub)
+      throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) — re-run \`cotal login --idp ${idp.url}\``);
+    return deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
+  },
+
+  /** Spawn-path grant authorship: one atomic MANAGED-AGENT row (its own row space — never
+   *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
+   *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
+   *  its agent is respawned. */
+  async grantAgent({ dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label }) {
+    const callout = loadCalloutAuth(dir);
+    if (!callout)
+      throw new Error(`space "${space}" has no user-auth material under ${dir} — enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
+    const { actorToken, tokenHash } = newActorToken();
+    grantManagedActor(dir, {
+      owner,
+      actor,
+      scope,
+      allowSubscribe,
+      allowPublish,
+      ...(role ? { role } : {}),
+      ...(parent ? { parent } : {}),
+      ...(label ? { label } : {}),
+      tokenHash,
+    });
+    return { actorToken, sentinelCreds: callout.sentinelCreds };
+  },
+
+  async revokeAgent({ dir, owner, actor }) {
+    return revokeManagedActor(dir, owner, actor);
+  },
+
+  agentBearerCommand: "agent-bearer",
 };
 
 registry.register(cotalAuthProvider);

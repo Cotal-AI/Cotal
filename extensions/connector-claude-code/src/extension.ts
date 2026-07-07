@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel } from "@cotal-ai/connector-core";
+import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -51,6 +51,7 @@ export const claudeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
       ...aclEnv(opts),
+      ...userAuthEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the

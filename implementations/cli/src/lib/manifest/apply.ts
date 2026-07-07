@@ -52,12 +52,14 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
   };
 }
 
-/** Build the launch spec the manager boots from. */
-export function buildLaunchSpec(prepared: PreparedManifest, runId: string): MeshLaunchSpec {
+/** Build the launch spec the manager boots from. `owner` (user-auth meshes) is the logged-in
+ *  operator every launched agent runs under — resolved by the caller at apply time. */
+export function buildLaunchSpec(prepared: PreparedManifest, runId: string, owner?: string): MeshLaunchSpec {
   return {
     apiVersion: "cotal-launch/v1",
     space: prepared.manifest.space,
     runId,
+    ...(owner ? { owner } : {}),
     agents: prepared.agents.map(toLaunchAgent),
   };
 }

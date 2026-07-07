@@ -2,13 +2,18 @@ import {
   CotalEndpoint,
   DEFAULT_SPACE,
   CONTROL_PRIVILEGED,
+  CONTROL_ADMIN,
   type ControlReply,
   type ControlTier,
   type Profile,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { connectOrExit, refuseUserModeOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, type ConnectFlags } from "./connect.js";
+
+/** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
+ *  (spread into the endpoint verbatim). */
+export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string };
 
 /** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
  *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
@@ -31,14 +36,15 @@ export const START_TIMEOUT_MS = 40_000;
 export async function resolveControlTarget(
   flags: ConnectFlags,
   profile: Profile,
-): Promise<{ space: string; server: string; creds?: string }> {
+): Promise<{ space: string; server: string; auth: ControlAuth }> {
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? loadSpaceAuth(authDir(findCotalRoot()))?.space ?? DEFAULT_SPACE }
     : flags;
+  // USER MODE rides through: the control call connects with the operator's bearer (actor `cli`) and
+  // publishes on its OWN ctl principal subject — the broker grants that publish only when the cli
+  // actor's ledger scope carries the matching capability (`spawn` → privileged, `admin` → admin).
   const conn = await connectOrExit(withSpace, profile);
-  refuseUserModeOrExit(conn, "manager control (spawn --detach / ps / stop / attach)");
-  const { space, server, creds } = conn;
-  return { space, server, creds };
+  return { space: conn.space, server: conn.server, auth: endpointAuth(conn) };
 }
 
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
@@ -53,14 +59,14 @@ export async function askManager(
   server: string,
   op: string,
   args?: Record<string, unknown>,
-  creds?: string,
+  auth: ControlAuth = {},
   tier: ControlTier = CONTROL_PRIVILEGED,
   timeoutMs?: number,
 ): Promise<ControlReply> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...auth,
     channels: [],
     consume: false, // request/reply only — binds no consumers (and under auth has no pre-created DM durable)
     registerPresence: false,
@@ -72,7 +78,12 @@ export async function askManager(
   try {
     return await ep.requestControl(tier, { op, args }, timeoutMs);
   } catch (e) {
-    return { ok: false, error: `no manager reachable (${(e as Error).message})` };
+    // A user-mode caller whose cli actor lacks the tier's scope gets a broker publish denial (the
+    // red endpoint error above) and then this timeout — name the grant, not just the silence.
+    const scopeHint = auth.bearer
+      ? ` — on a user-auth mesh this op needs your cli actor granted scope "${tier === CONTROL_ADMIN ? "admin" : "spawn"}": \`cotal actor grant cli --sub <your IdP subject> --scope ${tier === CONTROL_ADMIN ? "admin" : "spawn"}\``
+      : "";
+    return { ok: false, error: `no manager reachable (${(e as Error).message})${scopeHint}` };
   } finally {
     await ep.stop();
   }

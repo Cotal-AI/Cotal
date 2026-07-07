@@ -123,7 +123,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
         continue;
       }
-      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath));
+      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner));
       if (!reply.ok) {
         console.error(c.red(`✗ ${la.name}: ${reply.error}`));
         continue;

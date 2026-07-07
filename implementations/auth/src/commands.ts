@@ -5,8 +5,9 @@
  * (`~/.cotal`, `COTAL_HOME`-overridable) — per human, per machine, NOT per checkout: you are
  * logged in as YOU across every repo on this box.
  */
+import { readFileSync, writeFileSync } from "node:fs";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import { findCotalRoot, homeCotalDir, resolveSpace, userAuthStateDir } from "@cotal-ai/workspace";
+import { findCotalRoot, homeCotalDir, resolveSpace, userAuthStateDir, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -15,9 +16,9 @@ import {
   revokeIdpSession,
 } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { grantActor, loadActorLedger, revokeActor } from "./ledger.js";
+import { findManagedActor, grantActor, loadActorLedger, revokeActor } from "./ledger.js";
 import { runAuthService } from "./service.js";
-import { loadOwnerSecret, loadPinnedIdp } from "./store.js";
+import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
@@ -136,7 +137,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
       }
       for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))
         console.log(
-          `${r.owner}.${r.actor}${r.label ? `  (${r.label})` : ""}  role=${r.role ?? "-"}  scope=[${r.scope.join(",")}]  read=[${r.allowSubscribe.join(",")}]  post=[${r.allowPublish.join(",")}]`,
+          `${r.owner}.${r.actor}${r.label ? `  (${r.label})` : ""}  kind=${r.kind}  role=${r.role ?? "-"}  scope=[${r.scope.join(",")}]  read=[${r.allowSubscribe.join(",")}]  post=[${r.allowPublish.join(",")}]`,
         );
       return;
     }
@@ -160,14 +161,80 @@ async function runActor(args: ParsedArgs): Promise<void> {
       if (!actor) throw new Error("usage: cotal actor revoke <actor> --sub <IdP subject>|--owner <u_…>");
       const owner = resolveGrantOwner(dir, values);
       if (!revokeActor(dir, owner, actor)) {
+        if (findManagedActor(dir, owner, actor))
+          throw new Error(`${owner}.${actor} is a managed agent — its grant lives with its process: stop/despawn it (\`cotal stop --name ${actor}\`) and the grant dies with it`);
         console.log(`no grant for ${owner}.${actor} — nothing to revoke`);
         return;
       }
-      console.log(`✓ revoked ${owner}.${actor} — new logins/connects are denied now; a live connection ends at its bearer expiry`);
+      // Split-case honesty: the interactive deny is immediate at both boundaries; only the LIVE
+      // connection's end rides the bearer's own expiry (a human bearer can carry up to the IdP
+      // session cap — not the agents' short TTL).
+      console.log(`✓ revoked ${owner}.${actor} — new exchanges and new connects are denied now; an already-open connection ends at its current bearer's expiry`);
       return;
     }
     throw new Error("usage: cotal actor <grant <actor> | revoke <actor> | list>");
   });
+}
+
+/** `cotal agent-bearer` — the ONE thing a spawned user-mode agent execs to refresh its auth: read
+ *  its spawn-time secret from the 0600 token file, exchange it at the space's auth service (agent
+ *  grant type), print the fresh bearer to STDOUT, exit. Machine-facing: stdout carries the bearer
+ *  and NOTHING else; every failure is a stderr sentence + exit 1 (the endpoint surfaces it as a
+ *  loud "error" event and retries). The secret rides a file, never argv (ps-visible) or env. */
+async function runAgentBearer(args: ParsedArgs): Promise<void> {
+  const v = args.values as {
+    dir?: string; space?: string; owner?: string; actor?: string;
+    "token-file"?: string; "health-file"?: string;
+  };
+  const { dir, space, owner, actor } = v;
+  const tokenFile = v["token-file"];
+  if (!dir || !space || !owner || !actor || !tokenFile)
+    throw new Error("usage: cotal agent-bearer --dir <state-dir> --space <s> --owner <u_…> --actor <a> --token-file <path> [--health-file <path>]");
+  // Every attempt's outcome lands in the manager-composed health file (core's AgentAuthHealth) —
+  // the `ps` window into a detached agent's bearer life. Best-effort: health reporting must never
+  // turn a successful exchange into a failure.
+  const health = (state: "ok" | "failed", reason?: string) => {
+    const path = v["health-file"];
+    if (!path) return;
+    try {
+      writeFileSync(path, JSON.stringify({ state, at: new Date().toISOString(), ...(reason ? { reason } : {}) } satisfies AgentAuthHealth));
+    } catch { /* the exchange outcome still stands */ }
+  };
+  try {
+    let actorToken: string;
+    try {
+      actorToken = readFileSync(tokenFile, "utf8").trim();
+    } catch (e) {
+      throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) — respawn this agent to re-provision it`);
+    }
+    const info = loadAuthServiceInfo(dir);
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    if (!info || !alive(info.pid))
+      throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running — restart it with \`cotal up\``);
+    let res: Response;
+    try {
+      res = await fetch(`${info.url}/exchange`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+        body: JSON.stringify({ owner, actor, actorToken }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (e) {
+      throw new Error(`agent-bearer: the user-auth service did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) — restart it with \`cotal up\``);
+    }
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
+    }
+    const out = (await res.json().catch(() => ({}))) as { token?: string };
+    if (typeof out.token !== "string" || !out.token)
+      throw new Error("agent-bearer: the auth service's exchange returned no token — its build may be stale; restart it with `cotal up`");
+    health("ok");
+    process.stdout.write(`${out.token}\n`);
+  } catch (e) {
+    health("failed", e instanceof Error ? e.message : String(e));
+    throw e;
+  }
 }
 
 const authCommands: Command[] = [
@@ -202,6 +269,22 @@ const authCommands: Command[] = [
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link" },
     ],
     run: runActor,
+  },
+  {
+    kind: "command",
+    name: "agent-bearer",
+    group: "Manager",
+    summary: "print one fresh agent bearer for a spawned user-mode agent (machine-facing; exec'd by agent endpoints)",
+    usage: "agent-bearer --dir <state-dir> --space <s> --owner <u_…> --actor <a> --token-file <path>",
+    flags: [
+      { name: "dir", type: "string", value: "<state-dir>", description: "the space's user-auth state dir" },
+      { name: "space", type: "string", value: "<s>", description: "the space the bearer is scoped to" },
+      { name: "owner", type: "string", value: "<u_…>", description: "the agent's owner token" },
+      { name: "actor", type: "string", value: "<a>", description: "the agent's actor token" },
+      { name: "token-file", type: "string", value: "<path>", description: "0600 file holding the spawn-time agent secret" },
+      { name: "health-file", type: "string", value: "<path>", description: "write each attempt's outcome here (read by the manager's ps)" },
+    ],
+    run: (args) => legibly(() => runAgentBearer(args)),
   },
   {
     kind: "command",
