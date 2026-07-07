@@ -101,6 +101,14 @@ try {
 
   const fixed = await runDoctor({ fix: true });
   check("--fix ends healthy (exit 0)", fixed.code === undefined && fixed.out.includes("auth: healthy"), `${fixed.code} ${fixed.out.slice(-300)}`);
+  // The audit line must not contradict itself: files WERE re-signed, so a record without an
+  // explicit daemon adoption renders as "not requested" (backstop applies), never "nothing
+  // re-signed" (the slice-6 UX-review catch).
+  check(
+    "--fix renewal record says adoption was not requested, not 'nothing re-signed'",
+    fixed.out.includes("adoption not requested") && !fixed.out.includes("nothing re-signed"),
+    fixed.out,
+  );
   const dlvAfter = readFileSync(join(root, ".cotal", "delivery.creds"), "utf8");
   const rwAfter = readFileSync(join(root, ".cotal", "membership-rw.creds"), "utf8");
   check("--fix re-signed delivery for the SAME nkey (identity pin)", idFromCreds(dlvAfter) === dlvId.id);

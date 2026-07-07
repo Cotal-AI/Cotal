@@ -128,7 +128,8 @@ const csv = (s: string | undefined, dflt: string[]): string[] =>
  *  before this runs, so a missing daemon/signer/registry only widens the end back to the bearer's
  *  own expiry — reported, never silent, and never a reason to fail the revoke. */
 async function evictRevokedPrincipal(space: string, principal: string): Promise<string> {
-  const fallback = (why: string) => `live-connection eviction skipped (${why}) — an already-open connection ends at its current bearer's expiry`;
+  const fallback = (why: string) =>
+    `live-connection eviction skipped (${why}) — deny-new is committed and the revoke cannot be re-run; the already-open connection ends at its current bearer's expiry. To evict live connections at revoke time, run \`cotal actor revoke\` from the mesh root (local signer + registry).`;
   const root = findCotalRoot();
   const auth = loadSpaceAuth(authDir(root));
   if (!auth) return fallback("no local signer here");

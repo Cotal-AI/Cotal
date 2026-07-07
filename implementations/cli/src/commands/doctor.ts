@@ -191,7 +191,9 @@ function renderRenewalRecord(root: string): void {
   const resigned = rec.results.filter((r) => r.ok).map((r) => r.file);
   const failed = rec.results.filter((r) => !r.ok && !r.skipped);
   const adoption = rec.adoption === undefined
-    ? c.dim("adoption: n/a (nothing re-signed)")
+    ? resigned.length
+      ? c.yellow("daemon adoption not requested by this pass — daemons adopt via the 75% re-read backstop or the manager's next renewal pass")
+      : c.dim("adoption: n/a (nothing re-signed)")
     : rec.adoption.ok
       ? c.green("daemon adopted ✓")
       : c.yellow(`daemon adoption pending — ${rec.adoption.error ?? "unknown"}`);
