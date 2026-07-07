@@ -19,6 +19,7 @@ import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
+import { status, statusFlags } from "./commands/status.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -105,6 +106,14 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "list the running meshes (a `*` marks the `current` default a bare spawn joins)",
     run: meshes,
+  },
+  {
+    kind: "command",
+    name: "status",
+    group: "Mesh",
+    summary: "detailed read-only status for setup, local processes, recorded meshes, and the selected live mesh",
+    flags: statusFlags,
+    run: status,
   },
   {
     kind: "command",
@@ -306,9 +315,8 @@ const baseCommands: Command[] = [
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
     run: console_,
   },
-  // `web` (dashboard) and `demo` (trace generator) moved out to the `cotal-web` and
-  // `@cotal-ai/demo` extension packages (stage 4) — installed via `cotal ext add`, they
-  // self-register here and appear in this same surface.
+  // `web` (dashboard) moved out to the `cotal-web` extension package (stage 4) — installed via
+  // `cotal ext add`, it self-registers here and appears in this same surface.
 ];
 
 registry.register(...baseCommands);

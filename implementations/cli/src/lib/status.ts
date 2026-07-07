@@ -1,13 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { resolveNatsServer } from "./nats-bin.js";
 
-// Moved into `@cotal-ai/workspace` (stage 4, shared with @cotal-ai/demo); re-exported for the
-// CLI's many importers.
+// Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
 export { resolveSpace } from "@cotal-ai/workspace";
 
 export interface MeshStatus {
@@ -76,8 +75,24 @@ export async function machineStatus(): Promise<MachineStatus> {
 }
 
 export function onPath(bin: string): boolean {
-  const r = spawnSync(bin, ["--version"], { stdio: "ignore" });
-  return !r.error && r.status === 0;
+  const exts = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
+    : [""];
+  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    for (const ext of exts) {
+      const name = process.platform === "win32" && ext && !bin.toUpperCase().endsWith(ext.toUpperCase())
+        ? `${bin}${ext}`
+        : bin;
+      const candidate = join(dir, name);
+      try {
+        accessSync(candidate, constants.X_OK);
+        return true;
+      } catch {
+        /* try the next PATH entry */
+      }
+    }
+  }
+  return false;
 }
 
 function claudePluginInstalled(): boolean {

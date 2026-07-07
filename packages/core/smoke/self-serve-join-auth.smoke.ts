@@ -45,7 +45,7 @@ import {
 // that doesn't await the child's exit leaks the broker, and the next run collides with the squatter
 // (the "Authorization Violation" contamination reviewers hit). The mid-test reconnect restart reuses
 // THIS port, so it too must await the old process's exit before respawning, or it races the dying one.
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = 12000 + Math.floor(Math.random() * 8000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promise<boolean> => {

@@ -37,12 +37,13 @@ happens to be on the mesh.
 **Two commands:**
 
 ```
-cotal setup      # one-time: installs the plugin, seeds personas — launches nothing
+cotal setup      # one-time: installs the plugin, seeds one agent — launches nothing
 cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
 `cotal setup` configures your machine — it installs the cotal plugin (so the repo's Claude
-sessions get the `cotal_*` tools) and seeds the demo personas — and launches nothing. `cotal up`
+sessions get the `cotal_*` tools) and seeds one `default` persona (add the guided david/sven/me
+team with `cotal setup --demo`) — and launches nothing. `cotal up`
 then brings up the whole local stack: the broker, the delivery daemon, and a detached manager, so
 `cotal spawn --detach` / `cotal_spawn` work right away. Use `cotal_persona` to mint a teammate,
 `cotal_spawn` to bring it online, and `cotal_despawn` to tear it down. Re-running either is
@@ -50,7 +51,7 @@ idempotent.
 
 Under the hood these are the existing pieces, so you can also run them by hand:
 
-- `cotal setup` (one-time plugin install + persona seed)
+- `cotal setup` (one-time plugin install + one-agent seed; `--demo` adds the guided team)
 - `cotal up` (broker + delivery daemon + manager) — add `--open` for an unauthenticated dev mesh
 - `cotal supervise --runtime cmux --space <s>` (a manager with each teammate in its own cmux tab; drop `--runtime` for the default pty runtime)
 - `cotal spawn <name> --space <s>` (a foreground Claude on the mesh; a bare name with no

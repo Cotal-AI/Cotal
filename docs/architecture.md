@@ -184,8 +184,8 @@ package as a **peerDependency** — core is mandatory, and each declared peer is
 binary's own copy at add time (one registry singleton; no drifting second copies; npm never
 resolves the peers itself) — and a name collision — with a built-in or with another installed
 extension — fails the add; built-ins always win. The mechanism is dogfooded by the repo's own
-`cotal-web` (browser dashboard) and `@cotal-ai/demo` (trace generator) packages. Moving or reinstalling the binary (e.g. a Node
-version switch) can strand the prefix's core link: every such path fails **loud** at dispatch
+`cotal-web` browser dashboard package. Moving or reinstalling the binary (e.g. a Node version
+switch) can strand the prefix's core link: every such path fails **loud** at dispatch
 with a `cotal ext add` re-add prescription, never a silently missing command.
 Library composition roots (examples) are unaffected: explicit imports stay the model there.
 
