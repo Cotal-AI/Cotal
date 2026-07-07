@@ -34,6 +34,21 @@ export function idFromCreds(creds: string): string {
   return identityFromCreds(creds).id;
 }
 
+/** The decoded (UNVERIFIED) claims of a creds file's user JWT — shared parse for every local
+ *  inspector (credential health, renewal scheduling, identity checks). Unverified is correct here:
+ *  the broker is the enforcement boundary; local readers only need the claims to schedule and
+ *  diagnose. Throws on a structurally-unusable file (no JWT block / undecodable payload). */
+export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: number; name?: string } {
+  const jwtM = creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/);
+  const payload = jwtM?.[1].trim().split(".")[1];
+  if (!payload) throw new Error("creds: no NATS user JWT block found");
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; iat?: number; exp?: number; name?: string };
+  } catch {
+    throw new Error("creds: undecodable user JWT payload");
+  }
+}
+
 /** The full identity (id + seed) carried by a creds file — what a standing-renewal REMINTER needs:
  *  re-signing a fresh JWT for the file's EXISTING nkey (never a new one) is what lets the renewed
  *  cred pass the endpoint's identity pin, so renewal can never silently swap who a daemon is. Same

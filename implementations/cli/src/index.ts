@@ -20,6 +20,7 @@ import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
+import { doctor, doctorFlags } from "./commands/doctor.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -114,6 +115,15 @@ const baseCommands: Command[] = [
     summary: "detailed read-only status for setup, local processes, recorded meshes, and the selected live mesh",
     flags: statusFlags,
     run: status,
+  },
+  {
+    kind: "command",
+    name: "doctor",
+    group: "Mesh",
+    summary: "credential-health diagnosis + repair — `doctor auth [--fix]` renders every managed cred (healthy/near-expiry/expired) and ends in `healthy` or the exact next command",
+    positionals: "auth",
+    flags: doctorFlags,
+    run: doctor,
   },
   {
     kind: "command",
