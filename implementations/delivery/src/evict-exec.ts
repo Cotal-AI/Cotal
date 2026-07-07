@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   evictDeniedPrincipalWithCreds,
+  isPrincipalOwnerToken,
   parsePrincipalKey,
   type EvictionResult,
 } from "@cotal-ai/core";
@@ -17,9 +18,14 @@ import { findCotalRoot } from "@cotal-ai/workspace";
  */
 export async function executeEviction(server: string, principal: string): Promise<EvictionResult> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
-  // but the FILTER must be a well-formed owner.actor key or a typo silently evicts nothing.
-  if (!parsePrincipalKey(principal))
-    throw new Error(`evictPrincipal: "${principal}" is not a valid owner.actor principal (dot-form)`);
+  // but the FILTER must be a REAL principal: syntax alone is not enough, because CONNZ attribution
+  // only ever surfaces owners that pass isPrincipalOwnerToken (`local` / derived `u_…`), so a
+  // syntactically-valid non-principal like `foo.bar` could scan completely, match nothing, and
+  // return a HEALTHY verified no-op — false confidence for a typo'd or old-shape target (the
+  // critic's slice-6 catch). Same owner boundary as attribution, refused loudly instead.
+  const parsed = parsePrincipalKey(principal);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
+    throw new Error(`evictPrincipal: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
   const dir = join(findCotalRoot(), ".cotal");
   const obsPath = join(dir, "membership-observer.creds");
   const evPath = join(dir, "connection-evictor.creds");

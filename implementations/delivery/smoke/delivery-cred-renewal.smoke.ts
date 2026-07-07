@@ -174,6 +174,10 @@ try {
   check("evicting a not-live principal is an idempotent verified no-op", ghost.ok === true && gv.kicked === 0 && gv.verifiedGone === true, JSON.stringify(ghost));
   const badPrincipal = await adminReq2(sup, "evictPrincipal", { principal: "not a principal" });
   check("malformed principal is refused fail-closed", badPrincipal.ok === false, JSON.stringify(badPrincipal));
+  // Syntactically valid but NOT a real principal owner (CONNZ attribution can never surface it) —
+  // must be a refusal, never a false verified no-op (critic's slice-6 catch).
+  const fakeOwner = await adminReq2(sup, "evictPrincipal", { principal: "foo.bar" });
+  check("non-principal owner (foo.bar) is refused, not a healthy no-op", fakeOwner.ok === false && (fakeOwner.error ?? "").includes("not a real owner.actor principal"), JSON.stringify(fakeOwner));
 
   await wait(2000);
   check("the run never hit an authentication expiry (every swap was explicit + ahead of exp)", !output.includes("User Authentication Expired"), output.slice(-500));
