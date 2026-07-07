@@ -194,10 +194,19 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
   assertRowInputs(row);
   if (row.tokenHash !== undefined)
     throw new Error("grantActor: an interactive grant cannot carry an agent token hash — managed-agent rows are written by the spawn path only");
-  if (findIn(dir, "managed-agent", row.owner, row.actor))
-    throw new Error(`actor "${row.actor}" is a managed agent — its grant is owned by the spawn lifecycle (respawn rewrites it, despawn revokes it); pick another actor name for an interactive grant`);
+  const managedRefusal = () =>
+    new Error(`actor "${row.actor}" is a managed agent — its grant is owned by the spawn lifecycle (respawn rewrites it, despawn revokes it); pick another actor name for an interactive grant`);
+  if (findIn(dir, "managed-agent", row.owner, row.actor)) throw managedRefusal();
   const full: ActorRow = { ...row, grantedAt: new Date().toISOString() };
   writeRow(dir, "interactive", full);
+  // Post-write compensation for the check-then-write race (an operator grant racing a spawn for
+  // the same name): if the OTHER space's row appeared meanwhile, remove the just-written row and
+  // refuse — at most one row survives, without a cross-process lock protocol. The unified connect
+  // read's duplicate deny stays the backstop for a crash landing exactly between these two lines.
+  if (findIn(dir, "managed-agent", row.owner, row.actor)) {
+    revokeIn(dir, "interactive", row.owner, row.actor);
+    throw managedRefusal();
+  }
   return full;
 }
 
@@ -207,10 +216,16 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
   assertRowInputs(row);
   if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
-  if (findIn(dir, "interactive", row.owner, row.actor))
-    throw new Error(`actor "${row.actor}" already has an interactive grant — a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
+  const shadowRefusal = () =>
+    new Error(`actor "${row.actor}" already has an interactive grant — a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
+  if (findIn(dir, "interactive", row.owner, row.actor)) throw shadowRefusal();
   const full: ActorRow = { ...row, grantedAt: new Date().toISOString() };
   writeRow(dir, "managed-agent", full);
+  // Symmetric post-write compensation (see grantActor) — at most one surviving row per principal.
+  if (findIn(dir, "interactive", row.owner, row.actor)) {
+    revokeIn(dir, "managed-agent", row.owner, row.actor);
+    throw shadowRefusal();
+  }
   return full;
 }
 
