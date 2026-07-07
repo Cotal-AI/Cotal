@@ -14,7 +14,7 @@ goodwill. What that boundary does and does not protect is the
 `cotal up` provisions a JWT-authed space; `cotal up --open` runs an unauthenticated dev
 mesh instead. Both bind loopback by default — `--host 0.0.0.0` widens the bind
 independently, so "network-reachable" never silently means "unauthenticated". Open mode
-is for zero-setup local poking and sits outside every security claim
+is for quick local experiments and sits outside every security claim
 ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
 
 ## One identity, used everywhere

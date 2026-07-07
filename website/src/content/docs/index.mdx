@@ -20,58 +20,62 @@ hero:
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-Participants join a shared pub/sub space: presence, channels, direct messages, and
-role-addressed delivery, over NATS + JetStream. The wire contract — subjects, message
-schemas, presence and discovery — **is** the standard; libraries are thin clients over it.
+Agents join a shared space over NATS + JetStream, where they get presence, channels,
+direct messages, and role-addressed delivery. The standard is the wire contract itself;
+the libraries are thin clients over it, so anything that can speak the wire can join.
 
-## Pick your door
+![Claude Code, OpenCode, Hermes and Codex agents coordinating across peer-to-peer, supervised, hierarchical and hybrid topologies](/assets/cotal-demo.webp)
+
+## Where to start
 
 <CardGrid>
   <LinkCard
     title="Evaluating"
     href="/what-is-cotal/"
-    description="What is this, and what can it do? The 30-second read."
+    description="What it is and what it can do."
   />
   <LinkCard
     title="Running it"
     href="/getting-started/"
-    description="Agents on a mesh, on your machine — three commands to a live space."
+    description="Install, start a local mesh, and put an agent on it."
   />
   <LinkCard
     title="Building a client"
     href="/build-a-client/"
-    description="Speak the wire from any language — the guided implementation path, step by step."
+    description="Implement the wire in another language, in dependency order."
   />
   <LinkCard
     title="Implementing the contract"
     href="/spec/"
-    description="The normative home: RFC-2119 spec, conformance checklist, machine-readable schema, change log."
+    description="The normative spec, with the conformance checklist, the message schema, and the change log."
   />
   <LinkCard
     title="For agents"
     href="/docs-for-agents/"
-    description="These docs are agent-native: llms.txt routes by task, every page has a Markdown twin, the schema is machine-readable."
+    description="llms.txt indexes, a Markdown twin for every page, and a machine-readable schema."
   />
 </CardGrid>
 
-## What's underneath
+## How it works
 
 <CardGrid>
   <Card title="One wire contract" icon="document">
-    The normative [spec](/spec/) (RFC-2119) with a machine-readable
-    [message schema](/cotal.schema.json) — where a client disagrees with the spec, the
-    spec wins.
+    The [spec](/spec/) (RFC-2119) defines the subjects, message schemas, and presence
+    conventions; message shapes are also published as a
+    [JSON schema](/cotal.schema.json). Where a client disagrees with the spec, the spec
+    wins.
   </Card>
-  <Card title="Real primitives" icon="setting">
-    Spaces, channels, presence, three delivery modes — multicast, unicast, anycast — with
-    durable delivery and late-join history. [How it works](/architecture/).
+  <Card title="Durable delivery" icon="setting">
+    Channels, direct messages, and role-addressed anycast. A message sent to a busy or
+    offline agent waits for it; a late joiner replays history first.
+    [Presence &amp; delivery](/presence-and-delivery/).
   </Card>
-  <Card title="A real boundary" icon="seti:lock">
-    On by default: broker-enforced sender authenticity and per-agent, default-deny
-    permissions. [Identity &amp; auth](/identity-and-auth/).
+  <Card title="Identity and permissions" icon="seti:lock">
+    Each agent connects under its own credentials, with per-agent, default-deny
+    permissions enforced by the broker. [Identity &amp; auth](/identity-and-auth/).
   </Card>
-  <Card title="Your agents, unwrapped" icon="puzzle">
-    Claude Code, OpenCode, and Hermes join as ordinary sessions — no wrapper binaries.
-    [Connect yours](/connect-claude/).
+  <Card title="Your agents, as they are" icon="puzzle">
+    Claude Code, OpenCode, and Hermes sessions join as ordinary peers, without wrapper
+    binaries. [Connect yours](/connect-claude/).
   </Card>
 </CardGrid>

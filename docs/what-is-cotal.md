@@ -2,71 +2,71 @@
 
 > **Start here** (informative) · **For:** anyone evaluating Cotal · **Next:** [Quickstart](getting-started.md)
 
-A standard interface for software, especially AI agents, to coordinate in real time as
-**lateral peers in a shared space**, instead of as nodes in an orchestrator tree.
+Cotal is a standard interface for software, especially AI agents, to coordinate in real
+time. Instead of wiring agents into an orchestrator tree, you give them a shared space:
+each one joins as a peer, sees who else is there and what they are doing, and talks to
+the group, to one peer, or to a role.
 
-Participants join a shared pub/sub space. There they keep presence, broadcast to the
-group or message one peer directly, see what others are doing, and coordinate as equals.
+![Claude Code, OpenCode, Hermes and Codex agents coordinating across peer-to-peer, supervised, hierarchical and hybrid topologies](../assets/cotal-demo.webp)
 
-**→ Ready to run it? [Quickstart](getting-started.md)** — install to a running mesh, with
-an agent on it, in three commands.
+The transport underneath is NATS + JetStream and the reference implementation is
+TypeScript, but neither of those is the standard. The standard is the wire contract: the
+subjects, message schemas, and presence conventions written down in the normative
+[spec](../SPEC.md). Any language that can speak the wire is a first-class citizen
+([build a client](build-a-client.md)).
 
-Two terms anchor everything else:
+If you would rather try it than read about it, the [Quickstart](getting-started.md) gets
+you from install to a running mesh in a few minutes.
 
-- **Endpoint** is any software on the network. It is the base unit.
-- **Agent node** is an endpoint with identity, role, and tags.
-
-Transport is **NATS + JetStream** (a local mesh first; the same design scales to a
-cluster). The reference implementation is **TypeScript**, but the **wire contract is the
-standard**: subjects, message schemas, and presence/discovery conventions, written down in
-the normative **[spec](../SPEC.md)**. Libraries are thin clients over it — any language
-that can speak the wire is a first-class citizen ([build a client](build-a-client.md)).
+Two terms come up on every page: an **endpoint** is any software on the network (the
+base unit), and an **agent node** is an endpoint with identity, a role, and tags.
 
 ## What it can do
 
-**Addressability.** Three delivery modes: **multicast** broadcasts to a channel,
-**unicast** messages one peer, **anycast** reaches *any one* holder of a role — "whoever
-is a reviewer". Many participants share one channel; channels nest (`team.backend`).
+Messages travel three ways: **multicast** to a channel, **unicast** to one peer, and
+**anycast** to any one holder of a role ("whoever is a reviewer"). Channels are shared
+by many participants and nest (`team.backend`).
 
-**Presence and discovery.** A live roster of who is present, each peer's state
-(`idle` / `waiting` / `working` / `offline`) and identity card: name, role, what it can
-do. Peers watch each other, divide work, and delegate over channels and DMs.
+| Multicast | Unicast | Anycast |
+|---|---|---|
+| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it](../assets/anycast.webp) |
 
-**Durable delivery and history.** A message sent while a peer is busy or offline waits
-for it; a late joiner replays recent history and the current roster, then goes live. Agents
-are constantly mid-turn — nothing is lost to timing.
+Every peer keeps a presence entry: name, role, what it can do, and a live state
+(`idle` / `waiting` / `working` / `offline`). Peers use the roster to find each other,
+divide work, and delegate; you use it to see what your agents are up to.
 
-**Control plane.** A separate command path that *acts on* endpoints rather than chatting
-with them: spawn a teammate, ask status, stop one. Managing agents happens through the
-same mesh.
+Delivery is durable. A message sent while a peer is busy or offline waits in its inbox,
+and a late joiner replays recent history and the current roster before going live. This
+matters more for agents than for people, because agents spend most of their time
+mid-turn.
 
-**Real security boundary.** On by default: an agent can only speak **as itself** and only
-where its declared permissions allow — enforced by the broker, not by agent goodwill
-([how](identity-and-auth.md)).
+A separate control plane carries commands that act on agents rather than chat with
+them: spawn a teammate, ask for status, stop one. It runs over the same mesh.
 
-**Observability.** Traces and presence live on the mesh, so any observer can render them:
-a terminal console or a browser dashboard ([watch a mesh](watch-a-mesh.md)), with no
-instrumentation added to the agents.
+Security is on by default. The broker only accepts a message if it really came from the
+agent named on it, and only lets each agent read and write where its declared
+permissions allow ([identity & auth](identity-and-auth.md)). Spaces are isolated from
+each other, and several can share one machine ([spaces & channels](spaces.md)).
 
-**Isolation.** Spaces do not see each other; many can run on one machine
-([spaces & channels](spaces.md)).
+Traces and presence live on the mesh itself, so any observer can render them without
+instrumenting the agents. Cotal ships two: a terminal console and a browser dashboard
+([watch a mesh](watch-a-mesh.md)).
 
 ## Principles
 
 - **The wire contract is the standard.** The subjects, message schemas, and
-  presence/discovery conventions *are* Cotal. Libraries are thin clients over them.
-- **Primitives, not a prescribed topology.** Squad-of-peers, orchestrator-and-workers, or
-  any hybrid are configurations on top, never baked in.
-- **One command to join.** Integration ease is the moat.
-- **Lateral and long-running.** Peers hold long-lived connections and talk directly.
-- **Local-first, no-rewrite scaling.** The same subjects, streams, and accounts run
+  presence/discovery conventions are what Cotal is; libraries are thin clients over
+  them.
+- **Primitives, not a prescribed topology.** A squad of peers, an orchestrator with
+  workers, or a hybrid are all configurations on top; none is baked in.
+- **Joining must stay cheap.** One command puts an existing agent on the mesh.
+- **Lateral and long-running.** Peers hold long-lived connections and talk to each other
+  directly.
+- **Local-first, no rewrite to scale.** The same subjects, streams, and accounts run
   unchanged from one machine to a cluster.
 
-## See it run
-
-Role-specialized agents join one shared space, each in its own terminal, and coordinate
-laterally through presence, addressing, messaging, and the control plane — the topology is
-how you set it up, not something hardwired. Runnable scenarios: **[examples](examples.md)**.
+Runnable scenarios, from a first coordination demo to a wall of pixel-art agents, live
+in [examples](examples.md).
 
 ## Where next
 

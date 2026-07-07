@@ -5,7 +5,7 @@
 `cotal` is the operator command line for the reference implementation: bring a mesh up, mint
 identities, launch agents, watch what they do, and tear it all down. It is a thin client over the
 wire contract — the normative subjects and schemas live in the [SPEC](../SPEC.md); this page is
-lookup material for the commands, not a walkthrough. New here? Start with
+lookup material for the commands, not a walkthrough; if you are new, start with
 [Getting started](getting-started.md).
 
 ## Running it

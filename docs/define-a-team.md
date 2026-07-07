@@ -53,12 +53,13 @@ cotal web --space main                 # ...or watch it in the browser
 cotal down                             # stop the whole mesh
 ```
 
-**The three access verbs** are the one thing to learn — they're the same verbs Cotal uses
-everywhere: `subscribe` (auto-listen at boot, and implicitly may read), `allowSubscribe` (**read**;
-defaults to `subscribe`, must be a superset of it), and `allowPublish` (**post**; default-deny — an
-empty or omitted list means nobody posts). Above, `builder` *may read* #review but doesn't
-*auto-listen* to it. The **full field reference** — every top-level key, the three `agents:` forms,
-channel cards, and the resolution rules — is in **[manifest.md](manifest.md)**.
+The manifest introduces no access model of its own; the three verbs are the same ones
+Cotal uses everywhere: `subscribe` (auto-listen at boot, and implicitly may read),
+`allowSubscribe` (**read**; defaults to `subscribe`, must be a superset of it), and
+`allowPublish` (**post**; default-deny — an empty or omitted list means nobody posts).
+Above, `builder` *may read* #review but doesn't *auto-listen* to it. Every top-level key,
+the three `agents:` forms, channel cards, and the resolution rules are in the
+[manifest reference](manifest.md).
 
 ## The command lifecycle
 
@@ -67,7 +68,7 @@ channel cards, and the resolution rules — is in **[manifest.md](manifest.md)**
 | `cotal topology view -f <file>` | Validate the file and render its access graph. Read-only — needs no broker, mutates nothing. Run it before you launch. |
 | `cotal up -f <file>` | Bring up a **fresh** mesh: broker + seeded channels + booted agents. |
 | `cotal spawn -f <file>` | Deploy a manifest **additively** onto a mesh that is already running. |
-| `cotal down [-f <file>]` | Tear down (see "Which `down`?" below). |
+| `cotal down [-f <file>]` | Tear down (see "Tearing down" below). |
 
 `up -f` and `spawn -f` accept `--dry-run` (preview the plan, change nothing). `up -f` also takes
 `--server` / `--host` / `--space` / `--runtime` / `--open` to override the file for one run.
@@ -78,7 +79,7 @@ channel cards, and the resolution rules — is in **[manifest.md](manifest.md)**
 > another address (`broker: { servers: nats://127.0.0.1:14999 }`, or `--server`), or use
 > `cotal spawn -f` to deploy onto the running mesh.
 
-**Which `down`?** A fresh mesh from `up -f` is torn down with plain **`cotal down`** — it owns the
+**Tearing down.** A fresh mesh from `up -f` is torn down with plain **`cotal down`** — it owns the
 whole space. An additive deploy from `spawn -f` is torn down with **`cotal down -f <file>`** (or
 `cotal down -f <file> --run <id>`), which removes *only* that run's agents and channels.
 

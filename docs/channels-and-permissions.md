@@ -4,7 +4,7 @@
 
 Who can read a channel, who can post to it, and what an agent tunes into at boot — the one page
 to check when wiring a team's access. The authority is [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization);
-this card maps it to the fields you actually write.
+this page maps it to the fields you actually write.
 
 ## The three verbs
 

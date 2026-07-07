@@ -88,16 +88,25 @@ const knownSlugs = new Map(
   sources.map((rel) => [basename(rel).replace(/\.md$/, ''), slugFor(basename(rel).replace(/\.md$/, ''))]),
 );
 
-// Rewrite cross-links to site routes. Three cases, everything else untouched:
+// Rewrite cross-links to site routes. Four cases, everything else untouched:
 //  1. same-dir doc links (`getting-started.md`, `../SPEC.md`, `README.md`) → /slug/
 //  2. the generated schema (`../spec/cotal.schema.json`) → the published /cotal.schema.json
-//  3. other repo-relative links (`../packages/...`, `../examples/...`) → GitHub
+//  3. repo images (`../assets/...`) → /assets/... (copied into public/ below)
+//  4. other repo-relative links (`../packages/...`, `../examples/...`) → GitHub
+// Seeded with images used by the hand-authored landing page (index.mdx), which
+// doesn't pass through this rewriter.
+const assetRefs = new Set(['assets/cotal-demo.webp']);
 function rewriteLinks(md) {
   // Case 2 first (not a .md link).
   md = md.replaceAll('](../spec/cotal.schema.json)', '](/cotal.schema.json)');
-  // Cases 1 + 3.
+  // Cases 1 + 3 + 4.
   return md.replace(/\]\(([^)#]+?)(#[^)]*)?\)/g, (whole, target, anchor = '') => {
     if (/^[a-z]+:\/\//.test(target) || target.startsWith('/') || target.startsWith('#')) return whole;
+    if (target.startsWith('../assets/')) {
+      const rel = target.slice(3); // assets/foo.webp
+      assetRefs.add(rel);
+      return `](/${rel})`;
+    }
     const isDocLink =
       (target.endsWith('.md') && !target.includes('/')) || target === '../SPEC.md' || target === 'README.md';
     if (isDocLink) {
@@ -120,7 +129,7 @@ function firstH1(md) {
 
 function firstParagraph(md) {
   const body = md.replace(/^\s*#\s+.+\n+/, '');
-  const m = body.match(/^(?!\s*[#>\-*`|])\s*(\S.+?)(?:\n\s*\n|$)/s);
+  const m = body.match(/^(?!\s*[#>\-*`|!])\s*(\S.+?)(?:\n\s*\n|$)/s);
   if (!m) return null;
   return m[1].replace(/\s+/g, ' ').replace(/[*_`[\]]/g, '').slice(0, 160).trim();
 }
@@ -169,4 +178,14 @@ for (const group of groups) {
 
 writeFileSync(join(genDir, 'sidebar.json'), JSON.stringify(sidebar, null, 2) + '\n');
 
-console.log(`sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json`);
+// Copy every image the pages reference into public/. copyFileSync throws on a
+// missing source, so a dead image link fails the sync instead of 404ing live.
+for (const rel of assetRefs) {
+  const dest = join(pubDir, rel);
+  mkdirSync(dirname(dest), { recursive: true });
+  copyFileSync(join(repoRoot, rel), dest);
+}
+
+console.log(
+  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + ${assetRefs.size} images`,
+);

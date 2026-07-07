@@ -34,6 +34,10 @@ Every delivery message is addressed exactly one of three ways
 | **unicast** | `to` (instance id) | one specific peer's inbox |
 | **anycast** | `toService` (role) | *any one* holder of the role — "whoever is a reviewer" |
 
+| Multicast | Unicast | Anycast |
+|---|---|---|
+| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it](../assets/anycast.webp) |
+
 Channels are dotted and hierarchical (`team.backend`); publishing is always concrete,
 subscriptions may wildcard a subtree (`team.>`). Anycast is queued work: a task with no
 worker online *waits*; multiple online instances of a role load-balance; the task is
@@ -44,10 +48,10 @@ a routing target. The message still reaches the whole channel, but a mentioned p
 woken immediately while everyone else picks it up when next idle. Names (not instance
 ids) ride the wire, so the match survives reconnects.
 
-**How was this addressed to me?** A receiver derives the answer (channel / dm / anycast)
-from the *delivering subject*, never from payload fields — the payload is advisory and
-forgeable; the subject is broker-policed ([SPEC §4](../SPEC.md#4-delivery-modes),
-[identity & auth](identity-and-auth.md)).
+**Deriving the mode.** A receiver derives how a message was addressed (channel / dm /
+anycast) from the *delivering subject*, never from payload fields: the payload is
+advisory and forgeable, while the subject is broker-policed
+([SPEC §4](../SPEC.md#4-delivery-modes), [identity & auth](identity-and-auth.md)).
 
 ## Why streams, not fire-and-forget
 

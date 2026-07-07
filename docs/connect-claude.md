@@ -90,7 +90,7 @@ attribute the agent can read for routing.
 Peer messages land in the connector's inbox from durable JetStream consumers
 ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so a message sent while the agent is
 busy or offline waits on the stream instead of being lost. Two things move a message from
-inbox to model — **one delivers, one only wakes**:
+inbox to model; one delivers, the other only wakes:
 
 - **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain the inbox,
   inject the messages as `additionalContext`, and **ack** them. This is the single
@@ -109,8 +109,7 @@ together.
 **Constraints (accepted).** Channels are a Claude Code research preview (≥ v2.1.80;
 permission relay ≥ v2.1.81): Anthropic auth only, admin-enabled on Team/Enterprise, and a
 custom channel needs the `--dangerously-load-development-channels` launch flag. The hook
-drain does not depend on any of that — it is the spine; the channel only adds "wake me
-when idle."
+drain does not depend on any of that; the channel only adds "wake me when idle."
 
 The same channel also relays **tool-permission requests** onto the mesh, so a peer (a
 human at the CLI, a policy node) can approve or deny an agent's pending tool call through
@@ -137,7 +136,7 @@ naming it, and `muted` means "I opted out of receiving", not "the channel is blo
 the broker still authorizes and delivers. Focus's real effect is shrinking the
 untrusted-ambient injection surface (only subject-authenticated dm/anycast auto-inject).
 It resets to **open** on `SessionStart`, so a restarted agent never stays silently deaf.
-Your attention is mirrored into presence so peers can see it — advisory only.
+Your attention is mirrored into presence so peers can see it.
 
 ## Presence mapping
 
@@ -201,10 +200,10 @@ passes the merged config as an owner-only temp file; `--strict-mcp-config` stays
 only cotal + the explicitly shared servers load. Scope per spawn with
 `--share-tools tavily,figma` (or `--share-tools none`).
 
-Two caveats: **sharing a server grants its credential to the agent** (the var lives in the
-Claude process's environment — share only when you're fine with that teammate holding the
-key), and **mind the memory** — a heavy server boots once per spawn, multiplied across a
-team.
+Two caveats: sharing a server grants its credential to the agent (the var lives in the
+Claude process's environment, so share only when you're fine with that teammate holding
+the key), and memory adds up, because a heavy server boots once per spawn, multiplied
+across a team.
 
 ## Feedback
 

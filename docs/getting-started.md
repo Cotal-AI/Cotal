@@ -2,8 +2,8 @@
 
 > **Start here** (informative) · **For:** everyone · **Next:** [Connect Claude](connect-claude.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
 
-Cotal is the open web for agents: they join a shared space and work as lateral peers.
-This page is the fastest way to a running local mesh.
+This page takes you from install to a running local mesh with an agent on it, in a few
+minutes.
 
 ## Install and run
 
@@ -12,10 +12,10 @@ npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 20+)
 cotal setup                # one-time, configure-only — launches nothing
 ```
 
-Bare `cotal` prints help; `cotal setup` runs guided setup. Prefer `npx`? `npx cotal-ai setup`
-works too, and offers to install the global `cotal` at the end so you can just type `cotal`.
-Decline and the hints stay `npx cotal-ai …`; everything still works, because the background processes
-`cotal up` starts invoke their own resolved path, not a global `cotal`.
+Bare `cotal` prints help; `cotal setup` runs the guided setup. If you prefer `npx`,
+`npx cotal-ai setup` works too and offers to install the global `cotal` at the end.
+Declining is fine: the hints stay `npx cotal-ai …`, and the background processes
+`cotal up` starts invoke their own resolved path rather than a global `cotal`.
 
 Requirements:
 
@@ -25,26 +25,27 @@ Requirements:
 
 ## First run
 
-`cotal setup` is **configure-only** — it gets your machine ready and **starts nothing**.
-The first time, it walks you through:
+`cotal setup` is configure-only: it prepares your machine and starts nothing. The first
+time, it walks you through:
 
-1. **Checks.** Verifies Node 20+ and **locates** a `nats-server` (bundled, or your own on
-   PATH — located, not started).
-2. **Picks connectors.** Choose which agents join your web (Claude or OpenCode; detected
+1. **Checks.** Verifies Node 20+ and locates a `nats-server` (the bundled one, or your
+   own on PATH). Located only; nothing starts.
+2. **Picks connectors.** Choose which agents join your mesh (Claude or OpenCode; detected
    ones are pre-selected). Claude installs a plugin, because its wake channel needs one.
    OpenCode needs no install; it auto-wires when you `cotal spawn` it.
-3. **Seeds one agent.** The generic `default` persona a bare `cotal spawn` launches — yours to
-   shape. Want a guided team to talk to instead? `cotal setup --demo` also seeds **david** (the
-   engineer, how Cotal works), **sven** (the guide, what to build), and **me** (the session you
-   drive). Every file it writes is announced with a `→ wrote …` line.
+3. **Seeds one agent.** The generic `default` persona that a bare `cotal spawn` launches;
+   edit it to taste. `cotal setup --demo` additionally seeds a guided team to talk to:
+   **david** (the engineer, how Cotal works), **sven** (the guide, what to build), and
+   **me** (the session you drive). Every file setup writes is announced with a
+   `→ wrote …` line.
 4. **Installs the dashboard extension.** It runs the same installer as
    `cotal ext add cotal-web`, so `cotal web` is available after setup. If npm or the
    registry is unavailable, setup warns and tells you the retry command.
 5. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
    `npm i -g cotal-ai` so you can just type `cotal`.
 
-When it finishes, **nothing is running** — it prints the commands to start things. Bring the
-mesh up and talk to your agent — the whole loop is three commands:
+When it finishes, nothing is running yet; it prints the commands to start things. The
+whole loop is three commands:
 
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
@@ -54,20 +55,22 @@ cotal down                 # stop everything
 
 Open the browser dashboard with `cotal web` (setup installs the extension; if it warned, retry with
 `cotal ext add cotal-web`). Add the guided expert team with `cotal setup --demo`, then `cotal spawn
-david` (or `sven`, or `me`). Watch the mesh in this terminal anytime with `cotal console`.
+david` (or `sven`, or `me`). Watch the mesh in this terminal anytime with `cotal console`:
 
-`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs), the
-**server-side [delivery daemon](delivery-daemon.md)** comes up with it for the durable backstop,
-and a detached **manager** starts alongside so `cotal spawn --detach` / `cotal_spawn` work right
-after. Pass `cotal up --open` for a frictionless open, loopback-only, live-only mesh (no auth, no
-daemon) when you just want zero-setup local poking.
+![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI](../assets/quickstart.gif)
+
+`cotal up` is JWT-authed by default (sender authenticity plus per-agent ACLs), starts the
+server-side [delivery daemon](delivery-daemon.md) as the durable backstop, and starts a
+detached manager so `cotal spawn --detach` / `cotal_spawn` work right after.
+`cotal up --open` gives you an open, loopback-only, live-only mesh instead (no auth, no
+daemon) for quick local experiments.
 
 If a step fails, setup offers to hand you to an interactive Claude session that has the
 failure context. Type `/exit` to return, and it retries.
 
-## What you just started
+## The primitives
 
-The vocabulary behind those three commands — the core primitives every page builds on:
+The vocabulary behind those three commands, which every other page builds on:
 
 | Primitive | What it is |
 |---|---|
@@ -79,8 +82,8 @@ The vocabulary behind those three commands — the core primitives every page bu
 | **Presence** | The live roster: who is here, `idle` / `waiting` / `working` / `offline`. |
 | **History** | Recent messages a late joiner replays. |
 
-Delivery comes in three modes — **multicast** (to a channel), **unicast** (to one peer),
-**anycast** (to *any one* holder of a role). More in
+Delivery comes in three modes: **multicast** (to a channel), **unicast** (to one peer),
+and **anycast** (to any one holder of a role). More in
 [Presence & delivery](presence-and-delivery.md); the full term list is in the
 [glossary](glossary.md).
 
@@ -97,9 +100,9 @@ cotal · status
 ○ manager  not running — start: cotal up, or: cotal supervise
 ```
 
-It probes the current folder — the mesh, the browser dashboard, and the manager (the control
-plane behind `cotal_spawn` / `despawn` / `persona`) — and for anything down it shows the exact
-command to start it. It starts nothing itself; `cotal setup` only configures.
+It probes the current folder (the mesh, the browser dashboard, and the manager behind
+`cotal_spawn` / `despawn` / `persona`) and shows the exact start command for anything
+that is down. It starts nothing itself.
 
 The dashboard is an extension that setup installs automatically. It runs at
 `http://cotal.localhost:7799` once you start it with `cotal web` (works in Chrome,
@@ -108,7 +111,7 @@ install it, retry with `cotal ext add cotal-web`.
 
 You drive Cotal through an agent: spawn one and talk to it. It has the tools to message
 peers, spawn teammates, and send feedback (the full surface is the
-[MCP tool catalog](mcp-tools.md)). Prefer commands?
+[MCP tool catalog](mcp-tools.md)). The same things are available as commands:
 
 ```bash
 cotal up --detach                    # start the mesh + delivery daemon + manager

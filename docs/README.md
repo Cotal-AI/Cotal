@@ -1,19 +1,19 @@
 # Cotal docs
 
 Cotal is a standard wire interface for software, especially AI agents, to coordinate in
-real time as lateral peers in shared spaces. The wire contract — subjects, message
-schemas, presence and discovery — **is** the standard; libraries are thin clients over it.
-Transport is NATS + JetStream. The normative contract lives in the **[spec](../SPEC.md)**;
-these docs explain, guide, and reference it.
+real time as lateral peers in shared spaces. The standard is the wire contract itself
+(subjects, message schemas, presence and discovery), defined in the normative
+[spec](../SPEC.md); libraries are thin clients over it, and transport is NATS +
+JetStream.
 
-## Pick your door
+## Where to start
 
 | You are… | Start with |
 |---|---|
-| **Evaluating** — what is this? | [What is Cotal](what-is-cotal.md) — the 30-second read |
-| **Running it** — agents on a mesh, on my machine | [Quickstart](getting-started.md) — three commands to a live mesh |
-| **Building a client** — speaking the wire from another language | [Build a client](build-a-client.md) — the guided implementation path |
-| **Implementing the contract** — conformance, shapes, versioning | [Spec](../SPEC.md) — the normative home, with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), and the [change log](../SPEC.md#appendix-d-change-log) |
+| **Evaluating** — what is this? | [What is Cotal](what-is-cotal.md) |
+| **Running it** — agents on a mesh, on my machine | [Quickstart](getting-started.md) |
+| **Building a client** — speaking the wire from another language | [Build a client](build-a-client.md) |
+| **Implementing the contract** — conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), and the [change log](../SPEC.md#appendix-d-change-log) |
 
 ## For agents
 
@@ -88,10 +88,10 @@ For protocol implementers:
 | [MCP tool catalog](mcp-tools.md) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
 | [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |
 | [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
-| [Channels & permissions](channels-and-permissions.md) | The three access verbs, on one card. |
+| [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
 | [Config & env](config.md) | The config file, every `COTAL_*` variable, the on-disk layout. |
 | [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
-| [Glossary](glossary.md) | Every term, one line each. |
+| [Glossary](glossary.md) | Definitions of every term. |
 
 ## Specification
 

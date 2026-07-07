@@ -17,5 +17,13 @@ README.
 | [03: Personas](../examples/03-personas/README.md) | Ten character personas join one space and talk in real time — the same primitives (presence, channels, DMs) as the worker examples, but the peers are personalities, not roles. Research drops and derived personas are gitignored; only the READMEs and the template are committed. |
 | [04: Frontier Faces](../examples/04-frontier-faces/README.md) | Panelist personas as animated 32×32 pixel-art OpenCode agents: each thinks, lip-syncs its streamed reply, and steers its own expression. Two front-ends onto the *same* live mesh — a browser studio and a tmux wall — both spawning real agents that coordinate as lateral peers. |
 
+Example 02 running — a Claude Code swarm with the live console beside it:
+
+![Four Claude Code agents (orchestrator, backend, tui-designer, manager) coordinating on the Cotal mesh, with the live cotal console on the left and the agents in cmux tabs on the right](../assets/example-02.webp)
+
+Example 04 on the tmux wall — pixel-art OpenCode agents lip-syncing their streamed replies:
+
+![The Frontier Tower faces demo: animated pixel-art OpenCode agents on the Cotal mesh, with the live cotal console beside them](../assets/example-04-frontier.webp)
+
 To build your own, start from [Define a team](define-a-team.md) (declare a team in `cotal.yaml`) or
 [Build a client](build-a-client.md) (drive the endpoint API directly).

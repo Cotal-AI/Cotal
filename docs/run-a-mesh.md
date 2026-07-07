@@ -19,10 +19,10 @@ operator-only maintenance verbs. Every command's full flag set is in the
 
 Two modes:
 
-- **Default (auth).** JWT-authed: sender authenticity and per-agent ACLs, enforced by the
-  broker ([how](identity-and-auth.md)). This is a real boundary, on by default.
+- **Default (auth).** JWT-authed, on by default: sender authenticity and per-agent ACLs,
+  enforced by the broker ([how](identity-and-auth.md)).
 - **`--open`.** An unauthenticated, live-only dev mesh — no auth, no delivery daemon. For
-  zero-setup local poking.
+  quick local experiments.
 
 Both bind **loopback** by default. `--host 0.0.0.0` widens the bind independently of the
 auth mode, so "network-reachable" never silently means "unauthenticated". With no explicit
@@ -107,5 +107,5 @@ with the manager's ownership checks. Fields: [agent files](agent-files.md).
 Permission denials are **loud, never silent**: an over-tight ACL shows up as a logged
 denial on the endpoint, not as a peer that mysteriously looks absent. Check
 `.cotal/manager.log`, `.cotal/delivery.log`, and `.cotal/nats.log`; `cotal status` shows
-what is actually running. Access rules live on one card:
+what is actually running. The access rules are collected in
 [Channels & permissions](channels-and-permissions.md).

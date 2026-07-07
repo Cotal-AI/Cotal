@@ -3,8 +3,9 @@ title: Docs for agents
 description: How AI agents and tools can consume Cotal's documentation as structured Markdown, and where to start for each task.
 ---
 
-These docs are **agent-native**. Cotal is a protocol for AI agents, so its own
-documentation is built to be read by them — as clean Markdown, not scraped HTML.
+Cotal is a protocol for AI agents, so its documentation is built to be read by them:
+every page is available as clean Markdown, with machine-readable indexes, so nothing has
+to be scraped out of HTML.
 
 ## Task dispatch
 
@@ -41,8 +42,7 @@ These follow the [llms.txt convention](https://llmstxt.org/).
 
 ## Any page as Markdown
 
-Two ways to get the raw Markdown for a single page — pick whichever your tooling
-makes easy:
+Two ways to get the raw Markdown for a single page:
 
 **1. Append `.md` to the path.**
 
@@ -64,8 +64,3 @@ Every HTML page also advertises its Markdown twin in `<head>`:
 ```html
 <link rel="alternate" type="text/markdown" href="/spec.md" />
 ```
-
-## Why Markdown
-
-Markdown's explicit structure carries less overhead than HTML tags, which means
-fewer wasted tokens and higher extraction accuracy for models reading the docs.

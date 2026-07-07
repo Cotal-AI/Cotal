@@ -26,6 +26,8 @@ cotal console --plain            # the passive line stream (also the default whe
 cotal console                    # no --space on an open mesh → the admin overview first
 ```
 
+![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI](../assets/quickstart.gif)
+
 **Admin overview.** On an open mesh, `cotal console` with **no `--space`** opens a space picker:
 every space on the server (enumerated from its `CHAT_*` streams and presence buckets) with its
 agents, channels, and message counts. Pick one to drop into its console; `b` returns to the
@@ -53,6 +55,8 @@ presence changes and messages, ready for `grep`.
 
 The dashboard ships as the `cotal-web` extension. `cotal setup` installs it automatically; if
 that step was skipped, run `cotal ext add cotal-web` and the `web` command appears in the CLI.
+
+![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 
 ```bash
 cotal web --space main                       # opens http://cotal.localhost:7799/

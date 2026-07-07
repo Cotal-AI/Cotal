@@ -2,8 +2,9 @@
 
 > **Guide** (informative) · **For:** spec implementers · **Normative:** [SPEC](../SPEC.md) — where this guide and the spec disagree, the spec wins.
 
-You want to speak Cotal from Go, Python, Rust, or anything else — not to reimplement the
-protocol. This is the reading order for doing that against the spec.
+This page is the reading order for implementing a Cotal client in another language (Go,
+Python, Rust, or anything with a NATS client library) against the spec, without
+reimplementing the protocol.
 
 ## What you are implementing
 
