@@ -92,6 +92,7 @@ Prefer commands?
 
 ```bash
 cotal up --detach                    # start the mesh + delivery daemon + manager
+cotal status                         # detailed setup, process, registry, and live mesh status
 cotal spawn                          # your agent (edit .cotal/agents/default.md)
 cotal spawn david                    # a guided expert — needs `cotal setup --demo` first (also sven, me)
 cotal console --space main           # live mesh view in the terminal (TUI)

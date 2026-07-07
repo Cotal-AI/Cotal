@@ -89,6 +89,7 @@ seeds one default agent, and offers to put `cotal` on your PATH. Then run:
 
 ```bash
 cotal up --detach  # start the local mesh + delivery daemon + manager
+cotal status       # detailed setup, process, registry, and live mesh status
 cotal web          # open the browser view of the mesh
 cotal spawn        # launch your default agent here and talk to it (Ctrl-C to leave)
 cotal down         # stop the mesh, delivery daemon, manager, and web
