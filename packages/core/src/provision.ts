@@ -113,6 +113,12 @@ export interface CredentialLifetimePolicy {
 
 const FIVE_MINUTES = 5 * 60;
 
+/** Bounded lifetime for `standing-renewable` credentials whose renewal owner is ONLINE (D5 slice 5):
+ *  the holder (or its launcher) re-mints at 75% of the lifetime via the endpoint's creds-source seam,
+ *  so a copied cred is broker-dead within a day while renewal never involves an operator. 24h keeps
+ *  the remaining-25% loud-failure window at ~6h — wide enough to notice and repair before expiry. */
+export const STANDING_RENEWABLE_TTL_SEC = 24 * 60 * 60;
+
 /** Bounded lifetime for the `rotation-renewed` $SYS credentials (membership-observer + connection-
  *  evictor). They are NOT online-renewable (the $SYS seed dies at end of `up`), so this exp is the
  *  credential-death horizon: a copied observer/evictor cred becomes broker-dead after it, and the
@@ -127,7 +133,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
-  supervisor: { class: "standing-renewable", renewalOwner: "manager", note: "manager's always-on endpoint; renewal slice required before default exp" },
+  supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
   delivery: { class: "standing-renewable", renewalOwner: "delivery launcher", note: "server-side Plane-3 daemon; renewal slice required before default exp" },
   "membership-rw": { class: "standing-renewable", renewalOwner: "delivery launcher", note: "membership feed writer; renewal slice required before default exp" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },

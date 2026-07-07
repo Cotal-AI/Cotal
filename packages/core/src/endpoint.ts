@@ -136,9 +136,21 @@ export interface EndpointOptions {
   /** Username/password auth (both required together). */
   user?: string;
   pass?: string;
-  /** NATS user creds file *content* (JWT + nkey seed). When set, the endpoint
-   *  authenticates as that user and adopts the creds' identity as its card.id. */
-  creds?: string;
+  /** NATS user creds file *content* (JWT + nkey seed), or a SOURCE that mints/reads a fresh copy.
+   *  When set, the endpoint authenticates as that user and adopts the creds' identity as its card.id.
+   *
+   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam (D5 slice 5) for
+   *  bounded-lifetime standing creds: the endpoint fetches before the first connect, re-fetches at
+   *  75% of each JWT's lifetime (then swaps the connection onto the fresh cred with a controlled
+   *  reconnect) and on rebuilds, and every (re)connect attempt presents the freshest copy — the
+   *  broker's expiry-close is only the backstop for a missed swap.
+   *  The two source shapes are the renewal classes: a seed-holder self-remints (the manager's
+   *  supervisor), a seed-less daemon re-reads its launcher-reminted creds file (delivery). A source
+   *  requires explicit `card.id` (the pinned identity); every fetched cred MUST carry that same nkey
+   *  or the endpoint fails loud — renewal may never silently swap identity. A fetch failure is
+   *  emitted as an "error" event and retried; the connection stays up until its current JWT expires,
+   *  so a dead reminter is loud without instantly dropping the mesh. */
+  creds?: string | (() => Promise<string>);
   /** USER-MODE auth: a validated Cotal user bearer (the JWT from `cotal login` → the IdP bridge), or a
    *  SOURCE that mints a fresh one. When set, the endpoint connects through the auth callout — presenting
    *  {@link sentinelCreds} + the bearer, the broker mints its scoped data-account JWT.
@@ -226,7 +238,12 @@ export class CotalEndpoint extends EventEmitter {
   private readonly token?: string;
   private readonly user?: string;
   private readonly pass?: string;
-  private readonly creds?: string;
+  /** The creds source, when standing renewal is on (bounded supervisor/daemon creds); undefined for
+   *  a static string. Mirrors {@link bearerSource} exactly — same fetch-ahead + pin + retry shape. */
+  private readonly credsSource?: () => Promise<string>;
+  /** The freshest creds — what every (re)connect attempt presents. Static callers set it once. */
+  private currentCreds?: string;
+  private credsTimer?: NodeJS.Timeout;
   /** True in user mode (bearer string OR source) — gates the callout-shaped connect. */
   private readonly userMode: boolean = false;
   /** The bearer source, when auth refreshes (spawned agents); undefined for a one-shot string. */
@@ -394,10 +411,21 @@ export class CotalEndpoint extends EventEmitter {
       // a random (dash-free, valid-actor-token) id. When both an id and creds are given they MUST name the
       // same nkey — else the connection would authenticate as one user while its grants name another. The
       // owner+actor PRINCIPAL defaults to owner = DEV_OWNER ("local"), actor = the connection id.
-      const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
-      if (opts.card.id && credId && opts.card.id !== credId)
-        throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
-      this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
+      if (typeof opts.creds === "function") {
+        // Creds SOURCE (standing renewal): no cred exists yet, so the identity must be declared up
+        // front; every fetched cred is checked against it (refreshCreds), so a renewal can never
+        // silently swap the connection's nkey.
+        if (!opts.card.id)
+          throw new Error("a creds source requires an explicit card.id (no cred to derive the identity from at construction)");
+        this.credsSource = opts.creds;
+        this.connId = opts.card.id;
+      } else {
+        const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
+        if (opts.card.id && credId && opts.card.id !== credId)
+          throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
+        this.currentCreds = opts.creds;
+        this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
+      }
       this.owner = opts.card.owner ?? DEV_OWNER;
       this.actor = opts.card.actor ?? this.connId;
     }
@@ -409,7 +437,6 @@ export class CotalEndpoint extends EventEmitter {
     this.token = opts.token;
     this.user = opts.user;
     this.pass = opts.pass;
-    this.creds = opts.creds;
     this.tls = opts.tls ?? false;
     this.channels = opts.channels ?? ["general"];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
@@ -433,7 +460,7 @@ export class CotalEndpoint extends EventEmitter {
    *  branch keys on: authed endpoints OPEN pre-created streams/KVs and BIND pre-provisioned
    *  durables (creates are denied to agents); only the open dev broker lazy-creates. */
   private get authed(): boolean {
-    return Boolean(this.creds) || this.userMode;
+    return Boolean(this.currentCreds || this.credsSource) || this.userMode;
   }
 
   async start(): Promise<void> {
@@ -477,6 +504,44 @@ export class CotalEndpoint extends EventEmitter {
     this.bearerTimer.unref?.();
   }
 
+  /** How soon a FAILED creds refresh retries. Successful refreshes schedule by lifetime fraction
+   *  (75% of iat→exp), not a fixed margin — standing creds span hours to days, bearers minutes. */
+  private static readonly CREDS_RETRY_MS = 60_000;
+
+  /** Fetch fresh creds from the source, pin their identity to ours, arm the next refresh at 75% of
+   *  the new JWT's lifetime — then SWAP the live connection onto the fresh cred with a controlled
+   *  `nc.reconnect()` (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of
+   *  waiting for the broker to close the connection at `exp`, means the wire never carries a
+   *  near-dead JWT and the operator never sees a spurious "authentication expired" — the broker's
+   *  expiry-close remains the BACKSTOP if a swap is missed, not the mechanism. Failure shape mirrors
+   *  {@link refreshBearer}: THROWS when `initial`, else emits "error" and retries. */
+  private async refreshCreds(initial = false): Promise<void> {
+    try {
+      const creds = await this.credsSource!();
+      const id = idFromCreds(creds);
+      if (id !== this.connId)
+        throw new Error(`creds source returned identity ${id}, expected ${this.connId} — renewal may not swap the connection's nkey`);
+      this.currentCreds = creds;
+      this.armCredsRefresh(credsRenewalDelayMs(creds));
+      // Already-closed/draining rejections are the supervise loop's to own (its rebuild re-fetches);
+      // an already-disconnected client is a no-op (its own reconnect loop presents the fresh cred).
+      if (!initial && this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
+    } catch (e) {
+      if (initial) throw e;
+      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) — retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
+      this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
+    }
+  }
+
+  private armCredsRefresh(delayMs: number): void {
+    if (this.stopped) return;
+    clearTimeout(this.credsTimer);
+    // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
+    // lifetimes are hours+ so the floor never engages there.
+    this.credsTimer = setTimeout(() => void this.refreshCreds(), Math.max(1_000, delayMs));
+    this.credsTimer.unref?.();
+  }
+
   /** Open the connection and bind everything that hangs off it: status watch, presence
    *  watch + heartbeat, channel registry, and the durable consumers. Re-runnable — a
    *  reconnect calls it again after {@link clearConnectionScoped}; every binding is
@@ -490,6 +555,12 @@ export class CotalEndpoint extends EventEmitter {
       const stale = !this.currentBearer ||
         bearerExpiryMs(this.currentBearer) - Date.now() < CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
       if (stale) await this.refreshBearer(!this.currentBearer);
+    }
+    // Creds-source endpoints likewise fetch before the FIRST connect, and re-fetch on a rebuild
+    // whose cached cred is expired or inside its renewal window.
+    if (this.credsSource) {
+      const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
+      if (stale) await this.refreshCreds(!this.currentCreds);
     }
     this.nc = await connect({
       servers: this.servers,
@@ -506,7 +577,9 @@ export class CotalEndpoint extends EventEmitter {
       inboxPrefix: `_INBOX_${this.connId}`,
       // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
       // attempt, so internal reconnects present whatever refreshBearer last fetched.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.creds, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      // Creds likewise ride a GETTER when a source renews them, so internal reconnects (incl. the
+      // one the broker forces at JWT `exp`) present whatever refreshCreds last fetched.
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.credsSource ? () => this.currentCreds! : this.currentCreds, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     this.watchStatus();
     this.js = jetstream(this.nc);
@@ -750,6 +823,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.bearerTimer) clearTimeout(this.bearerTimer);
+    if (this.credsTimer) clearTimeout(this.credsTimer);
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -2792,7 +2866,9 @@ interface AuthOpts {
   token?: string;
   user?: string;
   pass?: string;
-  creds?: string;
+  /** May be a sync GETTER (like `bearer`) — the authenticator then re-reads it per (re)connect
+   *  attempt, which is how a standing-renewal endpoint presents its freshest cred. */
+  creds?: string | (() => string);
   bearer?: string | (() => string);
   sentinelCreds?: string;
   tls?: boolean;
@@ -2818,7 +2894,13 @@ function authOpts(a: AuthOpts) {
   if (a.creds) {
     if (a.token || a.user || a.pass)
       throw new Error("creds are mutually exclusive with token/user/pass auth");
-    return { authenticator: credsAuthenticator(new TextEncoder().encode(a.creds)), tls };
+    const creds = a.creds;
+    // A getter re-wraps per (re)connect attempt so each attempt signs with the freshest cred;
+    // nats.js invokes the authenticator function on every attempt, including internal reconnects.
+    const authenticator = typeof creds === "function"
+      ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
+      : credsAuthenticator(new TextEncoder().encode(creds));
+    return { authenticator, tls };
   }
   return { token: a.token, user: a.user, pass: a.pass, tls };
 }
@@ -2828,6 +2910,28 @@ function authOpts(a: AuthOpts) {
  *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
  *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
  *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
+/** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style
+ *  renew-early convention: the remaining 25% is the loud-failure window, wide for day-scale standing
+ *  creds). Negative when already past it. A source-fed cred WITHOUT a numeric `exp` is fail-loud:
+ *  the renewal seam exists precisely for bounded creds, so an unbounded one signals a matrix/caller
+ *  mismatch, not a cred to keep silently forever. */
+function credsRenewalDelayMs(creds: string): number {
+  const jwtM = creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/);
+  const payload = jwtM?.[1].trim().split(".")[1];
+  if (!payload) throw new Error("creds source returned content without a NATS user JWT block");
+  let claims: { iat?: unknown; exp?: unknown };
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("creds source returned an undecodable user JWT payload");
+  }
+  if (typeof claims.exp !== "number")
+    throw new Error("creds source returned a cred without a numeric exp — a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
+  const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
+  const expMs = claims.exp * 1000;
+  return iatMs + 0.75 * (expMs - iatMs) - Date.now();
+}
+
 /** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
  *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
 function bearerExpiryMs(bearer: string): number {

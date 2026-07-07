@@ -24,6 +24,7 @@ import {
   serverConfig,
   DEV_OWNER,
   ROTATION_RENEWED_TTL_SEC,
+  STANDING_RENEWABLE_TTL_SEC,
 } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
@@ -90,7 +91,7 @@ try {
   const sup = newIdentity();
   const supCreds = await mintCreds(auth, sup, "supervisor");
   const supClaims = await parseCreds(enc(supCreds));
-  check("standing supervisor is classified for renewal but has no default exp yet", credentialLifetime("supervisor").class === "standing-renewable" && supClaims.uc.exp === undefined, supClaims.uc);
+  check("standing supervisor is bounded now that self-remint renewal exists (slice 5 class 1)", credentialLifetime("supervisor").class === "standing-renewable" && Boolean(supClaims.uc.exp && supClaims.uc.exp - now <= STANDING_RENEWABLE_TTL_SEC + 5 && supClaims.uc.exp - now > STANDING_RENEWABLE_TTL_SEC - 60), supClaims.uc);
   check("agent is mixed until managed/unmanaged paths split", credentialLifetime("agent").class === "mixed" && credentialLifetime("agent").renewalOwner === undefined, credentialLifetime("agent"));
 
   const obs = newIdentity();

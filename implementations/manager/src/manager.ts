@@ -258,16 +258,22 @@ export class Manager {
       throw new Error(
         `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} — the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
       );
-    let creds: string | undefined;
+    let creds: (() => Promise<string>) | undefined;
     let id: string | undefined;
     if (this.auth) {
       const identity = newIdentity();
+      const auth = this.auth;
       id = identity.id;
       // The long-lived SUPERVISOR cred (closure (ii), residual 2): serve the three control tiers, hold the
       // singleton lease (open-only), publish + watch presence — and nothing else. Provisioning runs on an
       // EPHEMERAL provisioner connection per spawn (withProvisioner); destructive purge mints a PURGER per
       // call. So the always-on daemon holds no DM/DLV read, no consumer-create, no stream-admin tamper.
-      creds = await mintCreds(this.auth, identity, "supervisor");
+      //
+      // STANDING RENEWAL (D5 slice 5, class 1): the manager holds the DATA signing seed, so it is its
+      // own renewal owner — the cred rides the endpoint's SOURCE seam and self-remints (same identity,
+      // pinned by the endpoint) ahead of each bounded supervisor JWT's expiry. A copied supervisor
+      // cred is broker-dead within the matrix TTL.
+      creds = () => mintCreds(auth, identity, "supervisor");
     }
     this.ep = new CotalEndpoint({
       space: this.space,

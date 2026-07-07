@@ -2,8 +2,10 @@
  * Mesh-manifest launch smoke — proves the `supervise --launch` path: `startAgent({ resolved })`
  * mints creds from the RESOLVED policy (no persona file read for authority), the launch-spec loader
  * rejects untrusted/unsafe input, and `materializePersona` writes a transient, non-authoritative
- * persona (no ACL frontmatter, with a generated header). No broker, no real harness — real crypto
- * (createSpaceAuth + the mint path), a fake runtime + no-op ep stub, decode the minted creds JWT.
+ * persona (no ACL frontmatter, with a generated header). Boots a throwaway auth broker (the spawn
+ * path opens a real ephemeral provisioner connection — withProvisioner — so a live trusted broker
+ * with the space streams is part of startAgent's contract now), a fake runtime, decode the minted
+ * creds JWT.
  * Run with: pnpm smoke:manifest-launch
  */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
@@ -11,7 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts, launchSpecForRun } from "../src/launch.js";
-import { createSpaceAuth, registry, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { createSpaceAuth, mintCreds, newIdentity, setupSpaceStreams, registry, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -66,8 +69,11 @@ const personaPath = materializePersona(root, runId, resolved);
 }
 
 // --- startAgent({ resolved }): creds minted from the resolved policy, no file authority ----------
-const mgr = new Manager({ space: "demo", servers: undefined, runtime: "pty", workspaceRoot: root });
-(mgr as unknown as { auth: unknown }).auth = await createSpaceAuth("demo");
+const auth = await createSpaceAuth("demo");
+const broker = await bootBroker(auth);
+await setupSpaceStreams({ servers: broker.servers, space: "demo", creds: await mintCreds(auth, newIdentity(), "provisioner") });
+const mgr = new Manager({ space: "demo", servers: broker.servers, runtime: "pty", workspaceRoot: root });
+(mgr as unknown as { auth: unknown }).auth = auth;
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
 (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
@@ -89,7 +95,7 @@ registry.register(recCon);
   // Note: there is NO .cotal/agents/scout.md — only the transient file. A non-resolved spawn would
   // fail "no persona scout"; the resolved path must succeed from the launch object alone.
   const reply = await mgr.startAgent(launchAgentToStartOpts(resolved, personaPath));
-  check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, reply);
+  check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, JSON.stringify(reply));
   check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
 
   const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
@@ -192,5 +198,6 @@ function writeSpec(name: string, body: unknown): string {
   throws("materialize refuses a symlinked .cotal/run/<runId> dir", () => materializePersona(root3, "rid", { ...resolved, name: "y" }));
 }
 
+await broker.stop();
 console.log(`\nMANIFEST-LAUNCH SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);
