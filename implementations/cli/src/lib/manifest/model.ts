@@ -44,6 +44,8 @@ export interface ResolvedAgent {
   persona?: string;
   /** Manifest override of the persona's model (or the inline model). */
   model?: string;
+  /** Manifest override of the persona's connector-defined model variant. */
+  variant?: string;
   role?: string;
   /** Manifest card blurb (override / inline). */
   description?: string;

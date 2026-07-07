@@ -16,6 +16,7 @@ export interface MeshLaunchAgent {
   agent: string;
   role?: string;
   model?: string;
+  variant?: string;
   description?: string;
   /** Persona body — materialized to a transient, non-authoritative file the connector reads. */
   body?: string;

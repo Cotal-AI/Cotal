@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts, launchSpecForRun } from "../src/launch.js";
-import { createSpaceAuth, registry, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { createSpaceAuth, registry, type Connector, type DurableProvisioner, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -45,6 +45,7 @@ const resolved: MeshLaunchAgent = {
   agent: "smoke-launch",
   role: "researcher",
   model: "opus",
+  variant: "high",
   description: "Quick web researcher.",
   body: "Research the web; report in 3 bullets.",
   capabilities: ["spawn"],
@@ -59,7 +60,7 @@ const personaPath = materializePersona(root, runId, resolved);
   const md = readFileSync(personaPath, "utf8");
   check("transient persona lives under .cotal/run/<runId>/agents", personaPath.includes(join(".cotal", "run", runId, "agents")));
   check("not under .cotal/agents", !personaPath.includes(join(".cotal", "agents", "scout")));
-  check("carries identity/role/model", /name: scout/.test(md) && /role: researcher/.test(md) && /model: opus/.test(md));
+  check("carries identity/role/model/variant", /name: scout/.test(md) && /role: researcher/.test(md) && /model: opus/.test(md) && /variant: high/.test(md));
   check("carries the persona body", md.includes("Research the web"));
   check("has a generated-artifact header", /Generated runtime artifact/.test(md));
   check("NO authoritative ACL frontmatter", !/^(subscribe|allowSubscribe|allowPublish|capabilities):/m.test(md), md);
@@ -68,6 +69,13 @@ const personaPath = materializePersona(root, runId, resolved);
 // --- startAgent({ resolved }): creds minted from the resolved policy, no file authority ----------
 const mgr = new Manager({ space: "demo", servers: undefined, runtime: "pty", workspaceRoot: root });
 (mgr as unknown as { auth: unknown }).auth = await createSpaceAuth("demo");
+const fakeProvisioner: DurableProvisioner = {
+  provisionDmInbox: async () => {},
+  provisionDlvInbox: async () => {},
+  commitAcl: async () => {},
+  provisionTaskQueue: async () => {},
+};
+(mgr as unknown as { withProvisioner: <T>(fn: (prov: DurableProvisioner) => Promise<T>) => Promise<T> }).withProvisioner = async (fn) => fn(fakeProvisioner);
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
 (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
@@ -82,15 +90,28 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   off: () => {},
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
 };
-const recCon: Connector = { kind: "connector", name: "smoke-launch", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) };
+let seenVariant: string | undefined;
+const recCon: Connector = {
+  kind: "connector",
+  name: "smoke-launch",
+  requires: ["node"],
+  supportsModelVariant: true,
+  buildLaunch: (opts) => {
+    seenVariant = opts.variant;
+    return { command: "true", args: [], env: {} };
+  },
+};
 registry.register(recCon);
 
 {
   // Note: there is NO .cotal/agents/scout.md — only the transient file. A non-resolved spawn would
   // fail "no persona scout"; the resolved path must succeed from the launch object alone.
-  const reply = await mgr.startAgent(launchAgentToStartOpts(resolved, personaPath));
+  const startOpts = launchAgentToStartOpts(resolved, personaPath);
+  check("launchAgentToStartOpts carries variant", startOpts.variant === "high", startOpts.variant);
+  const reply = await mgr.startAgent(startOpts);
   check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, reply);
   check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
+  check("variant is forwarded to the connector", seenVariant === "high", seenVariant);
 
   const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);
@@ -124,6 +145,7 @@ function writeSpec(name: string, body: unknown): string {
   throws("unsafe role token rejected", () => loadLaunchSpec(writeSpec("a2.json", agent1({ role: "a/b" }))));
   throws("unsafe capability token rejected", () => loadLaunchSpec(writeSpec("a3.json", agent1({ capabilities: ["spawn x"] }))));
   throws("non-alphanumeric hash rejected", () => loadLaunchSpec(writeSpec("a4.json", agent1({ hash: "../../etc" }))));
+  throws("empty variant rejected", () => loadLaunchSpec(writeSpec("a5.json", agent1({ variant: "" }))));
   // Policy re-validation at the manager boundary — --launch must not be a looser manifest format.
   throws("wildcard scope in launch policy rejected", () => loadLaunchSpec(writeSpec("p1.json", agent1({ subscribe: ["team.>"], allowSubscribe: ["team.>"] }))));
   throws("subscribe ⊄ allowSubscribe rejected", () => loadLaunchSpec(writeSpec("p2.json", agent1({ subscribe: ["general"], allowSubscribe: [] }))));
@@ -140,7 +162,7 @@ function writeSpec(name: string, body: unknown): string {
     space: "demo",
     runId: runId2,
     agents: [{
-      name: "scout", agent: "smoke-launch", role: "researcher", model: "opus", description: "Quick researcher.",
+      name: "scout", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
       body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
       allowPublish: ["general"], personaPath: undefined, hash: "abc123",
     }],

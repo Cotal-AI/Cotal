@@ -59,6 +59,9 @@ export interface AgentConfig {
    *  `COTAL_MODEL`. Rides {@link AgentCard.meta}.model as display-only discovery metadata; omitted
    *  when the operator didn't pin one (the harness default isn't knowable from here). */
   model?: string;
+  /** Connector-defined model variant (for example reasoning effort), from `variant:` or
+   *  `COTAL_VARIANT`. Display-only discovery metadata. */
+  variant?: string;
   token?: string;
   user?: string;
   pass?: string;
@@ -145,6 +148,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     meta: def?.meta,
     capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
     model: env.COTAL_MODEL?.trim() || def?.model || undefined,
+    variant: env.COTAL_VARIANT?.trim() || def?.variant || undefined,
     servers: env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,
     allowSubscribe: resolvedAllowSub,

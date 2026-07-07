@@ -38,6 +38,11 @@ export interface LaunchOpts {
    *  agent file's `model:` and is applied even when no agent file is present. Each connector
    *  renders it in its host form (Claude `--model`, OpenCode `config.model`, Hermes `HERMES_MODEL`). */
   model?: string;
+  /** Optional model variant selector — a connector-defined variant of the selected/default model
+   *  (for example provider-specific reasoning effort). Takes precedence over the agent file's
+   *  `variant:`. A connector that supports variants renders it in its host form; unsupported
+   *  connectors fail loud rather than silently ignoring it. */
+  variant?: string;
   /** An initial message for the session to act on the moment it starts. Connectors
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */
@@ -88,6 +93,39 @@ export interface LaunchSpec {
   control?: { path: string; token: string };
 }
 
+/** One provider-specific model variant. `options` is opaque connector metadata for UIs; core never
+ *  interprets it or feeds it back into launch. */
+export interface ModelVariantInfo {
+  name: string;
+  options?: Record<string, unknown>;
+}
+
+/** One model a connector can launch. `id` is the value to pass as {@link LaunchOpts.model}; variants
+ *  are selected separately via {@link LaunchOpts.variant}. */
+export interface ModelInfo {
+  id: string;
+  name?: string;
+  provider?: string;
+  variants?: ModelVariantInfo[];
+}
+
+/** Connector-provided model catalog. Optional by design: some hosts have no local model-list API. */
+export interface ModelCatalog {
+  source?: string;
+  models: ModelInfo[];
+}
+
+export interface ModelCatalogOpts {
+  refresh?: boolean;
+}
+
+/** Manager-facing wrapper for one connector's catalog lookup. */
+export interface ConnectorModelCatalog extends ModelCatalog {
+  agent: string;
+  supported: boolean;
+  error?: string;
+}
+
 /**
  * A bridge that knows how to launch one agent type (Claude Code, OpenCode, the CLI
  * peer …) as a Cotal mesh node — an {@link Extension} of kind `"connector"`.
@@ -99,6 +137,9 @@ export interface Connector extends Extension {
   readonly kind: "connector";
   readonly name: string;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
+  /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
+   *  and still accepts any string the operator supplies. */
+  listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
   /** The channel this connector publishes an agent's transcript mirror to (see
    *  {@link LaunchOpts.transcript}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
    *  actually mirror (Claude Code, OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
@@ -127,4 +168,7 @@ export interface Connector extends Extension {
    *  stays as the backstop. Only a connector that forks-from a prior session (never hijacks it) sets
    *  this `true`. */
   readonly supportsResume?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
+   *  fails before provisioning side effects in the manager. */
+  readonly supportsModelVariant?: boolean;
 }

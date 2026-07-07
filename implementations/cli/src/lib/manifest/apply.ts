@@ -24,6 +24,7 @@ export function hashAgent(a: PreparedAgent): string {
   const stable = JSON.stringify({
     agent: a.agentType,
     model: a.model ?? null,
+    variant: a.variant ?? null,
     role: a.role ?? null,
     body: a.body ?? null,
     capabilities: [...a.capabilities].sort(),
@@ -41,6 +42,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
     agent: a.agentType,
     role: a.role,
     model: a.model,
+    variant: a.variant,
     description: a.description,
     body: a.body,
     capabilities: a.capabilities.length ? a.capabilities : undefined,
@@ -124,6 +126,9 @@ export function preflightConnectors(prepared: PreparedManifest): string {
     }
     const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length) problems.push(`${type} needs ${missing.join(", ")} on PATH`);
+    const variantUsers = prepared.agents.filter((a) => a.agentType === type && a.variant);
+    if (variantUsers.length && !connector.supportsModelVariant)
+      problems.push(`${type} does not support model variants (used by ${variantUsers.map((a) => a.name).join(", ")})`);
   }
   return problems.join("; ");
 }
