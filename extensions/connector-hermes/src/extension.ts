@@ -35,6 +35,7 @@ export const hermesConnector: Connector = {
     // ignores opts it doesn't render, so without this guard `resume` would be dropped without a word.
     if (opts.resume)
       throw new Error("the Hermes connector does not support resuming an existing session (resume)");
+    if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
     // OS allow-list + the named model-provider key (Hermes is model-agnostic; any one unlocks a
     // provider), forwarded BY NAME — never `...process.env` — so the operator's unrelated secrets
     // don't reach the gateway child (P3).
@@ -56,7 +57,10 @@ export const hermesConnector: Connector = {
     // gateway model — resolving here is the one place that honors the file's model for Hermes.
     const fileModel = opts.configPath ? loadAgentFile(opts.configPath).model : undefined;
     const model = opts.model ?? fileModel ?? process.env.HERMES_MODEL;
-    if (model) env.HERMES_MODEL = model;
+    if (model) {
+      env.HERMES_MODEL = model;
+      env.COTAL_MODEL = model;
+    }
     return { command: TSX, args: [LAUNCH_ENTRY], env };
   },
 };

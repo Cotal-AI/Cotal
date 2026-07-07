@@ -3,7 +3,7 @@
  * (read from disk) with the manifest. Pure: it takes already-loaded {@link AgentDef}s so it stays
  * unit-testable; the fs/live I/O lives in {@link ./preflight.js}.
  *
- * Behavior fields (model/role/description/body) are persona-default + manifest-override. Access is
+ * Behavior fields (model/variant/role/description/body) are persona-default + manifest-override. Access is
  * governed by {@link PersonaPermissions}: under `reject` the manifest is the sole source; under
  * `include` a persona's own grants are inherited **only for channels the manifest does not declare**
  * (one authority per channel), concrete-only (wildcards rejected), and surfaced loudly.
@@ -37,6 +37,7 @@ export interface PreparedAgent {
   persona?: string;
   /** Effective values (manifest override ?? persona default). */
   model?: string;
+  variant?: string;
   role?: string;
   description?: string;
   /** Effective persona body (manifest `instructions` REPLACES the file body; sole body for inline). */
@@ -65,6 +66,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
 
   // Behavior: persona default, manifest override wins. Inline `instructions` REPLACE the body.
   const model = agent.model ?? persona?.model;
+  const variant = agent.variant ?? persona?.variant;
   const role = agent.role ?? persona?.role;
   const description = agent.description ?? persona?.description;
   const body = agent.instructions ?? persona?.persona;
@@ -132,6 +134,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       agentType: agent.agentType,
       persona: agent.persona,
       model,
+      variant,
       role,
       description,
       body,

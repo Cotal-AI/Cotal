@@ -44,7 +44,8 @@ channels:
 
 > **Harness:** `agent: claude` runs each agent as Claude Code (which must be installed). Use
 > `agent: opencode` for OpenCode — its models use `provider/model` form (e.g.
-> `anthropic/claude-sonnet-4-6`). You can also set the harness per agent.
+> `anthropic/claude-sonnet-4-6`) and may expose variants (`cotal models --agent opencode`).
+> You can also set the harness per agent.
 
 Save it as `cotal.yaml` and run:
 
@@ -123,6 +124,7 @@ agents:
   builder:                              # 2) a persona file + overrides (manifest wins)
     persona: ./agents/builder.md
     model: sonnet
+    variant: high
     role: implementer
     instructions: Prefer the smallest change that works.
   lead:                                 # 3) inline (no file): needs at least model or instructions
@@ -132,10 +134,10 @@ agents:
     instructions: Coordinate the team.
 ```
 
-Per-agent keys: `persona`, `agent` (harness override), `model`, `role`, `description`,
+Per-agent keys: `persona`, `agent` (harness override), `model`, `variant`, `role`, `description`,
 `instructions`, `capabilities` (e.g. `[spawn]`), `personaPermissions` (override the top-level
-policy). Model strings pass to the harness as-is — for Claude use the short form (`opus`,
-`sonnet`) or the full id; for OpenCode use `provider/model`.
+policy). Model strings and variants pass to the harness as-is — for Claude use the short form
+(`opus`, `sonnet`) or the full id; for OpenCode use `provider/model` plus an optional variant.
 
 ### `channels:` — the three access verbs
 
