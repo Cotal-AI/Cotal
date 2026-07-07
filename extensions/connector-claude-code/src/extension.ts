@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -136,6 +136,19 @@ export const claudeConnector: Connector = {
     // token (no shell), so a hostile-looking id can't inject. The persona `--append-system-prompt`
     // above still applies, so the forked context runs under the current mesh persona.
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+
+    // Opaque connector options → native `claude` flags: `key=value` renders `--key value`, and an
+    // empty value (`--opt foo=`) renders a bare boolean `--foo`. The connector-managed flags below
+    // are refused so a passthrough can't relax the MCP isolation, model, or session it pins.
+    const RESERVED = [
+      "model", "mcp-config", "strict-mcp-config", "append-system-prompt", "resume", "fork-session",
+      "dangerously-load-development-channels", "dangerously-skip-permissions", "allowedTools", "add-dir", "permission-mode",
+    ];
+    for (const [k, v] of connectorLaunchOptions("claude", opts.launchOptions, RESERVED)) {
+      const val = String(v);
+      if (val === "") args.push(`--${k}`);
+      else args.push(`--${k}`, val);
+    }
 
     return {
       command: "claude",

@@ -138,6 +138,27 @@ export function aclEnv(opts: {
   return env;
 }
 
+/** Validate a connector's opaque {@link LaunchOpts.launchOptions} bag and return its entries for
+ *  the connector to render into its host form (CLI flags / config / env). Fails loud on a `reserved`
+ *  key — one the connector itself sets for identity/isolation/model — so a passthrough option can
+ *  never override the flags that enforce the launch's security boundary or its chosen model. Core
+ *  never sees this; each connector calls it with the key set IT manages. */
+export function connectorLaunchOptions(
+  connector: string,
+  launchOptions: Record<string, unknown> | undefined,
+  reserved: readonly string[],
+): [string, unknown][] {
+  if (!launchOptions) return [];
+  const reservedSet = new Set(reserved);
+  const clash = Object.keys(launchOptions).filter((k) => reservedSet.has(k));
+  if (clash.length)
+    throw new Error(
+      `${connector} connector: launch option(s) ${clash.join(", ")} are reserved — the connector sets ` +
+        `them itself and a passthrough must not override them`,
+    );
+  return Object.entries(launchOptions);
+}
+
 /** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
  *  subject-safe characters. The SINGLE source of this connector convention — connectors publish here
  *  (their plugin/runtime path AND their `Connector.transcriptChannel` method both call this), and the

@@ -485,6 +485,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe("Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low)."),
+        launchOptions: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("Optional connector-specific launch options — an opaque key→value map the chosen connector interprets in its own host form; a connector rejects (fails the spawn) any key it doesn't support."),
         cwd: z
           .string()
           .optional()
@@ -497,9 +501,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, role, agent: agentType, model, variant, cwd }: { name: string; role?: string; agent?: string; model?: string; variant?: string; cwd?: string }) {
+      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, cwd });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned

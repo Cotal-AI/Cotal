@@ -166,6 +166,7 @@ function resolveAgents(
     persona: entry.persona ? personaPath(entry.persona) : undefined,
     model: entry.model,
     variant: entry.variant,
+    launchOptions: entry.launchOptions,
     role: entry.role,
     description: entry.description,
     instructions: entry.instructions,

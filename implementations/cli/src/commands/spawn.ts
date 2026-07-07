@@ -33,6 +33,8 @@ import {
   defaultPersonaRef,
   launchFlags,
   loadMeshes,
+  mergeLaunchOptions,
+  parseLaunchOptions,
   provenance,
   resolveMeshTarget,
   serverFlag,
@@ -192,6 +194,7 @@ async function spawnDetached(
   values: FlagValues<typeof spawnFlags>,
   positionals: string[],
   transcript: boolean | undefined,
+  launchOptions: Record<string, string> | undefined,
 ): Promise<void> {
   // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
@@ -214,6 +217,7 @@ async function spawnDetached(
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
+    launchOptions,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
     prompt: values.prompt,
@@ -260,6 +264,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error("--variant needs a variant name (got an empty value)");
     process.exit(1);
   }
+  // Parse `--opt k=v` pairs once, up front — a malformed pair fails loud before either launch path
+  // (foreground or detached) does any work. The opaque map is core-agnostic; the connector validates.
+  let cliLaunchOptions: Record<string, string> | undefined;
+  try {
+    cliLaunchOptions = parseLaunchOptions(values.opt);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(1);
+  }
   // Transcript mirroring to `tr-<name>` is OFF by default. Tri-state: true (--transcript),
   // false (--no-transcript, explicit), undefined (absent). Foreground treats absent as off;
   // detached forwards the tri-state so absent defers to the manager's default.
@@ -269,7 +282,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
   // request and override the file exactly as the foreground path does.
   if (values.detach) {
-    return spawnDetached(values, positionals, transcript);
+    return spawnDetached(values, positionals, transcript, cliLaunchOptions);
   }
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
@@ -416,6 +429,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
     model: values.model,
     variant,
+    // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+    launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
     subscribe,
     allowSubscribe,
     allowPublish,

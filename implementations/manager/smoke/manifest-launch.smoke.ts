@@ -46,6 +46,7 @@ const resolved: MeshLaunchAgent = {
   role: "researcher",
   model: "opus",
   variant: "high",
+  launchOptions: { temperature: "0.2" },
   description: "Quick web researcher.",
   body: "Research the web; report in 3 bullets.",
   capabilities: ["spawn"],
@@ -91,6 +92,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
 };
 let seenVariant: string | undefined;
+let seenLaunchOptions: Record<string, unknown> | undefined;
 const recCon: Connector = {
   kind: "connector",
   name: "smoke-launch",
@@ -98,6 +100,7 @@ const recCon: Connector = {
   supportsModelVariant: true,
   buildLaunch: (opts) => {
     seenVariant = opts.variant;
+    seenLaunchOptions = opts.launchOptions;
     return { command: "true", args: [], env: {} };
   },
 };
@@ -112,6 +115,7 @@ registry.register(recCon);
   check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, reply);
   check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
   check("variant is forwarded to the connector", seenVariant === "high", seenVariant);
+  check("launchOptions forwarded to the connector (via resolved)", JSON.stringify(seenLaunchOptions) === JSON.stringify({ temperature: "0.2" }), seenLaunchOptions);
 
   const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);

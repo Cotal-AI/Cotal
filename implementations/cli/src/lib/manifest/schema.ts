@@ -23,6 +23,8 @@ const AgentEntryObject = z
     agent: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     variant: z.string().min(1).optional(),
+    /** Opaque connector-specific launch options, merged per key over the persona's `launchOptions:`. */
+    launchOptions: z.record(z.string(), z.unknown()).optional(),
     role: z.string().min(1).optional(),
     description: z.string().optional(),
     instructions: z.string().optional(),

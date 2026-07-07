@@ -25,6 +25,7 @@ const LaunchAgentSchema = z.strictObject({
   role: z.string().regex(TOKEN, "role must be a route-safe token ([A-Za-z0-9_-])").optional(),
   model: z.string().optional(),
   variant: z.string().min(1).optional(),
+  launchOptions: z.record(z.string(), z.unknown()).optional(),
   description: z.string().optional(),
   body: z.string().optional(),
   capabilities: z.array(z.string().regex(TOKEN, "capability must be a safe token ([A-Za-z0-9_-])")).optional(),

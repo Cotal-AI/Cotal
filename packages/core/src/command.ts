@@ -26,6 +26,9 @@ export interface FlagSpec {
   readonly type: "string" | "boolean";
   /** Single-character short alias (`f` for `-f`). */
   readonly short?: string;
+  /** Repeatable: `--opt a=1 --opt b=2` collects into an array (Node `parseArgs` `multiple`).
+   *  A repeated flag without this errors as a usage violation (last-wins is never silent). */
+  readonly multiple?: boolean;
   /** Metavar shown in help for string flags, e.g. `<url>`. Defaults to `<value>`. */
   readonly value?: string;
   /** One-line help text. */
@@ -45,7 +48,11 @@ export interface ParsedArgs {
  *  `args.values as FlagValues<typeof FLAGS>` cast can never disagree with what the dispatcher
  *  parses: add/retype/remove a flag in the spec and every stale use is a compile error. */
 export type FlagValues<F extends readonly FlagSpec[]> = {
-  [S in F[number] as S["name"]]?: S["type"] extends "boolean" ? boolean : string;
+  [S in F[number] as S["name"]]?: S extends { multiple: true }
+    ? string[]
+    : S["type"] extends "boolean"
+      ? boolean
+      : string;
 };
 
 /**
@@ -92,7 +99,11 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
   if (cmd.rawArgs) return { values: {}, positionals: [...argv], raw: argv };
   const options: ParseArgsOptionsConfig = {};
   for (const f of cmd.flags ?? []) {
-    options[f.name] = f.short ? { type: f.type, short: f.short } : { type: f.type };
+    options[f.name] = {
+      type: f.type,
+      ...(f.short ? { short: f.short } : {}),
+      ...(f.multiple ? { multiple: true } : {}),
+    };
   }
   const { values, positionals } = parseArgs({
     args: [...argv],

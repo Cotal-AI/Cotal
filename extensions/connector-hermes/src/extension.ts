@@ -36,6 +36,10 @@ export const hermesConnector: Connector = {
     if (opts.resume)
       throw new Error("the Hermes connector does not support resuming an existing session (resume)");
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
+    // The Hermes launcher reads a FIXED set of env vars, so it has no generic launch-option surface —
+    // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
+    if (opts.launchOptions && Object.keys(opts.launchOptions).length)
+      throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
     // OS allow-list + the named model-provider key (Hermes is model-agnostic; any one unlocks a
     // provider), forwarded BY NAME — never `...process.env` — so the operator's unrelated secrets
     // don't reach the gateway child (P3).
