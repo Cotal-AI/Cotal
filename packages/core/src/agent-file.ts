@@ -11,13 +11,14 @@
  *   allowSubscribe: [general]  # read ACL — channels it MAY read; omit ⇒ same as `subscribe`
  *   allowPublish: [general]    # post ACL — channels it may publish to; omit ⇒ DENY (default-deny)
  *   model: opus                # optional CLI/model override
+ *   variant: high              # optional connector-defined model variant
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
  *   theme: dark            # any unmodelled key is kept verbatim in AgentDef.meta, so a
  *                          #   connector can read its own launcher hints without core knowing them
  *   ---
  *   <the Markdown body is the persona — an appended system prompt>
  *
- * A launcher resolves a name (or path) to one of these, hands the persona/model
+ * A launcher resolves a name (or path) to one of these, hands the persona/model/variant
  * to the agent process at spawn, and passes the file through so the joined
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
@@ -55,6 +56,8 @@ export interface AgentDef {
   muted?: string[];
   /** Model override handed to the agent CLI (e.g. `claude --model`). */
   model?: string;
+  /** Connector-defined model variant handed to the launcher (e.g. OpenCode reasoning effort). */
+  variant?: string;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
    *  cred's publish allow-list). Today `spawn` is the only one: it grants publish to the
    *  privileged control subject (start/purge/definePersona/named stop). Default-deny when
@@ -186,7 +189,7 @@ export function loadAgentFile(path: string): AgentDef {
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
-  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "model", "capabilities", "owner"]);
+  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "model", "variant", "capabilities", "owner"]);
   const meta: Record<string, string> = {};
   for (const [k, v] of Object.entries(fm)) if (!known.has(k) && typeof v === "string") meta[k] = v;
 
@@ -202,6 +205,7 @@ export function loadAgentFile(path: string): AgentDef {
     quiet,
     muted,
     model: str("model"),
+    variant: str("variant"),
     capabilities: list("capabilities"),
     owner: str("owner"),
     meta: Object.keys(meta).length ? meta : undefined,
@@ -227,6 +231,7 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.quiet?.length) lines.push(`quiet: [${def.quiet.map(fmItem).join(", ")}]`);
   if (def.muted?.length) lines.push(`muted: [${def.muted.map(fmItem).join(", ")}]`);
   if (def.model) lines.push(`model: ${fmScalar(def.model)}`);
+  if (def.variant) lines.push(`variant: ${fmScalar(def.variant)}`);
   if (def.capabilities?.length) lines.push(`capabilities: [${def.capabilities.map(fmItem).join(", ")}]`);
   if (def.owner) lines.push(`owner: ${fmScalar(def.owner)}`);
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) lines.push(`${k}: ${fmScalar(v)}`);

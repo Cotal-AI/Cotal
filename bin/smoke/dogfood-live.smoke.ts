@@ -17,11 +17,19 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const AUTH_PORT = 14361;
-const WEB_PORT = 14371;
+// Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
+  });
+const AUTH_PORT = await freePort();
+const WEB_PORT = await freePort();
 const REPO = resolve(import.meta.dirname, "..", "..");
 
 const sandbox = mkdtempSync(join(tmpdir(), "cotal-dogfood-"));

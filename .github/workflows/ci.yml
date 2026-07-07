@@ -8,91 +8,124 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
+# Same coverage as before, fanned across parallel jobs so wall-clock is the slowest job, not the sum:
+#   • unit  — typecheck + build + unit tests + the broker-free view/pack checks (fast).
+#   • smoke — the protocol/security suite (smoke:ci), round-robin sharded across runners by
+#             bin/smoke/shard.mjs (each smoke still runs in its own broker; shards are on separate
+#             runners, so no cross-smoke port contention).
+#   • live  — the Linux-only live/lifecycle e2es (real broker + real agents, tmux/cmux/opencode).
+# `ci-ok` fans them back in for a single required status.
 jobs:
-  check:
-    timeout-minutes: 30
+  unit:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Build
+        run: pnpm build
+      - name: Unit tests
+        run: pnpm test
+      - name: View smoke
+        run: pnpm smoke:view
+      - name: Verify Claude connector package
+        run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+  smoke:
+    name: smoke (shard ${{ matrix.shard }}/4)
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Cache nats-server
+        id: nats
+        uses: actions/cache@v4
+        with:
+          path: ~/nats-bin
+          key: nats-server-v2.10.22-${{ runner.os }}
       - name: Install nats-server
+        if: steps.nats.outputs.cache-hit != 'true'
         run: |
           NATS_VERSION=v2.10.22
           curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
           tar -xzf /tmp/nats-server.tar.gz -C /tmp
-          sudo install "/tmp/nats-server-${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
-          nats-server --version
+          mkdir -p ~/nats-bin
+          install "/tmp/nats-server-${NATS_VERSION}-linux-amd64/nats-server" ~/nats-bin/nats-server
+      - name: nats-server on PATH
+        run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: pnpm build
+      - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
+        run: node bin/smoke/shard.mjs ${{ matrix.shard }} 4
 
+  live:
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Cache nats-server
+        id: nats
+        uses: actions/cache@v4
+        with:
+          path: ~/nats-bin
+          key: nats-server-v2.10.22-${{ runner.os }}
+      - name: Install nats-server
+        if: steps.nats.outputs.cache-hit != 'true'
+        run: |
+          NATS_VERSION=v2.10.22
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
+          tar -xzf /tmp/nats-server.tar.gz -C /tmp
+          mkdir -p ~/nats-bin
+          install "/tmp/nats-server-${NATS_VERSION}-linux-amd64/nats-server" ~/nats-bin/nats-server
+      - name: nats-server on PATH
+        run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Install tmux
         run: tmux -V || (sudo apt-get update && sudo apt-get install -y tmux)
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Test
-        run: pnpm test
-
-      - name: Smoke test
-        run: pnpm smoke:view
-
-      - name: Protocol & security smoke tests
-        run: pnpm smoke:ci
-
-      - name: Core boundary, mesh preflight & resolution smoke tests
-        # Core-never-imports-workspace boundary guard (smoke:core-boundary), the broker-free preflight
-        # decision tree incl. the prune-authority rules (smoke:preflight, now in @cotal-ai/workspace),
-        # the live manager target-resolution regression (smoke:server-resolution:live), and the live
-        # spawn-from-anywhere registry/auth-path e2e (smoke:spawn-from-anywhere:live). The last one is
-        # gated here AND in `pnpm check` deliberately: CLI smoke files are outside package typecheck, so
-        # a dynamic `await import()` boundary regression in a live smoke escapes tsc — only running it catches it.
-        # smoke:up-stack:live / smoke:up-manifest:live e2e the full `up --detach` stack (broker +
-        # delivery + manager, real `cotal ps`) and the one-manager-carries-the-launch invariant of
-        # `up -f` (the singleton-lease race regression). smoke:ext:live e2es the operator-installed
-        # extension lifecycle (cotal ext) through the real binary. smoke:readiness:live e2es the
-        # #159 B1 launch readiness window with a real slow-joining agent (spawn/launch clients must
-        # outlive the manager's real-outcome reply). nats-server installed above.
+      - name: Build
+        run: pnpm build
+      # Broker-free boundary/preflight guards + the live target-resolution / spawn-from-anywhere /
+      # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
+      - name: Core boundary, mesh preflight & resolution
         run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
-
       - name: Manager lifecycle e2e (real broker + real agents)
-        # Real end-to-end for #159 Part B: the startAgent presence-race (started via real presence / failed
-        # on process exit), deprovision-on-despawn, and shutdown teardown — verified against a real JWT-auth
-        # broker with real agent processes and direct broker-footprint inspection (durables/ACL/creds). Uses
-        # real pty processes, so Linux-only (not in the cross-platform smoke:ci). nats-server installed above.
         run: pnpm smoke:lifecycle-e2e
-
       - name: Runtime smoke tests (tmux)
-        # Exercises the tmux Runtime + TerminalLayout end to end (driver, lifecycle by stable
-        # @window_id/%pane_id, P3 env -i isolation, attach hints). dist is built by Typecheck above.
-        # Includes the privateLaunch no-leak guard: a live pane's command carries no env secret.
         run: pnpm smoke:runtime
-
       - name: cmux launcher secret-hygiene smoke
-        # The cmux pane launcher writes the agent's env (creds + control token) to a 0o600 file in a
-        # 0o700 dir, never a world-readable /tmp script or the returned command line. Exercises
-        # paneCommand directly (no cmux CLI needed), so it runs here.
         run: pnpm smoke:cmux
-
       - name: OpenCode cooperative-stop smoke test
-        # The opencode plugin's control-plane cooperative shutdown: a {op:"shutdown"} makes the plugin
-        # leave the mesh (publish offline presence) instead of waiting out the presence TTL. Drives the
-        # real plugin closure (in a subprocess) under Node against a real broker; the real opencode
-        # (Bun) runtime — incl. Bun-on-Windows named pipes — is not in CI yet (no opencode binary here).
-        # (smoke:opencode / turn-wedge is intentionally not wired here — it depends on open-mode stream
-        # auto-setup that is currently broken independent of this change; tracked separately.)
         run: pnpm smoke:opencode-coop
 
-      - name: Verify Claude connector package
-        run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run
+  ci-ok:
+    # Single required status: green only if unit + every smoke shard + live all passed.
+    if: always()
+    needs: [unit, smoke, live]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate
+        run: |
+          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }}"
+          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ]

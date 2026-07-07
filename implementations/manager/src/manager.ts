@@ -25,7 +25,7 @@ import {
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
 import { authDir, defaultAgentType, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
-import type { AgentDef, AttachSession, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
+import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -98,6 +98,8 @@ export interface StartAgentOpts {
   identity?: string;
   /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
   model?: string;
+  /** Model variant override (the `--variant` flag). Takes precedence over the agent file's `variant:`. */
+  variant?: string;
   /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
@@ -385,6 +387,8 @@ export class Manager {
         return this.opAttach(args, caller, admin);
       case "ps":
         return { ok: true, data: this.list() };
+      case "models":
+        return this.opModels(args);
       case "status": {
         const a = this.list().find((x) => x.name === name);
         return a ? { ok: true, data: a } : { ok: false, error: `no agent "${name}"` };
@@ -554,6 +558,8 @@ export class Manager {
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
     if (args.resume !== undefined && !String(args.resume).trim())
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
+    if (args.variant !== undefined && !String(args.variant).trim())
+      return Promise.resolve({ ok: false, error: "variant: must not be empty" });
     // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
     // not something to coerce (no fallbacks).
     const strList = (v: unknown, flag: string): string[] | undefined => {
@@ -578,6 +584,7 @@ export class Manager {
         config: args.config ? String(args.config) : undefined,
         identity: args.identity ? String(args.identity) : undefined,
         model: args.model ? String(args.model) : undefined,
+        variant: args.variant ? String(args.variant) : undefined,
         resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
@@ -589,6 +596,43 @@ export class Manager {
       },
       caller,
     );
+  }
+
+  /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
+   *  local model-list API reports `supported:false` rather than blocking the manager. */
+  private async opModels(args: Record<string, unknown>): Promise<ControlReply> {
+    const requested = String(args.agent ?? "").trim();
+    const refresh = args.refresh === true;
+    const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
+      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
+      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
+      if (missing.length)
+        return {
+          agent: connector.name,
+          supported: true,
+          models: [],
+          error: `${connector.name} harness needs ${missing.join(", ")} on PATH — not found`,
+        };
+      try {
+        const catalog = await connector.listModels({ refresh });
+        return { agent: connector.name, supported: true, ...catalog };
+      } catch (e) {
+        return { agent: connector.name, supported: true, models: [], error: (e as Error).message };
+      }
+    };
+
+    if (requested) {
+      let connector: Connector;
+      try {
+        connector = registry.resolve<Connector>("connector", requested);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      const result = await one(connector);
+      return result.error ? { ok: false, error: result.error } : { ok: true, data: result };
+    }
+
+    return { ok: true, data: await Promise.all(registry.all<Connector>("connector").map(one)) };
   }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
@@ -688,7 +732,7 @@ export class Manager {
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
 
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
-    // + model. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
+    // + model/variant. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
     // is a materialized transient persona — the file is NOT the access authority), or from the
     // persona file. The number rides the IDENTITY (socrates → socrates-2), not the file ref — a
     // redelivered identical spawn yields a fresh numbered agent (MAX_AGENTS bounds the blast radius).
@@ -699,6 +743,7 @@ export class Manager {
     let allowPublish: string[] | undefined;
     let capabilities: string[] | undefined;
     let model = opts.model;
+    let variant = opts.variant;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -712,6 +757,7 @@ export class Manager {
       allowPublish = r.allowPublish;
       capabilities = r.capabilities;
       model = opts.model ?? r.model;
+      variant = opts.variant ?? r.variant;
     } else {
       let def: AgentDef;
       try {
@@ -733,9 +779,12 @@ export class Manager {
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? ["general"];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
+      variant = opts.variant ?? def.variant;
     }
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+    if (variant && !connector.supportsModelVariant)
+      return { ok: false, error: `${agent} connector does not support model variants (variant)` };
 
     const name = this.uniqueName(identityName);
     this.reserved.add(name);
@@ -806,6 +855,7 @@ export class Manager {
         servers: this.servers,
         configPath,
         model,
+        variant,
         // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.

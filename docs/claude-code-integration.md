@@ -137,7 +137,7 @@ run`). They differ only in how they *run* the spec:
 
 | Launcher | How to point at a file |
 |---|---|
-| Manager (supervised PTY) | `cotal spawn --detach dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <persona-or-path>` for an explicit persona ref/file; the SAME grammar as the foreground launch — `--model`, `--cwd`, `--prompt`, ACL overrides, `--share-tools` all apply. View via console / `cotal attach`. |
+| Manager (supervised PTY) | `cotal spawn --detach dave` (auto-discovers `.cotal/agents/dave.md` in the manager's workspace) or `--config <persona-or-path>` for an explicit persona ref/file; the SAME grammar as the foreground launch — `--model`, `--variant`, `--cwd`, `--prompt`, ACL overrides, `--share-tools` all apply. View via console / `cotal attach`. |
 | Foreground (`cotal spawn`) | `cotal spawn <persona>` for `.cotal/agents/<persona>.md`, or `--config <persona-or-path>` when a flag is clearer. The real Claude TUI takes over this terminal (run it inside a cmux/tmux pane to multiplex). Works from **any directory** — it joins the running mesh via the registry (see below), no `cd` into the project that ran `cotal up`. |
 
 `.cotal/` is gitignored (user-local, like `.claude/`). The demo ships committed example
@@ -153,14 +153,16 @@ as `--config`; an explicit positional persona or `--config` wins.
 `COTAL_DEFAULT_AGENT` when set, otherwise Claude. For example, start the stack with
 `COTAL_DEFAULT_AGENT=opencode cotal up --detach` to make later `cotal_spawn(...)` calls launch
 OpenCode by default. Foreground `cotal spawn` reads the same variable. An explicit per-spawn
-`--agent claude` / `agent: "claude"` still wins.
+`--agent claude` / `agent: "claude"` still wins. Selector UIs can ask the manager for connector
+catalogs with `cotal models --agent opencode`; connectors that expose a catalog report model ids
+and variant names without Cotal hardcoding provider lists.
 
 **Define one at runtime.** `cotal_persona(name, prompt, model?)` sends the persona to the
 manager, which writes the same `.cotal/agents/<name>.md` file (via `saveAgentFile`) and
-announces it on the mesh. A later `cotal_spawn(name, role?, agent?, model?)` auto-discovers it, so
+announces it on the mesh. A later `cotal_spawn(name, role?, agent?, model?, variant?)` auto-discovers it, so
 a peer can mint a teammate's persona on the fly and bring it online with no hand-written file. The
 agent spawn door carries the same knobs as the operator's `cotal spawn --detach` — `role`, `agent` (harness)
-and `model` (overrides the persona file's `model:`) — set at spawn because they are policy, not
+and `model` / `variant` (override the persona file's selectors) — set at spawn because they are policy, not
 persona content.
 
 **Resume an existing session (fork, never hijack).** `--resume <session-id>` pulls an existing

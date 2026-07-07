@@ -10,15 +10,23 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:up-manifest:live
  */
 import { spawnSync } from "node:child_process";
-import { createConnection } from "node:net";
+import { createConnection, createServer, type AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const PORT = 14311;
-const DECOY_PORT = 14312; // the manifest declares this; --server overrides it to PORT
+// Ephemeral free ports + a per-run space: repeated or concurrent runs never collide on a fixed port
+// nor contaminate each other's `supervise` scan (the old fixed 14311 / "upf-live" flaked locally).
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
+  });
+const PORT = await freePort();
+const DECOY_PORT = await freePort(); // the manifest declares this; --server overrides it to PORT
 const SERVER = `nats://127.0.0.1:${PORT}`;
-const SPACE = "upf-live";
+const SPACE = `upf-live-${process.pid}`;
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
@@ -74,10 +82,11 @@ channels:
 `,
 );
 
+let mgrPid = NaN;
 try {
   // 1) fresh up -f with a --server OVERRIDE (the manifest declares the decoy port; the flag wins).
   const up = cli("up", "-f", manifest, "--server", SERVER);
-  ok("up -f reports the mesh is up", /mesh "upf-live" up/.test(up.stdout), up.stdout + up.stderr);
+  ok("up -f reports the mesh is up", up.stdout.includes(`mesh "${SPACE}" up`), up.stdout + up.stderr);
   ok("up -f reports seeded channels", /seeded 2 channel/.test(up.stdout), up.stdout);
   // Regression guard (checked BEFORE any settle sleep, while a lease-race loser would still be
   // alive): the launch rides THE one control-plane manager — two supervises here means the plain
@@ -86,7 +95,7 @@ try {
   await sleep(1500);
   ok("broker bound the --server OVERRIDE port (not the manifest's)", await portOpen(PORT));
   ok("manifest's declared port was NOT used (override won)", !(await portOpen(DECOY_PORT)));
-  const mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
+  mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
   ok("the recorded manager is alive (not a lease-race loser)", Number.isFinite(mgrPid) && alive(mgrPid), mgrPid);
   const mgrCmd = spawnSync("ps", ["-p", String(mgrPid), "-o", "command="], { encoding: "utf8" }).stdout;
   ok("the recorded manager carries the launch spec", /--launch\b/.test(mgrCmd), mgrCmd);
@@ -109,19 +118,22 @@ try {
   ok("...and redirects to spawn -f", /spawn -f/.test(again.stderr), again.stderr);
 
   // 5) down tears the mesh down + clears the run dir — including the manager (nothing orphaned).
-  //    Poll: the SIGTERM'd manager shuts down gracefully, which can take a few seconds on slow CI.
+  //    `cotal down` now awaits real exit; keep a backstop poll keyed on the EXACT manager pid
+  //    (precise — a name scan can be contaminated by an unrelated run) in case of a slow CI reap.
   down();
   let torn = false;
-  for (let i = 0; i < 24 && !torn; i++) {
-    await sleep(500);
-    torn = !(await portOpen(PORT)) && supervisors().length === 0;
+  for (let i = 0; i < 60 && !torn; i++) {
+    torn = !alive(mgrPid) && !(await portOpen(PORT));
+    if (!torn) await sleep(500);
   }
-  ok("broker + manager are gone after down (no orphaned supervise)", torn, supervisors());
+  ok("broker + manager are gone after down (no orphaned supervise)", torn, { mgrAlive: alive(mgrPid), portOpen: await portOpen(PORT), supervisors: supervisors() });
   ok("transient run dir cleaned by down", !existsSync(runDir));
 
   console.log(`\nUP-MANIFEST LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
   down();
+  // Belt-and-suspenders: if down somehow didn't reap the manager, don't leave an orphan behind.
+  if (Number.isFinite(mgrPid) && alive(mgrPid)) { try { process.kill(mgrPid, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

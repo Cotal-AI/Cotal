@@ -29,6 +29,7 @@ export const launchFlags = [
   { name: "agent", type: "string", value: "<a>", description: "connector type (claude, opencode, hermes …); defaults from COTAL_DEFAULT_AGENT" },
   { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
   { name: "model", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },
+  { name: "variant", type: "string", value: "<v>", description: "model variant override (connector-defined; wins over the agent file's variant:)" },
   { name: "cwd", type: "string", value: "<dir>", description: "working directory to root the agent at" },
   { name: "prompt", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
   { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (claude only; detached: pair with --cwd)" },

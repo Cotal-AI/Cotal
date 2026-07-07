@@ -56,9 +56,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "file:string:f", "model:string", "name:string", "no-transcript:boolean",
       "prompt:string", "resume:string", "role:string", "runtime:string", "server:string",
       "share-tools:string", "space:string", "subscribe:string", "transcript:boolean",
+      "variant:string",
     ],
     positionals: true,
   },
+  models: { flags: [...TARGET, "agent:string", "refresh:boolean"], positionals: false },
   personas: {
     flags: [
       ...TARGET, "force:boolean", "from:string", "model:string", "prompt:string", "role:string",
