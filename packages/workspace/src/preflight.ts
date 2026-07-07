@@ -57,6 +57,11 @@ export async function preflightTarget(
   target: MeshTarget,
   probeCreds?: string,
 ): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean }> {
+  // A user-mode target has no probe credential by design (its auth is a per-connect bearer) — a
+  // credless probe would be DENIED by the callout and misclassified as a stale registry entry
+  // (prune:true). Callers own the user connect; reaching here with one is a caller bug, fail loud.
+  if (target.mode === "user")
+    throw new Error("preflightTarget: a user-mode target cannot be credless-probed — the caller owns the user connect (see preflightOrExit's user branch)");
   const creds =
     probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "probe") : undefined);
   const probe = await probeConnect(target.server, creds ? { creds } : {});

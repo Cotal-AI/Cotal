@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
+  isReachable,
   mintCreds,
   newIdentity,
   probeConnect,
@@ -231,6 +232,16 @@ export async function resolveTargetOrExit(flags: {
  *  caller's `--creds`/minted creds); otherwise a throwaway identity is minted from the target's
  *  own trust material. */
 export async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise<void> {
+  // USER-mode targets are never credless-probed here: the callout denies a bare connect, the
+  // classifier reads that as a stale registry entry, and the PRUNE deletes a healthy mesh's
+  // record (found live: foreground `spawn` did exactly this and every later command fell into
+  // raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a user
+  // target is the user connect / bearer chain itself.
+  if (target.mode === "user") {
+    if (await isReachable(target.server)) return;
+    console.error(c.red(`✗ mesh "${target.space}" at ${target.server} is not reachable — start it with \`cotal up\` from its project folder`));
+    process.exit(1);
+  }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
   if (r.prune) removeMesh(target.space);
