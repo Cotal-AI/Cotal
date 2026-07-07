@@ -421,44 +421,55 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   );
 
   const connector = registry.resolve<Connector>("connector", agentType);
-  const spec = connector.buildLaunch({
-    space,
-    name,
-    role,
-    id,
-    creds: credsPath,
-    userAuth,
-    servers: server,
-    configPath: path,
-    // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
-    model: values.model,
-    subscribe,
-    allowSubscribe,
-    allowPublish,
-    prompt: values.prompt,
-    // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
-    // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
-    resume: values.resume,
-    transcript,
-    mcpServers,
-  });
+  // From here through a successful child launch, a THROW must run the user-mode cleanup — otherwise
+  // a buildLaunch/spawn rejection (unsupported resume/model, a bad connector) leaves the just-granted
+  // managed row + secret files standing (the freelance's blocker: cleanup only ran on normal exit).
+  let child: ReturnType<typeof spawnProcess>;
+  try {
+    const spec = connector.buildLaunch({
+      space,
+      name,
+      role,
+      id,
+      creds: credsPath,
+      userAuth,
+      servers: server,
+      configPath: path,
+      // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
+      model: values.model,
+      subscribe,
+      allowSubscribe,
+      allowPublish,
+      prompt: values.prompt,
+      // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
+      // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
+      resume: values.resume,
+      transcript,
+      mcpServers,
+    });
 
-  console.error(
-    `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
-  );
-  if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
-  const child = spawnProcess(spec.command, spec.args, {
-    stdio: "inherit",
-    // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
-    // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
-    env: spec.env ?? {},
-    // `--cwd` roots the agent at another folder/repo (launch-grammar parity with --detach); a
-    // relative path resolves against the invoking shell's cwd. Omitted → inherit this cwd.
-    cwd: values.cwd ? resolvePath(values.cwd) : undefined,
-  });
+    console.error(
+      `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
+    );
+    if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
+    child = spawnProcess(spec.command, spec.args, {
+      stdio: "inherit",
+      // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
+      // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
+      env: spec.env ?? {},
+      // `--cwd` roots the agent at another folder/repo (launch-grammar parity with --detach); a
+      // relative path resolves against the invoking shell's cwd. Omitted → inherit this cwd.
+      cwd: values.cwd ? resolvePath(values.cwd) : undefined,
+    });
+  } catch (e) {
+    // Launch construction threw AFTER the user-mode grant landed — revoke + shred before rethrowing,
+    // so no standing managed grant survives a spawn that never started.
+    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(err as Error).message}`)));
+    throw e;
+  }
   await new Promise<void>((resolve) => {
     child.on("error", (e) => {
-      console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
+      console.error(`✗ failed to launch the agent process: ${e.message}`);
       process.exitCode = 1;
       resolve();
     });

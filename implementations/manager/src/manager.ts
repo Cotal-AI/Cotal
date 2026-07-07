@@ -920,7 +920,12 @@ export class Manager {
     // Set once the agent's creds + durables are minted; cleared the moment a live slot takes ownership
     // (`agents.set`, after which freeSlot deprovisions on exit). If it survives to `finally`, the spawn
     // threw AFTER minting (buildLaunch / runtime.spawn) — tear the orphan down so no footprint leaks (#159 B).
-    let provisioned: { id: string; name: string } | undefined;
+    // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
+    // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
+    // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
+    // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
+    // static durable teardown (the freelance found this window leaking the managed grant + files).
+    let provisioned: { id: string; name: string; userOwner?: string } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -948,7 +953,7 @@ export class Manager {
         }
         userLaunch = prep.launch;
         userOwner = prep.owner;
-        provisioned = { id: principalKey(prep.owner, name).key, name };
+        provisioned = { id: principalKey(prep.owner, name).key, name, userOwner: prep.owner };
       } else if (this.auth) {
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection

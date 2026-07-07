@@ -180,6 +180,16 @@ const e2eCon: Connector = {
 };
 registry.register(e2eCon);
 
+// A connector whose buildLaunch THROWS after the manager has already provisioned the user grant —
+// exercises the post-provision failure window the freelance found leaking the managed row + files.
+const e2eFailCon: Connector = {
+  kind: "connector",
+  name: "e2e-fail",
+  requires: ["node"],
+  buildLaunch: (): LaunchSpec => { throw new Error("e2e-fail: buildLaunch deliberately rejects this launch"); },
+};
+registry.register(e2eFailCon);
+
 // ---------- the real Better Auth IdP (device-code, auto-approved) ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 const idpSrv = createServer((req, res) => handler!(req, res));
@@ -425,6 +435,16 @@ try {
   const healRun = await execBearer(alphaBearerArgv);
   check("the agent bearer command succeeds after the auth service heals", healRun.ok && healRun.stdout.trim().split(".").length === 3, { ok: healRun.ok, err: healRun.stderr.slice(0, 120) });
   check("manager ps is auth-clean again (no authHealth flag)", manager.list().find((a) => a.name === "alpha")?.authHealth === undefined, manager.list().find((a) => a.name === "alpha"));
+
+  // ---------- H. post-provision failure window (freelance blocker 1) ----------
+  console.log("H) a spawn that provisions then FAILS at buildLaunch leaves no managed grant behind");
+  const hReply = await manager.startAgent({ name: "gamma", agent: "e2e-fail", owner: OWNER });
+  check("a spawn failing after provisioning is reported not-ok", hReply.ok === false, hReply);
+  // The orphan-rollback must run the USER-MODE teardown (revoke + shred), not just static durables —
+  // so the managed row AND all three secret files are gone, and the grant can't mint a bearer.
+  const gammaRowGone = !existsSync(rowFile("managed", OWNER, "gamma"));
+  const gammaFilesGone = ["gamma.actor-token", "gamma.sentinel.creds", "gamma.auth-health.json"].every((f) => !existsSync(join(credsDir, f)));
+  check("the failed spawn left NO managed row and NO secret files (orphan rollback ran the user-mode teardown)", gammaRowGone && gammaFilesGone, { gammaRowGone, gammaFilesGone });
 
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
