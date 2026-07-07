@@ -91,8 +91,17 @@ export type Profile =
   | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
   | "deployer"; // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
 
-export type CredentialLifetimeClass = "standing-renewable" | "one-shot" | "static-operator-managed" | "mixed";
-export type CredentialKind = Profile | "membership-observer";
+export type CredentialLifetimeClass =
+  | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
+  // The $SYS class: bounded exp but NOT online-renewable — the $SYS signing seed is destroyed at end
+  // of `up` (saveSpaceAuth strips it), so no running process can re-mint these. Their only renewal is
+  // a coordinated system-account ROTATION (rotateSystemAccount) + broker restart. Named distinctly so
+  // the "renewable" verb can never leak "online renewal" into the doctor/operator copy (D5 slice 5).
+  | "rotation-renewed"
+  | "one-shot"
+  | "static-operator-managed"
+  | "mixed";
+export type CredentialKind = Profile | "membership-observer" | "connection-evictor";
 
 export interface CredentialLifetimePolicy {
   class: CredentialLifetimeClass;
@@ -103,6 +112,14 @@ export interface CredentialLifetimePolicy {
 }
 
 const FIVE_MINUTES = 5 * 60;
+
+/** Bounded lifetime for the `rotation-renewed` $SYS credentials (membership-observer + connection-
+ *  evictor). They are NOT online-renewable (the $SYS seed dies at end of `up`), so this exp is the
+ *  credential-death horizon: a copied observer/evictor cred becomes broker-dead after it, and the
+ *  operator is expected to have run a coordinated system-account rotation + broker restart within it
+ *  (the doctor surface warns ahead — slice 6). 30 days balances "copied cred eventually dies" against
+ *  a comfortable monthly rotation cadence; tune here as one named knob. */
+export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
 
 /** D5 profile matrix. This is intentionally centralized so every new mint profile must classify its
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
@@ -124,7 +141,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
-  "membership-observer": { class: "standing-renewable", renewalOwner: "delivery launcher", note: "system-account CONNZ observer persisted beside membership-rw; renewal slice required before default exp" },
+  "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) — bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
+  "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
 
 export function credentialLifetime(kind: CredentialKind): CredentialLifetimePolicy {
@@ -300,7 +318,11 @@ export interface MintOpts {
   expiresAt?: number;
 }
 
-function userValidDates(profile: Profile, opts: MintOpts): { exp?: number } {
+/** Compute a minted credential's `{ exp? }` from an explicit override or the centralized matrix
+ *  default. Widened to {@link CredentialKind} (not just {@link Profile}) so the bespoke $SYS minters
+ *  — `membership-observer` / `connection-evictor`, which are kinds, not profiles — thread the same
+ *  bounded-lifetime policy instead of minting non-expiring $SYS creds. */
+function userValidDates(kind: CredentialKind, opts: MintOpts): { exp?: number } {
   if (opts.expiresAt !== undefined && opts.expiresInSeconds !== undefined)
     throw new Error("mintCreds: pass only one of expiresAt or expiresInSeconds");
   if (opts.expiresAt !== undefined) {
@@ -308,7 +330,7 @@ function userValidDates(profile: Profile, opts: MintOpts): { exp?: number } {
       throw new Error("mintCreds: expiresAt must be a non-negative integer timestamp (seconds)");
     return { exp: opts.expiresAt };
   }
-  const ttl = opts.expiresInSeconds ?? CREDENTIAL_LIFETIMES[profile].defaultTtlSeconds;
+  const ttl = opts.expiresInSeconds ?? CREDENTIAL_LIFETIMES[kind].defaultTtlSeconds;
   if (ttl === undefined) return {};
   if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("mintCreds: expiresInSeconds must be a positive integer");
   return { exp: Math.floor(Date.now() / 1000) + ttl };
@@ -1257,19 +1279,23 @@ function membershipObserverPermissions(accountId: string): Record<string, unknow
  *  original `up`): the observer can only be minted at the (re-)provision that creates the account — a
  *  documented migration property, not a silent no-op. The CONNZ/event subjects pin the DATA account id
  *  (`auth.account.pub`). Mirrors {@link mintCreds} but issues into the system account. */
-export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Identity): Promise<string> {
+export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
   if (!auth.sys.signingSeed)
     throw new Error(
       "mintMembershipObserverCreds: no in-memory system-account signing seed — the observer can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable broker-sourced membership.",
     );
   const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
   const perms = membershipObserverPermissions(auth.account.pub);
+  // Bounded exp (D5 slice 5): the observer is `rotation-renewed` — it carries the matrix's default
+  // lifetime so a copied cred becomes broker-dead, but there is NO online renewal (the $SYS seed is
+  // gone after `up`); renewal is a coordinated system-account rotation + restart.
+  const validDates = userValidDates("membership-observer", opts);
   const userJwt = await encodeUser(
     "membership-observer",
     fromPublic(identity.id),
     fromPublic(auth.sys.pub),
     perms,
-    { signer },
+    { signer, ...validDates },
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
@@ -1296,18 +1322,20 @@ function connectionEvictorPermissions(): Record<string, unknown> {
 /** Mint the scoped `connection-evictor` creds — the kick-only SYSTEM-account user D5 slice 4's live
  *  eviction holds. Same mint-only-at-provision property as the observer (the $SYS seed is in-memory
  *  only), same fail-loud when it's absent. Paired with the observer at `up`. */
-export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Identity): Promise<string> {
+export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
   if (!auth.sys.signingSeed)
     throw new Error(
       "mintConnectionEvictorCreds: no in-memory system-account signing seed — the evictor can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable live eviction.",
     );
   const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
+  // Bounded exp (D5 slice 5): `rotation-renewed`, same posture as the observer above.
+  const validDates = userValidDates("connection-evictor", opts);
   const userJwt = await encodeUser(
     "connection-evictor",
     fromPublic(identity.id),
     fromPublic(auth.sys.pub),
     connectionEvictorPermissions(),
-    { signer },
+    { signer, ...validDates },
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);

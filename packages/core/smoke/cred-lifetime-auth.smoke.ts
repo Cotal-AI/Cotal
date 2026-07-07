@@ -17,11 +17,13 @@ import {
   credentialLifetime,
   chatSubject,
   isReachable,
+  mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   mintCreds,
   newIdentity,
   serverConfig,
   DEV_OWNER,
+  ROTATION_RENEWED_TTL_SEC,
 } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
@@ -94,8 +96,13 @@ try {
   const obs = newIdentity();
   const obsCreds = await mintMembershipObserverCreds(auth, obs);
   const obsClaims = await parseCreds(enc(obsCreds));
-  check("membership-observer is classified as a standing host cred", credentialLifetime("membership-observer").class === "standing-renewable", credentialLifetime("membership-observer"));
-  check("membership-observer remains unexpired until renewal lands", obsClaims.uc.exp === undefined, obsClaims.uc);
+  check("membership-observer is rotation-renewed (bounded exp, no online renewal)", credentialLifetime("membership-observer").class === "rotation-renewed", credentialLifetime("membership-observer"));
+  check("membership-observer creds carry the rotation-renewed exp", Boolean(obsClaims.uc.exp && obsClaims.uc.exp - now <= ROTATION_RENEWED_TTL_SEC + 5 && obsClaims.uc.exp - now > ROTATION_RENEWED_TTL_SEC - 60), obsClaims.uc.exp);
+  const evi = newIdentity();
+  const eviCreds = await mintConnectionEvictorCreds(auth, evi);
+  const eviClaims = await parseCreds(enc(eviCreds));
+  check("connection-evictor is rotation-renewed (bounded exp, no online renewal)", credentialLifetime("connection-evictor").class === "rotation-renewed", credentialLifetime("connection-evictor"));
+  check("connection-evictor creds carry the rotation-renewed exp", Boolean(eviClaims.uc.exp && eviClaims.uc.exp - now <= ROTATION_RENEWED_TTL_SEC + 5 && eviClaims.uc.exp - now > ROTATION_RENEWED_TTL_SEC - 60), eviClaims.uc.exp);
   check("deployer is classified but not default-expired before near-expiry guards", credentialLifetime("deployer").defaultTtlSeconds === undefined, credentialLifetime("deployer"));
   check("teardown is classified but not default-expired before near-expiry guards", credentialLifetime("teardown").defaultTtlSeconds === undefined, credentialLifetime("teardown"));
 
