@@ -15,8 +15,20 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const p = (s.address() as AddressInfo).port;
+      s.close(() => res(p));
+    });
+  });
 
 // Sandbox the registry BEFORE importing workspace — homeCotalDir() reads COTAL_HOME per call.
 const home = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-home-"));
@@ -51,14 +63,16 @@ async function waitReady(server: string): Promise<void> {
   throw new Error(`broker ${server} never came up`);
 }
 
-const OTHER = "nats://127.0.0.1:14999"; // the recorded mesh's broker (non-default port)
-const OVERRIDE = "nats://127.0.0.1:7777"; // a second live broker for --server override / raw-open
+const PORT_OTHER = await freePort();
+const PORT_OVERRIDE = await freePort();
+const OTHER = `nats://127.0.0.1:${PORT_OTHER}`; // the recorded mesh's broker (non-default port)
+const OVERRIDE = `nats://127.0.0.1:${PORT_OVERRIDE}`; // a second live broker for --server override / raw-open
 const ts = new Date(0).toISOString();
 
 try {
   // Two live OPEN brokers (open ⇒ no creds to mint — keeps the smoke free of a creds-issuing broker).
-  startBroker(14999);
-  startBroker(7777);
+  startBroker(PORT_OTHER);
+  startBroker(PORT_OVERRIDE);
   await waitReady(OTHER);
   await waitReady(OVERRIDE);
   recordMesh({ space: "team-alpha", server: OTHER, root: projectRoot, mode: "open", ts });
