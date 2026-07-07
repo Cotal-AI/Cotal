@@ -25,8 +25,10 @@ const {
   loadMeshes,
   meshesDir,
   recordMesh,
+  registryTarget,
   removeMesh,
   resolveMeshTarget,
+  resolveRegistryTarget,
   setCurrent,
 } = await import("@cotal-ai/workspace");
 const { spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js");
@@ -61,6 +63,8 @@ try {
   // 0 meshes → a bare resolve fails with one sentence, not a crash.
   assert.throws(() => resolveMeshTarget(neutral), /no mesh running/);
   check("0 meshes: resolve throws 'no mesh running'", true);
+  assert.throws(() => resolveRegistryTarget(), /no mesh running/);
+  check("0 meshes: registry-only resolve throws too", true);
 
   // …but completion must FAIL CLOSED, never throw — offer nothing rather than crash the shell.
   const prevCwd0 = process.cwd();
@@ -184,6 +188,22 @@ try {
     (e: Error) => /another mesh/.test(e.message) && /is running at/.test(e.message),
   );
   check("local project w/o its own entry won't silently join a mesh on the default port", true);
+
+  // Registry-ONLY resolution (the console's run-anywhere overview): the SAME stray local project
+  // that blocks resolveMeshTarget above neither hijacks nor blocks it — it takes no cwd at all.
+  const regCur = resolveRegistryTarget();
+  check("registry-only: N + current → 'current'", regCur.source === "current" && regCur.root === projB, regCur);
+  clearCurrent();
+  assert.throws(
+    () => resolveRegistryTarget(),
+    (e: unknown) => isWorkspaceTargetError(e) && e.code === "ambiguous-target",
+  );
+  check("registry-only: N without current → ambiguous-target", true);
+  setCurrent("teamB"); // restore for the completion checks below
+  check("registryTarget: entry → 'registry' target honoring recorded mode", (() => {
+    const t = registryTarget(entry("teamA", projA)); // mode "open" despite auth files on projA's disk
+    return t.source === "registry" && t.auth === undefined && t.root === projA;
+  })());
   rmSync(projC, { recursive: true, force: true });
 
   // Offline completion: lists the RESOLVED mesh's personas (current=teamB → projB), and is

@@ -161,6 +161,34 @@ function isGenuineSpace(root: string): boolean {
   return resolve(join(root, ".cotal")) !== resolve(homeCotalDir()) && existsSync(join(root, ".cotal"));
 }
 
+/** Registry entry → target, for surfaces that enumerate the registry themselves (the console's
+ *  run-anywhere overview): honors the recorded mode and the stale-auth-root guard exactly like the
+ *  resolver's registry branch. */
+export function registryTarget(m: MeshEntry): MeshTarget {
+  return targetFromEntry(m, m.server, "registry");
+}
+
+/**
+ * Registry-ONLY resolution — step 4 of {@link resolveMeshTarget} without the cwd branches, for
+ * read-only surfaces meant to run from anywhere (`console`): a stray local `.cotal/` must neither
+ * hijack the target nor block it (`default-occupied`). 0 ⇒ error; 1 ⇒ use it; N ⇒ `current` if
+ * set, else error naming each + its root.
+ */
+export function resolveRegistryTarget(): MeshTarget {
+  const meshes = loadMeshes();
+  if (meshes.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
+  if (meshes.length === 1) return targetFromEntry(meshes[0], meshes[0].server, "registry");
+
+  const current = getCurrent();
+  const cur = current ? findMesh(current) : undefined;
+  if (cur) return targetFromEntry(cur, cur.server, "current");
+
+  const names = meshes.map((m) => `${m.space} (${m.root})`);
+  throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
+    available: names,
+  });
+}
+
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
@@ -214,16 +242,5 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return localTarget(root, DEFAULT_SERVER, "local-space");
   }
 
-  const meshes = loadMeshes();
-  if (meshes.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
-  if (meshes.length === 1) return targetFromEntry(meshes[0], meshes[0].server, "registry");
-
-  const current = getCurrent();
-  const cur = current ? findMesh(current) : undefined;
-  if (cur) return targetFromEntry(cur, cur.server, "current");
-
-  const names = meshes.map((m) => `${m.space} (${m.root})`);
-  throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
-    available: names,
-  });
+  return resolveRegistryTarget();
 }

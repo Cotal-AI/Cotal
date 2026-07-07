@@ -6,17 +6,20 @@ import { Confirm } from "./Confirm.js";
 
 /** The admin landing view: an overview of every space on the server (agents present, channels,
  *  messages) with a selection cursor. Enter drops into that space's console; `r` re-enumerates.
- *  Self-sizing (mirrors App) so the command just renders it. See docs/protocol-view.md. */
+ *  Self-sizing (mirrors App) so the command just renders it. See docs/watch-a-mesh.md. */
 export function SpacePicker({
   server,
   creds,
   canWrite,
   onSelect,
+  onBack,
 }: {
   server: string;
   creds?: string;
   canWrite?: boolean;
   onSelect: (space: string) => void;
+  /** Present when a mesh overview sits above this picker — `b` returns to it. */
+  onBack?: () => void;
 }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -57,6 +60,7 @@ export function SpacePicker({
   useInput(
     (input, key) => {
       if (input === "q") return exit();
+      if (input === "b" && onBack) return onBack();
       if (input === "r") return setNonce((n) => n + 1);
       if (input === "D" && canWrite && list.length) return setDel(list[selClamped]);
       if (key.upArrow || input === "k") return setSel((v) => Math.max(0, v - 1));
@@ -113,7 +117,7 @@ export function SpacePicker({
         )}
       </Box>
       <Text dimColor wrap="truncate-end">
-        ↑↓ select · Enter open · r refresh{canWrite ? " · D delete" : ""} · q quit
+        ↑↓ select · Enter open{onBack ? " · b back" : ""} · r refresh{canWrite ? " · D delete" : ""} · q quit
       </Text>
     </Box>
   );

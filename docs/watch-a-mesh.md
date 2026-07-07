@@ -28,11 +28,14 @@ cotal console                    # no --space on an open mesh → the admin over
 
 ![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI](../assets/quickstart.gif)
 
-**Admin overview.** On an open mesh, `cotal console` with **no `--space`** opens a space picker:
-every space on the server (enumerated from its `CHAT_*` streams and presence buckets) with its
-agents, channels, and message counts. Pick one to drop into its console; `b` returns to the
-overview. `--space X` skips the picker. Under auth a server hosts a single space, so the console
-enters it directly (no overview).
+**Admin overview.** A bare `cotal console` is the run-anywhere view: it resolves from the mesh
+registry **only**, never the cwd, so a stray local `.cotal/` can neither hijack nor block it.
+With several meshes registered it opens a mesh picker first: every broker on the machine (space,
+server, mode, root); pick one to connect, `b` returns. On an open mesh with no `--space` a space
+picker follows: every space on the server (enumerated from its `CHAT_*` streams and presence
+buckets) with its agents, channels, and message counts; pick one to drop into its console.
+`--space X` skips the pickers. Under auth a server hosts a single space, so the console enters
+it directly (no space overview).
 
 **Lenses and keys** (TUI). The layout is a roster, a live feed, per-channel tabs, a golden-signal
 tiles strip, and toggleable lenses:
