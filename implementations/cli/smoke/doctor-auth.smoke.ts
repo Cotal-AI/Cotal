@@ -66,6 +66,8 @@ writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth,
 writeFileSync(join(root, ".cotal", "membership-observer.creds"), sysObserver, { mode: 0o600 });
 // A static agent cred: unbounded is EXPECTED pre-flip — never a problem.
 writeFileSync(join(root, ".cotal", "auth", "creds", "alice.creds"), unbounded, { mode: 0o600 });
+// User-auth managed-agent sentinel: deny-all callout-account bearer plumbing, NOT a static agent cred.
+writeFileSync(join(root, ".cotal", "auth", "creds", "alpha.sentinel.creds"), unbounded, { mode: 0o600 });
 
 const origCwd = process.cwd();
 const origLog = console.log;
@@ -94,6 +96,7 @@ try {
   check("every problem names an exact next command", first.out.includes("next:") && first.out.includes("doctor auth --fix"), first.out);
   check("missing connection-evictor is a note, not a failure", first.out.includes("not provisioned here"), first.out);
   check("static agent cred is NOT a problem (pre-flip)", !first.out.includes("alice.creds:"), first.out);
+  check("user-auth sentinel cred is not rendered as a static agent cred", !first.out.includes("alpha.sentinel.creds"), first.out);
   check("$SYS observer renders healthy with expiry", /healthy\s+membership-observer/.test(first.out.replace(/\[[0-9;]*m/g, "")), first.out);
 
   const fixed = await runDoctor({ fix: true });

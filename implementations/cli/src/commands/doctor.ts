@@ -112,7 +112,7 @@ function inventory(root: string): CredReport[] {
   const reports = fixed.map((f) => report(f.label, f.kind, f.path));
   const agentDir = join(authDir(root), "creds");
   if (existsSync(agentDir)) {
-    for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds")).sort()) {
+    for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
       reports.push(report(basename(f), "agent", join(agentDir, f)));
     }
   }
