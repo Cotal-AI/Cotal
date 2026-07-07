@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import {
@@ -9,6 +10,7 @@ import {
 } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { control, type ControlCtx } from "./control.js";
+import { attachClient } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Roster } from "./ui/Roster.js";
 import { Feed } from "./ui/Feed.js";
@@ -75,6 +77,7 @@ export function App({
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null);
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
+  const [attachTarget, setAttachTarget] = useState<{ name: string; ws: string } | null>(null);
 
   const overlay = helpOpen || detail !== null;
   const blocked = overlay || search.active || palette.active || confirm !== null || compose !== null;
@@ -113,7 +116,7 @@ export function App({
 
   // Focus the right pane after an overlay closes, or when switching into/out of a view.
   useEffect(() => {
-    if (overlay || confirm) return;
+    if (overlay || confirm || attachTarget) return;
     if (railOverlay) focus("needsyou");
     else if (mode === "dm") focus("dmpeers");
     else if (mode === "topo") focus("topo");
@@ -177,6 +180,36 @@ export function App({
     return () => clearTimeout(t);
   }, [notice]);
 
+  // Suspend the console and hand the terminal to the agent's PTY. The `attachTarget` render commits
+  // App→null + gates the top-level useInput, so Ink releases stdin (ref-counted raw mode) BEFORE
+  // attachClient grabs it. The observer endpoint + MeshView keep running in the background (App
+  // stays mounted). On detach (Ctrl-]) or ws close, re-assert the console's alt-screen/alt-scroll/
+  // cursor — attachClient leaves us in the main buffer after a full-screen child — then resume.
+  useEffect(() => {
+    if (!attachTarget) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await attachClient(attachTarget.ws);
+      } catch (e) {
+        if (!cancelled) setNotice("attach: " + (e as Error).message);
+      } finally {
+        try {
+          writeSync(process.stdout.fd, "\x1b[?1049h\x1b[?1007h\x1b[?25h");
+        } catch {
+          /* stdout gone */
+        }
+        if (!cancelled) {
+          setAttachTarget(null);
+          setNotice(`detached from ${attachTarget.name}`);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachTarget]);
+
   useEffect(() => {
     const onResize = () => setSize({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
     stdout.on("resize", onResize);
@@ -212,6 +245,23 @@ export function App({
         .catch((e) => setNotice(`${op}: ` + (e as Error).message));
     },
     [ctl, pausedIds],
+  );
+  // Attach: open the agent's live PTY. Keyed by NAME (a manager-managed agent needn't be a mesh
+  // roster peer — same as `cotal attach --name`). Resolve the manager's loopback WS via the attach
+  // control op (admin tier + per-action mint, like kill/pause), then suspend the console.
+  const handleAttach = useCallback(
+    (name: string) => {
+      if (!canControl) return setNotice("no control authority — pass --creds, or run against a mesh whose auth you hold");
+      setNotice(`attaching to ${name}…`);
+      void ctl("attach", { name }, CONTROL_ADMIN)
+        .then((r) => {
+          const ws = (r.data as { ws?: string } | undefined)?.ws;
+          if (!r.ok || !ws) return setNotice(`attach: ${r.error ?? "no ws endpoint"}`);
+          setAttachTarget({ name, ws });
+        })
+        .catch((e) => setNotice("attach: " + (e as Error).message));
+    },
+    [canControl, ctl],
   );
   const feedCompose = useCallback(
     () => setCompose({ kind: "channel", channel: activeChannel === "all" ? "general" : activeChannel, value: "" }),
@@ -294,6 +344,7 @@ export function App({
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
       ensureParticipant,
       recordOutboundDm,
+      startAttach: handleAttach,
     };
     runCommand(line, ctx, !!canWrite, !!canControl);
   };
@@ -353,9 +404,12 @@ export function App({
         if (idx < tabs.length) setActiveChannel(tabs[idx]);
       }
     },
-    { isActive: !palette.active && confirm === null && compose === null },
+    { isActive: !attachTarget && !palette.active && confirm === null && compose === null },
   );
 
+  // Attached: render nothing so Ink releases stdin/stdout to the agent PTY (the suspend effect owns
+  // the terminal). App stays mounted → the observer endpoint + MeshView survive in the background.
+  if (attachTarget) return null;
   if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
   if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} />;
   if (confirm)
@@ -422,6 +476,7 @@ export function App({
               onOpenDetail={openAgent}
               onKill={canControl ? handleKill : undefined}
               onPause={canControl ? handlePause : undefined}
+              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}
               paused={pausedIds}
               onCompose={canWrite ? rosterCompose : undefined}
             />

@@ -59,7 +59,11 @@ they are: `p` pauses or resumes with no confirm (recoverable; the roster shows a
 badge merged from a low-rate `ps` poll, since a frozen agent's presence reads offline), `D`
 kills behind a confirm (`y` graceful stop, `f` force-kill), and the `:` palette adds
 `spawn <persona> [name]`, `status <agent>`, `ps`, and `purge` (type the space name to confirm,
-like the space delete).
+like the space delete). `a` on a roster agent (or `:attach <agent>`) suspends the console and
+hands the terminal to the agent's live PTY over the manager's loopback attach endpoint;
+`Ctrl-]` (or `COTAL_DETACH_KEY`) returns and repaints the console, with the observer running in
+the background throughout. Attach is `canControl`-gated, pty-runtime only (tmux/cmux are watched
+natively and flash their own hint), and same-host only (the socket is loopback).
 
 **Operator participant mode.** By default the operator is invisible, and a message it sends is
 one-way: an agent's DM reply has no inbox to land in. On the operator's **first send** (`:dm` /

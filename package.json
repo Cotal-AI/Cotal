@@ -65,6 +65,7 @@
     "smoke:opencode-transcript": "tsx extensions/connector-opencode/smoke/transcript-mirror.smoke.ts",
     "smoke:attach": "tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:attach-repaint": "tsx implementations/manager/smoke/attach-repaint.smoke.ts",
+    "smoke:attach-control:live": "tsx implementations/manager/smoke/attach-control-live.smoke.ts",
     "smoke:manager-console": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/console-assets.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",
     "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",

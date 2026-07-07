@@ -39,6 +39,7 @@ export function Help({
               ["↑↓ / j k", "move selection"],
               ["Enter", "open agent detail"],
               ["p", "pause / resume agent"],
+              ["a", "attach agent terminal (Ctrl-] detach)"],
               ["D", "kill agent (y stop · f force)"],
             ];
   const global: [string, string][] = [

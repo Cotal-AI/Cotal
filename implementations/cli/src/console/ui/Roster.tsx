@@ -59,6 +59,7 @@ export function Roster({
   onOpenDetail,
   onKill,
   onPause,
+  onAttach,
   paused,
   onCompose,
 }: {
@@ -74,6 +75,8 @@ export function Roster({
   onKill?: (p: Presence) => void;
   /** Pause/resume toggle on the selected agent — recoverable, so it fires without a confirm. */
   onPause?: (p: Presence) => void;
+  /** Attach to the selected agent's live terminal. */
+  onAttach?: (p: Presence) => void;
   /** Ids the manager reports as paused — authoritative over presence for the badge. */
   paused?: Set<string>;
   onCompose?: (p: Presence) => void;
@@ -97,6 +100,8 @@ export function Roster({
         onKill(list[selClamped]);
       else if (input === "p" && onPause && list[selClamped]?.card.kind === "agent")
         onPause(list[selClamped]);
+      else if (input === "a" && onAttach && list[selClamped]?.card.kind === "agent")
+        onAttach(list[selClamped]);
       else if (input === "c" && onCompose && list[selClamped]?.card.kind === "agent")
         onCompose(list[selClamped]);
       else if (key.return && list.length) onOpenDetail(list[selClamped]);

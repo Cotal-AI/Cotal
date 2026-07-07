@@ -133,7 +133,8 @@ and configures them.
   `ps`.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
   docker for agent TUIs): **`pty`** ships built-in (the manager owns a pseudo-terminal;
-  watch or type via `cotal attach`); **`tmux`** and **`cmux`** are extensions that put
+  watch or type via `cotal attach`, or in-process from the console's `a` key, which reuses
+  the same attach client); **`tmux`** and **`cmux`** are extensions that put
   each teammate in its own window/tab (explicit opt-ins that throw when the extension
   isn't loaded, never a silent fallback); **byo** is the floor (a human's own terminal,
   tracked via presence); **host** (Agent SDK, true mid-turn interrupt) is the documented

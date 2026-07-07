@@ -34,6 +34,8 @@ export interface CommandCtx {
   ensureParticipant: () => Promise<void>;
   /** Record an outbound DM locally so the DM lens shows both sides of the thread. */
   recordOutboundDm: (toId: string, text: string) => void;
+  /** Attach to a managed agent's live terminal (suspends the console). */
+  startAttach: (name: string) => void;
 }
 
 export interface ConsoleCommand {
@@ -188,6 +190,17 @@ export const COMMANDS: ConsoleCommand[] = [
       } catch (e) {
         ctx.notify("status: " + (e as Error).message);
       }
+    },
+  },
+  {
+    name: "attach",
+    summary: "open a managed agent's terminal (Ctrl-] to detach)",
+    usage: "attach <agent>",
+    control: true,
+    run: (ctx, rest) => {
+      const name = rest.replace(/^@/, "").trim().split(/\s+/)[0] ?? "";
+      if (!name) return ctx.notify("usage: attach <agent>");
+      ctx.startAttach(name);
     },
   },
   {
