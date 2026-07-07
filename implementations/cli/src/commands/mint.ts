@@ -70,7 +70,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   if (existsSync(userAuthStateDir(cotalRoot(), auth.space))) {
     console.error(
       c.red(
-        `✗ space "${auth.space}" is a per-user-auth mesh — static ${profile} creds are retired here: agents join under YOUR login (\`cotal login\`, then \`cotal spawn\` — bearer-based, revocable), never via a minted file. Static minting remains available on static-auth meshes.`,
+        `✗ space "${auth.space}" is a per-user-auth mesh — static ${profile} creds are retired here. Use user-mode commands (\`cotal login\`; agents: \`cotal spawn\`); static dashboard/audit creds are not supported on user-auth meshes. Static minting remains available on static-auth meshes.`,
       ),
     );
     process.exit(1);

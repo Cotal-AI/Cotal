@@ -84,16 +84,31 @@ export function endpointAuth(conn: Connection): { creds?: string; bearer?: strin
  *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject>`. */
 export const CLI_USER_ACTOR = "cli";
 
-/** Guard for commands whose job needs an OPERATOR-profile credential (admin/purger/channel-writer/
- *  control-caller/deployer) that a user-mode login's ledger-scoped bearer cannot carry. The refusal
- *  is explicit and names the deliberate escape hatch — `cotal mint` where the broker runs, then
- *  `--creds` — so there is a path, but never a silent static fallback (U10). Lives here so every
- *  command surface (the CLI, cotal-web, …) refuses identically. */
+/** Guard for commands whose job needs authority a user-mode login's ledger-scoped bearer cannot
+ *  carry. On per-user-auth meshes, static --creds are deliberately NOT an escape hatch anymore;
+ *  the operator must use a supported user-mode path or a static-auth mesh. */
 export function refuseUserModeOrExit(conn: Connection, what: string): void {
   if (!conn.bearer) return;
   console.error(
     c.red(
-      `✗ ${what} is not yet supported over a user-mode login on space "${conn.space}" — it needs an operator credential: mint one where the broker runs (\`cotal mint <name> --profile <profile>\`) and pass it with --creds`,
+      `✗ ${what} is not yet supported over a user-mode login on space "${conn.space}" — static --creds are retired on per-user-auth meshes. Use a supported user-mode command, or run this workflow on a static-auth mesh.`,
+    ),
+  );
+  process.exit(1);
+}
+
+/** Fail-closed guard for the flip: explicit raw creds are still useful for true off-registry/static
+ *  meshes, but not for a user-auth mesh this machine KNOWS about. Otherwise an old static
+ *  `local.<nkey>` creds file can bypass the user-mode branch and publish/join through raw `--creds`.
+ *  Registry match covers cross-directory use; the on-disk marker covers a lost/stale registry. */
+export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: string | undefined, what: string): void {
+  const recorded = findMesh(space);
+  const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
+  const knownLocalUser = existsSync(userAuthStateDir(findCotalRoot(), space));
+  if (!knownRecordedUser && !knownLocalUser) return;
+  console.error(
+    c.red(
+      `✗ ${what} cannot use static credentials on per-user-auth space "${space}" — sign in (\`cotal login\`) and use the user-mode path (agents: \`cotal spawn\`); old --creds files are refused here.`,
     ),
   );
   process.exit(1);
@@ -101,9 +116,9 @@ export function refuseUserModeOrExit(conn: Connection, what: string): void {
 
 /**
  * Resolve where a mesh-touching command connects + with what creds.
- *  • Explicit `--creds` → a RAW off-registry connection: straight to `--server` (default loopback)
- *    as `--space`, with those creds. No registry lookup, no stale-prune, plain reachability message
- *    (the user is deliberately off-registry — e.g. a remote mesh that isn't locally recorded).
+ *  • Explicit `--creds` → a RAW off-registry connection, except when the target is a known
+ *    per-user-auth mesh. Those refuse static creds fail-closed because old local creds remain
+ *    broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
@@ -111,6 +126,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
   if (flags.creds) {
     const server = flags.server ?? DEFAULT_SERVER;
     const space = flags.space ?? DEFAULT_SPACE;
+    refuseStaticCredsForKnownUserAuthOrExit(space, server, "--creds");
     const creds = readFileSync(flags.creds, "utf8");
     await reachableOrExit(server, { creds });
     return { server, space, creds };

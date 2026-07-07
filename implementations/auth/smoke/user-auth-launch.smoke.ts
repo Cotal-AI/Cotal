@@ -24,7 +24,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
@@ -170,6 +170,15 @@ try {
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
   const frame = got.find((g) => hasText(g, "hello from user mode"));
   check("the witness receives it AS the derived u_….cli principal", arrived && /^u_[a-z2-7]{26}\.cli$/.test(frame?.from.id ?? ""), frame?.from);
+  const unsupportedOperatorSurface = await cotal(["channels", "list", "--space", SPACE]);
+  check(
+    "blocked user-mode operator surfaces do NOT recommend static mint repair",
+    unsupportedOperatorSurface.status !== 0 &&
+      unsupportedOperatorSurface.out.includes("static --creds are retired") &&
+      !unsupportedOperatorSurface.out.includes("cotal mint") &&
+      !unsupportedOperatorSurface.out.includes("--profile"),
+    unsupportedOperatorSurface.out,
+  );
 
   // ---------- D. the deny matrix at the operator surface ----------
   console.log("D) revoke → refused; logout → the exact login line");
@@ -194,11 +203,19 @@ try {
   await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
   const openUp = await cotal(["up", "--open", "--server", SERVER, "--space", SPACE]);
   check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
-  // THE FLIP: static agent creds are retired on user-auth spaces — `cotal mint` must refuse with
-  // the login+spawn recourse, never write a working `local.<nkey>` identity file.
+  // THE FLIP: user-facing static creds are retired on user-auth spaces — `cotal mint` must
+  // refuse with user-mode recourse, never write a working `local.<nkey>` identity file.
   const staticMint = await cotal(["mint", "flip-probe", "--profile", "agent"]);
-  check("the flip: `cotal mint` on a user mesh is refused, naming the login+spawn path", staticMint.status !== 0 && staticMint.out.includes("retired") && staticMint.out.includes("cotal spawn"), staticMint.out);
+  check("the flip: `cotal mint` on a user mesh is refused, naming user-mode recourse", staticMint.status !== 0 && staticMint.out.includes("retired") && staticMint.out.includes("cotal spawn"), staticMint.out);
   check("the flip: no creds file was written by the refused mint", !existsSync(join(root, ".cotal", "auth", "creds", "flip-probe.creds")));
+  const oldCredsDir = join(root, ".cotal", "auth", "creds");
+  mkdirSync(oldCredsDir, { recursive: true });
+  const oldStaticCreds = join(oldCredsDir, "old-static.creds");
+  writeFileSync(oldStaticCreds, await mintCreds(auth, newIdentity(), "agent"), { mode: 0o600 });
+  const joinOldStatic = await cotal(["join", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
+  check("the flip: `join --creds` with an old static cred is refused on a known user mesh", joinOldStatic.status !== 0 && joinOldStatic.out.includes("per-user-auth") && joinOldStatic.out.includes("cotal spawn"), joinOldStatic.out);
+  const sendOldStatic = await cotal(["send", "msg", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
+  check("the flip: raw `--creds` send is refused on a known user mesh", sendOldStatic.status !== 0 && sendOldStatic.out.includes("per-user-auth"), sendOldStatic.out);
   // Crash the daemon (SIGKILL — no clean exit, so its stale discovery file survives too).
   const svcPidPath = join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`);
   const svcPid = Number(readFileSync(svcPidPath, "utf8").trim());

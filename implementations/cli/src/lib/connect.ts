@@ -6,6 +6,7 @@ export {
   endpointAuth,
   reachableOrExit,
   refuseUserModeOrExit,
+  refuseStaticCredsForKnownUserAuthOrExit,
   resolveTargetOrExit,
   preflightOrExit,
   classifyPreflightFailure,

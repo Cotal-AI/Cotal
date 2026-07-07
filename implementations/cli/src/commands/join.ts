@@ -17,7 +17,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { resolveSpace } from "../lib/status.js";
-import { reachableOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
+import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
@@ -66,6 +66,7 @@ export async function join(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    refuseStaticCredsForKnownUserAuthOrExit(space, server, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
