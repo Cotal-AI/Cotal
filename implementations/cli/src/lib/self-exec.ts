@@ -14,12 +14,17 @@ export function isNpx(): boolean {
   return /[/\\]_npx[/\\]/.test(process.argv[1] ?? "");
 }
 
-/** Is a `cotal` executable resolvable on PATH? A pure PATH scan (no exec): `cotal --version`
- *  isn't a real command, so probing it via `onPath` would always report cotal as missing. */
+/** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec): `cotal
+ *  --version` isn't a real command, so probing it via `onPath` would always report cotal missing.
+ *  Skips npx's transient shim: `npm exec` (npx) prepends the package's own
+ *  `<cache>/_npx/<hash>/node_modules/.bin` to PATH, and since `cotal-ai` declares a `cotal` bin,
+ *  that dir holds a throwaway `cotal`. Counting it would make a bare `npx cotal-ai setup` conclude
+ *  `cotal` is already installed — skipping the global-install offer and printing `cotal …` hints
+ *  the user can't run once npx exits. That shim is exactly what we're offering to make permanent. */
 export function cotalOnPath(): boolean {
   const exts = process.platform === "win32" ? ["", ".cmd", ".exe", ".bat"] : [""];
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
+    if (!dir || isEphemeralNpxBin(dir)) continue;
     for (const ext of exts) {
       try {
         accessSync(join(dir, `cotal${ext}`), constants.X_OK);
@@ -30,6 +35,13 @@ export function cotalOnPath(): boolean {
     }
   }
   return false;
+}
+
+/** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache
+ *  `node_modules/.bin`. A `cotal` shim there disappears when npx exits, so it must not count as
+ *  `cotal` being installed. Matches the `_npx` cache segment on POSIX and Windows. */
+function isEphemeralNpxBin(dir: string): boolean {
+  return /[/\\]_npx[/\\]/.test(dir);
 }
 
 /** The copy-paste command prefix for user-facing hints: `cotal` when it's on PATH, `npx cotal-ai`

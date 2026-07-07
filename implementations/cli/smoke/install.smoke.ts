@@ -6,9 +6,9 @@
  * proves the gate (npx + no global `cotal`) and that a failed install is handled gracefully (the
  * feature is best-effort and must never throw / abort setup).
  */
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { isNpx, cotalOnPath } from "../src/lib/self-exec.js";
 import { offerGlobalInstall } from "../src/commands/setup.js";
 
@@ -56,6 +56,29 @@ try {
 }
 check("npx install path: failed install handled gracefully (no throw)", !threw);
 check("nothing actually installed: `cotal` still not on PATH", cotalOnPath() === false);
+
+// 3) Regression: npx prepends its own `<cache>/_npx/<hash>/node_modules/.bin` (holding a throwaway
+//    `cotal`, since cotal-ai declares that bin) to PATH. That shim must NOT count as installed —
+//    else `npx cotal-ai setup` skips the global-install offer and hands out `cotal …` hints the
+//    user can't run once npx exits. This is the exact PATH the earlier `= prefix` reset stripped.
+const cotalExe = () => (process.platform === "win32" ? "cotal.cmd" : "cotal");
+function seedCotal(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, cotalExe());
+  writeFileSync(f, "#!/bin/sh\n");
+  chmodSync(f, 0o755);
+  return dir;
+}
+const npxBin = seedCotal(join(prefix, "_npx", "deadbeef", "node_modules", ".bin"));
+const realBin = seedCotal(join(prefix, "realbin"));
+
+process.env.PATH = npxBin; // only the ephemeral npx shim is reachable
+check("npx `_npx/.../.bin/cotal` shim on PATH ⇒ cotalOnPath() ignores it (false)", cotalOnPath() === false);
+
+process.env.PATH = [npxBin, realBin].join(delimiter); // ephemeral shim + a durable install
+check("a durable `cotal` alongside the npx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
+
+process.env.PATH = prefix; // restore the deterministic no-cotal PATH
 
 process.argv[1] = realArgv1;
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
