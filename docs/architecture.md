@@ -914,9 +914,15 @@ files to hand out, and revocation actually bites.
 - **Callout stage:** SHIPPED for user mode (see *Per-user auth* above) — the auth service mints
   scoped creds *at connect* and confines the data-account signing key. **The flip has landed for
   user-auth spaces:** static agent/observer/admin minting is refused there (`cotal mint` names the
-  login + spawn recourse; every managed launch path is user-mode-only), so no static `local.<nkey>`
-  publisher can sit alongside user-owned principals. Static-auth meshes keep static creds by
-  design; the join-link bootstrap-token variant remains future work.
+  user-mode recourse for agents; static dashboard/audit creds are a deliberate no on user-auth
+  meshes), every managed launch path is user-mode-only, and explicit `--creds`/`join --creds` are
+  refused against a user-auth space this machine knows (registry entry or on-disk marker) — so no
+  static `local.<nkey>` publisher path remains at the CLI surface. Honest scope: the flip is
+  **deny-new**. A static cred signed *before* the flip — or minted out-of-band by anyone holding
+  the signer material — stays broker-valid until signing-key rotation, so the "no static agents"
+  claim holds for user-auth spaces that never shipped static creds; converting a static mesh that
+  already handed out creds means rotating the signing key, not just enabling user auth. Static-auth
+  meshes keep static creds by design; the join-link bootstrap-token variant remains future work.
 
 ## Deferred
 

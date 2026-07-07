@@ -921,7 +921,10 @@ adoption for the seed-less daemons); the two system-account credentials (`member
 `connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
 broker restart — no persisted system-account minting secret exists, by design. On per-user-auth
 spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
-exist only as owner+actor principals under a logged-in user.
+exist only as owner+actor principals under a logged-in user. The flip is deny-new — a static
+credential signed before it (or minted out-of-band with the account signing key) remains
+broker-valid until signing-key rotation, which is the revocation lever for static material; the
+guarantee therefore applies to spaces that never issued static user-facing credentials.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe` — the
   human-CLI and maintenance surfaces, each scoped to its verbs.
 
