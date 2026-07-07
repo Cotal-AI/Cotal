@@ -343,12 +343,19 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   if (s === undefined) return undefined;
   if (typeof s.token !== "string" || !s.token || typeof s.expiresAt !== "number")
     throw new Error(`stored idp session for ${key} is malformed — run \`cotal login --idp ${key}\` again`);
-  return { token: s.token, expiresAt: s.expiresAt };
+  // `sub` rides the cache round-trip (offline owner derivation for the spawn paths) — every
+  // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
+  // broke both user-mode spawn entry points while every in-process test passed.
+  return { token: s.token, expiresAt: s.expiresAt, ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}) };
 }
 
 export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession): void {
   const file = readSessionsFile(dir);
-  file.sessions[normalizeIdpUrl(idpUrl)] = { token: session.token, expiresAt: session.expiresAt };
+  file.sessions[normalizeIdpUrl(idpUrl)] = {
+    token: session.token,
+    expiresAt: session.expiresAt,
+    ...(session.sub ? { sub: session.sub } : {}),
+  };
   mkSecretDir(dir); // harden the dir BEFORE the secret lands (0700 POSIX, private ACL win32)
   writeSecretFileAtomic(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));
 }
