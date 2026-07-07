@@ -25,7 +25,7 @@ const TARGET = ["creds:string", "server:string", "space:string"];
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
   // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.
-  setup: { flags: ["full:boolean", "yes:boolean:y"], positionals: false },
+  setup: { flags: ["demo:boolean", "full:boolean", "yes:boolean:y"], positionals: false },
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
@@ -35,6 +35,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: false },
   meshes: { flags: [], positionals: false },
+  status: { flags: ["server:string", "space:string"], positionals: false },
   use: { flags: [], positionals: true },
   join: {
     flags: [
