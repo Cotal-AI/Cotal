@@ -145,6 +145,13 @@ export async function up(args: ParsedArgs): Promise<void> {
         // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
         if (!svc.ok) process.exitCode = 1;
       }
+      // Auth/user meshes also need their resident renewal owner. A same-root refresh is the normal
+      // repair command after a stale/missing manager, so ensure the delivery daemon + manager before
+      // claiming the running mesh is healthy. Open meshes have no auth creds or delivery daemon.
+      if (held.mode !== "open") {
+        const controlPlane = await startDeliveryWithBroker(held.space, server);
+        if (!controlPlane) process.exitCode = 1;
+      }
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ts: new Date().toISOString() });
       return;
     }

@@ -135,8 +135,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
-  delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "up launcher (co-resident remint timer)", note: "server-side Plane-3 daemon; seed-less — the resident `up` re-signs .cotal/delivery.creds for the SAME nkey, the daemon reloads it via the endpoint creds source (D5 slice 5 class 2)" },
-  "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "up launcher (co-resident remint timer)", note: "membership feed writer; seed-less — launcher re-signs .cotal/membership-rw.creds, the feed's rw connection re-reads it per reconnect attempt (D5 slice 5 class 2)" },
+  delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less — the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop (D5 slice 5 class 2)" },
+  "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less — the manager re-signs .cotal/membership-rw.creds for the SAME nkey, delivery-admin reloadCreds reconnects the rw feed explicitly, and source re-read is only a backstop (D5 slice 5 class 2)" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
@@ -163,7 +163,7 @@ export function credentialLifetime(kind: CredentialKind): CredentialLifetimePoli
 export type CredHealthState = "healthy" | "near-expiry" | "expired" | "unbounded" | "unreadable";
 export interface CredHealth {
   state: CredHealthState;
-  /** Issue time (epoch sec) — the "last renewal" timestamp for launcher-reminted creds. */
+  /** Issue time (epoch sec) — the "last renewal" timestamp for reminted creds. */
   iat?: number;
   exp?: number;
   /** The 75%-of-lifetime renewal point (epoch sec); past it = near-expiry. */

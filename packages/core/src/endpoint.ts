@@ -1992,7 +1992,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
    *  boundary — only the supervisor profile can publish here — and `serveControl`'s sender check +
    *  bounded reply still apply on top. `reloadCreds` is the class-2 renewal ADOPTION step: re-read
-   *  the launcher-re-signed creds file, pin, swap the live connection, reconnect the membership
+   *  the renewal-owner-re-signed creds file, pin, swap the live connection, reconnect the membership
    *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
    *  structured failure (e.g. the file was never re-signed), never a silent partial. */
   private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
