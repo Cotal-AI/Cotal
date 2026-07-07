@@ -80,9 +80,28 @@ check("auth-required + local + open → NO prune + 'open-wants-auth'", (() => {
   const r = classifyPreflightFailure("flag-server", "auth-required", false);
   return r.prune === false && r.kind === "open-wants-auth";
 })());
+// STALE-AUTH (D5 slice 6): a dead CREDENTIAL on a LIVE broker — never a prune, whatever the
+// source (deleting a live mesh's entry for an expired cred would misdirect the repair).
+for (const s of [...REGISTRY, ...NON_REGISTRY])
+  for (const hasAuth of [true, false])
+    check(`stale-auth + ${s} / auth=${hasAuth} → NO prune + 'stale-auth'`, (() => {
+      const r = classifyPreflightFailure(s, "stale-auth", hasAuth);
+      return r.prune === false && r.kind === "stale-auth";
+    })());
+// …and the canonical copy names the ONE repair surface, not a re-registration.
+check("stale-auth preflight copy names `cotal doctor auth` (the repair surface)", (() => {
+  const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth" } as never;
+  const msg = renderWorkspaceError({ kind: "preflight", failure: "stale-auth", target: t, pruned: false });
+  return msg.includes("doctor auth") && msg.includes("EXPIRED");
+})());
+check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
+  const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1" });
+  return msg.includes("doctor auth") && msg.includes("EXPIRED");
+})());
+
 // The invariant, exhaustively: a non-registry source is NEVER pruned — whatever the reason/auth.
 for (const s of NON_REGISTRY)
-  for (const reason of ["unreachable", "auth-required"] as const)
+  for (const reason of ["unreachable", "auth-required", "stale-auth"] as const)
     for (const hasAuth of [true, false])
       check(
         `non-registry ${s} / ${reason} / auth=${hasAuth} never prunes`,

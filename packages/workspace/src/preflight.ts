@@ -22,7 +22,8 @@ export type PreflightFailure =
   | "registry-creds-rejected"
   | "registry-open-now-auth"
   | "creds-rejected"
-  | "open-wants-auth";
+  | "open-wants-auth"
+  | "stale-auth";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -32,7 +33,7 @@ export type PreflightFailure =
  *  operator-supplied, so a failure there is the user's to diagnose, not a stale-registry signal. */
 export function classifyPreflightFailure(
   source: MeshTarget["source"],
-  reason: "auth-required" | "unreachable",
+  reason: "auth-required" | "stale-auth" | "unreachable",
   hasAuth: boolean,
 ): { prune: boolean; kind: PreflightFailure } {
   // `flag-space-override` and `flag-server` are deliberately absent: the probe hit an operator-named
@@ -43,6 +44,11 @@ export function classifyPreflightFailure(
     source === "flag-space" ||
     source === "local-recorded";
   if (reason === "unreachable") return { prune: fromRegistry, kind: "unreachable" };
+  // STALE-AUTH (D5 slice 6): the broker is UP and answered — only the presented CREDENTIAL is dead
+  // (bounded lifetime / credential death). NEVER a prune signal, whatever the source: deleting a
+  // live mesh's registry entry because a cred expired would misdirect the repair (the fix is
+  // `doctor auth`, not re-registration) — the same misdiagnosis class as the gate-1 prune bug.
+  if (reason === "stale-auth") return { prune: false, kind: "stale-auth" };
   if (fromRegistry && hasAuth) return { prune: true, kind: "registry-creds-rejected" };
   if (fromRegistry) return { prune: true, kind: "registry-open-now-auth" };
   if (hasAuth) return { prune: false, kind: "creds-rejected" };

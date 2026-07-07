@@ -15,6 +15,7 @@ import {
   type Subscription,
 } from "@nats-io/transport-node";
 import { credsClaims, idFromCreds } from "./identity.js";
+import { inspectCredHealth } from "./provision.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -3154,11 +3155,15 @@ export async function isReachable(
 }
 
 /** What a connect attempt told us about the server — the distinction {@link isReachable} flattens.
- *  `auth-required` means a server answered but rejected these creds (so it IS up); `unreachable`
- *  means nothing answered (refused / timeout / a stale registry entry). */
+ *  `auth-required` means a server answered but rejected these creds (so it IS up); `stale-auth`
+ *  means the server is up and the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded
+ *  lifetime (the broker's "authentication expired", or a cred that is locally provably expired) —
+ *  the D5 credential-death event, whose repair is `doctor auth`, never a registry prune;
+ *  `unreachable` means nothing answered (refused / timeout / a stale registry entry). */
 export type ProbeResult =
   | { ok: true }
   | { ok: false; reason: "auth-required" }
+  | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" };
 
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
@@ -3181,8 +3186,19 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    if (e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError)
+    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
+    if (e instanceof AuthorizationError) {
+      // The broker's denial is generic; local knowledge isn't. A presented cred that is PROVABLY
+      // expired by its own JWT is stale-auth (credential death), not "wrong mesh/creds" — the
+      // repair differs (doctor auth vs re-target), so the classification must too. Unreadable
+      // content stays a plain rejection (no false stale diagnosis from garbage).
+      if (typeof opts.creds === "string") {
+        try {
+          if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
+        } catch { /* not introspectable — keep the wire truth */ }
+      }
       return { ok: false, reason: "auth-required" };
+    }
     return { ok: false, reason: "unreachable" };
   }
 }

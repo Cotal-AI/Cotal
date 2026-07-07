@@ -15,7 +15,7 @@ import type { PreflightFailure } from "./preflight.js";
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
   | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean }
-  | { kind: "reachable"; reason: "auth-required" | "unreachable"; server: string };
+  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable"; server: string };
 
 /** Render a workspace failure as the canonical one-line `cotal …` sentence. */
 export function renderWorkspaceError(e: WorkspaceError): string {
@@ -64,12 +64,16 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
       return `✗ credentials for "${t.space}" were rejected at ${t.server} — a different mesh may be running there. Run \`cotal meshes\` to check, or \`cotal up\` here to start yours`;
     case "open-wants-auth":
       return `✗ broker at ${t.server} requires auth, but this mesh is open (no trust material) — use \`--space <name>\` for an auth mesh, or run \`cotal up\` here without \`--open\``;
+    case "stale-auth":
+      return `✗ credentials for "${t.space}" have EXPIRED — this mesh enforces bounded credential lifetimes; run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`;
   }
 }
 
 /** Plain reachability for a RAW (off-registry) probe — the `--creds` / `--server`+unregistered-`--space`
  *  escape hatch, which never touches the registry (no prune, no stale-entry wording). */
-function renderReachable(reason: "auth-required" | "unreachable", server: string): string {
+function renderReachable(reason: "auth-required" | "stale-auth" | "unreachable", server: string): string {
+  if (reason === "stale-auth")
+    return `✗ credential EXPIRED at ${server} — bounded lifetime reached (credential death); run \`cotal doctor auth\` where the mesh runs, or re-mint the credential`;
   return reason === "auth-required"
     ? `✗ credentials rejected at ${server} — check your creds, or the broker wants different auth`
     : `✗ can't reach a broker at ${server} — is it running? (\`cotal up\`)`;
