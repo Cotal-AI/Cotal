@@ -276,6 +276,17 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, a local
   // project, or the registry (the running mesh / the `current` default).
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+  // USER-auth mesh: spawn provisions a STATIC agent identity — the wrong identity plane for a user
+  // space (agents there run as ledger-granted owner.actor principals). Refuse with the user path
+  // rather than launching an agent the mesh's readers would treat as a legacy static peer (U10).
+  if (target.mode === "user") {
+    console.error(
+      c.red(
+        `✗ spawn is not yet supported on user-auth space "${target.space}" — user-mode agent launch (manager-granted actors) lands with the next slice; grant + connect via \`cotal actor grant\` / \`cotal send\` for now`,
+      ),
+    );
+    process.exit(1);
+  }
   const { space, server, auth } = target;
 
   const defaultPersona = defaultPersonaOverride();
