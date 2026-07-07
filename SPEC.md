@@ -900,10 +900,28 @@ single-function profiles, each granting only the verbs its function needs and no
 
 - `provisioner` — pre-creates the per-instance durables (`dm_<owner>-<actor>`, `svc_<role>`, the
   per-member `dlv_<owner>-<actor>` handoff) and mints scoped credentials; ephemeral onboarding authority.
-- `supervisor` — the always-on agent-lifecycle daemon (the manager process's own connection).
+- `supervisor` — the always-on agent-lifecycle daemon (the manager process's own connection). Also
+  the ONLY caller of the privileged **delivery-admin** control service (below).
 - `delivery` — the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
-  membership/ACL records the durable backstop authorizes against (§7).
+  membership/ACL records the durable backstop authorizes against (§7). Also SERVES the privileged
+  `P.ctl.delivery-admin.<owner>.<actor>` control service (bounded replies on its `.reply.>`
+  subtree, same shape as `ctl.delivery`): `reloadCreds` — the explicit adoption step of standing
+  credential renewal (the daemon re-reads its re-signed creds file, pins the identity, swaps its
+  connection, and reconnects the membership feed's rw connection, replying with the adopted JWT
+  windows); and `evictPrincipal` — force-drop a denied principal's live connections
+  (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on partial scans and
+  on owners outside the principal namespace). The caller set is credential-enforced: only the
+  `supervisor` profile holds the request-publish grant; agents are broker-denied.
 - `membership-rw` — the derived channel-membership graph feed reader/writer.
+
+Standing host credentials are **bounded and renewed**: one-shot profiles carry minutes-scale
+expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the manager as the named
+renewal owner (self-remint for its own credential; same-nkey re-sign + explicit `reloadCreds`
+adoption for the seed-less daemons); the two system-account credentials (`membership-observer`,
+`connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
+broker restart — no persisted system-account minting secret exists, by design. On per-user-auth
+spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
+exist only as owner+actor principals under a logged-in user.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe` — the
   human-CLI and maintenance surfaces, each scoped to its verbs.
 

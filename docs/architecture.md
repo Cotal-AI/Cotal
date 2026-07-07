@@ -712,7 +712,8 @@ later).
   capability*: it holds the account signing key and mints profile-scoped creds. The manager hosts
   it in Demo 1, but it is not manager-special: privilege attaches to the signer, and a space can
   run with no manager. `cotal mint <name> --profile <agent|observer|admin>` is the out-of-band
-  path; the manager calls the same lib at spawn.
+  path (static-auth meshes only — a per-user-auth space refuses it: agents there join under a
+  logged-in user, never via a minted file); the manager calls the same lib at spawn.
 - **Identity = the agent's nkey public key**, used identically everywhere: `card.id`, the subject
   sender token, the JWT subject, and the DM/inbox durable names. Generated locally
   ([`identity.ts`](../packages/core/src/identity.ts)); the provisioner signs over only the public
@@ -888,20 +889,34 @@ files to hand out, and revocation actually bites.
 - **Signing key plus operator seed are hot** in `.cotal/auth` (the mint/manager box), not yet
   key-confined; the "real boundary" holds only given operator-controlled cred distribution. The
   operator seed should be cold-stored (it is the root; only needed for account setup/rotation).
-- **No credential revocation or TTL** on minted creds yet, and this bounds containment.
-  `cotal_despawn` cuts an agent's **session**, not its **credential**. A compromised agent that
-  copied its own (no-TTL bearer) creds can reconnect afterward, from any host, until the space
-  signing key is **rotated** (which re-mints *everyone*, the only per-cred revocation today) or it
-  is cut at the network. Despawn is the immediate lever, not full containment of a compromised
-  identity; per-cred TTL/rotation is the deferred fix (auth-callout, below).
+- **Credential death is enforced (D5), with honest edges.** Minted creds are bounded by a
+  centralized lifetime matrix: one-shot command creds expire in minutes; standing daemon creds
+  (supervisor, delivery, membership-rw) expire in 24h and are renewed by a **named owner** — the
+  manager self-remints its own cred and re-signs the seed-less daemons' files (same nkey, never a
+  new identity), then requests explicit adoption over the privileged `ctl.delivery-admin` rail,
+  recording the pass in `.cotal/renewal.json`; the `$SYS` observer/evictor creds are bounded 30d
+  and renewed **only** by a system-account rotation + broker restart (no persisted `$SYS` remint
+  secret — by design). Live containment: `evictPrincipal` (same rail) scan→KICKs→verifies a denied
+  principal's open connections, and `cotal actor revoke` wires it so removal stops live delivery
+  immediately, not at bearer expiry. Operator surface: expired/rotated creds classify as
+  **stale-auth** (never a registry prune) and every path points at `cotal doctor auth`, the one
+  diagnosis + repair command. Remaining edges, on the record: **seed theft is out of standing
+  renewal's scope** — a copied signing seed stays valid for its identity until account
+  signing-key/system **rotation** (the rotation helpers are the revocation lever for trust
+  material, renewal only bounds *user JWTs*); and eviction's scan-complete verification is
+  single-server grade (a partially-silent multi-server cluster cannot yet be distinguished from a
+  complete scan).
 - **Credless liveness** (`isReachable`/`pruneStaleMeshes` with no creds) is a silent plaintext
   TCP+`INFO` probe — it reads the server's pre-auth greeting and closes without authenticating, so
   it no longer logs a broker auth-error on every check. Limitation: it returns false for a TLS-first
   (`handshake_first`) listener (that broker config isn't supported by the credless probe yet); the
   creds path stays a real authenticated connect and is unaffected.
 - **Callout stage:** SHIPPED for user mode (see *Per-user auth* above) — the auth service mints
-  scoped creds *at connect* and confines the data-account signing key. Static agent creds still
-  exist alongside it; retiring them (and the join-link bootstrap-token variant) is the flip.
+  scoped creds *at connect* and confines the data-account signing key. **The flip has landed for
+  user-auth spaces:** static agent/observer/admin minting is refused there (`cotal mint` names the
+  login + spawn recourse; every managed launch path is user-mode-only), so no static `local.<nkey>`
+  publisher can sit alongside user-owned principals. Static-auth meshes keep static creds by
+  design; the join-link bootstrap-token variant remains future work.
 
 ## Deferred
 
