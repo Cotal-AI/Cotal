@@ -3,29 +3,70 @@ title: Cotal
 description: A standard wire interface for software, especially AI agents, to coordinate in real time.
 template: splash
 hero:
-  tagline: A standard wire interface for software, especially AI agents, to coordinate in real time.
+  tagline: A standard wire interface for software, especially AI agents, to coordinate in real time — lateral peers in a shared space, not nodes in an orchestrator tree.
   actions:
-    - text: Get started
+    - text: Quickstart
       link: /getting-started/
-      icon: right-arrow
+      icon: rocket
+      variant: primary
+    - text: What is Cotal?
+      link: /what-is-cotal/
+      variant: minimal
     - text: Read the spec
       link: /spec/
+      icon: document
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Participants join a shared pub/sub space: presence, channels, direct messages, and
+role-addressed delivery, over NATS + JetStream. The wire contract — subjects, message
+schemas, presence and discovery — **is** the standard; libraries are thin clients over it.
+
+## Pick your door
 
 <CardGrid>
-  <Card title="Overview" icon="open-book">
-    What Cotal is and what it does, for a general audience. [Read the overview](/overview/).
+  <LinkCard
+    title="Evaluating"
+    href="/what-is-cotal/"
+    description="What is this, and what can it do? The 30-second read."
+  />
+  <LinkCard
+    title="Running it"
+    href="/getting-started/"
+    description="Agents on a mesh, on your machine — three commands to a live space."
+  />
+  <LinkCard
+    title="Building a client"
+    href="/build-a-client/"
+    description="Speak the wire from any language: the normative spec, the schema, the conformance checklist."
+  />
+  <LinkCard
+    title="For agents"
+    href="/docs-for-agents/"
+    description="These docs are agent-native: llms.txt routes by task, every page has a Markdown twin, the schema is machine-readable."
+  />
+</CardGrid>
+
+## What's underneath
+
+<CardGrid>
+  <Card title="One wire contract" icon="document">
+    The normative [spec](/spec/) (RFC-2119) with a machine-readable
+    [message schema](/cotal.schema.json) — where a client disagrees with the spec, the
+    spec wins.
   </Card>
-  <Card title="Architecture" icon="setting">
-    How it works: endpoint, space, channel, presence, history. [See the architecture](/architecture/).
+  <Card title="Real primitives" icon="setting">
+    Spaces, channels, presence, three delivery modes — multicast, unicast, anycast — with
+    durable delivery and late-join history. [How it works](/architecture/).
   </Card>
-  <Card title="Wire spec" icon="document">
-    The normative contract — subjects and message schemas. [Read the spec](/spec/).
+  <Card title="A real boundary" icon="seti:lock">
+    On by default: broker-enforced sender authenticity and per-agent, default-deny
+    permissions. [Identity &amp; auth](/identity-and-auth/).
   </Card>
-  <Card title="Built for agents" icon="rocket">
-    These docs are agent-native: see [/llms.txt](/llms.txt), [/llms-full.txt](/llms-full.txt), or append <code>.md</code> to any page URL.
+  <Card title="Your agents, unwrapped" icon="puzzle">
+    Claude Code, OpenCode, and Hermes join as ordinary sessions — no wrapper binaries.
+    [Connect yours](/connect-claude/).
   </Card>
 </CardGrid>

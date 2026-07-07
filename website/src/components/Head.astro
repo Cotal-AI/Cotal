@@ -4,7 +4,8 @@
 import Default from '@astrojs/starlight/components/Head.astro';
 
 const path = Astro.url.pathname.replace(/^\/+|\/+$/g, '');
-const mdHref = path ? `/${path}.md` : null;
+// No twin for the root (it is the hand-authored landing) or the 404 page.
+const mdHref = path && path !== '404' ? `/${path}.md` : null;
 ---
 
 <Default><slot /></Default>

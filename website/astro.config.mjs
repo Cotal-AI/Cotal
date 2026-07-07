@@ -31,9 +31,10 @@ export default defineConfig({
           description:
             'Cotal is a standard wire interface for software, especially AI agents, to coordinate in real time. The wire contract — subjects, message schemas, presence/discovery conventions — is the standard; libraries are thin clients over it. Transport is NATS + JetStream.',
           details:
-            'Start with the Overview, then Architecture, then the normative wire Spec. Core primitives: endpoint, agent node, space, channel, direct message, presence, history. Delivery modes: multicast / unicast / anycast.',
-          // A compact, agent-pickable subset for small context windows.
-          exclude: ['release', 'setup-internals'],
+            'Route by task: set up + run a mesh → Quickstart (`npx cotal-ai setup --yes && npx cotal-ai up --detach`, then `cotal spawn`); message peers from a session → MCP tool catalog (cotal_send / cotal_dm / cotal_anycast); declare a team → Define a team (cotal.yaml); grant channel access → Channels & permissions; build a client in another language → Build a client + the normative Spec. The Spec is the RFC-2119 wire contract and wins over every other page; the machine-readable message schema is at /cotal.schema.json (authoritative for message shapes). Pages are marked normative / informative / reference in their opening line; Roadmap content is not shipped behavior. Core primitives: endpoint, agent node, space, channel, direct message, presence, history. Delivery modes: multicast / unicast / anycast.',
+          // A compact, agent-pickable subset for small context windows: drop the
+          // maintainer-facing Project section.
+          exclude: ['release', 'setup-internals', 'roadmap'],
         }),
       ],
     }),

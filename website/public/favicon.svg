@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Cotal mark: three lateral peers meshed in one space. -->
+  <g stroke="#6E56CF" stroke-width="2.4" stroke-linecap="round">
+    <line x1="16" y1="7" x2="7" y2="24" />
+    <line x1="16" y1="7" x2="25" y2="24" />
+    <line x1="7" y1="24" x2="25" y2="24" />
+  </g>
+  <circle cx="16" cy="7" r="4.4" fill="#6E56CF" />
+  <circle cx="7" cy="24" r="4.4" fill="#9E8CFC" />
+  <circle cx="25" cy="24" r="4.4" fill="#9E8CFC" />
+</svg>

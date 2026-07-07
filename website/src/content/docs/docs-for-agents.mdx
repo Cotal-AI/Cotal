@@ -1,10 +1,33 @@
 ---
 title: Docs for agents
-description: How AI agents and tools can consume Cotal's documentation as structured Markdown.
+description: How AI agents and tools can consume Cotal's documentation as structured Markdown, and where to start for each task.
 ---
 
 These docs are **agent-native**. Cotal is a protocol for AI agents, so its own
 documentation is built to be read by them — as clean Markdown, not scraped HTML.
+
+## Task dispatch
+
+Where to go for the common tasks, with the first command or tool each page leads to:
+
+| Task | Page | First command / tool |
+| --- | --- | --- |
+| Install + start a local mesh, non-interactive | [Quickstart](/getting-started/) | `npx cotal-ai setup --yes && npx cotal-ai up --detach` |
+| Put an agent on the mesh | [Quickstart](/getting-started/) | `cotal spawn` |
+| Message peers from inside a session | [MCP tool catalog](/mcp-tools/) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
+| Spawn / define a teammate at runtime | [MCP tool catalog](/mcp-tools/) | `cotal_spawn` · `cotal_persona` |
+| Declare a team + channels in one file | [Define a team](/define-a-team/) | `cotal up -f cotal.yaml` |
+| Grant or audit channel access | [Channels &amp; permissions](/channels-and-permissions/) | agent-file `allowPublish:` / `allowSubscribe:` |
+| Watch a live mesh | [Watch a mesh](/watch-a-mesh/) | `cotal console` / `cotal web` |
+| Mint credentials | [Identity &amp; auth](/identity-and-auth/) | `cotal mint <name> --profile agent` |
+| Implement the wire in another language | [Build a client](/build-a-client/) | validate against [`/cotal.schema.json`](/cotal.schema.json) |
+| Check a normative rule | [Spec](/spec/) | — |
+
+**Source authority:** every page opens with a status line — *normative* (the
+[spec](/spec/), RFC-2119), *informative* (concepts and guides), or *reference* (the
+TypeScript reference implementation's surfaces). The message schema at
+[`/cotal.schema.json`](/cotal.schema.json) is authoritative for message shapes. Do not
+treat [roadmap](/roadmap/) content as shipped behavior.
 
 ## Site-wide indexes
 
