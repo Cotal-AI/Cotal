@@ -9,6 +9,7 @@ import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags } from "./commands/spawn.js";
 import { attach, attachFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
+import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, complete } from "./commands/completion.js";
@@ -237,6 +238,15 @@ const baseCommands: Command[] = [
     flags: spawnFlags,
     run: spawn,
     complete: spawnComplete,
+  },
+  {
+    kind: "command",
+    name: "models",
+    group: "Agents",
+    summary: "list connector model catalogs and variants from the manager",
+    flags: modelsFlags,
+    run: models,
+    complete: modelsComplete,
   },
   {
     kind: "command",

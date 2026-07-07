@@ -22,6 +22,7 @@ const AgentEntryObject = z
      *  top-level `agent:` default; one of the two must be set (no silent default — matches roster). */
     agent: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    variant: z.string().min(1).optional(),
     role: z.string().min(1).optional(),
     description: z.string().optional(),
     instructions: z.string().optional(),
@@ -29,9 +30,9 @@ const AgentEntryObject = z
     /** Per-agent override of the top-level `personaPermissions` policy. */
     personaPermissions: PersonaPermissions.optional(),
   })
-  .refine((v) => v.persona !== undefined || v.model !== undefined || v.instructions !== undefined, {
+  .refine((v) => v.persona !== undefined || v.model !== undefined || v.variant !== undefined || v.instructions !== undefined, {
     message:
-      "inline agent (no `persona:`) needs at least `model` or `instructions` — otherwise reference a persona file",
+      "inline agent (no `persona:`) needs at least `model`, `variant`, or `instructions` — otherwise reference a persona file",
   });
 
 /** An `agents:` value is a string (bare persona path) OR the object above. A plain `z.union`

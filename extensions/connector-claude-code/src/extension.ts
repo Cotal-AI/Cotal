@@ -37,6 +37,7 @@ export const claudeConnector: Connector = {
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
     // claude auths via macOS Keychain / an OAuth token, not an env key → forward NO provider key.
@@ -124,7 +125,10 @@ export const claudeConnector: Connector = {
       model ??= def.model;
     }
     // The `--model` flag wins over the agent file, and applies even with no agent file.
-    if (model) args.push("--model", model);
+    if (model) {
+      args.push("--model", model);
+      env.COTAL_MODEL = model;
+    }
 
     // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
     // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
