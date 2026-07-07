@@ -30,7 +30,7 @@
  *  - This is ALWAYS paired with a committed deny-new by the caller: a kicked client reconnects with
  *    a fresh cid until its cred dies, so an evict-only loop would chase churn. The name says so.
  */
-import type { NatsConnection } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { connzRequestSubject, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -253,4 +253,40 @@ export async function evictDeniedPrincipal(
   }
   // Unreachable (the loop returns), but satisfies the type checker.
   return { principal, kicked, remaining: 0, verifiedGone: false, scanComplete: true, note };
+}
+
+/** Creds-level wrapper for composition roots that hold the two $SYS creds as FILES/strings (the
+ *  delivery daemon's admin-rail executor): open the observer (under its granted inbox prefix) and
+ *  the kick-only evictor PER CALL, run {@link evictDeniedPrincipal}, and drain both — eviction is a
+ *  rare repair/flip step, never a standing $SYS connection. Core owns the connection lifecycle
+ *  (the same placement rule as the membership feed), so edge packages never import the transport. */
+export async function evictDeniedPrincipalWithCreds(opts: {
+  servers: string;
+  observerCreds: string;
+  evictorCreds: string;
+  accountId: string;
+  principal: string;
+  options?: EvictOptions;
+}): Promise<EvictionResult> {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const observer = await connect({
+    servers: opts.servers,
+    authenticator: credsAuthenticator(enc(opts.observerCreds)),
+    inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const evictor = await connect({
+      servers: opts.servers,
+      authenticator: credsAuthenticator(enc(opts.evictorCreds)),
+      maxReconnectAttempts: 0,
+    });
+    try {
+      return await evictDeniedPrincipal(observer, evictor, opts.accountId, opts.principal, opts.options ?? {});
+    } finally {
+      await evictor.drain().catch(() => {});
+    }
+  } finally {
+    await observer.drain().catch(() => {});
+  }
 }

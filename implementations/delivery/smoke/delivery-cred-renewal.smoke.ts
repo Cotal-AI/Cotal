@@ -22,14 +22,18 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   CotalEndpoint,
+  DEV_OWNER,
   identityFromCreds,
   isReachable,
   createSpaceAuth,
+  mintConnectionEvictorCreds,
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  principalKey,
   serverConfig,
   setupSpaceStreams,
   waitForDeliveryLease,
@@ -50,18 +54,20 @@ const until = async (cond: () => boolean, timeoutMs: number, stepMs = 200): Prom
 /** Admin request that rides out the daemon's post-swap re-arm window: an adoption reconnect drops
  *  the responder for under a second before armDeliveryControl re-binds it — a caller right behind a
  *  reload retries on no-responders (pinning that the responder DOES come back). */
-async function adminReq(ep: CotalEndpoint, op: string): Promise<{ ok: boolean; error?: string; data?: unknown }> {
+async function adminReq2(ep: CotalEndpoint, op: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: string; data?: unknown }> {
   let last: Error | undefined;
   for (let i = 0; i < 12; i++) {
-    try { return await ep.requestDeliveryAdmin(op, {}); }
+    try { return await ep.requestDeliveryAdmin(op, args, 15_000); }
     catch (e) { last = e as Error; await wait(500); }
   }
   throw last ?? new Error("adminReq: no attempts ran");
 }
+const adminReq = (ep: CotalEndpoint, op: string) => adminReq2(ep, op, {});
 
 const space = `dlv-renew-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const obsCreds = await mintMembershipObserverCreds(auth, newIdentity()); // while the $SYS seed is in memory
+const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity()); // same in-memory-$SYS-only window
 const dir = mkdtempSync(join(tmpdir(), "cotal-dlv-renew-"));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -90,6 +96,7 @@ try {
   writeFileSync(credsPath, credA, { mode: 0o600 });
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 120 }), { mode: 0o600 });
   writeFileSync(join(root, ".cotal", "membership-observer.creds"), obsCreds, { mode: 0o600 });
+  writeFileSync(join(root, ".cotal", "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
   writeFileSync(join(root, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
   const bornAt = Date.now();
 
@@ -144,6 +151,29 @@ try {
   writeFileSync(credsPath, await mintCreds(auth, identityFromCreds(credA), "delivery"), { mode: 0o600 });
   const recovered = await adminReq(sup, "reloadCreds");
   check("explicit reload after re-sign recovers from the stale state", recovered.ok === true, JSON.stringify(recovered));
+
+  // Phase 5 — the LIVE-EVICTION EXECUTOR on the same rail (D5 slice 6): a victim connection is
+  // force-dropped by principal via the daemon's per-call $SYS observer+evictor, structured result.
+  const victim = newIdentity();
+  const victimNc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, victim, "operator"))),
+    inboxPrefix: `_INBOX_${victim.id}`,
+    maxReconnectAttempts: 0,
+    reconnect: false,
+  });
+  let victimClosed = false;
+  void victimNc.closed().then(() => { victimClosed = true; });
+  const victimPrincipal = principalKey(DEV_OWNER, victim.id).key;
+  const evicted = await adminReq2(sup, "evictPrincipal", { principal: victimPrincipal });
+  const ev = (evicted.ok ? evicted.data : {}) as { kicked?: number; verifiedGone?: boolean; scanComplete?: boolean };
+  check("evictPrincipal force-drops the victim (kicked + verifiedGone + complete scan)", evicted.ok === true && (ev.kicked ?? 0) >= 1 && ev.verifiedGone === true && ev.scanComplete === true, JSON.stringify(evicted));
+  check("victim's connection actually closed", await until(() => victimClosed, 5000));
+  const ghost = await adminReq2(sup, "evictPrincipal", { principal: principalKey(DEV_OWNER, newIdentity().id).key });
+  const gv = (ghost.ok ? ghost.data : {}) as { kicked?: number; verifiedGone?: boolean };
+  check("evicting a not-live principal is an idempotent verified no-op", ghost.ok === true && gv.kicked === 0 && gv.verifiedGone === true, JSON.stringify(ghost));
+  const badPrincipal = await adminReq2(sup, "evictPrincipal", { principal: "not a principal" });
+  check("malformed principal is refused fail-closed", badPrincipal.ok === false, JSON.stringify(badPrincipal));
 
   await wait(2000);
   check("the run never hit an authentication expiry (every swap was explicit + ahead of exp)", !output.includes("User Authentication Expired"), output.slice(-500));

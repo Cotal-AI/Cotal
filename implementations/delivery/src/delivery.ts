@@ -14,6 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
+import { executeEviction } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -143,6 +144,9 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   await ep.startPlane3((owner) => ep.aclForOwner(owner), {
     reloadMembershipCreds: async () =>
       membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
+    // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
+    // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
+    evictPrincipal: (principal) => executeEviction(server, principal),
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,

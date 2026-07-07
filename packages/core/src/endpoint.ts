@@ -146,7 +146,7 @@ export interface EndpointOptions {
    *  reconnect) and on rebuilds, and every (re)connect attempt presents the freshest copy — the
    *  broker's expiry-close is only the backstop for a missed swap.
    *  The two source shapes are the renewal classes: a seed-holder self-remints (the manager's
-   *  supervisor), a seed-less daemon re-reads its launcher-reminted creds file (delivery). A source
+   *  supervisor), a seed-less daemon re-reads its manager-reminted creds file (delivery). A source
    *  requires explicit `card.id` (the pinned identity); every fetched cred MUST carry that same nkey
    *  or the endpoint fails loud — renewal may never silently swap identity. A fetch failure is
    *  emitted as an "error" event and retried; the connection stays up until its current JWT expires,
@@ -287,6 +287,9 @@ export class CotalEndpoint extends EventEmitter {
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
      *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). */
     reloadMembershipCreds?: () => Promise<unknown>;
+    /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
+     *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
+    evictPrincipal?: (principal: string) => Promise<unknown>;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -1888,10 +1891,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: () => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: () => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown> } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal };
     await this.armPlane3();
   }
 
@@ -1998,6 +2001,20 @@ export class CotalEndpoint extends EventEmitter {
         const delivery = await this.reloadCreds();
         const membership = this.plane3?.reloadMembershipCreds ? await this.plane3.reloadMembershipCreds() : undefined;
         return { ok: true, data: { delivery, ...(membership !== undefined ? { membership } : {}) } };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "evictPrincipal") {
+      // The LIVE-EVICTION executor (D5 slice 6): force-drop a denied principal's connections.
+      // Composition-root hook because the $SYS observer/evictor creds live outside this endpoint's
+      // trust boundary; absent hook = a daemon build without the executor, refused loudly.
+      if (!this.plane3?.evictPrincipal)
+        return { ok: false, error: "evictPrincipal: no eviction executor wired on this daemon" };
+      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+      if (!principal) return { ok: false, error: "evictPrincipal: a principal (owner.actor dot-form) is required" };
+      try {
+        return { ok: true, data: await this.plane3.evictPrincipal(principal) };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

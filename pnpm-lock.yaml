@@ -313,6 +313,10 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
+    devDependencies:
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
 
   implementations/manager:
     dependencies:
