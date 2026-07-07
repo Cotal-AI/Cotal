@@ -49,10 +49,16 @@ export interface MembershipFeedOpts {
   space: string;
   /** DATA account public key — the CONNZ request + CONNECT/DISCONNECT event subjects pin this account. */
   accountId: string;
-  /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader). */
+  /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader). Always a static string: it is
+   *  `rotation-renewed` ($SYS seed dies at `up`), so its only renewal is a system-account rotation +
+   *  broker restart — a new process, never a live reload. */
   observerCreds: string;
-  /** Scoped DATA-account read/write creds (conn B — members read + feed write). */
-  rwCreds: string;
+  /** Scoped DATA-account read/write creds (conn B — members read + feed write), or a SOURCE that
+   *  re-reads them (D5 slice 5 class 2: the launcher re-signs the creds file for the SAME nkey; the
+   *  getter is re-evaluated per (re)connect attempt, so the broker's expiry-close renews the
+   *  connection from the refreshed file). A read that swaps the nkey fails loud — the feed's identity
+   *  (inbox scope + self-presence check) is pinned to the first read. */
+  rwCreds: string | (() => string);
   /** Safety reconcile interval (ms) — primary signal (no SUB/UNSUB event exists). Default 15000. */
   intervalMs?: number;
   /** Connect/disconnect-event → re-poll debounce (ms); coalesces connect storms. Default 400. */
@@ -95,10 +101,21 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   });
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
-  const rwSelfId = idFromCreds(opts.rwCreds); // conn B's own nkey — the data-account self-presence check below
+  const readRw = typeof opts.rwCreds === "function" ? opts.rwCreds : () => opts.rwCreds as string;
+  const rwSelfId = idFromCreds(readRw()); // conn B's own nkey — the data-account self-presence check below
+  // Pin every re-read to the first read's nkey: a renewal (launcher re-signs the file) keeps the
+  // identity; a swapped file would silently break the inbox scope + self-presence check, so it throws
+  // inside the authenticator instead (the connect attempt fails loud and retries).
+  const rwCredsPinned = () => {
+    const creds = readRw();
+    const id = idFromCreds(creds);
+    if (id !== rwSelfId) throw new Error(`membership rw creds re-read returned identity ${id}, expected ${rwSelfId} — a renewal may not swap the feed's nkey`);
+    return creds;
+  };
   const connB = await connect({
     servers: opts.servers,
-    authenticator: credsAuthenticator(enc(opts.rwCreds)),
+    // Re-wrapped per (re)connect attempt so each attempt signs with the freshest (pinned) file read.
+    authenticator: (nonce?: string) => credsAuthenticator(enc(rwCredsPinned()))(nonce),
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.

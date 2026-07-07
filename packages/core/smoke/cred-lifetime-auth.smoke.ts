@@ -93,6 +93,10 @@ try {
   const supClaims = await parseCreds(enc(supCreds));
   check("standing supervisor is bounded now that self-remint renewal exists (slice 5 class 1)", credentialLifetime("supervisor").class === "standing-renewable" && Boolean(supClaims.uc.exp && supClaims.uc.exp - now <= STANDING_RENEWABLE_TTL_SEC + 5 && supClaims.uc.exp - now > STANDING_RENEWABLE_TTL_SEC - 60), supClaims.uc);
   check("agent is mixed until managed/unmanaged paths split", credentialLifetime("agent").class === "mixed" && credentialLifetime("agent").renewalOwner === undefined, credentialLifetime("agent"));
+  const dlv = await parseCreds(enc(await mintCreds(auth, newIdentity(), "delivery")));
+  check("delivery is bounded now that the launcher-remint reload seam exists (slice 5 class 2)", credentialLifetime("delivery").defaultTtlSeconds === STANDING_RENEWABLE_TTL_SEC && typeof dlv.uc.exp === "number", dlv.uc.exp);
+  const mrw = await parseCreds(enc(await mintCreds(auth, newIdentity(), "membership-rw")));
+  check("membership-rw is bounded now that the launcher-remint reload seam exists (slice 5 class 2)", credentialLifetime("membership-rw").defaultTtlSeconds === STANDING_RENEWABLE_TTL_SEC && typeof mrw.uc.exp === "number", mrw.uc.exp);
 
   const obs = newIdentity();
   const obsCreds = await mintMembershipObserverCreds(auth, obs);

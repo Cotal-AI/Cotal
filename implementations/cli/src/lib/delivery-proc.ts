@@ -2,11 +2,14 @@ import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import {
   DEFAULT_SERVER,
+  STANDING_RENEWABLE_TTL_SEC,
+  identityFromCreds,
   mintCreds,
   mkSecretDir,
   newIdentity,
   waitForDeliveryLease,
   writeSecretFile,
+  type Profile,
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
@@ -115,6 +118,44 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   if (!ready)
     console.error("• delivery daemon not yet ready (responder not bound) — boot durable joins will reconcile when it is");
   return { running: true };
+}
+
+/** The two seed-less daemon creds files the resident launcher re-signs (D5 slice 5 class 2). The
+ *  $SYS files (membership-observer, connection-evictor) are deliberately ABSENT: they are
+ *  rotation-renewed — no persisted seed can re-sign them, by design. */
+const REMINTABLE: Array<{ file: string; profile: Profile }> = [
+  { file: "delivery.creds", profile: "delivery" },
+  { file: "membership-rw.creds", profile: "membership-rw" },
+];
+
+/** Re-sign the daemon creds files for their EXISTING nkeys (a renewal must never swap a daemon's
+ *  identity — the daemon side pins it). Skips files that don't exist (pre-feature space, no daemon);
+ *  loud per-file on failure, never throws — a failed remint leaves the old cred running toward its
+ *  loud expiry, and the daemon's own stale-file error names the repair. */
+export async function remintDaemonCreds(): Promise<void> {
+  const auth = loadSpaceAuth(authDir(findCotalRoot()));
+  if (!auth) return; // open mesh — no daemon creds to renew
+  for (const { file, profile } of REMINTABLE) {
+    const path = cotalPath(file);
+    if (!existsSync(path)) continue;
+    try {
+      const identity = identityFromCreds(readFileSync(path, "utf8"));
+      writeSecretFile(path, await mintCreds(auth, identity, profile));
+    } catch (e) {
+      console.error(`✗ credential renewal: could not re-sign ${file}: ${(e as Error).message} — the daemon dies loud at this cred's expiry unless it is reminted`);
+    }
+  }
+}
+
+/** Start the co-resident remint schedule in the ONE process that both holds the signer and lives as
+ *  long as the mesh: the foreground `cotal up`. Re-signs at HALF the standing TTL (the daemons reload
+ *  at 75%, so a healthy launcher is always a window ahead), and once immediately — a daemon REUSED
+ *  from a previous session may be holding a creds file that has aged since the last `up`. */
+export function startDaemonCredRenewal(): NodeJS.Timeout {
+  void remintDaemonCreds();
+  const timer = setInterval(() => void remintDaemonCreds(), (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+  timer.unref?.();
+  return timer;
 }
 
 /** Stop the detached delivery daemon if we started one, and drop its creds file. */

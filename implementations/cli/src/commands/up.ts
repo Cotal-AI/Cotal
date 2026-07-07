@@ -51,7 +51,7 @@ import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
+import { ensureControlPlane, startDaemonCredRenewal, stopDelivery } from "../lib/delivery-proc.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -247,6 +247,10 @@ export async function up(args: ParsedArgs): Promise<void> {
       ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
       ts: new Date().toISOString(),
     });
+    // D5 slice 5 class 2: the resident `up` is the ONE process that both holds the signer and lives
+    // as long as the mesh — it owns the daemon-cred renewal schedule. Re-sign BEFORE the daemon
+    // starts (a reused daemon's creds file may have aged since the last session), then every half-TTL.
+    startDaemonCredRenewal();
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     await startDeliveryWithBroker(space, server);
