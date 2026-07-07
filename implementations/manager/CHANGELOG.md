@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.10.1
+
+### Patch Changes
+
+- e3a53e3: Add a connector-agnostic model/variant selector: the `cotal models` command, a `--variant` flag on spawn, and the core `listModels` / `ModelCatalog` + `LaunchOpts.variant` contract. OpenCode discovers its models and variants from the installed CLI; Claude and Hermes reject variants (fail loud) and set `COTAL_MODEL` when a model is given.
+- Updated dependencies [e3a53e3]
+  - @cotal-ai/core@0.10.1
+  - @cotal-ai/workspace@0.10.1
+
 ## 0.10.0
 
 ### Minor Changes
