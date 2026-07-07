@@ -35,6 +35,12 @@ export async function console_(args: ParsedArgs): Promise<void> {
     }
   })();
   const canWrite = !creds || !!values.creds;
+  // Control (kill/pause/spawn/purge) is broader than chat-write: it doesn't ride the observer
+  // endpoint — each action makes its own tier-scoped request (see console/control.ts). Possible
+  // whenever we can produce an authorized caller: bare on an open mesh, the operator's --creds,
+  // or a fresh per-action mint from the held trust material.
+  const canControl = !creds || !!values.creds || !!auth;
+  const controlCtx = { server, auth, creds: values.creds ? creds : undefined };
 
   // No TTY (piped/headless) or --plain → the passive line stream; Ink needs a real terminal, and a
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
@@ -72,11 +78,14 @@ export async function console_(args: ParsedArgs): Promise<void> {
     process.exit(0);
   });
 
-  const { waitUntilExit } = render(createElement(Root, { server, creds, space, canWrite, name: operator }), {
-    exitOnCtrlC: true,
-    maxFps: 30,
-    incrementalRendering: true,
-  });
+  const { waitUntilExit } = render(
+    createElement(Root, { server, creds, space, canWrite, canControl, controlCtx, name: operator }),
+    {
+      exitOnCtrlC: true,
+      maxFps: 30,
+      incrementalRendering: true,
+    },
+  );
   await waitUntilExit();
   restore();
 }

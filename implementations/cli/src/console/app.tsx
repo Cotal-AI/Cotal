@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
-import type { CotalEndpoint, Presence } from "@cotal-ai/core";
+import {
+  CONTROL_ADMIN,
+  CONTROL_PRIVILEGED,
+  type ControlTier,
+  type CotalEndpoint,
+  type Presence,
+} from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
+import { control, type ControlCtx } from "./control.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Roster } from "./ui/Roster.js";
 import { Feed } from "./ui/Feed.js";
@@ -40,11 +47,15 @@ export function App({
   tapSubject,
   onBack,
   canWrite,
+  canControl,
+  controlCtx,
 }: {
   ep: CotalEndpoint;
   tapSubject?: string;
   onBack?: () => void;
   canWrite?: boolean;
+  canControl?: boolean;
+  controlCtx?: Omit<ControlCtx, "space">;
 }) {
   const mesh = useMesh(ep, { tapSubject });
   const { exit } = useApp();
@@ -118,6 +129,47 @@ export function App({
     return () => clearInterval(t);
   }, []);
 
+  // Per-action control against the manager for THIS space (see console/control.ts — the observer
+  // endpoint never carries control; each action makes its own tier-scoped request).
+  const ctl = useCallback(
+    (op: string, args: Record<string, unknown>, tier: ControlTier) =>
+      control({ space: ep.space, server: controlCtx?.server ?? "", auth: controlCtx?.auth, creds: controlCtx?.creds }, op, args, tier),
+    [ep.space, controlCtx],
+  );
+
+  // Paused-ness lives in the manager's managed-state, NOT presence — a SIGSTOPped agent's
+  // heartbeat freezes, so its presence key TTLs out to "offline" and would lie. Poll `ps` at a
+  // low rate and merge by non-forgeable id; fail QUIET and stop polling when no manager answers
+  // (an open mesh without a supervisor must not spin or flash errors).
+  const [pausedIds, setPausedIds] = useState<Set<string>>(new Set());
+  const psDead = useRef(false);
+  useEffect(() => {
+    if (!canControl || !controlCtx) return;
+    psDead.current = false;
+    let alive = true;
+    const poll = async () => {
+      if (!alive || psDead.current) return;
+      const r = await ctl("ps", {}, CONTROL_PRIVILEGED).catch(() => ({ ok: false as const, error: "" }));
+      if (!alive) return;
+      if (!r.ok) {
+        psDead.current = true; // no manager on this mesh — don't keep knocking
+        return;
+      }
+      const list = (r.data ?? []) as { id: string; paused?: boolean }[];
+      setPausedIds((prev) => {
+        const next = new Set(list.filter((a) => a.paused).map((a) => a.id));
+        if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev;
+        return next;
+      });
+    };
+    void poll();
+    const t = setInterval(() => void poll(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [canControl, controlCtx, ctl]);
+
   // Auto-clear the transient action notice.
   useEffect(() => {
     if (!notice) return;
@@ -141,6 +193,26 @@ export function App({
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
   const openMessage = useCallback((e: FeedEntry) => setDetail({ kind: "message", entry: e }), []);
   const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name }), []);
+  // Pause/resume toggle — recoverable, so no confirm (graduated destructiveness). Admin tier: the
+  // console operator is never the spawner.
+  const handlePause = useCallback(
+    (p: Presence) => {
+      const op = pausedIds.has(p.card.id) ? "resume" : "pause";
+      void ctl(op, { name: p.card.name }, CONTROL_ADMIN)
+        .then((r) => {
+          setNotice(r.ok ? `${op === "pause" ? "paused" : "resumed"} ${p.card.name}` : `${op}: ${r.error ?? "failed"}`);
+          if (r.ok)
+            setPausedIds((prev) => {
+              const next = new Set(prev);
+              if (op === "pause") next.add(p.card.id);
+              else next.delete(p.card.id);
+              return next;
+            });
+        })
+        .catch((e) => setNotice(`${op}: ` + (e as Error).message));
+    },
+    [ctl, pausedIds],
+  );
   const feedCompose = useCallback(
     () => setCompose({ kind: "channel", channel: activeChannel === "all" ? "general" : activeChannel, value: "" }),
     [activeChannel],
@@ -194,19 +266,27 @@ export function App({
       back: onBack,
       exit,
       notify: setNotice,
+      control: ctl,
+      confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
     };
-    runCommand(line, ctx, !!canWrite);
+    runCommand(line, ctx, !!canWrite, !!canControl);
   };
 
-  // Confirmed destructive action (kill only; space-delete is handled in the picker).
-  const onConfirmed = () => {
+  // Confirmed destructive action (kill/purge; space-delete is handled in the picker). Kill goes
+  // on the ADMIN tier with a per-action mint — the privileged tier only reaches a caller's own
+  // spawned child, and the console's observer cred can't publish control at all.
+  const onConfirmed = (opts?: { force?: boolean }) => {
     const c = confirm;
     setConfirm(null);
     if (c?.kind === "kill") {
-      void ep
-        .requestControl("manager", { op: "stop", args: { name: c.name } })
-        .then((r) => setNotice(r.ok ? `stopped ${c.name}` : `stop: ${r.error ?? "failed"}`))
+      const graceful = !opts?.force;
+      void ctl("stop", { name: c.name, graceful }, CONTROL_ADMIN)
+        .then((r) => setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${c.name}` : `stop: ${r.error ?? "failed"}`))
         .catch((e) => setNotice("stop: " + (e as Error).message));
+    } else if (c?.kind === "purge") {
+      void ctl("purge", {}, CONTROL_ADMIN)
+        .then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`))
+        .catch((e) => setNotice("purge: " + (e as Error).message));
     }
   };
 
@@ -311,7 +391,9 @@ export function App({
               blocked={blocked}
               onFocus={onFocus}
               onOpenDetail={openAgent}
-              onKill={canWrite ? handleKill : undefined}
+              onKill={canControl ? handleKill : undefined}
+              onPause={canControl ? handlePause : undefined}
+              paused={pausedIds}
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed
@@ -361,6 +443,7 @@ export function App({
           query={palette.query}
           snapshot={mesh}
           canWrite={!!canWrite}
+          canControl={!!canControl}
           width={size.cols}
           onChange={(q) => setPalette((p) => ({ ...p, query: q }))}
           onRun={runPaletteLine}
@@ -385,6 +468,7 @@ export function App({
         railOpen={railOpen}
         canBack={!!onBack}
         canWrite={!!canWrite}
+        canControl={!!canControl}
         width={size.cols}
       />
     </Box>

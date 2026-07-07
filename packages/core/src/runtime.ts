@@ -39,6 +39,12 @@ export interface AgentHandle {
    *  it's a hard, immediate kill. */
   stop(opts?: { graceful?: boolean }): void;
   interrupt(): void;
+  /** Freeze the agent in place (POSIX SIGSTOP to its process group). Present only on backends
+   *  that own a real process (pty) — a backend that can't suspend omits it and the manager
+   *  errors rather than degrading. */
+  pause?(): void;
+  /** Resume a paused agent (SIGCONT). Present iff {@link pause} is. */
+  resume?(): void;
   /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
    *  you attach to natively). */
   attach(): AttachSession;

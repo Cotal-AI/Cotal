@@ -79,6 +79,7 @@
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:server-resolution:live": "tsx implementations/cli/smoke/server-resolution-live.smoke.ts",
     "smoke:cooperative-stop:live": "tsx implementations/manager/smoke/cooperative-stop-live.smoke.ts",
+    "smoke:pause-resume:live": "tsx implementations/manager/smoke/pause-resume-live.smoke.ts",
     "smoke:lifecycle-e2e": "tsx implementations/manager/smoke/lifecycle-e2e.smoke.ts",
     "smoke:spawn-args": "tsx extensions/connector-core/smoke/spawn-args.smoke.ts",
     "smoke:install": "tsx implementations/cli/smoke/install.smoke.ts",

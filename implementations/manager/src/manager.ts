@@ -145,6 +145,10 @@ interface ManagedAgent {
   spawner: string;
   startedAt: number;
   handle: AgentHandle;
+  /** Frozen via the `pause` op (SIGSTOP). Lives HERE, not in presence: a stopped process can't
+   *  heartbeat (its key TTLs out to offline) and the manager's cred can't write a peer's presence
+   *  key — managed-state is the one honest home. Surfaced by `ps`/`status`. */
+  paused?: boolean;
   /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
    *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
    *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
@@ -376,6 +380,11 @@ export class Manager {
         if (!name) return { ok: false, error: "self-stop not allowed on privileged subject; send it on the self-service subject" };
         return this.opStop(args, caller, admin);
       }
+      case "pause":
+      case "resume": {
+        if (!name) return { ok: false, error: `${req.op} requires a target name` };
+        return this.opPauseResume(req.op, args, caller, admin);
+      }
       case "definePersona":
         return this.opDefinePersona(args, caller, admin);
       case "purge":
@@ -442,6 +451,10 @@ export class Manager {
    *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
   private stopHandle(a: ManagedAgent, graceful: boolean): void {
     try {
+      // A paused (SIGSTOPped) process won't receive SIGTERM until it runs again — resume first so
+      // a graceful stop can't hang the grace window. SIGKILL lands regardless, but resuming
+      // uniformly is cheap and keeps the paths identical.
+      if (a.paused && a.handle.resume) a.handle.resume();
       if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
       a.handle.stop({ graceful });
     } catch (e) {
@@ -1042,6 +1055,32 @@ export class Manager {
     return { ok: true, data: { name, stopped: true, graceful } };
   }
 
+  /** Freeze / unfreeze a managed agent in place (SIGSTOP/SIGCONT on runtimes that own the
+   *  process). Same authority as a named stop — privileged tier reaches only the caller's own
+   *  child, admin any — because a pause is a lifecycle intervention, just a recoverable one.
+   *  A runtime without an owned pid (tmux/cmux) or platform support (win32) errors loud. */
+  private opPauseResume(
+    op: "pause" | "resume",
+    args: Record<string, unknown>,
+    caller: string,
+    admin: boolean,
+  ): ControlReply {
+    const name = String(args.name ?? "").trim();
+    const a = this.agents.get(name);
+    if (!a) return { ok: false, error: `no agent "${name}"` };
+    const denied = this.authorizeNamed(a, caller, admin);
+    if (denied) return { ok: false, error: denied };
+    const fn = op === "pause" ? a.handle.pause : a.handle.resume;
+    if (!fn) return { ok: false, error: `${op} is not supported by the ${a.handle.kind} runtime` };
+    try {
+      fn.call(a.handle);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    a.paused = op === "pause"; // idempotent — re-pausing re-signals harmlessly
+    return { ok: true, data: { name, paused: a.paused } };
+  }
+
   /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
    *  residual 2). The DM/DLV consumer-create surface — the irreducible onboarding power — lives only for
    *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
@@ -1170,6 +1209,7 @@ export class Manager {
       space: this.space,
       mode: a.handle.kind,
       status: a.handle.status(),
+      paused: a.paused ?? false,
       uptimeMs: Date.now() - a.startedAt,
       mesh: roster.get(a.name)?.status ?? "absent",
     }));

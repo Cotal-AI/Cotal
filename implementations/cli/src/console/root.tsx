@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CotalEndpoint, chatWildcard } from "@cotal-ai/core";
 import { App } from "./app.js";
+import type { ControlCtx } from "./control.js";
 import { SpacePicker } from "./ui/SpacePicker.js";
 
 /** The read-only observer the console watches a space through — invisible to peers. Built once
@@ -36,12 +37,17 @@ export function Root({
   creds,
   space,
   canWrite,
+  canControl,
+  controlCtx,
   name,
 }: {
   server: string;
   creds?: string;
   space?: string;
   canWrite?: boolean;
+  canControl?: boolean;
+  /** Trust material for per-action control mints — space-less; App adds its own space. */
+  controlCtx?: Omit<ControlCtx, "space">;
   name?: string;
 }) {
   const [selected, setSelected] = useState<string | undefined>(space);
@@ -62,6 +68,8 @@ export function Root({
       tapSubject={creds ? chatWildcard(selected) : undefined}
       onBack={space === undefined ? () => setSelected(undefined) : undefined}
       canWrite={canWrite}
+      canControl={canControl}
+      controlCtx={controlCtx}
     />
   );
 }

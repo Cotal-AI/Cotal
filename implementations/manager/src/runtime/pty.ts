@@ -135,6 +135,20 @@ export class PtyRuntime implements Runtime {
       interrupt: () => {
         if (alive) proc.write("\x03");
       },
+      // POSIX-only: ConPTY delivers no job-control signals, so pause errors loud on Windows
+      // rather than pretending (no fallbacks). Signal the process GROUP (forkpty makes the child
+      // a session leader): freezing the agent must also freeze whatever subprocess it spawned,
+      // the same scope `interrupt`'s ^C reaches.
+      pause: () => {
+        if (process.platform === "win32")
+          throw new Error("pause is not supported on Windows (ConPTY has no POSIX job control)");
+        if (alive) process.kill(-proc.pid, "SIGSTOP");
+      },
+      resume: () => {
+        if (process.platform === "win32")
+          throw new Error("pause/resume is not supported on Windows (ConPTY has no POSIX job control)");
+        if (alive) process.kill(-proc.pid, "SIGCONT");
+      },
       attach: (): AttachSession => ({
         get cols() {
           return cols;

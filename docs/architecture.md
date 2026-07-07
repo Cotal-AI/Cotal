@@ -138,10 +138,19 @@ and configures them.
   isn't loaded, never a silent fallback); **byo** is the floor (a human's own terminal,
   tracked via presence); **host** (Agent SDK, true mid-turn interrupt) is the documented
   upgrade path ([roadmap](roadmap.md)).
+- **Pause and resume.** Optional `pause`/`resume` on the Runtime contract freeze an agent
+  in place (POSIX `SIGSTOP`/`SIGCONT` to its process group). Only the `pty` backend owns a
+  real process, so only it implements them (POSIX only; Windows/ConPTY errors loud);
+  `tmux`/`cmux` reply "not supported by the `<kind>` runtime" rather than degrading.
+  Authority matches a named `stop` (privileged tier reaches your own child, admin any).
+  Paused-ness lives in the manager's managed state (`ps`/`status` report `paused`), not
+  presence: a SIGSTOPped agent cannot heartbeat, so its presence key TTLs out to `offline`;
+  surfaces merge `ps` by id instead (the console shows a `⏸ paused` badge). A graceful
+  `stop` on a paused agent resumes it first (SIGTERM is not delivered to a stopped process).
 - **Control schema:** `start {role, name, agent, model?, variant?}` · `models {agent?,
-  refresh?}` · `stop {name, graceful?}` · `definePersona {name, persona, model?}` · `ps` ·
-  `status` · `attach` · `bind`, request/reply messages any authorized node can send,
-  policy-gated ([identity & auth](identity-and-auth.md)).
+  refresh?}` · `stop {name, graceful?}` · `pause`/`resume {name}` · `definePersona {name,
+  persona, model?}` · `ps` · `status` · `attach` · `bind`, request/reply messages any
+  authorized node can send, policy-gated ([identity & auth](identity-and-auth.md)).
 - **Bounded spawn.** A synchronous gate caps concurrent + in-flight agents and a
   minimum-lifetime floor bounds spawn↔despawn churn, so a capability-holding but
   compromised peer cannot fork-bomb the host.

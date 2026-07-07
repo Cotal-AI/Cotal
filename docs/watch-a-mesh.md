@@ -45,8 +45,21 @@ tiles strip, and toggleable lenses:
 | `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map |
 | `/` | search / filter the feed |
 | `:` | the command palette |
+| `p` / `D` | pause–resume / kill the selected agent (control-gated, below) |
 | arrows / `h` `l` | move focus; select a row for its detail card |
 | `?` · `b` · `q` | help · back to overview · quit |
+
+**Operator control.** Watching stays read-only, but the console can also drive the
+[manager](architecture.md#manager-agent-supervisor): the observer endpoint never carries
+control; each action makes its own tier-scoped request. On an auth mesh the console mints a
+per-action, five-minute control cred from the trust material it holds (its own god-view cred
+stays read-only); on an open mesh it goes bare; an explicit `--creds` is used as-is. That gate
+is `canControl`, distinct from `canWrite` (chat publishes). Affordances follow how destructive
+they are: `p` pauses or resumes with no confirm (recoverable; the roster shows a `⏸ paused`
+badge merged from a low-rate `ps` poll, since a frozen agent's presence reads offline), `D`
+kills behind a confirm (`y` graceful stop, `f` force-kill), and the `:` palette adds
+`spawn <persona> [name]`, `status <agent>`, `ps`, and `purge` (type the space name to confirm,
+like the space delete).
 
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.
