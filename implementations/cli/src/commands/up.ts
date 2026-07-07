@@ -10,7 +10,7 @@ import {
   readSync,
   closeSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
@@ -189,11 +189,11 @@ export async function up(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
-  mkdirSync(storeDir, { recursive: true });
   const useAuth = !values.open;
   const space = values.space ?? resolveSpace(process.cwd());
-  assertAuthMatchesSpace(useAuth, space);
+  ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
+  const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
+  mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined) : undefined;
@@ -490,11 +490,11 @@ export async function startMeshDetached(
   opts: DetachOpts = {},
 ): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
-  const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
-  mkdirSync(storeDir, { recursive: true });
   const useAuth = !opts.open;
   const space = opts.space ?? resolveSpace(process.cwd());
-  assertAuthMatchesSpace(useAuth, space);
+  ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
+  const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
+  mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
@@ -537,21 +537,31 @@ export async function startMeshDetached(
   return { server, pid: child.pid ?? 0, source, controlPlane, authService: svc.ok };
 }
 
-/** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so starting it
- *  under a *different* explicit `--space` would run that space's name against the other space's trust
- *  material — the registry would then point a `spawn --space` at mismatched creds. Reject it. (When
- *  multi-space-per-root lands, this becomes provision-the-new-space instead of an error.) */
-function assertAuthMatchesSpace(useAuth: boolean, space: string): void {
+/** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so an
+ *  explicit `--space` naming a different space cannot run against this root's trust material — the
+ *  registry would point a `spawn --space` at mismatched creds. A mismatch only exists when
+ *  `--space` was given (the default IS this root's space): clear intent for a different mesh. When
+ *  the root was merely inherited from an ancestor folder (the cwd has no `.cotal` of its own),
+ *  honor that intent — make the cwd the new space's own root. Only a folder that itself holds the
+ *  other space's material refuses. (When multi-space-per-root lands, that refusal becomes
+ *  provision-the-new-space instead.) */
+function ensureRootForSpace(useAuth: boolean, space: string): void {
   if (!useAuth) return;
-  const existing = loadSpaceAuth(authDir(cotalRoot()));
-  if (existing && existing.space !== space) {
-    console.error(
-      c.red(
-        `✗ this root's trust material is for space "${existing.space}", not "${space}" — drop \`--space\` (it defaults to "${existing.space}"), or run "${space}" from its own root`,
-      ),
-    );
-    process.exit(1);
+  const root = cotalRoot();
+  const existing = loadSpaceAuth(authDir(root));
+  if (!existing || existing.space === space) return;
+  const cwd = process.cwd();
+  if (root !== cwd) {
+    mkdirSync(join(cwd, ".cotal"), { recursive: true });
+    console.log(c.dim(`nearest mesh root ${root} is space "${existing.space}" — making this folder its own root for "${space}"`));
+    return;
   }
+  console.error(
+    c.red(
+      `✗ this folder is the root of space "${existing.space}" (${authDir(root)}), so it can't also run "${space}" — drop \`--space\` to run "${existing.space}", or start "${space}" from a different folder (it becomes that mesh's own root)`,
+    ),
+  );
+  process.exit(1);
 }
 
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
