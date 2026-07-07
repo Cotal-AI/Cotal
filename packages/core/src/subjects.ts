@@ -225,17 +225,21 @@ export function assertInboxConnId(connId: string): string {
   return connId;
 }
 
-/** The `tags` prefix carrying a connection's principal dot-form in its minted user JWT. Chosen because
- *  `tags` are the ONE identity field a NATS `$SYS` CONNZ record surfaces for a JWT-authed connection —
- *  empirically: `authorized_user` is the per-connect ephemeral nkey (NOT the principal, which the client
- *  never knows pre-connect under the callout), and the JWT `name` claim is not surfaced as a queryable
- *  field. So the membership feed recovers the live principal from this tag. */
+/** The `tags` prefix carrying a connection's principal dot-form in its minted user JWT. CONNZ
+ *  surfaces a JWT-authed connection's principal identity DIFFERENTLY by cred shape, proven live on
+ *  nats-server 2.10/2.14 (see {@link principalFromConnz}): a STATICALLY-minted user (`mintCreds`)
+ *  surfaces this `principal:` tag (`authorized_user` is the ephemeral connection nkey), while a
+ *  CALLOUT-minted user surfaces the JWT `name` (the principal NAME-form) as `authorized_user` and NO
+ *  tags at all. So this tag is the attribution field for STATIC connections only; callout connections
+ *  are attributed via `authorized_user`. NEVER reintroduce a tags-ONLY read — it silently misses every
+ *  user-mode connection. Always attribute through {@link principalFromConnz}, which handles both. */
 export const PRINCIPAL_TAG_PREFIX = "principal:";
 
 /** The identity `tags` stamped into every minted user JWT (dev mint AND the auth callout, via this one
- *  helper) so a connection's principal is recoverable server-side from its CONNZ record. `owner:`/`actor:`
- *  are human/debug breadcrumbs; `principal:` (the dot-form {@link principalKey} `key`) is the one the
- *  feed keys on. Single source of the tag format — never hand-join these elsewhere. */
+ *  helper) — recoverable from a STATIC connection's CONNZ record (a callout connection surfaces the
+ *  principal via `authorized_user` instead; see {@link PRINCIPAL_TAG_PREFIX}). `owner:`/`actor:` are
+ *  human/debug breadcrumbs; `principal:` (the dot-form {@link principalKey} `key`) is the one attribution
+ *  reads. Single source of the tag format — never hand-join these elsewhere. */
 export function principalTags(owner: string, actor: string): string[] {
   const { key } = principalKey(owner, actor);
   return [`owner:${owner}`, `actor:${actor}`, `${PRINCIPAL_TAG_PREFIX}${key}`];

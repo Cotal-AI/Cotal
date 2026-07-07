@@ -88,8 +88,10 @@ export interface EvictOptions {
 }
 
 /** Scan this account's live connections, projected to `{cid, serverId, principal}`. Returns
- *  `complete:false` when any round under-reported (zero replies = broker unreachable/denied, or a
- *  MAX_PAGES truncation) so a caller never mistakes a partial read for "no such connection". */
+ *  `complete:false` when any round under-reported — zero replies (broker unreachable/denied), a
+ *  MAX_PAGES truncation, OR a reply that names no server id (its connections can't be routed a
+ *  KICK, so the scan can't act on what it saw) — so a caller never mistakes a partial read for "no
+ *  such connection". */
 async function scanLive(
   observerConn: NatsConnection,
   accountId: string,
@@ -98,6 +100,7 @@ async function scanLive(
   const conns: LiveConn[] = [];
   let gotAnyReply = false;
   let truncated = false;
+  let unroutable = false; // a reply named no server id → its conns can't be KICKed → scan is not complete
   let seq = 0;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * opts.pageLimit;
@@ -106,7 +109,13 @@ async function scanLive(
     let fullPageSomewhere = false;
     for (const r of replies) {
       const serverId = r.data?.server_id ?? r.server?.id;
-      if (!serverId) continue; // a reply we can't route a KICK back to is unusable — skip (drops completeness below)
+      if (!serverId) {
+        // KICK is per-server; a reply with no server id can't be routed. Fail CLOSED (mark the whole
+        // scan incomplete) so an unroutable-but-live connection is never read as "gone" — even an
+        // empty such reply, since it signals a malformed CONNZ round we can't fully trust.
+        unroutable = true;
+        continue;
+      }
       const cs = r.data?.connections ?? [];
       for (const c of cs) {
         // Attribute across BOTH cred shapes — a callout user surfaces its principal as the
@@ -120,7 +129,7 @@ async function scanLive(
     if (!fullPageSomewhere) break; // no server still has a full page → done
     if (page === MAX_PAGES - 1) truncated = true;
   }
-  return { conns, complete: gotAnyReply && !truncated };
+  return { conns, complete: gotAnyReply && !truncated && !unroutable };
 }
 
 /** One CONNZ round: fan out the account request, collect every server's reply within the window. */

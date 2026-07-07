@@ -271,12 +271,12 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         const perms = opts.permissionsFor(validated, inboxNonce);
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
         // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
-        // so the membership feed (which keys CONNZ entries on the connection identity) needs owner+actor
-        // carried here. `tags` are the ONE identity field CONNZ surfaces for a JWT-authed connection
-        // (proven empirically — `authorized_user` is the nkey, the JWT `name` claim is not surfaced), via
-        // core's single-source {@link principalTags}. The JWT `name` is the principal name-form
-        // (JetStream-safe), a stable label. The feed-side re-key onto the `principal:` tag ships with
-        // the membership-feed migration (Increment D).
+        // so CONNZ-based attribution (the membership feed, live eviction) needs owner+actor carried
+        // here. What actually surfaces in CONNZ for a CALLOUT connection (proven live, nats-server
+        // 2.10/2.14) is the JWT `name` as `authorized_user` — the principal NAME-form — NOT the `tags`
+        // (those surface for static mints; see core's `principalFromConnz`). We set BOTH via core's
+        // single sources for shape-consistency with the static path, but attribution reads
+        // `authorized_user` here. The name is the principal name-form (JetStream-safe), a stable label.
         const { key, name } = principalKey(validated.owner, validated.act.actor);
         const userJwt = await encodeUser(
           name,
