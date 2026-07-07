@@ -4,7 +4,15 @@
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-06-21.
+> **Layered authority.** Message *shapes* are defined by the machine-readable schema,
+> [`spec/cotal.schema.json`](spec/cotal.schema.json) (§5); this document's prose defines
+> *semantics* — routing, delivery guarantees, presence, authorization, and conformance. For
+> the reference implementation's operator surfaces (the CLI, the `cotal_*` tools), see the
+> [Reference docs](docs/README.md#reference) — those describe the TypeScript implementation,
+> not this contract.
+>
+> **Editors:** Cotal maintainers. **Last updated:** 2026-07-07. Changes are tracked in
+> [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.3 binding revision — channel live delivery.** Channel *live* delivery moves from a single
 > mediated JetStream live-tail durable (`chat_<id>`) to native core-NATS subscriptions bounded by
@@ -209,11 +217,14 @@ core-kind values are not conformant. Messages MUST fit the broker's configured m
 v0 has no artifact transfer part; large payload transport is reserved for a future Object Store
 extension.
 
-**Schema.** The authoritative machine-readable source for the delivery-message type is
-[`packages/core/src/types.ts`](packages/core/src/types.ts). A JSON Schema (draft-07) is
-generated from `CotalMessage` at [`spec/cotal.schema.json`](spec/cotal.schema.json)
-(`pnpm gen:schema`) for validators; it is derived from the source, so the source wins on any
-divergence. A conformant delivery message MUST validate against it.
+**Schema.** The JSON Schema (draft-07) at
+[`spec/cotal.schema.json`](spec/cotal.schema.json) is **authoritative for message shapes**:
+a conformant delivery message MUST validate against it, and where this document's field
+tables and the schema diverge on a shape, the schema wins. Delivery *semantics* (routing,
+guarantees, rejection) are defined by this document's prose. The schema is generated from
+the reference source, [`packages/core/src/types.ts`](packages/core/src/types.ts)
+(`pnpm gen:schema`), and committed; the published copy lives at
+`https://docs.cotal.ai/cotal.schema.json`.
 
 **Rejection reasons.** The three permanent anomalies in §4 are terminated, never redelivered.
 These reason tokens are advisory (for logs and `ControlReply.error`); the action is uniform:
@@ -456,7 +467,10 @@ members registry), and it is not part of the normative wire contract a client mu
 ## 9. NATS + JetStream security and authorization
 
 **On by default.** A space is provisioned with decentralized JWT auth. Open unauthenticated
-dev mode is available but out of scope for the security claims here.
+dev mode is available but out of scope for the security claims here. *(Informative
+operator-facing views of this section: [docs/identity-and-auth.md](docs/identity-and-auth.md),
+[docs/channels-and-permissions.md](docs/channels-and-permissions.md); the threat model is
+[docs/security.md](docs/security.md).)*
 
 - **Account = space, user = agent.** A space is one NATS account. A per-space operator signs
   the account; an account signing key mints per-agent user JWTs.
@@ -559,7 +573,9 @@ reserved for a later version. v0 authenticated onboarding is out-of-band credent
 ## 11. Versioning and extensibility
 
 - Wire contract version is v0.2. It is pre-1.0 (the v0.x line) and may still change.
-  `AgentCard.protocolVersion` (§6) carries this string.
+  `AgentCard.protocolVersion` (§6) carries this string. **The wire `protocolVersion` is the
+  compatibility signal**; dated document snapshots (below) are navigation artifacts, not
+  negotiation — an implementation MUST NOT treat a document date as an interop key.
 - v0 has no in-band capability negotiation. Deployments MUST agree on the binding and
   version out of band. A participant MAY advertise the version it speaks via
   `AgentCard.protocolVersion` (§6) as a one-way change signal; v0 defines no behavior on a
@@ -570,6 +586,12 @@ reserved for a later version. v0 authenticated onboarding is out-of-band credent
   error.
 - A future v1 MUST either keep v0 subjects backward-compatible or use an explicit new
   version marker in subjects, credentials, or deployment config.
+
+**Document snapshots.** Published revisions of this document are immutable dated snapshots
+(`YYYY-MM-DD`, the **Last updated** date above), kept addressable alongside the rendered
+docs: the current revision is canonical, and a superseded one stays readable so a client
+built against it can still be audited. The snapshot date advances on any normative change;
+the wire `protocolVersion` moves only per the change process below.
 
 **Change process.** This document is the change-control point: a change lands here first,
 generalized into `core`, and the reference implementation follows. Additive changes (a new
@@ -592,6 +614,9 @@ federated/untrusted relay bindings.
 ---
 
 ## 12. Conformance
+
+*(An informative build-order walkthrough of this checklist is
+[docs/build-a-client.md](docs/build-a-client.md).)*
 
 A conformant authenticated NATS client MUST:
 
@@ -697,7 +722,9 @@ Interop scenario:
 
 ## Appendix B: Profile ACLs
 
-This appendix is normative for the NATS binding. Names below use these placeholders:
+This appendix is normative for the NATS binding. *(The operator-facing summary of these
+grants is [docs/identity-and-auth.md](docs/identity-and-auth.md).)* Names below use these
+placeholders:
 
 - `P = cotal.<space>`
 - `CHAT = CHAT_<space>`, `DM = DM_<space>`, `TASK = TASK_<space>`, `BSTOP = INBOX_<space>` (durable backstop stream; reference name, §8)
@@ -819,3 +846,14 @@ to ordinary agents.
 | RFC 8032 | Ed25519 keypairs behind nkeys (§2) |
 | [NATS client protocol](https://docs.nats.io/reference/reference-protocols/nats-protocol) + [JetStream](https://docs.nats.io/nats-concepts/jetstream) | the v0 transport binding (§8) |
 | [NATS decentralized JWT auth](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/auth_intro/jwt) + nkeys | identity and authorization (§2, §9) |
+
+## Appendix D: Change log
+
+Normative revisions of this document, newest first. Dated snapshots per §11; the wire
+`protocolVersion` is the compatibility signal, not these dates.
+
+| Date | Revision |
+| --- | --- |
+| 2026-07-07 | Documentation revision, no wire change: layered authority statement (schema authoritative for shapes, prose for semantics), document-snapshot policy and this change log (§11), reciprocal links to the informative docs. |
+| 2026-06-21 | **v0.3 binding revision — channel live delivery.** Channel live delivery moves from the mediated per-instance live-tail durable to native `sub.allow`-bounded core subscriptions, with an explicit per-channel `live`/`durable` delivery class and the per-member durable backstop (§4, §7, §8); membership moves to a privileged-written registry (§7). Supersedes the v0.2 single-durable live-tail. |
+| earlier | v0.2 and before predate change control: the v0.2 contract (single mediated live-tail durable binding) is superseded by v0.3 and kept only in history. |

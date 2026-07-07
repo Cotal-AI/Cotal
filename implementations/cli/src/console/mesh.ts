@@ -2,7 +2,7 @@
 // `MeshView` model in @cotal-ai/core: it owns one MeshView over the read-only observer endpoint
 // (built by the console command), subscribes to its batched "change" snapshots, and pushes
 // them into React state. All the normalization (classification, coalescing, windowing, roster
-// sort, rates, derived signals) lives in MeshView — see docs/protocol-view.md.
+// sort, rates, derived signals) lives in MeshView — see docs/mesh-view.md.
 
 import { useEffect, useRef, useState } from "react";
 import type { CotalEndpoint } from "@cotal-ai/core";

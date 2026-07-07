@@ -12,7 +12,7 @@ import { Root, makeObserver } from "../console/root.js";
  * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
  * or `--plain` gets the passive line stream. With no `--space` on an open mesh it opens an admin
  * overview of every space first (pick one to drill in, `b` to come back); `--space X` goes straight
- * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/protocol-view.md.
+ * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/mesh-view.md.
  */
 export async function console_(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; plain?: boolean; creds?: string };

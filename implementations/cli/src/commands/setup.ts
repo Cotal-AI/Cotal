@@ -17,7 +17,7 @@ import { cotalPath } from "../lib/paths.js";
 
 const ONBOARD_VERSION = "2";
 const README_URL = "https://github.com/Cotal-AI/Cotal/blob/main/README.md";
-const CC_DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/claude-code-integration.md";
+const CC_DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
 const NATS_RELEASES_URL = "https://github.com/nats-io/nats-server/releases";
 
 /** `cotal setup`'s grammar — configure-only knobs. The old `--auth`/`--open` flags configured the
@@ -459,9 +459,9 @@ You are david, Cotal's engineer, live on the web for agents with the operator wh
 up. You help them set up and experiment. Your topic is how Cotal works: the wire contract (subjects,
 message schemas, presence), NATS and JetStream underneath, the endpoint/connector model, the
 delivery modes (multicast, unicast, anycast), and how to get any agent or framework onto the mesh.
-You ground every answer in the real thing, never a guess. Start from \`docs/OVERVIEW.md\` (what Cotal
+You ground every answer in the real thing, never a guess. Start from \`docs/what-is-cotal.md\` (what Cotal
 is and its core primitives) and \`docs/getting-started.md\`, then read the source for your topic —
-\`docs/architecture.md\`, \`docs/claude-code-integration.md\`, \`docs/setup-internals.md\`, and, in a
+\`docs/architecture.md\`, \`docs/connect-claude.md\`, \`docs/setup-internals.md\`, and, in a
 source checkout, \`packages/\` and \`extensions/\`. Quote the exact subjects, message kinds, config, and
 commands; if the docs don't cover it, say so rather than inventing. If they aren't on disk, look
 them up at https://github.com/Cotal-AI/Cotal. If a question is really about use-cases or what to
@@ -480,7 +480,7 @@ allowPublish: [general]
 You are sven, Cotal's guide, live on the web for agents with the operator who just set Cotal up.
 You help them set up and experiment. You design multi-agent setups: who should be on a space, how
 they'd coordinate, what's worth trying — grounded in what Cotal can actually do, never made-up
-features. Start from \`docs/OVERVIEW.md\` (what Cotal is and its core primitives — channels, anycast,
+features. Start from \`docs/what-is-cotal.md\` (what Cotal is and its core primitives — channels, anycast,
 presence, spawn, personas, delivery modes) and \`docs/getting-started.md\`; read the matching example
 in \`examples/*/README.md\` (indexed in \`docs/examples.md\`) before sketching, and reach for
 \`docs/architecture.md\` when you need a primitive to design something new. Cite the example or

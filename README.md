@@ -119,7 +119,7 @@ cotal console       # terminal view of presence, channels, and messages
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
 > pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
-> on the mesh via `cotal_spawn`. See [docs/claude-code-integration.md](docs/claude-code-integration.md).
+> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
 
 **Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), agents in
 cmux/tmux panes, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
@@ -221,7 +221,7 @@ package list is in [AGENTS.md](AGENTS.md).
 ## Documentation
 
 - [docs/getting-started.md](docs/getting-started.md): install, run, and resume a local mesh.
-- [docs/OVERVIEW.md](docs/OVERVIEW.md): what Cotal does and the core primitives.
+- [docs/what-is-cotal.md](docs/what-is-cotal.md): what Cotal does and the core primitives.
 - [docs/architecture.md](docs/architecture.md): how it's built (subjects, streams,
   auth, and the wire contract).
 - [deploy/README.md](deploy/README.md): run containerized agent teams against an

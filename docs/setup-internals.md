@@ -1,5 +1,7 @@
 # Setup internals (maintainer notes)
 
+> **Project** (non-normative maintainer notes) · **For:** maintainers changing how setup works
+>
 > How `cotal setup` works, and the cross-repo couplings it depends on. If you change one of
 > the things in the **Invariants** table, update the listed siblings in the same change, or
 > setup silently breaks for npx users.
