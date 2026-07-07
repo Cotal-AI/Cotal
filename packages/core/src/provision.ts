@@ -1275,6 +1275,44 @@ export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Ide
   return new TextDecoder().decode(creds);
 }
 
+/** The KICK-ONLY connection-evictor permission set (D5 slice 4) — a SYSTEM-account user that can do
+ *  exactly ONE thing: `$SYS.REQ.SERVER.*.KICK` (disconnect a live client by cid). It CANNOT read
+ *  CONNZ (discovery stays on the separate observer cred — never one broad sys user that both
+ *  enumerates and kills), touch any other `$SYS` verb, or reach another account's data. A leaked
+ *  evictor cred can DoS live connections on this broker (KICK is not account-scoped — the honest
+ *  blast radius), which is why it is a HIGH-POWER standing credential: minted only at `up`,
+ *  rate-limited + audited by its one caller (the delivery daemon), and its cid/server-id inputs come
+ *  only from the observer's own CONNZ scan, never a user-facing API. Wildcard `*` over server id
+ *  because a cluster's server ids aren't known at mint time; the scan pins the exact id per KICK. */
+function connectionEvictorPermissions(): Record<string, unknown> {
+  return {
+    pub: { allow: ["$SYS.REQ.SERVER.*.KICK"] },
+    // Request/reply KICK replies land on the client's default inbox; no other subscription — it
+    // serves nothing and reads no feed.
+    sub: { allow: ["_INBOX.>"] },
+  };
+}
+
+/** Mint the scoped `connection-evictor` creds — the kick-only SYSTEM-account user D5 slice 4's live
+ *  eviction holds. Same mint-only-at-provision property as the observer (the $SYS seed is in-memory
+ *  only), same fail-loud when it's absent. Paired with the observer at `up`. */
+export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Identity): Promise<string> {
+  if (!auth.sys.signingSeed)
+    throw new Error(
+      "mintConnectionEvictorCreds: no in-memory system-account signing seed — the evictor can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable live eviction.",
+    );
+  const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
+  const userJwt = await encodeUser(
+    "connection-evictor",
+    fromPublic(identity.id),
+    fromPublic(auth.sys.pub),
+    connectionEvictorPermissions(),
+    { signer },
+  );
+  const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
+  return new TextDecoder().decode(creds);
+}
+
 /** Render the `nats-server` config that trusts this space's operator and serves its
  *  accounts via the in-config MEMORY resolver. */
 export function serverConfig(

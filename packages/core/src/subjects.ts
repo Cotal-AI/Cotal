@@ -609,6 +609,17 @@ export function accountDisconnectSubject(accountId: string): string {
   return `$SYS.ACCOUNT.${accountId}.DISCONNECT`;
 }
 
+/** The per-server client-KICK request subject (`$SYS.REQ.SERVER.<serverID>.KICK`, nats-server
+ *  `events.go` `clientKickReqSubj`). Payload `{cid}` → the server disconnects that live client by
+ *  connection id. PER-SERVER: `serverID` MUST come from the SAME CONNZ reply that yielded the cid
+ *  (KICK is not fan-out; a cid is only meaningful on its own server). System-account only. There is
+ *  no per-cid success ack — the caller re-scans CONNZ to confirm the connection is gone. This is the
+ *  kill-live half of revocation; it is ALWAYS paired with a deny-new (ledger revoke / cred expiry /
+ *  signer strip / ACL removal), since a kicked client reconnects with a fresh cid until its cred dies. */
+export function serverKickSubject(serverId: string): string {
+  return `$SYS.REQ.SERVER.${serverId}.KICK`;
+}
+
 /** Extract the channel pattern from a live chat SUBSCRIPTION subject in this space, or `null` if it
  *  isn't one. A subscription's sender slots are `*` (an agent's `sub.allow` is `chat.*.*.<channel>`), so
  *  the channel portion (wildcards preserved, e.g. `team.>`) is everything after the two identity tokens.

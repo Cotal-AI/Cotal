@@ -17,6 +17,7 @@ import {
   createSpaceAuth,
   serverConfig,
   mintCreds,
+  mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
@@ -754,9 +755,15 @@ async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
+    // D5 slice 4: the KICK-only connection-evictor cred — same mint-only-at-fresh-`up` window as
+    // the observer ($SYS seed in memory here). The delivery daemon pairs it with the observer to
+    // close a revoked/removed principal's live connections. A space without it degrades to
+    // deny-new-only (durable reauth) — surfaced loudly by the removal path, never silent.
+    const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
     mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
     writeSecretFile(cotalPath("membership-observer.creds"), observer);
     writeSecretFile(cotalPath("membership-rw.creds"), rw);
+    writeSecretFile(cotalPath("connection-evictor.creds"), evictor);
     writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {
     console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));
