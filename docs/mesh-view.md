@@ -16,7 +16,9 @@ presence) lives in the [SPEC](../SPEC.md).
 Every surface is built on one **read-only observer**: a `CotalEndpoint` started with
 `consume: false, registerPresence: false, watchPresence: true`, invisible to peers, binding no
 durables, reading the space through the live tap plus history and presence-watch. No surface opens
-its own NATS connection, and none re-implements the wire semantics.
+its own NATS connection, and none re-implements the wire semantics. (The console can upgrade its
+observer into a **participant** the moment the operator sends, so agents can reply — see
+[watch a mesh](watch-a-mesh.md); a pure-watch session stays the invisible observer.)
 
 ## The model: `MeshView` (`@cotal-ai/cli`)
 

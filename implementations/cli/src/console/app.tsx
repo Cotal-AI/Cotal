@@ -57,7 +57,7 @@ export function App({
   canControl?: boolean;
   controlCtx?: Omit<ControlCtx, "space">;
 }) {
-  const mesh = useMesh(ep, { tapSubject });
+  const { state: mesh, activateParticipant, recordOutboundDm } = useMesh(ep, { tapSubject });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { focus, focusNext, focusPrevious } = useFocusManager();
@@ -230,6 +230,23 @@ export function App({
         ? "→ @" + c.toName
         : "↩ " + c.entry.from.name + (c.entry.delivery === "multicast" && c.entry.channel ? " #" + c.entry.channel : "");
 
+  // First time the operator sends anything, upgrade the read-only observer into a participant:
+  // register presence (so agents see + can reply to the operator) and reveal/capture its own
+  // inbox in the DM lens. Idempotent, canWrite-gated (a pure-watch session never calls it).
+  const activatedRef = useRef(false);
+  const ensureParticipant = useCallback(async () => {
+    if (activatedRef.current || !canWrite) return;
+    activatedRef.current = true;
+    try {
+      await ep.startPresence();
+      activateParticipant(ep.card.id, ep.card.name);
+      setNotice("you're on the roster now — replies show in the DM lens (d)");
+    } catch (e) {
+      activatedRef.current = false; // let the next send retry
+      setNotice("participant: " + (e as Error).message);
+    }
+  }, [ep, activateParticipant, canWrite]);
+
   // Send the in-progress compose over the live endpoint.
   const submitCompose = () => {
     const c = compose;
@@ -239,17 +256,24 @@ export function App({
     if (!text) return;
     const ok = (label: string) => () => setNotice(label);
     const fail = (e: unknown) => setNotice("send: " + (e as Error).message);
-    if (c.kind === "channel")
-      void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
-    else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok("→ " + c.toName)).catch(fail);
-    else {
-      const e = c.entry;
-      const send =
-        e.delivery === "multicast" && e.channel
-          ? ep.multicast(text, { channel: e.channel, replyTo: e.id, mentions: mentionsIn(text) })
-          : ep.unicast(e.from.id, text, { replyTo: e.id });
-      void send.then(ok("↩ " + e.from.name)).catch(fail);
-    }
+    void ensureParticipant().then(() => {
+      if (c.kind === "channel")
+        void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
+      else if (c.kind === "dm") {
+        recordOutboundDm(c.toId, text); // show our own side of the thread
+        void ep.unicast(c.toId, text).then(ok("→ " + c.toName)).catch(fail);
+      } else {
+        const e = c.entry;
+        let send: Promise<unknown>;
+        if (e.delivery === "multicast" && e.channel) {
+          send = ep.multicast(text, { channel: e.channel, replyTo: e.id, mentions: mentionsIn(text) });
+        } else {
+          recordOutboundDm(e.from.id, text); // show our own side of the thread
+          send = ep.unicast(e.from.id, text, { replyTo: e.id });
+        }
+        void send.then(ok("↩ " + e.from.name)).catch(fail);
+      }
+    });
   };
 
   // Run a typed palette line against the live endpoint.
@@ -268,6 +292,8 @@ export function App({
       notify: setNotice,
       control: ctl,
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
+      ensureParticipant,
+      recordOutboundDm,
     };
     runCommand(line, ctx, !!canWrite, !!canControl);
   };

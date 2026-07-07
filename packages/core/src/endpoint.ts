@@ -207,7 +207,9 @@ export class CotalEndpoint extends EventEmitter {
   private readonly tls: boolean;
   private readonly heartbeatMs: number;
   private readonly ttlMs: number;
-  private readonly doRegister: boolean;
+  // Mutable: participant activation (startPresence) flips an observer into a presence-publishing
+  // peer after construction — the console upgrades a read-only observer once the operator sends.
+  private doRegister: boolean;
   private readonly doWatch: boolean;
   private readonly doWatchChannels: boolean;
   private readonly doConsume: boolean;
@@ -1182,6 +1184,17 @@ export class CotalEndpoint extends EventEmitter {
     return this.streamHistory(
       dmStream(this.space),
       unicastSubject(this.space, "*", "*"),
+      opts?.limit ?? 100,
+    );
+  }
+
+  /** Fetch recent DMs addressed to ONE recipient (`inst.<selfId>.*`) — the operator's own inbox
+   *  backlog for participant activation. Scoped to a single target (unlike {@link dmHistory}'s
+   *  whole-space read), so it stays within a caller's own DM confidentiality. */
+  async inboxHistory(selfId: string, opts?: { limit?: number }): Promise<CotalMessage[]> {
+    return this.streamHistory(
+      dmStream(this.space),
+      unicastSubject(this.space, selfId, "*"),
       opts?.limit ?? 100,
     );
   }
@@ -2473,6 +2486,23 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("error", e as Error);
       return undefined;
     }
+  }
+
+  /** Begin publishing presence AFTER construction — the participant upgrade a read-only observer
+   *  (e.g. the console) applies once its operator first speaks, so it becomes an addressable peer
+   *  and agents can reply. Idempotent. The presence KV is already open (any endpoint that watches
+   *  or registers opens it), and `connectAndBind` re-arms the publish+heartbeat off `doRegister` on
+   *  every reconnect, so flipping it here is all that's needed; `stop()`'s existing offline-leave
+   *  then fires for a clean deregister. A no-op when already registering (constructed with
+   *  `registerPresence`). Requires a presence-write grant — the caller's creds must allow it (open
+   *  mesh has none; an auth cred needs `$KV.<presence>.<id>` publish). */
+  async startPresence(): Promise<void> {
+    if (this.doRegister) return;
+    this.doRegister = true;
+    await this.publishPresence();
+    this.heartbeatTimer = setInterval(() => {
+      this.publishPresence().catch((e) => this.emit("error", e as Error));
+    }, this.heartbeatMs);
   }
 
   private async publishPresence(): Promise<void> {

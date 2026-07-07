@@ -61,6 +61,17 @@ kills behind a confirm (`y` graceful stop, `f` force-kill), and the `:` palette 
 `spawn <persona> [name]`, `status <agent>`, `ps`, and `purge` (type the space name to confirm,
 like the space delete).
 
+**Operator participant mode.** By default the operator is invisible, and a message it sends is
+one-way: an agent's DM reply has no inbox to land in. On the operator's **first send** (`:dm` /
+`:call` / `:ask` / `:msg`, or a compose) the console lazily upgrades itself: it registers
+presence so the operator joins the roster as a `role:"operator"` peer agents can reply to, and
+the DM lens starts capturing the operator's own inbox. Outbound DMs are recorded locally so a
+thread shows both sides, and the operator leaves cleanly (offline presence) on exit. This is
+`canWrite`-gated, so a pure-watch session never registers; it works where the console can send —
+an open mesh, or an auth mesh with a capable `--creds`. Under the auth-default read-only
+god-view cred the console cannot send at all, so participant mode never activates there (a
+dedicated auth `participant` cred profile is future work).
+
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.
 

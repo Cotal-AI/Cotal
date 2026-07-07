@@ -16,7 +16,7 @@ import type {
   PresenceStatus,
   ViewSpec,
 } from "@cotal-ai/core";
-import { deliveryOf, chatWildcard } from "@cotal-ai/core";
+import { deliveryOf, chatWildcard, unicastSubject } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
 
@@ -179,6 +179,9 @@ export class MeshView extends EventEmitter {
   private connected = false;
   private error?: string;
   private dirty = true;
+  // Participant mode: the operator has spoken, so it's a presence-registered peer and its own
+  // inbox (`inst.<selfId>.*`) is captured — replies land in the DM lens. Off = pure observer.
+  private participant = false;
 
   private readonly window: number;
   private readonly tapSubject?: string;
@@ -249,7 +252,7 @@ export class MeshView extends EventEmitter {
       status: {
         connected: this.connected,
         space: this.ep.space,
-        dmVisible: !this.chatOnly,
+        dmVisible: !this.chatOnly || this.participant,
         error: this.error,
       },
       signals: this.signals(),
@@ -349,6 +352,58 @@ export class MeshView extends EventEmitter {
   private recordDm(d: RawDm): void {
     this.dmLog.push(d);
     if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
+  }
+
+  /**
+   * Upgrade the model to participant mode: the operator has become a presence-registered peer, so
+   * its own inbox is now worth surfacing. Reveals the DM lens (`dmVisible`) and, on an auth mesh
+   * where the tap is narrowed to chat, opens a SECOND tap scoped to the operator's own inbox
+   * (`inst.<selfId>.*`) so agents' replies flow into `dmLog`. On an open mesh the main tap already
+   * covers the whole space, so no second tap — a duplicate would double-count (`recordDm` has no
+   * id-dedup). A one-shot own-inbox backfill catches a reply that raced activation (best-effort;
+   * skips under a cred that can't read the DM stream, like `prefillDms`).
+   */
+  activateParticipant(selfId: string, selfName: string): void {
+    if (this.participant) return;
+    this.participant = true;
+    this.byId.set(selfId, selfName); // resolve the operator's own id → name in threads
+    if (this.tapSubject) {
+      // Auth/chat-narrowed tap: the operator's inbox isn't covered, so add it.
+      this.ep.tap((subject, msg) => {
+        if (msg) this.ingest(subject, msg);
+      }, { subject: unicastSubject(this.ep.space, selfId, "*") });
+      void this.backfillInbox(selfId);
+    }
+    this.dirty = true;
+  }
+
+  /** Record an outbound DM the operator sent, so a thread shows both sides. Only needed on the
+   *  narrow-tap (auth) path: the operator's own `inst.<agent>.<selfId>` publish isn't covered by
+   *  the chat tap or the inbox tap. On an open mesh the whole-space tap already ingests it, so
+   *  recording here would double-count (`recordDm` has no id-dedup) — skip. */
+  recordOutboundDm(toId: string, text: string): void {
+    if (!this.tapSubject) return; // open mesh: the whole-space tap already captured it
+    this.recordDm({ ts: Date.now(), from: this.ep.ref(), toId, text });
+    this.dirty = true;
+  }
+
+  /** Best-effort one-shot backlog of the operator's own inbox (scoped `inst.<selfId>.*`), deduped
+   *  into `dmLog` — catches a reply that landed between the send and the tap being wired. */
+  private async backfillInbox(selfId: string): Promise<void> {
+    let msgs: CotalMessage[];
+    try {
+      msgs = await this.ep.inboxHistory(selfId, { limit: DM_LOG_CAP });
+    } catch {
+      return;
+    }
+    for (const m of msgs) {
+      if (!m.to) continue;
+      const dup = this.dmLog.some((d) => d.from.id === m.from.id && d.toId === m.to && d.ts === m.ts);
+      if (dup) continue;
+      this.recordDm({ ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) });
+    }
+    this.dmLog.sort((a, b) => a.ts - b.ts);
+    this.dirty = true;
   }
 
   /** Retain a peer-published view, deduped by message id and windowed (newest last). */

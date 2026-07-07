@@ -4,7 +4,7 @@
 // them into React state. All the normalization (classification, coalescing, windowing, roster
 // sort, rates, derived signals) lives in MeshView — see docs/mesh-view.md.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CotalEndpoint } from "@cotal-ai/core";
 import type { MeshSnapshot, MeshViewOptions } from "../view/mesh-view.js";
 import { MeshView } from "../view/mesh-view.js";
@@ -16,7 +16,16 @@ export type MeshState = MeshSnapshot;
 /** Focusable panes across the console (normal panels + the DM and topology lenses). */
 export type FocusId = "roster" | "feed" | "needsyou" | "dmpeers" | "dmthread" | "topo";
 
-export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions): MeshSnapshot {
+export interface UseMesh {
+  state: MeshSnapshot;
+  /** Turn the read-only model into participant mode (reveal the DM lens + capture the operator's
+   *  own inbox). Paired with the endpoint's `startPresence()` at the App layer. Idempotent. */
+  activateParticipant: (selfId: string, selfName: string) => void;
+  /** Record an outbound DM locally so a thread shows both sides. */
+  recordOutboundDm: (toId: string, text: string) => void;
+}
+
+export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions): UseMesh {
   const viewRef = useRef<MeshView | null>(null);
   if (!viewRef.current) viewRef.current = new MeshView(ep, opts ?? {});
   const [state, setState] = useState<MeshSnapshot>(() => viewRef.current!.snapshot());
@@ -31,5 +40,13 @@ export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions): MeshSnapshot
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return state;
+  const activateParticipant = useCallback(
+    (id: string, name: string) => viewRef.current?.activateParticipant(id, name),
+    [],
+  );
+  const recordOutboundDm = useCallback(
+    (toId: string, text: string) => viewRef.current?.recordOutboundDm(toId, text),
+    [],
+  );
+  return { state, activateParticipant, recordOutboundDm };
 }
