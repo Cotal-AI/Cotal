@@ -78,6 +78,8 @@ const baseCommands: Command[] = [
       { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
       { name: "channels", type: "string", value: "<a,b>", description: "channels to pre-create" },
       { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
+      { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
+      { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
       { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
       { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },

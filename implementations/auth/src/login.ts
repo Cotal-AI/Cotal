@@ -222,7 +222,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
       // misconfigured IdP hands one back as the device token, refuse rather than silently cache a
       // credential that can't be revoked.
       if (looksLikeJwt(tok.access_token))
-        throw new Error(`idp login: ${base} returned a JWT as the device access token — the session token must be an opaque revocable handle, refusing to cache it`);
+        throw new Error(`idp login: ${base} returned a JWT as the device access token — the session token must be an opaque revocable handle, refusing to cache it; re-run \`cotal login\` after fixing the IdP`);
       return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
     }
     const e = await oauthError(poll);
@@ -259,25 +259,31 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
 /** The whole login operation, in the only safe order: device sign-in, then PROVE the session
  *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
  *  land on disk — it would pass {@link requireIdpSession}'s no-fallback gate as a dud and defer
- *  the failure to some later connect. Returns the session plus the JWT's `sub` (display-only —
- *  verification is the bridge/callout's job, server-side). */
+ *  the failure to some later connect. Returns the session plus the JWT's `sub`, and a human
+ *  `label` (email/name/preferred_username when the IdP mints one) — BOTH display-only: the
+ *  operator must be able to read WHICH human signed in, but verification is the bridge/callout's
+ *  job, server-side. */
 export async function establishIdpSession(
   opts: DeviceLoginOpts & { dir: string },
-): Promise<{ session: IdpSession; sub: string }> {
+): Promise<{ session: IdpSession; sub: string; label?: string }> {
   const session = await deviceLogin(opts);
   const jwt = await fetchIdpJwt(opts.idpUrl, session.token);
-  let sub: unknown;
+  let claims: Record<string, unknown>;
   try {
-    sub = decodeJwt(jwt).sub;
+    claims = decodeJwt(jwt);
   } catch {
     // fetchIdpJwt only guarantees a non-empty string; a hostile IdP returning /token 200 with a
     // non-JWT body would otherwise surface jose's raw "Invalid JWT" here.
-    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} returned a /token value that is not a decodable JWT — refusing to cache the session`);
+    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} returned a /token value that is not a decodable JWT — refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   }
+  const sub = claims.sub;
   if (typeof sub !== "string" || !sub)
-    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub — refusing to cache the session`);
+    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub — refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   saveIdpSession(opts.dir, opts.idpUrl, session);
-  return { session, sub };
+  const label = [claims.email, claims.name, claims.preferred_username].find(
+    (c): c is string => typeof c === "string" && c.length > 0,
+  );
+  return { session, sub, ...(label ? { label } : {}) };
 }
 
 /** Revoke the session server-side (sign out). A 401 back means the session is already dead —

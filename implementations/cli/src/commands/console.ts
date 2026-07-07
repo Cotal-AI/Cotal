@@ -3,7 +3,7 @@ import { userInfo } from "node:os";
 import { createElement } from "react";
 import { render } from "ink";
 import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
-import { connectOrExit } from "../lib/connect.js";
+import { connectOrExit, refuseUserModeOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { runLog } from "../render.js";
 import { Root, makeObserver } from "../console/root.js";
@@ -21,7 +21,9 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // `observer` profile denies → NATS Authorization Violation); an authed server hosts exactly one
   // space, so we enter it directly. Open mode connects bare; with no --space, the TTY shows the
   // space overview. An explicit --creds wins.
-  const { server, space: resolvedSpace, creds, auth } = await connectOrExit(values, "admin");
+  const conn = await connectOrExit(values, "admin");
+  refuseUserModeOrExit(conn, "the console");
+  const { server, space: resolvedSpace, creds, auth } = conn;
   // Auth pins its one space; open mode keeps --space (undefined → the overview picker).
   const space = auth ? resolvedSpace : values.space;
 

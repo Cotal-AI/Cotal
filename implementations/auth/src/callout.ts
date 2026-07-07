@@ -32,7 +32,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { assertInboxConnId, newIdentity, principalKey, principalTags, token, type SpaceAuth } from "@cotal-ai/core";
+import { assertInboxConnId, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 
@@ -62,13 +62,24 @@ export interface CalloutAuth {
   xkey: { seed: string; pub: string };
 }
 
+/** EXACTLY what minting the callout account requires — a deliberate capability boundary (the
+ *  auth-provider seam passes this, never the whole space bundle): the operator seed signs the new
+ *  account into the trust chain; the data-account PUB is what `allowed_accounts` re-binds into. */
+export interface CalloutProvisionInput {
+  space: string;
+  /** The space operator's signing seed — only the operator can sign a new account. */
+  operatorSeed: string;
+  /** The data account callout responses may bind users into (public key only). */
+  accountPub: string;
+}
+
 /** Generate the dedicated auth-callout account for a space: account + signing key, the callout
  *  service user, the deny-all sentinel, and the xkey — `authorization` wired so the server seals
- *  requests and lets responses bind users into the data account. Requires the FULL (unstripped)
- *  {@link SpaceAuth}: only the operator can sign a new account. */
-export async function createCalloutAuth(auth: SpaceAuth): Promise<CalloutAuth> {
-  if (!auth.operator.seed) throw new Error("createCalloutAuth: full SpaceAuth required (operator seed missing — stripped auth cannot sign a new account)");
-  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
+ *  requests and lets responses bind users into the data account. */
+export async function createCalloutAuth(input: CalloutProvisionInput): Promise<CalloutAuth> {
+  if (!input.operatorSeed) throw new Error("createCalloutAuth: the operator signing seed is required — a stripped space bundle cannot sign a new account");
+  if (!input.accountPub) throw new Error("createCalloutAuth: the data account public key is required");
+  const okp = fromSeed(new TextEncoder().encode(input.operatorSeed));
   const akp = createAccount();
   const askp = createAccount();
   const xkp = createCurve();
@@ -76,14 +87,14 @@ export async function createCalloutAuth(auth: SpaceAuth): Promise<CalloutAuth> {
   const sentinel = newIdentity();
 
   const accountJwt = await encodeAccount(
-    `AUTH_${token(auth.space)}`,
+    `AUTH_${token(input.space)}`,
     akp,
     {
       limits: { ...AUTH_ACCOUNT_LIMITS },
       signing_keys: [askp.getPublicKey()],
       authorization: {
         auth_users: [callout.id],
-        allowed_accounts: [auth.account.pub],
+        allowed_accounts: [input.accountPub],
         xkey: xkp.getPublicKey(),
       },
     },

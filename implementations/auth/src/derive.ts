@@ -62,3 +62,18 @@ export function deriveOwnerToken(spaceSecret: string | Uint8Array, externalSubje
   const mac = createHmac("sha256", secret).update(`${DERIVATION_CONTEXT}:${externalSubject}`).digest();
   return assertDerivedOwnerToken(DERIVED_OWNER_PREFIX + base32LowerNoPad(mac.subarray(0, 16)));
 }
+
+/** Derive the owner for an IdP-authenticated subject — the ONE encoding of (idp issuer, sub) into
+ *  the derivation input, shared by the bridge exchange and the operator grant command so the two can
+ *  never drift. JSON-array encoding, NOT `${issuer}|${sub}`: a bare-delimiter concat is non-injective
+ *  (("a","b|c") and ("a|b","c") would collide). FROZEN once real owners exist — changing it (or the
+ *  IdP issuer string) re-keys every owner in the space. */
+export function deriveOwnerForIdpSubject(
+  spaceSecret: string | Uint8Array,
+  idpIssuer: string,
+  sub: string,
+): string {
+  if (!idpIssuer) throw new Error("deriveOwnerForIdpSubject: idpIssuer must be a non-empty string");
+  if (!sub) throw new Error("deriveOwnerForIdpSubject: sub must be a non-empty string");
+  return deriveOwnerToken(spaceSecret, JSON.stringify([idpIssuer, sub]));
+}

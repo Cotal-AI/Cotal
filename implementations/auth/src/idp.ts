@@ -27,7 +27,7 @@
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
-import { deriveOwnerToken } from "./derive.js";
+import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { MAX_TOKEN_TTL_SEC } from "./token.js";
 
@@ -131,11 +131,10 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
     exchange: async (idpToken, req) => {
       assertValidOwnerToken(req.actor);
       const { sub, exp: idpExp } = await verifyIdpToken(idpToken, opts.idp);
-      // JSON-array encoding, NOT `${issuer}|${sub}`: a bare-delimiter concat is non-injective
-      // (("a","b|c") and ("a|b","c") would hash the same input). Safe-by-luck today (one fixed
-      // issuer per bridge), but the derivation input is frozen once real owners exist — an
-      // ambiguity here becomes an owner re-key migration, so it is closed now, while it's free.
-      const owner = deriveOwnerToken(opts.spaceSecret, JSON.stringify([opts.idp.issuer, sub]));
+      // The (issuer, sub) → derivation-input encoding lives in ONE place (deriveOwnerForIdpSubject),
+      // shared with the operator grant command — the ledger's grant-time owner and the exchange-time
+      // owner must be the same bytes or every grant silently misses.
+      const owner = deriveOwnerForIdpSubject(opts.spaceSecret, opts.idp.issuer, sub);
       const grant = await opts.authorizeActor(owner, req.actor);
       if (grant === null || typeof grant !== "object" || Array.isArray(grant))
         throw new Error("idp bridge: authorizeActor must return a grant object — anything else is a deny");

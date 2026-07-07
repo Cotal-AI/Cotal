@@ -46,7 +46,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `callout-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const callout = await createCalloutAuth(auth);
+const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), "cotal-callout-"));
 writeFileSync(
   join(dir, "server.conf"),

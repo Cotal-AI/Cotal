@@ -241,13 +241,13 @@ importers:
       '@nats-io/nkeys':
         specifier: ^2.0.3
         version: 2.0.3
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       jose:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
-      '@nats-io/transport-node':
-        specifier: ^3.4.0
-        version: 3.4.0
       better-auth:
         specifier: ^1.6.23
         version: 1.6.23(react@19.2.7)

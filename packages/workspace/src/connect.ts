@@ -5,11 +5,14 @@ import {
   mintCreds,
   newIdentity,
   probeConnect,
+  registry,
+  type AuthProvider,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { c } from "./colors.js";
-import { findMesh, getCurrent, removeMesh } from "./mesh-registry.js";
+import { userAuthStateDir } from "./auth-paths.js";
+import { findMesh, getCurrent, removeMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
@@ -47,6 +50,13 @@ export interface Connection {
   server: string;
   space: string;
   creds?: string;
+  /** USER-MODE connect material (mode `"user"` only): the Cotal user bearer + the deny-all
+   *  sentinel creds, exactly what `EndpointOptions.bearer`/`sentinelCreds` consume. Mutually
+   *  exclusive with `creds` — spread {@link endpointAuth} instead of reading either directly. */
+  bearer?: string;
+  sentinelCreds?: string;
+  /** The user-auth registry metadata, when this is a user-mode connection. */
+  userAuth?: UserAuthInfo;
   /** The mesh's trust material when resolved from the registry on an auth mesh — undefined for an
    *  open mesh or a raw off-registry connection (`--creds` or `--server`+unregistered `--space`).
    *  (web keeps it for its per-delete manager mint.) */
@@ -59,6 +69,19 @@ export interface Connection {
   /** How the target was resolved (registry / current / flag-space / …) — undefined for raw. */
   source?: MeshTarget["source"];
 }
+
+/** The one way a command turns a {@link Connection} into endpoint auth options — spread this into
+ *  `new CotalEndpoint({...})` instead of passing `creds:` directly, so a user-mode connection
+ *  (bearer + sentinel) and a static/raw one (creds) ride the same call sites without each command
+ *  re-learning the mode split. */
+export function endpointAuth(conn: Connection): { creds?: string; bearer?: string; sentinelCreds?: string } {
+  if (conn.bearer && conn.sentinelCreds) return { bearer: conn.bearer, sentinelCreds: conn.sentinelCreds };
+  return conn.creds !== undefined ? { creds: conn.creds } : {};
+}
+
+/** The ledger actor a HUMAN CLI connect runs as on a user-auth space (v1: one well-known name).
+ *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject>`. */
+export const CLI_USER_ACTOR = "cli";
 
 /**
  * Resolve where a mesh-touching command connects + with what creds.
@@ -85,9 +108,53 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
     return { server: flags.server, space: flags.space };
   }
   const target = await resolveTargetOrExit({ server: flags.server, space: flags.space });
+  // USER MODE is a HARD branch: it never mints from on-disk trust material (static creds DO work
+  // on a user-auth broker — minting here would silently connect the operator on the wrong identity
+  // plane) and never connects credlessly. Everything it needs comes from the login cache + the
+  // provider's space-scoped state; every failure is one sentence with the exact operator action.
+  if (target.mode === "user") return userConnectOrExit(target);
   const creds = target.auth ? await mintCreds(target.auth, newIdentity(), role) : undefined;
   await preflightOrExit(target, creds);
   return { server: target.server, space: target.space, creds, auth: target.auth, root: target.root, source: target.source };
+}
+
+/** The user-mode connect: resolve the space's auth provider from the registry (composition-root
+ *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
+ *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
+ *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper only
+ *  colours and exits (the workstation-layer contract). */
+async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
+  const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
+  let provider: AuthProvider;
+  try {
+    provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
+  } catch {
+    console.error(
+      c.red(
+        `✗ space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register — user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
+      ),
+    );
+    process.exit(1);
+  }
+  try {
+    const { bearer, sentinelCreds } = await provider.userCredentials({
+      dir: userAuthStateDir(target.root, target.space),
+      space: target.space,
+      actor: CLI_USER_ACTOR,
+    });
+    return {
+      server: target.server,
+      space: target.space,
+      bearer,
+      sentinelCreds,
+      userAuth: ua,
+      root: target.root,
+      source: target.source,
+    };
+  } catch (e) {
+    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
 }
 
 /** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/

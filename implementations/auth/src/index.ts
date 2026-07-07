@@ -1,9 +1,10 @@
-export { deriveOwnerToken } from "./derive.js";
+export { deriveOwnerToken, deriveOwnerForIdpSubject } from "./derive.js";
 export {
   AUTH_CALLOUT_SUBJECT,
   createCalloutAuth,
   startAuthCallout,
   type CalloutAuth,
+  type CalloutProvisionInput,
   type CalloutConnection,
   type CalloutMsg,
   type StartAuthCalloutOpts,
@@ -52,4 +53,37 @@ export {
   type DeviceLoginPrompt,
 } from "./login.js";
 export { calloutPermissions, type AclResolver } from "./permissions.js";
-import "./commands.js"; // self-registers `login` / `logout` into the core Registry
+export {
+  clearAuthServiceInfo,
+  ensureCalloutAuth,
+  ensureIssuer,
+  ensureOwnerSecret,
+  ensurePinnedIdp,
+  loadAuthServiceInfo,
+  loadCalloutAuth,
+  loadIssuer,
+  loadOwnerSecret,
+  loadPinnedIdp,
+  loadServiceKeys,
+  saveAuthServiceInfo,
+  saveServiceKeys,
+  spaceIssuer,
+  type AuthServiceInfo,
+  type PinnedIdp,
+  type ServiceKeys,
+} from "./store.js";
+export {
+  actorLedgerDir,
+  findActor,
+  grantActor,
+  ledgerAclResolver,
+  ledgerAuthorizeConnect,
+  ledgerAuthorizeGrant,
+  ledgerRowFilename,
+  loadActorLedger,
+  revokeActor,
+  type ActorRow,
+} from "./ledger.js";
+export { runAuthService, JWKS_MAX_AGE_SEC } from "./service.js";
+export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
+import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry

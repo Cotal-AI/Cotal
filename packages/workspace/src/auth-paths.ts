@@ -19,6 +19,15 @@ export function authDir(root: string): string {
   return join(root, ".cotal", "auth");
 }
 
+/** The SPACE-SCOPED user-auth state dir (`<root>/.cotal/auth/<space>`) — the one layout fact the
+ *  workstation layer owns about user auth: the auth provider persists its material under this dir
+ *  (opaque to us), and its EXISTENCE marks the space as user-auth-enabled on disk. Space-keyed now
+ *  so multi-space-per-root is a caller change, never an on-disk migration; a (broker, space) key
+ *  later extends the same shape. */
+export function userAuthStateDir(root: string, space: string): string {
+  return join(authDir(root), encodeURIComponent(space));
+}
+
 /** Find the project's `.cotal/` by walking up from `start` (like git finds `.git`), returning the
  *  directory that *contains* `.cotal/`. Falls back to `start` when none is found up the tree (a
  *  fresh setup creates `.cotal/` there). Lets `cotal` run from any subdirectory of a project. */

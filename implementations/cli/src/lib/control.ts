@@ -8,7 +8,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { connectOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, refuseUserModeOrExit, type ConnectFlags } from "./connect.js";
 
 /** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
  *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
@@ -35,7 +35,9 @@ export async function resolveControlTarget(
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? loadSpaceAuth(authDir(findCotalRoot()))?.space ?? DEFAULT_SPACE }
     : flags;
-  const { space, server, creds } = await connectOrExit(withSpace, profile);
+  const conn = await connectOrExit(withSpace, profile);
+  refuseUserModeOrExit(conn, "manager control (spawn --detach / ps / stop / attach)");
+  const { space, server, creds } = conn;
   return { space, server, creds };
 }
 

@@ -826,6 +826,38 @@ later).
   absent" message. This is why an over-tight ACL shows up as a logged denial, not a peer that
   mysteriously looks absent.
 
+### Per-user auth (user mode)
+
+`cotal up --user-auth --idp <auth base URL>` (or manifest `broker.auth: "user"`) puts a **human
+identity plane** above the per-agent one: people sign in to an external IdP once, and every
+connect is authorized *at connect time* against the operator's actor ledger — no per-agent creds
+files to hand out, and revocation actually bites.
+
+- **The wire identity is `owner.actor`.** The owner is an opaque per-space token (`u_…`, an HMAC
+  of the IdP subject — no PII on the wire); the actor is the agent instance under that owner.
+  Subjects, durables, presence, and `card.id` all carry the pair.
+- **One auth service per space** (its own detached daemon, started with the broker, torn down by
+  `cotal down`; pid space-scoped). It hosts both halves: the **NATS auth callout** (validates a
+  presented bearer offline against the local issuer keys, checks the actor ledger, mints a scoped
+  data-account user JWT whose expiry is *bound to the bearer's*) and the **loopback token
+  exchange + JWKS** (`POST /exchange` turns a fresh IdP JWT into a Cotal bearer; capability-gated
+  by a 0600 file, browser-origin requests rejected, JWKS served under an explicit
+  `max-age=300` cache contract). It is the only standing holder of the data-account signing key;
+  the operator seed never enters it.
+- **The actor ledger is the single authorization source** (`cotal actor grant/revoke/list`,
+  one file per `owner.actor` row under the space-scoped `.cotal/auth/<space>/actors/`). Both
+  trust boundaries read it fresh: a revoke denies the next exchange *and* the next connect with
+  no restart. No row, no access — there is no allow-by-default.
+- **The client path** (`cotal login --idp …` once per machine, then any command): cached IdP
+  session → fresh IdP JWT per connect (IdP-side revocation bites here) → local exchange → connect
+  with sentinel creds + bearer. A user-mode mesh is a **hard branch**: commands never fall back
+  to static minting or credless connects; a missing login or a down auth service is one sentence
+  naming the exact recovery.
+- **Composition, not coupling:** `@cotal-ai/auth` self-registers a core `auth-provider`
+  extension; the CLI resolves it generically (`bin/cotal.ts` is the one root that imports the
+  package). Static and user auth coexist on one broker today (infra daemons stay on scoped static
+  creds); the cutover that kills static agent creds is the flip, later.
+
 **Known limitations (Demo 1):**
 
 - **Standalone/late-join DM receipt** needs a *connected* provisioner (the manager) to pre-create
@@ -845,9 +877,9 @@ later).
   it no longer logs a broker auth-error on every check. Limitation: it returns false for a TLS-first
   (`handshake_first`) listener (that broker config isn't supported by the credless probe yet); the
   creds path stays a real authenticated connect and is unaffected.
-- **Callout stage (later, additive):** auth-callout (NATS 2.10+) mints creds *at connect* from a
-  per-space/per-profile bootstrap token (the `token@` the join link already parses), moving the
-  signing key into the callout service (true key-confinement) and removing the out-of-band mint.
+- **Callout stage:** SHIPPED for user mode (see *Per-user auth* above) — the auth service mints
+  scoped creds *at connect* and confines the data-account signing key. Static agent creds still
+  exist alongside it; retiring them (and the join-link bootstrap-token variant) is the flip.
 
 ## Deferred
 

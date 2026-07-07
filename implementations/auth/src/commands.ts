@@ -6,7 +6,7 @@
  * logged in as YOU across every repo on this box.
  */
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { findCotalRoot, homeCotalDir, resolveSpace, userAuthStateDir } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -14,6 +14,10 @@ import {
   normalizeIdpUrl,
   revokeIdpSession,
 } from "./login.js";
+import { deriveOwnerForIdpSubject } from "./derive.js";
+import { grantActor, loadActorLedger, revokeActor } from "./ledger.js";
+import { runAuthService } from "./service.js";
+import { loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
@@ -40,7 +44,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     const idp = normalizeIdpUrl(idpArg);
     // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
     // proof leaves no cache entry to fool requireIdpSession later.
-    const { session, sub } = await establishIdpSession({
+    const { session, sub, label } = await establishIdpSession({
       dir: homeCotalDir(),
       idpUrl: idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
@@ -50,8 +54,11 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         console.log(`Waiting for approval — the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
       },
     });
+    // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
+    // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
+    const who = label ? `${label} (${sub})` : sub;
     console.log(
-      `\nLogged in to ${idp} as ${sub}. Session cached in ${homeCotalDir()} until ${new Date(session.expiresAt * 1000).toISOString()}.`,
+      `\nLogged in to ${idp} as ${who}. Session cached in ${homeCotalDir()} until ${new Date(session.expiresAt * 1000).toISOString()}.`,
     );
   });
 }
@@ -88,7 +95,114 @@ async function runLogout(args: ParsedArgs): Promise<void> {
   });
 }
 
+/** The space-scoped provider state dir the `actor` commands operate on (`userAuthStateDir` — the
+ *  multi-space-ready layout; nothing user-auth lives flat in `.cotal/auth/`). */
+function actorStateDir(space?: string): { dir: string; space: string } {
+  const s = space ?? resolveSpace(process.cwd());
+  return { dir: userAuthStateDir(findCotalRoot(), s), space: s };
+}
+
+/** Resolve the operator's target (owner) for `actor grant`/`revoke`: an explicit derived `--owner`
+ *  token, or `--sub` (the IdP subject `cotal login` prints) derived through the SAME frozen encoding
+ *  the bridge exchange uses. Grant-by-sub needs the space's owner secret + IdP pin — i.e. user auth
+ *  already enabled here — and says exactly that when they're missing. */
+function resolveGrantOwner(dir: string, values: { owner?: string; sub?: string }): string {
+  if (values.owner && values.sub) throw new Error("pass --owner OR --sub, not both");
+  if (values.owner) return values.owner;
+  if (!values.sub) throw new Error("say who: --sub <IdP subject> (shown by `cotal login`) or --owner <u_…>");
+  const secret = loadOwnerSecret(dir);
+  const idp = loadPinnedIdp(dir);
+  if (!secret || !idp)
+    throw new Error(`user auth is not enabled for this space (no owner secret/IdP pin under ${dir}) — run \`cotal up --user-auth --idp <url>\` first`);
+  return deriveOwnerForIdpSubject(secret, idp.issuer, values.sub);
+}
+
+const csv = (s: string | undefined, dflt: string[]): string[] =>
+  s === undefined ? dflt : s.split(",").map((x) => x.trim()).filter(Boolean);
+
+async function runActor(args: ParsedArgs): Promise<void> {
+  const [sub, actor] = args.positionals;
+  const values = args.values as {
+    space?: string; sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
+    "allow-publish"?: string; role?: string; label?: string; parent?: string;
+  };
+  const { dir } = actorStateDir(values.space);
+  await legibly(async () => {
+    if (sub === "list") {
+      const rows = loadActorLedger(dir);
+      if (!rows.length) {
+        console.log("no actors granted — grant one with: cotal actor grant <actor> --sub <IdP subject>");
+        return;
+      }
+      for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))
+        console.log(
+          `${r.owner}.${r.actor}${r.label ? `  (${r.label})` : ""}  role=${r.role ?? "-"}  scope=[${r.scope.join(",")}]  read=[${r.allowSubscribe.join(",")}]  post=[${r.allowPublish.join(",")}]`,
+        );
+      return;
+    }
+    if (sub === "grant") {
+      if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]");
+      const owner = resolveGrantOwner(dir, values);
+      const row = grantActor(dir, {
+        owner,
+        actor,
+        scope: csv(values.scope, []),
+        allowSubscribe: csv(values["allow-subscribe"], ["general"]),
+        allowPublish: csv(values["allow-publish"], ["general"]),
+        ...(values.role ? { role: values.role } : {}),
+        ...(values.label ? { label: values.label } : {}),
+        ...(values.parent ? { parent: values.parent } : {}),
+      });
+      console.log(`✓ granted ${row.owner}.${row.actor} — read [${row.allowSubscribe.join(", ")}], post [${row.allowPublish.join(", ")}]${row.scope.length ? `, scope [${row.scope.join(", ")}]` : ""}`);
+      return;
+    }
+    if (sub === "revoke") {
+      if (!actor) throw new Error("usage: cotal actor revoke <actor> --sub <IdP subject>|--owner <u_…>");
+      const owner = resolveGrantOwner(dir, values);
+      if (!revokeActor(dir, owner, actor)) {
+        console.log(`no grant for ${owner}.${actor} — nothing to revoke`);
+        return;
+      }
+      console.log(`✓ revoked ${owner}.${actor} — new logins/connects are denied now; a live connection ends at its bearer expiry`);
+      return;
+    }
+    throw new Error("usage: cotal actor <grant <actor> | revoke <actor> | list>");
+  });
+}
+
 const authCommands: Command[] = [
+  {
+    kind: "command",
+    name: "auth-service",
+    group: "Manager",
+    summary: "run the user-auth service daemon — NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>]",
+    flags: [
+      { name: "space", type: "string", value: "<s>", description: "space to serve (required)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL the callout serves (required)" },
+      { name: "port", type: "string", value: "<n>", description: "loopback HTTP port for /exchange + /jwks (default: ephemeral)" },
+    ],
+    run: (args) => legibly(() => runAuthService(args)),
+  },
+  {
+    kind: "command",
+    name: "actor",
+    group: "Identity",
+    summary: "manage the space's actor ledger — grant/revoke which (user, actor) pairs may run agents",
+    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]",
+    positionals: "<grant <actor> | revoke <actor> | list>",
+    flags: [
+      { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the folder's)" },
+      { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
+      { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: none)" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: general)" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: general)" },
+      { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
+      { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
+      { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link" },
+    ],
+    run: runActor,
+  },
   {
     kind: "command",
     name: "login",

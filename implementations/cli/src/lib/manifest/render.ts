@@ -63,10 +63,11 @@ export function renderTopology(p: PreparedManifest): string {
  *  "will create" — broker + channels + agents — followed by the full access view. Mutates nothing. */
 export function renderUpPlan(p: PreparedManifest, server: string): string {
   const m = p.manifest;
+  const auth = m.broker?.auth === false ? "open" : m.broker?.auth === "user" ? `user auth${m.broker?.idp ? ` (idp ${m.broker.idp})` : ""}` : "static auth";
   const head = [
     c.bold("Plan — cotal up -f (fresh mesh)"),
     c.bold("Will create:"),
-    `  ${c.green("+")} broker + space ${c.cyan(`"${m.space}"`)} at ${server}`,
+    `  ${c.green("+")} broker + space ${c.cyan(`"${m.space}"`)} at ${server} ${c.dim(`(${auth})`)}`,
     `  ${c.green("+")} ${m.channels.length} channel(s): ${m.channels.map((ch) => c.cyan("#" + ch.name)).join(", ")}`,
     `  ${c.green("+")} ${p.agents.length} agent(s): ${p.agents.map((a) => a.name).join(", ")}`,
     "",

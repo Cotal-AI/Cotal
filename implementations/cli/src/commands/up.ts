@@ -24,11 +24,13 @@ import {
   ensureDefaultDeliveryClass,
   mkSecretDir,
   writeSecretFile,
+  type AuthPrepared,
   type SpaceAuth,
   type ChannelRegistryFile,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
+  assertUserAuthInfo,
   authDir,
   loadSpaceAuth,
   saveSpaceAuth,
@@ -39,8 +41,11 @@ import {
   recordMesh,
   removeMesh,
   setCurrent,
+  userAuthStateDir,
   type MeshEntry,
+  type UserAuthInfo,
 } from "@cotal-ai/workspace";
+import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
@@ -53,7 +58,19 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { failManifest } from "./topology.js";
 
 export async function up(args: ParsedArgs): Promise<void> {
-  const values = args.values as { server?: string; "store-dir"?: string; space?: string; open?: boolean; channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean };
+  const values = args.values as { server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string; channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean };
+  const wantUser = Boolean(values["user-auth"]);
+  // The auth-mode flags contradict each other loudly, never silently (a user-auth space quietly
+  // started open would run agents on the wrong identity plane — the exact failure per-user-auth
+  // exists to prevent).
+  if (wantUser && values.open) {
+    console.error(c.red("✗ --user-auth and --open contradict — a user-auth space cannot run unauthenticated"));
+    process.exit(1);
+  }
+  if (values.idp && !wantUser && !values.file) {
+    console.error(c.red('✗ --idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest'));
+    process.exit(1);
+  }
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
@@ -66,6 +83,8 @@ export async function up(args: ParsedArgs): Promise<void> {
       space: values.space,
       runtime: values.runtime,
       open: values.open,
+      userAuth: wantUser,
+      idp: values.idp,
     });
     return;
   }
@@ -81,8 +100,9 @@ export async function up(args: ParsedArgs): Promise<void> {
     const held = loadMeshes().find((m) => m.server === server);
     if (held && held.root === root && (held.space === space || values.space === undefined)) {
       // A refresh of the SAME already-running mesh — its mode is fixed by how the live broker was
-      // started; preserve `held.mode` rather than relabel it from this invocation's `--open`.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ts: new Date().toISOString() });
+      // started; preserve `held.mode` (and its user-auth metadata) rather than relabel it from this
+      // invocation's flags.
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.userAuth ? { userAuth: held.userAuth } : {}), ts: new Date().toISOString() });
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       return;
     }
@@ -107,6 +127,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       storeDir: values["store-dir"],
       space: values.space,
       open: values.open,
+      userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       channels: values.channels,
       host,
     });
@@ -122,7 +143,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   assertAuthMatchesSpace(useAuth, space);
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const natsArgs = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
   const { bin, source } = await resolveNatsServer();
@@ -139,10 +160,11 @@ export async function up(args: ParsedArgs): Promise<void> {
     process.exit(1);
   });
   // The control plane is coupled to the broker: stop the delivery daemon AND the detached manager
-  // when this `up` stops (Ctrl-C), so neither outlives the broker it serves — a surviving manager
-  // would reconnect-loop invisibly against the dead (or the NEXT) broker (the documented
-  // orphan-supervisor failure mode). Both kill by pidfile, symmetric.
-  const stop = () => { stopDelivery(); stopManager(); child.kill("SIGTERM"); };
+  // (AND the space's user-auth service) when this `up` stops (Ctrl-C), so none outlives the broker
+  // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
+  // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
+  // auth service's pid is space-scoped so no other space's daemon can ever be hit.
+  const stop = () => { stopDelivery(); stopManager(); stopAuthService(space); child.kill("SIGTERM"); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
@@ -150,6 +172,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   child.on("exit", (code) => {
     stopDelivery();
     stopManager();
+    stopAuthService(space);
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
     // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
     // record — removing by name would clobber the live winner and hide it from the registry.
@@ -163,12 +186,43 @@ export async function up(args: ParsedArgs): Promise<void> {
 
   if (await waitReady(server, setup?.creds)) {
     await postStart(server, space, setup, seedFile);
+    // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
+    // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
+    // (nor let agents race it) on a half-started auth plane.
+    const userAuth = await startUserAuthService(space, server, setup);
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     await startDeliveryWithBroker(space, server);
-    recordOurMesh({ space, server, root: cotalRoot(), mode: useAuth ? "auth" : "open", ts: new Date().toISOString() });
+    recordOurMesh({
+      space, server, root: cotalRoot(),
+      mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
+      ...(userAuth ? { userAuth } : {}),
+      ts: new Date().toISOString(),
+    });
   }
   await new Promise<void>(() => {});
+}
+
+/** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
+ *  provider's output). Loud both ways (U5): a ready service prints the login line; a service that
+ *  never became ready prints the exact consequence + recourse. Returns the registry metadata either
+ *  way — the mesh IS a user-auth mesh even while its service is down (connects must say "auth
+ *  service down", never fall back to static semantics). */
+async function startUserAuthService(
+  space: string,
+  server: string,
+  setup?: { prepared?: AuthPrepared; stateDir?: string },
+): Promise<UserAuthInfo | undefined> {
+  if (!setup?.prepared || !setup.stateDir) return undefined;
+  try {
+    const endpoints = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared });
+    const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
+    console.log(c.green("✓ user-auth service up") + c.dim(` — sign in with: cotal login --idp ${info.idp.url}`));
+    return info;
+  } catch (e) {
+    console.error(c.red(`✗ user-auth service did not come up (${(e as Error).message}) — user connects to "${space}" will fail until a re-\`cotal up\` succeeds`));
+    return assertUserAuthInfo(setup.prepared.publicAuth);
+  }
 }
 
 /** `cotal up -f cotal.yaml` — bring up a FRESH mesh from a manifest (broker + channels + booted
@@ -188,6 +242,22 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.error(c.red(`✗ unknown --runtime "${opts.runtime}" — expected pty, tmux, or cmux`));
     process.exit(1);
   }
+  // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
+  // exact correction in one sentence (a no-fallback identity decision, never a bare enum error).
+  const declared = prepared.manifest.broker?.auth;
+  const declaredStr = declared === undefined ? '"static" (the unset default)' : JSON.stringify(declared);
+  if (opts.open && declared === "user") {
+    console.error(c.red('✗ --open contradicts this manifest\'s broker.auth: "user" — a user-auth space cannot run unauthenticated. Drop --open, or change the manifest.'));
+    process.exit(1);
+  }
+  if (opts.userAuth && declared !== "user") {
+    console.error(c.red(`✗ --user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr}). Either set broker.auth: "user" in the manifest, or drop --user-auth.`));
+    process.exit(1);
+  }
+  if (opts.idp && declared !== "user") {
+    console.error(c.red(`✗ --idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) — set broker.auth: "user" in the manifest, or drop --idp.`));
+    process.exit(1);
+  }
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
   const eff = applyUpOverrides(prepared, opts);
@@ -195,6 +265,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const server = m.broker?.servers ?? DEFAULT_SERVER;
   const host = m.broker?.host ?? "127.0.0.1";
   const open = m.broker?.auth === false; // default is auth
+  const userAuth = m.broker?.auth === "user" ? { idpUrl: opts.idp ?? m.broker?.idp } : undefined; // flag > manifest
   const runtime = m.runtime ?? "pty";
 
   if (opts.dryRun) {
@@ -228,7 +299,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   let pid: number;
   let controlPlane = false;
   try {
-    ({ pid, controlPlane } = await startMeshDetached({ server, space: m.space, open, host, seed: manifestToChannels(eff), runtime, launch: specPath }));
+    ({ pid, controlPlane } = await startMeshDetached({ server, space: m.space, open, userAuth, host, seed: manifestToChannels(eff), runtime, launch: specPath }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -250,7 +321,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   console.log(c.dim(`\nWatch: \`cotal console --space ${m.space}\` or \`cotal web\`   ·   Tear down: \`cotal down\``));
 }
 
-/** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default). */
+/** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default).
+ *  `userAuth`/`idp` are consistency ASSERTIONS against the manifest, not overrides: the manifest
+ *  declares the auth mode; a disagreeing flag is a hard error, never a silent re-mode. */
 interface UpManifestFlags {
   dryRun: boolean;
   server?: string;
@@ -258,6 +331,8 @@ interface UpManifestFlags {
   space?: string;
   runtime?: string;
   open?: boolean;
+  userAuth?: boolean;
+  idp?: string;
 }
 
 /** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
@@ -305,6 +380,8 @@ export interface DetachOpts {
   storeDir?: string;
   space?: string;
   open?: boolean;
+  /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
+  userAuth?: { idpUrl?: string };
   channels?: string;
   host?: string;
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
@@ -337,7 +414,7 @@ export async function startMeshDetached(
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
-  const setup = useAuth ? await authSetup(storeDir, server, space, host) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const args = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
   const { bin, source } = await resolveNatsServer();
@@ -360,10 +437,17 @@ export async function startMeshDetached(
   }
   writeFileSync(cotalPath("nats.pid"), String(child.pid));
   await postStart(server, space, setup, seedFile);
+  // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
+  const userAuth = await startUserAuthService(space, server, setup);
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
   const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
   // Detached: the registry entry outlives this process — `cotal down` removes it.
-  recordOurMesh({ space, server, root: cotalRoot(), mode: useAuth ? "auth" : "open", ts: new Date().toISOString() });
+  recordOurMesh({
+    space, server, root: cotalRoot(),
+    mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
+    ...(userAuth ? { userAuth } : {}),
+    ts: new Date().toISOString(),
+  });
   return { server, pid: child.pid ?? 0, source, controlPlane };
 }
 
@@ -519,13 +603,20 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
 
 /** Ensure the space's trust material exists, render a server config, and mint a privileged
  *  setup creds (used to pre-create streams once the server is up). The account signing key
- *  in `.cotal/auth` is what `cotal mint` and the manager later use to issue per-agent creds. */
+ *  in `.cotal/auth` is what `cotal mint` and the manager later use to issue per-agent creds.
+ *
+ *  USER MODE (`user` set): additionally run the registered auth provider's `prepareServer` over the
+ *  SPACE-SCOPED state dir (`.cotal/auth/<space>/` — the multi-space-ready layout; nothing user-auth
+ *  lives flat) and preload its extra account(s) into the broker config. The inverse is fail-closed:
+ *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
+ *  config without the callout account would silently break every sentinel connect. */
 async function authSetup(
   storeDir: string,
   server: string,
   space: string,
   host: string = "127.0.0.1",
-): Promise<{ confPath: string; creds: string }> {
+  user?: { idpUrl?: string },
+): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot());
   let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
   if (!auth) {
@@ -533,14 +624,42 @@ async function authSetup(
     saveSpaceAuth(dir, auth); // strips the $SYS seed on disk, but leaves the in-memory `auth` intact …
     await provisionMembershipCreds(auth); // … so the observer can still be minted here (fresh-space only)
   }
+  const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
+  if (!user && existsSync(stateDir)) {
+    console.error(
+      c.red(
+        `✗ space "${space}" has user auth enabled (state under ${stateDir}) — start it with \`--user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
+      ),
+    );
+    process.exit(1);
+  }
+  let prepared: AuthPrepared | undefined;
+  if (user) {
+    // Registry composition: the provider came from the composition root (bin/cotal.ts imports
+    // @cotal-ai/auth); this package never imports it. No provider ⇒ resolveAuthProvider throws the
+    // exact fix. The narrow input is a capability boundary: operator seed (signs the provider's
+    // account once) + the data account's pub/signingSeed (projected for the service's minting duty).
+    try {
+      prepared = await resolveAuthProvider().prepareServer({
+        space,
+        operatorSeed: auth.operator.seed,
+        account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+        dir: stateDir,
+        idpUrl: user.idpUrl,
+      });
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host }));
+  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds };
+  return { confPath, creds, ...(prepared ? { prepared, stateDir } : {}) };
 }
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph

@@ -22,7 +22,7 @@ const check = (name: string, cond: boolean) => {
 const enc = (s: string) => new TextEncoder().encode(s);
 
 const auth = await createSpaceAuth("shape");
-const callout = await createCalloutAuth(auth);
+const callout = await createCalloutAuth({ space: "shape", operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const calloutXkeyPub = callout.xkey.pub;
 
 // A well-formed server: its signing key + curve key. `serverId`/`serverXkey` are what a real

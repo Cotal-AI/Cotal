@@ -110,6 +110,7 @@
     "smoke:endpoint-usermode:auth": "tsx implementations/auth/smoke/endpoint-usermode.smoke.ts",
     "smoke:callout-deny:auth": "tsx implementations/auth/smoke/callout-deny.smoke.ts",
     "smoke:callout-shape": "tsx implementations/auth/smoke/callout-shape.smoke.ts",
+    "smoke:user-auth-launch:live": "tsx implementations/auth/smoke/user-auth-launch.smoke.ts",
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",

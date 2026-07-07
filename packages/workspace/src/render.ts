@@ -43,6 +43,11 @@ function renderTargetError(err: MeshTargetError): string {
       return `✗ another mesh ("${d.space}") is running at ${d.server} — run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`;
     case "stale-auth-root":
       return `✗ registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}" — stale entry removed; re-run \`cotal up\` or check \`cotal meshes\``;
+    case "user-auth-unrecorded":
+      // U11: without a TRUSTED local record of the space's IdP there is no actionable
+      // `cotal login --idp <?>` line to print — the honest recovery is re-registering the mesh
+      // where its user-auth state lives, and remote discovery is explicitly not supported yet.
+      return `✗ space "${d.space}" requires user auth, but no trusted IdP config for it is registered on this machine — re-run \`cotal up --user-auth\` in ${d.root ?? "its broker root"} to re-register it (user-auth spaces are configured where their broker runs; remote discovery is not supported yet)`;
   }
 }
 

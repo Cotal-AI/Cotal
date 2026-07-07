@@ -30,7 +30,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "open:boolean", "runtime:string", "server:string", "space:string", "store-dir:string",
+      "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "store-dir:string", "user-auth:boolean",
     ],
     positionals: false,
   },
@@ -110,6 +111,15 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   login: { flags: ["client-id:string", "idp:string"], positionals: false },
   logout: { flags: ["idp:string"], positionals: false },
+  // Per-user auth (D4c): the actor-ledger operator surface + the auth-service daemon.
+  actor: {
+    flags: [
+      "allow-publish:string", "allow-subscribe:string", "label:string", "owner:string",
+      "parent:string", "role:string", "scope:string", "space:string", "sub:string",
+    ],
+    positionals: true,
+  },
+  "auth-service": { flags: ["port:string", "server:string", "space:string"], positionals: false },
 };
 
 const commands = registry.all<Command>("command");

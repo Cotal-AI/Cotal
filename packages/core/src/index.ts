@@ -22,3 +22,4 @@ export * from "./command.js";
 export * from "./runtime.js";
 export * from "./terminal.js";
 export * from "./registry.js";
+export * from "./auth-provider.js";

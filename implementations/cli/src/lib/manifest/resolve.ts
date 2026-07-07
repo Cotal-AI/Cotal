@@ -201,6 +201,17 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
       if (u.username || u.password)
         add(`broker.servers must not embed credentials ("${u.username}:***@…") — use auth creds/profile, not inline secrets`, ["broker", "servers"]);
     }
+  // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a
+  // silently-ignored identity provider is exactly the kind of drift the no-fallback rule exists for.
+  if (broker.idp !== undefined) {
+    if (broker.auth !== "user")
+      add(`broker.idp is for user-auth spaces — set broker.auth: "user" (or drop idp)`, ["broker", "idp"]);
+    try {
+      new URL(broker.idp);
+    } catch {
+      add(`broker.idp "${broker.idp}" is not a valid URL (Better Auth: <origin>/api/auth)`, ["broker", "idp"]);
+    }
+  }
 }
 
 function dedupe<T>(xs: T[]): T[] {

@@ -82,6 +82,16 @@ export async function join(args: ParsedArgs): Promise<void> {
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
     space = target.space;
     server = target.server;
+    // USER-auth mesh: interactive join self-provisions a STATIC agent identity, which is the wrong
+    // identity plane for a user space — refuse with the user path rather than half-joining (U10).
+    if (target.mode === "user") {
+      console.error(
+        c.red(
+          `✗ interactive join is not yet supported on user-auth space "${space}" — sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`), have the operator grant your actor (\`cotal actor grant\`), then use \`cotal send\`/agent connects`,
+        ),
+      );
+      process.exit(1);
+    }
     await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
     if (target.auth) {
       const identity = newIdentity();
