@@ -139,7 +139,10 @@ export async function up(args: ParsedArgs): Promise<void> {
           console.error(c.red(`✗ ${(e as Error).message}`));
           process.exit(1);
         }
-        userAuth = await startUserAuthService(held.space, server, { prepared, stateDir });
+        const svc = await startUserAuthService(held.space, server, { prepared, stateDir });
+        userAuth = svc.userAuth;
+        // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
+        if (!svc.ok) process.exitCode = 1;
       }
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ts: new Date().toISOString() });
       return;
@@ -160,7 +163,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   }
 
   if (values.detach) {
-    const { pid, source } = await startMeshDetached({
+    const { pid, source, authService } = await startMeshDetached({
       server,
       storeDir: values["store-dir"],
       space: values.space,
@@ -171,6 +174,10 @@ export async function up(args: ParsedArgs): Promise<void> {
     });
     console.log(c.dim(`Started nats-server (${source}).`));
     console.log(c.green(`✓ mesh running in the background (pid ${pid}) — stop with: cotal down`));
+    // A user mesh whose auth service never became ready is recorded + running (a re-`cotal up`
+    // heals it), but this `up` did NOT deliver what was asked — automation must see that in the
+    // exit code, not only in the red line above.
+    if (!authService) process.exitCode = 1;
     return;
   }
 
@@ -226,15 +233,16 @@ export async function up(args: ParsedArgs): Promise<void> {
     await postStart(server, space, setup, seedFile);
     // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
     // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
-    // (nor let agents race it) on a half-started auth plane.
-    const userAuth = await startUserAuthService(space, server, setup);
+    // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
+    // `ok` has no exit code to carry — the red consequence line above is the operator signal.)
+    const svc = await startUserAuthService(space, server, setup);
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     await startDeliveryWithBroker(space, server);
     recordOurMesh({
       space, server, root: cotalRoot(),
       mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
-      ...(userAuth ? { userAuth } : {}),
+      ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
       ts: new Date().toISOString(),
     });
   }
@@ -245,21 +253,23 @@ export async function up(args: ParsedArgs): Promise<void> {
  *  provider's output). Loud both ways (U5): a ready service prints the login line; a service that
  *  never became ready prints the exact consequence + recourse. Returns the registry metadata either
  *  way — the mesh IS a user-auth mesh even while its service is down (connects must say "auth
- *  service down", never fall back to static semantics). */
+ *  service down", never fall back to static semantics) — plus `ok`, so the exiting `up` surfaces
+ *  (detach / manifest / refresh-heal) turn a dead identity plane into a NON-ZERO exit: automation
+ *  must not read "user mesh up" from a mesh whose every user connect will be denied. */
 async function startUserAuthService(
   space: string,
   server: string,
   setup?: { prepared?: AuthPrepared; stateDir?: string },
-): Promise<UserAuthInfo | undefined> {
-  if (!setup?.prepared || !setup.stateDir) return undefined;
+): Promise<{ userAuth?: UserAuthInfo; ok: boolean }> {
+  if (!setup?.prepared || !setup.stateDir) return { ok: true };
   try {
     const endpoints = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared });
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
     console.log(c.green("✓ user-auth service up") + c.dim(` — sign in with: cotal login --idp ${info.idp.url}`));
-    return info;
+    return { userAuth: info, ok: true };
   } catch (e) {
     console.error(c.red(`✗ user-auth service did not come up (${(e as Error).message}) — user connects to "${space}" will fail until a re-\`cotal up\` succeeds`));
-    return assertUserAuthInfo(setup.prepared.publicAuth);
+    return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
   }
 }
 
@@ -336,8 +346,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   stopManager();
   let pid: number;
   let controlPlane = false;
+  let authService = true;
   try {
-    ({ pid, controlPlane } = await startMeshDetached({ server, space: m.space, open, userAuth, host, seed: manifestToChannels(eff), runtime, launch: specPath }));
+    ({ pid, controlPlane, authService } = await startMeshDetached({ server, space: m.space, open, userAuth, host, seed: manifestToChannels(eff), runtime, launch: specPath }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -357,6 +368,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (inherited) console.log("\n" + inherited);
   if (eff.warnings.length) console.log("\n" + renderWarnings(eff.warnings));
   console.log(c.dim(`\nWatch: \`cotal console --space ${m.space}\` or \`cotal web\`   ·   Tear down: \`cotal down\``));
+  // A declared-user-auth manifest whose auth service never became ready: the mesh is up + recorded
+  // (re-`cotal up` heals), but this launch did not deliver a usable identity plane — exit non-zero
+  // so CI/wrappers don't read success (the red consequence line printed at the failure above).
+  if (!authService) process.exitCode = 1;
 }
 
 /** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default).
@@ -442,7 +457,7 @@ export interface DetachOpts {
  */
 export async function startMeshDetached(
   opts: DetachOpts = {},
-): Promise<{ server: string; pid: number; source: string; controlPlane: boolean }> {
+): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   mkdirSync(storeDir, { recursive: true });
@@ -476,17 +491,17 @@ export async function startMeshDetached(
   writeFileSync(cotalPath("nats.pid"), String(child.pid));
   await postStart(server, space, setup, seedFile);
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
-  const userAuth = await startUserAuthService(space, server, setup);
+  const svc = await startUserAuthService(space, server, setup);
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
   const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
   // Detached: the registry entry outlives this process — `cotal down` removes it.
   recordOurMesh({
     space, server, root: cotalRoot(),
     mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
-    ...(userAuth ? { userAuth } : {}),
+    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ts: new Date().toISOString(),
   });
-  return { server, pid: child.pid ?? 0, source, controlPlane };
+  return { server, pid: child.pid ?? 0, source, controlPlane, authService: svc.ok };
 }
 
 /** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so starting it

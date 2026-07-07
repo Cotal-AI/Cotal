@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth, userAuthStateDir } from "./auth-paths.js";
@@ -178,13 +178,39 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
   // not silently static-mint — static creds DO work on a user-auth broker, which would connect the
   // operator on the wrong identity plane. The on-disk marker is the space-scoped user-auth state
   // dir; the recovery (re-`cotal up` in that root) rewrites the registry entry with the IdP pins.
-  if (auth && existsSync(userAuthStateDir(root, space)))
+  // The marker binds even when `auth.json` itself is missing/corrupt — a surviving state dir alone
+  // proves user auth was enabled here, and the alternative would classify the root "open" and
+  // connect credlessly toward a user-auth broker. Fail closed on the marker, whichever half died.
+  const userSpace = auth
+    ? existsSync(userAuthStateDir(root, space))
+      ? space
+      : undefined
+    : userAuthSpacesOnDisk(authDir(root))[0];
+  if (userSpace !== undefined)
     throw new MeshTargetError(
       "user-auth-unrecorded",
-      `space "${space}" has user auth enabled on disk but no usable registry entry`,
-      { space, root },
+      `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
+      { space: userSpace, root },
     );
   return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaRoot(root), source };
+}
+
+/** Space names with user-auth state under a root's auth dir, detectable WITHOUT `auth.json`: each
+ *  enabled space is a subdirectory (encodeURIComponent(space)) holding the provider's pinned
+ *  material — `idp.json` is written first at enable, `callout.json` right after, so either one
+ *  marks the dir as user-auth state (never confusable with a stray empty folder). */
+function userAuthSpacesOnDisk(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter(
+        (e) =>
+          e.isDirectory() &&
+          (existsSync(join(dir, e.name, "idp.json")) || existsSync(join(dir, e.name, "callout.json"))),
+      )
+      .map((e) => decodeURIComponent(e.name));
+  } catch {
+    return []; // no auth dir at all — nothing user-auth here
+  }
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on

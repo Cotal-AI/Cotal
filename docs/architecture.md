@@ -845,7 +845,10 @@ files to hand out, and revocation actually bites.
   `max-age=300` cache contract). It is the only standing holder of the data-account signing key;
   the operator seed never enters it. If it dies while the broker lives, re-running `cotal up`
   heals it — the refresh of a running user mesh re-ensures the service (it never just prints
-  "already running" over a dead callout).
+  "already running" over a dead callout). A detached/manifest `up` (or a refresh-heal) whose
+  service never became ready exits **non-zero**: the mesh stays recorded as user-auth (degraded —
+  every user connect names the recovery until a re-`up` heals it), but automation never reads a
+  dead identity plane as success.
 - **The actor ledger is the single authorization source** (`cotal actor grant/revoke/list`,
   one file per `owner.actor` row under the space-scoped `.cotal/auth/<space>/actors/`). Both
   trust boundaries read it fresh: a revoke denies the next exchange *and* the next connect with
