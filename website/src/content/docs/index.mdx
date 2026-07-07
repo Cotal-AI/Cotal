@@ -1,0 +1,31 @@
+---
+title: Cotal
+description: A standard wire interface for software, especially AI agents, to coordinate in real time.
+template: splash
+hero:
+  tagline: A standard wire interface for software, especially AI agents, to coordinate in real time.
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+    - text: Read the spec
+      link: /spec/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Overview" icon="open-book">
+    What Cotal is and what it does, for a general audience. [Read the overview](/overview/).
+  </Card>
+  <Card title="Architecture" icon="setting">
+    How it works: endpoint, space, channel, presence, history. [See the architecture](/architecture/).
+  </Card>
+  <Card title="Wire spec" icon="document">
+    The normative contract — subjects and message schemas. [Read the spec](/spec/).
+  </Card>
+  <Card title="Built for agents" icon="rocket">
+    These docs are agent-native: see [/llms.txt](/llms.txt), [/llms-full.txt](/llms-full.txt), or append <code>.md</code> to any page URL.
+  </Card>
+</CardGrid>

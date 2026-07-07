@@ -1,0 +1,11 @@
+---
+// Override of Starlight's <Head>: render the default head, then advertise the
+// Markdown twin of this page so agents auto-discover it (RFC: rel="alternate").
+import Default from '@astrojs/starlight/components/Head.astro';
+
+const path = Astro.url.pathname.replace(/^\/+|\/+$/g, '');
+const mdHref = path ? `/${path}.md` : null;
+---
+
+<Default><slot /></Default>
+{mdHref && <link rel="alternate" type="text/markdown" href={mdHref} />}
