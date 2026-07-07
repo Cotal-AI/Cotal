@@ -121,6 +121,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   "auth-service": { flags: ["port:string", "server:string", "space:string"], positionals: false },
+  // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
+  "agent-bearer": {
+    flags: ["actor:string", "dir:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    positionals: false,
+  },
 };
 
 const commands = registry.all<Command>("command");

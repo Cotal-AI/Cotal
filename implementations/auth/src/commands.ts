@@ -162,7 +162,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
       const owner = resolveGrantOwner(dir, values);
       if (!revokeActor(dir, owner, actor)) {
         if (findManagedActor(dir, owner, actor))
-          throw new Error(`${owner}.${actor} is a managed agent — its grant lives with its process: stop/despawn it (\`cotal stop --name ${actor}\`) and the grant dies with it`);
+          throw new Error(`${owner}.${actor} is a managed agent — its grant lives with its process: stop it if manager-owned (\`cotal stop --name ${actor}\`), or if it was a killed foreground spawn, respawn the same name (\`cotal spawn\`) to rotate the grant`);
         console.log(`no grant for ${owner}.${actor} — nothing to revoke`);
         return;
       }

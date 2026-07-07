@@ -446,7 +446,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   console.error(
     `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
   );
-  if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; despawn revokes it)`));
+  if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
   const child = spawnProcess(spec.command, spec.args, {
     stdio: "inherit",
     // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
