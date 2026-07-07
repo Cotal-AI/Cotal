@@ -31,7 +31,7 @@
  *    a fresh cid until its cred dies, so an evict-only loop would chase churn. The name says so.
  */
 import type { NatsConnection } from "@nats-io/transport-node";
-import { connzRequestSubject, principalFromTags, serverKickSubject } from "./subjects.js";
+import { connzRequestSubject, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const MAX_PAGES = 64; // fan-out pagination guard (mirrors the membership feed's under-report ceiling)
@@ -47,6 +47,9 @@ interface LiveConn {
 interface ConnzConn {
   cid?: number;
   tags?: string[];
+  /** For a CALLOUT-minted user this carries the principal NAME-form (the JWT name); for a static
+   *  user it's the ephemeral nkey. {@link principalFromConnz} disambiguates. */
+  authorized_user?: string;
 }
 interface ConnzReply {
   server?: { id?: string };
@@ -106,7 +109,9 @@ async function scanLive(
       if (!serverId) continue; // a reply we can't route a KICK back to is unusable — skip (drops completeness below)
       const cs = r.data?.connections ?? [];
       for (const c of cs) {
-        const principal = principalFromTags(c.tags);
+        // Attribute across BOTH cred shapes — a callout user surfaces its principal as the
+        // `authorized_user` name-form (no tags), a static user surfaces the `principal:` tag.
+        const principal = principalFromConnz(c);
         if (typeof c.cid === "number" && principal) conns.push({ cid: c.cid, serverId, principal });
       }
       const total = r.data?.total ?? 0;
@@ -127,7 +132,10 @@ function connzRound(
   seq: number,
 ): Promise<ConnzReply[]> {
   return new Promise((resolve) => {
-    const inbox = `_INBOX.cotal-evict.${seq}`;
+    // The reply inbox MUST sit under the prefix the observer cred (`membership-observer`) grants sub
+    // on — its ACL allows only `${MEMBERSHIP_INBOX_PREFIX}.>`, so a distinct `_INBOX.cotal-evict.*`
+    // subject is broker-denied and the scan gets ZERO replies (a fail-closed under-report).
+    const inbox = `${MEMBERSHIP_INBOX_PREFIX}.evict.${seq}`;
     const out: ConnzReply[] = [];
     let settle: ReturnType<typeof setTimeout> | undefined;
     let done = false;

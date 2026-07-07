@@ -259,6 +259,33 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
   return p && isPrincipalOwnerToken(p.owner) ? key : null;
 }
 
+/** Inverse of {@link principalKey}'s `name` form (`<owner>-<actor>`): recover the principal dot-form
+ *  from a name-form string, or `null` if it isn't one. Owner tokens are `[A-Za-z0-9_]+` and actor
+ *  tokens too — `-` is reserved as the name-form separator — so the FIRST `-` splits owner from actor
+ *  unambiguously, and both halves must be {@link parsePrincipalKey}-valid with a real principal owner.
+ *  An nkey (no `-`) or any other non-name-form returns null. */
+export function principalFromName(name: string | undefined): string | null {
+  if (typeof name !== "string") return null;
+  const dash = name.indexOf("-");
+  if (dash <= 0 || dash >= name.length - 1) return null;
+  const key = `${name.slice(0, dash)}.${name.slice(dash + 1)}`;
+  const p = parsePrincipalKey(key);
+  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+}
+
+/** Recover a connection's principal dot-form from a `$SYS` CONNZ record, across BOTH credential
+ *  shapes — the one place that knows nats-server surfaces principal identity differently for each:
+ *   - a STATICALLY-minted user (`mintCreds`) surfaces its `principal:` TAG (`authorized_user` is the
+ *     ephemeral connection nkey);
+ *   - a CALLOUT-minted user surfaces the JWT `name` (the principal NAME-form) as `authorized_user`,
+ *     and does NOT surface `tags` at all (proven live on nats-server 2.10.22 + 2.14.2).
+ *  So attribution must try the tag first, then the `authorized_user` name-form; anything else (an
+ *  un-tagged nkey, open mode, infra) is `null` — unattributable, dropped fail-closed by callers.
+ *  The membership feed and live eviction both key on this, so it lives here as the single source. */
+export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }): string | null {
+  return principalFromTags(conn.tags) ?? principalFromName(conn.authorized_user);
+}
+
 /** The reserved owner token for the **no-login local/dev path** — the static-creds default when there
  *  is no user identity (the plan's zero-login local default). A valid {@link assertValidOwnerToken}
  *  token, and — being lowercase-alpha with no `u_` prefix — trivially distinct from both nkeys and
