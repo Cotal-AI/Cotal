@@ -31,17 +31,19 @@ const groups = [
     files: ['docs/what-is-cotal.md', 'docs/getting-started.md'],
   },
   {
+    // Three lanes, in order: operators → connector users → protocol implementers
+    // (mirrors docs/README.md's Guides lanes).
     label: 'Guides',
     files: [
       'docs/run-a-mesh.md',
       'docs/define-a-team.md',
       'docs/watch-a-mesh.md',
+      'docs/deploy.md',
+      'docs/examples.md',
       'docs/connect-claude.md',
       'docs/connect-opencode.md',
       'docs/connect-hermes.md',
-      'docs/examples.md',
       'docs/build-a-client.md',
-      'docs/deploy.md',
     ],
   },
   {

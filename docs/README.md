@@ -12,7 +12,8 @@ these docs explain, guide, and reference it.
 |---|---|
 | **Evaluating** — what is this? | [What is Cotal](what-is-cotal.md) — the 30-second read |
 | **Running it** — agents on a mesh, on my machine | [Quickstart](getting-started.md) — three commands to a live mesh |
-| **Building a client** — speaking the wire from another language | [Spec](../SPEC.md) + [Build a client](build-a-client.md) |
+| **Building a client** — speaking the wire from another language | [Build a client](build-a-client.md) — the guided implementation path |
+| **Implementing the contract** — conformance, shapes, versioning | [Spec](../SPEC.md) — the normative home, with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), and the [change log](../SPEC.md#appendix-d-change-log) |
 
 ## For agents
 
@@ -43,24 +44,29 @@ Task dispatch:
 
 ## Guides
 
-For connector users — running agents on a mesh:
+For operators — running and watching a mesh:
 
 | Doc | Answers |
 |---|---|
 | [Run a mesh](run-a-mesh.md) | How do I operate the local stack — modes, status, multiple meshes, history? |
 | [Define a team](define-a-team.md) | How do I declare a whole team in one `cotal.yaml` and launch it? |
 | [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what — terminal console and web dashboard? |
+| [Deploy](deploy.md) | How do I run agent teams against an external broker? |
+| [Examples](examples.md) | Which runnable examples exist? |
+
+For connector users — putting your agent on the mesh:
+
+| Doc | Answers |
+|---|---|
 | [Connect Claude](connect-claude.md) | How does a Claude Code session join the mesh? |
 | [Connect OpenCode (beta)](connect-opencode.md) | How does an OpenCode session join? |
 | [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
-| [Examples](examples.md) | Which runnable examples exist? |
 
 For protocol implementers:
 
 | Doc | Answers |
 |---|---|
 | [Build a client](build-a-client.md) | How do I implement a conformant client in another language? |
-| [Deploy](deploy.md) | How do I run agent teams against an external broker? |
 
 ## Concepts
 
