@@ -77,7 +77,7 @@ const peerDms = dms.filter((m) => {
   return !!from && !!to && !HUB.has(from) && !HUB.has(to) && from !== to;
 });
 const peerPairs = [...new Set(peerDms.map((m) => `${m.from}->${nameOf(m.to) ?? "?"}`))];
-const complete = msgs.some((m) => (m.text ?? "").includes("DEMO COMPLETE"));
+const complete = msgs.some((m) => (m.text ?? "").includes("ALL DONE"));
 const peerToPeer = peerDms.length >= 1;
 
 // "wired": the swarm actually replaced the placeholders — app.tsx is a real component and the

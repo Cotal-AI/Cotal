@@ -112,6 +112,9 @@ importers:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../../extensions/connector-core
+      '@cotal-ai/connector-opencode':
+        specifier: workspace:*
+        version: link:../../extensions/connector-opencode
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core

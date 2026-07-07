@@ -22,14 +22,23 @@ import {
 import { Manager } from "@cotal-ai/manager";
 import { launchEnv } from "@cotal-ai/connector-core";
 import "@cotal-ai/cmux"; // registers the cmux runtime (default here); harmless under COTAL_RUNTIME=pty
+import { opencodeConnector } from "@cotal-ai/connector-opencode"; // the OpenCode launcher (serve + attach TUI)
 import { fileURLToPath } from "node:url";
 
 const RUN_AGENT = fileURLToPath(new URL("../run-agent.sh", import.meta.url));
+const OPENCODE_REVIEWER = fileURLToPath(new URL("../agents/opencode-reviewer.md", import.meta.url));
 
 const roleAgentConnector: Connector = {
   kind: "connector",
   name: "cotal",
   buildLaunch: (opts: LaunchOpts): LaunchSpec => {
+    const role = opts.role ?? opts.name ?? "";
+    // Cross-vendor: an opencode reviewer (role `opencode-*`) launches via the OpenCode connector —
+    // a non-Anthropic peer (GLM-5.1) reviewing the Claude agents' work over the mesh. The agent file
+    // carries its persona + model; the connector runs `opencode serve` + an attached TUI.
+    if (role.startsWith("opencode")) {
+      return opencodeConnector.buildLaunch({ ...opts, configPath: opts.configPath ?? OPENCODE_REVIEWER });
+    }
     // Claude agents via run-agent.sh; `confirm` lets the PTY runtime auto-accept dev-channels.
     return { command: RUN_AGENT, args: [opts.role ?? opts.name], confirm: "Enter to confirm", env: launchEnv() };
   },

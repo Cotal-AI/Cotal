@@ -11,6 +11,7 @@
   "dependencies": {
     "@cotal-ai/cmux": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/manager": "workspace:*"
   },

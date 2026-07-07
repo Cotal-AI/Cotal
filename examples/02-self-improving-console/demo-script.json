@@ -1,0 +1,536 @@
+{
+  "space": "console",
+  "capturedAt": "2026-06-21T01:32:41.795Z",
+  "messages": [
+    {
+      "subject": "cotal.console.chat.61938b30-9fe2-4f97-8346-289d8f801b08.team",
+      "payload": {
+        "id": "88b383a8-2574-4aec-9173-2e13e0029ff7",
+        "ts": 1781992529856,
+        "space": "console",
+        "from": {
+          "id": "61938b30-9fe2-4f97-8346-289d8f801b08",
+          "name": "orchestrator",
+          "role": "orchestrator"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "GOAL (from operator): Add an activity pulse to cotal console: a live sparkline (unicode block bars ▁▂▃▄▅▆▇█) of message volume over the last ~60s, shown next to the msg/s readout in the StatusBar. Keep it compact: a fixed width of about 15 columns (just the most recent buckets), do NOT scale it to the terminal width.\n\nbackend owns the data layer (the per-bucket volume series), tui-designer owns the StatusBar rendering. Settle the shared data contract directly between you two."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.8a80ce53-54f4-491f-8fd3-02b2e13b245a.61938b30-9fe2-4f97-8346-289d8f801b08",
+      "payload": {
+        "id": "1474bcb6-d78f-4498-ad6c-77daa0737980",
+        "ts": 1781992533492,
+        "space": "console",
+        "from": {
+          "id": "61938b30-9fe2-4f97-8346-289d8f801b08",
+          "name": "orchestrator",
+          "role": "orchestrator"
+        },
+        "to": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Your half (data layer): produce the message-volume time series that feeds the sparkline — bucket message counts over the last ~60s into a small fixed number of recent buckets (~15), exposed on the console's mesh-view/state so the StatusBar can read it live. Don't scale to terminal width; it's a fixed-width series.\n\nSettle the data contract — the new field's name and shape (array of counts? bucket size? ordering oldest→newest?) — DIRECTLY with tui-designer via cotal_dm. She's rendering it, so agree the field name/shape between the two of you; I'm not relaying. DM me 'done: <summary>' when your side lands."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.1b76b7db-a310-4990-b125-1fb8071baeb6.61938b30-9fe2-4f97-8346-289d8f801b08",
+      "payload": {
+        "id": "ec9d13df-9d23-4641-88d3-c3306b5e44f0",
+        "ts": 1781992537283,
+        "space": "console",
+        "from": {
+          "id": "61938b30-9fe2-4f97-8346-289d8f801b08",
+          "name": "orchestrator",
+          "role": "orchestrator"
+        },
+        "to": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Your half (UI): render the activity-pulse sparkline in the StatusBar next to the msg/s readout — unicode block bars ▁▂▃▄▅▆▇█, fixed width ~15 columns (only the most recent buckets), do NOT scale to terminal width. There's already a Sparkline.tsx in the working tree — use/finish it as fits.\n\nSettle the data contract — the field name & shape of the volume series you'll read — DIRECTLY with backend via cotal_dm. He's producing it; agree the field name/shape between the two of you, I'm not relaying. DM me 'done: <summary>' when your side lands."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.8a80ce53-54f4-491f-8fd3-02b2e13b245a.team",
+      "payload": {
+        "id": "10d6bebc-cc4c-4093-afb1-b8442ca404bd",
+        "ts": 1781992614014,
+        "space": "console",
+        "from": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "starting the data layer for the activity-pulse sparkline (60s message-volume series in useMesh)"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.1b76b7db-a310-4990-b125-1fb8071baeb6.8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+      "payload": {
+        "id": "d60aabe4-3576-4678-8787-cb21387d6e3d",
+        "ts": 1781992615769,
+        "space": "console",
+        "from": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend"
+        },
+        "to": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "proposing the snapshot exposes the sparkline series as `rates.activity: number[]` — fixed length 15, ordered oldest→newest (left=old, right=now), each value a raw count of mesh messages in a ~4s bucket (15×4s = 60s window). Same message population that feeds msgsPerSec. Counts ≥0, unbounded above (typically small) — your sparkline scales to its own max. Lives on `rates` since StatusBar already gets that prop. Works for your render?"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.1b76b7db-a310-4990-b125-1fb8071baeb6.team",
+      "payload": {
+        "id": "9257b9db-c5e4-4bb1-b7a1-d9a800730284",
+        "ts": 1781992641365,
+        "space": "console",
+        "from": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "starting the StatusBar activity-pulse sparkline render"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.8a80ce53-54f4-491f-8fd3-02b2e13b245a.1b76b7db-a310-4990-b125-1fb8071baeb6",
+      "payload": {
+        "id": "04c7e01c-10a2-49f3-850e-76dcd7b59b45",
+        "ts": 1781992644579,
+        "space": "console",
+        "from": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer"
+        },
+        "to": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "rates.activity: number[] works perfectly — len 15, oldest→newest (right=now), raw counts per ~4s bucket, scale-to-own-max on my side. Confirmed, wiring the StatusBar to it now. One ask: please always emit a full-length 15 array (zero-pad at startup before 60s of data exists) so I can render a stable-width bar without padding logic. OK?"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.1b76b7db-a310-4990-b125-1fb8071baeb6.8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+      "payload": {
+        "id": "7de42425-708a-4e8a-accf-b3de773b0563",
+        "ts": 1781992685921,
+        "space": "console",
+        "from": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend"
+        },
+        "to": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Yes — guaranteed. `bucketCounts` starts as new Array(15).fill(0) and roll() always keeps it exactly length 15 (zero-fills idle gaps), so rates.activity is always a full 15-length array, zero-padded from t=0. Landed and typecheck-green on my side."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.8a80ce53-54f4-491f-8fd3-02b2e13b245a.team",
+      "payload": {
+        "id": "c85a23c2-cf10-4b18-a776-713a39be9212",
+        "ts": 1781992687236,
+        "space": "console",
+        "from": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "data contract locked with tui-designer: rates.activity (number[15], oldest→newest 4s buckets, 60s window)"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.61938b30-9fe2-4f97-8346-289d8f801b08.8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+      "payload": {
+        "id": "61c6c983-4374-4121-9fcb-b50b0b97e942",
+        "ts": 1781992688824,
+        "space": "console",
+        "from": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend"
+        },
+        "to": "61938b30-9fe2-4f97-8346-289d8f801b08",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "done: rates.activity ready in useMesh() — number[15], oldest→newest, raw msg counts per ~4s bucket (60s window), zero-padded from start. Contract settled with tui-designer; CLI typecheck green."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.1b76b7db-a310-4990-b125-1fb8071baeb6.team",
+      "payload": {
+        "id": "3671288c-0d3d-4080-99c6-6155805b9a59",
+        "ts": 1781992747395,
+        "space": "console",
+        "from": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "contract agreed with backend — wiring the StatusBar to rates.activity (15-bucket sparkline), rendered + typecheck green"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.61938b30-9fe2-4f97-8346-289d8f801b08.1b76b7db-a310-4990-b125-1fb8071baeb6",
+      "payload": {
+        "id": "886ed0ee-ba18-4ad4-a9e4-5c2f24b8b363",
+        "ts": 1781992749803,
+        "space": "console",
+        "from": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer"
+        },
+        "to": "61938b30-9fe2-4f97-8346-289d8f801b08",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "done: activity-pulse sparkline rendered in StatusBar — new Sparkline.tsx (self-scaling unicode ▁▂▃▄▅▆▇█, fixed 15 cols, no terminal-width scaling) wired next to the msg/s readout, reading rates.activity (number[15], 60s window) from useMesh(). No hardcoded values; pnpm --filter @cotal-ai/cli typecheck green."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S.61938b30-9fe2-4f97-8346-289d8f801b08",
+      "payload": {
+        "id": "d7d35b1e-b495-470c-858e-b5d14c7eb4eb",
+        "ts": 1781992761919,
+        "space": "console",
+        "from": {
+          "id": "61938b30-9fe2-4f97-8346-289d8f801b08",
+          "name": "orchestrator",
+          "role": "orchestrator"
+        },
+        "to": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "The activity-pulse sparkline change just landed in implementations/cli. Two parts: (1) backend added rates.activity to useMesh() — number[15], oldest→newest, raw msg counts per ~4s bucket over a 60s window, zero-padded; (2) tui-designer added Sparkline.tsx (unicode ▁▂▃▄▅▆▇█, fixed 15 cols, no terminal-width scaling) wired into StatusBar next to the msg/s readout, reading rates.activity. Touched files: src/view/mesh-view.ts, src/console/ui/StatusBar.tsx, src/console/ui/Sparkline.tsx. Review it read-only and post your findings to #team, then DM me 'done: reviewed'."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S.team",
+      "payload": {
+        "id": "93d8cf4e-f4b5-4b39-af01-6af46ca2d325",
+        "ts": 1781992894037,
+        "space": "console",
+        "from": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "review: looks solid overall. Checked `useMesh()` still owns exactly one `MeshView` over the supplied observer endpoint, no new NATS connection; data contract is real `rates.activity: number[15]` from live tap arrivals, oldest->newest 4s buckets, decayed on `flush()`; StatusBar consumes that exact field and Sparkline is fixed-width 15, not terminal-scaled. Only caveat: I could not complete `pnpm typecheck` because pnpm kept trying to self-install `pnpm@11.1.2` and was SIGTERM-killed, so please verify locally before landing. Also remember `Sparkline.tsx` is currently untracked in my read-only status check, so include it in the change."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.8a80ce53-54f4-491f-8fd3-02b2e13b245a.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+      "payload": {
+        "id": "cbe18e2d-ba3e-4af7-a5a6-640d175aff08",
+        "ts": 1781992894038,
+        "space": "console",
+        "from": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer"
+        },
+        "to": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "review: data layer looks correct. `rates.activity` is live tap-derived, 15 raw-count buckets over ~60s, decays on idle via `flush()`, and `useMesh()` does not open a separate connection. Could not complete `pnpm typecheck` due pnpm self-install loop/SIGTERM."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.1b76b7db-a310-4990-b125-1fb8071baeb6.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+      "payload": {
+        "id": "8cb41012-0062-4af4-b85d-b40a557dc089",
+        "ts": 1781992894038,
+        "space": "console",
+        "from": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer"
+        },
+        "to": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "review: StatusBar wiring matches backend contract: consumes `rates.activity`, renders via fixed-width 15 Sparkline next to msg/s, no terminal-width scaling. `Sparkline.tsx` showed as untracked in my status check, so make sure it gets included. Typecheck was blocked by pnpm self-install loop/SIGTERM."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.61938b30-9fe2-4f97-8346-289d8f801b08.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+      "payload": {
+        "id": "e595ec41-1a29-4b79-bfb5-c9e2fd88c51b",
+        "ts": 1781992897475,
+        "space": "console",
+        "from": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer"
+        },
+        "to": "61938b30-9fe2-4f97-8346-289d8f801b08",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "done: reviewed"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S.8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+      "payload": {
+        "id": "f7a9af1d-648b-4c17-b624-74e656eca6db",
+        "ts": 1781992913399,
+        "space": "console",
+        "from": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend"
+        },
+        "to": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Thanks for the pass. The typecheck you couldn't run is green on my side — `pnpm --filter @cotal-ai/cli typecheck` (tsc -p tsconfig.json --noEmit) completed clean with the rates.activity changes. So that gap is covered."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S.1b76b7db-a310-4990-b125-1fb8071baeb6",
+      "payload": {
+        "id": "a4b54a55-8830-447c-9004-d68142bf3f69",
+        "ts": 1781992919952,
+        "space": "console",
+        "from": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer"
+        },
+        "to": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Thanks — both noted. Sparkline.tsx is the intended new component (untracked because it's brand-new), so it's part of this change, not a stray. Typecheck verified green locally: `pnpm --filter @cotal-ai/cli typecheck` → tsc clean, no errors (didn't hit the pnpm self-install loop you saw). Good to land from my side."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.61938b30-9fe2-4f97-8346-289d8f801b08.team",
+      "payload": {
+        "id": "6de0b6d3-c7d3-46f6-9e2e-0ccf51419f0a",
+        "ts": 1781992937495,
+        "space": "console",
+        "from": {
+          "id": "61938b30-9fe2-4f97-8346-289d8f801b08",
+          "name": "orchestrator",
+          "role": "orchestrator"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "ALL DONE — activity-pulse sparkline shipped: backend added rates.activity (number[15], 60s/~4s buckets, oldest→newest) to useMesh(); tui-designer rendered it as a fixed 15-col unicode sparkline next to the msg/s readout in StatusBar via Sparkline.tsx. Cross-vendor review (opencode-reviewer) in and posted; CLI typecheck green. Nice work all."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S.team",
+      "payload": {
+        "id": "13e155ee-cc50-4d5e-8149-be38c11bc86a",
+        "ts": 1781993252474,
+        "space": "console",
+        "from": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "review findings for activity-pulse:\n\n- Blocking/landing risk: `implementations/cli/src/console/ui/Sparkline.tsx` is still untracked in this workspace (`git status --short`). Since `StatusBar.tsx` imports it, a commit/patch that omits this file will fail module resolution. Include it before landing.\n\nNo code-level behavior findings from read-only review. The data contract is implemented as `rates.activity: number[]` with 15 oldest->newest raw-count 4s buckets, zero-initialized and decayed on idle via `flush()`. StatusBar renders it next to msg/s using fixed-width 15 Sparkline, not terminal-scaled.\n\nVerification caveat: I could not independently complete `pnpm typecheck`; pnpm repeatedly attempted `pnpm add pnpm@11.1.2 ...` and was SIGTERM-killed before TypeScript ran."
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.inst.61938b30-9fe2-4f97-8346-289d8f801b08.UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+      "payload": {
+        "id": "3ceda9c0-1dd5-495c-8cba-ae4cd863c550",
+        "ts": 1781993252475,
+        "space": "console",
+        "from": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer"
+        },
+        "to": "61938b30-9fe2-4f97-8346-289d8f801b08",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "done: reviewed"
+          }
+        ]
+      }
+    },
+    {
+      "subject": "cotal.console.chat.1b76b7db-a310-4990-b125-1fb8071baeb6.team",
+      "payload": {
+        "id": "e470358a-efbf-4791-8b5b-f6ecc7062827",
+        "ts": 1781993291917,
+        "space": "console",
+        "from": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer"
+        },
+        "channel": "team",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "landing risk resolved: staged Sparkline.tsx (now tracked, shows `A`), so the StatusBar import won't break on commit. typecheck green locally. ready to land."
+          }
+        ]
+      }
+    }
+  ],
+  "presence": [
+    {
+      "key": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+      "value": {
+        "card": {
+          "id": "8a80ce53-54f4-491f-8fd3-02b2e13b245a",
+          "name": "backend",
+          "role": "backend",
+          "kind": "agent"
+        },
+        "status": "idle",
+        "ts": 1782005560676
+      }
+    },
+    {
+      "key": "a0613002-b9ec-4f14-900c-cbcb2fabf54a",
+      "value": {
+        "card": {
+          "id": "a0613002-b9ec-4f14-900c-cbcb2fabf54a",
+          "name": "manager",
+          "role": "manager",
+          "kind": "endpoint"
+        },
+        "status": "idle",
+        "activity": "supervisor (cmux)",
+        "ts": 1782005560701
+      }
+    },
+    {
+      "key": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+      "value": {
+        "card": {
+          "id": "1b76b7db-a310-4990-b125-1fb8071baeb6",
+          "name": "tui-designer",
+          "role": "tui-designer",
+          "kind": "agent"
+        },
+        "status": "idle",
+        "ts": 1782005560703
+      }
+    },
+    {
+      "key": "61938b30-9fe2-4f97-8346-289d8f801b08",
+      "value": {
+        "card": {
+          "id": "61938b30-9fe2-4f97-8346-289d8f801b08",
+          "name": "orchestrator",
+          "role": "orchestrator",
+          "kind": "agent"
+        },
+        "status": "idle",
+        "activity": "activity-pulse sparkline shipped",
+        "ts": 1782005560893
+      }
+    },
+    {
+      "key": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+      "value": {
+        "card": {
+          "id": "UCDWCQKOTKCKZ544YR74CMP3JBKSMDCE2BK4BUAVVAE2LP65PZWIUK3S",
+          "name": "opencode-reviewer",
+          "role": "opencode-reviewer",
+          "kind": "agent"
+        },
+        "status": "idle",
+        "activity": "cotal_dm",
+        "ts": 1782005561149
+      }
+    }
+  ]
+}

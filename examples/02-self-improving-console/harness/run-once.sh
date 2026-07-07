@@ -10,7 +10,7 @@
 # - manager headless on the PTY runtime (open stdin + dev-channels auto-confirm)
 # - orchestrator spawned via the manager (`cotal start`); it cotal_spawns the workers
 # - observer logs ALL traffic to .runs/run-<iter>/transcript.jsonl
-# - wait for "DEMO COMPLETE" / timeout, tear down, evaluate (build main + comms)
+# - wait for "ALL DONE" / timeout, tear down, evaluate (build main + comms)
 #
 # Does NOT reset at the end (last run stays inspectable); the next run resets first.
 set -uo pipefail
@@ -74,7 +74,7 @@ log "swarm running (space=$SPACE, timeout=${TIMEOUT}s) — mgr=$MGR obs=$OBS"
 deadline=$(( $(date +%s) + TIMEOUT ))
 outcome="timeout"
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  if grep -q "DEMO COMPLETE" "$TRANSCRIPT" 2>/dev/null; then outcome="complete"; break; fi
+  if grep -q "ALL DONE" "$TRANSCRIPT" 2>/dev/null; then outcome="complete"; break; fi
   if ! kill -0 "$MGR" 2>/dev/null; then outcome="manager-died"; break; fi
   sleep 5
 done

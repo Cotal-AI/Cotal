@@ -70,7 +70,7 @@ if [[ "$role" == orchestrator ]]; then
   if [[ -n "${COTAL_HEADLESS:-}" ]]; then
     init=("$(cat "$HERE/GOAL.md")")
   else
-    init=("Onboard me (the operator) in <=6 short lines: what this demo is, that I give you ONE goal and you spawn research/backend/tui-designer into their own tabs, that research seeds the SPEC and backend<->tui-designer settle the data contract peer-to-peer. Show me the goal to paste (from GOAL.md). Then STOP and wait — do NOT spawn yet.")
+    init=("Introduce yourself, and what Cotal is.")
   fi
 fi
 
