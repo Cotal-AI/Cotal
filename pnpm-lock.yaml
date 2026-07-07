@@ -358,6 +358,9 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
   packages/workspace:
     dependencies:

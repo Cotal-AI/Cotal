@@ -25,6 +25,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { assertValidChannel, channelInAllow, isConcreteChannel } from "./subjects.js";
@@ -58,6 +59,11 @@ export interface AgentDef {
   model?: string;
   /** Connector-defined model variant handed to the launcher (e.g. OpenCode reasoning effort). */
   variant?: string;
+  /** Opaque, connector-specific launch options — an arbitrary key→value map that core never
+   *  interprets. Each connector reads the keys it understands (rendering them into its own host
+   *  form) and throws on anything it doesn't. `--opt k=v` on the CLI, a `launchOptions:` mapping in
+   *  a manifest, or a nested `launchOptions:` block here all feed the same bag. */
+  launchOptions?: Record<string, unknown>;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
    *  cred's publish allow-list). Today `spawn` is the only one: it grants publish to the
    *  privileged control subject (start/purge/definePersona/named stop). Default-deny when
@@ -77,37 +83,21 @@ export interface AgentDef {
   persona?: string;
 }
 
-/** Strip wrapping quotes from a scalar value. */
-function unquote(v: string): string {
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
-    return v.slice(1, -1);
-  return v;
-}
-
-/** Parse the frontmatter subset we support: `key: value` scalars and inline
- *  `key: [a, b]` string lists. Throws on anything fancier — block lists, nested
- *  maps and multi-doc YAML are deliberately unsupported (no silent fallback). */
-function parseFrontmatter(src: string): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {};
-  for (const raw of src.split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const colon = line.indexOf(":");
-    if (colon < 1) throw new Error(`agent file: unparseable frontmatter line "${raw}"`);
-    const key = line.slice(0, colon).trim();
-    const val = line.slice(colon + 1).trim();
-    if (val.startsWith("[")) {
-      if (!val.endsWith("]")) throw new Error(`agent file: unterminated list for "${key}"`);
-      out[key] = val
-        .slice(1, -1)
-        .split(",")
-        .map((s) => unquote(s.trim()))
-        .filter(Boolean);
-    } else {
-      out[key] = unquote(val);
-    }
+/** Parse the frontmatter block as YAML (the `yaml` library — spec-compliant quoting/escaping and
+ *  safe scalar typing, so a value with a `:`/`#`/quote can't be misread). Must be a mapping; a
+ *  sequence, scalar, or malformed block fails loud. Values keep their YAML types (string, number,
+ *  boolean, nested map/list); {@link loadAgentFile} coerces the modelled scalar fields. */
+function parseFrontmatter(src: string, path: string): Record<string, unknown> {
+  let doc: unknown;
+  try {
+    doc = parseYaml(src);
+  } catch (e) {
+    throw new Error(`agent file ${path}: invalid YAML frontmatter — ${(e as Error).message}`);
   }
-  return out;
+  if (doc === null || doc === undefined) return {};
+  if (typeof doc !== "object" || Array.isArray(doc))
+    throw new Error(`agent file ${path}: frontmatter must be a YAML mapping (key: value pairs)`);
+  return doc as Record<string, unknown>;
 }
 
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). */
@@ -115,18 +105,22 @@ export function loadAgentFile(path: string): AgentDef {
   const src = readFileSync(path, "utf8");
   const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(src);
   if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
-  const fm = parseFrontmatter(m[1]);
+  const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
   const str = (k: string): string | undefined => {
     const v = fm[k];
-    if (Array.isArray(v)) throw new Error(`agent file ${path}: "${k}" must be a scalar`);
-    return v;
+    if (v === undefined || v === null) return undefined;
+    if (typeof v === "object") throw new Error(`agent file ${path}: "${k}" must be a scalar`);
+    return String(v);
   };
   const list = (k: string): string[] | undefined => {
     const v = fm[k];
-    if (v === undefined) return undefined;
-    return Array.isArray(v) ? v : [v];
+    if (v === undefined || v === null) return undefined;
+    return (Array.isArray(v) ? v : [v]).map((x) => {
+      if (x === null || typeof x === "object") throw new Error(`agent file ${path}: "${k}" list items must be scalars`);
+      return String(x);
+    });
   };
 
   const name = str("name");
@@ -187,11 +181,21 @@ export function loadAgentFile(path: string): AgentDef {
         throw new Error(`agent file ${path}: ${field} channel "${ch}" is not within your read ACL / allowSubscribe [${effAllow.join(", ")}]`);
     }
 
+  // Opaque connector-specific launch options — a mapping core never interprets (each connector
+  // reads its own keys). A scalar/sequence here is a config error (it must be `key: value` pairs).
+  const launchOptionsRaw = fm["launchOptions"];
+  let launchOptions: Record<string, unknown> | undefined;
+  if (launchOptionsRaw !== undefined && launchOptionsRaw !== null) {
+    if (typeof launchOptionsRaw !== "object" || Array.isArray(launchOptionsRaw))
+      throw new Error(`agent file ${path}: "launchOptions" must be a mapping of key: value pairs`);
+    launchOptions = launchOptionsRaw as Record<string, unknown>;
+  }
+
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
-  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "model", "variant", "capabilities", "owner"]);
+  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "model", "variant", "launchOptions", "capabilities", "owner"]);
   const meta: Record<string, string> = {};
-  for (const [k, v] of Object.entries(fm)) if (!known.has(k) && typeof v === "string") meta[k] = v;
+  for (const [k, v] of Object.entries(fm)) if (!known.has(k) && v !== null && typeof v !== "object") meta[k] = String(v);
 
   return {
     name,
@@ -206,6 +210,7 @@ export function loadAgentFile(path: string): AgentDef {
     muted,
     model: str("model"),
     variant: str("variant"),
+    launchOptions,
     capabilities: list("capabilities"),
     owner: str("owner"),
     meta: Object.keys(meta).length ? meta : undefined,
@@ -220,42 +225,29 @@ export function loadAgentFile(path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
-  const lines = ["---", `name: ${fmScalar(def.name)}`];
-  if (def.role) lines.push(`role: ${fmScalar(def.role)}`);
-  if (def.kind) lines.push(`kind: ${fmScalar(def.kind)}`);
-  if (def.description) lines.push(`description: ${fmScalar(def.description)}`);
-  if (def.tags?.length) lines.push(`tags: [${def.tags.map(fmItem).join(", ")}]`);
-  if (def.subscribe?.length) lines.push(`subscribe: [${def.subscribe.map(fmItem).join(", ")}]`);
-  if (def.allowSubscribe?.length) lines.push(`allowSubscribe: [${def.allowSubscribe.map(fmItem).join(", ")}]`);
-  if (def.allowPublish?.length) lines.push(`allowPublish: [${def.allowPublish.map(fmItem).join(", ")}]`);
-  if (def.quiet?.length) lines.push(`quiet: [${def.quiet.map(fmItem).join(", ")}]`);
-  if (def.muted?.length) lines.push(`muted: [${def.muted.map(fmItem).join(", ")}]`);
-  if (def.model) lines.push(`model: ${fmScalar(def.model)}`);
-  if (def.variant) lines.push(`variant: ${fmScalar(def.variant)}`);
-  if (def.capabilities?.length) lines.push(`capabilities: [${def.capabilities.map(fmItem).join(", ")}]`);
-  if (def.owner) lines.push(`owner: ${fmScalar(def.owner)}`);
-  if (def.meta) for (const [k, v] of Object.entries(def.meta)) lines.push(`${k}: ${fmScalar(v)}`);
-  lines.push("---");
+  // Build the frontmatter mapping in read order, then serialize with the `yaml` library — it owns
+  // all quoting/escaping (a value with a `:`/`#`/`[`/quote round-trips safely, which the old
+  // hand-rolled writer had to special-case). `lineWidth: 0` keeps scalars on one line (no folding).
+  const fm: Record<string, unknown> = { name: def.name };
+  if (def.role) fm.role = def.role;
+  if (def.kind) fm.kind = def.kind;
+  if (def.description) fm.description = def.description;
+  if (def.tags?.length) fm.tags = def.tags;
+  if (def.subscribe?.length) fm.subscribe = def.subscribe;
+  if (def.allowSubscribe?.length) fm.allowSubscribe = def.allowSubscribe;
+  if (def.allowPublish?.length) fm.allowPublish = def.allowPublish;
+  if (def.quiet?.length) fm.quiet = def.quiet;
+  if (def.muted?.length) fm.muted = def.muted;
+  if (def.model) fm.model = def.model;
+  if (def.variant) fm.variant = def.variant;
+  if (def.launchOptions && Object.keys(def.launchOptions).length) fm.launchOptions = def.launchOptions;
+  if (def.capabilities?.length) fm.capabilities = def.capabilities;
+  if (def.owner) fm.owner = def.owner;
+  if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
+  const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${lines.join("\n")}\n\n${body}`);
-}
-
-/** Render a frontmatter scalar so {@link loadAgentFile} reads it back unchanged. Quotes values
- *  the parser would otherwise misread (a leading `[`, a `,`/`:`/`#`, edge whitespace, or empty);
- *  throws on values the line-based format can't represent (a newline, or both quote styles). */
-function fmScalar(value: string): string {
-  if (/[\r\n]/.test(value)) throw new Error(`saveAgentFile: value cannot contain a newline: ${JSON.stringify(value)}`);
-  if (value !== "" && value === value.trim() && !/^[[]/.test(value) && !/[,:#"']/.test(value)) return value;
-  if (!value.includes('"')) return `"${value}"`;
-  if (!value.includes("'")) return `'${value}'`;
-  throw new Error(`saveAgentFile: value cannot contain both quote styles: ${JSON.stringify(value)}`);
-}
-
-/** A list item additionally cannot hold a comma — the parser splits on `,` before unquoting. */
-function fmItem(value: string): string {
-  if (value.includes(",")) throw new Error(`saveAgentFile: list item cannot contain a comma: ${JSON.stringify(value)}`);
-  return fmScalar(value);
+  writeFileSync(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
 /** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on
