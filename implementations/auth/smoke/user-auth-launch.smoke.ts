@@ -40,7 +40,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-ua-root-"));
 
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { chatSubject, isReachable, mintCreds, newIdentity } = await import("@cotal-ai/core");
-const { authDir, loadSpaceAuth, userAuthStateDir } = await import("@cotal-ai/workspace");
+const { authDir, loadSpaceAuth, readRenewalRecord, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { deleteIdpSession, establishIdpSession, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
@@ -199,6 +199,8 @@ try {
   check("send with a dead auth service names the `cotal up` recovery", deadSend.status !== 0 && deadSend.out.includes("restart it with `cotal up`"), deadSend.out);
   const heal = await cotal(["up", "--server", SERVER, "--space", SPACE]);
   check("refresh `cotal up` on the running broker heals the auth service", heal.status === 0 && heal.out.includes("already running") && heal.out.includes("user-auth service up"), heal.out);
+  const renewal = readRenewalRecord(root);
+  check("refresh `cotal up` also ensures the manager renewal owner", renewal?.owner === "manager", renewal);
   const healedSend = await cotal(["send", "msg", "general", "healed", "--space", SPACE]);
   check("user-mode send works again after the heal", healedSend.status === 0, healedSend.out);
 

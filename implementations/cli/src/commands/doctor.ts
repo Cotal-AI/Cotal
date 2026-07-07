@@ -21,7 +21,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 
 export const doctorFlags = [
-  { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the launcher-remintable daemon creds; needs the local signer)" },
+  { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds; needs the local signer)" },
 ] as const;
 
 /** One inspected credential file: where it lives, what the matrix says it is, and how it looks. */
@@ -38,7 +38,7 @@ interface CredReport {
 /** `cotal doctor auth` — the ONE stale-credential repair surface (D5 slice 6). Read-only diagnosis
  *  of every managed credential file in this folder against the credential-lifetime matrix, rendered
  *  as healthy / near-expiry (yellow) / expired / unreadable (red) with the LAST-RENEWAL timestamp
- *  for launcher-reminted creds — ending in either `healthy` or the exact next command (exit 1).
+ *  for manager-reminted creds — ending in either `healthy` or the exact next command (exit 1).
  *  `--fix` executes the one safe local repair (re-sign the class-2 daemon files for their existing
  *  nkeys); $SYS and agent creds are never auto-fixed — their repairs are printed, not guessed. */
 export async function doctor(args: ParsedArgs): Promise<void> {

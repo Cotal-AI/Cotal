@@ -54,7 +54,7 @@ export interface MembershipFeedOpts {
    *  broker restart — a new process, never a live reload. */
   observerCreds: string;
   /** Scoped DATA-account read/write creds (conn B — members read + feed write), or a SOURCE that
-   *  re-reads them (D5 slice 5 class 2: the launcher re-signs the creds file for the SAME nkey; the
+   *  re-reads them (D5 slice 5 class 2: the manager re-signs the creds file for the SAME nkey; the
    *  getter is re-evaluated per (re)connect attempt, so the broker's expiry-close renews the
    *  connection from the refreshed file). A read that swaps the nkey fails loud — the feed's identity
    *  (inbox scope + self-presence check) is pinned to the first read. */
@@ -107,7 +107,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
 
   const readRw = typeof opts.rwCreds === "function" ? opts.rwCreds : () => opts.rwCreds as string;
   const rwSelfId = idFromCreds(readRw()); // conn B's own nkey — the data-account self-presence check below
-  // Pin every re-read to the first read's nkey: a renewal (launcher re-signs the file) keeps the
+  // Pin every re-read to the first read's nkey: a renewal (manager re-signs the file) keeps the
   // identity; a swapped file would silently break the inbox scope + self-presence check, so it throws
   // inside the authenticator instead (the connect attempt fails loud and retries).
   const rwCredsPinned = () => {
