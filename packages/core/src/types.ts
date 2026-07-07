@@ -242,6 +242,42 @@ export interface MembershipSnapshot {
   members: MembershipEntry[];
 }
 
+/**
+ * A renderable view — a json-render "flat spec" (vercel-labs/json-render): a root element key
+ * plus a flat map of elements, each naming a catalog component `type`, its `props`, and its
+ * child element keys. Carried as a {@link Part} so a peer can publish a *view* (a table, chart,
+ * status panel) instead of plain text; a viewer renders it against a fixed component catalog —
+ * the guardrail: only declared components, validated props, never arbitrary code. Structural by
+ * design — core owns the wire shape, the renderer (a thin client) owns the catalog.
+ */
+export interface ViewElement {
+  /** Catalog component name (e.g. "Box", "Text", "Table", "StatusLine"). */
+  type: string;
+  props?: Record<string, unknown>;
+  /** Child element keys (flat reference into {@link ViewSpec.elements}). */
+  children?: string[];
+}
+
+export interface ViewSpec {
+  /** Key of the root element in {@link elements}. */
+  root: string;
+  elements: Record<string, ViewElement>;
+  /** Optional seed state for dynamic (`$state`) props. */
+  state?: Record<string, unknown>;
+}
+
+/** Throw unless `spec` is a structurally valid {@link ViewSpec} (root key present, `elements`
+ *  is an object, the root resolves). A cheap publish-time guard — component-level validation
+ *  (are these real catalog components, with valid props?) is the renderer's job. */
+export function assertViewSpec(spec: ViewSpec): void {
+  if (!spec || typeof spec.root !== "string" || spec.root.length === 0)
+    throw new Error("invalid view spec: missing root element key");
+  if (!spec.elements || typeof spec.elements !== "object")
+    throw new Error("invalid view spec: elements must be an object");
+  if (!spec.elements[spec.root])
+    throw new Error(`invalid view spec: root "${spec.root}" is not present in elements`);
+}
+
 /** Reverse-DNS extension part kind, e.g. `com.acme.snapshot`.
  * @pattern ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ */
 export type ExtensionPartKind = `${string}.${string}`;
@@ -249,6 +285,7 @@ export type ExtensionPartKind = `${string}.${string}`;
 export type Part =
   | { kind: "text"; text: string }
   | { kind: "data"; data: unknown }
+  | { kind: "view"; spec: ViewSpec }
   | { kind: ExtensionPartKind; [key: string]: unknown };
 
 export interface EndpointRef {

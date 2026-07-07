@@ -261,6 +261,22 @@
           "type": "object"
         },
         {
+          "properties": {
+            "kind": {
+              "const": "view",
+              "type": "string"
+            },
+            "spec": {
+              "$ref": "#/definitions/ViewSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "spec"
+          ],
+          "type": "object"
+        },
+        {
           "additionalProperties": {},
           "properties": {
             "kind": {
@@ -273,6 +289,54 @@
           "type": "object"
         }
       ]
+    },
+    "ViewElement": {
+      "description": "A renderable view — a json-render \"flat spec\" (vercel-labs/json-render): a root element key plus a flat map of elements, each naming a catalog component `type`, its `props`, and its child element keys. Carried as a  {@link  Part }  so a peer can publish a *view* (a table, chart, status panel) instead of plain text; a viewer renders it against a fixed component catalog — the guardrail: only declared components, validated props, never arbitrary code. Structural by design — core owns the wire shape, the renderer (a thin client) owns the catalog.",
+      "properties": {
+        "children": {
+          "description": "Child element keys (flat reference into  {@link  ViewSpec.elements } ).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "props": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "type": {
+          "description": "Catalog component name (e.g. \"Box\", \"Text\", \"Table\", \"StatusLine\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "ViewSpec": {
+      "properties": {
+        "elements": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ViewElement"
+          },
+          "type": "object"
+        },
+        "root": {
+          "description": "Key of the root element in  {@link  elements } .",
+          "type": "string"
+        },
+        "state": {
+          "additionalProperties": {},
+          "description": "Optional seed state for dynamic (`$state`) props.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "root",
+        "elements"
+      ],
+      "type": "object"
     }
   }
 }

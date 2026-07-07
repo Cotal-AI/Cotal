@@ -51,7 +51,9 @@ import type {
   MembershipEntry,
   MembershipSnapshot,
   Plane3Entry,
+  ViewSpec,
 } from "./types.js";
+import { assertViewSpec } from "./types.js";
 import {
   openMembersRegistry,
   commitMember,
@@ -703,6 +705,33 @@ export class CotalEndpoint extends EventEmitter {
     };
     await this.publishMsg(anycastSubject(this.space, service, this.card.id), msg);
     return msg;
+  }
+
+  /**
+   * Publish a renderable view — a json-render flat {@link ViewSpec} — as a `view` {@link Part}
+   * on an ordinary message, so it rides the existing delivery modes (no new subject). Defaults
+   * to a multicast to a channel; pass `to` for unicast or `toService` for anycast. A plain-text
+   * label part travels alongside so text-only consumers still see something, while view-aware
+   * surfaces (the console) render the spec against their component catalog. The spec is checked
+   * structurally before publish; the renderer enforces the catalog (which components are legal).
+   */
+  async publishView(
+    spec: ViewSpec,
+    opts?: {
+      channel?: string;
+      to?: string;
+      toService?: string;
+      text?: string;
+      replyTo?: string;
+      contextId?: string;
+    },
+  ): Promise<CotalMessage> {
+    assertViewSpec(spec);
+    const parts: Part[] = [{ kind: "text", text: opts?.text ?? "shared a view" }, { kind: "view", spec }];
+    const common = { parts, replyTo: opts?.replyTo, contextId: opts?.contextId };
+    if (opts?.to) return this.unicast(opts.to, "", common);
+    if (opts?.toService) return this.anycast(opts.toService, "", common);
+    return this.multicast("", { channel: opts?.channel, ...common });
   }
 
   /** Subscribe to a read-only observer feed. Defaults to the whole space; an observer under

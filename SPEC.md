@@ -189,12 +189,20 @@ Delivery messages are UTF-8 JSON objects with this shape (`CotalMessage`):
 | `replyTo` | string | MAY | id of the message replied to |
 | `contextId` | string | MAY | thread/conversation correlation id |
 
-`Part` is one of the two core shapes, or an extension object whose `kind` is namespaced
+`Part` is one of the three core shapes, or an extension object whose `kind` is namespaced
 as described in §11:
 
 - `{ "kind": "text", "text": string }`
 - `{ "kind": "data", "data": <any JSON value> }`
+- `{ "kind": "view", "spec": ViewSpec }`
 - `{ "kind": "<reverse-DNS extension kind>", ... }`
+
+`ViewSpec` is a renderable view — a json-render flat spec: `{ "root": string, "elements":
+{ [key]: { "type": string, "props"?: object, "children"?: string[] } }, "state"?: object }`,
+where `root` MUST name a key in `elements`. A viewer renders it against its own fixed
+component catalog (declared components only, validated props, never code); a text-only
+consumer MAY ignore the part or show a placeholder. Senders SHOULD pair a `view` part with
+a `text` part so text-only consumers still see something.
 
 `EndpointRef` is `{ "id": string, "name": string, "role"?: string }`.
 

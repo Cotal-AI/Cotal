@@ -36,8 +36,8 @@ for (const variant of message.anyOf) {
 message.oneOf = message.anyOf;
 delete message.anyOf;
 
-if (!part?.anyOf || part.anyOf.length !== 3) {
-  throw new Error("expected Part to generate core text, core data, and extension variants");
+if (!part?.anyOf || part.anyOf.length !== 4) {
+  throw new Error("expected Part to generate core text, core data, core view, and extension variants");
 }
 part.oneOf = part.anyOf;
 delete part.anyOf;
