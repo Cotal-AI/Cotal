@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
@@ -11,7 +11,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { c } from "./colors.js";
-import { userAuthStateDir } from "./auth-paths.js";
+import { findCotalRoot, userAuthStateDir } from "./auth-paths.js";
 import { findMesh, getCurrent, removeMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
@@ -119,6 +119,18 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
   // off-registry (no registry lookup, no prune). A registered `--space` still goes through the
   // resolver below (which honors `--server` as an override); `--server` alone resolves there too.
   if (flags.server && flags.space && !findMesh(flags.space)) {
+    // Fail-closed marker, same posture as the resolver's: this machine may hold USER-AUTH state
+    // for that very space even when the registry lost (or never had) the entry — treating it as an
+    // open broker would credless-connect into a callout denial whose copy sends the operator
+    // port-hunting. Name the real state and the recovery instead.
+    if (existsSync(userAuthStateDir(findCotalRoot(), flags.space))) {
+      console.error(
+        c.red(
+          `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry — re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        ),
+      );
+      process.exit(1);
+    }
     await reachableOrExit(flags.server, {});
     return { server: flags.server, space: flags.space };
   }

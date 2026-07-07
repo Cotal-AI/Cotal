@@ -849,10 +849,27 @@ files to hand out, and revocation actually bites.
   service never became ready exits **non-zero**: the mesh stays recorded as user-auth (degraded —
   every user connect names the recovery until a re-`up` heals it), but automation never reads a
   dead identity plane as success.
-- **The actor ledger is the single authorization source** (`cotal actor grant/revoke/list`,
-  one file per `owner.actor` row under the space-scoped `.cotal/auth/<space>/actors/`). Both
-  trust boundaries read it fresh: a revoke denies the next exchange *and* the next connect with
-  no restart. No row, no access — there is no allow-by-default.
+- **The actor ledger is the single authorization source**, in **two disjoint row spaces**:
+  interactive rows (`cotal actor grant/revoke/list`, under `.cotal/auth/<space>/actors/`,
+  exchanged with a human IdP proof) and managed-agent rows (under `managed-actors/`, written
+  only by the spawn path, exchanged only with the agent's own spawn-time secret). The IdP path
+  reads only the first space and the agent path only the second — no corruption or misrepair can
+  make a managed child human-exchangeable; writers refuse a duplicate name across the spaces.
+  Both trust boundaries read the ledger fresh: a revoke denies the next exchange *and* the next
+  connect with no restart. No row, no access — there is no allow-by-default.
+- **Agents are user-mode principals too.** `cotal spawn` (foreground or `--detach`) on a user
+  mesh grants a managed actor under the *spawning operator's* owner — persona ACLs and role in
+  the row, a fresh per-agent secret whose hash is all the ledger keeps — and launches the agent
+  with an exec-able bearer command instead of a creds file. The agent exchanges its secret for
+  short bearers (≤ 5 min) and rides the callout like every other principal, refreshing ahead of
+  each expiry; rows are **runtime grants** — every start rotates the secret, every stop/despawn
+  revokes the row, so a non-running agent holds no standing mint authority and a respawn
+  re-derives policy from the persona. Both spawn paths *preflight* the whole bearer chain once
+  before launching, and `cotal ps` renders each managed agent's last refresh outcome fail-closed
+  (`auth-renewal-failed` with the exact repair sentence / `auth-unknown` / `auth-stale` — never
+  silently healthy). Control ops ride the operator's own bearer, gated by ledger scope
+  (`spawn` → spawn/ps, `admin` → cross-agent stop/attach); manifest `up -f` stamps the logged-in
+  owner into the launch, so those agents are yours too.
 - **The client path** (`cotal login --idp …` once per machine, then any command): cached IdP
   session → fresh IdP JWT per connect (IdP-side revocation bites here) → local exchange → connect
   with sentinel creds + bearer. A user-mode mesh is a **hard branch**: commands never fall back

@@ -78,14 +78,17 @@ export async function ps(args: ParsedArgs): Promise<void> {
             : r.mesh === "waiting"
               ? c.yellow("waiting")
               : c.cyan(r.mesh);
+    // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
+    // triages "definitely broken" before "might be".
+    const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
     console.log(
       `${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
         r.agent + " · " + r.mode,
-      )}  ${status}${r.authHealth ? "  " + c.red(r.authHealth) : ""}`,
+      )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
     );
     // The detached agent's ONLY operator window into a failing bearer refresh: the provider
     // command's operator-exact sentence, verbatim (it already names the repair).
-    if (r.authHealth && r.authReason) console.log(c.red(`    ${r.authReason}`));
+    if (r.authHealth && r.authReason) console.log(authColor(`    ${r.authReason}`));
   }
 }
 

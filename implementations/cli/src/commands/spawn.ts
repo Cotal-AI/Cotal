@@ -4,6 +4,7 @@ import { join, dirname, resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
   connectorServers,
+  deprovisionAgent,
   firstFreeName,
   isReachable,
   loadAgentFile,
@@ -12,6 +13,7 @@ import {
   mkSecretDir,
   newIdentity,
   parseShareSelection,
+  principalKey,
   provisionAgent,
   provisionAgentDurables,
   registry,
@@ -579,10 +581,16 @@ async function provisionUserForeground(
       },
     };
   } catch (e) {
+    // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
+    // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
     await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
     rmSync(tokenPath, { force: true });
     rmSync(sentinelPath, { force: true });
     rmSync(healthPath, { force: true });
+    const targetId = principalKey(owner, name).key;
+    await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: targetId })
+      .then((creds) => deprovisionAgent({ servers: server, space, targetId, creds }))
+      .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
     return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
   }
 }

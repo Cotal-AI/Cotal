@@ -250,6 +250,10 @@ export class Manager {
       throw new Error(
         `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) — \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
       );
+    if (this.userMode && !recorded)
+      throw new Error(
+        `space "${this.space}" has user-auth state on disk but no mesh registry entry — a user-mode manager needs the authoritative record (\`cotal up\` writes it before the control plane); \`cotal up --user-auth\` this space, or remove the stale ${userAuthStateDir(this.workspaceRoot, this.space)}`,
+      );
     if (this.userMode && !this.auth)
       throw new Error(
         `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} — the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
@@ -1034,7 +1038,10 @@ export class Manager {
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
       if (!readiness.ok) return { ok: false, error: readiness.detail }; // uncertain — non-success, but kept
-      return { ok: true, data: { name, role, agent, id: identity.id, mode: handle.kind } };
+      // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
+      // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
+      // would never match and down -f would treat the agent as foreign).
+      return { ok: true, data: { name, role, agent, id: managed.id, mode: handle.kind } };
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.

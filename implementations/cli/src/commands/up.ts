@@ -236,15 +236,19 @@ export async function up(args: ParsedArgs): Promise<void> {
     // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
     // `ok` has no exit code to carry — the red consequence line above is the operator signal.)
     const svc = await startUserAuthService(space, server, setup);
-    // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
-    // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
-    await startDeliveryWithBroker(space, server);
+    // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
+    // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
+    // so the record must exist by the time it boots. A manager/delivery failure after this leaves
+    // a recorded-but-degraded mesh — the documented, healable posture.
     recordOurMesh({
       space, server, root: cotalRoot(),
       mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
       ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
       ts: new Date().toISOString(),
     });
+    // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
+    // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
+    await startDeliveryWithBroker(space, server);
   }
   await new Promise<void>(() => {});
 }
@@ -509,15 +513,17 @@ export async function startMeshDetached(
   await postStart(server, space, setup, seedFile);
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
   const svc = await startUserAuthService(space, server, setup);
-  // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
-  const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
-  // Detached: the registry entry outlives this process — `cotal down` removes it.
+  // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
+  // authoritative registry entry at boot (marker-without-registry refuses). Detached: the entry
+  // outlives this process — `cotal down` removes it.
   recordOurMesh({
     space, server, root: cotalRoot(),
     mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ts: new Date().toISOString(),
   });
+  // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
+  const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
   return { server, pid: child.pid ?? 0, source, controlPlane, authService: svc.ok };
 }
 
