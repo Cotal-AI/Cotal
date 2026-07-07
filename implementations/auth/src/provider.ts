@@ -105,13 +105,16 @@ export const cotalAuthProvider: AuthProvider = {
       );
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
-    // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
-    const idpJwt = await fetchIdpJwt(idp.url, session.token);
+    // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
+    // restart recovery (U10) without spending an IdP /token call — and without an unrelated
+    // IdP/network failure masking it. Missing-login stays primary (the session gate above).
     const info = loadAuthServiceInfo(dir);
     if (!info || !pidAlive(info.pid))
       throw new Error(
         `the user-auth service for space "${space}" is not running — restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
       );
+    // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
+    const idpJwt = await fetchIdpJwt(idp.url, session.token);
     let res: Response;
     try {
       res = await fetch(`${info.url}/exchange`, {

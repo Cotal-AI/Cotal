@@ -65,6 +65,11 @@ export const JWKS_MAX_AGE_SEC = 300;
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
 const FAILED_EXCHANGE_PER_MIN = 30;
 
+/** Invalid-capability attempts get their OWN window (same size): an unauthenticated local prober
+ *  is throttled AND audited, but never consumes the refused-exchange budget of a caller holding
+ *  the real capability — a cap-less process must not be able to starve legitimate exchanges. */
+const BAD_CAP_PER_MIN = 30;
+
 type Values = Record<string, string | undefined>;
 
 /** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`
@@ -130,7 +135,8 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   });
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
-  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures }));
+  const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
+  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps }));
   await new Promise<void>((resolvePort, reject) => {
     http.once("error", reject);
     http.listen(port, "127.0.0.1", () => resolvePort());
@@ -169,6 +175,7 @@ interface HandlerCtx {
   bridge: IdpBridge;
   cap: string;
   failures: number[];
+  badCaps: number[];
 }
 
 /** Route one HTTP request. Local-only surface: /jwks (public keys, cacheable), /exchange (IdP JWT →
@@ -194,9 +201,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
       if (req.headers.origin !== undefined) return send(403, { error: "browser-origin requests are not served here" });
       if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
         return send(415, { error: "content-type must be application/json" });
-      // The capability gate: same-user file ACL on the 0600 discovery file is the boundary.
+      // The capability gate: same-user file ACL on the 0600 discovery file is the boundary. An
+      // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
+      // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
       const auth = req.headers.authorization ?? "";
-      if (auth !== `Bearer ${ctx.cap}`) return send(401, { error: "missing/invalid exchange capability — read it from the space's auth-service.json" });
+      if (auth !== `Bearer ${ctx.cap}`) {
+        const now = Date.now();
+        while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
+        ctx.badCaps.push(now);
+        console.error("auth-service: rejected an exchange with a missing/invalid capability");
+        if (ctx.badCaps.length > BAD_CAP_PER_MIN)
+          return send(429, { error: "too many invalid-capability attempts — wait a minute and retry" });
+        return send(401, { error: "missing/invalid exchange capability — read it from the space's auth-service.json" });
+      }
       // Refused-exchange rate limit (probing protection): count only FAILURES.
       const now = Date.now();
       while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();

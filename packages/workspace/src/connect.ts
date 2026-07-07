@@ -83,6 +83,21 @@ export function endpointAuth(conn: Connection): { creds?: string; bearer?: strin
  *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject>`. */
 export const CLI_USER_ACTOR = "cli";
 
+/** Guard for commands whose job needs an OPERATOR-profile credential (admin/purger/channel-writer/
+ *  control-caller/deployer) that a user-mode login's ledger-scoped bearer cannot carry. The refusal
+ *  is explicit and names the deliberate escape hatch — `cotal mint` where the broker runs, then
+ *  `--creds` — so there is a path, but never a silent static fallback (U10). Lives here so every
+ *  command surface (the CLI, cotal-web, …) refuses identically. */
+export function refuseUserModeOrExit(conn: Connection, what: string): void {
+  if (!conn.bearer) return;
+  console.error(
+    c.red(
+      `✗ ${what} is not yet supported over a user-mode login on space "${conn.space}" — it needs an operator credential: mint one where the broker runs (\`cotal mint <name> --profile <profile>\`) and pass it with --creds`,
+    ),
+  );
+  process.exit(1);
+}
+
 /**
  * Resolve where a mesh-touching command connects + with what creds.
  *  • Explicit `--creds` → a RAW off-registry connection: straight to `--server` (default loopback)

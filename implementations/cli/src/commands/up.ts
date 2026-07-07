@@ -100,10 +100,48 @@ export async function up(args: ParsedArgs): Promise<void> {
     const held = loadMeshes().find((m) => m.server === server);
     if (held && held.root === root && (held.space === space || values.space === undefined)) {
       // A refresh of the SAME already-running mesh — its mode is fixed by how the live broker was
-      // started; preserve `held.mode` (and its user-auth metadata) rather than relabel it from this
-      // invocation's flags.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.userAuth ? { userAuth: held.userAuth } : {}), ts: new Date().toISOString() });
+      // started. A flag asking for a DIFFERENT mode must fail loud (silently preserving the old
+      // mode would hand the operator a mesh on the wrong identity plane); a bare refresh keeps the
+      // held mode.
+      const requested = wantUser ? "user" : values.open ? "open" : undefined;
+      if (requested && requested !== held.mode) {
+        const label = { auth: "static JWT auth", open: "no auth (--open)", user: "per-user auth" }[held.mode];
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} with ${label} — a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
+          ),
+        );
+        process.exit(1);
+      }
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
+      // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
+      // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
+      // never just reprint "already running" over a dead callout. No broker config is (re)written
+      // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
+      let userAuth = held.userAuth;
+      if (held.mode === "user") {
+        const auth = loadSpaceAuth(authDir(root));
+        if (!auth) {
+          console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} — \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
+          process.exit(1);
+        }
+        const stateDir = userAuthStateDir(root, held.space);
+        let prepared: AuthPrepared;
+        try {
+          prepared = await resolveAuthProvider().prepareServer({
+            space: held.space,
+            operatorSeed: auth.operator.seed,
+            account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+            dir: stateDir,
+            idpUrl: values.idp,
+          });
+        } catch (e) {
+          console.error(c.red(`✗ ${(e as Error).message}`));
+          process.exit(1);
+        }
+        userAuth = await startUserAuthService(held.space, server, { prepared, stateDir });
+      }
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ts: new Date().toISOString() });
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";

@@ -12,7 +12,10 @@
  *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap).
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
  *      logged-out machine → the exact `cotal login --idp …` line. No fallback anywhere.
- *   E. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
+ *   E. recovery: a crashed (SIGKILLed) auth service surfaces the exact `cotal up` recovery on a
+ *      user connect, a refresh `cotal up` on the RUNNING broker heals it, and a cross-mode flag
+ *      (`up --open` on the user mesh) is refused loudly.
+ *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *
  * COTAL_HOME is sandboxed; kills only what it starts. Needs nats-server on PATH.
@@ -180,8 +183,27 @@ try {
   const loggedOut = await cotal(["send", "msg", "general", "no session", "--space", SPACE]);
   check("logged-out send prints the exact login action", loggedOut.status !== 0 && loggedOut.out.includes(`cotal login --idp ${base}`), loggedOut.out);
 
-  // ---------- E. down + fail-closed re-up ----------
-  console.log("E) down stops the auth service; re-up without --user-auth is refused");
+  // ---------- E. crash → refresh heal + cross-mode refusal ----------
+  console.log("E) auth-service crash → `cotal up` refresh heals it; cross-mode re-up refused");
+  // D left the machine logged out — sign back in so the daemon-liveness failure (not the login
+  // gate) is what the dead-service send exercises.
+  await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+  const openUp = await cotal(["up", "--open", "--server", SERVER, "--space", SPACE]);
+  check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
+  // Crash the daemon (SIGKILL — no clean exit, so its stale discovery file survives too).
+  const svcPidPath = join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`);
+  const svcPid = Number(readFileSync(svcPidPath, "utf8").trim());
+  process.kill(svcPid, "SIGKILL");
+  await until(() => { try { process.kill(svcPid, 0); return false; } catch { return true; } });
+  const deadSend = await cotal(["send", "msg", "general", "service is dead", "--space", SPACE]);
+  check("send with a dead auth service names the `cotal up` recovery", deadSend.status !== 0 && deadSend.out.includes("restart it with `cotal up`"), deadSend.out);
+  const heal = await cotal(["up", "--server", SERVER, "--space", SPACE]);
+  check("refresh `cotal up` on the running broker heals the auth service", heal.status === 0 && heal.out.includes("already running") && heal.out.includes("user-auth service up"), heal.out);
+  const healedSend = await cotal(["send", "msg", "general", "healed", "--space", SPACE]);
+  check("user-mode send works again after the heal", healedSend.status === 0, healedSend.out);
+
+  // ---------- F. down + fail-closed re-up ----------
+  console.log("F) down stops the auth service; re-up without --user-auth is refused");
   const down = await cotal(["down"]);
   check("down exits 0 and stops the user-auth service", down.status === 0 && down.out.includes("user-auth service"), down.out);
   check("auth-service pid file is gone", !existsSync(join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`)));

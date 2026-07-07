@@ -843,7 +843,9 @@ files to hand out, and revocation actually bites.
   exchange + JWKS** (`POST /exchange` turns a fresh IdP JWT into a Cotal bearer; capability-gated
   by a 0600 file, browser-origin requests rejected, JWKS served under an explicit
   `max-age=300` cache contract). It is the only standing holder of the data-account signing key;
-  the operator seed never enters it.
+  the operator seed never enters it. If it dies while the broker lives, re-running `cotal up`
+  heals it — the refresh of a running user mesh re-ensures the service (it never just prints
+  "already running" over a dead callout).
 - **The actor ledger is the single authorization source** (`cotal actor grant/revoke/list`,
   one file per `owner.actor` row under the space-scoped `.cotal/auth/<space>/actors/`). Both
   trust boundaries read it fresh: a revoke denies the next exchange *and* the next connect with
