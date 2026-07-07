@@ -175,6 +175,10 @@ try {
   console.log("D) revoke → refused; logout → the exact login line");
   const revoke = await cotal(["actor", "revoke", "cli", "--sub", sub]);
   check("actor revoke succeeds", revoke.status === 0, revoke.out);
+  // THE FLIP: revoke wires the live-eviction executor — the output must report the live-window
+  // outcome honestly (closed-and-verified here, since no connection is open; or a LOUD skip
+  // naming why + the bearer-expiry consequence), never silently leave the window unmentioned.
+  check("revoke reports the live-connection outcome (evict wired)", /verified gone|live-connection eviction/i.test(revoke.out), revoke.out);
   const denied = await cotal(["send", "msg", "general", "should be refused", "--space", SPACE]);
   check("revoked actor's send is refused with the ledger reason", denied.status !== 0 && /refused|not granted/i.test(denied.out), denied.out);
   const regrant = await cotal(["actor", "grant", "cli", "--sub", sub]);
@@ -190,6 +194,11 @@ try {
   await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
   const openUp = await cotal(["up", "--open", "--server", SERVER, "--space", SPACE]);
   check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
+  // THE FLIP: static agent creds are retired on user-auth spaces — `cotal mint` must refuse with
+  // the login+spawn recourse, never write a working `local.<nkey>` identity file.
+  const staticMint = await cotal(["mint", "flip-probe", "--profile", "agent"]);
+  check("the flip: `cotal mint` on a user mesh is refused, naming the login+spawn path", staticMint.status !== 0 && staticMint.out.includes("retired") && staticMint.out.includes("cotal spawn"), staticMint.out);
+  check("the flip: no creds file was written by the refused mint", !existsSync(join(root, ".cotal", "auth", "creds", "flip-probe.creds")));
   // Crash the daemon (SIGKILL — no clean exit, so its stale discovery file survives too).
   const svcPidPath = join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`);
   const svcPid = Number(readFileSync(svcPidPath, "utf8").trim());

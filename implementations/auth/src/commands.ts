@@ -6,8 +6,8 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import { findCotalRoot, homeCotalDir, resolveSpace, userAuthStateDir, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { authDir, findCotalRoot, homeCotalDir, loadMeshes, loadSpaceAuth, resolveSpace, userAuthStateDir, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -121,13 +121,54 @@ function resolveGrantOwner(dir: string, values: { owner?: string; sub?: string }
 const csv = (s: string | undefined, dflt: string[]): string[] =>
   s === undefined ? dflt : s.split(",").map((x) => x.trim()).filter(Boolean);
 
+/** Close a revoked principal's LIVE window (D5 acceptance gate: removal stops live delivery
+ *  IMMEDIATELY, not at bearer expiry): mint an ephemeral supervisor cred from the local signer and
+ *  request the delivery daemon's `evictPrincipal` (privileged delivery-admin rail — scan→KICK→
+ *  verify). BEST-EFFORT with honest copy: deny-new is already committed by the ledger revoke
+ *  before this runs, so a missing daemon/signer/registry only widens the end back to the bearer's
+ *  own expiry — reported, never silent, and never a reason to fail the revoke. */
+async function evictRevokedPrincipal(space: string, principal: string): Promise<string> {
+  const fallback = (why: string) => `live-connection eviction skipped (${why}) — an already-open connection ends at its current bearer's expiry`;
+  const root = findCotalRoot();
+  const auth = loadSpaceAuth(authDir(root));
+  if (!auth) return fallback("no local signer here");
+  const mesh = loadMeshes().find((m) => m.space === space);
+  if (!mesh) return fallback("mesh not in the local registry");
+  const id = newIdentity();
+  const ep = new CotalEndpoint({
+    space,
+    servers: mesh.server,
+    creds: await mintCreds(auth, id, "supervisor"),
+    card: { id: id.id, name: "revoke-evict", kind: "endpoint" },
+    channels: [],
+    consume: false,
+    watchChannels: false,
+    watchPresence: false,
+    registerPresence: false,
+  });
+  ep.on("error", () => {});
+  try {
+    await ep.start();
+    const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
+    if (!r.ok) return `live-connection eviction refused: ${r.error}`;
+    const d = (r.data ?? {}) as { kicked?: number; remaining?: number; verifiedGone?: boolean };
+    return d.verifiedGone
+      ? `live connections closed now (${d.kicked ?? 0} kicked, verified gone)`
+      : `live-connection eviction INCOMPLETE (${d.kicked ?? 0} kicked, ${d.remaining ?? "?"} still live) — run \`cotal doctor auth\``;
+  } catch (e) {
+    return fallback(e instanceof Error ? e.message : String(e));
+  } finally {
+    await ep.stop().catch(() => {});
+  }
+}
+
 async function runActor(args: ParsedArgs): Promise<void> {
   const [sub, actor] = args.positionals;
   const values = args.values as {
     space?: string; sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
     "allow-publish"?: string; role?: string; label?: string; parent?: string;
   };
-  const { dir } = actorStateDir(values.space);
+  const { dir, space } = actorStateDir(values.space);
   await legibly(async () => {
     if (sub === "list") {
       const rows = loadActorLedger(dir);
@@ -166,10 +207,12 @@ async function runActor(args: ParsedArgs): Promise<void> {
         console.log(`no grant for ${owner}.${actor} — nothing to revoke`);
         return;
       }
-      // Split-case honesty: the interactive deny is immediate at both boundaries; only the LIVE
-      // connection's end rides the bearer's own expiry (a human bearer can carry up to the IdP
-      // session cap — not the agents' short TTL).
-      console.log(`✓ revoked ${owner}.${actor} — new exchanges and new connects are denied now; an already-open connection ends at its current bearer's expiry`);
+      // Deny-new is immediate at both boundaries (exchange + connect). The LIVE window no longer
+      // rides the bearer's expiry by default: the flip wires revoke → the delivery daemon's
+      // evictPrincipal (scan→KICK→verify on the privileged rail), best-effort with honest copy —
+      // a human bearer can otherwise carry up to the IdP session cap, far beyond the agents' TTL.
+      console.log(`✓ revoked ${owner}.${actor} — new exchanges and new connects are denied now`);
+      console.log(`  ${await evictRevokedPrincipal(space, `${owner}.${actor}`)}`);
       return;
     }
     throw new Error("usage: cotal actor <grant <actor> | revoke <actor> | list>");
