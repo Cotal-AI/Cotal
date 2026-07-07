@@ -4,7 +4,9 @@ import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
+  DEV_OWNER,
   MANAGER_LEASE_TTL_MS,
+  STANDING_RENEWABLE_TTL_SEC,
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
@@ -29,7 +31,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, resolveOnPath, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -210,6 +212,8 @@ export class Manager {
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
+  /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
+  private credRenewTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -329,11 +333,50 @@ export class Manager {
     this.ep.serveControl(CONTROL_PRIVILEGED, (req) => this.handle(req, CONTROL_PRIVILEGED), { boundReply: true });
     this.ep.serveControl(CONTROL_SELF_SERVICE, (req) => this.handle(req, CONTROL_SELF_SERVICE), { boundReply: true });
     this.ep.serveControl(CONTROL_ADMIN, (req) => this.handle(req, CONTROL_ADMIN), { boundReply: true });
+    // D5 slice 5 class 2: the manager is the CLASS-2 RENEWAL OWNER — the one control-plane process
+    // that is resident in EVERY mesh mode (foreground `up`, `up --detach`, same-root refresh) and
+    // holds the signer. Ordered initial pass NOW (ensureControlPlane starts delivery BEFORE the
+    // manager, so the daemon's launch-time creds write always precedes this — no write race), then
+    // every half-TTL: re-sign the daemon creds files for their EXISTING nkeys, request the explicit
+    // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
+    if (this.auth) {
+      await this.renewDaemonCreds();
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer.unref?.();
+    }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
     // manager records each agent's read ACL at spawn (`commitAcl`, in provisionAgent) so the daemon can
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
+  }
+
+  /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
+   *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
+   *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
+   *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
+   *  (no responder) is recorded honestly: the daemon's 75% source re-read remains the adoption backstop.
+   *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
+  private async renewDaemonCreds(): Promise<void> {
+    try {
+      const results = await remintDaemonCreds(this.workspaceRoot);
+      const resigned = results.filter((r) => r.ok);
+      let adoption: RenewalRecord["adoption"];
+      if (resigned.length) {
+        try {
+          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", {});
+          adoption = reply.ok ? { ok: true, detail: reply.data } : { ok: false, error: reply.error };
+        } catch (e) {
+          adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) — the daemon's 75% re-read backstop adopts the re-signed file` };
+        }
+      }
+      for (const r of results.filter((x) => !x.ok && !x.skipped))
+        console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} — the daemon dies loud at this cred's expiry unless it is reminted`);
+      if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
+      writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+    } catch (e) {
+      console.error(`! credential renewal pass failed: ${(e as Error).message}`);
+    }
   }
 
   /** Tear down every managed agent's footprint — the shared teardown for EVERY manager-exit path (#159
@@ -363,6 +406,7 @@ export class Manager {
 
   async stop(): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
+    if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     await this.teardownManagedAgents(); // reap agents BEFORE releasing the lease/endpoints (#159 B2)
     await this.ep.releaseManagerLease(this.leaseRevision);
     await this.ep.stop();
@@ -458,13 +502,21 @@ export class Manager {
     return `not authorized: ${target.name} was not spawned by ${caller} (admin tier required)`;
   }
 
+  /** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
+   *  entries already store it in `id`; static mints store the raw nkey there (the durable/teardown
+   *  key), so the wire form derives under DEV_OWNER. Every comparison against an AUTHENTICATED wire
+   *  id (presence card.id, control from.id) must go through this, never raw `a.id`. */
+  private managedPrincipal(a: { id: string; userOwner?: string }): string {
+    return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
+  }
+
   /** Self-despawn (P2b): stop the managed agent whose id == the authenticated caller. The
    *  no-name self-op can only ever resolve to the caller's OWN managed entry (ids are unique
    *  per spawn + non-forgeable in auth mode), never a peer — so it's structurally incapable of
    *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
    *  no match and get a loud error, not a silent no-op. */
   private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply {
-    const target = [...this.agents.values()].find((a) => a.id === callerId);
+    const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
     this.stopHandle(target, graceful);
@@ -1090,7 +1142,11 @@ export class Manager {
       /* tmux/cmux stream no exit — presence-or-backstop only */
     }
     const s = session;
-    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === a.id && p.status !== "offline");
+    // Presence cards carry the wire PRINCIPAL dot-form (`<owner>.<actor>`), never a raw nkey — match
+    // through managedPrincipal or a static launch can never be seen joining (every static spawn would
+    // resolve "uncertain"; caught by the lifecycle e2e).
+    const wanted = this.managedPrincipal(a);
+    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline");
 
     return await new Promise((resolve) => {
       let done = false;

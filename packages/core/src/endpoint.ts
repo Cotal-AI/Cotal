@@ -14,7 +14,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
-import { idFromCreds } from "./identity.js";
+import { credsClaims, idFromCreds } from "./identity.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -82,6 +82,7 @@ import {
   controlServiceSubject,
   CONTROL_SELF_SERVICE,
   CONTROL_DELIVERY,
+  CONTROL_DELIVERY_ADMIN,
   dmStream,
   dmDurable,
   dlvStream,
@@ -277,10 +278,16 @@ export class CotalEndpoint extends EventEmitter {
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
+  private deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
-  private plane3?: { aclFor: (owner: string) => MaybePromise<string[] | undefined> };
+  private plane3?: {
+    aclFor: (owner: string) => MaybePromise<string[] | undefined>;
+    /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
+     *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). */
+    reloadMembershipCreds?: () => Promise<unknown>;
+  };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
@@ -508,29 +515,57 @@ export class CotalEndpoint extends EventEmitter {
    *  (75% of iat→exp), not a fixed margin — standing creds span hours to days, bearers minutes. */
   private static readonly CREDS_RETRY_MS = 60_000;
 
-  /** Fetch fresh creds from the source, pin their identity to ours, arm the next refresh at 75% of
-   *  the new JWT's lifetime — then SWAP the live connection onto the fresh cred with a controlled
-   *  `nc.reconnect()` (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of
-   *  waiting for the broker to close the connection at `exp`, means the wire never carries a
-   *  near-dead JWT and the operator never sees a spurious "authentication expired" — the broker's
-   *  expiry-close remains the BACKSTOP if a swap is missed, not the mechanism. Failure shape mirrors
-   *  {@link refreshBearer}: THROWS when `initial`, else emits "error" and retries. */
+  /** Fetch fresh creds from the source, pin their identity to ours, cache them, and arm the next
+   *  refresh at 75% of the new JWT's lifetime. THROWS on fetch/pin failure — the callers decide the
+   *  failure posture (loud-and-retry for the timer, a structured error reply for an explicit
+   *  {@link reloadCreds}). */
+  private async fetchFreshCreds(): Promise<{ iat?: number; exp?: number }> {
+    const creds = await this.credsSource!();
+    const id = idFromCreds(creds);
+    if (id !== this.connId)
+      throw new Error(`creds source returned identity ${id}, expected ${this.connId} — renewal may not swap the connection's nkey`);
+    this.currentCreds = creds;
+    this.armCredsRefresh(credsRenewalDelayMs(creds));
+    const { iat, exp } = credsClaims(creds);
+    return { iat, exp };
+  }
+
+  /** Swap the live connection onto the freshest cached cred with a controlled `nc.reconnect()`
+   *  (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of waiting for the
+   *  broker to close the connection at `exp`, means the wire never carries a near-dead JWT and the
+   *  operator never sees a spurious "authentication expired" — the broker's expiry-close remains the
+   *  BACKSTOP if a swap is missed, not the mechanism. Already-closed/draining rejections are the
+   *  supervise loop's to own (its rebuild re-fetches); an already-disconnected client is a no-op
+   *  (its own reconnect loop presents the fresh cred). */
+  private async swapConnectionOntoFreshCreds(): Promise<void> {
+    if (this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
+  }
+
+  /** The 75%-of-lifetime renewal timer tick (and rebuild re-fetch) — the passive BACKSTOP behind the
+   *  explicit {@link reloadCreds}. Failure shape mirrors {@link refreshBearer}: THROWS when
+   *  `initial`, else emits "error" and retries. */
   private async refreshCreds(initial = false): Promise<void> {
     try {
-      const creds = await this.credsSource!();
-      const id = idFromCreds(creds);
-      if (id !== this.connId)
-        throw new Error(`creds source returned identity ${id}, expected ${this.connId} — renewal may not swap the connection's nkey`);
-      this.currentCreds = creds;
-      this.armCredsRefresh(credsRenewalDelayMs(creds));
-      // Already-closed/draining rejections are the supervise loop's to own (its rebuild re-fetches);
-      // an already-disconnected client is a no-op (its own reconnect loop presents the fresh cred).
-      if (!initial && this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
+      await this.fetchFreshCreds();
+      if (!initial) await this.swapConnectionOntoFreshCreds();
     } catch (e) {
       if (initial) throw e;
       this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) — retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
       this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
     }
+  }
+
+  /** EXPLICIT credential reload — the auditable adoption step of D5 class-2 standing renewal (served
+   *  to the renewal owner via the delivery-admin rail). Re-invokes the source NOW, pins + adopts the
+   *  fresh cred on the live connection, and returns the adopted JWT's window so the caller can record
+   *  proof of adoption. THROWS (structured for the reply) when the source fails — e.g. the creds file
+   *  was not actually re-signed — so "file written" can never masquerade as "daemon adopted". */
+  async reloadCreds(): Promise<{ identity: string; iat?: number; exp?: number }> {
+    if (!this.credsSource)
+      throw new Error("reloadCreds: this endpoint has no creds source (a static cred cannot be renewed in place)");
+    const { iat, exp } = await this.fetchFreshCreds();
+    await this.swapConnectionOntoFreshCreds();
+    return { identity: this.connId, iat, exp };
   }
 
   private armCredsRefresh(delayMs: number): void {
@@ -1049,6 +1084,21 @@ export class CotalEndpoint extends EventEmitter {
     // reply subject (not a standing `.reply.>` wildcard), so a predictable suffix would let a peer target
     // an in-flight reply subscription — randomUUID brings it to parity with the nuid-protected `_INBOX`
     // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
+    const body: ControlRequest = { op, args, from: this.ref() };
+    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    return m.json<ControlReply>();
+  }
+
+  /** Send a PRIVILEGED delivery-admin request to the server-side delivery daemon and await its reply
+   *  (the D5 rail-split: `reloadCreds` now, the eviction executor next). Same bounded-reply shape as
+   *  {@link requestDelivery}; the cred layer is the real gate — only the manager's supervisor profile
+   *  holds the request-publish grant, so an agent calling this gets a broker denial, not a handler
+   *  refusal. NoResponders (no daemon) surfaces as the thrown request error — callers decide whether
+   *  that degrades (renewal falls back to the daemon's 75% re-read backstop) or fails. */
+  async requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY_ADMIN, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
     const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
@@ -1836,9 +1886,12 @@ export class CotalEndpoint extends EventEmitter {
    *  resume on a daemon restart. Both the JS loops AND the `ctl.delivery` subscription are (re)bound by
    *  {@link armPlane3} on EVERY (re)connect — a reconnect drains the old connection, so re-binding both
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
-  async startPlane3(aclFor: (owner: string) => MaybePromise<string[] | undefined>): Promise<void> {
+  async startPlane3(
+    aclFor: (owner: string) => MaybePromise<string[] | undefined>,
+    opts: { reloadMembershipCreds?: () => Promise<unknown> } = {},
+  ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds };
     await this.armPlane3();
   }
 
@@ -1925,6 +1978,31 @@ export class CotalEndpoint extends EventEmitter {
       if (i >= 0) this.subs.splice(i, 1);
     }
     this.deliveryServeSub = this.serveControl(CONTROL_DELIVERY, (req) => this.handleDeliveryControl(req), { boundReply: true });
+    if (this.deliveryAdminServeSub) {
+      try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
+      const i = this.subs.indexOf(this.deliveryAdminServeSub);
+      if (i >= 0) this.subs.splice(i, 1);
+    }
+    this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), { boundReply: true });
+  }
+
+  /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
+   *  boundary — only the supervisor profile can publish here — and `serveControl`'s sender check +
+   *  bounded reply still apply on top. `reloadCreds` is the class-2 renewal ADOPTION step: re-read
+   *  the launcher-re-signed creds file, pin, swap the live connection, reconnect the membership
+   *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
+   *  structured failure (e.g. the file was never re-signed), never a silent partial. */
+  private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
+    if (req.op === "reloadCreds") {
+      try {
+        const delivery = await this.reloadCreds();
+        const membership = this.plane3?.reloadMembershipCreds ? await this.plane3.reloadMembershipCreds() : undefined;
+        return { ok: true, data: { delivery, ...(membership !== undefined ? { membership } : {}) } };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
   /** Fan-out loop: bind the privileged `fanout` durable on CHAT and route each message (routing only —
@@ -2916,15 +2994,7 @@ function authOpts(a: AuthOpts) {
  *  the renewal seam exists precisely for bounded creds, so an unbounded one signals a matrix/caller
  *  mismatch, not a cred to keep silently forever. */
 function credsRenewalDelayMs(creds: string): number {
-  const jwtM = creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/);
-  const payload = jwtM?.[1].trim().split(".")[1];
-  if (!payload) throw new Error("creds source returned content without a NATS user JWT block");
-  let claims: { iat?: unknown; exp?: unknown };
-  try {
-    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-  } catch {
-    throw new Error("creds source returned an undecodable user JWT payload");
-  }
+  const claims = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
   if (typeof claims.exp !== "number")
     throw new Error("creds source returned a cred without a numeric exp — a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
   const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;

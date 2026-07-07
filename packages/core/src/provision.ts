@@ -41,6 +41,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
   CONTROL_DELIVERY,
+  CONTROL_DELIVERY_ADMIN,
   chatStream,
   dmStream,
   taskStream,
@@ -815,14 +816,20 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         `$JS.API.CONSUMER.INFO.${PKV}.>`,
         "$JS.FC.>", // ordered-consumer flow control
         // Control: reply to any caller on each SERVED tier (bounded). It SERVES (does not call), so no
-        // request-publish grant and no position-1 wildcard.
+        // request-publish grant and no position-1 wildcard — EXCEPT the delivery-admin rail below.
         ...ctlReplies,
+        // The ONE control service the supervisor CALLS (D5 slice 5): the delivery daemon's privileged
+        // admin rail — the manager is the class-2 renewal owner, and after re-signing the daemon creds
+        // files it requests `reloadCreds` here so adoption is an explicit, auditable event. Self-scoped
+        // request subject (its own owner+actor slots), bounded reply subtree in sub.allow below.
+        controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor),
       ],
     },
     sub: {
-      // Own reply inbox + the three served control tiers (queue-grouped). NO chat/inst/dlv native sub (the
-      // supervisor reads no feed), NO broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
-      allow: [`_INBOX_${pr.connId}.>`, ...ctlServe],
+      // Own reply inbox + the three served control tiers (queue-grouped) + the delivery-admin reply
+      // subtree for its OWN requests. NO chat/inst/dlv native sub (the supervisor reads no feed), NO
+      // broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
+      allow: [`_INBOX_${pr.connId}.>`, ...ctlServe, `${controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor)}.>`],
     },
   };
 }
@@ -1252,10 +1259,14 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // the `.reply.>` leaf so the daemon can't publish to the request subjects themselves — tighter than a
     // blanket `ctl.delivery.>` (fact-check precision, review panel). The caller slots widened to `.*.*`.
     `${p}.ctl.delivery.*.*.reply.>`,
+    // The privileged delivery-admin rail (D5 slice 5/6): same replies-only shape. Requests reach the
+    // daemon on the sub below; only the supervisor cred can PUBLISH them (nats-server is the boundary).
+    `${p}.ctl.delivery-admin.*.*.reply.>`,
   ];
   const sub = [
     `_INBOX_${pr.connId}.>`,
     `${p}.ctl.delivery.*.*`, // serve the delivery control service (queue-grouped; owner+actor caller slots)
+    `${p}.ctl.delivery-admin.*.*`, // serve the privileged admin rail (reloadCreds; eviction executor next)
   ];
   return { pub: { allow: pub }, sub: { allow: sub } };
 }

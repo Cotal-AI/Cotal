@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts, launchSpecForRun } from "../src/launch.js";
-import { createSpaceAuth, mintCreds, newIdentity, setupSpaceStreams, registry, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { createSpaceAuth, mintCreds, newIdentity, principalKey, setupSpaceStreams, registry, DEV_OWNER, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
@@ -86,7 +86,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent joined.
   on: () => {},
   off: () => {},
-  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" })),
 };
 const recCon: Connector = { kind: "connector", name: "smoke-launch", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) };
 registry.register(recCon);

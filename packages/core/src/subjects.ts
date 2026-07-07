@@ -439,6 +439,13 @@ export const CONTROL_ADMIN = "admin" as const;
  *  agent (only the allow-all manager could reply into the per-id `_INBOX_<id>` prefix). Lifecycle ops
  *  (spawn/stop/despawn) stay on the manager's tiers; durable membership is the daemon's. */
 export const CONTROL_DELIVERY = "delivery" as const;
+/** The delivery daemon's PRIVILEGED admin rail (the D5 rail-split): control-plane ops the daemon
+ *  EXECUTES for the mesh's renewal/repair owner — credential reload (`reloadCreds`, the class-2
+ *  standing-renewal adoption step) now; the live-eviction executor rides here next. Cred-enforced
+ *  caller set: only the manager's `supervisor` profile holds the request-publish grant (every agent
+ *  cred is default-denied — nats-server is the boundary, same pattern as {@link CONTROL_ADMIN});
+ *  the `delivery` cred holds the serve + bounded-reply side. */
+export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
 /** The three control-plane tiers the manager serves — values tie to the `CONTROL_*` service
  *  names so handler routing can't drift from the subject names. */
 export type ControlTier = typeof CONTROL_PRIVILEGED | typeof CONTROL_SELF_SERVICE | typeof CONTROL_ADMIN;

@@ -8,8 +8,15 @@ import {
   type FlagValues,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth, userAuthStateDir } from "@cotal-ai/workspace";
-import { remintDaemonCreds } from "../lib/delivery-proc.js";
+import {
+  authDir,
+  findCotalRoot,
+  loadSpaceAuth,
+  readRenewalRecord,
+  remintDaemonCreds,
+  userAuthStateDir,
+  writeRenewalRecord,
+} from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 
@@ -59,17 +66,22 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   let reports = inventory(root);
   let problems = reports.filter((r) => r.problem);
 
-  // --fix: the one safe local repair — re-sign the launcher-remintable daemon files (same nkeys),
-  // exactly what the resident `cotal up` timer does. Then re-diagnose: the doctor reports what IS,
-  // never what it hopes the fix did.
+  // --fix: the one safe local repair — re-sign the remintable daemon files (same nkeys), exactly
+  // what the manager's renewal pass does, and record the pass so the audit trail stays honest
+  // (adoption is the DAEMON's explicit reload, which only the running manager requests — a doctor
+  // fix without a live manager is adopted by the daemon's 75% re-read backstop). Then re-diagnose:
+  // the doctor reports what IS, never what it hopes the fix did.
   if (values.fix && problems.some((r) => isRemintable(r.kind))) {
-    console.log(c.dim("\n--fix: re-signing the launcher-remintable daemon creds…"));
-    await remintDaemonCreds();
+    console.log(c.dim("\n--fix: re-signing the remintable daemon creds…"));
+    const results = await remintDaemonCreds(root);
+    writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results });
+    for (const r of results.filter((x) => !x.ok && !x.skipped)) console.error(c.red(`  ✗ ${r.file}: ${r.error}`));
     reports = inventory(root);
     problems = reports.filter((r) => r.problem);
   }
 
-  render("Daemon creds (launcher-reminted — class 2)", reports.filter((r) => isRemintable(r.kind)));
+  render("Daemon creds (manager-reminted — class 2)", reports.filter((r) => isRemintable(r.kind)));
+  renderRenewalRecord(root);
   render("$SYS creds (rotation-renewed — never remintable from disk)", reports.filter((r) => r.kind === "membership-observer" || r.kind === "connection-evictor"));
   render("Agent creds (static, pre-flip)", reports.filter((r) => r.kind === "agent"));
 
@@ -114,7 +126,7 @@ function report(label: string, kind: CredentialKind, path: string): CredReport {
   const policy = credentialLifetime(kind);
   const standing = policy.class === "standing-renewable" || policy.class === "rotation-renewed";
   const repair = isRemintable(kind)
-    ? `${displayCmd()} doctor auth --fix   (or re-run \`${displayCmd()} up\` — its resident remint timer re-signs it)`
+    ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager — it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
       ? `respawn the agent (\`${displayCmd()} spawn\`) — its old cred is dead by design`
       : `system-account rotation: \`${displayCmd()} down\` then a fresh \`${displayCmd()} up\` regenerates the $SYS material`;
@@ -164,6 +176,27 @@ function render(title: string, reports: CredReport[]): void {
       : c.red(`✗ ${h.state}`);
     console.log(`    ${badge}  ${r.label}${lastRenewal}${expiry}`);
   }
+}
+
+/** Render the renewal owner's audit record (written by the manager's pass / doctor --fix): when the
+ *  last pass ran, who ran it, and whether the daemon EXPLICITLY adopted — the "file re-signed" vs
+ *  "daemon adopted" distinction the D5 panel required. Absence is informational (a mesh started
+ *  before the renewal owner existed, or an open mesh). */
+function renderRenewalRecord(root: string): void {
+  const rec = readRenewalRecord(root);
+  if (!rec) {
+    console.log(c.dim("    no renewal record yet (written by the manager's renewal pass)"));
+    return;
+  }
+  const resigned = rec.results.filter((r) => r.ok).map((r) => r.file);
+  const failed = rec.results.filter((r) => !r.ok && !r.skipped);
+  const adoption = rec.adoption === undefined
+    ? c.dim("adoption: n/a (nothing re-signed)")
+    : rec.adoption.ok
+      ? c.green("daemon adopted ✓")
+      : c.yellow(`daemon adoption pending — ${rec.adoption.error ?? "unknown"}`);
+  console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} — re-signed [${resigned.join(", ") || "none"}] · ${adoption}`);
+  for (const f of failed) console.log(`    ${c.red("✗")} last pass failed on ${f.file}: ${f.error}`);
 }
 
 function at(sec?: number): string {

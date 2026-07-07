@@ -11,4 +11,5 @@ export * from "./mesh-registry.js";
 export * from "./mesh-target.js";
 export * from "./preflight.js";
 export * from "./render.js";
+export * from "./renewal.js";
 export * from "./space.js";

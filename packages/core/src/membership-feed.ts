@@ -41,7 +41,7 @@ import {
   principalFromConnz,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
-import { idFromCreds } from "./identity.js";
+import { credsClaims, idFromCreds } from "./identity.js";
 import type { ChannelMembership } from "./types.js";
 
 export interface MembershipFeedOpts {
@@ -76,6 +76,10 @@ export interface MembershipFeedOpts {
 export interface MembershipFeedHandle {
   /** Force an immediate reconcile (also used by tests). Never throws — errors are logged. */
   poll(): Promise<void>;
+  /** Explicitly adopt a re-signed rw creds file on conn B (D5 class-2 renewal): validated re-read
+   *  (pinned nkey) + forced reconnect, returning the adopted JWT window as proof. THROWS when the
+   *  re-read fails (missing/swapped file) — adoption must never be assumed. */
+  reloadRwCreds(): Promise<{ identity: string; iat?: number; exp?: number }>;
   stop(): Promise<void>;
 }
 
@@ -302,6 +306,15 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
 
   return {
     poll,
+    async reloadRwCreds() {
+      // Explicit class-2 adoption for conn B (D5 slice 5): validate the re-read (the pinned getter
+      // throws on a swapped nkey or a missing file) and force a reconnect so the fresh cred is on
+      // the wire NOW — never waiting for the broker's expiry-close. The observer conn (A) is
+      // rotation-renewed and deliberately not reloadable.
+      const { exp, iat } = credsClaims(rwCredsPinned());
+      await connB.reconnect().catch(() => {}); // already-reconnecting is a no-op; its loop re-reads the getter
+      return { identity: rwSelfId, iat, exp };
+    },
     async stop() {
       stopped = true;
       clearInterval(timer);

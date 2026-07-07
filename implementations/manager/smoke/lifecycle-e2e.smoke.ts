@@ -17,7 +17,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,17 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   await mgr.start();
+
+  // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered
+  // renewal pass and persists the audit record — here with both daemon files absent (no delivery
+  // daemon staged), recorded honestly as skips, never a fabricated adoption.
+  const renewalPath = join(workspaceRoot, ".cotal", "renewal.json");
+  check("manager start writes the renewal audit record", existsSync(renewalPath));
+  {
+    const rec = JSON.parse(readFileSync(renewalPath, "utf8")) as { owner?: string; results?: Array<{ file: string; ok: boolean; skipped?: string }>; adoption?: unknown };
+    check("renewal record is the manager's pass", rec.owner === "manager", rec);
+    check("absent daemon files are honest skips (no fabricated re-sign/adoption)", rec.results?.every((r) => !r.ok && r.skipped === "missing-file") === true && rec.adoption === undefined, rec);
+  }
 
   // 1 — STARTED via real presence + footprint exists.
   console.log("1. real spawn → started via presence:");

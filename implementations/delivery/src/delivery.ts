@@ -4,6 +4,7 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
+  credsClaims,
   idFromCreds,
   isReachable,
   mintCreds,
@@ -27,22 +28,30 @@ function deliveryCredsPath(): string {
  *  default `.cotal/delivery.creds`, written by the CLI's `ensureDelivery` setup helper) and NEVER touches
  *  the signer: this runtime does not load `.cotal/auth`. Returned as `{ initial, source }`: the SOURCE
  *  is the D5 slice-5 class-2 reload seam — the endpoint re-invokes it at 75% of each JWT's lifetime, so
- *  the daemon renews from the launcher-re-signed file without a restart or a signal. A re-read that
- *  finds the file UNCHANGED at renewal time is a renewal FAILURE (the launcher missed its window),
- *  surfaced loudly by the endpoint's retry loop — never a silent ride to expiry. A standalone dev run
+ *  the daemon renews from the renewal-owner-re-signed file without a restart or a signal. Adoption is
+ *  IDEMPOTENT on an unchanged file while its cred is still ahead of the renewal point (explicit reload
+ *  may race the backstop); past it, an unchanged file is a MISSED remint, surfaced loudly with the
+ *  exact repair — never a silent ride to expiry. A standalone dev run
  *  with no creds file can opt into `--dev-mint`, which loads the local signer and self-remints a scoped
  *  `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production contract. */
 async function loadDeliveryCreds(v: Values): Promise<{ initial: string; source: () => Promise<string> }> {
   const path = v.creds ?? deliveryCredsPath();
   if (existsSync(path)) {
     const initial = readFileSync(path, "utf8");
-    let last: string | undefined; // set by the FIRST source call (the endpoint's initial fetch) — only re-reads demand a changed file
+    let last: string | undefined; // set by the FIRST source call (the endpoint's initial fetch)
     return {
       initial,
       source: async () => {
         const content = readFileSync(path, "utf8");
-        if (last !== undefined && content === last)
-          throw new Error(`${path} still holds the previous cred — the launcher has not re-signed it (the resident \`cotal up\` runs the remint timer); re-run \`cotal up\`, or remint the file, before this JWT expires`);
+        if (last !== undefined && content === last) {
+          // Unchanged file: adoption is IDEMPOTENT while the cred is still ahead of its renewal
+          // point (the explicit reload may race the 75% backstop that just adopted the same
+          // re-sign — both succeeding is correct). Past the renewal point an unchanged file is a
+          // MISSED remint: fail loud with the exact repair, never a silent ride to expiry.
+          const { iat, exp } = credsClaims(content);
+          if (typeof exp === "number" && typeof iat === "number" && Date.now() / 1000 < iat + 0.75 * (exp - iat)) return content;
+          throw new Error(`${path} still holds the previous cred — the renewal owner has not re-signed it (the manager re-signs + reloads every half-TTL); run \`cotal doctor auth --fix\`, or restart the mesh's manager, before this JWT expires`);
+        }
         last = content;
         return content;
       },
@@ -123,9 +132,18 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
     return;
   }
 
+  // Broker-sourced graph membership handle — declared BEFORE Plane-3 so the delivery-admin reload
+  // hook below can close over it (it starts further down; the closure reads it live).
+  let membership: MembershipFeedHandle | undefined;
+
   // Host Plane-3 (fan-out writer + trusted reader) AND serve the ctl.delivery runtime durable ops. The
-  // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry.
-  await ep.startPlane3((owner) => ep.aclForOwner(owner));
+  // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
+  // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
+  // rw connection via this hook.
+  await ep.startPlane3((owner) => ep.aclForOwner(owner), {
+    reloadMembershipCreds: async () =>
+      membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
+  });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
   // not merely that the single-flight slot was claimed.
@@ -136,7 +154,6 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
   // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
   // logs and the graph degrades to traffic-only; Plane-3 delivery is never affected.
-  let membership: MembershipFeedHandle | undefined;
   try {
     membership = await startMembership({ space, server });
   } catch (e) {
