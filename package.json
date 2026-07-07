@@ -27,6 +27,7 @@
     "smoke:auth": "tsx packages/core/smoke-auth.ts",
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
+    "smoke:topo-membership": "tsx implementations/cli/smoke/topo-membership.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
     "smoke:control-reply-bound": "tsx packages/core/smoke/control-reply-bound.smoke.ts",
     "smoke:plane3:auth": "tsx packages/core/smoke/plane3-auth.smoke.ts",

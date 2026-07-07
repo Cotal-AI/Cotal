@@ -60,6 +60,7 @@ interface MeshSnapshot {
   channels:  { channel: string; messages: number }[];
   feed:      FeedEntry[];       // classified + coalesced + windowed
   views:     ViewItem[];        // peer-published renderable views (json-render specs), newest last
+  membership?: MembershipSnapshot; // broker-authoritative channel membership (needs the delivery daemon)
   rates:     { msgsPerSec: number };
   status:    { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals:   MeshSignals;       // derived operator signals (below)
@@ -103,7 +104,7 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ tiles |
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
-| topology (who-talks-to-whom) | `feed` + `agents` (derived) | ✓ lens (`t`, 3 variants) |  |  |
+| topology (membership + who-talks-to-whom) | `feed` + `agents` + `membership` | ✓ lens (`t`, 3 variants) |  | ✓ graph |
 | peer-pushed views (json-render) | `views` | ✓ lens (`V`) |  |  |
 | message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
@@ -112,7 +113,14 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 Both interactive surfaces render every model field. The console adds the signals as an always-on
 tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) folds the feed
 plus roster into a who-talks-to-whom graph client-side and renders it three switchable ways
-(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. The views
+(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. It also
+overlays the **broker-authoritative membership** feed (`readMembership`/`watchMembership`, the
+same source as the web graph) when available: silent subscribers appear as nodes, subscriptions
+as resting spokes (live solid-faint, durable-offline dashed), and wide readers (`>`/`*`) carry a
+`≫` badge; a header pill reads `membership: live / stale / traffic-only`. The map carries the
+full membership rendering, the matrix a light `∘`/`◌` marker, the sequence stays a traffic
+timeline. With no delivery daemon (or on an open mesh whose bare cred cannot read the feed) the
+lens degrades to the traffic-only view and the pill reads `traffic-only`. The views
 lens (`V`) shows the latest peer-published json-render view, validated against the console's
 fixed Ink component catalog (an invalid spec shows its rejection reason instead); the tiles strip
 renders through the same catalog, so the console dogfoods its own guardrail. The stream is

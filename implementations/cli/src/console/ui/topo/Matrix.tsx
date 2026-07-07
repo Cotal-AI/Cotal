@@ -35,7 +35,13 @@ export function Matrix({
 }) {
   const rows = graph.nodes.filter((n) => n.kind === "agent");
   const inbound = new Set(graph.edges.map((e) => e.dst));
-  const cols = graph.nodes.filter((n) => inbound.has(n.key));
+  // Membership state per (agent → channel), and the channels it touches — so a silent subscriber's
+  // channel still gets a column even with zero traffic.
+  const memberState = new Map<string, "live" | "durable">(
+    graph.memberships.map((m) => [m.agent + "|" + m.channel, m.state]),
+  );
+  const memberChans = new Set(graph.memberships.map((m) => m.channel));
+  const cols = graph.nodes.filter((n) => inbound.has(n.key) || memberChans.has(n.key));
   const edgeOf = new Map<string, TopoEdge>(graph.edges.map((e) => [e.key, e]));
 
   const [cur, setCur] = useState({ r: 0, c: 0 });
@@ -128,12 +134,17 @@ export function Matrix({
                   </Text>
                 );
               const e = edgeOf.get(row.key + "→" + col.key);
-              if (!e)
+              if (!e) {
+                // No traffic — but a broker-authoritative member of this channel still shows a faint
+                // marker (∘ live subscriber, ◌ durable-offline), so silent subscribers are visible.
+                const ms = memberState.get(row.key + "|" + col.key);
+                const mark = ms === "live" ? "  ∘" : ms === "durable" ? "  ◌" : "  ·";
                 return (
                   <Text key={col.key} dimColor inverse={selected} color={selected ? "cyan" : undefined}>
-                    {"  ·".padEnd(CELL_W)}
+                    {mark.padEnd(CELL_W)}
                   </Text>
                 );
+              }
               const lvl = heatLevel(e.rate);
               const txt = (HEAT[Math.max(1, lvl)] + " " + e.count).padEnd(CELL_W);
               if (selected)

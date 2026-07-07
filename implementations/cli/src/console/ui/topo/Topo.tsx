@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { Box, Text, useFocus } from "ink";
-import type { Presence } from "@cotal-ai/core";
+import type { MembershipSnapshot, Presence } from "@cotal-ai/core";
 import type { FeedEntry, FocusId } from "../../mesh.js";
-import { foldTopo } from "./model.js";
+import { foldTopo, membershipFreshness } from "./model.js";
 import { Sequence } from "./Sequence.js";
 import { Matrix } from "./Matrix.js";
 import { RingMap } from "./Map.js";
@@ -19,6 +19,9 @@ const MARKS = ["①", "②", "③"] as const;
 export function Topo({
   feed,
   agents,
+  membership,
+  channels,
+  nameOf,
   variant,
   width,
   height,
@@ -29,6 +32,10 @@ export function Topo({
 }: {
   feed: FeedEntry[];
   agents: Presence[];
+  membership?: MembershipSnapshot;
+  channels: { channel: string; messages: number }[];
+  /** Id → display name from the shared model (resolves endpoints and silent members too). */
+  nameOf?: (id: string) => string;
   variant: TopoVariant;
   width: number;
   height: number;
@@ -43,8 +50,13 @@ export function Topo({
   }, [isFocused, onFocus]);
 
   // The 1s age tick in App re-renders this tree, so `now` stays fresh between snapshots.
-  const graph = useMemo(() => foldTopo(feed, agents), [feed, agents]);
+  const knownChannels = channels.map((c) => c.channel);
+  const graph = useMemo(
+    () => foldTopo(feed, agents, { membership, knownChannels: channels.map((c) => c.channel), nameOf }),
+    [feed, agents, membership, nameOf, knownChannels.join(",")], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const msgs = graph.edges.reduce((n, e) => n + e.count, 0);
+  const fresh = membershipFreshness(graph.now, graph.membership);
   const active = isFocused && !blocked;
   const innerW = Math.max(8, width - 4); // border + paddingX
   const innerH = Math.max(1, height - 3); // border + title row
@@ -77,7 +89,9 @@ export function Topo({
             </Text>
           </Text>
         ))}
-        <Text dimColor>{" · window " + Math.round(graph.windowMs / 60_000) + "m · " + msgs + " msgs"}</Text>
+        <Text dimColor>{" · window " + Math.round(graph.windowMs / 60_000) + "m · " + msgs + " msgs · "}</Text>
+        <Text dimColor>membership: </Text>
+        <Text color={fresh.color} dimColor={!fresh.color}>{fresh.label}</Text>
       </Text>
       {body}
     </Box>

@@ -12,6 +12,7 @@ import type {
   CotalMessage,
   DeliveryMode,
   EndpointRef,
+  MembershipSnapshot,
   Presence,
   PresenceStatus,
   ViewSpec,
@@ -100,6 +101,10 @@ export interface MeshSnapshot {
   rates: { msgsPerSec: number; activity: number[] };
   status: { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals: MeshSignals;
+  // Broker-authoritative channel membership (delivery-daemon CONNZ ∪ durable registry), when the
+  // feed is readable (admin cred + a running daemon). Undefined ⇒ the topology lens degrades to
+  // its traffic-derived view. The topology lens overlays this to show silent subscribers.
+  membership?: MembershipSnapshot;
   nameOf: (id: string) => string; // unicast target id → display name
 }
 
@@ -182,6 +187,9 @@ export class MeshView extends EventEmitter {
   // Participant mode: the operator has spoken, so it's a presence-registered peer and its own
   // inbox (`inst.<selfId>.*`) is captured — replies land in the DM lens. Off = pure observer.
   private participant = false;
+  private membership?: MembershipSnapshot; // authoritative membership feed, when readable
+  private membershipWatch?: { stop(): void };
+  private membershipTimer?: ReturnType<typeof setTimeout>; // debounce the watch's replay burst
 
   private readonly window: number;
   private readonly tapSubject?: string;
@@ -222,6 +230,7 @@ export class MeshView extends EventEmitter {
     );
     void this.prefill();
     void this.refreshChannels();
+    void this.startMembership();
     this.timers.push(setInterval(() => this.flush(), TICK_MS));
     this.timers.push(setInterval(() => void this.refreshChannels(), CHANNELS_MS));
     this.timers.push(setInterval(() => (this.dirty = true), 1000)); // refresh ages + decay rate
@@ -235,7 +244,37 @@ export class MeshView extends EventEmitter {
     this.ep.off("error", this.onError);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
+    this.membershipWatch?.stop();
+    clearTimeout(this.membershipTimer);
     await this.ep.stop();
+  }
+
+  /** Populate + watch the broker-authoritative membership feed. Best-effort: on an open mesh (bare
+   *  cred) or a space with no delivery daemon the KV bucket isn't openable, so this stays silent and
+   *  the topology lens degrades to its traffic-derived view — exactly like `prefillDms`. A membership
+   *  fault must NOT set `this.error` (that drives connection health; a missing feed is normal). */
+  private async startMembership(): Promise<void> {
+    await this.loadMembership();
+    try {
+      this.membershipWatch = await this.ep.watchMembership(() => this.scheduleMembership());
+    } catch {
+      /* no feed / cred can't open the bucket → traffic-only */
+    }
+  }
+
+  /** Debounce the watch's replay burst into one re-read (mirrors the web dashboard's 150ms). */
+  private scheduleMembership(): void {
+    clearTimeout(this.membershipTimer);
+    this.membershipTimer = setTimeout(() => void this.loadMembership(), 150);
+  }
+
+  private async loadMembership(): Promise<void> {
+    try {
+      this.membership = await this.ep.readMembership();
+      this.dirty = true;
+    } catch {
+      /* keep the last snapshot; never surface as a connection error */
+    }
   }
 
   snapshot(): MeshSnapshot {
@@ -256,6 +295,7 @@ export class MeshView extends EventEmitter {
         error: this.error,
       },
       signals: this.signals(),
+      membership: this.membership,
       nameOf: this.nameOf,
     };
   }

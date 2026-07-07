@@ -84,7 +84,8 @@ export function RingMap({
   // Geometry: labels live on an ellipse, the hub box at the center.
   const labelOf = (n: TopoNode) => {
     const role = n.role && n.role !== n.name ? "/" + n.role : "";
-    return STATUS[n.status ?? "offline"].dot + " " + trunc(n.name + role, 22);
+    const wide = n.wide ? " ≫" : ""; // "reads all" — a wide subscriber (> / *)
+    return STATUS[n.status ?? "offline"].dot + " " + trunc(n.name + role, 22) + wide;
   };
   const maxLabel = Math.max(...ring.map((n) => labelOf(n).length));
   const cx = Math.floor(width / 2);
@@ -106,6 +107,30 @@ export function RingMap({
   const hubRow = (key: string) => hubY + 1 + hubs.findIndex((n) => n.key === key);
 
   const grid = blankGrid(width, height);
+
+  // Membership spokes — the broker-authoritative subscription skeleton, drawn UNDER traffic so hot
+  // edges overdraw it. Live = solid faint; durable-only or offline agent = dashed dim. Only channel
+  // hubs carry membership (agents→channels); a wide reader shows the ≫ badge, not a spoke per hub.
+  for (const link of graph.memberships) {
+    const from = pos.get(link.agent);
+    if (!from) continue;
+    const agentNode = graph.byKey.get(link.agent);
+    const offline = link.state === "durable" || (agentNode?.status ?? "offline") === "offline";
+    const row = hubRow(link.channel);
+    if (row < hubY + 1) continue; // hub not materialized (shouldn't happen — merge adds it)
+    let to: { x: number; y: number };
+    let head: string;
+    if (from.x < hubX) (to = { x: hubX - 1, y: row }), (head = "▶");
+    else if (from.x > hubX + hubW - 1) (to = { x: hubX + hubW, y: row }), (head = "◀");
+    else (to = { x: cx, y: from.y < cy ? hubY - 1 : hubY + hubH }), (head = from.y < cy ? "▼" : "▲");
+    const pts = walk(from.x, from.y, to.x, to.y);
+    pts.forEach((p, i) => {
+      if (p.y < 0 || p.y >= height || p.x < 0 || p.x >= width) return;
+      if (offline && i % 2 === 1) return; // durable/offline spoke goes dashed
+      if (grid[p.y][p.x].ch !== " ") return; // never overwrite existing ink (traffic drawn later still wins)
+      stamp(grid[p.y], p.x, i === pts.length - 1 ? head : p.ch, { dim: true });
+    });
+  }
 
   // Edges — ascending by rate so hot traffic overdraws cool; spotlight the selection.
   for (const e of graph.edges) {
