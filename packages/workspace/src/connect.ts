@@ -91,7 +91,12 @@ export function refuseUserModeOrExit(conn: Connection, what: string): void {
   if (!conn.bearer) return;
   console.error(
     c.red(
-      `✗ ${what} is not yet supported over a user-mode login on space "${conn.space}" — static --creds are retired on per-user-auth meshes. Use a supported user-mode command, or run this workflow on a static-auth mesh.`,
+      `✗ ${what} isn't available over a user login yet — space "${conn.space}" is a per-user-auth mesh, and this command still relies on operator creds files (static --creds are retired here).`,
+    ),
+  );
+  console.error(
+    c.dim(
+      `  Nothing is wrong with your login or grant; this surface just isn't ported to user mode yet. Use a user-mode command (send, spawn, status, actor …), or run this on a static-auth mesh.`,
     ),
   );
   process.exit(1);
@@ -108,9 +113,10 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
   if (!knownRecordedUser && !knownLocalUser) return;
   console.error(
     c.red(
-      `✗ ${what} cannot use static credentials on per-user-auth space "${space}" — sign in (\`cotal login\`) and use the user-mode path (agents: \`cotal spawn\`); old --creds files are refused here.`,
+      `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh — old --creds files are refused here so they can't bypass user accounts.`,
     ),
   );
+  console.error(c.dim(`  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`));
   process.exit(1);
 }
 
