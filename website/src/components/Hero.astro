@@ -98,7 +98,7 @@ if (image) {
     }
 
     .copy > * {
-      max-width: 50ch;
+      max-width: 60ch;
     }
 
     h1 {
@@ -121,9 +121,14 @@ if (image) {
 
     @media (min-width: 50rem) {
       .hero {
+        padding-block: clamp(2.5rem, calc(1rem + 10vmin), 10rem);
+      }
+
+      /* Reserve the side column only when a hero image exists; without one the
+         copy would sit squeezed beside empty space. */
+      .hero:has(> img, > .hero-html) {
         grid-template-columns: 7fr 4fr;
         gap: 3%;
-        padding-block: clamp(2.5rem, calc(1rem + 10vmin), 10rem);
       }
 
       .hero > img,
@@ -143,6 +148,28 @@ if (image) {
       .actions {
         justify-content: flex-start;
       }
+    }
+  }
+
+  /* Entrance: title, tagline, and actions rise in once, staggered. The
+     `backwards` fill hides delayed elements until their turn; no forwards
+     fill, so nothing keeps holding a transform afterwards. */
+  @media (prefers-reduced-motion: no-preference) {
+    .copy > *,
+    .actions {
+      animation: hero-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    }
+    .tagline {
+      animation-delay: 0.08s;
+    }
+    .actions {
+      animation-delay: 0.16s;
+    }
+  }
+  @keyframes hero-rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
     }
   }
 </style>

@@ -2,3 +2,82 @@
 .site-title {
   color: #e9c46a;
 }
+
+/* Motion. Subtle and purposeful (150-500ms, eased); every rule below is a
+   progressive enhancement and switched off for reduced-motion users. */
+@media (prefers-reduced-motion: no-preference) {
+  /* Cross-fade between pages (Chrome 126+, Safari 18.2+; elsewhere navigation
+     stays instant). The header, sidebar, and table of contents get their own
+     snapshots, so only the content pane appears to change. */
+  @view-transition {
+    navigation: auto;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.18s;
+  }
+  header.header {
+    view-transition-name: site-header;
+  }
+  .sidebar-pane {
+    view-transition-name: sidebar;
+  }
+  .right-sidebar {
+    view-transition-name: toc;
+  }
+
+  /* Smooth in-page jumps (table of contents, heading anchors). */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Link cards lift toward the pointer; the arrow leans into the direction
+     of travel. */
+  .sl-link-card {
+    transition:
+      border-color 0.2s,
+      box-shadow 0.2s,
+      transform 0.2s;
+  }
+  .sl-link-card:hover {
+    border-color: color-mix(in srgb, #e9c46a 40%, var(--sl-color-gray-5));
+    box-shadow: 0 4px 14px color-mix(in srgb, #e9c46a 8%, transparent);
+    transform: translateY(-2px);
+  }
+  .sl-link-card svg {
+    transition: transform 0.2s;
+  }
+  .sl-link-card:hover svg {
+    transform: translateX(3px);
+  }
+
+  /* Hover feedback eases instead of snapping. */
+  .sidebar-content a,
+  .sl-markdown-content a,
+  starlight-toc a {
+    transition:
+      color 0.15s,
+      background-color 0.15s;
+  }
+  .sl-anchor-link {
+    transition: opacity 0.15s;
+  }
+
+  /* Landing-page card grids fade in as they scroll into view (scroll-driven
+     animations; ignored where unsupported). Opacity only, so it never fights
+     the hover transforms above. */
+  @supports (animation-timeline: view()) {
+    .card-grid > * {
+      animation: fade-in linear both;
+      animation-timeline: view();
+      animation-range: entry 10% entry 50%;
+    }
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
