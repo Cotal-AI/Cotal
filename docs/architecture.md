@@ -37,10 +37,15 @@ itself, where the server can police it, rather than in a self-asserted payload f
 
 | Delivery | Subject |
 |---|---|
-| multicast | `cotal.<space>.chat.<sender>.<channel…>` |
-| unicast | `cotal.<space>.inst.<target>.<sender>` |
-| anycast | `cotal.<space>.svc.<role>.<sender>` |
-| control | `cotal.<space>.ctl.<service>.<sender>` |
+| multicast | `cotal.<space>.chat.<owner>.<actor>.<channel…>` |
+| unicast | `cotal.<space>.inst.<toOwner>.<toActor>.<owner>.<actor>` |
+| anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` |
+| control | `cotal.<space>.ctl.<service>.<owner>.<actor>` |
+
+The sender is a **principal**, an `owner.actor` pair: the account the agent acts on behalf
+of, then the agent's own handle under it ([identity & auth](identity-and-auth.md)). Two
+tokens instead of one means the broker can deny cross-owner *and* same-owner cross-actor
+forgery in the subject grammar itself.
 
 Behind the subjects, each space gets three **JetStream streams** (chat / DM / task, for
 storage, per-reader bookmarks, and history), **KV buckets** for presence and the channel

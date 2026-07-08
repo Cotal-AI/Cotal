@@ -76,13 +76,13 @@ as lateral peers in a shared pub/sub space, not as nodes in an orchestrator tree
 
 An instance's wire identity is a **principal** = a pair of routing tokens `(owner, actor)`:
 
-- **`owner`** — the account that owns the instance: the human (or organization) an agent acts on
-  behalf of. In an authenticated deployment it is a derived **owner token** — `u_` followed by 26
-  base32-lower characters — a namespaced, nkey-disjoint token deterministically derived from the
+- **`owner`**: the account that owns the instance: the human (or organization) an agent acts on
+  behalf of. In an authenticated deployment it is a derived **owner token** (`u_` followed by 26
+  base32-lower characters), a namespaced, nkey-disjoint token deterministically derived from the
   owner's stable identity (e.g. an IdP subject) by the deployment's identity adapter; the wire
   contract fixes the token *format*, not the derivation mechanism, which is a pluggable edge. In open
   dev mode the owner is the literal `local`.
-- **`actor`** — the instance's own handle within that owner (its agent id). Distinct actors under one
+- **`actor`**: the instance's own handle within that owner (its agent id). Distinct actors under one
   owner are distinct principals and are confined from one another (§9), so one human's two agents
   cannot forge or read as each other.
 
@@ -94,7 +94,7 @@ dot-form), the presence key (§6, dot-form), and the per-instance durable names 
 
 **The principal is distinct from the connection credential.** In the authenticated NATS binding the
 connecting user is still an Ed25519 nkey (base32, 56 chars, prefix `U`, e.g. `UAQG...`), stable for
-the lifetime of the connection — but it is **not** the wire identity. The nkey authenticates the
+the lifetime of the connection, but it is **not** the wire identity. The nkey authenticates the
 transport and scopes only the per-connection reply inbox `_INBOX_<connId>.>` (§10); the principal
 that keys every subject, grant, and durable is carried by the minted grant, not by the nkey. This
 separation is what lets a login (§9) mint a fresh connection whose nkey the client never sees while
@@ -105,7 +105,7 @@ the principal stays stable across reconnects.
   MUST fail before publish.
 - A client that authenticates through the auth callout (user mode, §9) cannot know its connection
   nkey before connecting, so it chooses its own reply-inbox nonce (`connId`) and derives its
-  principal from its bearer; the broker's minted grant — not the client's self-read — is the
+  principal from its bearer; the broker's minted grant, not the client's self-read, is the
   boundary.
 - Open dev mode MAY use `local` as the owner and an opaque stable actor, but open mode is outside
   the security claims in §9 and is not a conformant authenticated deployment.
@@ -144,11 +144,11 @@ Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1
 - `svc`, `ctl`: route target at token 3; sender owner at token 4, actor at token 5.
 - `inst`: recipient owner+actor at tokens 3–4; sender owner+actor at tokens 5–6.
 
-The two-token sender is what lets a native publish grant **forge-lock** the sender suffix — e.g.
-`inst.*.*.<myOwner>.<myActor>` permits a DM to anyone but only *as me* — so the broker enforces
+The two-token sender is what lets a native publish grant **forge-lock** the sender suffix (e.g.
+`inst.*.*.<myOwner>.<myActor>` permits a DM to anyone but only *as me*), so the broker enforces
 sender authenticity and a receiver need not re-verify a payload claim. A subject that does not match
 one of these shapes (wrong prefix or wrong per-kind arity) MUST be treated as having no sender and
-MUST NOT be read as a delivery. `parseSubject` **splits only** — it recovers the tokens but does not
+MUST NOT be read as a delivery. `parseSubject` **splits only**: it recovers the tokens but does not
 validate that `<owner>` is a well-formed owner token; trust comes from the broker's forge-locked
 grant, and a reader that surfaces content additionally rejects a non-principal owner token at the
 surfacing boundary (§9). Reference implementation: `parseSubject` in
@@ -542,7 +542,7 @@ operator-facing views of this section: [docs/identity-and-auth.md](docs/identity
   declared channel).
 
 Every grant below is keyed on the agent's **principal** `<owner>.<actor>` (§2), except the reply
-inbox, which is keyed on the **connection** `<connId>` — the connection nkey (static mode) or the
+inbox, which is keyed on the **connection** `<connId>`: the connection nkey (static mode) or the
 client-chosen nonce (user mode, §9). This is the one place the wire identity and the connection
 credential diverge (§2): the principal keys subjects/durables/presence; the connId keys the inbox.
 
@@ -559,7 +559,7 @@ DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
    `sub.allow` permits alongside the agent's channel read grants (next item) and nothing else. In user
    mode the client picks `<connId>` (a nonce) and the callout scopes the inbox to it, so a
    wildcard-inbox subscribe that would sniff peers' DM deliveries is refused. Re-authorized durable
-   copies do NOT ride the inbox — they ride the agent's own `dlv_<owner>-<actor>` DELIVER consumer
+   copies do NOT ride the inbox; they ride the agent's own `dlv_<owner>-<actor>` DELIVER consumer
    (item 5, §8).
 2. **Channel live reads are bounded by `sub.allow`.** `allowSubscribe` is minted as native subscribe
    grants over `cotal.<space>.chat.*.*.<channel>` (wildcards preserved); the broker refuses, per
@@ -629,15 +629,15 @@ cotal://user:pass@host/space                         user/password auth
 - Credentials (`creds`) are mutually exclusive with token and username/password auth.
 - A client MUST set `inboxPrefix` to `_INBOX_<connId>` before any request, pull consumer, or KV
   watch operation, where `<connId>` is the connection identifier (the connection nkey in static
-  mode; the client-chosen nonce in user mode, §2/§9) — NOT the owner+actor principal, which the
+  mode; the client-chosen nonce in user mode, §2/§9), NOT the owner+actor principal, which the
   client may not know pre-connect.
 
 Authenticated onboarding has two bindings. **Out-of-band credential minting** provisions a per-agent
 credential ahead of connect (the static path). **Auth-callout onboarding** validates a user bearer at
 connect time and mints the scoped data-account JWT then (user mode, §2/§10): the client presents a
 deny-all sentinel credential plus its bearer, the callout derives the owner+actor principal and grants,
-and re-binds the connection into the data account. The owner-token *derivation* — how a bearer maps to
-an owner token — is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
+and re-binds the connection into the data account. The owner-token *derivation* (how a bearer maps to
+an owner token) is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
 contract; the callout *mechanism* and the resulting grants are.
 
 ---
@@ -697,14 +697,14 @@ federated/untrusted relay bindings.
 
 A conformant authenticated NATS client MUST:
 
-1. Use one stable principal `<owner>.<actor>` as its wire identity everywhere — subject sender
-   tokens (§3), `from.id` (§5), presence key (§6), durable names (dash-form, §8) — and treat the
+1. Use one stable principal `<owner>.<actor>` as its wire identity everywhere: subject sender
+   tokens (§3), `from.id` (§5), presence key (§6), durable names (dash-form, §8); and treat the
    connection credential (nkey) as distinct, keying only its reply inbox (§2).
 2. Publish only on subjects whose sender tokens are its own principal `<owner>.<actor>` (§3).
 3. Publish delivery messages as UTF-8 JSON through JetStream with `msgID = id` (§8).
 4. Set exactly one routing field on each delivery message (§5).
 5. Reject any received delivery message whose `from.id` does not match the subject sender, and whose
-   subject `<owner>` is not a well-formed principal owner token — a subject that split-parses but
+   subject `<owner>` is not a well-formed principal owner token: a subject that split-parses but
    carries a non-owner in the owner slot (e.g. a raw nkey, an old-shape alias) MUST NOT be surfaced
    as a delivery (§3, §5).
 6. Derive delivery kind (channel/dm/anycast) from the subject, not payload routing fields (§4).
@@ -734,7 +734,7 @@ Test vectors use these sample principals (`<owner>.<actor>`); `<ownerA>` = `u_aa
 - Reviewer role: `reviewer`
 
 Subject parsing. `parseSubject` **splits only** (§3): it recovers tokens by prefix and per-kind arity
-but does NOT validate the owner token — a well-formed *split* is necessary, not sufficient, for a
+but does NOT validate the owner token: a well-formed *split* is necessary, not sufficient, for a
 subject to be surfaced as a delivery. The last row shows an old-shape alias that split-parses yet MUST
 be dropped at the surfacing boundary (§9):
 
@@ -818,7 +818,7 @@ placeholders:
 - `KV = KV_cotal_presence_<space>`
 - `CHKV = KV_cotal_channels_<space>`; `DLVKV = <delivery lease/readiness KV>`
 - `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
-- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode) — distinct from the principal, and keys ONLY the reply inbox
+- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode); distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
 - `chatHistD = chathist_<owner>-<actor>`, `dmD = dm_<owner>-<actor>`, `dlvD = dlv_<owner>-<actor>`, `svcD = svc_<role>` (all keyed on the principal dash-form; §8)
 - `inbox = _INBOX_<connId>.>`
@@ -840,8 +840,8 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.chat.<owner>.<actor>.<ch>` for every `allowPublish` channel (post ACL; none by default)
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
-- `P.ctl.self.<owner>.<actor>` (self stop/despawn — granted to every agent)
-- `P.ctl.delivery.<owner>.<actor>` (durable join/leave/list to the delivery daemon — every agent)
+- `P.ctl.self.<owner>.<actor>` (self stop/despawn; granted to every agent)
+- `P.ctl.delivery.<owner>.<actor>` (durable join/leave/list to the delivery daemon; every agent)
 - `P.ctl.<manager>.<owner>.<actor>` **only if the agent has the `spawn` capability** (privileged lifecycle: start/purge/definePersona/named stop-despawn); default-deny otherwise
 - `$JS.API.INFO`
 - `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>`: CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/TASK (agents bind those by name and never inspect them, so INFO there would only leak inbox/task metadata)
@@ -854,7 +854,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.ACK.<DM>.<dmD>.>` (DM inbox: BIND-ONLY its own pre-created `dmD`, never create)
 - `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`
-- `$JS.ACK.<DLV>.<dlvD>.>` — the **durable backstop**: BIND-ONLY its own pre-created per-member DELIVER consumer `dlvD` (the trusted reader's re-authorized handoff, §8). The agent holds NO grant on the mixed pre-auth `INBOX` fan-out stream.
+- `$JS.ACK.<DLV>.<dlvD>.>`, the **durable backstop**: BIND-ONLY its own pre-created per-member DELIVER consumer `dlvD` (the trusted reader's re-authorized handoff, §8). The agent holds NO grant on the mixed pre-auth `INBOX` fan-out stream.
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
 - `$JS.FC.>`
@@ -862,7 +862,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
-- `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness — read-only, non-gating)
+- `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
 - if `role` is set: `$JS.API.CONSUMER.INFO.<TASK>.<svcD>`,
   `$JS.API.CONSUMER.MSG.NEXT.<TASK>.<svcD>`, `$JS.ACK.<TASK>.<svcD>.>`
 
@@ -982,5 +982,6 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | Date | Revision |
 | --- | --- |
 | 2026-07-07 | Documentation revision, no wire change: layered authority statement (schema authoritative for shapes, prose for semantics), document-snapshot policy and this change log (§11), reciprocal links to the informative docs. |
+| 2026-07-03 | **v0.3 binding revision: owner+actor identity.** The wire identity becomes the two-token principal `(owner, actor)`: subjects carry the sender as `<owner>.<actor>`, and grants, durables, presence, and `from.id` re-key onto the pair (§2, §3, §6, §8, §9). The connection nkey remains only the transport credential (the per-connection reply inbox). Adds the per-user-auth authorization grammar and the owner-token format (§2, §9). Supersedes the single-id grammar. |
 | 2026-06-21 | **v0.3 binding revision: channel live delivery.** Channel live delivery moves from the mediated per-instance live-tail durable to native `sub.allow`-bounded core subscriptions, with an explicit per-channel `live`/`durable` delivery class and the per-member durable backstop (§4, §7, §8); membership moves to a privileged-written registry (§7). Supersedes the v0.2 single-durable live-tail. |
 | earlier | v0.2 and before predate change control: the v0.2 contract (single mediated live-tail durable binding) is superseded by v0.3 and kept only in history. |

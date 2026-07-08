@@ -6,25 +6,30 @@
 
 Cotal's wire contract (subjects, message schemas, presence and discovery conventions) is the
 standard; libraries are thin clients over it. `SPEC.md` is normative; the `docs/` are
-informative companions. Paths below are repo-relative; the hosted docs site serves the same
-index at `/llms.txt` with absolute URLs.
+informative companions. Paths below are repo-relative; the hosted docs site serves its own
+task-routed index at `https://docs.cotal.ai/llms.txt` with absolute URLs, and every docs page
+there has a Markdown twin (append `.md` to its URL).
 
 ## Start here
 
 - [README.md](README.md): what Cotal is, the three addressing modes, and a quick start.
-- [docs/OVERVIEW.md](docs/OVERVIEW.md): what Cotal is and what it can do.
+- [docs/README.md](docs/README.md): the docs index, with task dispatch for agents.
+- [docs/what-is-cotal.md](docs/what-is-cotal.md): what Cotal is and what it can do.
+- [docs/getting-started.md](docs/getting-started.md): install and run a local mesh.
 - [docs/architecture.md](docs/architecture.md): how it is built (subjects, streams, auth, the manager).
-- [docs/claude-code-integration.md](docs/claude-code-integration.md): how a coding agent joins the mesh.
+- [docs/connect-claude.md](docs/connect-claude.md): how a Claude Code session joins the mesh.
 
 ## Reference
 
 - [SPEC.md](SPEC.md): the normative wire contract.
-- [docs/getting-started.md](docs/getting-started.md): install and run a local mesh.
-- [docs/protocol-view.md](docs/protocol-view.md): the shared MeshView observability model.
+- [docs/cli.md](docs/cli.md): every `cotal` command.
+- [docs/mcp-tools.md](docs/mcp-tools.md): the `cotal_*` tool catalog agents use in-session.
+- [docs/manifest.md](docs/manifest.md): every field of the `cotal.yaml` mesh manifest.
+- [docs/identity-and-auth.md](docs/identity-and-auth.md): who can do what, and how it is enforced (static and per-user auth).
 - [docs/transport.md](docs/transport.md): protocol vs transport, and the capability contract.
 - [docs/spaces.md](docs/spaces.md): spaces vs channels, and the federation direction.
 - [docs/security.md](docs/security.md): the trust boundary and threat model.
-- [docs/web.md](docs/web.md): the `cotal web` observability dashboard.
+- [docs/build-a-client.md](docs/build-a-client.md): implement a conformant client in another language.
 - [docs/examples.md](docs/examples.md): index of runnable examples.
 
 ## For contributors

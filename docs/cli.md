@@ -47,7 +47,11 @@ ships this way; see [`web`](#web)).
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `cotal-web` extension) |
-| Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (auth mode) |
+| Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
+| Auth & meshes | [`login`](#login-logout) | Sign in to a per-user-auth mesh's IdP (once per machine) |
+| Auth & meshes | [`logout`](#login-logout) | Revoke the IdP session and clear the cached login |
+| Auth & meshes | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
+| Auth & meshes | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
 | Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
 | Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
 | Extensions & misc | [`ext`](#ext) | Install / remove operator CLI extensions |
@@ -92,6 +96,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
 | `--store-dir <dir>` | — | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
+| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
+| `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
@@ -103,6 +109,12 @@ per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory 
 stays fail-loud on collision. `--detach` also brings up the control plane (delivery daemon in auth
 mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see
 [Run a mesh](run-a-mesh.md).
+
+`--user-auth --idp <url>` starts the space's auth service alongside the broker (the NATS
+auth callout plus the loopback token exchange); it is torn down with `cotal down`, and a
+re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
+contradict each other and are refused loudly; a running broker cannot change auth mode
+without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
 ## down
 
@@ -203,10 +215,12 @@ cotal attach --name <n> [--space <s>]
 | `--name <n>` | — | Managed agent to stop / attach (required) |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
-their mesh status (`starting…` / `working` / `waiting` / `offline`). `attach` streams and drives an
-agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
+their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
+renders each managed agent's last credential-refresh outcome, fail-closed. `attach` streams and
+drives an agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
 [`COTAL_DETACH_KEY`](config.md)). `stop` and `attach` are cross-agent admin operations, so they need
-a manager to talk to; launch detached agents with [`spawn --detach`](#spawn).
+a manager to talk to; on a user-auth mesh they need the `admin` scope on your ledger row
+([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
 
 ## personas
 
@@ -351,9 +365,63 @@ cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--signer]
 | `--allow-subscribe <a,b>` | profile default | Read-ACL override |
 | `--allow-publish <a,b>` | profile default | Post-ACL override |
 
-Mints a NATS creds file for a space in auth mode, scoped to a profile and (optionally) explicit
-read/post ACLs. `--signer` emits an account-signing file for delegating minting to another host. See
+Mints a NATS creds file for a space in **static** auth mode, scoped to a profile and (optionally)
+explicit read/post ACLs. `--signer` emits an account-signing file for delegating minting to another
+host. A per-user-auth space refuses `mint`: agents there join under a logged-in user
+([`login`](#login-logout) + [`actor grant`](#actor)), never via a handed-out creds file. See
 [Identity and auth](identity-and-auth.md).
+
+## login, logout
+
+```bash
+cotal login --idp <auth base URL> [--client-id <id>]
+cotal logout --idp <auth base URL>
+```
+
+Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
+once per machine. It prints your IdP subject, the id the operator grants against. After a
+login, every command on that mesh works under your identity: each connect takes a fresh IdP
+proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
+ledger at connect time. `logout` revokes the IdP session and clears the cache. See
+[identity & auth](identity-and-auth.md).
+
+## actor
+
+```bash
+cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
+cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
+cotal actor list
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | the folder's | Space whose ledger to manage |
+| `--sub <subject>` | — | The IdP subject (shown by `cotal login`) the actor belongs to |
+| `--owner <u_…>` | — | The derived owner token (alternative to `--sub`) |
+| `--scope <a,b>` | `spawn,role:default` | Capability scope (`''` = none; `spawn` = may run agents, `role:<r>` = may delegate role r, `admin` = cross-agent control) |
+| `--allow-subscribe <a,b>` | `>` (all channels) | Channel read ACL; the user's envelope, their agents can never read beyond it |
+| `--allow-publish <a,b>` | `>` (all channels) | Channel post ACL; also the envelope for their agents' posting |
+| `--role <r>` | — | Role (scopes the task-queue consumer) |
+| `--label <l>` | — | Display label for `actor list` (never the IdP subject) |
+
+The actor ledger is the single authorization source of a user-auth space: no row, no access.
+A bare `grant` is the **full** envelope (all channels, may spawn); the flags narrow it. A
+re-grant **replaces** the row, so to add a capability, re-grant with it added to the current
+scope (`cotal actor list` shows what a row holds). `revoke` denies the next exchange and the
+next connect with no restart, and evicts the principal's live connections. Managed-agent rows
+(written by the spawn path) live in a disjoint row space this command never touches. See
+[identity & auth](identity-and-auth.md).
+
+## doctor
+
+```bash
+cotal doctor auth [--fix]
+```
+
+Credential-health diagnosis and repair for this folder's mesh: renders every managed
+credential as healthy / near-expiry / expired and ends in `healthy` or the exact next
+command; `--fix` applies the repairs it can. The one surface every stale-credential error
+points at.
 
 ## join
 
@@ -447,8 +515,13 @@ daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>]
+cotal auth-service --space <s> --server <url> [--port <n>]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
+
+`auth-service` runs a user-auth space's identity plane (the NATS auth callout plus the
+loopback token exchange and JWKS); `cotal up --user-auth` starts and supervises it for you,
+so you run it directly only to recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
@@ -460,5 +533,7 @@ include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and 
 ## Plumbing
 
 `cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
-for the current command line; you never run it directly. (`cotal start` is a removed tombstone: it
+for the current command line; you never run it directly. `cotal agent-bearer` is machine-facing
+plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
+spawn-time secret; you never run it directly either. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)

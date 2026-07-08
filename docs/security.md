@@ -21,8 +21,9 @@ what is (not) defended**.
 Each adversary, what it can attempt, and what stops it (or why it is out of scope).
 
 - **Compromised or malicious peer agent** (authenticated, in-space): the primary adversary.
-  It cannot forge another agent's `from.id` (the subject sender is bound to its nkey by NATS
-  permissions), cannot publish to channels outside its declared allow-list, and cannot read
+  It cannot forge another agent's `from.id` (the subject sender, an `owner.actor` principal,
+  is pinned to its connection by NATS permissions; not another owner, and not a sibling actor
+  under its own owner), cannot publish to channels outside its declared allow-list, and cannot read
   another agent's DMs or another role's work queue ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
   It still can send well-formed hostile content to channels it is allowed on
   (see *Prompt-facing data*) and flood within its limits (see *availability* under *What v0
@@ -82,15 +83,21 @@ The guarantees, at a glance, each enforced by the broker per
   and adds no per-agent application-level rate limiting.
 - **Replay by a peer:** a peer may re-send its own prior messages; v0 defines no protocol-level
   nonce or idempotency key. It cannot replay as another agent (subject binding still holds).
-- **Credential revocation/TTL:** minted credentials are long-lived in v0 unless rotated out of
-  band. Despawn cuts a session, not a credential ([identity & auth](identity-and-auth.md)).
+- **Static agent credential revocation:** on a static-auth mesh, a minted *agent* cred is
+  long-lived unless the signing key is rotated; despawn cuts a session, not a credential. The
+  machinery is bounded (one-shot command creds expire in minutes, standing daemon creds in 24h
+  with renewal), and a per-user-auth mesh closes the gap entirely: short-lived bearers,
+  ledger revocation that bites at the next connect, and live-connection eviction
+  ([identity & auth](identity-and-auth.md)). A copied signing *seed* still stays valid until
+  rotation on either kind of mesh.
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there
   is **no allow-all cred**); the long-lived **supervisor** serves control and touches
   presence/its lease but cannot read a DM, create a consumer, or delete a stream; the destructive
   verbs (`STREAM.DELETE`/`PURGE`, cross-agent stop, per-agent provisioning) ride ephemeral
-  per-command creds (teardown / control-caller-admin / deployer / provisioner). What stays hot is
-  the account **signing key** on the mint/manager box (a compromise there can still mint fresh
-  creds) and confining it is the auth-callout stage ([roadmap](roadmap.md)).
+  per-command creds (teardown / control-caller-admin / deployer / provisioner). What stays hot on
+  a static-auth mesh is the account **signing key** on the mint/manager box (a compromise there
+  can still mint fresh creds); on a per-user-auth mesh it is confined to the auth service (the
+  callout stage, shipped for user mode; [identity & auth](identity-and-auth.md)).
 
 ## Prompt-facing data
 
