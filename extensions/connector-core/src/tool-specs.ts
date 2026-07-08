@@ -159,23 +159,31 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_docs",
       title: "Cotal: read the docs (version-exact)",
       description:
-        `The authoritative Cotal documentation for the exact version installed here (v${DOCS_VERSION}) — ` +
-        "the wire spec, message schema, and every guide, bundled and version-accurate. Consult this " +
-        "before answering anything about Cotal (subjects, message shapes, auth grammar, channels, the " +
-        "CLI, the cotal_* tools) or writing code against it; prefer it over training memory, which may be " +
-        "stale or wrong for this version. Call with no arguments for the page index; `page` (e.g. \"spec\", " +
-        "\"schema\", \"architecture\") for a page's full text; `query` to search across all docs. Read-only. " +
-        "Add `refresh: true` to also pull any doc patches published to docs.cotal.ai for this same version.",
+        `Read the authoritative Cotal docs for the exact version installed here (v${DOCS_VERSION}): the ` +
+        "wire spec, the message schema, and every guide, bundled so they always match this version. " +
+        "Use it before you answer or write code about anything Cotal — subjects, message shapes, the auth " +
+        "grammar, channels and ACLs, the CLI, the cotal_* tools — and prefer it over your training memory, " +
+        "which may be stale or wrong for this version. Three ways to call it: (1) no arguments returns the " +
+        "page index (a table of contents; start here when unsure); (2) `page` returns one page in full — " +
+        'pass "spec", "schema", or a guide slug from the index like "architecture" or ' +
+        '"channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant ' +
+        "sections with a pointer to each full page. Read the full page before writing code against it. " +
+        "Read-only, offline, instant. Optionally set `refresh: true` to also pull post-release doc patches " +
+        "from docs.cotal.ai (used only when the site reports this same version, so it can never return " +
+        "docs for a different version).",
       schema: {
         page: z
           .string()
           .optional()
-          .describe('A page to read in full: "spec" (the normative wire contract), "schema" (the message JSON Schema), or a guide slug like "architecture", "channels-and-permissions", "mcp-tools". Omit with no query to get the index.'),
-        query: z.string().optional().describe("Keyword search across every doc; returns the best-matching pages with an excerpt and a pointer to read each in full."),
+          .describe('Read one page in full. Use "spec" for the normative wire contract, "schema" for the message JSON Schema, or a guide slug from the index (e.g. "architecture", "channels-and-permissions", "mcp-tools"). Leave page and query both empty to get the index.'),
+        query: z
+          .string()
+          .optional()
+          .describe('Keyword search across all docs when you do not know which page to read. Best with exact Cotal identifiers — a subject, a cotal_* tool name, a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set.'),
         refresh: z
           .boolean()
           .optional()
-          .describe("Also try docs.cotal.ai for post-release patches. It is served only if the site reports this same version, so it can never return docs for a different version; otherwise the bundled copy is used."),
+          .describe("Default false serves the bundled, version-exact docs (offline). Set true to also try docs.cotal.ai for post-release patches; it is used only if the site reports this same version, otherwise the bundled copy is served and the response says so."),
       },
       run(_agent, _config, args: { page?: string; query?: string; refresh?: boolean }) {
         return runDocs(args);

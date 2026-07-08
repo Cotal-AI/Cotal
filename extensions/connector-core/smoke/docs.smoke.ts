@@ -58,19 +58,30 @@ const repoRoot = join(here, "..", "..", "..");
   assert.match(miss.text, /spec, schema/, "error lists the available pages");
 }
 
-// 5 — search: ranks matches and points back at full pages; empty query handled.
+// 5 — BM25 section search: ranks the right page, returns section headings + full-page pointers.
 {
   const res = await runDocs({ query: "channel permissions" });
   assert.equal(res.isError, undefined);
   assert.match(res.text, /matches for/);
   assert.match(res.text, /cotal_docs\(page: "/, "each hit points at the full page");
 
-  const hits = searchDocs("channel");
-  assert.ok(hits.length > 0, "‘channel’ matches at least one page");
+  const hits = searchDocs("channel permissions");
+  assert.ok(hits.length > 0, "‘channel permissions’ matches at least one section");
+  assert.equal(hits[0].slug, "channels-and-permissions", "the channels page ranks first");
+  assert.ok(hits[0].heading.includes(" › ") || hits[0].heading.length > 0, "a hit carries a heading path");
+  assert.ok(hits.every((h) => h.slug), "every hit names a page to fetch");
+
+  // BM25's edge: an exact identifier retrieves the page that documents it.
+  const ident = searchDocs("allowSubscribe");
   assert.ok(
-    hits.some((h) => h.page.slug === "channels-and-permissions"),
-    "the channels page ranks for ‘channel’",
+    ident.some((h) => h.slug === "channels-and-permissions"),
+    "exact identifier ‘allowSubscribe’ retrieves the channels page",
   );
+
+  // Diversity: at most two sections per page in the results.
+  const perPage = new Map<string, number>();
+  for (const h of searchDocs("cotal")) perPage.set(h.slug, (perPage.get(h.slug) ?? 0) + 1);
+  assert.ok([...perPage.values()].every((n) => n <= 2), "no page contributes more than two sections");
 
   const none = await runDocs({ query: "zzzznotawordzzzz" });
   assert.match(none.text, /No matches/);

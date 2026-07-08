@@ -68,10 +68,13 @@ export function renderDocsIndex(): string {
   return [
     `# Cotal v${DOCS_BUNDLE.version} — documentation`,
     "",
-    "Authoritative docs for the exact version installed here. Fetch a page for the full text",
-    "instead of relying on memory: `cotal_docs(page: \"<name>\")`. Search across everything:",
-    "`cotal_docs(query: \"…\")`. These docs are bundled and version-exact; add `refresh: true`",
-    "to also pull any doc patches published to docs.cotal.ai for this same version.",
+    "The authoritative docs for the exact version installed here. This is the index — it lists what",
+    "exists; it holds no answers itself. Your next call:",
+    '- Know the page? Read it in full: `cotal_docs(page: "<slug>")` (e.g. "spec", "architecture").',
+    '- Not sure which page? Search: `cotal_docs(query: "…")` returns the most relevant sections.',
+    "Prefer these docs over training memory, and read the full page before writing code or wire",
+    "frames. Docs are bundled and version-exact; add `refresh: true` to also pull any patches",
+    "published to docs.cotal.ai for this same version.",
     "",
     "## The normative sources",
     `- \`spec\` — ${DOCS_BUNDLE.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
@@ -88,68 +91,158 @@ function renderPage(p: DocsPage, note: string): string {
   return `${note}\n\n${p.body}`.trimStart();
 }
 
-interface Hit {
-  page: DocsPage;
-  score: number;
-  excerpt: string;
+// ─── Search: BM25 over heading-aware sections (offline, no embeddings) ───
+// Version-exact docs make LEXICAL retrieval the right tool: the queries are dominated by exact
+// identifiers (subjects, `cotal_*` tools, field names, `$SYS.*`), and BM25 with IDF + length
+// normalization beats naive term-counting on precisely those. We index SECTIONS (a heading and
+// its body), not whole pages, so a hit returns the specific passage the agent wants — code
+// fences kept intact — with a pointer back to the full page. This mirrors the current
+// architecture (index → fetch full page, the model is the retriever); search is the shortcut
+// for "I don't yet know which page."
+
+interface Section {
+  slug: string;
+  pageTitle: string;
+  /** Heading path shown to the agent, e.g. "Channels and permissions › The three verbs". */
+  heading: string;
+  /** The section's raw Markdown (its heading line included). */
+  text: string;
+  /** Field-boosted tokens (page title / heading repeated) used for scoring. */
+  tokens: string[];
+  len: number;
 }
 
-/** Case-insensitive keyword search over the bundle. Title/summary weighted above body.
- *  Returns the top pages with a short excerpt around the first match, and points the agent
- *  at the full page — token-bounded, never dumps everything. */
-export function searchDocs(query: string, limit = 5): Hit[] {
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return [];
-  const all: DocsPage[] = [
-    ...DOCS_BUNDLE.pages,
-    { slug: "spec", title: DOCS_BUNDLE.spec.title, kind: "normative", summary: "", body: DOCS_BUNDLE.spec.body },
-    { slug: "schema", title: DOCS_BUNDLE.schema.title, kind: "reference", summary: "", body: DOCS_BUNDLE.schema.body },
-  ];
-  const hits: Hit[] = [];
-  for (const page of all) {
-    const title = page.title.toLowerCase();
-    const summary = page.summary.toLowerCase();
-    const body = page.body.toLowerCase();
-    let score = 0;
-    for (const t of terms) {
-      score += title.includes(t) ? 5 : 0;
-      score += summary.includes(t) ? 3 : 0;
-      score += occurrences(body, t);
+/** Keep identifiers and subjects whole: `cotal_send`, `$SYS.>`, `#general`, `allowSubscribe`. */
+const TOKEN = /[a-z0-9_$.#>-]+/gi;
+function tokenize(s: string): string[] {
+  const m = s.toLowerCase().match(TOKEN);
+  return m ? m.filter((t) => t.length >= 2) : [];
+}
+
+// Query-side stopwords only (the corpus keeps everything so IDF stays honest).
+const STOP = new Set(
+  "a an and are as at be by do for from has how in is it of on or that the this to use using was what when where which who with you your".split(" "),
+);
+
+function sectionsOf(slug: string, pageTitle: string, body: string): Section[] {
+  const out: Section[] = [];
+  let heading = pageTitle;
+  let buf: string[] = [];
+  const flush = () => {
+    const text = buf.join("\n").trim();
+    if (text) {
+      const tokens = [
+        ...tokenize(pageTitle), ...tokenize(pageTitle), ...tokenize(pageTitle), // title ×3
+        ...tokenize(heading), ...tokenize(heading), // heading ×2
+        ...tokenize(text),
+      ];
+      out.push({ slug, pageTitle, heading, text, tokens, len: tokens.length });
     }
-    if (!score) continue;
-    hits.push({ page, score, excerpt: excerptAround(page.body, terms) });
+    buf = [];
+  };
+  let inFence = false;
+  for (const line of body.split("\n")) {
+    if (line.trimStart().startsWith("```")) inFence = !inFence;
+    const h = inFence ? null : line.match(/^#{2,6}\s+(.+?)\s*$/);
+    if (h) {
+      flush();
+      heading = `${pageTitle} › ${h[1].trim()}`;
+    }
+    buf.push(line);
   }
-  return hits.sort((a, b) => b.score - a.score).slice(0, limit);
+  flush();
+  return out;
 }
 
-function occurrences(haystack: string, needle: string): number {
-  let n = 0;
-  let i = haystack.indexOf(needle);
-  while (i !== -1) {
-    n++;
-    i = haystack.indexOf(needle, i + needle.length);
+const K1 = 1.2;
+const B = 0.75;
+
+function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: number } {
+  const sections: Section[] = [];
+  for (const p of DOCS_BUNDLE.pages) sections.push(...sectionsOf(p.slug, p.title, p.body));
+  sections.push(...sectionsOf("spec", DOCS_BUNDLE.spec.title, DOCS_BUNDLE.spec.body));
+  // The schema is JSON (no Markdown headings) — index it as a single section.
+  const sTok = [...tokenize(DOCS_BUNDLE.schema.title), ...tokenize(DOCS_BUNDLE.schema.title), ...tokenize(DOCS_BUNDLE.schema.body)];
+  sections.push({ slug: "schema", pageTitle: DOCS_BUNDLE.schema.title, heading: DOCS_BUNDLE.schema.title, text: DOCS_BUNDLE.schema.body, tokens: sTok, len: sTok.length });
+
+  const df = new Map<string, number>();
+  let total = 0;
+  for (const s of sections) {
+    total += s.len;
+    for (const t of new Set(s.tokens)) df.set(t, (df.get(t) ?? 0) + 1);
   }
-  return n;
+  return { sections, df, avgdl: total / Math.max(1, sections.length) };
 }
 
-/** A few lines of context around the first matching term. */
-function excerptAround(body: string, terms: string[]): string {
-  const lines = body.split("\n");
-  const lc = lines.map((l) => l.toLowerCase());
-  const at = lc.findIndex((l) => terms.some((t) => l.includes(t)));
-  if (at === -1) return lines.slice(0, 3).join("\n").trim();
-  const start = Math.max(0, at - 1);
-  return lines.slice(start, start + 4).join("\n").trim();
+// Built once at import: the bundle is static, so the section index is too.
+const INDEX = buildIndex();
+
+export interface DocHit {
+  /** Page slug to fetch in full via cotal_docs(page: slug). */
+  slug: string;
+  pageTitle: string;
+  heading: string;
+  /** The matching section's Markdown. */
+  text: string;
+  score: number;
 }
 
-function renderSearch(query: string, hits: Hit[]): string {
+/** BM25 search over heading-aware sections. Returns the best-matching sections (at most two per
+ *  page, for diversity), each with a pointer to read the full page. Offline; no embeddings. */
+export function searchDocs(query: string, limit = 5): DocHit[] {
+  let terms = tokenize(query).filter((t) => !STOP.has(t));
+  if (!terms.length) terms = tokenize(query); // all-stopword query → keep the raw terms
+  const termSet = new Set(terms);
+  if (!termSet.size) return [];
+
+  const N = INDEX.sections.length;
+  const scored: { s: Section; score: number }[] = [];
+  for (const s of INDEX.sections) {
+    const tf = new Map<string, number>();
+    for (const t of s.tokens) if (termSet.has(t)) tf.set(t, (tf.get(t) ?? 0) + 1);
+    let score = 0;
+    for (const t of termSet) {
+      const f = tf.get(t) ?? 0;
+      if (!f) continue;
+      const n = INDEX.df.get(t) ?? 0;
+      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+      score += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * s.len) / INDEX.avgdl)));
+    }
+    if (score > 0) scored.push({ s, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+
+  const perPage = new Map<string, number>();
+  const hits: DocHit[] = [];
+  for (const { s, score } of scored) {
+    const seen = perPage.get(s.slug) ?? 0;
+    if (seen >= 2) continue; // don't let one page crowd out the rest
+    perPage.set(s.slug, seen + 1);
+    hits.push({ slug: s.slug, pageTitle: s.pageTitle, heading: s.heading, text: s.text, score });
+    if (hits.length >= limit) break;
+  }
+  return hits;
+}
+
+/** Cap a section so a single long match can't blow the context; the pointer covers the rest. */
+function capSection(text: string, maxLines = 48): string {
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text.trim();
+  return lines.slice(0, maxLines).join("\n").trimEnd() + "\n\n… (section continues — read the full page)";
+}
+
+function renderSearch(query: string, hits: DocHit[]): string {
   if (!hits.length) {
-    return `No matches for "${query}" in the Cotal v${DOCS_BUNDLE.version} docs. Try \`cotal_docs()\` for the page index, or broader terms.`;
+    return `No matches for "${query}" in the Cotal v${DOCS_BUNDLE.version} docs. Call cotal_docs() for the page index, or search an exact identifier (a subject, a cotal_* tool, a field name).`;
   }
   const blocks = hits.map(
-    (h) => `## \`${h.page.slug}\` — ${h.page.title}\n${h.excerpt}\n→ full page: cotal_docs(page: "${h.page.slug}")`,
+    (h) => `## ${h.heading}\n${capSection(h.text)}\n\n→ read the full page: cotal_docs(page: "${h.slug}")`,
   );
-  return [`# Cotal docs — matches for "${query}"`, "", ...blocks].join("\n");
+  return [
+    `# Cotal v${DOCS_BUNDLE.version} docs — top matches for "${query}"`,
+    "The most relevant sections are below. Read the full page before writing code or wire frames.",
+    ...blocks,
+  ].join("\n\n");
 }
 
 /** Fetch the version docs.cotal.ai is currently serving, or null if unavailable. */
