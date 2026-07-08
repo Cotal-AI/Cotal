@@ -49,6 +49,11 @@ export interface LaunchOpts {
    *  `variant:`. A connector that supports variants renders it in its host form; unsupported
    *  connectors fail loud rather than silently ignoring it. */
   variant?: string;
+  /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
+   *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,
+   *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
+   *  `launchOptions:` mapping, or a manifest `launchOptions:` — merged per key. */
+  launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts. Connectors
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */

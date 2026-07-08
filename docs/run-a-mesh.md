@@ -62,6 +62,14 @@ How a spawn resolves:
   `--model provider/model --variant high`.
 - **Tools.** A spawned agent gets only the cotal tools by default; share your own MCP
   servers deliberately with `--share-tools` ([config](config.md)).
+- **Launch options.** `--opt key=value` (repeatable) passes a native harness flag straight
+  through; a persona or manifest `launchOptions:` mapping does the same declaratively (a
+  `--opt` wins per key). It is a **raw passthrough**, with no allow/deny list: Claude renders
+  each as `--key value` (a bare `--key` for an empty value), OpenCode merges them into its
+  agent config, and Hermes has no option surface so it fails loud. The trust boundary is the
+  `spawn` capability itself, not the flag set, so granting `spawn` is host-launch authority
+  ([security](security.md)). A key must be a plain flag name; malformed or prototype-polluting
+  keys are refused.
 
 Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it with
 `COTAL_DETACH_KEY=ctrl-<char>` when it clashes with a keybinding inside the agent's TUI.

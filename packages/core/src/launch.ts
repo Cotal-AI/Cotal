@@ -17,6 +17,8 @@ export interface MeshLaunchAgent {
   role?: string;
   model?: string;
   variant?: string;
+  /** Opaque connector-specific launch options (see {@link LaunchOpts.launchOptions}). */
+  launchOptions?: Record<string, unknown>;
   description?: string;
   /** Persona body — materialized to a transient, non-authoritative file the connector reads. */
   body?: string;
