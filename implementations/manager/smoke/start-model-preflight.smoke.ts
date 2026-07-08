@@ -48,11 +48,22 @@ import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, typ
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { opencodeConnector } from "@cotal-ai/connector-opencode";
 import { hermesConnector } from "@cotal-ai/connector-hermes";
+import { piConnector } from "../../../extensions/pi/src/connector.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
   if (!cond) failures++;
+}
+
+function throws(label: string, fn: () => unknown): void {
+  let ok = false;
+  try {
+    fn();
+  } catch {
+    ok = true;
+  }
+  check(label, ok);
 }
 
 // Hermes is Unix-only — its buildLaunch THROWS on win32 by design (AF_UNIX bridge + Python sidecar).
@@ -175,6 +186,9 @@ registry.register(recNoResumeCon);
   check("claude.requires == [claude]", JSON.stringify(claudeConnector.requires) === '["claude"]');
   check("opencode.requires == [opencode]", JSON.stringify(opencodeConnector.requires) === '["opencode"]');
   check("hermes.requires == [hermes]", JSON.stringify(hermesConnector.requires) === '["hermes"]');
+  check("pi.requires == [pi]", JSON.stringify(piConnector.requires) === '["pi"]');
+  throws("pi: buildLaunch rejects resume", () => piConnector.buildLaunch({ ...base, resume: "host-session" }));
+  throws("pi: buildLaunch rejects variant", () => piConnector.buildLaunch({ ...base, variant: "high" }));
 
   // Hermes is Unix-only: on win32 buildLaunch throws BEFORE producing a spec — assert that guard here
   // and skip the Hermes model rows below (they'd all throw). claude + opencode still run on both OSes.

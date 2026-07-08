@@ -16,6 +16,7 @@ import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessi
 import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
 import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
 import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)
+import "@cotal-ai/pi"; // registers the `pi` connector (mesh extension loaded into the user's own pi)
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { registry } from "@cotal-ai/core";
 
