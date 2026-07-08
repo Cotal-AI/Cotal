@@ -27,11 +27,13 @@ export async function down(args: ParsedArgs): Promise<void> {
     ["nats.pid", "nats-server"],
   ];
   let any = false;
+  // Sequential, in declared order (manager → delivery → web → nats): the manager's graceful shutdown
+  // releases its lease OVER nats, so nats must outlive it. Each stop awaits the real exit.
   for (const [file, label] of targets) {
     const pidPath = cotalPath(file);
     if (!existsSync(pidPath)) continue;
     any = true;
-    stop(pidPath, label);
+    await stop(pidPath, label);
   }
   // Non-pid control-plane artifacts: the delivery daemon's scoped creds + the manager's delivery-aware
   // marker. Drop them with the processes so a stale creds file / marker never lingers.
@@ -48,13 +50,36 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
 }
 
-function stop(pidPath: string, label: string): void {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+};
+
+/** Stop one recorded process and AWAIT its actual exit — SIGTERM starts a graceful shutdown (a
+ *  manager reaps its agents and releases its JetStream lease over NATS, which isn't instant), so
+ *  returning before the process is really gone would let callers (and `up`-style smokes) race a
+ *  still-dying manager. Poll the pid, escalate to SIGKILL if it overstays, then confirm it's gone. */
+async function stop(pidPath: string, label: string): Promise<void> {
   const pid = Number(readFileSync(pidPath, "utf8").trim());
+  // Drop the pidfile up front so a concurrent `down` can't double-signal a reused pid.
+  rmSync(pidPath, { force: true });
+  if (!Number.isFinite(pid)) return;
   try {
     process.kill(pid, "SIGTERM");
-    console.log(c.green(`✓ stopped ${label} (pid ${pid})`));
   } catch {
     console.log(c.dim(`${label} (pid ${pid}) was not running.`));
+    return;
   }
-  rmSync(pidPath);
+  const graceDeadline = Date.now() + 15_000;
+  while (isAlive(pid) && Date.now() < graceDeadline) await sleep(100);
+  if (isAlive(pid)) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
+    const hardDeadline = Date.now() + 3_000;
+    while (isAlive(pid) && Date.now() < hardDeadline) await sleep(100);
+  }
+  console.log(
+    isAlive(pid)
+      ? c.red(`✗ ${label} (pid ${pid}) did not exit`)
+      : c.green(`✓ stopped ${label} (pid ${pid})`),
+  );
 }

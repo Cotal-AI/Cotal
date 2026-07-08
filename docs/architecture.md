@@ -427,7 +427,7 @@ browser).
   standalone `cotal console` node that discovers managers over the mesh and aggregates their
   streams.
 
-**Control schema (first cut):** `start {role, name, agent}` · `stop {name, graceful?}` ·
+**Control schema (first cut):** `start {role, name, agent, model?, variant?}` · `models {agent?, refresh?}` · `stop {name, graceful?}` ·
 `definePersona {name, persona, model?}` · `ps` · `status {instance}` · `attach {instance}` ·
 `bind {instance, config}`. These are control-plane request/reply messages any authorized node
 (CLI, dashboard, or an agent) can send; spawning is policy-gated. `definePersona` writes

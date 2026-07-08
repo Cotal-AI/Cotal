@@ -16,8 +16,27 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const p = (s.address() as AddressInfo).port;
+      s.close(() => res(p));
+    });
+  });
+/** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
+const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
+  new Promise((r) => {
+    if (p.exitCode !== null || p.signalCode !== null) return r();
+    p.once("exit", () => r());
+    setTimeout(r, ms).unref?.();
+  });
 
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
@@ -37,7 +56,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const PORT = 14461;
+const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "detach-e2e";
 
@@ -76,6 +95,7 @@ const e2eCon: Connector = {
   kind: "connector",
   name: "e2e",
   requires: ["node"],
+  supportsModelVariant: true,
   buildLaunch: (o) => {
     lastOpts = o;
     return {
@@ -137,7 +157,7 @@ try {
     run("spawn", [
       "poet", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "bard",
       "--prompt", "compose", "--subscribe", "ops,ops.x", "--allow-subscribe", "ops,ops.>",
-      "--allow-publish", "ops", "--model", "fancy", "--cwd", agentCwd, "--share-tools", "alpha",
+      "--allow-publish", "ops", "--model", "fancy", "--variant", "high", "--cwd", agentCwd, "--share-tools", "alpha",
     ]),
   );
   ok("detached spawn reached the connector", lastOpts !== undefined);
@@ -147,6 +167,7 @@ try {
   ok("allow-subscribe override arrived", JSON.stringify(lastOpts?.allowSubscribe) === JSON.stringify(["ops", "ops.>"]), lastOpts?.allowSubscribe);
   ok("allow-publish override arrived", JSON.stringify(lastOpts?.allowPublish) === JSON.stringify(["ops"]), lastOpts?.allowPublish);
   ok("model override arrived", lastOpts?.model === "fancy", lastOpts?.model);
+  ok("variant override arrived", lastOpts?.variant === "high", lastOpts?.variant);
   ok("share-tools narrowed the config servers", JSON.stringify(Object.keys(lastOpts?.mcpServers ?? {})) === JSON.stringify(["alpha"]), lastOpts?.mcpServers);
   ok("persona role survived (no override given)", lastOpts?.role === "writer", lastOpts?.role);
   // --cwd is proven by the real child: it wrote its actual working directory.
@@ -243,5 +264,8 @@ try {
   console.log(`\nspawn-detach live e2e: ${pass} checks passed`);
 } finally {
   await mgr?.stop().catch(() => {});
-  for (const k of kids) k.kill("SIGKILL");
+  await Promise.all(kids.map((k) => {
+    k.kill("SIGKILL");
+    return awaitExit(k);
+  }));
 }

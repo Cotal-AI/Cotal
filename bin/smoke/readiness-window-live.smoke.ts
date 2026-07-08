@@ -15,8 +15,27 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const p = (s.address() as AddressInfo).port;
+      s.close(() => res(p));
+    });
+  });
+/** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
+const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
+  new Promise((r) => {
+    if (p.exitCode !== null || p.signalCode !== null) return r();
+    p.once("exit", () => r());
+    setTimeout(r, ms).unref?.();
+  });
 
 const home = mkdtempSync(join(tmpdir(), "cotal-readiness-home-"));
 process.env.COTAL_HOME = home;
@@ -37,7 +56,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const PORT = 14487;
+const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "readiness-e2e";
 // Past the 5s op default (what the old clients died at), inside the ~30s readiness backstop with
@@ -153,5 +172,8 @@ try {
   await ep?.stop().catch(() => {});
   await driver?.stop().catch(() => {});
   await mgr?.stop().catch(() => {});
-  for (const k of kids) k.kill("SIGKILL");
+  await Promise.all(kids.map((k) => {
+    k.kill("SIGKILL");
+    return awaitExit(k);
+  }));
 }

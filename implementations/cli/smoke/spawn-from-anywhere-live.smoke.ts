@@ -14,10 +14,28 @@
  * never pkill, so a co-running broker on :4222 is untouched. Run: pnpm smoke:spawn-from-anywhere:live
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer, type Server } from "node:net";
+import { createServer, type AddressInfo, type Server } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const p = (s.address() as AddressInfo).port;
+      s.close(() => res(p));
+    });
+  });
+/** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
+const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
+  new Promise((r) => {
+    if (p.exitCode !== null || p.signalCode !== null) return r();
+    p.once("exit", () => r());
+    setTimeout(r, ms).unref?.();
+  });
 
 // Sandbox the machine-home BEFORE importing core — homeCotalDir() reads COTAL_HOME per call, so the
 // real ~/.cotal is never touched.
@@ -66,13 +84,17 @@ function project(label: string): string {
 }
 
 const projA = project("projA");
-const SRV_OPEN = "nats://127.0.0.1:4455";
-const SRV_AUTH = "nats://127.0.0.1:4456";
+const PORT_OPEN = await freePort();
+const PORT_AUTH = await freePort();
+const PORT_NOTNATS = await freePort();
+const SRV_OPEN = `nats://127.0.0.1:${PORT_OPEN}`;
+const SRV_AUTH = `nats://127.0.0.1:${PORT_AUTH}`;
+const SRV_NOTNATS = `nats://127.0.0.1:${PORT_NOTNATS}`;
 const ts = "2026-06-22T00:00:00.000Z";
 
 try {
   // A + B(live ok) + D: open broker on a NON-default port, recorded for projA.
-  startBroker(4455, false);
+  startBroker(PORT_OPEN, false);
   await waitReady(SRV_OPEN, "ok");
   recordMesh({ space: "alpha", server: SRV_OPEN, root: projA, mode: "open", ts });
 
@@ -108,7 +130,7 @@ try {
   );
 
   // B(auth-required): the unreachable-vs-auth split against a REAL auth broker.
-  startBroker(4456, true);
+  startBroker(PORT_AUTH, true);
   await waitReady(SRV_AUTH, "auth-required");
   const credless = await probeConnect(SRV_AUTH, { timeoutMs: 800 });
   ok(
@@ -123,8 +145,8 @@ try {
   ok("E: isReachable(live open broker) → true", (await isReachable(SRV_OPEN)) === true);
   ok("E: isReachable(live AUTH broker) → true (credless, no auth-error log)", (await isReachable(SRV_AUTH)) === true);
   notNats = createServer((s) => s.end("hello, not nats\r\n"));
-  await new Promise<void>((res) => notNats!.listen(4457, "127.0.0.1", res));
-  ok("E: isReachable(non-NATS listener) → false (not 'any open port')", (await isReachable("nats://127.0.0.1:4457")) === false);
+  await new Promise<void>((res) => notNats!.listen(PORT_NOTNATS, "127.0.0.1", res));
+  ok("E: isReachable(non-NATS listener) → false (not 'any open port')", (await isReachable(SRV_NOTNATS)) === false);
 
   // C: prune-on-real-death. Kill ONLY our 4455 child, then the entry must prune.
   const opener = kids[0]!;
@@ -139,15 +161,15 @@ try {
 
   console.log(`\nspawn-from-anywhere live e2e: ${pass} checks passed`);
 } finally {
-  for (const cp of kids) {
+  await Promise.all(kids.map((cp) => {
     try {
       cp.kill("SIGKILL");
     } catch {
       /* already gone */
     }
-  }
+    return awaitExit(cp);
+  }));
   try { notNats?.close(); } catch { /* already closed */ }
-  await sleep(300);
   for (const d of [home, projA]) rmSync(d, { recursive: true, force: true });
 }
 process.exit(0);

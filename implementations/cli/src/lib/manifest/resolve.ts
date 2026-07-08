@@ -165,6 +165,7 @@ function resolveAgents(
     agentType: connector(name, entry.agent),
     persona: entry.persona ? personaPath(entry.persona) : undefined,
     model: entry.model,
+    variant: entry.variant,
     role: entry.role,
     description: entry.description,
     instructions: entry.instructions,

@@ -222,6 +222,7 @@ async function spawnDetached(
     agent: values.agent ?? defaultAgentOverride(),
     config: managerConfigRef,
     model: values.model,
+    variant: values.variant,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
     prompt: values.prompt,
@@ -262,6 +263,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // rather than silently spawn a fresh one (no fallbacks). An absent flag (undefined) is fine.
   if (values.resume !== undefined && !values.resume.trim()) {
     console.error("--resume needs a session id (got an empty value)");
+    process.exit(1);
+  }
+  if (values.variant !== undefined && !values.variant.trim()) {
+    console.error("--variant needs a variant name (got an empty value)");
     process.exit(1);
   }
   // `--dry-run` is a manifest-only flag (`-f`): on an imperative spawn it would have to be ignored
@@ -347,6 +352,20 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
+  const agentType = values.agent ?? defaultAgentType("claude");
+  let connector: Connector;
+  try {
+    connector = registry.resolve<Connector>("connector", agentType);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  const variant = values.variant ?? def.variant;
+  if (variant && !connector.supportsModelVariant) {
+    console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
+    process.exit(1);
+  }
+
   // Auth mode (`.cotal/auth` present): mint a stable identity + scoped creds for this agent
   // and pre-create its bind-only durables, via a short-lived privileged provisioner — the
   // same onboarding the manager does, so the foreground launch joins the authed mesh too.
@@ -413,14 +432,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
   // config (global ~/.config/cotal + the target mesh's .cotal), narrowed by an optional
   // --share-tools selection. Default (no config) is none — the connector launches isolated.
-  const agentType = values.agent ?? defaultAgentType("claude");
   const mcpServers = connectorServers(
     loadCotalConfig(target.root),
     agentType,
     parseShareSelection(values["share-tools"]),
   );
 
-  const connector = registry.resolve<Connector>("connector", agentType);
   // From here through a successful child launch, a THROW must run the user-mode cleanup — otherwise
   // a buildLaunch/spawn rejection (unsupported resume/model, a bad connector) leaves the just-granted
   // managed row + secret files standing (the freelance's blocker: cleanup only ran on normal exit).
@@ -437,6 +454,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       configPath: path,
       // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
       model: values.model,
+      variant,
       subscribe,
       allowSubscribe,
       allowPublish,

@@ -114,6 +114,10 @@ By default, `cotal spawn` and `cotal_spawn` launch Claude. Set `COTAL_DEFAULT_AG
 or `COTAL_DEFAULT_AGENT=hermes` to change the default harness for spawns that do not pass
 `--agent` / `agent`. An explicit `--agent` always wins.
 
+For connector-provided model selectors, ask the manager: `cotal models --agent opencode` lists
+OpenCode model ids and available variants. Use them with `cotal spawn --agent opencode --model
+provider/model --variant high`.
+
 Feedback flows through your agent too: tell it "send feedback: ..." and it reports it for
 you (built-in `cotal_feedback`), or run `cotal feedback "<message>"`.
 

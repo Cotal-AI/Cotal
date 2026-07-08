@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
@@ -12,6 +13,80 @@ const PLUGIN_ENTRY = fileURLToPath(new URL("./plugin.bundle.js", import.meta.url
 /** The launcher shim (`dist/serve.js`): starts `opencode serve` with the plugin, then attaches a
  *  foreground `opencode` TUI to the exact session the plugin drives (see serve.ts). */
 const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
+
+function discoveryEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.OPENCODE_CONFIG_CONTENT;
+  for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+  return env;
+}
+
+function execErrorMessage(e: unknown): string {
+  const err = e as Error & { stderr?: Buffer | string };
+  const stderr = Buffer.isBuffer(err.stderr) ? err.stderr.toString("utf8") : err.stderr;
+  return (stderr?.trim() || err.message).replace(/\s+/g, " ");
+}
+
+function readJsonBlock(lines: string[], start: number): { value: unknown; end: number } {
+  const parts: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    parts.push(lines[i]);
+    try {
+      return { value: JSON.parse(parts.join("\n")), end: i };
+    } catch {
+      // Keep accumulating the pretty-printed JSON object.
+    }
+  }
+  throw new Error("opencode models output ended before a model metadata JSON block closed");
+}
+
+function parseModels(stdout: string): ModelInfo[] {
+  const lines = stdout.split(/\r?\n/);
+  const models: ModelInfo[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const id = lines[i].trim();
+    if (!/^[^\s/]+\/\S+$/.test(id)) continue;
+
+    let raw: Record<string, unknown> | undefined;
+    if (lines[i + 1]?.trim().startsWith("{")) {
+      const block = readJsonBlock(lines, i + 1);
+      i = block.end;
+      if (block.value && typeof block.value === "object" && !Array.isArray(block.value)) raw = block.value as Record<string, unknown>;
+    }
+
+    const variantsRaw = raw?.variants;
+    const variants = variantsRaw && typeof variantsRaw === "object" && !Array.isArray(variantsRaw)
+      ? Object.entries(variantsRaw as Record<string, unknown>)
+        .filter(([, v]) => !(v && typeof v === "object" && !Array.isArray(v) && (v as { disabled?: unknown }).disabled === true))
+        .map(([name, v]) => ({ name, ...(v && typeof v === "object" && !Array.isArray(v) ? { options: v as Record<string, unknown> } : {}) }))
+      : undefined;
+
+    const provider = typeof raw?.providerID === "string" ? raw.providerID : id.split("/", 1)[0];
+    models.push({
+      id,
+      provider,
+      ...(typeof raw?.name === "string" ? { name: raw.name } : {}),
+      ...(variants?.length ? { variants } : {}),
+    });
+  }
+  return models;
+}
+
+function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
+  const args = ["models", "--pure", "--verbose"];
+  if (opts.refresh) args.push("--refresh");
+  try {
+    const stdout = execFileSync("opencode", args, {
+      encoding: "utf8",
+      env: discoveryEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { source: "opencode models --pure --verbose", models: parseModels(stdout) };
+  } catch (e) {
+    throw new Error(`opencode models failed: ${execErrorMessage(e)}`);
+  }
+}
 
 /**
  * The OpenCode connector: launches a watchable `opencode` TUI bound to the agent's session, using
@@ -32,6 +107,8 @@ export const opencodeConnector: Connector = {
   name: "opencode",
   transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["opencode"],
+  supportsModelVariant: true,
+  listModels: listOpenCodeModels,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
     // a plugin that CREATES its own session then attaches a TUI, so a fork must plumb into
@@ -96,23 +173,34 @@ export const opencodeConnector: Connector = {
       },
     };
 
-    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona + model.
-    // The model is a config default (the session — and the attached TUI — use it); the persona is
+    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona + model/variant.
+    // The model/variant are config defaults (the session — and the attached TUI — use them); the persona is
     // applied in-session by the plugin (opencode has no `--append-system-prompt`).
     let model = opts.model;
+    let variant = opts.variant;
     if (opts.configPath) {
       const path = resolve(opts.configPath);
       env.COTAL_AGENT_FILE = path; // plugin reads persona from it
       const def = loadAgentFile(path);
       model ??= def.model;
+      variant ??= def.variant;
     }
-    // The `--model` flag wins over the agent file, and applies even with no agent file. Pin it to a
-    // dedicated primary agent made the default, so an operator's own `default_agent` in
-    // ~/.config/opencode (with its own model) can't override the model a Cotal spawn asks for — the
-    // session the plugin drives runs the persona's model, not the operator's default agent's.
+    // The `--model` / `--variant` flags win over the agent file, and apply even with no agent file.
+    // Pin them to a dedicated primary agent made the default, so an operator's own `default_agent` in
+    // ~/.config/opencode (with its own model) can't override what a Cotal spawn asks for — the session
+    // the plugin drives runs the persona's selectors, not the operator's default agent's.
+    const cotalAgent: Record<string, unknown> = { mode: "primary" };
     if (model) {
       config.model = model;
-      config.agent = { cotal: { mode: "primary", model } };
+      env.COTAL_MODEL = model;
+      cotalAgent.model = model;
+    }
+    if (variant) {
+      env.COTAL_VARIANT = variant;
+      cotalAgent.variant = variant;
+    }
+    if (model || variant) {
+      config.agent = { cotal: cotalAgent };
       config.default_agent = "cotal";
     }
 

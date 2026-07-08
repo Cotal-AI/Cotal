@@ -1,5 +1,22 @@
 # cotal-ai
 
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies [e3a53e3]
+  - @cotal-ai/core@0.10.1
+  - @cotal-ai/workspace@0.10.1
+  - @cotal-ai/cli@0.10.1
+  - @cotal-ai/manager@0.10.1
+  - @cotal-ai/connector-core@0.10.1
+  - @cotal-ai/connector-claude-code@0.10.1
+  - @cotal-ai/connector-opencode@0.10.1
+  - @cotal-ai/connector-hermes@0.10.1
+  - @cotal-ai/cmux@0.10.1
+  - @cotal-ai/tmux@0.10.1
+  - @cotal-ai/delivery@0.10.1
+
 ## 0.10.0
 
 ### Minor Changes

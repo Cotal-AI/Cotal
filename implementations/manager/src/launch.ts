@@ -24,6 +24,7 @@ const LaunchAgentSchema = z.strictObject({
   agent: z.string().regex(TOKEN, "agent must be a connector token ([A-Za-z0-9_-])"),
   role: z.string().regex(TOKEN, "role must be a route-safe token ([A-Za-z0-9_-])").optional(),
   model: z.string().optional(),
+  variant: z.string().min(1).optional(),
   description: z.string().optional(),
   body: z.string().optional(),
   capabilities: z.array(z.string().regex(TOKEN, "capability must be a safe token ([A-Za-z0-9_-])")).optional(),
@@ -109,7 +110,7 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
 }
 
 /** Materialize one resolved agent's persona to a transient file the connector reads, and return its
- *  path. Carries only what a connector needs (identity/role/model/description + body) plus a loud
+ *  path. Carries only what a connector needs (identity/role/model/variant/description + body) plus a loud
  *  generated-artifact header — never ACL/capability frontmatter (creds come from the spec's policy). */
 export function materializePersona(root: string, runId: string, a: MeshLaunchAgent): string {
   // 0700 dirs created component-by-component, refusing a symlinked parent (writes can't escape the
@@ -120,6 +121,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   const fm = ["---", `name: ${a.name}`];
   if (a.role) fm.push(`role: ${scalar(a.role)}`);
   if (a.model) fm.push(`model: ${scalar(a.model)}`);
+  if (a.variant) fm.push(`variant: ${scalar(a.variant)}`);
   if (a.description) fm.push(`description: ${scalar(a.description)}`);
   fm.push("---", "");
   const src = a.personaPath ?? "the manifest";
@@ -130,18 +132,19 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   return path;
 }
 
-/** Build the manager spawn opts for a launch agent: identity/role/model + the resolved object
+/** Build the manager spawn opts for a launch agent: identity/role/model/variant + the resolved object
  *  (which carries the ACL authority) + the materialized configPath. */
 export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, owner?: string): {
   name: string;
   agent: string;
   role?: string;
   model?: string;
+  variant?: string;
   config: string;
   resolved: MeshLaunchAgent;
   owner?: string;
 } {
-  return { name: a.name, agent: a.agent, role: a.role, model: a.model, config: configPath, resolved: a, owner };
+  return { name: a.name, agent: a.agent, role: a.role, model: a.model, variant: a.variant, config: configPath, resolved: a, owner };
 }
 
 /** Quote a frontmatter scalar so the agent-file parser reads it back unchanged (it strips a matching
