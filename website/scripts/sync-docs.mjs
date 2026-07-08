@@ -171,6 +171,14 @@ mkdirSync(genDir, { recursive: true });
 mkdirSync(pubDir, { recursive: true });
 copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.schema.json'));
 
+// Stamp the version this docs build was generated from at /docs-version.json. The in-package
+// cotal_docs tool version-gates its optional remote refresh against this: it serves a page
+// from docs.cotal.ai only when this matches the installed version, so a site that has moved
+// ahead can never feed an agent docs for a version it isn't running. Source of truth: the
+// published bin/package.json version.
+const shippedVersion = JSON.parse(readFileSync(join(repoRoot, 'bin', 'package.json'), 'utf8')).version;
+writeFileSync(join(pubDir, 'docs-version.json'), JSON.stringify({ version: shippedVersion }) + '\n');
+
 const sidebar = [];
 for (const group of groups) {
   const items = [];
@@ -219,5 +227,5 @@ for (const rel of assetRefs) {
 }
 
 console.log(
-  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + ${assetRefs.size} images`,
+  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + docs-version.json (v${shippedVersion}) + ${assetRefs.size} images`,
 );

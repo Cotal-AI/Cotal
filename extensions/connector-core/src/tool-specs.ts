@@ -13,6 +13,7 @@ import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDeni
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
+import { runDocs, DOCS_VERSION } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
  *  `content`; the OpenCode plugin returns the string. */
@@ -152,6 +153,32 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             ? card
             : `(not connected to the mesh yet — the live context below is empty)\n\n${card}`,
         );
+      },
+    },
+    {
+      name: "cotal_docs",
+      title: "Cotal: read the docs (version-exact)",
+      description:
+        `The authoritative Cotal documentation for the exact version installed here (v${DOCS_VERSION}) — ` +
+        "the wire spec, message schema, and every guide, bundled and version-accurate. Consult this " +
+        "before answering anything about Cotal (subjects, message shapes, auth grammar, channels, the " +
+        "CLI, the cotal_* tools) or writing code against it; prefer it over training memory, which may be " +
+        "stale or wrong for this version. Call with no arguments for the page index; `page` (e.g. \"spec\", " +
+        "\"schema\", \"architecture\") for a page's full text; `query` to search across all docs. Read-only. " +
+        "Add `refresh: true` to also pull any doc patches published to docs.cotal.ai for this same version.",
+      schema: {
+        page: z
+          .string()
+          .optional()
+          .describe('A page to read in full: "spec" (the normative wire contract), "schema" (the message JSON Schema), or a guide slug like "architecture", "channels-and-permissions", "mcp-tools". Omit with no query to get the index.'),
+        query: z.string().optional().describe("Keyword search across every doc; returns the best-matching pages with an excerpt and a pointer to read each in full."),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe("Also try docs.cotal.ai for post-release patches. It is served only if the site reports this same version, so it can never return docs for a different version; otherwise the bundled copy is used."),
+      },
+      run(_agent, _config, args: { page?: string; query?: string; refresh?: boolean }) {
+        return runDocs(args);
       },
     },
     {

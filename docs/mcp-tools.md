@@ -9,6 +9,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | Tool | Does | Side-effect |
 |---|---|---|
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
+| [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
 | [`cotal_roster`](#cotalroster) | who's present | read-only |
 | [`cotal_inbox`](#cotalinbox) | read incoming messages | drains your inbox (pass `peek` to read without clearing) |
 | [`cotal_send`](#cotalsend) | broadcast to a channel | publishes to a channel |
@@ -37,6 +38,22 @@ Your orientation card: who you are (name/role/space), the channels you can read 
 - Call it first; safe to re-check anytime.
 
 No arguments.
+
+## `cotal_docs`
+
+*read the docs (version-exact)*
+
+The authoritative Cotal documentation for the exact version installed here (v0.10.1) — the wire spec, message schema, and every guide, bundled and version-accurate. Consult this before answering anything about Cotal (subjects, message shapes, auth grammar, channels, the CLI, the cotal_* tools) or writing code against it; prefer it over training memory, which may be stale or wrong for this version. Call with no arguments for the page index; `page` (e.g. "spec", "schema", "architecture") for a page's full text; `query` to search across all docs. Read-only. Add `refresh: true` to also pull any doc patches published to docs.cotal.ai for this same version.
+
+- **Side-effect:** read-only.
+- **Available:** always.
+- Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `page` | string | no | A page to read in full: "spec" (the normative wire contract), "schema" (the message JSON Schema), or a guide slug like "architecture", "channels-and-permissions", "mcp-tools". Omit with no query to get the index. |
+| `query` | string | no | Keyword search across every doc; returns the best-matching pages with an excerpt and a pointer to read each in full. |
+| `refresh` | boolean | no | Also try docs.cotal.ai for post-release patches. It is served only if the site reports this same version, so it can never return docs for a different version; otherwise the bundled copy is used. |
 
 ## `cotal_roster`
 

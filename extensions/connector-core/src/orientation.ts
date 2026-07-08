@@ -12,6 +12,7 @@
 import type { AttentionMode, PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent } from "./agent.js";
 import type { AgentConfig } from "./config.js";
+import { DOCS_VERSION } from "./docs.js";
 
 /** One-line connector bootstrap that points a joining agent at `cotal_orientation`. Folded into each
  *  connector's system prompt / MCP instructions so every agent — Claude Code, OpenCode, Hermes — is
@@ -32,7 +33,7 @@ export interface Orientation {
   /** Snapshot stamp. The live fields below (peers / status / attention / unread) are as of this time;
    *  the identity/access/capabilities/tools fields are static for the session. */
   generatedAt: number;
-  identity: { name: string; role?: string; space: string; id: string };
+  identity: { name: string; role?: string; space: string; id: string; cotalVersion: string };
   access: {
     /** auth mode → these grants are broker-enforced; open mode → advisory (host-trusted) only. */
     authMode: boolean;
@@ -93,7 +94,7 @@ export function buildOrientation(
   return {
     v: 1,
     generatedAt,
-    identity: { name: config.name, role: config.role, space: config.space, id: agent.id },
+    identity: { name: config.name, role: config.role, space: config.space, id: agent.id, cotalVersion: DOCS_VERSION },
     access: {
       authMode: !!config.creds,
       read: config.subscribe,
@@ -125,6 +126,8 @@ export function renderOrientation(o: Orientation): string {
 
   const lines: string[] = [
     `You are ${who} in space "${o.identity.space}" (id ${o.identity.id.slice(0, 8)}…).`,
+    `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
+      "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
     "",
     `Access — ${o.access.authMode ? "auth mode (grants are broker-enforced)" : "open mode (grants advisory, host-trusted)"}:`,
     `  • read: ${fmt(o.access.read)}`,
