@@ -7,7 +7,7 @@ import {
   type ChannelRegistryFile,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { connectOrExit } from "../lib/connect.js";
+import { connectOrExit, refuseUserModeOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /**
@@ -35,7 +35,9 @@ export async function channels(args: ParsedArgs): Promise<void> {
   // `set`/`default` WRITE the registry → the narrow `channel-writer` cred ($KV.<channelBucket>.> +
   // read-before-write; no stream data, no other bucket, no chat/DM).
   const profile = sub === "list" ? "operator" : "channel-writer";
-  const { server, space, creds } = await connectOrExit(values, profile); // creds undefined ⇒ open mode
+  const conn = await connectOrExit(values, profile); // creds undefined ⇒ open mode
+  refuseUserModeOrExit(conn, "the channel registry");
+  const { server, space, creds } = conn;
 
   switch (sub) {
     case "list": {

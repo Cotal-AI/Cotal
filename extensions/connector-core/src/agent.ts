@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   normalizeMentions,
@@ -38,6 +39,20 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   if (config.variant) meta.variant = config.variant;
   if (config.connector) meta.connector = config.connector;
   return Object.keys(meta).length ? meta : undefined;
+}
+
+/** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
+ *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
+ *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
+function execBearerCmd(argv: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(stderr.trim() || err.message));
+      const bearer = stdout.trim();
+      if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
+      resolve(bearer);
+    });
+  });
 }
 
 /** A message that has arrived for us, normalized for the agent to read. */
@@ -133,6 +148,10 @@ export class MeshAgent extends EventEmitter {
       user: config.user,
       pass: config.pass,
       creds: config.creds,
+      // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
+      // protocol lives entirely behind that command, this runtime just runs it and reads a line.
+      bearer: config.userAuth ? () => execBearerCmd(config.userAuth!.bearerCmd) : undefined,
+      sentinelCreds: config.userAuth?.sentinelCreds,
       tls: config.tls,
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
@@ -144,6 +163,10 @@ export class MeshAgent extends EventEmitter {
         kind: config.kind,
         description: config.description,
         tags: config.tags,
+        // A bearer source can't declare the principal itself — the spawner does (endpoint pins
+        // every fetched bearer to it).
+        owner: config.userAuth?.owner,
+        actor: config.userAuth?.actor,
         // Display-only discovery metadata so observers can show which harness an agent runs on
         // and (when pinned) which model. Each is omitted when unset rather than faked.
         meta: buildMeta(config),

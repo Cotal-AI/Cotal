@@ -35,6 +35,8 @@ import {
   openMembersRegistry,
   commitMember,
   readMember,
+  principalKey,
+  DEV_OWNER,
   CONTROL_SELF_SERVICE,
   type Delivery,
 } from "../src/index.js";
@@ -68,6 +70,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
     console.log(`  ✗ FAIL: ${name}`, extra ?? "");
   }
 };
+// Dev/static principal for an agent nkey (owner=DEV_OWNER, actor=the nkey). Plane-3 ACLs, member records,
+// from.id and card.id all key by this dot-form under owner+actor — a raw nkey misses every one.
+const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 
 const space = `selfjoin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -223,7 +228,7 @@ try {
   // real Manager (implementations/manager): durableJoin checks the caller's ACL, durableLeave REQUIRES
   // a finite generation (fail-closed stale-leave guard), and listMemberships serves the caller's own
   // current memberships so a connecting agent can hydrate its boot generations.
-  const acls: Record<string, string[]> = { [aId.id]: ["general", "ops", "review.>"] };
+  const acls: Record<string, string[]> = { [pkey(aId.id)]: ["general", "ops", "review.>"] };
   // Phase 2 Plane-3 host = a scoped `delivery` cred (`dlv`), NOT the deleted allow-all manager. The
   // supervisor cred (`sup`) serves the CONTROL_SELF_SERVICE tier below (its only job — no chat publish,
   // no members read), but the durableJoin/Leave/ownerMemberships ops the handler mediates run on the
@@ -290,11 +295,11 @@ try {
   // were enough — a slow round-trip (CI/Windows) lagged it and flaked this check (cf. the `until`
   // wait the durable-delivery check above uses for the same eventual-consistency reason).
   let aliceOpsBefore = await dlv.channelMembers("ops");
-  for (let i = 0; i < 160 && !aliceOpsBefore.some((m) => m.id === aId.id); i++) {
+  for (let i = 0; i < 160 && !aliceOpsBefore.some((m) => m.id === pkey(aId.id)); i++) {
     await wait(50);
     aliceOpsBefore = await dlv.channelMembers("ops");
   }
-  check("alice's boot 'ops' membership is present (self-joined at connect)", aliceOpsBefore.some((m) => m.id === aId.id), aliceOpsBefore);
+  check("alice's boot 'ops' membership is present (self-joined at connect)", aliceOpsBefore.some((m) => m.id === pkey(aId.id)), aliceOpsBefore);
 
   // Force alice's "ops" record to a crash-stuck PENDING activation (activated:false). It still routes
   // (pure-interval durableEligible) but is hidden from channelMembers + the hydration mirror — so
@@ -306,15 +311,15 @@ try {
   const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, seedId, "delivery"))), inboxPrefix: `_INBOX_${seedId.id}`, maxReconnectAttempts: 0 });
   kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
-  const opsRec = (await readMember(kv, "ops", aId.id))!.record;
+  const opsRec = (await readMember(kv, "ops", pkey(aId.id)))!.record;
   await commitMember(kv, { ...opsRec, activated: false });
   const hidden = await dlv.channelMembers("ops");
-  check("an activation-pending (activated:false) member is HIDDEN from channelMembers", !hidden.some((m) => m.id === aId.id), hidden);
+  check("an activation-pending (activated:false) member is HIDDEN from channelMembers", !hidden.some((m) => m.id === pkey(aId.id)), hidden);
 
   const opsLeave = await a.leaveChannel("ops");
   check("leaving an UN-hydrated, activation-pending boot durable channel succeeds (generation re-resolved on demand)", opsLeave.left === true, opsLeave);
   await wait(150);
-  const opsRecAfter = await readMember(kv, "ops", aId.id);
+  const opsRecAfter = await readMember(kv, "ops", pkey(aId.id));
   check("leave TOMBSTONES the activation-pending record (discovered despite activated:false — BLOCKER-1 leave-discovery)", opsRecAfter?.record.leaveCursor !== undefined, opsRecAfter?.record);
   await kvNc.close();
   got.length = 0;
@@ -327,7 +332,7 @@ try {
   //    mirror (plane3Channels). Leaving "ops" then tombstones the §7 boundary from that mirror — and if
   //    the mirror entry were missing, leaveChannel re-resolves the generation on demand (fail-closed).
   const bId = newIdentity();
-  acls[bId.id] = ["ops"];
+  acls[pkey(bId.id)] = ["ops"];
   const bCreds = await provisionAgent(prov, auth, bId, { subscribe: ["ops"], allowSubscribe: ["ops"] });
   const b = new CotalEndpoint({
     space, servers: SERVERS, creds: bCreds,
@@ -342,17 +347,17 @@ try {
   // Poll for bob's boot self-join to hydrate (connect + daemon round-trip) rather than assume a fixed
   // delay — same eventual-consistency flake class as alice's check above; a fixed wait can lag on CI/Windows.
   let bootMembers = await dlv.channelMembers("ops");
-  for (let i = 0; i < 160 && !bootMembers.some((m) => m.id === bId.id); i++) {
+  for (let i = 0; i < 160 && !bootMembers.some((m) => m.id === pkey(bId.id)); i++) {
     await wait(50);
     bootMembers = await dlv.channelMembers("ops");
   }
-  check("bob's BOOT durable membership is listed (activated, hydrated)", bootMembers.some((m) => m.id === bId.id), bootMembers);
+  check("bob's BOOT durable membership is listed (activated, hydrated)", bootMembers.some((m) => m.id === pkey(bId.id)), bootMembers);
 
   const bootLeave = await b.leaveChannel("ops");
   check("leaving a BOOT durable channel succeeds (hydrated generation → fail-closed tombstone)", bootLeave.left === true, bootLeave);
   await wait(150);
   const afterBootLeave = await dlv.channelMembers("ops");
-  check("a boot-channel leave TOMBSTONES its Plane-3 membership (no longer a member)", !afterBootLeave.some((m) => m.id === bId.id), afterBootLeave);
+  check("a boot-channel leave TOMBSTONES its Plane-3 membership (no longer a member)", !afterBootLeave.some((m) => m.id === pkey(bId.id)), afterBootLeave);
   gotB.length = 0;
   await poster.multicast("after boot leave", { channel: "ops" });
   await wait(900); // settle: prove ABSENCE — both planes closed (live sub + backstop)

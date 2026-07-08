@@ -1,4 +1,4 @@
-import { spawn as spawnProcess } from "node:child_process";
+import { spawn as spawnProcess, execFile } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join, dirname, resolve as resolvePath } from "node:path";
 import {
@@ -13,8 +13,11 @@ import {
   mkSecretDir,
   newIdentity,
   parseShareSelection,
+  principalKey,
   provisionAgent,
+  provisionAgentDurables,
   registry,
+  resolveAuthProvider,
   writeSecretFile,
   CotalEndpoint,
   type AgentDef,
@@ -22,6 +25,7 @@ import {
   type Connector,
   type FlagSpec,
   type FlagValues,
+  type LaunchOpts,
   type LaunchSpec,
   type ParsedArgs,
   type SpaceAuth,
@@ -36,12 +40,15 @@ import {
   defaultPersonaRef,
   launchFlags,
   loadMeshes,
+  loadSpaceAuth,
   mergeLaunchOptions,
   parseLaunchOptions,
   provenance,
   resolveMeshTarget,
   serverFlag,
   spaceFlag,
+  userAuthStateDir,
+  type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -232,7 +239,7 @@ async function spawnDetached(
     transcript,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
-  }, t.creds, CONTROL_PRIVILEGED, START_TIMEOUT_MS);
+  }, t.auth, CONTROL_PRIVILEGED, START_TIMEOUT_MS);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(
@@ -265,6 +272,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   if (values.variant !== undefined && !values.variant.trim()) {
     console.error("--variant needs a variant name (got an empty value)");
+    process.exit(1);
+  }
+  // `--dry-run` is a manifest-only flag (`-f`): on an imperative spawn it would have to be ignored
+  // (and once WAS, silently spawning a real agent) — refuse instead.
+  if (values["dry-run"]) {
+    console.error(c.red("✗ --dry-run only applies to a manifest deploy (`cotal spawn -f <manifest> --dry-run`)"));
     process.exit(1);
   }
   // Parse `--opt k=v` pairs once, up front — a malformed pair fails loud before either launch path
@@ -339,7 +352,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // A second `cotal spawn` of the same agent would otherwise join under a duplicate mesh identity:
   // auto-number the name past anyone already present (best-effort — this path bypasses the manager's
   // race-free reservation; see uniqueMeshName). Everything below (creds path, launch) uses `name`.
-  const name = await uniqueMeshName(requested, { space, server, auth });
+  // USER mesh: the advisory presence read has no credential to ride (no static mint — U10), so the
+  // requested name stands; a same-name respawn ROTATES that actor's grant (upsert), which kills the
+  // previous holder's next bearer refresh with the "secret is stale — respawn" health state rather
+  // than aliasing it silently.
+  const name = target.mode === "user" ? requested : await uniqueMeshName(requested, { space, server, auth });
   if (name !== requested)
     console.error(`"${requested}" is already on the mesh — spawning as ${name} instead`);
 
@@ -369,6 +386,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Open mode (no `.cotal/auth`): unchanged — the session connects without creds.
   let id: string | undefined;
   let credsPath: string | undefined;
+  let userAuth: LaunchOpts["userAuth"];
+  let userCleanup: (() => Promise<void>) | undefined;
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
@@ -376,7 +395,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
   const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
   const allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
-  if (auth) {
+  if (target.mode === "user") {
+    // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
+    // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer
+    // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
+    // dead auth plane.
+    ({ userAuth, cleanup: userCleanup } = await provisionUserForeground(target, name, ref, {
+      subscribe,
+      allowSubscribe,
+      allowPublish,
+      role,
+      capabilities: def.capabilities,
+    }));
+  } else if (auth) {
     const identity = newIdentity();
     const prov = new CotalEndpoint({
       space,
@@ -438,6 +469,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     }
   };
 
+  // From here through a successful child launch, a THROW must undo whatever this spawn provisioned —
+  // the user-mode actor grant (userCleanup) OR the static-auth creds + broker footprint
+  // (rollbackProvision) — otherwise a buildLaunch/spawn rejection (unsupported resume/model/`--opt`,
+  // a bad connector) leaves the just-granted identity standing. The planes are exclusive, so each
+  // cleanup is a no-op in the other's mode.
+  let child: ReturnType<typeof spawnProcess>;
   let spec: LaunchSpec;
   try {
     spec = connector.buildLaunch({
@@ -446,6 +483,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       role,
       id,
       creds: credsPath,
+      userAuth,
       servers: server,
       configPath: path,
       // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
@@ -463,26 +501,32 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       transcript,
       mcpServers,
     });
+
+    console.error(
+      `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
+    );
+    if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
+    child = spawnProcess(spec.command, spec.args, {
+      stdio: "inherit",
+      // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
+      // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
+      env: spec.env ?? {},
+      // `--cwd` roots the agent at another folder/repo (launch-grammar parity with --detach); a
+      // relative path resolves against the invoking shell's cwd. Omitted → inherit this cwd.
+      cwd: values.cwd ? resolvePath(values.cwd) : undefined,
+    });
   } catch (e) {
+    // Launch construction / spawn threw AFTER provisioning — undo BOTH planes (each a no-op in the
+    // other's mode): revoke the user-mode actor grant AND roll back the static-auth creds + footprint,
+    // before rethrowing, so no standing grant survives a spawn that never started.
+    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(err as Error).message}`)));
     await rollbackProvision("launch build failed");
     throw e;
   }
-
-  console.error(
-    `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
-  );
-  const child = spawnProcess(spec.command, spec.args, {
-    stdio: "inherit",
-    // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
-    // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
-    env: spec.env ?? {},
-    // `--cwd` roots the agent at another folder/repo (launch-grammar parity with --detach); a
-    // relative path resolves against the invoking shell's cwd. Omitted → inherit this cwd.
-    cwd: values.cwd ? resolvePath(values.cwd) : undefined,
-  });
   await new Promise<void>((resolve) => {
     child.on("error", (e) => {
-      // The exec never started, so the just-provisioned identity is orphaned too — roll it back.
+      // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
+      // back. (User-mode revoke runs unconditionally once this promise settles, below.)
       console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
       void rollbackProvision("exec failed").finally(() => {
         process.exitCode = 1;
@@ -494,4 +538,130 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       resolve();
     });
   });
+  // USER MODE: the runtime-grant invariant applies to the foreground departure too — the agent is
+  // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
+  // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
+  // on failure, never blocking the exit code already set above.
+  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
+}
+
+/** Foreground USER-MODE onboarding — the CLI-side twin of the manager's user spawn provisioning:
+ *  owner = the logged-in operator (offline, from the login cache + local user-auth material);
+ *  principal-keyed durables on an ephemeral provisioner (LIVE-ONLY, like static foreground);
+ *  ledger grant with a fresh per-agent secret (upsert rotates); 0600 secret/sentinel files; and a
+ *  one-shot bearer preflight whose operator-exact sentence is the refusal. Exits on any failure —
+ *  the agent process is never launched into a broken auth chain. */
+async function provisionUserForeground(
+  target: MeshTarget,
+  name: string,
+  ref: string,
+  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[] },
+): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void> }> {
+  const { space, server } = target;
+  const dir = userAuthStateDir(target.root, space);
+  const fail = (msg: string): never => {
+    console.error(c.red(`✗ ${msg}`));
+    process.exit(1);
+  };
+  let provider: ReturnType<typeof resolveAuthProvider>;
+  let owner: string;
+  try {
+    provider = resolveAuthProvider();
+    owner = await provider.ownerForLogin({ dir, space });
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+  // The provisioner cred is INFRA (pre-flip static coexistence, like the manager's own creds) —
+  // loaded explicitly here for durable pre-creation only, never for the agent's identity.
+  const infra = loadSpaceAuth(authDir(target.root));
+  if (!infra) return fail(`space "${space}" has user-auth state but no auth.json under ${authDir(target.root)} — re-run \`cotal up --user-auth\` here`);
+  const prov = new CotalEndpoint({
+    space,
+    servers: server,
+    creds: await mintCreds(infra, newIdentity(), "provisioner"),
+    channels: [],
+    consume: false,
+    registerPresence: false,
+    watchPresence: false,
+    watchChannels: false,
+    card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
+  });
+  prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
+  await prov.start();
+  try {
+    // Live-only, like static foreground spawn: no ACL row → no durable backstop (that requires a
+    // managing daemon; use `cotal spawn --detach` / `cotal up` for one).
+    await provisionAgentDurables(prov, { owner, actor: name }, {
+      subscribe: opts.subscribe,
+      allowSubscribe: opts.allowSubscribe,
+      role: opts.role,
+      durableMembership: false,
+    });
+  } finally {
+    await prov.stop();
+  }
+  const credsDir = join(authDir(target.root), "creds");
+  const tokenPath = join(credsDir, `${name}.actor-token`);
+  const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
+  const healthPath = join(credsDir, `${name}.auth-health.json`);
+  try {
+    const grant = await provider.grantAgent({
+      dir,
+      space,
+      owner,
+      actor: name,
+      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "admin"),
+      allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe?.length ? opts.subscribe : ["general"]),
+      allowPublish: opts.allowPublish ?? [],
+      role: opts.role,
+      parent: `${owner}.cli`,
+      label: ref,
+    });
+    mkSecretDir(credsDir);
+    writeSecretFile(tokenPath, grant.actorToken);
+    writeSecretFile(sentinelPath, grant.sentinelCreds);
+    rmSync(healthPath, { force: true });
+    provenance.wrote(`actor grant ${owner}.${name} (user mode)`, tokenPath);
+    const bearerCmd = [
+      process.execPath,
+      ...process.execArgv,
+      process.argv[1],
+      provider.agentBearerCommand,
+      "--dir", dir,
+      "--space", space,
+      "--owner", owner,
+      "--actor", name,
+      "--token-file", tokenPath,
+      "--health-file", healthPath,
+    ];
+    await new Promise<void>((res, rej) => {
+      execFile(bearerCmd[0], bearerCmd.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
+        if (err) return rej(new Error(stderr.trim() || err.message));
+        res();
+      });
+    });
+    return {
+      userAuth: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
+      // The foreground departure's half of the runtime-grant invariant: the caller runs this when
+      // the agent process exits — revoke the row, shred the secret material.
+      cleanup: async () => {
+        await provider.revokeAgent({ dir, owner, actor: name });
+        rmSync(tokenPath, { force: true });
+        rmSync(sentinelPath, { force: true });
+        rmSync(healthPath, { force: true });
+      },
+    };
+  } catch (e) {
+    // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
+    // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
+    await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+    rmSync(tokenPath, { force: true });
+    rmSync(sentinelPath, { force: true });
+    rmSync(healthPath, { force: true });
+    const targetId = principalKey(owner, name).key;
+    await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: targetId })
+      .then((creds) => deprovisionAgent({ servers: server, space, targetId, creds }))
+      .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
+    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+  }
 }

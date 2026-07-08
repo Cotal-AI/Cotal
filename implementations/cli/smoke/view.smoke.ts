@@ -11,6 +11,7 @@ import {
   chatSubject,
   unicastSubject,
   anycastSubject,
+  DEV_OWNER,
   type CotalEndpoint,
   type CotalMessage,
   type Presence,
@@ -77,13 +78,13 @@ await view.start();
 const tap = mock.tapHandler!;
 // multicast + anycast pass through immediately; the unicast burst (same sender+text, 3
 // recipients) coalesces into ONE entry over the 400ms window.
-tap(chatSubject(space, ids.alice, "general"), msg(ids.alice, "alice", { channel: "general" }, "hello team", "m1"));
-tap(anycastSubject(space, ids.alice, "reviewer"), msg(ids.alice, "alice", { toService: "reviewer" }, "review pls", "m2"));
-tap(unicastSubject(space, ids.bob, ids.alice), msg(ids.alice, "alice", { to: ids.bob }, "ping", "m3"));
-tap(unicastSubject(space, ids.carol, ids.alice), msg(ids.alice, "alice", { to: ids.carol }, "ping", "m4"));
-tap(unicastSubject(space, ids.bob, ids.alice), msg(ids.alice, "alice", { to: ids.bob }, "ping", "m5"));
+tap(chatSubject(space, DEV_OWNER, ids.alice, "general"), msg(ids.alice, "alice", { channel: "general" }, "hello team", "m1"));
+tap(anycastSubject(space, "reviewer", DEV_OWNER, ids.alice), msg(ids.alice, "alice", { toService: "reviewer" }, "review pls", "m2"));
+tap(unicastSubject(space, DEV_OWNER, ids.bob, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to: ids.bob }, "ping", "m3"));
+tap(unicastSubject(space, DEV_OWNER, ids.carol, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to: ids.carol }, "ping", "m4"));
+tap(unicastSubject(space, DEV_OWNER, ids.bob, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to: ids.bob }, "ping", "m5"));
 // a control frame → deliveryOf null → must NOT enter the feed
-tap(`cotal.${space}.ctl.manager.${ids.alice}`, msg(ids.alice, "alice", {}, "ignored", "m6"));
+tap(`cotal.${space}.ctl.manager.${DEV_OWNER}.${ids.alice}`, msg(ids.alice, "alice", {}, "ignored", "m6"));
 
 await wait(550); // let the unicast burst flush
 const s = view.snapshot();

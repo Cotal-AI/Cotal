@@ -13,7 +13,7 @@ import {
   clearChannel,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { c, connectOrExit } from "@cotal-ai/workspace";
+import { c, connectOrExit, refuseUserModeOrExit } from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -45,6 +45,9 @@ export async function web(args: ParsedArgs): Promise<void> {
   // creds carry the purge rights.
   const { server, space, creds, purgeCreds } = await (async () => {
     const conn = await connectOrExit(values, "admin");
+    // A user-mode login's ledger-scoped bearer can't carry the god-view tap this dashboard is —
+    // refuse with the explicit `--creds` escape, never degrade to a credless connect (U10).
+    refuseUserModeOrExit(conn, "the dashboard (cotal web)");
     const purge = conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
     return { server: conn.server, space: conn.space, creds: conn.creds, purgeCreds: purge };
   })();

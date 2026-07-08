@@ -31,5 +31,8 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@nats-io/transport-node": "^3.4.0"
   }
 }

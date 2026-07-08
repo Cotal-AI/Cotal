@@ -44,6 +44,8 @@ import {
   dmDurable,
   dlvDurable,
   taskDurable,
+  DEV_OWNER,
+  principalKey,
 } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
@@ -72,6 +74,7 @@ const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-deprov-"));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const localPrincipal = (actor: string) => principalKey(DEV_OWNER, actor).key;
 
 /** Does consumer `name` exist on `stream`? Opens a short-lived provisioner-cred jsm to check. */
 async function consumerExists(provCreds: string, provId: string, stream: string, name: string): Promise<boolean> {
@@ -133,20 +136,20 @@ try {
   await provisionAgent(prov, auth, agent, { subscribe: ["general"], allowSubscribe: ["general"], role: "worker" });
   await prov.stop();
 
-  console.log("after provisionAgent — the id-keyed footprint + the role-shared svc_<role> exist:");
-  check("dm_<id> durable present", await consumerExists(provCreds, provId.id, DM, dmDurable(agent.id)));
-  check("dlv_<id> durable present", await consumerExists(provCreds, provId.id, DLV, dlvDurable(agent.id)));
+  console.log("after provisionAgent — the local-principal footprint + the role-shared svc_<role> exist:");
+  check("dm_local-<id> durable present", await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id)));
+  check("dlv_local-<id> durable present", await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, agent.id)));
   check("svc_<role> (worker) durable present", await consumerExists(provCreds, provId.id, TASK, taskDurable("worker")));
-  check("read-ACL row present", await aclPresent(provCreds, provId.id, agent.id));
+  check("read-ACL row present", await aclPresent(provCreds, provId.id, localPrincipal(agent.id)));
 
   // ---- deprovision with a TARGET-PINNED cred (what the manager mints on the agent's exit) ----
   const dpvCreds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: agent.id });
   await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, creds: dpvCreds });
 
-  console.log("after deprovisionAgent — the id-keyed footprint is gone; the role-shared durable survives:");
-  check("dm_<id> durable GONE", !(await consumerExists(provCreds, provId.id, DM, dmDurable(agent.id))));
-  check("dlv_<id> durable GONE", !(await consumerExists(provCreds, provId.id, DLV, dlvDurable(agent.id))));
-  check("read-ACL row GONE", !(await aclPresent(provCreds, provId.id, agent.id)));
+  console.log("after deprovisionAgent — the local-principal footprint is gone; the role-shared durable survives:");
+  check("dm_local-<id> durable GONE", !(await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id))));
+  check("dlv_local-<id> durable GONE", !(await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, agent.id))));
+  check("read-ACL row GONE", !(await aclPresent(provCreds, provId.id, localPrincipal(agent.id))));
   check("svc_<role> (worker) durable UNTOUCHED (role-shared — siblings still bind it)", await consumerExists(provCreds, provId.id, TASK, taskDurable("worker")));
 
   // ---- idempotent: a second teardown (missing consumers / absent ACL row) must not throw ----

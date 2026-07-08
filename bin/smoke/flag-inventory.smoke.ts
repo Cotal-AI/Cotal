@@ -19,6 +19,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
+import "@cotal-ai/auth"; // registers login/logout
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
@@ -29,13 +30,15 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "open:boolean", "runtime:string", "server:string", "space:string", "store-dir:string",
+      "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "store-dir:string", "user-auth:boolean",
     ],
     positionals: false,
   },
   down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: false },
   meshes: { flags: [], positionals: false },
   status: { flags: ["server:string", "space:string"], positionals: false },
+  doctor: { flags: ["fix:boolean"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
     flags: [
@@ -108,6 +111,22 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "channel:string", "creds:string", "host:string", "keys:string", "max-bytes:string",
       "port:string", "rate-limit:string", "server:string", "space:string", "store:string",
     ],
+    positionals: false,
+  },
+  login: { flags: ["client-id:string", "idp:string"], positionals: false },
+  logout: { flags: ["idp:string"], positionals: false },
+  // Per-user auth (D4c): the actor-ledger operator surface + the auth-service daemon.
+  actor: {
+    flags: [
+      "allow-publish:string", "allow-subscribe:string", "label:string", "owner:string",
+      "parent:string", "role:string", "scope:string", "space:string", "sub:string",
+    ],
+    positionals: true,
+  },
+  "auth-service": { flags: ["port:string", "server:string", "space:string"], positionals: false },
+  // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
+  "agent-bearer": {
+    flags: ["actor:string", "dir:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
     positionals: false,
   },
 };

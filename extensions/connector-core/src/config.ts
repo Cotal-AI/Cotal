@@ -20,6 +20,11 @@ export interface AgentConfig {
   id?: string;
   /** Minted creds file content (auth mode); the endpoint authenticates with it. */
   creds?: string;
+  /** USER-MODE launch (a spawned agent on a user-auth mesh): the agent's owner+actor principal,
+   *  the sentinel creds content it presents alongside its bearers, and the argv it EXECS for a
+   *  fresh bearer (initial connect + every refresh — the exchange protocol stays behind that
+   *  command). All four env vars come from the spawner together; mutually exclusive with creds. */
+  userAuth?: { owner: string; actor: string; sentinelCreds: string; bearerCmd: string[] };
   name: string;
   role?: string;
   description?: string;
@@ -137,10 +142,41 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
         throw new Error(`COTAL config: ${field} channel "${ch}" is not within allowSubscribe [${resolvedAllowSub.join(", ")}]`);
     }
   const credsPath = env.COTAL_CREDS?.trim();
+  // USER-MODE identity: all-or-nothing — a partial set means a broken launcher, and connecting
+  // with half an identity (or silently falling back to open) is exactly the U10 hazard.
+  const userVars = {
+    owner: env.COTAL_OWNER?.trim(),
+    actor: env.COTAL_ACTOR?.trim(),
+    sentinel: env.COTAL_SENTINEL_CREDS?.trim(),
+    bearerCmd: env.COTAL_BEARER_CMD?.trim(),
+  };
+  const userSet = Object.values(userVars).filter(Boolean).length;
+  if (userSet > 0 && userSet < 4)
+    throw new Error("COTAL config: user-mode launch needs ALL of COTAL_OWNER, COTAL_ACTOR, COTAL_SENTINEL_CREDS, COTAL_BEARER_CMD — a partial set is a broken launcher, not a mode");
+  if (userSet && credsPath)
+    throw new Error("COTAL config: COTAL_CREDS (static auth) and COTAL_OWNER/... (user-mode auth) are mutually exclusive");
+  let userAuth: AgentConfig["userAuth"];
+  if (userSet === 4) {
+    let bearerCmd: unknown;
+    try {
+      bearerCmd = JSON.parse(userVars.bearerCmd!);
+    } catch {
+      throw new Error("COTAL config: COTAL_BEARER_CMD must be a JSON argv array");
+    }
+    if (!Array.isArray(bearerCmd) || !bearerCmd.length || !bearerCmd.every((a) => typeof a === "string"))
+      throw new Error("COTAL config: COTAL_BEARER_CMD must be a non-empty JSON array of strings");
+    userAuth = {
+      owner: userVars.owner!,
+      actor: userVars.actor!,
+      sentinelCreds: readFileSync(userVars.sentinel!, "utf8"),
+      bearerCmd: bearerCmd as string[],
+    };
+  }
   return {
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: env.COTAL_ID?.trim() || undefined,
     creds: credsPath ? readFileSync(credsPath, "utf8") : undefined,
+    userAuth,
     name,
     role: env.COTAL_ROLE?.trim() || def?.role || undefined,
     description: def?.description,

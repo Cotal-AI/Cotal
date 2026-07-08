@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -58,8 +58,10 @@ try {
   check("durableJoin succeeds while the channel is in the read ACL", r.durable === true);
   const gen = r.generation ?? 0;
 
-  // Narrow the agent's ACL to NOTHING (revocation) — as the broker would for a refused live sub.
-  await mgr.commitAcl(aId.id, []);
+  // Narrow the agent's ACL to NOTHING (revocation) — as the broker would for a refused live sub. The ACL
+  // registry is keyed by the agent's PRINCIPAL (dot-form `local.<nkey>`, how provisionAgent wrote it), so
+  // the narrow must target that same key — a raw nkey would miss and leave the real ACL intact.
+  await mgr.commitAcl(principalKey(DEV_OWNER, aId.id).key, []);
   await wait(150);
 
   // JOIN is now rejected (join stays current-ACL-gated).

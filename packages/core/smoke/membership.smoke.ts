@@ -128,7 +128,7 @@ async function scenarioB(): Promise<void> {
   const jsm = await jetstreamManager(nc);
   await jsm.consumers.add(chatStream(space), {
     durable_name: "chat_GHOST123",
-    filter_subjects: [chatSubject(space, "*", "general")],
+    filter_subjects: [chatSubject(space, "*", "*", "general")],
     ack_policy: AckPolicy.Explicit,
     deliver_policy: DeliverPolicy.All,
   });

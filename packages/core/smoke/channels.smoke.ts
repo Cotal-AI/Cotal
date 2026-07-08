@@ -19,7 +19,7 @@ import { jetstream } from "@nats-io/jetstream";
 import {
   CotalEndpoint, seedChannelRegistry, readChannelRegistry, effectiveReplay, effectiveDeliveryClass,
   ensureDefaultDeliveryClass, validateChannelConfig,
-  isReachable, chatSubject, type CotalMessage, type Delivery, type MessageMeta,
+  isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 
 // Fresh random port per run: a fixed port means a single leaked broker (from a crashed/failed prior
@@ -126,7 +126,9 @@ try {
       to: "B_join",           // the forgery: a payload `to` pointing at B
       parts: [{ kind: "text", text: "forged-dm-probe" }],
     };
-    const subject = chatSubject(space, A.card.id, "log");
+    // A's principal is owner=DEV_OWNER ("local"), actor=its connId ("A_pub"); publish onto A's own
+    // chat subject so the forged frame's from.id (A.card.id = "local.A_pub") binds the subject sender.
+    const subject = chatSubject(space, DEV_OWNER, "A_pub", "log");
     await js.publish(subject, JSON.stringify(forged), { msgID: forged.id });
     await nc.close();
   }

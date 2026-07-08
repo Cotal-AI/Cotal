@@ -27,7 +27,7 @@ import {
 } from "@cotal-ai/core";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { connectOrExit } from "../lib/connect.js";
+import { connectOrExit, refuseUserModeOrExit } from "../lib/connect.js";
 import { startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, channelsSeed, genRunId, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -82,6 +82,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   // calls the manager's `launch`/`ps` — no `$JS.>`, no STREAM.DELETE, no DM read, no self-post. The
   // channel SEED rides a separate `channel-writer` cred (below), so the deploy cred writes no KV.
   const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "deployer");
+  refuseUserModeOrExit(connection, "a manifest deploy");
 
   const root = cotalRoot();
   // Same-checkout invariant (security/UX): the launch spec, the ledger, and the manager `spawn -f`

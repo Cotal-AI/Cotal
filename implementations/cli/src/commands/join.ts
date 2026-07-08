@@ -17,7 +17,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { resolveSpace } from "../lib/status.js";
-import { reachableOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
+import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
@@ -66,6 +66,7 @@ export async function join(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    refuseStaticCredsForKnownUserAuthOrExit(space, server, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
@@ -82,6 +83,16 @@ export async function join(args: ParsedArgs): Promise<void> {
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
     space = target.space;
     server = target.server;
+    // USER-auth mesh: interactive join self-provisions a STATIC agent identity, which is the wrong
+    // identity plane for a user space — refuse with the user path rather than half-joining (U10).
+    if (target.mode === "user") {
+      console.error(
+        c.red(
+          `✗ interactive join is not yet supported on user-auth space "${space}" — sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`) and use \`cotal send\`, or run agents properly: \`cotal spawn <persona>\` (they get their own managed identity under you)`,
+        ),
+      );
+      process.exit(1);
+    }
     await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
     if (target.auth) {
       const identity = newIdentity();

@@ -185,9 +185,12 @@ export async function listMembers(
   for await (const key of await kv.keys()) {
     const parsed = parseMemberKey(key);
     if (!parsed) continue;
+    // `parsed.principal` is the member's owner+actor dot-form (membership is per-agent); the
+    // members.ts API calls this identity token `owner` throughout — under the owner+actor grammar an
+    // "owner" here IS the full principal `<owner>.<actor>`, so `filter.owner` compares to it directly.
     if (filter.channel !== undefined && parsed.channel !== filter.channel) continue;
-    if (filter.owner !== undefined && parsed.owner !== filter.owner) continue;
-    const rec = await readMember(kv, parsed.channel, parsed.owner);
+    if (filter.owner !== undefined && parsed.principal !== filter.owner) continue;
+    const rec = await readMember(kv, parsed.channel, parsed.principal);
     if (rec) out.push(rec.record);
   }
   return out;

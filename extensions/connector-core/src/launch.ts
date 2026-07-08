@@ -194,6 +194,24 @@ export function connectorLaunchOptions(
   return Object.entries(launchOptions);
 }
 
+/** USER-MODE launch identity as `COTAL_*` env, when present — the one place the LaunchOpts.userAuth
+ *  → env mapping lives, so every connector forwards the identical contract configFromEnv parses.
+ *  Refuses a creds+userAuth combination here (one launch, one identity plane — U10). */
+export function userAuthEnv(opts: {
+  creds?: string;
+  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+}): Record<string, string> {
+  if (!opts.userAuth) return {};
+  if (opts.creds)
+    throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
+  return {
+    COTAL_OWNER: opts.userAuth.owner,
+    COTAL_ACTOR: opts.userAuth.actor,
+    COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
+    COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd),
+  };
+}
+
 /** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
  *  subject-safe characters. The SINGLE source of this connector convention — connectors publish here
  *  (their plugin/runtime path AND their `Connector.transcriptChannel` method both call this), and the

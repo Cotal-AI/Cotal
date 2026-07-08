@@ -53,7 +53,7 @@ fit lateral pub/sub.
   wildcard.
 - **Delivery classes + self-serve join + durable backstop (SPEC v0.3 rebuild — the current model).**
   Channel delivery is two wire-observable classes (SPEC §4/§7). **`live`** is a native core-NATS
-  subscription to `cotal.<space>.chat.*.<channel>` bounded by the agent's `sub.allow`: **join =
+  subscription to `cotal.<space>.chat.*.*.<channel>` bounded by the agent's `sub.allow`: **join =
   subscribe, leave = unsubscribe, no manager**, at-most-once. **`durable`** is `live` plus a
   per-subscriber durable backstop ("Plane-3"), so a post still reaches a busy/offline agent on its
   next turn (SPEC §8): a privileged **fan-out writer** copies each post into every eligible member's
@@ -602,35 +602,39 @@ when it frees up, with nothing missed and no interruption required. One mechanis
 three things at once: live delivery, the inbound buffer, and late-join history.
 
 - **Subjects (delivery modes).** The **sender is encoded in the subject**, a server-policeable
-  fact, not a self-asserted payload field. `parseSubject()` is the single authority on the layout
-  (the sender position is asymmetric: `[3]` for chat, `[4]` for the rest; read it through
-  `parseSubject`, never index a subject directly).
-  - multicast → `cotal.<space>.chat.<sender>.<channel…>` (broadcast to a channel)
-  - unicast → `cotal.<space>.inst.<target>.<sender>` (one specific endpoint)
-  - anycast → `cotal.<space>.svc.<role>.<sender>` (any one instance of a service, i.e. role)
-  - control → `cotal.<space>.ctl.<service>.<sender>` (request/reply to a service)
+  fact, not a self-asserted payload field. The sender is a **principal** — an `<owner>.<actor>` pair
+  (the human/account owner and the agent actor; see *Identity and authorization*), carried as two
+  adjacent tokens. `parseSubject()` is the single authority on the layout (the sender's two tokens
+  sit at `[3][4]` for chat, `[4][5]` for svc/ctl, `[5][6]` for inst; read it through `parseSubject`,
+  never index a subject directly).
+  - multicast → `cotal.<space>.chat.<owner>.<actor>.<channel…>` (broadcast to a channel)
+  - unicast → `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` (one specific endpoint)
+  - anycast → `cotal.<space>.svc.<role>.<owner>.<actor>` (any one instance of a service, i.e. role)
+  - control → `cotal.<space>.ctl.<service>.<owner>.<actor>` (request/reply to a service)
   - Receivers read the sender **from the subject**; the payload `from` is advisory and is
     rejected on mismatch (fail-closed, on every receive path, see *Identity and authorization*).
   - The message *class* (channel/dm/anycast) is likewise **derived from the delivering subject**
     and surfaced to listeners as `MessageMeta.kind`: authenticated, **not** read from the
     forgeable payload `to`/`toService`. A peer publishing a broadcast with payload `{to:victim}`
     can no longer make it classify as a DM.
-  - `*` matches one token, `>` matches trailing tokens. Subscribers wildcard the sender position
-    (`chat.*.<channel>`, `inst.<myId>.*`); an observer taps `cotal.<space>.chat.>`.
+  - `*` matches one token, `>` matches trailing tokens. Subscribers wildcard the sender principal
+    (`chat.*.*.<channel>`, `inst.<myOwner>.<myActor>.>`); an observer taps `cotal.<space>.chat.>`.
+    The two-token sender lets a publish grant forge-lock the sender suffix (`inst.*.*.<me>` = DM
+    anyone, but only *as me*), so cross-owner **and** same-owner cross-actor forgery is broker-denied.
 - **Streams (one model, three read patterns).**
   - **`CHAT_<space>`** (multicast) captures `chat.>`, with **Limits** retention and
     `MaxMsgsPerSubject` (a capped per-channel backlog). **Every** agent reads **every** message
     via its **own** consumer/bookmark, at its own pace; a late joiner replays the window. This
     *is* both the inbound channel buffer and history.
   - **`DM_<space>`** (unicast) captures `inst.>`, with **Limits** retention. Each agent has a
-    **per-instance durable consumer** (durable name = instance id, filter `inst.<id>.*`): its
+    **per-instance durable consumer** (durable name = principal dash-form `dm_<owner>-<actor>`, filter `inst.<owner>.<actor>.>`): its
     private inbox. Retained for **session length** (an `InactiveThreshold` retires the consumer
     when the context ends, mirroring the *Instance continuity* rule). Under auth this durable is
     **pre-created by the provisioner** and the agent only binds it (see *Identity and
     authorization*; the create-time filter is the DM confidentiality surface). `cotal_inbox`
     pulls the unread batch; push is the consumer delivering on attach.
   - **`TASK_<space>`** (anycast) captures `svc.>`, with **WorkQueuePolicy**. A **shared pull
-    consumer per role** (durable `svc_<role>`, filter `svc.<role>.*`): a task with no worker
+    consumer per role** (durable `svc_<role>`, filter `svc.<role>.>`): a task with no worker
     online *waits*; the first available instance of the role grabs it; multiple online instances
     load-balance; the task is removed once acked. Under auth this durable is **pre-created
     per-role by the provisioner** and agents bind it (same create-time-filter reason as DM, to
@@ -708,7 +712,8 @@ later).
   capability*: it holds the account signing key and mints profile-scoped creds. The manager hosts
   it in Demo 1, but it is not manager-special: privilege attaches to the signer, and a space can
   run with no manager. `cotal mint <name> --profile <agent|observer|admin>` is the out-of-band
-  path; the manager calls the same lib at spawn.
+  path (static-auth meshes only — a per-user-auth space refuses it: agents there join under a
+  logged-in user, never via a minted file); the manager calls the same lib at spawn.
 - **Identity = the agent's nkey public key**, used identically everywhere: `card.id`, the subject
   sender token, the JWT subject, and the DM/inbox durable names. Generated locally
   ([`identity.ts`](../packages/core/src/identity.ts)); the provisioner signs over only the public
@@ -822,6 +827,61 @@ later).
   absent" message. This is why an over-tight ACL shows up as a logged denial, not a peer that
   mysteriously looks absent.
 
+### Per-user auth (user mode)
+
+`cotal up --user-auth --idp <auth base URL>` (or manifest `broker.auth: "user"`) puts a **human
+identity plane** above the per-agent one: people sign in to an external IdP once, and every
+connect is authorized *at connect time* against the operator's actor ledger — no per-agent creds
+files to hand out, and revocation actually bites.
+
+- **The wire identity is `owner.actor`.** The owner is an opaque per-space token (`u_…`, an HMAC
+  of the IdP subject — no PII on the wire); the actor is the agent instance under that owner.
+  Subjects, durables, presence, and `card.id` all carry the pair.
+- **One auth service per space** (its own detached daemon, started with the broker, torn down by
+  `cotal down`; pid space-scoped). It hosts both halves: the **NATS auth callout** (validates a
+  presented bearer offline against the local issuer keys, checks the actor ledger, mints a scoped
+  data-account user JWT whose expiry is *bound to the bearer's*) and the **loopback token
+  exchange + JWKS** (`POST /exchange` turns a fresh IdP JWT into a Cotal bearer; capability-gated
+  by a 0600 file, browser-origin requests rejected, JWKS served under an explicit
+  `max-age=300` cache contract). It is the only standing holder of the data-account signing key;
+  the operator seed never enters it. If it dies while the broker lives, re-running `cotal up`
+  heals it — the refresh of a running user mesh re-ensures the service (it never just prints
+  "already running" over a dead callout). A detached/manifest `up` (or a refresh-heal) whose
+  service never became ready exits **non-zero**: the mesh stays recorded as user-auth (degraded —
+  every user connect names the recovery until a re-`up` heals it), but automation never reads a
+  dead identity plane as success.
+- **The actor ledger is the single authorization source**, in **two disjoint row spaces**:
+  interactive rows (`cotal actor grant/revoke/list`, under `.cotal/auth/<space>/actors/`,
+  exchanged with a human IdP proof) and managed-agent rows (under `managed-actors/`, written
+  only by the spawn path, exchanged only with the agent's own spawn-time secret). The IdP path
+  reads only the first space and the agent path only the second — no corruption or misrepair can
+  make a managed child human-exchangeable; writers refuse a duplicate name across the spaces.
+  Both trust boundaries read the ledger fresh: a revoke denies the next exchange *and* the next
+  connect with no restart. No row, no access — there is no allow-by-default.
+- **Agents are user-mode principals too.** `cotal spawn` (foreground or `--detach`) on a user
+  mesh grants a managed actor under the *spawning operator's* owner — persona ACLs and role in
+  the row, a fresh per-agent secret whose hash is all the ledger keeps — and launches the agent
+  with an exec-able bearer command instead of a creds file. The agent exchanges its secret for
+  short bearers (≤ 5 min) and rides the callout like every other principal, refreshing ahead of
+  each expiry; rows are **runtime grants** — every start rotates the secret, every stop/despawn
+  revokes the row, so a non-running agent holds no standing mint authority and a respawn
+  re-derives policy from the persona. Both spawn paths *preflight* the whole bearer chain once
+  before launching, and `cotal ps` renders each managed agent's last refresh outcome fail-closed
+  (`auth-renewal-failed` with the exact repair sentence / `auth-unknown` / `auth-stale` — never
+  silently healthy). Control ops ride the operator's own bearer, gated by ledger scope
+  (`spawn` → spawn/ps, `admin` → cross-agent stop/attach); manifest `up -f` stamps the logged-in
+  owner into the launch, so those agents are yours too.
+- **The client path** (`cotal login --idp …` once per machine, then any command): cached IdP
+  session → fresh IdP JWT per connect (IdP-side revocation bites here) → local exchange → connect
+  with sentinel creds + bearer. A user-mode mesh is a **hard branch**: commands never fall back
+  to static minting or credless connects; a missing login or a down auth service is one sentence
+  naming the exact recovery.
+- **Composition, not coupling:** `@cotal-ai/auth` self-registers a core `auth-provider`
+  extension; the CLI resolves it generically (`bin/cotal.ts` is the one root that imports the
+  package). Static and user auth coexist on one broker today (infra daemons stay on scoped static
+  creds); user-auth spaces now refuse new static user-facing creds, while static-auth meshes keep
+  static creds by design.
+
 **Known limitations (Demo 1):**
 
 - **Standalone/late-join DM receipt** needs a *connected* provisioner (the manager) to pre-create
@@ -830,20 +890,40 @@ later).
 - **Signing key plus operator seed are hot** in `.cotal/auth` (the mint/manager box), not yet
   key-confined; the "real boundary" holds only given operator-controlled cred distribution. The
   operator seed should be cold-stored (it is the root; only needed for account setup/rotation).
-- **No credential revocation or TTL** on minted creds yet, and this bounds containment.
-  `cotal_despawn` cuts an agent's **session**, not its **credential**. A compromised agent that
-  copied its own (no-TTL bearer) creds can reconnect afterward, from any host, until the space
-  signing key is **rotated** (which re-mints *everyone*, the only per-cred revocation today) or it
-  is cut at the network. Despawn is the immediate lever, not full containment of a compromised
-  identity; per-cred TTL/rotation is the deferred fix (auth-callout, below).
+- **Credential death is enforced (D5), with honest edges.** Minted creds are bounded by a
+  centralized lifetime matrix: one-shot command creds expire in minutes; standing daemon creds
+  (supervisor, delivery, membership-rw) expire in 24h and are renewed by a **named owner** — the
+  manager self-remints its own cred and re-signs the seed-less daemons' files (same nkey, never a
+  new identity), then requests explicit adoption over the privileged `ctl.delivery-admin` rail,
+  recording the pass in `.cotal/renewal.json`; the `$SYS` observer/evictor creds are bounded 30d
+  and renewed **only** by a system-account rotation + broker restart (no persisted `$SYS` remint
+  secret — by design). Live containment: `evictPrincipal` (same rail) scan→KICKs→verifies a denied
+  principal's open connections, and `cotal actor revoke` wires it so removal stops live delivery
+  immediately, not at bearer expiry. Operator surface: expired/rotated creds classify as
+  **stale-auth** (never a registry prune) and every path points at `cotal doctor auth`, the one
+  diagnosis + repair command. Remaining edges, on the record: **seed theft is out of standing
+  renewal's scope** — a copied signing seed stays valid for its identity until account
+  signing-key/system **rotation** (the rotation helpers are the revocation lever for trust
+  material, renewal only bounds *user JWTs*); and eviction's scan-complete verification is
+  single-server grade (a partially-silent multi-server cluster cannot yet be distinguished from a
+  complete scan).
 - **Credless liveness** (`isReachable`/`pruneStaleMeshes` with no creds) is a silent plaintext
   TCP+`INFO` probe — it reads the server's pre-auth greeting and closes without authenticating, so
   it no longer logs a broker auth-error on every check. Limitation: it returns false for a TLS-first
   (`handshake_first`) listener (that broker config isn't supported by the credless probe yet); the
   creds path stays a real authenticated connect and is unaffected.
-- **Callout stage (later, additive):** auth-callout (NATS 2.10+) mints creds *at connect* from a
-  per-space/per-profile bootstrap token (the `token@` the join link already parses), moving the
-  signing key into the callout service (true key-confinement) and removing the out-of-band mint.
+- **Callout stage:** SHIPPED for user mode (see *Per-user auth* above) — the auth service mints
+  scoped creds *at connect* and confines the data-account signing key. **The flip has landed for
+  user-auth spaces:** static agent/observer/admin minting is refused there (`cotal mint` names the
+  user-mode recourse for agents; static dashboard/audit creds are a deliberate no on user-auth
+  meshes), every managed launch path is user-mode-only, and explicit `--creds`/`join --creds` are
+  refused against a user-auth space this machine knows (registry entry or on-disk marker) — so no
+  static `local.<nkey>` publisher path remains at the CLI surface. Honest scope: the flip is
+  **deny-new**. A static cred signed *before* the flip — or minted out-of-band by anyone holding
+  the signer material — stays broker-valid until signing-key rotation, so the "no static agents"
+  claim holds for user-auth spaces that never shipped static creds; converting a static mesh that
+  already handed out creds means rotating the signing key, not just enabling user auth. Static-auth
+  meshes keep static creds by design; the join-link bootstrap-token variant remains future work.
 
 ## Deferred
 

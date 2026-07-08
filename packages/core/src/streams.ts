@@ -18,10 +18,10 @@ import {
   isConcreteChannel,
   dmStream,
   dmDurable,
-  unicastSubject,
+  unicastRecvFilter,
   taskStream,
   taskDurable,
-  anycastSubject,
+  anycastServeFilter,
   presenceBucket,
   channelBucket,
   membersBucket,
@@ -35,6 +35,9 @@ import {
   dlvDurable,
   fanoutDurable,
   readerDurable,
+  DEV_OWNER,
+  principalKey,
+  deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
@@ -182,12 +185,13 @@ export async function createSpaceStreams(
  */
 export function dmDurableConfig(
   space: string,
-  id: string,
+  owner: string,
+  actor: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dmDurable(id),
-    filter_subject: unicastSubject(space, id, "*"),
+    durable_name: dmDurable(owner, actor),
+    filter_subject: unicastRecvFilter(space, owner, actor), // inst.<owner>.<actor>.> — every DM to me
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -210,7 +214,7 @@ export function taskDurableConfig(
 ): Partial<ConsumerConfig> {
   return {
     durable_name: taskDurable(role),
-    filter_subject: anycastSubject(space, role, "*"),
+    filter_subject: anycastServeFilter(space, role), // svc.<role>.> — every anycast to the role
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
   };
@@ -245,11 +249,12 @@ export function inboxReaderConfig(
 export function dlvDurableConfig(
   space: string,
   owner: string,
+  actor: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dlvDurable(owner),
-    filter_subject: dlvSubject(space, owner),
+    durable_name: dlvDurable(owner, actor),
+    filter_subject: dlvSubject(space, owner, actor),
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -355,7 +360,7 @@ export async function clearChannel(opts: {
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
-      filter: chatSubject(opts.space, "*", opts.channel),
+      filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
@@ -369,13 +374,14 @@ export async function clearChannel(opts: {
   }
 }
 
-/** Delete a departed agent's id-keyed provisioning footprint (#159 Part B) — the teardown counterpart
- *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS agent: its two
- *  bind-only durables (`dm_<id>`, `dlv_<id>`) and its read-ACL row. Idempotent — a missing consumer /
- *  absent ACL row is a no-op (the agent may have exited before a durable was created, or a re-run).
+/** Delete a departed dev/static agent's provisioning footprint (#159 Part B) — the teardown counterpart
+ *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS agent actor under the
+ *  reserved local owner: its two bind-only durables (`dm_local-<actor>`, `dlv_local-<actor>`) and its
+ *  read-ACL row. Idempotent — a missing consumer / absent ACL row is a no-op (the agent may have exited
+ *  before a durable was created, or a re-run).
  *
  *  Does NOT touch the role-SHARED `svc_<role>` TASK durable (deleting it would break the role's other
- *  agents — it lives until space teardown), nor the ephemeral `chathist_<id>` history consumers (they
+ *  agents — it lives until space teardown), nor the ephemeral `chathist_local-<actor>` history consumers (they
  *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
  *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
  *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
@@ -396,10 +402,14 @@ export async function deprovisionAgent(opts: {
     timeout: 5_000,
   });
   try {
+    // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
+    // local owner — the SAME resolution the deprovisioner cred's permission pin used, so the delete
+    // names and the grant can't diverge.
+    const t = deprovisionTargetPrincipal(opts.targetId);
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(opts.targetId));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(opts.targetId));
-    await deleteAcl(await openAclRegistry(nc, opts.space), opts.targetId);
+    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor));
+    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor));
+    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key);
   } finally {
     await nc.drain();
   }

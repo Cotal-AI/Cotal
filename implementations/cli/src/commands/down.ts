@@ -16,9 +16,13 @@ export async function down(args: ParsedArgs): Promise<void> {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
+  // The auth service's pid file is SPACE-scoped (auth-service.<space>.pid) — resolve the space
+  // first, so `down` can only ever stop THIS folder's space's daemon, never another space's.
+  const space = resolveSpace(process.cwd());
   const targets: Array<[string, string]> = [
     ["manager.pid", "manager"],
     ["delivery.pid", "delivery daemon"],
+    [`auth-service.${encodeURIComponent(space)}.pid`, "user-auth service"],
     ["web.pid", "web dashboard"],
     ["nats.pid", "nats-server"],
   ];
@@ -38,7 +42,6 @@ export async function down(args: ParsedArgs): Promise<void> {
   // owns the whole mesh, so tearing it down clears all run dirs — they're never authoritative source.
   rmSync(cotalPath("run"), { recursive: true, force: true });
   // Drop this folder's mesh from the registry (and the `current` pointer if it was the default).
-  const space = resolveSpace(process.cwd());
   removeMesh(space);
   if (getCurrent() === space) clearCurrent();
   if (!any) {

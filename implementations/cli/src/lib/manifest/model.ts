@@ -64,7 +64,7 @@ export interface ResolvedAgent {
 /** The fully resolved, validated manifest — channel-centric on disk, per-agent here. */
 export interface ResolvedManifest {
   space: string;
-  broker?: { servers?: string; host?: string; auth?: boolean };
+  broker?: { servers?: string; host?: string; auth?: boolean | "static" | "user"; idp?: string };
   runtime?: "pty" | "tmux" | "cmux";
   personaPermissions: PersonaPermissions;
   defaults?: ChannelDefaults;

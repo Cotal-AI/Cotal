@@ -23,7 +23,9 @@ import {
   registry,
   mintCreds,
   newIdentity,
+  principalKey,
   setupSpaceStreams,
+  DEV_OWNER,
   type Connector,
   type LaunchSpec,
   type AgentHandle,
@@ -70,7 +72,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
-  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" })),
 };
 
 // The exact `tr-<name>` sanitizer the real connectors use (connector-core); the manager grants whatever

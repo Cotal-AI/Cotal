@@ -41,5 +41,9 @@ export interface MeshLaunchSpec {
   space: string;
   /** Identifies this apply run: names the transient `.cotal/run/<runId>/` dir and ties to the ledger. */
   runId: string;
+  /** USER-AUTH meshes only: the derived owner (`u_…`) every launched agent runs under — the
+   *  logged-in operator who applied the manifest, resolved at apply time (`ownerForLogin`). The
+   *  manager refuses a user-mesh launch spec without one (fail loud, never a guessed owner). */
+  owner?: string;
   agents: MeshLaunchAgent[];
 }

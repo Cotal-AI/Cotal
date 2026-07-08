@@ -135,7 +135,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
 
 /** Build the manager spawn opts for a launch agent: identity/role/model/variant + the resolved object
  *  (which carries the ACL authority) + the materialized configPath. */
-export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string): {
+export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, owner?: string): {
   name: string;
   agent: string;
   role?: string;
@@ -143,8 +143,9 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string): 
   variant?: string;
   config: string;
   resolved: MeshLaunchAgent;
+  owner?: string;
 } {
-  return { name: a.name, agent: a.agent, role: a.role, model: a.model, variant: a.variant, config: configPath, resolved: a };
+  return { name: a.name, agent: a.agent, role: a.role, model: a.model, variant: a.variant, config: configPath, resolved: a, owner };
 }
 
 /** Quote a frontmatter scalar so the agent-file parser reads it back unchanged (it strips a matching

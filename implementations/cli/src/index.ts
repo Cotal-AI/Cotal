@@ -21,6 +21,7 @@ import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
+import { doctor, doctorFlags } from "./commands/doctor.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -80,6 +81,8 @@ const baseCommands: Command[] = [
       { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
       { name: "channels", type: "string", value: "<a,b>", description: "channels to pre-create" },
       { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
+      { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
+      { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
       { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
       { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
@@ -113,6 +116,15 @@ const baseCommands: Command[] = [
     summary: "detailed read-only status for setup, local processes, recorded meshes, and the selected live mesh",
     flags: statusFlags,
     run: status,
+  },
+  {
+    kind: "command",
+    name: "doctor",
+    group: "Mesh",
+    summary: "credential-health diagnosis + repair — `doctor auth [--fix]` renders every managed cred (healthy/near-expiry/expired) and ends in `healthy` or the exact next command",
+    positionals: "auth",
+    flags: doctorFlags,
+    run: doctor,
   },
   {
     kind: "command",

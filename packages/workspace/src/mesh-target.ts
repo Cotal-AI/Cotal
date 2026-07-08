@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "./auth-paths.js";
+import { authDir, findCotalRoot, loadSpaceAuth, userAuthStateDir } from "./auth-paths.js";
 import {
   findMesh,
   getCurrent,
@@ -9,6 +9,7 @@ import {
   loadMeshes,
   removeMesh,
   type MeshEntry,
+  type UserAuthInfo,
 } from "./mesh-registry.js";
 
 /**
@@ -25,8 +26,15 @@ export interface MeshTarget {
   root: string;
   server: string;
   space: string;
-  /** Trust material, or undefined for an open mesh. */
+  /** The mesh's auth mode — `user` is its OWN connect path (login + bearer), a hard branch:
+   *  it never static-mints from `auth` and never connects credlessly like `open`. */
+  mode: MeshEntry["mode"];
+  /** Trust material, for a STATIC-auth mesh only — undefined for open AND for user mode (a
+   *  user-mode root may still hold `auth.json` on disk; deliberately not loaded here so no caller
+   *  can drift into minting static creds for a user-auth space). */
   auth?: SpaceAuth;
+  /** User-auth client metadata (from the registry entry), present iff `mode === "user"`. */
+  userAuth?: UserAuthInfo;
   /** `<root>/.cotal/agents` — the persona catalog for this mesh. */
   personaRoot: string;
   /** Where the target came from — this also carries OWNERSHIP for pruning. `registry`/`current`/
@@ -61,7 +69,8 @@ export type MeshTargetErrorCode =
   | "unknown-space"
   | "ambiguous-target"
   | "default-occupied"
-  | "stale-auth-root";
+  | "stale-auth-root"
+  | "user-auth-unrecorded";
 
 /** Structured context for a {@link MeshTargetError} — enough for any surface to render its own
  *  recovery affordance (a CLI sentence, a web button, an SDK embed that wants no command at all). */
@@ -122,8 +131,10 @@ function personaRoot(root: string): string {
 function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"]): MeshTarget {
   // Honor the recorded mode: an OPEN mesh connects credlessly even if its root still has auth
   // material on disk (e.g. a root that once ran auth mode). Loading it would make `spawn` mint
-  // creds against a broker that takes none.
+  // creds against a broker that takes none. A USER mesh loads NO static auth either — its connect
+  // material comes from the login/bearer path; the entry's `userAuth` metadata rides the target.
   let auth: SpaceAuth | undefined;
+  let userAuth: UserAuthInfo | undefined;
   if (m.mode === "auth") {
     auth = loadSpaceAuth(authDir(m.root));
     // Defense in depth: the root's on-disk auth must still be for THIS space. A divergence (the root
@@ -137,12 +148,24 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
         { space: m.space, root: m.root, found: auth.space },
       );
     }
+  } else if (m.mode === "user") {
+    // A user entry without its metadata cannot produce an actionable login line — treat it as the
+    // unrecorded case (re-`up` rewrites the entry) rather than half-connecting.
+    if (!m.userAuth)
+      throw new MeshTargetError(
+        "user-auth-unrecorded",
+        `registry entry "${m.space}" is user-auth but carries no IdP metadata`,
+        { space: m.space, root: m.root },
+      );
+    userAuth = m.userAuth;
   }
   return {
     root: m.root,
     server,
     space: m.space,
+    mode: m.mode,
     auth,
+    ...(userAuth ? { userAuth } : {}),
     personaRoot: personaRoot(m.root),
     source,
   };
@@ -150,7 +173,44 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
 
 function localTarget(root: string, server: string, source: MeshTarget["source"]): MeshTarget {
   const auth = loadSpaceAuth(authDir(root));
-  return { root, server, space: auth?.space ?? DEFAULT_SPACE, auth, personaRoot: personaRoot(root), source };
+  const space = auth?.space ?? DEFAULT_SPACE;
+  // U10 guard: a user-auth space resolved WITHOUT its registry entry (pruned/never recorded) must
+  // not silently static-mint — static creds DO work on a user-auth broker, which would connect the
+  // operator on the wrong identity plane. The on-disk marker is the space-scoped user-auth state
+  // dir; the recovery (re-`cotal up` in that root) rewrites the registry entry with the IdP pins.
+  // The marker binds even when `auth.json` itself is missing/corrupt — a surviving state dir alone
+  // proves user auth was enabled here, and the alternative would classify the root "open" and
+  // connect credlessly toward a user-auth broker. Fail closed on the marker, whichever half died.
+  const userSpace = auth
+    ? existsSync(userAuthStateDir(root, space))
+      ? space
+      : undefined
+    : userAuthSpacesOnDisk(authDir(root))[0];
+  if (userSpace !== undefined)
+    throw new MeshTargetError(
+      "user-auth-unrecorded",
+      `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
+      { space: userSpace, root },
+    );
+  return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaRoot(root), source };
+}
+
+/** Space names with user-auth state under a root's auth dir, detectable WITHOUT `auth.json`: each
+ *  enabled space is a subdirectory (encodeURIComponent(space)) holding the provider's pinned
+ *  material — `idp.json` is written first at enable, `callout.json` right after, so either one
+ *  marks the dir as user-auth state (never confusable with a stray empty folder). */
+function userAuthSpacesOnDisk(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter(
+        (e) =>
+          e.isDirectory() &&
+          (existsSync(join(dir, e.name, "idp.json")) || existsSync(join(dir, e.name, "callout.json"))),
+      )
+      .map((e) => decodeURIComponent(e.name));
+  } catch {
+    return []; // no auth dir at all — nothing user-auth here
+  }
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on

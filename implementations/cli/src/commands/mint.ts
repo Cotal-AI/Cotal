@@ -11,7 +11,7 @@ import {
   type ParsedArgs,
   type Profile,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, loadSpaceAuth, userAuthStateDir } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 
@@ -58,6 +58,21 @@ export async function mint(args: ParsedArgs): Promise<void> {
   const auth = loadSpaceAuth(dir);
   if (!auth) {
     console.error(c.red("no space auth found here — run `cotal up` first"));
+    process.exit(1);
+  }
+  // THE FLIP (per-user-auth): static agent/observer/admin creds are RETIRED on user-auth spaces.
+  // A static mint here would be a fully-working `local.<nkey>` identity that user-mode readers
+  // trust — exactly the "no compatibility window may allow old credentials to publish data new
+  // owner+actor readers can trust or misattribute" invariant. Fail-closed on the on-disk marker
+  // alone (refusing is the safe direction; the manager's stricter marker×registry check guards the
+  // PERMISSIVE branch, not this one). `--signer` stays available above: infrastructure creds
+  // (supervisor/delivery/…) are pre-flip trust material, not agent identities.
+  if (existsSync(userAuthStateDir(cotalRoot(), auth.space))) {
+    console.error(
+      c.red(
+        `✗ space "${auth.space}" is a per-user-auth mesh — static ${profile} creds are retired here. Use user-mode commands (\`cotal login\`; agents: \`cotal spawn\`); static dashboard/audit creds are not supported on user-auth meshes. Static minting remains available on static-auth meshes.`,
+      ),
+    );
     process.exit(1);
   }
   // For agents, derive the read/post ACLs AND role from the agent file if one exists (flags

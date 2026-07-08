@@ -23,9 +23,48 @@ export interface MeshEntry {
   server: string;
   /** Absolute path whose `.cotal/{auth,agents}` hold this mesh's trust material + personas. */
   root: string;
-  mode: "auth" | "open";
+  /** How the broker authenticates: static per-agent JWT creds (`auth`), none (`open`), or
+   *  per-USER auth (`user`) — login + bearer through the space's auth service. `user` is its own
+   *  connect path: it must never be treated as `auth` with missing creds, nor as `open`. */
+  mode: "auth" | "open" | "user";
+  /** The user-auth client metadata, present iff `mode === "user"` — how a connect from any
+   *  directory on THIS machine finds the login target and exchange. Local operator config, not
+   *  broker truth: it lives under the user's protected registry dir and is trusted the way the
+   *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
+  userAuth?: UserAuthInfo;
   /** ISO timestamp of when the record was written. */
   ts: string;
+}
+
+/** Non-secret user-auth metadata on a {@link MeshEntry}. TRUST PINS and CONVENIENCE ENDPOINTS are
+ *  deliberately separate fields: `idp` is what the operator pinned at `up --user-auth` time (the
+ *  login/exchange trust config — error messages and login guidance use THIS); `endpoints` is where
+ *  the local auth service happened to bind (runtime, may change across restarts, re-recorded by
+ *  `up`). Nothing here is ever taken from a presented token or an unauthenticated response. */
+export interface UserAuthInfo {
+  /** The registered auth provider's name (registry key, e.g. `"cotal"`). */
+  provider: string;
+  /** The pinned IdP: the login target (`cotal login --idp <url>`) + exact issuer/audience pins. */
+  idp: { url: string; issuer: string; audience: string };
+  /** The local auth service's runtime endpoints (exchange/JWKS base URL). Convenience, not trust. */
+  endpoints?: { url?: string };
+}
+
+/** Runtime-validate a provider's opaque `publicAuth` blob into a {@link UserAuthInfo} — the
+ *  workstation layer owns this shape (core stays IdP-agnostic), so the boundary where an
+ *  arbitrary provider's metadata enters the registry is checked here, fail-loud. */
+export function assertUserAuthInfo(v: unknown): UserAuthInfo {
+  const o = v as UserAuthInfo;
+  if (o === null || typeof o !== "object" || typeof o.provider !== "string" || !o.provider)
+    throw new Error("auth provider publicAuth: a provider name is required");
+  if (o.idp === null || typeof o.idp !== "object" || typeof o.idp.url !== "string" || !o.idp.url ||
+      typeof o.idp.issuer !== "string" || !o.idp.issuer || typeof o.idp.audience !== "string" || !o.idp.audience)
+    throw new Error("auth provider publicAuth: idp { url, issuer, audience } trust pins are required");
+  if (o.endpoints !== undefined && (o.endpoints === null || typeof o.endpoints !== "object" ||
+      (o.endpoints.url !== undefined && typeof o.endpoints.url !== "string")))
+    throw new Error("auth provider publicAuth: endpoints, when present, must be { url?: string }");
+  return { provider: o.provider, idp: { url: o.idp.url, issuer: o.idp.issuer, audience: o.idp.audience },
+    ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}) };
 }
 
 /** The cotal machine-home dir, overridable via `COTAL_HOME` so tests sandbox it and never touch the

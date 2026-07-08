@@ -13,6 +13,12 @@ export interface LaunchOpts {
   /** Path to a minted creds file (auth mode). Passed to the session so it authenticates
    *  as `id`; absent when the mesh runs open. */
   creds?: string;
+  /** USER-MODE launch (a user-auth mesh): the agent's owner+actor principal, the PATH to its
+   *  sentinel-creds copy, and the argv it execs for a fresh bearer. The connector forwards these
+   *  verbatim (`COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` as JSON
+   *  argv) — like {@link creds}, host-local pointers, opaque to core. Mutually exclusive with
+   *  `creds`/`id` (the principal IS the identity; connectors throw on a conflicting combination). */
+  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
   servers?: string;
   /** The agent's resolved access policy — the SAME read/post set the manager mints the agent's
    *  creds from. The connector forwards it (`COTAL_SUBSCRIBE` / `COTAL_ALLOW_SUBSCRIBE` /

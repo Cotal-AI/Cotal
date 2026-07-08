@@ -40,15 +40,18 @@ export async function stop(args: ParsedArgs): Promise<void> {
   // `control-caller-admin` cred holds ONLY `ctl.<admin>.<id>` (that IS the cross-agent authority —
   // the manager doesn't re-check the caller), so it reaches this op and nothing else.
   const t = await resolveControlTarget(v, "control-caller-admin");
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.creds, CONTROL_ADMIN);
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, CONTROL_ADMIN);
   failIfNotOk(reply);
-  console.log(c.dim(`✓ stopped ${v.name}`));
+  // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
+  // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
+  // restart-vs-revoke model is visible at the command, not inferred from docs.
+  console.log(c.dim(`✓ stopped ${v.name}${t.auth.bearer ? " — its actor grant is revoked; a respawn re-grants automatically" : ""}`));
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
-  const reply = await askManager(t.space, t.server, "ps", undefined, t.creds);
+  const reply = await askManager(t.space, t.server, "ps", undefined, t.auth);
   failIfNotOk(reply);
   const rows =
     (reply.data as Array<{
@@ -57,6 +60,8 @@ export async function ps(args: ParsedArgs): Promise<void> {
       agent: string;
       mode: string;
       mesh: string;
+      authHealth?: string;
+      authReason?: string;
     }>) ?? [];
   if (!rows.length) {
     console.log(c.dim("(no managed agents)"));
@@ -73,11 +78,17 @@ export async function ps(args: ParsedArgs): Promise<void> {
             : r.mesh === "waiting"
               ? c.yellow("waiting")
               : c.cyan(r.mesh);
+    // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
+    // triages "definitely broken" before "might be".
+    const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
     console.log(
       `${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
         r.agent + " · " + r.mode,
-      )}  ${status}`,
+      )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
     );
+    // The detached agent's ONLY operator window into a failing bearer refresh: the provider
+    // command's operator-exact sentence, verbatim (it already names the repair).
+    if (r.authHealth && r.authReason) console.log(authColor(`    ${r.authReason}`));
   }
 }
 
@@ -90,7 +101,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   // Operator attach is a cross-agent (admin) op — same reasoning as stop (the operator isn't the
   // spawner; admin reaches any agent). Scoped `control-caller-admin`: ctl.<admin> only.
   const t = await resolveControlTarget(v, "control-caller-admin");
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.creds, CONTROL_ADMIN);
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, CONTROL_ADMIN);
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
   console.error(c.dim(`attached to ${v.name} — ${detachKey().label} to detach`));

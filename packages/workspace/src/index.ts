@@ -1,4 +1,5 @@
 export * from "./auth-paths.js";
+export * from "./agent-health.js";
 export * from "./bin-path.js";
 export * from "./colors.js";
 export * from "./connect.js";
@@ -10,4 +11,5 @@ export * from "./mesh-registry.js";
 export * from "./mesh-target.js";
 export * from "./preflight.js";
 export * from "./render.js";
+export * from "./renewal.js";
 export * from "./space.js";
