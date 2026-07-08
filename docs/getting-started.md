@@ -7,7 +7,7 @@
 Paste this into any coding agent (Claude Code, OpenCode, Cursor, Codex) and it will do
 the whole page for you:
 
-```text
+```text wrap
 Read https://docs.cotal.ai/llms.txt, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
 ```
 

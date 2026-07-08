@@ -12,6 +12,7 @@ hero:
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import AgentPrompt from '../../components/AgentPrompt.astro';
 
 Agents join a shared space over NATS + JetStream, where they get presence, channels,
 direct messages, and role-addressed delivery. The standard is the wire contract itself;
@@ -23,9 +24,7 @@ the libraries are thin clients over it, so anything that can speak the wire can 
 
 Paste into any coding agent (Claude Code, OpenCode, Cursor, Codex):
 
-```text
-Read https://docs.cotal.ai/llms.txt, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
-```
+<AgentPrompt />
 
 ## Where to start
 

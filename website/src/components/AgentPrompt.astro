@@ -1,0 +1,108 @@
+---
+// The landing-page prompt card: the setup one-liner in a framed box with the
+// agent marks and an always-visible copy button. Same prompt as the hero pill.
+import AgentLogos from './AgentLogos.astro';
+import { AGENT_PROMPT } from '../prompt';
+---
+
+<div class="agent-prompt not-content">
+  <AgentLogos />
+  <code>{AGENT_PROMPT}</code>
+  <button type="button" data-prompt={AGENT_PROMPT} aria-label="Copy the setup prompt">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M8 4v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.24a2 2 0 0 0-.6-1.44l-2.32-2.24A2 2 0 0 0 15.7 3H10a2 2 0 0 0-2 2Zm8 14v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2"
+      />
+    </svg>
+    <span class="label" aria-live="polite">Copy</span>
+  </button>
+</div>
+
+<script>
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('.agent-prompt button')) {
+    const label = btn.querySelector('.label');
+    btn.addEventListener('click', async () => {
+      if (!label) return;
+      try {
+        await navigator.clipboard.writeText(btn.dataset.prompt ?? '');
+        label.textContent = 'Copied';
+        btn.classList.add('copied');
+      } catch {
+        label.textContent = 'Failed';
+      }
+      setTimeout(() => {
+        label.textContent = 'Copy';
+        btn.classList.remove('copied');
+      }, 2000);
+    });
+  }
+</script>
+
+<style>
+  .agent-prompt {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1rem;
+    padding: 1rem 1rem 1rem 1.25rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.75rem;
+    background:
+      linear-gradient(
+        105deg,
+        color-mix(in srgb, #e9c46a 7%, transparent),
+        transparent 45%
+      ),
+      var(--sl-color-gray-6);
+  }
+  .agent-prompt > :global(.logos) {
+    color: var(--sl-color-gray-2);
+    font-size: 1.0625rem;
+  }
+  .agent-prompt code {
+    flex: 1;
+    font-size: var(--sl-text-sm);
+    line-height: 1.65;
+    color: var(--sl-color-white);
+    background: none;
+    padding: 0;
+  }
+  .agent-prompt button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-shrink: 0;
+    padding: 0.5rem 0.95rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 999rem;
+    background: var(--sl-color-black);
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-sm);
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      border-color 0.15s,
+      color 0.15s;
+  }
+  .agent-prompt button svg {
+    width: 0.95em;
+    height: 0.95em;
+  }
+  .agent-prompt button:hover,
+  .agent-prompt button.copied {
+    border-color: #e9c46a;
+    color: #e9c46a;
+  }
+  @media (max-width: 40rem) {
+    .agent-prompt {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.75rem;
+    }
+  }
+</style>
