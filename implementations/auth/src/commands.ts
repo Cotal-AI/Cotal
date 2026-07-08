@@ -52,7 +52,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       onPrompt: (p) => {
         console.log(`\nTo approve this sign-in, open:\n\n    ${p.verificationUriComplete}\n`);
         console.log(`(or go to ${p.verificationUri} and enter the code ${p.userCode})\n`);
-        console.log(`Waiting for approval — the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
+        console.log(`Waiting for approval - the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
       },
     });
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
@@ -64,7 +64,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // Signing in proves WHO you are; each mesh separately lets you in. Hand the human the exact
     // next step — their sub is the one thing the operator needs from them.
     console.log(
-      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (that's the full grant — all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)`,
+      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (that's the full grant - all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)`,
     );
   });
 }
@@ -81,7 +81,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     const dir = homeCotalDir();
     const session = loadIdpSession(dir, idp);
     if (!session) {
-      console.log(`not logged in to ${idp} — nothing to clear`);
+      console.log(`not logged in to ${idp} - nothing to clear`);
       return;
     }
     try {
@@ -97,7 +97,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
       );
     }
     deleteIdpSession(dir, idp);
-    console.log(`Logged out of ${idp} — server-side session revoked, local cache cleared.`);
+    console.log(`Logged out of ${idp} - server-side session revoked, local cache cleared.`);
   });
 }
 
@@ -110,17 +110,21 @@ function actorStateDir(space?: string): { dir: string; space: string } {
 
 /** Resolve the operator's target (owner) for `actor grant`/`revoke`: an explicit derived `--owner`
  *  token, or `--sub` (the IdP subject `cotal login` prints) derived through the SAME frozen encoding
- *  the bridge exchange uses. Grant-by-sub needs the space's owner secret + IdP pin — i.e. user auth
- *  already enabled here — and says exactly that when they're missing. */
+ *  the bridge exchange uses. BOTH require the space's owner secret + IdP pin under `dir` — i.e. this
+ *  IS the machine that ran `cotal up --user-auth`, where the authoritative ledger lives. Without
+ *  them a grant would write an INERT LOCAL row and print a misleading success while the mesh's real
+ *  ledger is untouched (an off-machine `--owner` cannot mutate authority), so we refuse instead. */
 function resolveGrantOwner(dir: string, values: { owner?: string; sub?: string }): string {
   if (values.owner && values.sub) throw new Error("pass --owner OR --sub, not both");
-  if (values.owner) return values.owner;
-  if (!values.sub) throw new Error("say who: --sub <IdP subject> (shown by `cotal login`) or --owner <u_…>");
+  if (!values.owner && !values.sub) throw new Error("say who: --sub <IdP subject> (shown by `cotal login`) or --owner <u_…>");
   const secret = loadOwnerSecret(dir);
   const idp = loadPinnedIdp(dir);
   if (!secret || !idp)
-    throw new Error(`user auth is not enabled for this space (no owner secret/IdP pin under ${dir}) — run \`cotal up --user-auth --idp <url>\` first`);
-  return deriveOwnerForIdpSubject(secret, idp.issuer, values.sub);
+    throw new Error(
+      `user auth is not enabled for this space here (no owner secret/IdP pin under ${dir}). The actor ledger lives on the machine that ran \`cotal up --user-auth --idp <url>\`; run the \`actor\` commands there`,
+    );
+  if (values.owner) return values.owner;
+  return deriveOwnerForIdpSubject(secret, idp.issuer, values.sub!);
 }
 
 const csv = (s: string | undefined, dflt: string[]): string[] =>
@@ -134,7 +138,7 @@ const csv = (s: string | undefined, dflt: string[]): string[] =>
  *  own expiry — reported, never silent, and never a reason to fail the revoke. */
 async function evictRevokedPrincipal(space: string, principal: string): Promise<string> {
   const fallback = (why: string) =>
-    `live-connection eviction skipped (${why}) — deny-new is committed and the revoke cannot be re-run; the already-open connection ends at its current bearer's expiry. To evict live connections at revoke time, run \`cotal actor revoke\` from the mesh root (local signer + registry).`;
+    `live-connection eviction skipped (${why}) - deny-new is committed and the revoke cannot be re-run; the already-open connection ends at its current bearer's expiry. To evict live connections at revoke time, run \`cotal actor revoke\` from the mesh root (local signer + registry).`;
   const root = findCotalRoot();
   const auth = loadSpaceAuth(authDir(root));
   if (!auth) return fallback("no local signer here");
@@ -160,7 +164,7 @@ async function evictRevokedPrincipal(space: string, principal: string): Promise<
     const d = (r.data ?? {}) as { kicked?: number; remaining?: number; verifiedGone?: boolean };
     return d.verifiedGone
       ? `live connections closed now (${d.kicked ?? 0} kicked, verified gone)`
-      : `live-connection eviction INCOMPLETE (${d.kicked ?? 0} kicked, ${d.remaining ?? "?"} still live) — run \`cotal doctor auth\``;
+      : `live-connection eviction INCOMPLETE (${d.kicked ?? 0} kicked, ${d.remaining ?? "?"} still live) - run \`cotal doctor auth\``;
   } catch (e) {
     return fallback(e instanceof Error ? e.message : String(e));
   } finally {
@@ -179,7 +183,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
     if (sub === "list") {
       const rows = loadActorLedger(dir);
       if (!rows.length) {
-        console.log("no actors granted — grant one with: cotal actor grant <actor> --sub <IdP subject>");
+        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject>");
         return;
       }
       for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))
@@ -205,7 +209,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
         ...(values.label ? { label: values.label } : {}),
         ...(values.parent ? { parent: values.parent } : {}),
       });
-      console.log(`✓ granted ${row.owner}.${row.actor} — read [${row.allowSubscribe.join(", ")}], post [${row.allowPublish.join(", ")}]${row.scope.length ? `, scope [${row.scope.join(", ")}]` : ""}`);
+      console.log(`✓ granted ${row.owner}.${row.actor} - read [${row.allowSubscribe.join(", ")}], post [${row.allowPublish.join(", ")}]${row.scope.length ? `, scope [${row.scope.join(", ")}]` : ""}`);
       return;
     }
     if (sub === "revoke") {
@@ -213,15 +217,15 @@ async function runActor(args: ParsedArgs): Promise<void> {
       const owner = resolveGrantOwner(dir, values);
       if (!revokeActor(dir, owner, actor)) {
         if (findManagedActor(dir, owner, actor))
-          throw new Error(`${owner}.${actor} is a managed agent — its grant lives with its process: stop it if manager-owned (\`cotal stop --name ${actor}\`), or if it was a killed foreground spawn, respawn the same name (\`cotal spawn\`) to rotate the grant`);
-        console.log(`no grant for ${owner}.${actor} — nothing to revoke`);
+          throw new Error(`${owner}.${actor} is a managed agent - its grant lives with its process: stop it if manager-owned (\`cotal stop --name ${actor}\`), or if it was a killed foreground spawn, respawn the same name (\`cotal spawn\`) to rotate the grant`);
+        console.log(`no grant for ${owner}.${actor} - nothing to revoke`);
         return;
       }
       // Deny-new is immediate at both boundaries (exchange + connect). The LIVE window no longer
       // rides the bearer's expiry by default: the flip wires revoke → the delivery daemon's
       // evictPrincipal (scan→KICK→verify on the privileged rail), best-effort with honest copy —
       // a human bearer can otherwise carry up to the IdP session cap, far beyond the agents' TTL.
-      console.log(`✓ revoked ${owner}.${actor} — new exchanges and new connects are denied now`);
+      console.log(`✓ revoked ${owner}.${actor} - new exchanges and new connects are denied now`);
       console.log(`  ${await evictRevokedPrincipal(space, `${owner}.${actor}`)}`);
       return;
     }
@@ -258,12 +262,12 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     try {
       actorToken = readFileSync(tokenFile, "utf8").trim();
     } catch (e) {
-      throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) — respawn this agent to re-provision it`);
+      throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) - respawn this agent to re-provision it`);
     }
     const info = loadAuthServiceInfo(dir);
     const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
     if (!info || !alive(info.pid))
-      throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running — restart it with \`cotal up\``);
+      throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
     let res: Response;
     try {
       res = await fetch(`${info.url}/exchange`, {
@@ -273,7 +277,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
-      throw new Error(`agent-bearer: the user-auth service did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) — restart it with \`cotal up\``);
+      throw new Error(`agent-bearer: the user-auth service did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``);
     }
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -281,7 +285,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     }
     const out = (await res.json().catch(() => ({}))) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
-      throw new Error("agent-bearer: the auth service's exchange returned no token — its build may be stale; restart it with `cotal up`");
+      throw new Error("agent-bearer: the auth service's exchange returned no token - its build may be stale; restart it with `cotal up`");
     health("ok");
     process.stdout.write(`${out.token}\n`);
   } catch (e) {
@@ -295,7 +299,7 @@ const authCommands: Command[] = [
     kind: "command",
     name: "auth-service",
     group: "Manager",
-    summary: "run the user-auth service daemon — NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>]",
+    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL the callout serves (required)" },
@@ -307,7 +311,7 @@ const authCommands: Command[] = [
     kind: "command",
     name: "actor",
     group: "Identity",
-    summary: "manage the space's actor ledger — grant/revoke which (user, actor) pairs may run agents",
+    summary: "manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents",
     usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]",
     positionals: "<grant <actor> | revoke <actor> | list>",
     flags: [
@@ -315,11 +319,11 @@ const authCommands: Command[] = [
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
       { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: > = all channels) — the user's envelope: their agents can never read beyond it" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: > = all channels) — also the envelope for their agents' posting" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: > = all channels) - the user's envelope: their agents can never read beyond it" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: > = all channels) - also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
-      { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority — this does not attenuate)" },
+      { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority - this does not attenuate)" },
     ],
     run: runActor,
   },

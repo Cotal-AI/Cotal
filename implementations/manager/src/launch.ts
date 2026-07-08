@@ -114,7 +114,7 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
       } catch (e) {
         throw new Error(`${where}: ${field}: ${(e as Error).message}`);
       }
-      if (!isConcreteChannel(ch)) throw new Error(`${where}: ${field} "${ch}" is a wildcard — not allowed in a v1 launch spec`);
+      if (!isConcreteChannel(ch)) throw new Error(`${where}: ${field} "${ch}" is a wildcard - not allowed in a v1 launch spec`);
     }
   const missing = a.subscribe.filter((c) => !a.allowSubscribe.includes(c));
   if (missing.length) throw new Error(`${where}: subscribe [${missing.join(", ")}] not within allowSubscribe`);
@@ -130,7 +130,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   // run tree); plus a lexical direct-child check on the final path as belt-and-suspenders.
   const dir = ensureDirNoSymlink(root, ".cotal", "run", runId, "agents");
   const path = resolve(dir, `${a.name}.md`);
-  if (dirname(path) !== dir) throw new Error(`unsafe agent name "${a.name}" — persona path escapes ${dir}`);
+  if (dirname(path) !== dir) throw new Error(`unsafe agent name "${a.name}" - persona path escapes ${dir}`);
   const fm = ["---", `name: ${a.name}`];
   if (a.role) fm.push(`role: ${scalar(a.role)}`);
   if (a.model) fm.push(`model: ${scalar(a.model)}`);
@@ -138,7 +138,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   if (a.description) fm.push(`description: ${scalar(a.description)}`);
   fm.push("---", "");
   const src = a.personaPath ?? "the manifest";
-  const header = `<!-- Generated runtime artifact from a cotal mesh manifest (run ${runId}). Do NOT edit — regenerated on each launch and deleted by \`cotal down\`. Edit ${src} instead. This file is not a reusable persona and carries no access authority. -->`;
+  const header = `<!-- Generated runtime artifact from a cotal mesh manifest (run ${runId}). Do NOT edit - regenerated on each launch and deleted by \`cotal down\`. Edit ${src} instead. This file is not a reusable persona and carries no access authority. -->`;
   const body = a.body ? `${a.body.trim()}\n` : "";
   // `wx`: exclusive create — fails rather than following a symlink pre-planted at the path.
   writeFileSync(path, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });

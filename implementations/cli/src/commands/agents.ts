@@ -50,7 +50,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
   // restart-vs-revoke model is visible at the command, not inferred from docs.
-  console.log(c.dim(`✓ stopped ${v.name}${t.auth.bearer ? " — its actor grant is revoked; a respawn re-grants automatically" : ""}`));
+  console.log(c.dim(`✓ stopped ${v.name}${t.auth.bearer ? " - its actor grant is revoked; a respawn re-grants automatically" : ""}`));
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
@@ -111,7 +111,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, tier);
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
-  console.error(c.dim(`attached to ${v.name} — ${detachKey().label} to detach`));
+  console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
   await attachClient(ws);
   console.error(c.dim(`\ndetached from ${v.name}`));
 }

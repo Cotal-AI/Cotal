@@ -9,7 +9,9 @@
  *      browser-origin requests and requests without the file-ACL capability.
  *   C. a real device-code login (auto-approved) + `cotal actor grant cli --sub …` → a plain
  *      `cotal send msg` connects USER-MODE (login → exchange → bearer → callout) and the message
- *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap).
+ *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap);
+ *      the ported operator surfaces: `channels list` on the plain grant, `history clear` refused
+ *      without scope "admin" (naming the purger view + the ADD re-grant) then passing after it.
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
  *      logged-out machine → the exact `cotal login --idp …` line. No fallback anywhere.
  *   E. recovery: a crashed (SIGKILLed) auth service surfaces the exact `cotal up` recovery on a
@@ -186,16 +188,6 @@ try {
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
   const frame = got.find((g) => hasText(g, "hello from user mode"));
   check("the witness receives it AS the derived u_….cli principal", arrived && /^u_[a-z2-7]{26}\.cli$/.test(frame?.from.id ?? ""), frame?.from);
-  const unsupportedOperatorSurface = await cotal(["channels", "list", "--space", SPACE]);
-  check(
-    "blocked user-mode operator surfaces do NOT recommend static mint repair",
-    unsupportedOperatorSurface.status !== 0 &&
-      unsupportedOperatorSurface.out.includes("static --creds are retired") &&
-      !unsupportedOperatorSurface.out.includes("cotal mint") &&
-      !unsupportedOperatorSurface.out.includes("--profile"),
-    unsupportedOperatorSurface.out,
-  );
-
   // Own-agent control TIER ROUTING: on a user mesh, `cotal stop`/`attach` ride the operator's own
   // bearer on the SPAWN (privileged) tier — a spawn-scoped grant (no admin) must REACH the manager
   // and get ITS decision back. Before this routing, the CLI published on ctl.admin and the broker
@@ -205,6 +197,31 @@ try {
   check("spawn-scoped `cotal stop` reaches the manager on the spawn tier (its reply, not a broker drop)", ghostStop.status !== 0 && ghostStop.out.includes('no agent "ghost"'), ghostStop.out);
   const ghostAttach = await cotal(["attach", "--name", "ghost", "--space", SPACE]);
   check("spawn-scoped `cotal attach` reaches the manager the same way", ghostAttach.status !== 0 && ghostAttach.out.includes('no agent "ghost"'), ghostAttach.out);
+
+  // PORTED OPERATOR SURFACES (elevated views): `channels list` rides the operator's OWN agent
+  // bearer, so the plain grant is enough — no view, no extra scope. `history clear` is
+  // destructive, so it asks the exchange for the one-shot "purger" view, which only mints
+  // against a FRESH ledger row carrying scope "admin": the refusal names the view, the missing
+  // scope, and the ADD-to-current re-grant — never static mint repair.
+  const chList = await cotal(["channels", "list", "--space", SPACE]);
+  // A fresh mesh has no registry ENTRIES (only `channels set` writes one), so the proof of the
+  // read is the space-default line, not a channel row.
+  check("`channels list` works user-mode on the plain grant (own agent bearer, no view)", chList.status === 0 && chList.out.includes("default replay"), chList.out);
+  const clearNoAdmin = await cotal(["history", "clear", "--force", "--space", SPACE]);
+  check(
+    '`history clear` without scope "admin" is refused, naming the purger view + the scope',
+    clearNoAdmin.status !== 0 && clearNoAdmin.out.includes('view "purger"') && clearNoAdmin.out.includes('needs scope "admin"'),
+    clearNoAdmin.out,
+  );
+  check(
+    "…and the ADD-to-current re-grant (never static mint repair)",
+    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint"),
+    clearNoAdmin.out,
+  );
+  const adminGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
+  check("re-grant with admin ADDED to the current scope succeeds (upsert)", adminGrant.status === 0 && adminGrant.out.includes("admin"), adminGrant.out);
+  const cleared = await cotal(["history", "clear", "--force", "--space", SPACE]);
+  check("`history clear --force` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("cleared"), cleared.out);
 
   // ---------- D. the deny matrix at the operator surface ----------
   console.log("D) revoke → refused; logout → the exact login line");

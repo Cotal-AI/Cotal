@@ -76,7 +76,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     {
       name: "nats-binary",
       title: "Locate the NATS server",
-      explain: "Cotal runs on NATS + JetStream, the wire your agents speak over. (Located only — `cotal up` starts it.)",
+      explain: "Cotal runs on NATS + JetStream, the wire your agents speak over. (Located only - `cotal up` starts it.)",
       context: [NATS_RELEASES_URL, README_URL],
       async run() {
         const r = await resolveNatsServer();
@@ -105,7 +105,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
   // shape. This is the whole first-run default; the guided expert team is opt-in right below.
   seedDefaultAgent();
-  p.log.success("Seeded your agent (.cotal/agents/default.md) — spawn it with `cotal spawn` once your mesh is up");
+  p.log.success("Seeded your agent (.cotal/agents/default.md) - spawn it with `cotal spawn` once your mesh is up");
   log.line("default-agent: wrote default.md");
   // The guided expert team (david the engineer + sven the guide + me, your session) is opt-in:
   // `cotal setup --demo` (or `--full`). Keeps the default first run to one agent, not a crowd.
@@ -141,7 +141,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       ];
   note(
     [
-      "Everything is configured — nothing has been started. Bring your mesh up when you're ready:",
+      "Everything is configured - nothing has been started. Bring your mesh up when you're ready:",
       "",
       ...driveLines,
       "",
@@ -170,7 +170,7 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
       await p.confirm({ message: "Install `cotal` globally so you can just type `cotal`?", initialValue: true }),
     );
     if (!go) {
-      p.log.info(`No problem — keep using ${dim("npx cotal-ai")}. Install later with ${dim("npm i -g cotal-ai")}.`);
+      p.log.info(`No problem - keep using ${dim("npx cotal-ai")}. Install later with ${dim("npm i -g cotal-ai")}.`);
       return;
     }
   }
@@ -180,7 +180,7 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
   s.start("Installing cotal globally");
   const r = spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8" });
   if (r.status === 0) {
-    s.stop("Installed — you can now run `cotal`");
+    s.stop("Installed - you can now run `cotal`");
   } else {
     s.stop("Couldn't install globally");
     const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n");
@@ -415,7 +415,7 @@ allowPublish: [">"]
 capabilities: [spawn]
 ---
 
-You are an agent on the Cotal mesh — a shared space where agents join, see who's around, and
+You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
 coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
 your peers and work with them. Edit this file to give yourself a name, role, and purpose.
 `;
@@ -440,13 +440,13 @@ function seedDemoTeam(log?: { line(msg: string): void }): void {
   for (const [name, body] of Object.entries(DEMO_AGENTS)) {
     writeDemoAgent(cotalPath("agents", `${name}.md`), body);
   }
-  p.log.success("Added the guided team — david (the engineer), sven (the guide), and your session (me); spawn them when your mesh is up");
+  p.log.success("Added the guided team - david (the engineer), sven (the guide), and your session (me); spawn them when your mesh is up");
   log?.line("demo-agents: wrote david + sven + me");
 }
 
 const DEMO_AGENTS: Record<string, string> = {
   david: `---
-${MANAGED_MARKER} — edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes
+${MANAGED_MARKER} - edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes
 name: david
 role: cotal-tech
 description: "the engineer: how Cotal works (the wire, NATS, connectors, integration)."
@@ -460,7 +460,7 @@ up. You help them set up and experiment. Your topic is how Cotal works: the wire
 message schemas, presence), NATS and JetStream underneath, the endpoint/connector model, the
 delivery modes (multicast, unicast, anycast), and how to get any agent or framework onto the mesh.
 You ground every answer in the real thing, never a guess. Start from \`docs/what-is-cotal.md\` (what Cotal
-is and its core primitives) and \`docs/getting-started.md\`, then read the source for your topic —
+is and its core primitives) and \`docs/getting-started.md\`, then read the source for your topic:
 \`docs/architecture.md\`, \`docs/connect-claude.md\`, \`docs/setup-internals.md\`, and, in a
 source checkout, \`packages/\` and \`extensions/\`. Quote the exact subjects, message kinds, config, and
 commands; if the docs don't cover it, say so rather than inventing. If they aren't on disk, look
@@ -468,7 +468,7 @@ them up at https://github.com/Cotal-AI/Cotal. If a question is really about use-
 build, hand it to your peer sven.
 `,
   sven: `---
-${MANAGED_MARKER} — edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes
+${MANAGED_MARKER} - edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes
 name: sven
 role: cotal-guide
 description: "the guide: what to build with Cotal (examples, setups, getting the most out of it)."
@@ -479,8 +479,8 @@ allowPublish: [general]
 
 You are sven, Cotal's guide, live on the web for agents with the operator who just set Cotal up.
 You help them set up and experiment. You design multi-agent setups: who should be on a space, how
-they'd coordinate, what's worth trying — grounded in what Cotal can actually do, never made-up
-features. Start from \`docs/what-is-cotal.md\` (what Cotal is and its core primitives — channels, anycast,
+they'd coordinate, what's worth trying - grounded in what Cotal can actually do, never made-up
+features. Start from \`docs/what-is-cotal.md\` (what Cotal is and its core primitives - channels, anycast,
 presence, spawn, personas, delivery modes) and \`docs/getting-started.md\`; read the matching example
 in \`examples/*/README.md\` (indexed in \`docs/examples.md\`) before sketching, and reach for
 \`docs/architecture.md\` when you need a primitive to design something new. Cite the example or
@@ -488,7 +488,7 @@ primitive you're drawing on. If they aren't on disk, look them up at https://git
 For deep how-it-works or integration details, pull in your peer david.
 `,
   me: `---
-${MANAGED_MARKER} — edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes
+${MANAGED_MARKER} - edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes
 name: me
 role: operator
 description: "your own session on the Cotal mesh."

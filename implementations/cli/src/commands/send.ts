@@ -54,7 +54,7 @@ async function dm(values: ParsedArgs["values"], positionals: string[]): Promise<
       peer = resolvePeer(ep.getRoster(), target);
     } catch (e) {
       if (!(e instanceof AmbiguousPeerError)) throw e;
-      console.error(c.red(`"${target}" is ambiguous — DM by instance id instead:`));
+      console.error(c.red(`"${target}" is ambiguous - DM by instance id instead:`));
       for (const cand of e.candidates)
         console.error(c.dim(`  ${cand.name} (${cand.status})  ${cand.id}`));
       await ep.stop();

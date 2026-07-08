@@ -81,7 +81,7 @@ async function printRegistry(): Promise<void> {
   const current = getCurrent();
   section("Recorded Meshes");
   if (!meshes.length) {
-    console.log(c.dim("  none — start one with `cotal up --detach`"));
+    console.log(c.dim("  none - start one with `cotal up --detach`"));
     return;
   }
   const pad = Math.max(...meshes.map((m) => m.space.length));
@@ -136,17 +136,17 @@ async function printTarget(
     } catch (e) {
       row("login", c.dim((e as Error).message));
     }
-    if (st && !st.login) row("login", c.yellow(`not signed in — ${cmd} login --idp ${st.idpUrl}`));
+    if (st && !st.login) row("login", c.yellow(`not signed in - ${cmd} login --idp ${st.idpUrl}`));
     if (st?.login) {
       row("login", c.green(st.login.sub) + c.dim(` · session until ${new Date(st.login.expiresAt * 1000).toISOString()}`));
       if (st.grant === "not-granted")
-        row("actor", c.yellow(`"${CLI_USER_ACTOR}" not granted — ${cmd} actor grant ${CLI_USER_ACTOR} --sub ${st.login.sub}`));
+        row("actor", c.yellow(`"${CLI_USER_ACTOR}" not granted - ${cmd} actor grant ${CLI_USER_ACTOR} --sub ${st.login.sub}`));
       else if (st.grant)
         row(
           "actor",
           c.green(`"${CLI_USER_ACTOR}" granted${st.grant.label ? ` (${st.grant.label})` : ""}`) +
             c.dim(
-              ` — read [${st.grant.allowSubscribe.join(", ")}], post [${st.grant.allowPublish.join(", ")}]${st.grant.scope.length ? `, scope [${st.grant.scope.join(", ")}]` : ""}`,
+              ` - read [${st.grant.allowSubscribe.join(", ")}], post [${st.grant.allowPublish.join(", ")}]${st.grant.scope.length ? `, scope [${st.grant.scope.join(", ")}]` : ""}`,
             ),
         );
       else row("actor", c.dim("grant not checkable on this machine (no local ledger)"));
@@ -226,7 +226,7 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
     );
     for (const p of roster.slice(0, 8)) {
       const label = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
-      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` — ${p.activity}`) : ""}`);
+      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : ""}`);
     }
     if (roster.length > 8) console.log(c.dim(`    +${roster.length - 8} more`));
     row("channels", channels.length ? channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none");

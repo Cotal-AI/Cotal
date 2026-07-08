@@ -74,7 +74,7 @@ export function Sequence({
   );
 
   if (!entries.length || !lanes.length)
-    return <Text dimColor>(no traffic in the window — waiting for peer messages)</Text>;
+    return <Text dimColor>(no traffic in the window - waiting for peer messages)</Text>;
 
   const room = Math.max(1, height - 1); // header row
   const top = Math.max(0, Math.min(selClamped - room + 1, entries.length - room));

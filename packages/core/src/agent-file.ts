@@ -142,7 +142,7 @@ export function loadAgentFile(path: string): AgentDef {
   for (const old of ["channels", "publish"])
     if (old in fm)
       throw new Error(
-        `agent file ${path}: "${old}" was renamed — use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
+        `agent file ${path}: "${old}" was renamed - use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
       );
 
   const subscribe = list("subscribe");
@@ -173,7 +173,7 @@ export function loadAgentFile(path: string): AgentDef {
   // channel can't be both at once. Fail loud (no silent no-op), matching the checks above.
   const both = (quiet ?? []).filter((c) => (muted ?? []).includes(c));
   if (both.length)
-    throw new Error(`agent file ${path}: channel(s) [${both.join(", ")}] are in both quiet and muted — pick one`);
+    throw new Error(`agent file ${path}: channel(s) [${both.join(", ")}] are in both quiet and muted - pick one`);
   for (const [field, chans] of [["quiet", quiet], ["muted", muted]] as const)
     for (const ch of chans ?? []) {
       try {

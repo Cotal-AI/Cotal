@@ -52,10 +52,43 @@ export async function authorizeNamedControl(opts: {
       if (scope?.includes("admin")) return undefined;
     }
     return (
-      `not authorized: ${target.name} runs under another owner — your grant covers agents under your own owner; ` +
+      `not authorized: ${target.name} runs under another owner - your grant covers agents under your own owner; ` +
       `cross-owner stop/attach needs scope "admin" on your actor. Re-grant with "admin" ADDED to your current ` +
       `scope (the upsert replaces the list; see \`cotal actor list\`)`
     );
   }
   return `not authorized: ${target.name} was not spawned by ${caller} (admin tier required)`;
+}
+
+/**
+ * The manifest-launch authorization decision — pure, same contract style as
+ * {@link authorizeNamedControl}. The dispatch already rejects a static-mesh privileged-tier
+ * `launch` (operator-only there), so this decides the remaining cases:
+ *
+ * - **Admin tier**: allowed (operator behavior, both modes).
+ * - **Privileged tier, user mesh**: you deploy your own team — the launch spec's apply-time
+ *   stamped owner must EQUAL the subject-pinned caller's owner. Fail-closed on an unparseable
+ *   caller or a spec with no owner; the cross-owner refusal names the `admin` ADD-to-current
+ *   re-grant.
+ */
+export function authorizeLaunch(opts: {
+  /** The launch spec's apply-time stamped owner (`u_…`); absent = an ownerless spec. */
+  specOwner: string | undefined;
+  /** Subject-pinned caller principal (`req.from.id`). */
+  caller: string;
+  /** True when the request arrived on the admin control tier. */
+  admin: boolean;
+  /** The run id, for the refusal copy only. */
+  runId: string;
+}): string | undefined {
+  if (opts.admin) return undefined;
+  const callerOwner = parsePrincipalKey(opts.caller)?.owner;
+  if (callerOwner === undefined) return `launch denied: caller "${opts.caller}" is not a valid principal`;
+  if (opts.specOwner === undefined || opts.specOwner !== callerOwner)
+    return (
+      `not authorized: run ${opts.runId} was applied under another owner - a spawn-scoped deploy launches only ` +
+      `your own manifest agents; cross-owner deploys need scope "admin" on your actor. Re-grant with "admin" ` +
+      `ADDED to your current scope (the upsert replaces the list; see \`cotal actor list\`)`
+    );
+  return undefined;
 }

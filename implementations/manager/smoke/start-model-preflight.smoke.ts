@@ -135,7 +135,7 @@ registry.register(recNoResumeCon);
   check("missing harness binary is rejected", reply.ok === false, reply);
   check(
     "reject error names the missing binary, no PATH contents",
-    reply.error === "claude harness needs claude on PATH — not found",
+    reply.error === "claude harness needs claude on PATH - not found",
     reply.error,
   );
   check("reject happens before any side effect (no agent recorded)", agentCount() === 0);

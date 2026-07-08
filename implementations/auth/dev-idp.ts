@@ -65,7 +65,7 @@ async function approve(userCode: string): Promise<void> {
 
 console.log(`dev IdP up (in-memory, dies with this process)`);
 console.log(`  base URL : ${base}`);
-console.log(`  human    : david@example.test — IdP subject (sub): ${sub}`);
+console.log(`  human    : david@example.test - IdP subject (sub): ${sub}`);
 console.log(`\nUse it from another terminal:`);
 console.log(`  cotal up --user-auth --idp ${base} …`);
 console.log(`  cotal login --idp ${base}`);
@@ -78,7 +78,7 @@ rl.on("line", (line) => {
   const code = line.trim();
   if (!code) return rl.prompt();
   approve(code)
-    .then(() => console.log(`approved ✓ — \`cotal login\` should complete on its next poll (~1s)`))
+    .then(() => console.log(`approved ✓ - \`cotal login\` should complete on its next poll (~1s)`))
     .catch((e) => console.error(e instanceof Error ? e.message : String(e)))
     .finally(() => rl.prompt());
 });

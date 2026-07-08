@@ -12,7 +12,7 @@ export interface SetupLog {
 export function openSetupLog(_cwd: string): SetupLog {
   const path = cotalPath("setup.log");
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `\n=== cotal setup — ${new Date().toISOString()} ===\n`);
+  appendFileSync(path, `\n=== cotal setup - ${new Date().toISOString()} ===\n`);
   return {
     path,
     line(s: string) {

@@ -32,7 +32,7 @@ const AgentEntryObject = z
   })
   .refine((v) => v.persona !== undefined || v.model !== undefined || v.variant !== undefined || v.instructions !== undefined, {
     message:
-      "inline agent (no `persona:`) needs at least `model`, `variant`, or `instructions` — otherwise reference a persona file",
+      "inline agent (no `persona:`) needs at least `model`, `variant`, or `instructions` - otherwise reference a persona file",
   });
 
 /** An `agents:` value is a string (bare persona path) OR the object above. A plain `z.union`

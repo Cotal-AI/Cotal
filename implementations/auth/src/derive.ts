@@ -55,7 +55,7 @@ export function deriveOwnerToken(spaceSecret: string | Uint8Array, externalSubje
   const secret = typeof spaceSecret === "string" ? new TextEncoder().encode(spaceSecret) : spaceSecret;
   if (secret.byteLength < MIN_SECRET_BYTES)
     throw new Error(
-      `deriveOwnerToken: spaceSecret must be at least ${MIN_SECRET_BYTES} bytes (got ${secret.byteLength}) — ` +
+      `deriveOwnerToken: spaceSecret must be at least ${MIN_SECRET_BYTES} bytes (got ${secret.byteLength}) - ` +
         `a short secret makes owner tokens offline-reversible/linkable`,
     );
   if (!externalSubject) throw new Error("deriveOwnerToken: externalSubject must be a non-empty IdP subject");

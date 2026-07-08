@@ -90,8 +90,9 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, CONTROL_PRIVILEGED, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry,
+  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel,
 } = await import("@cotal-ai/core");
+const { decodeJwt } = await import("jose");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
@@ -518,6 +519,118 @@ try {
   await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
   const narrowedAttach: ControlReply = await auditor.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "alpha" } });
   check("narrowing the auditor's scope bites its NEXT op on the same live connection", narrowedAttach.ok === false && /another owner/.test(narrowedAttach.error ?? ""), narrowedAttach);
+
+  // ---------- V. elevated views (exchange-gated per-connection profiles), live ----------
+  // The live half of the views design (unit layers: smoke:views). Real wire: refused under-scoped
+  // exchange, managed-path rejection, a standing god-view tap over a bearer SOURCE that survives
+  // its ≤20s tokens (fresh ledger check per re-mint), a channel-purger purge, the deployer view on
+  // the privileged tier, and the ps owner-domain filter.
+  console.log("V) elevated views: ledger-gated god view / purge / deploy over the real wire");
+  const svc = loadAuthServiceInfo(dir)!;
+  const freshIdpJwt = async () =>
+    fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => void approve(p.userCode) })).session.token);
+  const humanViewEx = async (view: string, ttlSec?: number) => {
+    const res = await fetch(`${svc.url}/exchange`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${svc.cap}` },
+      body: JSON.stringify({ idpToken: await freshIdpJwt(), actor: "cli", view, ...(ttlSec ? { ttlSec } : {}) }),
+    });
+    return { status: res.status, body: (await res.json().catch(() => ({}))) as { token?: string; error?: string } };
+  };
+  // cli's scope is still [spawn] here — every admin-gated view must refuse naming the gate.
+  const deniedView = await humanViewEx("admin");
+  check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
+  // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
+  const vg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [] });
+  const mgdViewRes = await fetch(`${svc.url}/exchange`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${svc.cap}` },
+    body: JSON.stringify({ owner: OWNER, actor: "viewbot", actorToken: vg.actorToken, view: "admin" }),
+  });
+  const mgdViewBody = (await mgdViewRes.json().catch(() => ({}))) as { error?: string };
+  check("the managed exchange rejects views outright (400, even with admin on the row)", mgdViewRes.status === 400 && /never mints elevated views/.test(mgdViewBody.error ?? ""), { status: mgdViewRes.status, error: mgdViewBody.error });
+  // ADD admin to the cli grant (the upsert replaces the list — spawn kept deliberately).
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "admin"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
+  let viewMints = 0;
+  const mintAdminView = async (): Promise<string> => {
+    viewMints++;
+    const r = await humanViewEx("admin", 20);
+    if (r.status !== 200 || !r.body.token) throw new Error(`admin-view exchange failed: HTTP ${r.status} ${r.body.error ?? ""}`);
+    return r.body.token;
+  };
+  const firstView = await mintAdminView();
+  check("with admin ADDED, the admin-view exchange mints act.view", (decodeJwt(firstView).act as { view?: string }).view === "admin");
+  // The standing god-view tap: a bearer SOURCE over ≤20s tokens (the endpoint refreshes ahead of
+  // each expiry and reconnects across the bearer-bound JWT's death), pinned principal up front.
+  const sentinel = loadCalloutAuth(dir)!.sentinelCreds;
+  const godEye = new CotalEndpoint({
+    space: SPACE, servers: SERVER, bearer: mintAdminView, sentinelCreds: sentinel,
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+    card: { owner: OWNER, actor: "cli", name: "web", kind: "endpoint" },
+  });
+  godEye.on("error", () => {});
+  await godEye.start();
+  ctlEps.push(godEye);
+  const tapped: string[] = [];
+  godEye.tap((subject: string) => { tapped.push(subject); }, { subject: spaceWildcard(SPACE) });
+  await wait(300); // let the tap subscription settle
+  await opsmate.unicast(`${OWNER}.alpha`, "psst — a DM between two other principals");
+  let sawDm = false;
+  for (let i = 0; i < 20 && !sawDm; i++) { await wait(100); sawDm = tapped.some((s) => s.includes(".inst.")); }
+  check("the admin-view tap sees a DM between two OTHER principals (the god view)", sawDm, tapped.slice(-3));
+  // channel-purger view: publish two chat messages on a scratch channel, purge them via clearChannel
+  // over a one-shot purger-view bearer (the standalone user-mode connect path).
+  const wg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"] });
+  const wx = await agentExchange("writer", wg.actorToken, OWNER);
+  const writer = new CotalEndpoint({
+    space: SPACE, servers: SERVER, bearer: wx.body.token!, sentinelCreds: wg.sentinelCreds,
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+    card: { name: "writer", owner: OWNER, actor: "writer", kind: "endpoint" },
+  });
+  writer.on("error", () => {});
+  await writer.start();
+  ctlEps.push(writer);
+  await writer.multicast("purge me", { channel: "viewtest" });
+  await writer.multicast("me too", { channel: "viewtest" });
+  const purgeView = await humanViewEx("channel-purger");
+  check("the channel-purger view mints under scope admin", purgeView.status === 200 && !!purgeView.body.token, purgeView);
+  const purged = await clearChannel({ servers: SERVER, space: SPACE, channel: "viewtest", bearer: purgeView.body.token!, sentinelCreds: sentinel });
+  check("clearChannel purges over the purger-view bearer (standalone user-mode connect)", purged.purged >= 2, purged);
+  // deployer view: spawn-gated (no admin needed — but cli has both), control rides the PRIVILEGED tier.
+  const depView = await humanViewEx("deployer");
+  check("the deployer view mints (spawn-gated)", depView.status === 200 && !!depView.body.token, depView);
+  const deployer = new CotalEndpoint({
+    space: SPACE, servers: SERVER, bearer: depView.body.token!, sentinelCreds: sentinel,
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+    card: { owner: OWNER, actor: "cli", name: "spawn-f", kind: "endpoint" },
+  });
+  deployer.on("error", () => {});
+  await deployer.start();
+  ctlEps.push(deployer);
+  const depPs: ControlReply = await deployer.requestControl(CONTROL_PRIVILEGED, { op: "ps" });
+  check("the deployer view drives ps on the PRIVILEGED tier", depPs.ok === true, depPs);
+  // ps owner-domain filter: an owner-B caller sees NOTHING (all managed agents are owner A's);
+  // an owner-A sibling sees alpha. (Both callers are live from section O.)
+  const psB: ControlReply = await intruder.requestControl(CONTROL_PRIVILEGED, { op: "ps" });
+  check("privileged ps under another owner lists NOTHING (owner-domain metadata bound)", psB.ok === true && Array.isArray(psB.data) && (psB.data as unknown[]).length === 0, psB.data);
+  const psA: ControlReply = await opsmate.requestControl(CONTROL_PRIVILEGED, { op: "ps" });
+  check("privileged ps under the owner lists its own agents", psA.ok === true && Array.isArray(psA.data) && (psA.data as Array<{ name: string }>).some((a) => a.name === "alpha"), psA.data);
+  // A fresh ledger `admin` scope (not just the admin TIER) sees ALL owners — the SAME authority that
+  // lets stop/attach reach cross-owner (section O). Without this, ps/status disagreed with control:
+  // an admin could cross-owner STOP an agent it could not LIST. An owner-B admin sees owner-A's alpha.
+  const overseer = await ctlCaller("overseer", OWNER_B, ["spawn", "admin"]);
+  const psAdmin: ControlReply = await overseer.requestControl(CONTROL_PRIVILEGED, { op: "ps" });
+  check(
+    "an admin-SCOPED privileged ps sees across owners (owner-B admin lists owner-A's alpha)",
+    psAdmin.ok === true && Array.isArray(psAdmin.data) && (psAdmin.data as Array<{ name: string }>).some((a) => a.name === "alpha"),
+    psAdmin.data,
+  );
+  // The refresh proof: past the first 20s bearer's death the endpoint has re-minted (fresh ledger
+  // checks) and reconnected — a live wire round-trip still answers.
+  await wait(25_000);
+  const channelsAfter = await godEye.listChannels();
+  check("the god-view endpoint outlives its first ≤20s bearer (source re-mint + reconnect)", Array.isArray(channelsAfter), channelsAfter?.length);
+  check("the bearer source re-minted at least once (fresh ledger check per refresh)", viewMints >= 2, { viewMints });
 
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");

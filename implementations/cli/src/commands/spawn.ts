@@ -214,7 +214,7 @@ async function spawnDetached(
     "control-caller-privileged",
   );
   provenance.read("mesh", `${t.space} (${t.server})`);
-  console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome — join, exit, or ~30s) …"));
+  console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
     identity: values.name,
@@ -239,7 +239,7 @@ async function spawnDetached(
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(
     c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
-      c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) — attach with: cotal attach --name ${d.name}`),
+      c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
   );
 }
 
@@ -313,8 +313,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(
         c.red(
           ref === "default" && !defaultPersona
-            ? "✗ no default persona yet — run `cotal setup` to seed one, or name a persona: `cotal spawn <name>`"
-            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${target.space}'s ${target.personaRoot} — pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
+            ? "✗ no default persona yet - run `cotal setup` to seed one, or name a persona: `cotal spawn <name>`"
+            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${target.space}'s ${target.personaRoot} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );
     } else {
@@ -344,7 +344,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // than aliasing it silently.
   const name = target.mode === "user" ? requested : await uniqueMeshName(requested, { space, server, auth });
   if (name !== requested)
-    console.error(`"${requested}" is already on the mesh — spawning as ${name} instead`);
+    console.error(`"${requested}" is already on the mesh - spawning as ${name} instead`);
 
   // When the target was auto-resolved (one mesh up, or the `current` default), say which mesh we
   // picked — it isn't obvious from the cwd. An explicit --space/--server or a local project is
@@ -467,7 +467,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     });
 
     console.error(
-      `spawning ${name}${role ? ` (${role})` : ""} on the mesh — press Enter at the dev-channels prompt`,
+      `spawning ${name}${role ? ` (${role})` : ""} on the mesh - press Enter at the dev-channels prompt`,
     );
     if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
     child = spawnProcess(spec.command, spec.args, {
@@ -532,7 +532,7 @@ async function provisionUserForeground(
   // The provisioner cred is INFRA (pre-flip static coexistence, like the manager's own creds) —
   // loaded explicitly here for durable pre-creation only, never for the agent's identity.
   const infra = loadSpaceAuth(authDir(target.root));
-  if (!infra) return fail(`space "${space}" has user-auth state but no auth.json under ${authDir(target.root)} — re-run \`cotal up --user-auth\` here`);
+  if (!infra) return fail(`space "${space}" has user-auth state but no auth.json under ${authDir(target.root)} - re-run \`cotal up --user-auth\` here`);
   const credsDir = join(authDir(target.root), "creds");
   const tokenPath = join(credsDir, `${name}.actor-token`);
   const sentinelPath = join(credsDir, `${name}.sentinel.creds`);

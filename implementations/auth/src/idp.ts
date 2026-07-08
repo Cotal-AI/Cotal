@@ -29,7 +29,7 @@ import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { MAX_TOKEN_TTL_SEC } from "./token.js";
+import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenView } from "./token.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
  *  ever read from a presented token. */
@@ -80,8 +80,12 @@ export interface ExchangeResult {
 }
 
 export interface IdpBridge {
-  /** Exchange a verified IdP token for a Cotal user bearer bound to (derived owner, actor). */
-  exchange(idpToken: string, req: { actor: string; ttlSec?: number }): Promise<ExchangeResult>;
+  /** Exchange a verified IdP token for a Cotal user bearer bound to (derived owner, actor).
+   *  `view` requests an elevated per-connection profile ({@link USER_TOKEN_VIEWS}); it is
+   *  authorized HERE against the fresh ledger grant — scope must contain `admin` — and minted as
+   *  the server-authored `act.view` claim. Human exchanges only; the managed (agent-secret)
+   *  exchange path rejects views before it ever reaches a bridge. */
+  exchange(idpToken: string, req: { actor: string; ttlSec?: number; view?: UserTokenView }): Promise<ExchangeResult>;
 }
 
 /** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
@@ -91,7 +95,7 @@ export interface IdpBridge {
 async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
-    throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected — keys resolve only via the pinned JWKS");
+    throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
   if (header.alg !== "EdDSA") throw new Error(`idp token: alg must be EdDSA (got ${String(header.alg)})`);
 
   const tol = idp.clockToleranceSec ?? 5;
@@ -107,12 +111,12 @@ async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: str
   // a singleton array of it. A multi-audience session proof minted for other services too must
   // not be exchangeable here.
   if (payload.aud !== idp.audience && !(Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === idp.audience))
-    throw new Error("idp token: aud must be exactly the configured audience — a multi-audience session proof is rejected");
-  if (typeof payload.exp !== "number") throw new Error("idp token: exp is required — an IdP session proof must expire");
+    throw new Error("idp token: aud must be exactly the configured audience - a multi-audience session proof is rejected");
+  if (typeof payload.exp !== "number") throw new Error("idp token: exp is required - an IdP session proof must expire");
   if (typeof payload.iat !== "number") throw new Error("idp token: iat is required");
   if (payload.iat > Math.floor(Date.now() / 1000) + tol) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
-    throw new Error("idp token: sub must be a non-empty string user id — no coercion at a trust boundary");
+    throw new Error("idp token: sub must be a non-empty string user id - no coercion at a trust boundary");
   return { sub: payload.sub, exp: payload.exp };
 }
 
@@ -126,7 +130,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
     throw new Error("idp bridge: idp.audience (the exact aud pin) is required");
   if (!opts.idp.key) throw new Error("idp bridge: idp.key (the pinned JWKS resolver / public key) is required");
   if (typeof opts.authorizeActor !== "function")
-    throw new Error("idp bridge: an authorizeActor ledger hook is required — there is no allow-by-default");
+    throw new Error("idp bridge: an authorizeActor ledger hook is required - there is no allow-by-default");
   return {
     exchange: async (idpToken, req) => {
       assertValidOwnerToken(req.actor);
@@ -137,7 +141,21 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const owner = deriveOwnerForIdpSubject(opts.spaceSecret, opts.idp.issuer, sub);
       const grant = await opts.authorizeActor(owner, req.actor);
       if (grant === null || typeof grant !== "object" || Array.isArray(grant))
-        throw new Error("idp bridge: authorizeActor must return a grant object — anything else is a deny");
+        throw new Error("idp bridge: authorizeActor must return a grant object - anything else is a deny");
+      if (req.view !== undefined) {
+        // An elevated view is authorized against the FRESH grant just read, per the central
+        // policy table (admin-gated operator views; spawn-gated deployer). The refusal names the
+        // exact re-grant (ADD to the current list — the upsert replaces it), mirroring the
+        // control-op copy.
+        if (!USER_TOKEN_VIEWS.includes(req.view))
+          throw new Error(`view "${String(req.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")})`);
+        const need = VIEW_REQUIRED_SCOPE[req.view];
+        if (!(grant.scope ?? []).includes(need))
+          throw new Error(
+            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant with "${need}" ADDED to your current scope: ` +
+              `cotal actor grant ${req.actor} --owner ${owner} --scope ${[...(grant.scope ?? []), need].join(",")}  (the upsert replaces the scope list; the operator can confirm with \`cotal actor list\`)`,
+          );
+      }
       // Cap the minted bearer's lifetime to the IdP proof's REMAINING life: the Cotal bearer must not
       // outlive the session proof it rests on. Otherwise a near-expired (or stolen just-before-expiry)
       // IdP JWT would exchange for a full MAX_TOKEN_TTL_SEC bearer, widening authority past the upstream
@@ -145,7 +163,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       // proof cannot mint anything (fail-loud).
       const idpRemaining = idpExp - Math.floor(Date.now() / 1000);
       if (idpRemaining <= 0)
-        throw new Error("idp bridge: the IdP session proof has expired — cannot mint a bearer");
+        throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
       const ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
       const token = await opts.issuer.issue({
         owner,
@@ -153,10 +171,11 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         actor: req.actor,
         scope: grant.scope,
         parent: grant.parent,
+        view: req.view,
         ttlSec,
       });
       const { exp } = decodeJwt(token);
-      if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp — issuer contract violated");
+      if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
       return { token, owner, exp };
     },
   };

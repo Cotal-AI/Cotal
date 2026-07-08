@@ -65,7 +65,7 @@ export async function feedback(args: ParsedArgs): Promise<void> {
     if (!email) {
       console.error(
         c.red(
-          "The public feedback intake needs a traceable contact email — pass --email or set COTAL_FEEDBACK_EMAIL.",
+          "The public feedback intake needs a traceable contact email - pass --email or set COTAL_FEEDBACK_EMAIL.",
         ),
       );
       process.exit(1);
@@ -85,7 +85,7 @@ export async function feedback(args: ParsedArgs): Promise<void> {
     console.error(c.red(`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : ""}).`));
     process.exit(1);
   }
-  console.log(`Feedback sent${reply.id ? ` — id ${c.cyan(reply.id)}` : ""}. Thanks!`);
+  console.log(`Feedback sent${reply.id ? ` - id ${c.cyan(reply.id)}` : ""}. Thanks!`);
 }
 
 function gitEmail(): string | undefined {

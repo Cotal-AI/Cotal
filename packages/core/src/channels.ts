@@ -8,9 +8,9 @@
  * here and oversize is **rejected at the write path** — never silently truncated.
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
-import { idFromCreds } from "./identity.js";
+import { standaloneConnectOpts } from "./streams.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** The declarative channel-config file read at `cotal up` to seed the registry. */
@@ -42,7 +42,7 @@ export function validateChannelConfig(cfg: ChannelConfig): void {
     cfg.deliveryClass !== "live" &&
     cfg.deliveryClass !== "durable"
   )
-    throw new Error(`invalid deliveryClass "${cfg.deliveryClass}" — expected "live" or "durable"`);
+    throw new Error(`invalid deliveryClass "${cfg.deliveryClass}" - expected "live" or "durable"`);
 }
 
 /** Validate a defaults patch the same way per-channel config is — the space default feeds
@@ -51,14 +51,14 @@ export function validateChannelConfig(cfg: ChannelConfig): void {
 export function validateChannelDefaults(d: ChannelDefaults): void {
   if (d.replayWindow !== undefined) parseDuration(d.replayWindow); // throws if unparseable
   if (d.deliveryClass !== undefined && d.deliveryClass !== "live" && d.deliveryClass !== "durable")
-    throw new Error(`invalid deliveryClass "${d.deliveryClass}" — expected "live" or "durable"`);
+    throw new Error(`invalid deliveryClass "${d.deliveryClass}" - expected "live" or "durable"`);
 }
 
 /** Parse a duration like `"24h"`, `"30m"`, `"7d"`, `"90s"` into milliseconds. Throws on a bad
  *  format — a typo'd window must fail loud, not silently mean "no window". */
 export function parseDuration(s: string): number {
   const m = /^(\d+)(s|m|h|d)$/.exec(s.trim());
-  if (!m) throw new Error(`invalid duration "${s}" — expected <number><s|m|h|d>, e.g. "24h"`);
+  if (!m) throw new Error(`invalid duration "${s}" - expected <number><s|m|h|d>, e.g. "24h"`);
   const n = Number(m[1]);
   const unit = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as "s" | "m" | "h" | "d"];
   return n * unit;
@@ -158,14 +158,12 @@ export async function seedChannelRegistry(opts: {
   servers: string;
   space: string;
   creds?: string;
+  /** User mode: a `channel-writer`-view bearer + the space's sentinel creds (instead of a creds file). */
+  bearer?: string;
+  sentinelCreds?: string;
   file: ChannelRegistryFile;
 }): Promise<void> {
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds
-      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` }
-      : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     // The seed path is privileged (manager creds or open) so it may CREATE the bucket — this
     // makes `cotal channels` work on a space whose bucket wasn't pre-created (e.g. one set up
@@ -191,12 +189,7 @@ export async function ensureDefaultDeliveryClass(opts: {
   creds?: string;
   deliveryClass: DeliveryClass;
 }): Promise<boolean> {
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds
-      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` }
-      : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
     if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
@@ -216,12 +209,12 @@ export async function deleteChannels(opts: {
   servers: string;
   space: string;
   creds?: string;
+  /** User mode: a `channel-writer`-view bearer + the space's sentinel creds (instead of a creds file). */
+  bearer?: string;
+  sentinelCreds?: string;
   channels: string[];
 }): Promise<void> {
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` } : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
     for (const channel of opts.channels) await kv.delete(channel);
@@ -237,13 +230,12 @@ export async function readChannelRegistry(opts: {
   servers: string;
   space: string;
   creds?: string;
+  /** User mode: the caller's OWN agent-view bearer + the space's sentinel creds — the registry is
+   *  world-readable in-space, so no elevated view is needed for the read side. */
+  bearer?: string;
+  sentinelCreds?: string;
 }): Promise<ChannelRegistryFile> {
-  const nc = await connect({
-    servers: opts.servers,
-    ...(opts.creds
-      ? { authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)), inboxPrefix: `_INBOX_${idFromCreds(opts.creds)}` }
-      : {}),
-  });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     // Read-only: never CREATE the bucket — a scoped read cred (operator) has no STREAM.CREATE, and a
     // read must not have the side effect of provisioning. `Kvm.open` binds lazily, so a never-seeded

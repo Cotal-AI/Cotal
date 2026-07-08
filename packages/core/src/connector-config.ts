@@ -83,7 +83,7 @@ function readConfigFile(path: string): CotalConfig {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`cotal config ${path}: invalid JSON — ${(e as Error).message}`);
+    throw new Error(`cotal config ${path}: invalid JSON - ${(e as Error).message}`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error(`cotal config ${path}: top level must be a JSON object`);

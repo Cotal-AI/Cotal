@@ -77,7 +77,7 @@ export interface CalloutProvisionInput {
  *  service user, the deny-all sentinel, and the xkey — `authorization` wired so the server seals
  *  requests and lets responses bind users into the data account. */
 export async function createCalloutAuth(input: CalloutProvisionInput): Promise<CalloutAuth> {
-  if (!input.operatorSeed) throw new Error("createCalloutAuth: the operator signing seed is required — a stripped space bundle cannot sign a new account");
+  if (!input.operatorSeed) throw new Error("createCalloutAuth: the operator signing seed is required - a stripped space bundle cannot sign a new account");
   if (!input.accountPub) throw new Error("createCalloutAuth: the data account public key is required");
   const okp = fromSeed(new TextEncoder().encode(input.operatorSeed));
   const akp = createAccount();
@@ -178,7 +178,7 @@ export interface StartAuthCalloutOpts {
 /** Serve the auth callout on an existing (auth-account) connection. Resolves setup synchronously —
  *  throws on missing/invalid xkey or signing material; returns the running service. */
 export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOpts): { done: Promise<void> } {
-  if (!opts.xkeySeed) throw new Error("auth callout: xkey seed is required — refusing to start a callout that would receive bearer tokens unsealed");
+  if (!opts.xkeySeed) throw new Error("auth callout: xkey seed is required - refusing to start a callout that would receive bearer tokens unsealed");
   const xkp = fromCurveSeed(new TextEncoder().encode(opts.xkeySeed)); // throws on non-curve seeds
   const responseSigner = fromSeed(new TextEncoder().encode(opts.authAccount.signingSeed));
   const userSigner = fromSeed(new TextEncoder().encode(opts.dataAccount.signingSeed));
@@ -187,7 +187,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const enc = (s: string) => new TextEncoder().encode(s);
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
   if (!opts.expectedServerIds?.length)
-    log("auth callout: WARNING — no expectedServerIds allow-list set; request provenance rests on $SYS system-subject isolation alone (safe single-broker, but set expectedServerIds for hardened/multi-server deploys)");
+    log("auth callout: WARNING - no expectedServerIds allow-list set; request provenance rests on $SYS system-subject isolation alone (safe single-broker, but set expectedServerIds for hardened/multi-server deploys)");
 
   const sub = nc.subscribe(AUTH_CALLOUT_SUBJECT, { queue: "cotal-auth-callout" });
 
@@ -196,7 +196,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       // ---- authenticate the REQUEST itself; shape violations get NO response ----
       const serverXkey = msg.headers?.get(SERVER_XKEY_HEADER);
       if (!serverXkey) {
-        log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) — check the account xkey config");
+        log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) - check the account xkey config");
         continue;
       }
       let claims;

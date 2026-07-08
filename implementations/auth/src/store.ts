@@ -55,10 +55,10 @@ function readStoreFile<T extends { ver: number }>(path: string, what: string): T
   try {
     parsed = JSON.parse(readFileSync(path, "utf8")) as T;
   } catch (e) {
-    throw new Error(`${path}: the ${what} file is not valid JSON (${e instanceof Error ? e.message : String(e)}) — restore it from backup; regenerating breaks existing credentials`);
+    throw new Error(`${path}: the ${what} file is not valid JSON (${e instanceof Error ? e.message : String(e)}) - restore it from backup; regenerating breaks existing credentials`);
   }
   if (parsed === null || typeof parsed !== "object" || parsed.ver !== STORE_VER)
-    throw new Error(`${path}: unknown ${what} version ${String((parsed as { ver?: unknown })?.ver)} (expected ${STORE_VER}) — refusing to guess at credential material`);
+    throw new Error(`${path}: unknown ${what} version ${String((parsed as { ver?: unknown })?.ver)} (expected ${STORE_VER}) - refusing to guess at credential material`);
   return parsed;
 }
 
@@ -75,7 +75,7 @@ export function loadCalloutAuth(dir: string): CalloutAuth | undefined {
   if (!f) return undefined;
   const c = f.callout;
   if (!c?.account?.pub || !c.account.jwt || !c.calloutCreds || !c.sentinelCreds || !c.xkey?.seed)
-    throw new Error(`${join(dir, CALLOUT_FILE)}: malformed callout account material — restore it from backup; regenerating orphans the preloaded auth account`);
+    throw new Error(`${join(dir, CALLOUT_FILE)}: malformed callout account material - restore it from backup; regenerating orphans the preloaded auth account`);
   return c;
 }
 
@@ -106,10 +106,10 @@ export async function loadIssuer(dir: string): Promise<UserTokenIssuer | undefin
   const f = readStoreFile<IssuerFile>(join(dir, ISSUER_FILE), "issuer key");
   if (!f) return undefined;
   if (!f.issuer || !Array.isArray(f.keys) || !f.keys.length || !f.activeKid)
-    throw new Error(`${join(dir, ISSUER_FILE)}: malformed issuer key file — restore it from backup; regenerating kills every outstanding bearer`);
+    throw new Error(`${join(dir, ISSUER_FILE)}: malformed issuer key file - restore it from backup; regenerating kills every outstanding bearer`);
   const active = f.keys.find((k) => k.kid === f.activeKid);
   if (!active)
-    throw new Error(`${join(dir, ISSUER_FILE)}: active kid ${f.activeKid} is not in the key set — restore it from backup`);
+    throw new Error(`${join(dir, ISSUER_FILE)}: active kid ${f.activeKid} is not in the key set - restore it from backup`);
   // createUserTokenIssuer starts with one active key; rotate() adds the rest (each rotate re-points
   // active, so feed the non-active keys THROUGH rotate and finish on the persisted active kid).
   const issuer = createUserTokenIssuer({ issuer: f.issuer, key: await importSigningKey(active) });
@@ -127,7 +127,7 @@ export async function ensureIssuer(dir: string, space: string): Promise<UserToke
   const existing = await loadIssuer(dir);
   if (existing) {
     if (existing.issuer !== iss)
-      throw new Error(`${join(dir, ISSUER_FILE)}: persisted issuer "${existing.issuer}" != this space's pin "${iss}" — the material belongs to a different space; refusing to mint under it`);
+      throw new Error(`${join(dir, ISSUER_FILE)}: persisted issuer "${existing.issuer}" != this space's pin "${iss}" - the material belongs to a different space; refusing to mint under it`);
     return existing;
   }
   const key = await generateSigningKey();
@@ -153,7 +153,7 @@ export function loadOwnerSecret(dir: string): Uint8Array | undefined {
   if (!f) return undefined;
   const secret = Buffer.from(f.secretB64 ?? "", "base64");
   if (secret.byteLength !== 32)
-    throw new Error(`${join(dir, OWNER_SECRET_FILE)}: malformed owner secret — restore it from backup; a regenerated secret RE-KEYS EVERY OWNER in the space`);
+    throw new Error(`${join(dir, OWNER_SECRET_FILE)}: malformed owner secret - restore it from backup; a regenerated secret RE-KEYS EVERY OWNER in the space`);
   return new Uint8Array(secret);
 }
 
@@ -200,7 +200,7 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
   const f = readStoreFile<IdpFile>(join(dir, IDP_FILE), "IdP pin");
   if (!f) return undefined;
   if (!f.url || !f.issuer || !f.audience || !f.jwksUri)
-    throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin — re-pin with \`cotal up --user-auth --idp <url>\``);
+    throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
   return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri };
 }
 
@@ -214,12 +214,12 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
     if (idpUrl !== undefined && idpUrl !== existing.url)
       throw new Error(
         `this space's IdP is pinned to ${existing.url}; --idp ${idpUrl} would re-key every derived owner. ` +
-          `Re-pointing an IdP is a migration — remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
+          `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
       );
     return existing;
   }
   if (!idpUrl)
-    throw new Error("user auth needs an IdP on first enable — run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
+    throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
   // Same normalization + scheme guard as `cotal login` (https, or loopback http for dev; no
   // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
   const url = normalizeIdpUrl(idpUrl);
@@ -251,7 +251,7 @@ export function loadServiceKeys(dir: string): ServiceKeys | undefined {
   const f = readStoreFile<ServiceKeysFile>(join(dir, SERVICE_KEYS_FILE), "service key projection");
   if (!f) return undefined;
   if (!f.dataAccount?.pub || !f.dataAccount.signingSeed)
-    throw new Error(`${join(dir, SERVICE_KEYS_FILE)}: malformed service key projection — re-run \`cotal up --user-auth\` to rewrite it`);
+    throw new Error(`${join(dir, SERVICE_KEYS_FILE)}: malformed service key projection - re-run \`cotal up --user-auth\` to rewrite it`);
   return { dataAccount: { pub: f.dataAccount.pub, signingSeed: f.dataAccount.signingSeed } };
 }
 
@@ -289,7 +289,7 @@ export function loadAuthServiceInfo(dir: string): AuthServiceInfo | undefined {
   const f = readStoreFile<ServiceFile>(join(dir, SERVICE_FILE), "auth service info");
   if (!f) return undefined;
   if (!f.url || typeof f.pid !== "number" || !f.cap)
-    throw new Error(`${join(dir, SERVICE_FILE)}: malformed auth service info — restart the mesh (\`cotal down\` then \`cotal up\`)`);
+    throw new Error(`${join(dir, SERVICE_FILE)}: malformed auth service info - restart the mesh (\`cotal down\` then \`cotal up\`)`);
   return { url: f.url, pid: f.pid, cap: f.cap };
 }
 

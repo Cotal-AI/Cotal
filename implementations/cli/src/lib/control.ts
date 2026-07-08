@@ -85,7 +85,7 @@ export async function askManager(
     // --scope that would silently strip the caller's spawn/role capabilities.
     const need = tier === CONTROL_ADMIN ? "admin" : "spawn";
     const scopeHint = auth.bearer
-      ? ` — on a user-auth mesh this op needs scope "${need}" on your cli actor. Re-grant with "${need}" ADDED to your current scope (the upsert replaces the list; see \`cotal actor list\`), e.g. \`cotal actor grant cli --sub <your IdP subject> --scope 'spawn,role:default,${need}'\``
+      ? ` - on a user-auth mesh this op needs scope "${need}" on your cli actor. Re-grant with "${need}" ADDED to your current scope (the upsert replaces the list; see \`cotal actor list\`), e.g. \`cotal actor grant cli --sub <your IdP subject> --scope 'spawn,role:default,${need}'\``
       : "";
     return { ok: false, error: `no manager reachable (${(e as Error).message})${scopeHint}` };
   } finally {

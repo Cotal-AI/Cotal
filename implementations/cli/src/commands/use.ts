@@ -15,7 +15,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   await pruneStaleMeshes();
   const m = findMesh(space);
   if (!m) {
-    console.error(c.red(`✗ no mesh named "${space}" is running — see \`cotal meshes\``));
+    console.error(c.red(`✗ no mesh named "${space}" is running - see \`cotal meshes\``));
     process.exit(1);
   }
   setCurrent(space);

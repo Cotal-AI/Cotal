@@ -13,7 +13,10 @@ export {
   validateUserToken,
   USER_TOKEN_VER,
   MAX_TOKEN_TTL_SEC,
+  USER_TOKEN_VIEWS,
+  VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
+  type UserTokenView,
   type ValidatedUserToken,
   type ValidateUserTokenOpts,
 } from "./token.js";
@@ -48,6 +51,7 @@ export {
   deleteIdpSession,
   requireIdpSession,
   normalizeIdpUrl,
+  probeIdpJwks,
   type IdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,

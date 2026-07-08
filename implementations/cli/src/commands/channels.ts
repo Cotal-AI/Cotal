@@ -7,7 +7,7 @@ import {
   type ChannelRegistryFile,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { connectOrExit, refuseUserModeOrExit } from "../lib/connect.js";
+import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /**
@@ -34,14 +34,22 @@ export async function channels(args: ParsedArgs): Promise<void> {
   // `list` is read-only → the scoped `operator` cred (channel-registry read, no stream-admin).
   // `set`/`default` WRITE the registry → the narrow `channel-writer` cred ($KV.<channelBucket>.> +
   // read-before-write; no stream data, no other bucket, no chat/DM).
+  // USER MODE: `list` rides the caller's OWN agent-view bearer (the registry is world-readable
+  // in-space); writes ride a one-shot "channel-writer" VIEW bearer, exchange-gated on ledger
+  // scope "admin" (the refusal names the exact re-grant).
   const profile = sub === "list" ? "operator" : "channel-writer";
   const conn = await connectOrExit(values, profile); // creds undefined ⇒ open mode
-  refuseUserModeOrExit(conn, "the channel registry");
+  const user = conn.bearer && sub !== "list" ? await userViewAuthOrExit(conn, "channel-writer") : undefined;
   const { server, space, creds } = conn;
+  const auth = user
+    ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds }
+    : conn.bearer
+      ? { bearer: conn.bearer, sentinelCreds: conn.sentinelCreds }
+      : { creds };
 
   switch (sub) {
     case "list": {
-      printRegistry(await readChannelRegistry({ servers: server, space, creds }));
+      printRegistry(await readChannelRegistry({ servers: server, space, ...auth }));
       return;
     }
     case "set": {
@@ -53,10 +61,10 @@ export async function channels(args: ParsedArgs): Promise<void> {
       if (values.desc !== undefined) cfg.description = values.desc;
       if (values.instructions !== undefined) cfg.instructions = values.instructions;
       if (!Object.keys(cfg).length) {
-        console.error(c.red("nothing to set — pass --replay/--no-replay, --window, --desc, or --instructions"));
+        console.error(c.red("nothing to set - pass --replay/--no-replay, --window, --desc, or --instructions"));
         process.exit(1);
       }
-      await seedChannelRegistry({ servers: server, space, creds, file: { channels: { [name]: cfg } } });
+      await seedChannelRegistry({ servers: server, space, ...auth, file: { channels: { [name]: cfg } } });
       console.log(c.green(`✓ set #${name} in "${space}"`));
       return;
     }
@@ -68,7 +76,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
         console.error(c.red("usage: cotal channels default [--replay|--no-replay] [--window <dur>]"));
         process.exit(1);
       }
-      await seedChannelRegistry({ servers: server, space, creds, file: { defaults } });
+      await seedChannelRegistry({ servers: server, space, ...auth, file: { defaults } });
       console.log(c.green(`✓ set space defaults in "${space}"`));
       return;
     }

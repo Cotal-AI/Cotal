@@ -12,7 +12,7 @@ const webCommand: Command = {
   kind: "command",
   name: "web",
   group: "Observe",
-  summary: "browser observability dashboard — presence, channels, live feed",
+  summary: "browser observability dashboard - presence, channels, live feed",
   flags: [
     ...targetFlags,
     { name: "port", type: "string", value: "<n>", description: "HTTP port (default 7799)" },

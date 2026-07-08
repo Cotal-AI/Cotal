@@ -74,16 +74,16 @@ export function normalizeIdpUrl(idpUrl: string): string {
   // issuer's pinned-JWKS origin guard).
   const loopback = u.hostname === "127.0.0.1" || u.hostname === "[::1]" || u.hostname === "localhost";
   if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback))
-    throw new Error(`idp url must be https (or loopback http for local dev) — got "${idpUrl}"`);
+    throw new Error(`idp url must be https (or loopback http for local dev) - got "${idpUrl}"`);
   // A query/hash would be silently DROPPED by the normalization below — and a silently altered
   // auth base is a different IdP than the operator asked for. Refuse instead.
   if (u.search !== "" || u.hash !== "")
-    throw new Error(`idp url must not carry a query or fragment — got "${idpUrl}"`);
+    throw new Error(`idp url must not carry a query or fragment - got "${idpUrl}"`);
   // Same class: `--idp https://real-idp.example@evil.example/api/auth` parses to host
   // evil.example, so an operator who eyeballed "real-idp.example" would sign in against evil.
   // The normalization below drops the userinfo silently — refuse it (don't echo the password).
   if (u.username !== "" || u.password !== "")
-    throw new Error(`idp url must not embed credentials before the host — the host it would actually contact is "${u.host}"`);
+    throw new Error(`idp url must not embed credentials before the host - the host it would actually contact is "${u.host}"`);
   return u.origin + u.pathname.replace(/\/+$/, "");
 }
 
@@ -106,7 +106,7 @@ function idpTimeoutMs(): number {
   if (raw === undefined) return 30_000;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0)
-    throw new Error(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds — got "${raw}"`);
+    throw new Error(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds - got "${raw}"`);
   return n;
 }
 
@@ -119,7 +119,7 @@ async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
     return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError")
-      throw new Error(`idp request to ${url} timed out after ${ms}ms — the IdP is unreachable or not responding`);
+      throw new Error(`idp request to ${url} timed out after ${ms}ms - the IdP is unreachable or not responding`);
     throw new Error(`idp request to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -133,9 +133,24 @@ async function idpJson<T>(url: string, res: Response): Promise<T> {
     return (await res.json()) as T;
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError")
-      throw new Error(`idp request to ${url} timed out reading the response body — the IdP flushed headers then stalled`);
+      throw new Error(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
     throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/** Best-effort reachability + shape check of an IdP's JWKS. Used at the FIRST `--user-auth` enable
+ *  so a dead or typo'd `--idp` fails loud BEFORE a space is provisioned around it, instead of only
+ *  surfacing far away at the first user connect (the pin is written but the JWKS is fetched lazily).
+ *  Normalizes the URL exactly as the pin does (`<base>/jwks`). Throws a legible sentence on an
+ *  unreachable host, a non-2xx, or a body that is not a JWKS key set. */
+export async function probeIdpJwks(idpUrl: string): Promise<void> {
+  const jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`; // a bad scheme throws its own message here
+  const res = await idpFetch(jwksUri);
+  if (!res.ok)
+    throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. Check --idp <auth base URL>.`);
+  const body = await idpJson<{ keys?: unknown }>(jwksUri, res);
+  if (!Array.isArray(body.keys))
+    throw new Error(`the IdP at ${idpUrl} did not return a JWKS key set at ${jwksUri}. Check --idp <auth base URL>; it must expose <base>/jwks.`);
 }
 
 /** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
@@ -188,7 +203,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     !sane(grant.expires_in, 86_400) ||
     (grant.interval !== undefined && !sane(grant.interval, 300))
   )
-    throw new Error(`idp login: ${base} returned a malformed device grant — refusing to poll on it`);
+    throw new Error(`idp login: ${base} returned a malformed device grant - refusing to poll on it`);
   opts.onPrompt({
     verificationUri: grant.verification_uri,
     verificationUriComplete: grant.verification_uri_complete,
@@ -202,7 +217,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   for (;;) {
     await new Promise((r) => setTimeout(r, intervalSec * 1000));
     if (Date.now() > deadline)
-      throw new Error(`idp login: the device code expired after ${grant.expires_in}s without approval — run \`cotal login\` again`);
+      throw new Error(`idp login: the device code expired after ${grant.expires_in}s without approval - run \`cotal login\` again`);
     const poll = await idpFetch(`${base}/device/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -225,7 +240,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
       // misconfigured IdP hands one back as the device token, refuse rather than silently cache a
       // credential that can't be revoked.
       if (looksLikeJwt(tok.access_token))
-        throw new Error(`idp login: ${base} returned a JWT as the device access token — the session token must be an opaque revocable handle, refusing to cache it; re-run \`cotal login\` after fixing the IdP`);
+        throw new Error(`idp login: ${base} returned a JWT as the device access token - the session token must be an opaque revocable handle, refusing to cache it; re-run \`cotal login\` after fixing the IdP`);
       return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
     }
     const e = await oauthError(poll);
@@ -236,7 +251,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     }
     if (e.error === "access_denied") throw new Error("idp login: the sign-in was denied at the verification page");
     if (e.error === "expired_token")
-      throw new Error("idp login: the device code expired before the sign-in was approved — run `cotal login` again");
+      throw new Error("idp login: the device code expired before the sign-in was approved - run `cotal login` again");
     throw new Error(
       `idp login: ${base} rejected the poll (${e.error ?? `HTTP ${poll.status}`}: ${e.error_description ?? "no detail"})`,
     );
@@ -251,7 +266,7 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
   const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } });
   if (res.status === 401)
     throw new Error(
-      `idp session: ${base} rejected the cached session (expired or revoked) — run \`cotal login --idp ${base}\` to sign in again`,
+      `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
     );
   if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
   const body = await idpJson<{ token?: string }>(`${base}/token`, res);
@@ -277,11 +292,11 @@ export async function establishIdpSession(
   } catch {
     // fetchIdpJwt only guarantees a non-empty string; a hostile IdP returning /token 200 with a
     // non-JWT body would otherwise surface jose's raw "Invalid JWT" here.
-    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} returned a /token value that is not a decodable JWT — refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
+    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} returned a /token value that is not a decodable JWT - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   }
   const sub = claims.sub;
   if (typeof sub !== "string" || !sub)
-    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub — refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
+    throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
   saveIdpSession(opts.dir, opts.idpUrl, session);
   const label = [claims.email, claims.name, claims.preferred_username].find(
@@ -301,7 +316,7 @@ export async function revokeIdpSession(idpUrl: string, sessionToken: string): Pr
     body: "{}",
   });
   if (!res.ok && res.status !== 401)
-    throw new Error(`idp logout: ${base}/sign-out failed (HTTP ${res.status}) — the server-side session may still be alive`);
+    throw new Error(`idp logout: ${base}/sign-out failed (HTTP ${res.status}) - the server-side session may still be alive`);
 }
 
 // ---- the machine-local session cache ----
@@ -326,12 +341,12 @@ function readSessionsFile(dir: string): SessionsFile {
   try {
     parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
   } catch (e) {
-    throw new Error(`${f}: the session cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) — delete it and run \`cotal login\` again`);
+    throw new Error(`${f}: the session cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) - delete it and run \`cotal login\` again`);
   }
   if (parsed === null || typeof parsed !== "object")
-    throw new Error(`${f}: the session cache is not a JSON object — delete it and run \`cotal login\` again`);
+    throw new Error(`${f}: the session cache is not a JSON object - delete it and run \`cotal login\` again`);
   if (parsed.ver !== SESSIONS_VER)
-    throw new Error(`${f}: unknown version ${String(parsed.ver)} (expected ${SESSIONS_VER}) — refusing to guess at a credential file`);
+    throw new Error(`${f}: unknown version ${String(parsed.ver)} (expected ${SESSIONS_VER}) - refusing to guess at a credential file`);
   if (parsed.sessions === null || typeof parsed.sessions !== "object" || Array.isArray(parsed.sessions))
     throw new Error(`${f}: malformed sessions map`);
   return parsed;
@@ -342,7 +357,7 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   const s = readSessionsFile(dir).sessions[key];
   if (s === undefined) return undefined;
   if (typeof s.token !== "string" || !s.token || typeof s.expiresAt !== "number")
-    throw new Error(`stored idp session for ${key} is malformed — run \`cotal login --idp ${key}\` again`);
+    throw new Error(`stored idp session for ${key} is malformed - run \`cotal login --idp ${key}\` again`);
   // `sub` rides the cache round-trip (offline owner derivation for the spawn paths) — every
   // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
   // broke both user-mode spawn entry points while every in-process test passed.
@@ -378,7 +393,7 @@ export function requireIdpSession(dir: string, idpUrl: string): IdpSession {
   const s = loadIdpSession(dir, key);
   if (!s)
     throw new Error(
-      `not logged in to ${key} — this space requires a user identity and there is no anonymous fallback; run \`cotal login --idp ${key}\``,
+      `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; run \`cotal login --idp ${key}\``,
     );
   return s;
 }

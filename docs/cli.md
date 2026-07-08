@@ -303,7 +303,9 @@ cotal channels default --replay | --no-replay
 
 Inspects and edits the channel registry: replay policy, description, and joiner instructions. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
-[Channels and permissions](channels-and-permissions.md).
+[Channels and permissions](channels-and-permissions.md). On a user-auth mesh, `list` rides your
+own login as is; `set` and `default` edit the registry over a short-lived channel-writer view,
+which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 
 ## history
 
@@ -317,7 +319,9 @@ cotal history clear --force [--dms] [--space <s>]
 | `--dms` | off | Also clear DM history |
 | `--force` | — | Required: clear without prompting |
 
-Purges retained channel history; `--dms` extends it to direct-message history.
+Purges retained channel history; `--dms` extends it to direct-message history. On a user-auth
+mesh the purge rides a short-lived purger view over your login, which needs ledger scope `admin`
+([Identity & auth](identity-and-auth.md)).
 
 ## console
 
@@ -330,8 +334,9 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. See
-[Watch a mesh](watch-a-mesh.md).
+A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. On a
+user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
+`admin`. See [Watch a mesh](watch-a-mesh.md).
 
 ## web
 
@@ -350,7 +355,9 @@ The browser observability dashboard: presence, channels, and a live feed. It is 
 `cotal up`: it ships as the `cotal-web` extension (`cotal setup` installs it automatically; otherwise
 `cotal ext add cotal-web`). It self-registers `cotal web` into this surface and serves
 `http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
-need `http://127.0.0.1:7799`). See [Watch a mesh](watch-a-mesh.md).
+need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
+over your login, and a channel purge asks for its own channel-purger view per click; both need
+ledger scope `admin`. See [Watch a mesh](watch-a-mesh.md).
 
 ## mint
 
@@ -460,7 +467,10 @@ cotal topology view -f cotal.yaml   # validate + view the access graph, change n
 ```
 
 `up -f` and `spawn -f` differ in target: `up -f` brings up a new broker and applies the manifest;
-`spawn -f` requires an already-reachable mesh and applies additively (ownership-scoped). Both take
+`spawn -f` requires an already-reachable mesh and applies additively (ownership-scoped). On a
+user-auth mesh, `spawn -f` deploys over your own login (the deployer view, gated on ledger scope
+`spawn`): the manifest's agents land under your owner, a manifest claiming another owner is
+refused, and seeding new channels additionally needs scope `admin`. Both take
 `--dry-run` to print the plan without mutating anything. `topology` validates the manifest and
 renders its channel / role / ACL graph. See [Define a team](define-a-team.md) and the
 [manifest reference](manifest.md).

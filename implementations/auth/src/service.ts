@@ -44,6 +44,7 @@ import { findCotalRoot, userAuthStateDir } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, type IdpBridge } from "./idp.js";
+import type { UserTokenView } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import {
@@ -105,12 +106,12 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   const ownerSecret = loadOwnerSecret(dir);
   const idp = loadPinnedIdp(dir);
   if (!keys || !callout || !issuer || !ownerSecret || !idp)
-    throw new Error(`auth-service: user-auth material is missing under ${dir} — enable it with \`cotal up --user-auth --idp <url>\``);
+    throw new Error(`auth-service: user-auth material is missing under ${dir} - enable it with \`cotal up --user-auth --idp <url>\``);
   if (issuer.issuer !== spaceIssuer(space))
     throw new Error(`auth-service: issuer pin ${issuer.issuer} does not match space "${space}"`);
 
   if (!(await isReachable(server, { creds: callout.calloutCreds })))
-    throw new Error(`auth-service: can't reach the broker at ${server} with the callout creds — is the mesh up (with the callout account preloaded)?`);
+    throw new Error(`auth-service: can't reach the broker at ${server} with the callout creds - is the mesh up (with the callout account preloaded)?`);
 
   // ---- Plane 2: the callout, on its own callout-account connection ----
   const nc: NatsConnection = await connect({
@@ -154,7 +155,7 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
 
   // Both planes bound — NOW write the discovery file (its existence is the readiness signal).
   saveAuthServiceInfo(dir, { url, pid: process.pid, cap });
-  console.log(`✓ auth service up (space ${space}) — callout on ${server}, exchange/JWKS at ${url}`);
+  console.log(`✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}`);
 
   const stop = async () => {
     clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
@@ -170,7 +171,7 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   await (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
     clearAuthServiceInfo(dir);
     if (err) {
-      console.error(`✗ auth-service: broker connection closed (${err.message}) — exiting`);
+      console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
       process.exit(1);
     }
     process.exit(0);
@@ -221,29 +222,35 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
         ctx.badCaps.push(now);
         console.error("auth-service: rejected an exchange with a missing/invalid capability");
         if (ctx.badCaps.length > BAD_CAP_PER_MIN)
-          return send(429, { error: "too many invalid-capability attempts — wait a minute and retry" });
-        return send(401, { error: "missing/invalid exchange capability — read it from the space's auth-service.json" });
+          return send(429, { error: "too many invalid-capability attempts - wait a minute and retry" });
+        return send(401, { error: "missing/invalid exchange capability - read it from the space's auth-service.json" });
       }
       // Refused-exchange rate limit (probing protection): count only FAILURES.
       const now = Date.now();
       while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();
       if (ctx.failures.length >= FAILED_EXCHANGE_PER_MIN)
-        return send(429, { error: "too many refused exchanges — wait a minute and retry" });
+        return send(429, { error: "too many refused exchanges - wait a minute and retry" });
       const body = await readJsonBody(req);
-      const { idpToken, actor, actorToken, owner, ttlSec } = body as {
+      const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
         idpToken?: unknown;
         actor?: unknown;
         actorToken?: unknown;
         owner?: unknown;
         ttlSec?: unknown;
+        view?: unknown;
       };
       if (ttlSec !== undefined && typeof ttlSec !== "number") return send(400, { error: "ttlSec must be a number" });
+      if (view !== undefined && typeof view !== "string") return send(400, { error: "view must be a string when present" });
       // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
       // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
       // A request presenting both is malformed — refuse rather than pick.
       if (idpToken !== undefined && actorToken !== undefined)
         return send(400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
       if (actorToken !== undefined) {
+        // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
+        // whatever its ledger row carries (v1 — agents hold no god views).
+        if (view !== undefined)
+          return send(400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
         if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
           return send(400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
         try {
@@ -266,9 +273,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
         }
       }
       if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
-        return send(400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number }" });
+        return send(400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
       try {
-        const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec });
+        // The bridge validates `view` against the closed enum and the fresh ledger grant — an
+        // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
+        const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec, view: view as UserTokenView | undefined });
         return send(200, r);
       } catch (e) {
         // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
@@ -279,7 +288,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
         return send(401, { error: reason });
       }
     }
-    return send(404, { error: "unknown path — /health, /jwks, /exchange" });
+    return send(404, { error: "unknown path - /health, /jwks, /exchange" });
   } catch (e) {
     send(400, { error: e instanceof Error ? e.message : String(e) });
   }

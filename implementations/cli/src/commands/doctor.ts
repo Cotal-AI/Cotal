@@ -44,7 +44,7 @@ interface CredReport {
 export async function doctor(args: ParsedArgs): Promise<void> {
   const sub = args.positionals[0];
   if (sub !== "auth") {
-    console.error(`usage: ${displayCmd()} doctor auth [--fix]  — credential-health diagnosis + repair for this folder's mesh`);
+    console.error(`usage: ${displayCmd()} doctor auth [--fix]  - credential-health diagnosis + repair for this folder's mesh`);
     process.exitCode = 1;
     return;
   }
@@ -57,7 +57,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   if (!auth) {
     // An open mesh has no minted credentials at all — nothing to diagnose is a healthy answer,
     // not a silent one.
-    console.log(c.green("\nauth: healthy — open mesh (no credential material in this folder)"));
+    console.log(c.green("\nauth: healthy - open mesh (no credential material in this folder)"));
     return;
   }
   const userMode = existsSync(userAuthStateDir(root, auth.space));
@@ -80,9 +80,9 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     problems = reports.filter((r) => r.problem);
   }
 
-  render("Daemon creds (manager-reminted — class 2)", reports.filter((r) => isRemintable(r.kind)));
+  render("Daemon creds (manager-reminted - class 2)", reports.filter((r) => isRemintable(r.kind)));
   renderRenewalRecord(root);
-  render("$SYS creds (rotation-renewed — never remintable from disk)", reports.filter((r) => r.kind === "membership-observer" || r.kind === "connection-evictor"));
+  render("$SYS creds (rotation-renewed - never remintable from disk)", reports.filter((r) => r.kind === "membership-observer" || r.kind === "connection-evictor"));
   render("Agent creds (static, pre-flip)", reports.filter((r) => r.kind === "agent"));
 
   if (!problems.length) {
@@ -126,9 +126,9 @@ function report(label: string, kind: CredentialKind, path: string): CredReport {
   const policy = credentialLifetime(kind);
   const standing = policy.class === "standing-renewable" || policy.class === "rotation-renewed";
   const repair = isRemintable(kind)
-    ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager — it is the renewal owner and re-signs + reloads these every half-TTL)`
+    ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
-      ? `respawn the agent (\`${displayCmd()} spawn\`) — its old cred is dead by design`
+      ? `respawn the agent (\`${displayCmd()} spawn\`) - its old cred is dead by design`
       : `system-account rotation: \`${displayCmd()} down\` then a fresh \`${displayCmd()} up\` regenerates the $SYS material`;
   switch (health.state) {
     case "unreadable":
@@ -136,18 +136,18 @@ function report(label: string, kind: CredentialKind, path: string): CredReport {
       r.repair = repair;
       break;
     case "expired":
-      r.problem = "EXPIRED — the broker denies this credential";
+      r.problem = "EXPIRED - the broker denies this credential";
       r.repair = repair;
       break;
     case "near-expiry":
       if (standing) {
-        r.problem = `past its renewal point (renewal owner: ${policy.renewalOwner}) — expires ${at(health.exp)}`;
+        r.problem = `past its renewal point (renewal owner: ${policy.renewalOwner}) - expires ${at(health.exp)}`;
         r.repair = repair;
       }
       break;
     case "unbounded":
       if (standing) {
-        r.problem = "unbounded standing credential (minted before the renewal slice) — a copied cred never dies";
+        r.problem = "unbounded standing credential (minted before the renewal slice) - a copied cred never dies";
         r.repair = repair;
       }
       break;
@@ -192,12 +192,12 @@ function renderRenewalRecord(root: string): void {
   const failed = rec.results.filter((r) => !r.ok && !r.skipped);
   const adoption = rec.adoption === undefined
     ? resigned.length
-      ? c.yellow("daemon adoption not requested by this pass — daemons adopt via the 75% re-read backstop or the manager's next renewal pass")
+      ? c.yellow("daemon adoption not requested by this pass - daemons adopt via the 75% re-read backstop or the manager's next renewal pass")
       : c.dim("adoption: n/a (nothing re-signed)")
     : rec.adoption.ok
       ? c.green("daemon adopted ✓")
-      : c.yellow(`daemon adoption pending — ${rec.adoption.error ?? "unknown"}`);
-  console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} — re-signed [${resigned.join(", ") || "none"}] · ${adoption}`);
+      : c.yellow(`daemon adoption pending - ${rec.adoption.error ?? "unknown"}`);
+  console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} - re-signed [${resigned.join(", ") || "none"}] · ${adoption}`);
   for (const f of failed) console.log(`    ${c.red("✗")} last pass failed on ${f.file}: ${f.error}`);
 }
 

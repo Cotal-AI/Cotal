@@ -15,7 +15,7 @@
  */
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider } from "@cotal-ai/core";
 import { assertUserAuthInfo, homeCotalDir, type UserAuthInfo } from "@cotal-ai/workspace";
-import { fetchIdpJwt, loadIdpSession, requireIdpSession } from "./login.js";
+import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import {
@@ -46,6 +46,11 @@ export const cotalAuthProvider: AuthProvider = {
   name: "cotal",
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
     const { space, dir, idpUrl } = input;
+    // On a FRESH enable, prove the IdP actually serves a JWKS before we pin + provision a space
+    // around it — a dead or typo'd `--idp` must fail loud here, not silently boot a broken space
+    // that only errors at the first user connect. Skip on re-up (an already-pinned IdP was validated
+    // at first enable; re-probing every boot would couple mesh liveness to IdP liveness).
+    if (idpUrl && !loadPinnedIdp(dir)) await probeIdpJwks(idpUrl);
     // Pin the IdP FIRST, so a fresh `up --user-auth` without --idp fails on the config error before
     // any key material is generated.
     const idp = ensurePinnedIdp(dir, idpUrl);
@@ -99,12 +104,12 @@ export const cotalAuthProvider: AuthProvider = {
   /** Client side: this machine's login session → a fresh IdP JWT → the local auth service's
    *  exchange → the Cotal bearer, plus the space's sentinel creds. NO fallback anywhere; each
    *  failure is one sentence with the exact operator action (U1/U10/U11 acceptance strings). */
-  async userCredentials({ dir, space, actor }: { dir: string; space: string; actor: string }) {
+  async userCredentials({ dir, space, actor, view }: { dir: string; space: string; actor: string; view?: string }) {
     const idp = loadPinnedIdp(dir);
     const callout = loadCalloutAuth(dir);
     if (!idp || !callout)
       throw new Error(
-        `space "${space}" has no user-auth material on this machine — user-mode connects run where \`cotal up --user-auth\` provisioned the space (remote discovery is not supported yet)`,
+        `space "${space}" has no user-auth material on this machine - user-mode connects run where \`cotal up --user-auth\` provisioned the space (remote discovery is not supported yet)`,
       );
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
@@ -114,7 +119,7 @@ export const cotalAuthProvider: AuthProvider = {
     const info = loadAuthServiceInfo(dir);
     if (!info || !pidAlive(info.pid))
       throw new Error(
-        `the user-auth service for space "${space}" is not running — restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
+        `the user-auth service for space "${space}" is not running - restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
       );
     // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
     const idpJwt = await fetchIdpJwt(idp.url, session.token);
@@ -123,23 +128,25 @@ export const cotalAuthProvider: AuthProvider = {
       res = await fetch(`${info.url}/exchange`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
-        body: JSON.stringify({ idpToken: idpJwt, actor }),
+        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}) }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
       throw new Error(
-        `the user-auth service for space "${space}" did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) — restart it with \`cotal up\``,
+        `the user-auth service for space "${space}" did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``,
       );
     }
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       // A refused exchange is an authenticated denial with the reason (an ungranted actor names
       // the grant command); surface it verbatim — the service's copy is already operator-exact.
-      throw new Error(`signed in, but the exchange for actor "${actor}" was refused: ${body.error ?? `HTTP ${res.status}`}`);
+      throw new Error(
+        `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
+      );
     }
     const out = (await res.json().catch(() => ({}))) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
-      throw new Error(`the auth service's exchange returned no token — its build may be stale; restart it with \`cotal up\``);
+      throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
   },
 
@@ -149,10 +156,10 @@ export const cotalAuthProvider: AuthProvider = {
     const idp = loadPinnedIdp(dir);
     const secret = loadOwnerSecret(dir);
     if (!idp || !secret)
-      throw new Error(`space "${space}" has no user-auth material on this machine — spawns for a user-auth space run where \`cotal up --user-auth\` provisioned it`);
+      throw new Error(`space "${space}" has no user-auth material on this machine - spawns for a user-auth space run where \`cotal up --user-auth\` provisioned it`);
     const session = requireIdpSession(homeCotalDir(), idp.url);
     if (!session.sub)
-      throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) — re-run \`cotal login --idp ${idp.url}\``);
+      throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) - re-run \`cotal login --idp ${idp.url}\``);
     return deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
   },
 
@@ -163,7 +170,7 @@ export const cotalAuthProvider: AuthProvider = {
     const idp = loadPinnedIdp(dir);
     if (!idp)
       throw new Error(
-        `space "${space}" has no user-auth material on this machine — user-mode status reads run where \`cotal up --user-auth\` provisioned the space`,
+        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space`,
       );
     const session = loadIdpSession(homeCotalDir(), idp.url);
     if (!session?.sub) return { idpUrl: idp.url };
@@ -195,7 +202,7 @@ export const cotalAuthProvider: AuthProvider = {
   async grantAgent({ dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label }) {
     const callout = loadCalloutAuth(dir);
     if (!callout)
-      throw new Error(`space "${space}" has no user-auth material under ${dir} — enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
+      throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
     const { actorToken, tokenHash } = newActorToken();
     grantManagedActor(dir, {
       owner,

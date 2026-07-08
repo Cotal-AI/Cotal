@@ -13,13 +13,13 @@ export async function topology(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string };
   const [sub, ...positionals] = args.positionals;
   if (sub !== "view") {
-    console.error(c.red(`✗ unknown topology subcommand "${sub ?? ""}" — expected: view`));
+    console.error(c.red(`✗ unknown topology subcommand "${sub ?? ""}" - expected: view`));
     console.error(c.dim("cotal topology view -f <cotal.yaml>"));
     process.exit(1);
   }
   const file = values.file ?? positionals[0];
   if (!file) {
-    console.error(c.red("✗ a manifest file is required — `cotal topology view -f <cotal.yaml>`"));
+    console.error(c.red("✗ a manifest file is required - `cotal topology view -f <cotal.yaml>`"));
     process.exit(1);
   }
   try {

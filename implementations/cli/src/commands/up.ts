@@ -65,7 +65,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   // started open would run agents on the wrong identity plane — the exact failure per-user-auth
   // exists to prevent).
   if (wantUser && values.open) {
-    console.error(c.red("✗ --user-auth and --open contradict — a user-auth space cannot run unauthenticated"));
+    console.error(c.red("✗ --user-auth and --open contradict - a user-auth space cannot run unauthenticated"));
     process.exit(1);
   }
   if (values.idp && !wantUser && !values.file) {
@@ -109,7 +109,7 @@ export async function up(args: ParsedArgs): Promise<void> {
         const label = { auth: "static JWT auth", open: "no auth (--open)", user: "per-user auth" }[held.mode];
         console.error(
           c.red(
-            `✗ mesh "${held.space}" is already running at ${server} with ${label} — a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
+            `✗ mesh "${held.space}" is already running at ${server} with ${label} - a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
           ),
         );
         process.exit(1);
@@ -123,7 +123,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       if (held.mode === "user") {
         const auth = loadSpaceAuth(authDir(root));
         if (!auth) {
-          console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} — \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
+          console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} - \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
           process.exit(1);
         }
         const stateDir = userAuthStateDir(root, held.space);
@@ -163,7 +163,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     } else {
       console.error(
         c.red(
-          `✗ ${server} is already in use by ${who} — to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+          `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
         ),
       );
       process.exit(1);
@@ -181,7 +181,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       host,
     });
     console.log(c.dim(`Started nats-server (${source}).`));
-    console.log(c.green(`✓ mesh running in the background (pid ${pid}) — stop with: cotal down`));
+    console.log(c.green(`✓ mesh running in the background (pid ${pid}) - stop with: cotal down`));
     // A user mesh whose auth service never became ready is recorded + running (a re-`cotal up`
     // heals it), but this `up` did NOT deliver what was asked — automation must see that in the
     // exit code, not only in the red line above.
@@ -204,7 +204,7 @@ export async function up(args: ParsedArgs): Promise<void> {
 
   console.log(
     c.dim(
-      `Starting nats-server (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}, ${source}) — store: ${storeDir}, bind: ${host}`,
+      `Starting nats-server (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}, ${source}) - store: ${storeDir}, bind: ${host}`,
     ),
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
@@ -280,10 +280,10 @@ async function startUserAuthService(
   try {
     const endpoints = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared });
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
-    console.log(c.green("✓ user-auth service up") + c.dim(` — sign in with: cotal login --idp ${info.idp.url}`));
+    console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
     return { userAuth: info, ok: true };
   } catch (e) {
-    console.error(c.red(`✗ user-auth service did not come up (${(e as Error).message}) — user connects to "${space}" will fail until a re-\`cotal up\` succeeds`));
+    console.error(c.red(`✗ user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`));
     return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
   }
 }
@@ -302,7 +302,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     failManifest(e);
   }
   if (opts.runtime && !["pty", "tmux", "cmux"].includes(opts.runtime)) {
-    console.error(c.red(`✗ unknown --runtime "${opts.runtime}" — expected pty, tmux, or cmux`));
+    console.error(c.red(`✗ unknown --runtime "${opts.runtime}" - expected pty, tmux, or cmux`));
     process.exit(1);
   }
   // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
@@ -310,7 +310,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const declared = prepared.manifest.broker?.auth;
   const declaredStr = declared === undefined ? '"static" (the unset default)' : JSON.stringify(declared);
   if (opts.open && declared === "user") {
-    console.error(c.red('✗ --open contradicts this manifest\'s broker.auth: "user" — a user-auth space cannot run unauthenticated. Drop --open, or change the manifest.'));
+    console.error(c.red('✗ --open contradicts this manifest\'s broker.auth: "user" - a user-auth space cannot run unauthenticated. Drop --open, or change the manifest.'));
     process.exit(1);
   }
   if (opts.userAuth && declared !== "user") {
@@ -318,7 +318,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     process.exit(1);
   }
   if (opts.idp && declared !== "user") {
-    console.error(c.red(`✗ --idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) — set broker.auth: "user" in the manifest, or drop --idp.`));
+    console.error(c.red(`✗ --idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`));
     process.exit(1);
   }
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
@@ -338,7 +338,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
 
   // up -f never adopts a running broker. Reachable at the bind address ⇒ redirect to spawn -f.
   if (await isReachable(server)) {
-    console.error(c.red(`✗ ${server} already has a broker — deploy this manifest onto it with \`cotal spawn -f ${file}\``));
+    console.error(c.red(`✗ ${server} already has a broker - deploy this manifest onto it with \`cotal spawn -f ${file}\``));
     process.exit(1);
   }
   // Connectors + their required binaries must exist before any mutation (no fallback).
@@ -390,9 +390,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // degraded control plane (announced above) means the agents are NOT coming up.
   if (controlPlane) {
     // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
-    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} — see .cotal/manager.log`));
+    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} - see .cotal/manager.log`));
   } else {
-    console.error(c.red(`✗ ${eff.agents.length} agent(s) NOT launched — the control plane did not come up (see above)`));
+    console.error(c.red(`✗ ${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`));
   }
 
   // Loud summary: any persona-inherited access an `include` manifest dragged in, plus warnings.
@@ -455,7 +455,7 @@ async function startDeliveryWithBroker(space: string, server: string, mgr?: { ru
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
     // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
     // not as an unexplained "no manager reachable" later.
-    console.error(c.dim(`! control plane degraded: ${(e as Error).message} — durable delivery/manager may be down; start one with: cotal supervise`));
+    console.error(c.dim(`! control plane degraded: ${(e as Error).message} - durable delivery/manager may be down; start one with: cotal supervise`));
     return false;
   }
 }
@@ -519,7 +519,7 @@ export async function startMeshDetached(
   tailing = false;
   if (!ready) {
     child.kill("SIGTERM");
-    throw new Error(`nats-server did not become reachable at ${server} — see ${logPath}`);
+    throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
   }
   writeFileSync(cotalPath("nats.pid"), String(child.pid));
   await postStart(server, space, setup, seedFile);
@@ -549,7 +549,7 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
   if (!existsSync(stateDir)) return;
   console.error(
     c.red(
-      `✗ space "${space}" has user auth enabled (state under ${stateDir}) — \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
+      `✗ space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
     ),
   );
   process.exit(1);
@@ -571,12 +571,12 @@ function ensureRootForSpace(useAuth: boolean, space: string): void {
   const cwd = process.cwd();
   if (root !== cwd) {
     mkdirSync(join(cwd, ".cotal"), { recursive: true });
-    console.log(c.dim(`nearest mesh root ${root} is space "${existing.space}" — making this folder its own root for "${space}"`));
+    console.log(c.dim(`nearest mesh root ${root} is space "${existing.space}" - making this folder its own root for "${space}"`));
     return;
   }
   console.error(
     c.red(
-      `✗ this folder is the root of space "${existing.space}" (${authDir(root)}), so it can't also run "${space}" — drop \`--space\` to run "${existing.space}", or start "${space}" from a different folder (it becomes that mesh's own root)`,
+      `✗ this folder is the root of space "${existing.space}" (${authDir(root)}), so it can't also run "${space}" - drop \`--space\` to run "${existing.space}", or start "${space}" from a different folder (it becomes that mesh's own root)`,
     ),
   );
   process.exit(1);
@@ -594,7 +594,7 @@ async function claimSpace(space: string, server: string, root: string): Promise<
   if (await isReachable(existing.server)) {
     console.error(
       c.red(
-        `✗ space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) — pick a different \`--space\`, or \`cotal down\` it first`,
+        `✗ space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`,
       ),
     );
     process.exit(1);
@@ -615,7 +615,7 @@ function recordOurMesh(m: MeshEntry): void {
     return;
   }
   if (usableCurrent !== m.space)
-    console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" — \`cotal use ${m.space}\` to switch`));
+    console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" - \`cotal use ${m.space}\` to switch`));
 }
 
 /** Poll a growing log file and forward newly-appended lines until `stopped()` is true. */
@@ -742,7 +742,7 @@ async function authSetup(
   if (!user && existsSync(stateDir)) {
     console.error(
       c.red(
-        `✗ space "${space}" has user auth enabled (state under ${stateDir}) — start it with \`--user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
+        `✗ space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`--user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
       ),
     );
     process.exit(1);

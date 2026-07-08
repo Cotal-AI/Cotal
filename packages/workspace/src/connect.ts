@@ -84,22 +84,70 @@ export function endpointAuth(conn: Connection): { creds?: string; bearer?: strin
  *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject>`. */
 export const CLI_USER_ACTOR = "cli";
 
-/** Guard for commands whose job needs authority a user-mode login's ledger-scoped bearer cannot
- *  carry. On per-user-auth meshes, static --creds are deliberately NOT an escape hatch anymore;
- *  the operator must use a supported user-mode path or a static-auth mesh. */
-export function refuseUserModeOrExit(conn: Connection, what: string): void {
-  if (!conn.bearer) return;
-  console.error(
-    c.red(
-      `✗ ${what} isn't available over a user login yet — space "${conn.space}" is a per-user-auth mesh, and this command still relies on operator creds files (static --creds are retired here).`,
-    ),
-  );
-  console.error(
-    c.dim(
-      `  Nothing is wrong with your login or grant; this surface just isn't ported to user mode yet. Use a user-mode command (send, spawn, status, actor …), or run this on a static-auth mesh.`,
-    ),
-  );
-  process.exit(1);
+/** The auth material for one ELEVATED user-mode connection (a "view"): bearer + sentinel for the
+ *  endpoint or a standalone helper, the bearer's own principal (a bearer-SOURCE endpoint needs it
+ *  pinned up front), and a fresh-mint source for standing taps (each call is a full login→exchange
+ *  round, so every refresh is a fresh ledger check). */
+export interface UserViewAuth {
+  bearer: string;
+  sentinelCreds: string;
+  owner: string;
+  actor: string;
+  source: () => Promise<string>;
+}
+
+/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
+ *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
+ *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
+ *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
+ *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
+ *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
+export async function userViewAuth(conn: Connection, view: string): Promise<UserViewAuth> {
+  if (!conn.bearer || !conn.userAuth || !conn.root)
+    throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
+  const ua = conn.userAuth;
+  let provider: AuthProvider;
+  try {
+    provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
+  } catch {
+    throw new Error(
+      `space "${conn.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
+    );
+  }
+  const dir = userAuthStateDir(conn.root, conn.space);
+  const mint = () => provider.userCredentials({ dir, space: conn.space, actor: CLI_USER_ACTOR, view });
+  const { bearer, sentinelCreds } = await mint();
+  const { owner, actor } = principalFromBearer(bearer);
+  return { bearer, sentinelCreds, owner, actor, source: () => mint().then((r) => r.bearer) };
+}
+
+/** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
+export async function userViewAuthOrExit(conn: Connection, view: string): Promise<UserViewAuth> {
+  try {
+    return await userViewAuth(conn, view);
+  } catch (e) {
+    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+}
+
+/** The (owner, actor) principal a minted bearer is bound to — read from the JWT payload WITHOUT
+ *  verification (client side; the broker verifies). A bearer-source endpoint requires the principal
+ *  pinned at construction, and the bearer is the one authoritative place it lives. */
+function principalFromBearer(bearer: string): { owner: string; actor: string } {
+  try {
+    const mid = bearer.split(".")[1];
+    if (!mid) throw new Error("not a compact JWS");
+    const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as {
+      sub?: string;
+      act?: { actor?: string };
+    };
+    if (typeof payload.sub !== "string" || !payload.sub || typeof payload.act?.actor !== "string" || !payload.act.actor)
+      throw new Error("missing sub/act.actor");
+    return { owner: payload.sub, actor: payload.act.actor };
+  } catch (e) {
+    throw new Error(`could not read the principal from the minted bearer (${e instanceof Error ? e.message : String(e)}) - the auth service's build may be stale; restart it with \`cotal up\``);
+  }
 }
 
 /** Fail-closed guard for the flip: explicit raw creds are still useful for true off-registry/static
@@ -113,7 +161,7 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
   if (!knownRecordedUser && !knownLocalUser) return;
   console.error(
     c.red(
-      `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh — old --creds files are refused here so they can't bypass user accounts.`,
+      `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     ),
   );
   console.error(c.dim(`  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`));
@@ -130,9 +178,18 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  */
 export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise<Connection> {
   if (flags.creds) {
-    const server = flags.server ?? DEFAULT_SERVER;
     const space = flags.space ?? DEFAULT_SPACE;
-    refuseStaticCredsForKnownUserAuthOrExit(space, server, "--creds");
+    // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
+    // as "any recorded server for this space", so a user mesh on a NON-default port is still
+    // recognized when the caller omits --server. Defaulting the server BEFORE the guard would make
+    // its `recorded.server === server` match miss every non-4222 user mesh, letting a static --creds
+    // slip past the flip.
+    refuseStaticCredsForKnownUserAuthOrExit(space, flags.server, "--creds");
+    const server = flags.server ?? DEFAULT_SERVER;
+    if (!existsSync(flags.creds)) {
+      console.error(c.red(`✗ creds file not found: ${flags.creds}`));
+      process.exit(1);
+    }
     const creds = readFileSync(flags.creds, "utf8");
     await reachableOrExit(server, { creds });
     return { server, space, creds };
@@ -149,7 +206,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
     if (existsSync(userAuthStateDir(findCotalRoot(), flags.space))) {
       console.error(
         c.red(
-          `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry — re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+          `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
         ),
       );
       process.exit(1);
@@ -181,7 +238,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
   } catch {
     console.error(
       c.red(
-        `✗ space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register — user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
+        `✗ space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
       ),
     );
     process.exit(1);
@@ -243,7 +300,7 @@ export async function resolveTargetOrExit(flags: {
   // otherwise quietly redirect a stale default.
   const cur = getCurrent();
   if (cur && !findMesh(cur) && target.source === "registry")
-    console.error(c.dim(`note: default mesh "${cur}" is down — using "${target.space}"`));
+    console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }
 
@@ -261,7 +318,7 @@ export async function preflightOrExit(target: MeshTarget, probeCreds?: string): 
   // target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    console.error(c.red(`✗ mesh "${target.space}" at ${target.server} is not reachable — start it with \`cotal up\` from its project folder`));
+    console.error(c.red(`✗ mesh "${target.space}" at ${target.server} is not reachable - start it with \`cotal up\` from its project folder`));
     process.exit(1);
   }
   const r = await preflightTarget(target, probeCreds);

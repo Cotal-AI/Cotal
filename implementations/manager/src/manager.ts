@@ -41,7 +41,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
-import { authorizeNamedControl } from "./authorize.js";
+import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
@@ -65,6 +65,11 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+
+/** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
+ *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
+ *  principal fail-closes to an empty `ps` instead of an unbounded one. */
+const NO_OWNER_MATCHES = "-no-owner-";
 
 /** Run the agent's bearer argv once, pre-launch — the end-to-end auth preflight (state dir, daemon,
  *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
@@ -255,15 +260,15 @@ export class Manager {
     const recorded = loadMeshes().find((m) => m.space === this.space);
     if (recorded && (recorded.mode === "user") !== this.userMode)
       throw new Error(
-        `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) — \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
+        `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) - \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
       );
     if (this.userMode && !recorded)
       throw new Error(
-        `space "${this.space}" has user-auth state on disk but no mesh registry entry — a user-mode manager needs the authoritative record (\`cotal up\` writes it before the control plane); \`cotal up --user-auth\` this space, or remove the stale ${userAuthStateDir(this.workspaceRoot, this.space)}`,
+        `space "${this.space}" has user-auth state on disk but no mesh registry entry - a user-mode manager needs the authoritative record (\`cotal up\` writes it before the control plane); \`cotal up --user-auth\` this space, or remove the stale ${userAuthStateDir(this.workspaceRoot, this.space)}`,
       );
     if (this.userMode && !this.auth)
       throw new Error(
-        `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} — the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
+        `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} - the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
       );
     let creds: (() => Promise<string>) | undefined;
     let id: string | undefined;
@@ -317,7 +322,7 @@ export class Manager {
       await this.attach.stop();
       throw new Error(
         held
-          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) — stop it first; one manager per space`
+          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first; one manager per space`
           : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
       );
     }
@@ -370,11 +375,11 @@ export class Manager {
           const reply = await this.ep.requestDeliveryAdmin("reloadCreds", {});
           adoption = reply.ok ? { ok: true, detail: reply.data } : { ok: false, error: reply.error };
         } catch (e) {
-          adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) — the daemon's 75% re-read backstop adopts the re-signed file` };
+          adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
         }
       }
       for (const r of results.filter((x) => !x.ok && !x.skipped))
-        console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} — the daemon dies loud at this cred's expiry unless it is reminted`);
+        console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
       if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
     } catch (e) {
@@ -425,7 +430,7 @@ export class Manager {
     try {
       this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
     } catch (e) {
-      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) — shutting down to avoid two managers serving it`);
+      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) - shutting down to avoid two managers serving it`);
       if (this.leaseTimer) clearInterval(this.leaseTimer);
       // Tear down our managed agents' footprints too (#159 B2) — this exit path leaks them otherwise. Do
       // NOT release the lease key (it may belong to the replacement holder). Best-effort, like ep/attach.
@@ -463,13 +468,16 @@ export class Manager {
         // Spawn is a privileged-tier op; reaching it via admin is fine (admin ⊇ privileged powers).
         return this.opStart(args, caller);
       case "launch":
-        // SECURITY: manifest launch is operator-only (admin tier). It is higher-power than `start`
-        // — it boots an operator-authored, coordinated policy set from a run spec and underpins the
-        // ownership ledger — so a merely spawn-capable agent (which CAN publish to the privileged
-        // subject) must not reach it. Gate at the handler like `purge`; the subject alone isn't a
-        // boundary because `spawn` grants privileged-subject publish and dispatch is by op here.
-        if (!admin) return { ok: false, error: "launch is admin-only; not allowed on the privileged subject" };
-        return this.opLaunch(args, caller);
+        // SECURITY: on a STATIC mesh, manifest launch is operator-only (admin tier). It is
+        // higher-power than `start` — it boots an operator-authored, coordinated policy set from a
+        // run spec and underpins the ownership ledger — so a merely spawn-capable agent (which CAN
+        // publish to the privileged subject) must not reach it. Gate at the handler like `purge`;
+        // the subject alone isn't a boundary because `spawn` grants privileged-subject publish and
+        // dispatch is by op here. On a USER mesh, a spawn-scoped operator deploys THEIR OWN team on
+        // the privileged tier: opLaunch enforces owner-equality (the spec's apply-time stamped
+        // owner === the subject-pinned caller's owner) BEFORE any side effect.
+        if (!admin && !this.userMode) return { ok: false, error: "launch is admin-only; not allowed on the privileged subject" };
+        return this.opLaunch(args, caller, admin);
       case "stop": {
         if (!name) return { ok: false, error: "self-stop not allowed on privileged subject; send it on the self-service subject" };
         return this.opStop(args, caller, admin);
@@ -484,11 +492,16 @@ export class Manager {
       case "attach":
         return this.opAttach(args, caller, admin);
       case "ps":
-        return { ok: true, data: this.list() };
+        // USER mesh, privileged tier: `ps` lists only the CALLER's own owner-domain (the admin tier
+        // OR a fresh ledger `admin` scope sees all) — cross-owner agent metadata (principals,
+        // personas, auth health) is operator-grade. Fail-closed: an unparseable caller sees nothing.
+        // Static meshes are unchanged.
+        return { ok: true, data: this.list(await this.psOwnerFilter(caller, admin)) };
       case "models":
         return this.opModels(args);
       case "status": {
-        const a = this.list().find((x) => x.name === name);
+        // Same owner-domain bound as `ps`: a cross-owner target reads as absent, never as metadata.
+        const a = this.list(await this.psOwnerFilter(caller, admin)).find((x) => x.name === name);
         return a ? { ok: true, data: a } : { ok: false, error: `no agent "${name}"` };
       }
       default:
@@ -588,7 +601,7 @@ export class Manager {
     const owner = opts.specOwner ?? (spawnerPr && spawnerPr.owner.startsWith("u_") ? spawnerPr.owner : undefined);
     if (!owner)
       return {
-        error: `user-auth space "${this.space}": no owner for this spawn — call it from a user-mode session (\`cotal login\` then \`cotal spawn\`), or apply a manifest as a logged-in operator`,
+        error: `user-auth space "${this.space}": no owner for this spawn - call it from a user-mode session (\`cotal login\` then \`cotal spawn\`), or apply a manifest as a logged-in operator`,
       };
     let provider;
     try {
@@ -848,7 +861,7 @@ export class Manager {
           agent: connector.name,
           supported: true,
           models: [],
-          error: `${connector.name} harness needs ${missing.join(", ")} on PATH — not found`,
+          error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found`,
         };
       try {
         const catalog = await connector.listModels({ refresh });
@@ -872,6 +885,30 @@ export class Manager {
     return { ok: true, data: await Promise.all(registry.all<Connector>("connector").map(one)) };
   }
 
+  /** The owner-domain bound on `ps`/`status` metadata: on a USER mesh, a privileged-tier caller
+   *  sees only agents under its OWN subject-pinned owner. Two ways to see ALL owners: the admin
+   *  TIER (operator), or a fresh ledger `admin` SCOPE on the caller's row — the SAME authority that
+   *  lets `stop`/`attach` reach cross-owner agents ({@link authorizeNamedControl}). Without this the
+   *  two surfaces disagree: an admin operator could cross-owner stop an agent it could not list.
+   *  Read fresh so a revoked admin loses visibility on its next call; a read failure and an
+   *  unparseable caller both fall closed (own-owner / matches-nothing). Static meshes are unbounded. */
+  private async psOwnerFilter(caller: string, admin: boolean): Promise<string | undefined> {
+    if (!this.userMode || admin) return undefined;
+    const key = parsePrincipalKey(caller);
+    if (!key) return NO_OWNER_MATCHES;
+    try {
+      const scope = await resolveAuthProvider().actorScope({
+        dir: userAuthStateDir(this.workspaceRoot, this.space),
+        owner: key.owner,
+        actor: key.actor,
+      });
+      if (scope?.includes("admin")) return undefined;
+    } catch {
+      /* unreadable ledger authorizes nothing extra: fall through to the own-owner bound */
+    }
+    return key.owner;
+  }
+
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
    *  manager. The request carries a `{ runId, name }`, NEVER a path: the manager derives + validates
    *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
@@ -879,8 +916,9 @@ export class Manager {
    *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
    *  `supervise --launch`. The reply is enriched for the ownership ledger: the SPAWNED
    *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
-   *  `runId`, and resolved `hash`. */
-  private async opLaunch(args: Record<string, unknown>, caller: string): Promise<ControlReply> {
+   *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
+   *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
+  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const runId = String(args.runId ?? "").trim();
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
@@ -895,7 +933,14 @@ export class Manager {
     // USER mesh: a manifest launch runs under the spec's apply-time owner, never the ctl caller —
     // fail loud on a spec without one rather than guess (core `MeshLaunchSpec.owner`).
     if (this.userMode && !spec.owner)
-      return { ok: false, error: `user-auth space "${this.space}": launch spec for run ${runId} carries no owner — re-apply the manifest as a logged-in operator` };
+      return { ok: false, error: `user-auth space "${this.space}": launch spec for run ${runId} carries no owner - re-apply the manifest as a logged-in operator` };
+    if (this.userMode) {
+      // Privileged-tier user-mode launch: owner-equality (spec owner === caller owner), decided by
+      // the pure policy BEFORE materializePersona or any other side effect, so a denied
+      // cross-owner launch writes nothing. Admin tier passes through it unchanged.
+      const denied = authorizeLaunch({ specOwner: spec.owner, caller, admin, runId });
+      if (denied) return { ok: false, error: denied };
+    }
     let configPath: string;
     try {
       configPath = materializePersona(this.workspaceRoot, runId, la);
@@ -951,7 +996,7 @@ export class Manager {
     } else {
       configPath = agentFilePath(this.workspaceRoot, ref);
       if (!existsSync(configPath))
-        return { ok: false, error: `no persona "${ref}" — ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
+        return { ok: false, error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
     }
 
     // Connector + harness preflight before reserving a slot or minting — a missing connector or a
@@ -965,7 +1010,7 @@ export class Manager {
     }
     const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length)
-      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH — not found` };
+      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
@@ -1242,7 +1287,7 @@ export class Manager {
         void (async () => {
           const tail = this.tail(await s.backlog());
           this.onAgentExit(a);
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` — last output: ${tail}` : ""}` });
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
         })();
       };
       timer = setTimeout(
@@ -1250,7 +1295,7 @@ export class Manager {
           finish({
             ok: false,
             uncertain: true,
-            detail: `${a.name} (${a.id}): launch status uncertain — no process exit and no mesh presence within ${Math.round(this.readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`, or stop it to clean up.`,
+            detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(this.readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`, or stop it to clean up.`,
           }),
         this.readinessTimeoutMs,
       );
@@ -1393,7 +1438,7 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
       if (!admin && def.owner !== caller) {
-        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file — no agent owner)";
+        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file - no agent owner)";
         return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
       }
       // PATCH content: overwrite model only when provided, so a persona-only redefine can't wipe an existing model.
@@ -1434,9 +1479,11 @@ export class Manager {
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */
-  private list() {
+  /** `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
+   *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
+  private list(ownerFilter?: string) {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
-    return [...this.agents.values()].map((a) => {
+    return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
       // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
       // bearer command writes each attempt's outcome to the health file, and `ps` renders it
       // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or

@@ -107,18 +107,18 @@ function readRow(path: string, kind: ActorKind): ActorRow {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8")) as RowFile;
   } catch (e) {
-    throw new Error(`${path}: unreadable actor grant (${e instanceof Error ? e.message : String(e)}) — fix or remove the row; a broken row denies its actor and fails ledger listings`);
+    throw new Error(`${path}: unreadable actor grant (${e instanceof Error ? e.message : String(e)}) - fix or remove the row; a broken row denies its actor and fails ledger listings`);
   }
   if (parsed === null || typeof parsed !== "object" || parsed.ver !== LEDGER_VER)
-    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) — refusing to guess at an authorization row`);
+    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
   assertDerivedOwnerToken(parsed.owner);
   assertValidOwnerToken(parsed.actor);
   if (!Array.isArray(parsed.scope) || !Array.isArray(parsed.allowSubscribe) || !Array.isArray(parsed.allowPublish))
     throw new Error(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
   if (kind === "interactive" && parsed.tokenHash !== undefined)
-    throw new Error(`${path}: an interactive grant must not carry an agent token hash — it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
+    throw new Error(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
   if (kind === "managed-agent" && !(typeof parsed.tokenHash === "string" && /^[0-9a-f]{64}$/.test(parsed.tokenHash)))
-    throw new Error(`${path}: managed-agent grant has a missing/corrupted secret hash — respawn the agent (\`cotal spawn\`) to rewrite it`);
+    throw new Error(`${path}: managed-agent grant has a missing/corrupted secret hash - respawn the agent (\`cotal spawn\`) to rewrite it`);
   const { ver: _ver, ...row } = parsed;
   return row;
 }
@@ -161,7 +161,7 @@ export function findActorUnified(dir: string, owner: string, actor: string): (Ac
   const managed = findIn(dir, "managed-agent", owner, actor);
   if (interactive && managed)
     throw new Error(
-      `actor "${actor}" is granted in BOTH the interactive and managed row spaces — a broken ledger denies; remove one of ${rowPath(dir, "interactive", owner, actor)} / ${rowPath(dir, "managed-agent", owner, actor)}`,
+      `actor "${actor}" is granted in BOTH the interactive and managed row spaces - a broken ledger denies; remove one of ${rowPath(dir, "interactive", owner, actor)} / ${rowPath(dir, "managed-agent", owner, actor)}`,
     );
   if (interactive) return { ...interactive, kind: "interactive" };
   if (managed) return { ...managed, kind: "managed-agent" };
@@ -216,9 +216,9 @@ function assertRowInputs(row: Omit<ActorRow, "grantedAt">): void {
 export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
   assertRowInputs(row);
   if (row.tokenHash !== undefined)
-    throw new Error("grantActor: an interactive grant cannot carry an agent token hash — managed-agent rows are written by the spawn path only");
+    throw new Error("grantActor: an interactive grant cannot carry an agent token hash - managed-agent rows are written by the spawn path only");
   const managedRefusal = () =>
-    new Error(`actor "${row.actor}" is a managed agent — its grant is owned by the spawn lifecycle (respawn rewrites it, despawn revokes it); pick another actor name for an interactive grant`);
+    new Error(`actor "${row.actor}" is a managed agent - its grant is owned by the spawn lifecycle (respawn rewrites it, despawn revokes it); pick another actor name for an interactive grant`);
   if (findIn(dir, "managed-agent", row.owner, row.actor)) throw managedRefusal();
   const full: ActorRow = { ...row, grantedAt: new Date().toISOString() };
   writeRow(dir, "interactive", full);
@@ -262,7 +262,7 @@ function assertWithinSpawnerGrant(
     const deep = child !== row;
     if (seen.has(parentKey))
       throw new Error(
-        `agent "${leaf}": its delegation chain contains a cycle at "${parentKey}" — a broken ledger denies; repair the parent links (\`cotal actor list\`)`,
+        `agent "${leaf}": its delegation chain contains a cycle at "${parentKey}" - a broken ledger denies; repair the parent links (\`cotal actor list\`)`,
       );
     seen.add(parentKey);
     const dot = parentKey.indexOf(".");
@@ -272,13 +272,13 @@ function assertWithinSpawnerGrant(
     if (!parent)
       throw new Error(
         boundary === "spawn"
-          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space — delegation flows from a granted spawner chain; grant it first (\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\`)`
-          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted — revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`)`,
+          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain; grant it first (\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\`)`
+          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`)`,
       );
     if (parent.scope.includes("admin")) return;
     if (child.owner !== pOwner)
       throw new Error(
-        `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner — cross-owner spawns are operator (admin) launches only`,
+        `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
     const overScope = child.scope.filter((s) => !parent.scope.includes(s));
     const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
@@ -299,10 +299,10 @@ function assertWithinSpawnerGrant(
       const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
       throw new Error(
         (boundary === "spawn"
-          ? `${who} would exceed its spawner's grant — delegation only narrows: `
+          ? `${who} would exceed its spawner's grant - delegation only narrows: `
           : `${who} exceeds its spawner's CURRENT grant (narrowed since spawn): `) +
           wrongs.join("; ") +
-          ` — the mesh operator widens the spawner with \`${widen}\`` +
+          ` - the mesh operator widens the spawner with \`${widen}\`` +
           (boundary === "spawn" ? ", then respawn" : ", or respawn within it"),
       );
     }
@@ -343,7 +343,7 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
   assertWithinSpawnerGrant(dir, row, "spawn");
   const shadowRefusal = () =>
-    new Error(`actor "${row.actor}" already has an interactive grant — a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
+    new Error(`actor "${row.actor}" already has an interactive grant - a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
   if (findIn(dir, "interactive", row.owner, row.actor)) throw shadowRefusal();
   const full: ActorRow = { ...row, grantedAt: new Date().toISOString() };
   writeRow(dir, "managed-agent", full);
@@ -381,9 +381,9 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
     const row = findInteractiveActor(dir, owner, actor);
     if (!row) {
       if (findManagedActor(dir, owner, actor))
-        throw new Error(`actor "${actor}" is a managed agent — it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
+        throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
       throw new Error(
-        `actor "${actor}" is not granted for this user — the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`)`,
+        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`)`,
       );
     }
     return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}) };
@@ -401,7 +401,7 @@ export function ledgerAuthorizeConnect(dir: string): (t: ValidatedUserToken) => 
     const granted = new Set(row.scope);
     for (const s of t.act.scope ?? [])
       if (!granted.has(s))
-        throw new Error(`bearer scope "${s}" exceeds the actor's current grant — re-login to mint a fresh bearer`);
+        throw new Error(`bearer scope "${s}" exceeds the actor's current grant - re-login to mint a fresh bearer`);
   };
 }
 
@@ -412,7 +412,7 @@ export function ledgerAuthorizeConnect(dir: string): (t: ValidatedUserToken) => 
 export function ledgerAclResolver(dir: string): AclResolver {
   return (t) => {
     const row = findActorUnified(dir, t.owner, t.act.actor);
-    if (!row) throw new Error(`actor "${t.act.actor}" has no ledger row — no channel ACL to mint`);
+    if (!row) throw new Error(`actor "${t.act.actor}" has no ledger row - no channel ACL to mint`);
     return { allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish, ...(row.role ? { role: row.role } : {}) };
   };
 }
@@ -462,7 +462,7 @@ export function ledgerAuthorizeAgentExchange(
   actorToken: string,
 ): { scope: string[]; parent?: string } {
   const deny = () =>
-    new Error("agent exchange refused: unknown agent or wrong secret — if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
+    new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
   let row: ActorRow | undefined;
   try {
     row = findManagedActor(dir, owner, actor);

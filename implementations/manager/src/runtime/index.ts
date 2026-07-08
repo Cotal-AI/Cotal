@@ -23,7 +23,7 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
     // the pty runtime is Node-only. tmux/cmux drive their own CLIs (no node-pty), so they're fine.
     if (process.versions.bun)
       throw new Error(
-        `the pty runtime requires Node.js — the manager is running under Bun (v${process.versions.bun}), ` +
+        `the pty runtime requires Node.js - the manager is running under Bun (v${process.versions.bun}), ` +
           `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
           `Run the manager under node, or use --runtime tmux / --runtime cmux (which don't use node-pty).`,
       );
@@ -34,7 +34,7 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
     provider = registry.resolve<RuntimeProvider>("runtime", kind);
   } catch {
     throw new Error(
-      `unknown runtime "${kind}" — is its integration imported? (e.g. import "@cotal-ai/tmux" or "@cotal-ai/cmux")`,
+      `unknown runtime "${kind}" - is its integration imported? (e.g. import "@cotal-ai/tmux" or "@cotal-ai/cmux")`,
     );
   }
   if (!provider.available())

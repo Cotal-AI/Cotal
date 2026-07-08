@@ -131,6 +131,17 @@ administrative boundary of its own subtree, so you (and your agents) manage what
 without any extra grant. `admin` is the explicit opt-in for touching **other owners'**
 agents; it is never part of a default grant and never accepted from a manifest.
 
+**Elevated operator surfaces ride the same login** through a short-lived *view*: the
+exchange stamps a server-authored view claim into the bearer, and the callout mints that
+connection as the matching non-agent profile instead of `agent`. `cotal web` and
+`cotal console` ask for the read-only admin view, `history clear` for the purger,
+`channels set/default` for the channel-writer (all gated on ledger scope `admin`);
+`up -f` deploys over the deployer view, gated on `spawn`, because deploying your own team
+is spawn-grade (the manager still refuses a manifest claiming another owner). Views exist
+only on a signed-in human exchange (an agent's managed exchange never mints one), are
+authorized against the fresh ledger row at every connect, and expire with the bearer, so
+narrowing or revoking a grant bites within minutes here too.
+
 **A hard branch, not a fallback.** On a user-auth space, commands never fall back to
 static minting or credless connects: a missing login or a down auth service is one
 sentence naming the exact recovery, and static agent/observer/admin minting is refused

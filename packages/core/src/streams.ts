@@ -8,7 +8,8 @@ import {
   type ConsumerConfig,
   type JetStreamManager,
 } from "@nats-io/jetstream";
-import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
+import { randomUUID } from "node:crypto";
+import { connect, credsAuthenticator, tokenAuthenticator, nanos } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   spacePrefix,
@@ -91,16 +92,41 @@ export interface ClearSpaceHistoryResult {
   dm?: number;
 }
 
+/** Auth material for a STANDALONE helper connection: a static/raw creds file, OR the user-mode
+ *  pair (a view bearer + the deny-all sentinel creds) — exactly what the endpoint's user mode
+ *  presents. Never both. Empty = open mode. */
+export interface StandaloneAuth {
+  creds?: string;
+  bearer?: string;
+  sentinelCreds?: string;
+}
+
 /** Connection options for a privileged STANDALONE helper (`setupSpaceStreams`, `clearSpaceHistory`,
- *  `clearChannel`): authenticate with `creds` and PIN the reply inbox to the cred's own id. A scoped cred
- *  (provisioner/purger/operator) subscribes only `_INBOX_<id>.>`, so without this its JS-API replies land
- *  on the default `_INBOX.<nuid>` — a subject the cred's sub rejects (Permissions Violation), hanging
- *  every `jetstreamManager`/`streams.*` request. Open mode (no creds) connects bare with the default inbox. */
-function authConnectOpts(creds?: string): Record<string, unknown> {
-  return creds
+ *  `clearChannel`, the channel-registry helpers): pin the reply inbox to the connection's own
+ *  identity. A scoped cred (provisioner/purger/operator) subscribes only `_INBOX_<id>.>`, so without
+ *  this its JS-API replies land on the default `_INBOX.<nuid>` — a subject the cred's sub rejects
+ *  (Permissions Violation), hanging every `jetstreamManager`/`streams.*` request.
+ *
+ *  USER MODE (`bearer` + `sentinelCreds`) mirrors the endpoint's callout-shaped connect: the
+ *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and a
+ *  client-chosen inbox NONCE goes out as the connect `name` — the callout scopes `_INBOX_<nonce>.>`
+ *  from it (the client cannot know its nkey pre-connect). Open mode (no auth) connects bare. */
+export function standaloneConnectOpts(auth: StandaloneAuth = {}): Record<string, unknown> {
+  if (auth.bearer !== undefined) {
+    if (!auth.sentinelCreds)
+      throw new Error("user-mode standalone connect requires sentinelCreds alongside the bearer");
+    if (auth.creds) throw new Error("standalone connect takes creds OR bearer+sentinelCreds, never both");
+    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    return {
+      name: nonce,
+      inboxPrefix: `_INBOX_${nonce}`,
+      authenticator: [credsAuthenticator(new TextEncoder().encode(auth.sentinelCreds)), tokenAuthenticator(auth.bearer)],
+    };
+  }
+  return auth.creds
     ? {
-        authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
-        inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+        authenticator: credsAuthenticator(new TextEncoder().encode(auth.creds)),
+        inboxPrefix: `_INBOX_${idFromCreds(auth.creds)}`,
       }
     : {};
 }
@@ -287,7 +313,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds }) });
   try {
     await createSpaceStreams(await jetstreamManager(nc), opts.space);
     // The presence + channels KV buckets are streams too — pre-create them so agents (denied
@@ -328,9 +354,12 @@ export async function clearSpaceHistory(opts: {
   servers: string;
   space: string;
   creds?: string;
+  /** User mode: a `purger`-view bearer + the space's sentinel creds (instead of a creds file). */
+  bearer?: string;
+  sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -353,10 +382,13 @@ export async function clearChannel(opts: {
   space: string;
   channel: string;
   creds?: string;
+  /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
+  bearer?: string;
+  sentinelCreds?: string;
 }): Promise<{ channel: string; purged: number }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
@@ -393,7 +425,7 @@ export async function deprovisionAgent(opts: {
 }): Promise<void> {
   const nc = await connect({
     servers: opts.servers,
-    ...authConnectOpts(opts.creds),
+    ...standaloneConnectOpts({ creds: opts.creds }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's
     // fail-loud `.catch` is load-bearing: no reconnect loop (a wedged broker rejects promptly instead of
     // looping silently) and a bounded initial connect. Without this a broker-down deprovision would sit

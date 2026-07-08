@@ -29,14 +29,40 @@ export const USER_TOKEN_VER = 1;
  *  re-mint is the working revocation path. */
 export const MAX_TOKEN_TTL_SEC = 900;
 
+/** The elevated per-connection profiles a bearer may request at exchange time (the "views"):
+ *  read-only god view, space-history purge, channel delete, channel-registry writes, and the
+ *  manifest-deploy preflight. Server-authored into `act.view` ONLY by the human exchange after a
+ *  fresh ledger check against {@link VIEW_REQUIRED_SCOPE}; the callout mints the matching profile
+ *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
+ *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
+ *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer"] as const;
+export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
+
+/** The ONE central view policy table: which ledger capability each view's exchange requires (and
+ *  the callout re-asserts, defense in depth). `admin` = operator authority (god-view read +
+ *  destructive space writes); `deployer` is spawn-grade — deploying YOUR OWN team's manifest rides
+ *  the same owner-domain model as own-agent stop/attach (the manager still enforces owner equality
+ *  at launch, and the view's control grant is the PRIVILEGED tier, never the admin bypass). */
+export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn"> = {
+  admin: "admin",
+  purger: "admin",
+  "channel-purger": "admin",
+  "channel-writer": "admin",
+  deployer: "spawn",
+};
+
 /** The server-authored actor claim. `owner` restates `sub` (cross-checked); `actor` is the
- *  ledger-derived agent-instance id; `parent` is at most ONE spawner audit link. */
+ *  ledger-derived agent-instance id; `parent` is at most ONE spawner audit link; `view` is the
+ *  exchange-authorized elevated profile request (absent = the agent profile). */
 export interface UserTokenActor {
   owner: string;
   actor: string;
   scope?: string[];
   /** The spawning principal (`<owner>.<actor>` dot-form), when this agent was spawned by another. */
   parent?: string;
+  /** Exchange-authorized elevated view ({@link USER_TOKEN_VIEWS}); absent = agent profile. */
+  view?: UserTokenView;
 }
 
 /** A fully validated user token, reduced to what the callout needs. */
@@ -76,7 +102,7 @@ export interface ValidateUserTokenOpts {
 export async function validateUserToken(token: string, opts: ValidateUserTokenOpts): Promise<ValidatedUserToken> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
-    throw new Error("user token: embedded key material (jku/jwk/x5u/x5c) is rejected — keys resolve only via the pinned JWKS");
+    throw new Error("user token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
   if (header.alg !== "EdDSA") throw new Error(`user token: alg must be EdDSA (got ${String(header.alg)})`);
 
   const { payload } = await jwtVerify(token, opts.key as JWTVerifyGetKey, {
@@ -90,7 +116,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   // bearer must be scoped to EXACTLY this space: the plain string, or a singleton array of it. A
   // multi-audience bearer would be replayable across spaces.
   if (payload.aud !== opts.audience && !(Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === opts.audience))
-    throw new Error("user token: aud must be exactly the space — a multi-audience bearer is rejected");
+    throw new Error("user token: aud must be exactly the space - a multi-audience bearer is rejected");
   if (typeof payload.exp !== "number") throw new Error("user token: exp is required (tokens must be short-lived)");
   if (typeof payload.iat !== "number") throw new Error("user token: iat is required");
   if (typeof payload.nbf !== "number") throw new Error("user token: nbf is required");
@@ -104,20 +130,20 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   const now = Math.floor(Date.now() / 1000);
   if (payload.iat > now + tol) throw new Error("user token: iat is in the future");
   if (payload.exp > now + maxTtl + tol)
-    throw new Error(`user token: exp is more than the ${maxTtl}s cap past now — short-lived tokens are the revocation lever`);
+    throw new Error(`user token: exp is more than the ${maxTtl}s cap past now - short-lived tokens are the revocation lever`);
   if (payload.exp - payload.iat > maxTtl)
-    throw new Error(`user token: lifetime ${payload.exp - payload.iat}s exceeds the ${maxTtl}s cap — short-lived tokens are the revocation lever`);
+    throw new Error(`user token: lifetime ${payload.exp - payload.iat}s exceeds the ${maxTtl}s cap - short-lived tokens are the revocation lever`);
 
   if (payload.ver !== USER_TOKEN_VER)
-    throw new Error(`user token: ver ${String(payload.ver)} != ${USER_TOKEN_VER} — stale or unknown token shape (downgrade defense)`);
+    throw new Error(`user token: ver ${String(payload.ver)} != ${USER_TOKEN_VER} - stale or unknown token shape (downgrade defense)`);
 
-  if (typeof payload.sub !== "string") throw new Error("user token: sub must be a string token — no coercion at a trust boundary");
+  if (typeof payload.sub !== "string") throw new Error("user token: sub must be a string token - no coercion at a trust boundary");
   const owner = assertDerivedOwnerToken(payload.sub);
 
   const act = payload.act as UserTokenActor | undefined;
   if (!act || typeof act !== "object") throw new Error("user token: act claim is required (server-authored owner/actor)");
-  if (act.owner !== owner) throw new Error(`user token: act.owner "${String(act.owner)}" != sub "${owner}" — inconsistent principal`);
-  if (typeof act.actor !== "string") throw new Error("user token: act.actor must be a string token — no coercion at a trust boundary");
+  if (act.owner !== owner) throw new Error(`user token: act.owner "${String(act.owner)}" != sub "${owner}" - inconsistent principal`);
+  if (typeof act.actor !== "string") throw new Error("user token: act.actor must be a string token - no coercion at a trust boundary");
   assertValidOwnerToken(act.actor);
   if (act.scope !== undefined && !(Array.isArray(act.scope) && act.scope.every((s) => typeof s === "string")))
     throw new Error("user token: act.scope must be a string list when present");
@@ -132,6 +158,10 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     assertDerivedOwnerToken(parts[0]);
     assertValidOwnerToken(parts[1]);
   }
+  if (act.view !== undefined && !USER_TOKEN_VIEWS.includes(act.view))
+    throw new Error(
+      `user token: act.view "${String(act.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - unknown views fail closed`,
+    );
 
   const scope = payload.scope === undefined ? [] : payload.scope;
   if (!(Array.isArray(scope) && scope.every((s) => typeof s === "string")))
@@ -141,7 +171,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, view: act.view },
     ver: USER_TOKEN_VER,
     exp: payload.exp,
   };

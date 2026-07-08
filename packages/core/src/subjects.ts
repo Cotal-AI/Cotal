@@ -124,7 +124,7 @@ export function assertValidChannel(channel: string): string {
     if (s === "*") return;
     if (!/^[A-Za-z0-9_-]+$/.test(s))
       throw new Error(
-        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' — ` +
+        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' - ` +
           `policy channel names can't contain characters the wire layer would rewrite`,
       );
   });
@@ -149,7 +149,7 @@ export function assertValidOwnerToken(owner: string): string {
   // without it a number like 123 stringifies, matches, and is returned UN-coerced.
   if (typeof owner !== "string" || !/^[A-Za-z0-9_]+$/.test(owner))
     throw new Error(
-      `invalid owner/actor token "${owner}": must be a single NATS-safe token ([A-Za-z0-9_]) — ` +
+      `invalid owner/actor token "${owner}": must be a single NATS-safe token ([A-Za-z0-9_]) - ` +
         `no dots, '*', '>', or '-'. A separator or wildcard in an id is lane breakout or aliasing, ` +
         `and '-' is reserved as the principal name-form separator, so it is rejected rather than ` +
         `silently rewritten.`,
@@ -219,7 +219,7 @@ export function parsePrincipalKey(key: string): { owner: string; actor: string }
 export function assertInboxConnId(connId: string): string {
   if (typeof connId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(connId))
     throw new Error(
-      `invalid connId/inbox nonce ${JSON.stringify(connId)} — must match [A-Za-z0-9_-]{8,120} ` +
+      `invalid connId/inbox nonce ${JSON.stringify(connId)} - must match [A-Za-z0-9_-]{8,120} ` +
         `(no subject metacharacters; guards the _INBOX_<connId>.> grant against wildcard escalation)`,
     );
   return connId;
@@ -340,7 +340,7 @@ export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: bo
   } catch {
     throw new Error(
       `invalid principal owner "${owner}" at a trust boundary: expected a derived owner (u_…)` +
-        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""} — an nkey-shaped or arbitrary ` +
+        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""} - an nkey-shaped or arbitrary ` +
         `token is not a real owner (flip criterion 2: owners are nkey-disjoint).`,
     );
   }

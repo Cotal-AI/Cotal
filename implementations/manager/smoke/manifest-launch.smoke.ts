@@ -194,8 +194,10 @@ function writeSpec(name: string, body: unknown): string {
   throws("launchSpecForRun rejects a missing run", () => launchSpecForRun(root, "nosuchrun"));
 
   type LaunchReply = { ok: boolean; data?: Record<string, unknown>; error?: string };
+  // Admin-tier launch (the static operator deploy path); the user-mode owner-equality policy is
+  // pinned separately in smoke:own-agent-control (pure authorizeLaunch).
   const op = (a: Record<string, unknown>) =>
-    (mgr as unknown as { opLaunch(a: Record<string, unknown>, c: string): Promise<LaunchReply> }).opLaunch(a, "smoke-caller");
+    (mgr as unknown as { opLaunch(a: Record<string, unknown>, c: string, admin: boolean): Promise<LaunchReply> }).opLaunch(a, "smoke-caller", true);
   const reply = await op({ runId: runId2, name: "scout" });
   check("opLaunch boots the resolved agent", reply.ok === true, reply.error);
   // `scout` is already on the (fake) mesh from the startAgent test above, so it collision-numbers.

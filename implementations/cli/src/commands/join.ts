@@ -28,7 +28,7 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
   const msg = (e as Error)?.message ?? String(e);
   if (/consumer not found|no responders|not provisioned/i.test(msg)) {
     console.error(
-      c.red(`${space} isn't provisioned for a console session yet — run `) +
+      c.red(`${space} isn't provisioned for a console session yet - run `) +
         c.bold("cotal up") +
         c.red(` first, or join with --creds/--token.`),
     );
@@ -36,7 +36,7 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
   }
   if (/authoriz|permission|not authorized/i.test(msg)) {
     console.error(
-      c.red(`not authorized to join ${space}'s channels — pass --creds/--token, or ask the mesh operator for a join link.`),
+      c.red(`not authorized to join ${space}'s channels - pass --creds/--token, or ask the mesh operator for a join link.`),
     );
     return true;
   }
@@ -88,7 +88,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     if (target.mode === "user") {
       console.error(
         c.red(
-          `✗ interactive join is not yet supported on user-auth space "${space}" — sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`) and use \`cotal send\`, or run agents properly: \`cotal spawn <persona>\` (they get their own managed identity under you)`,
+          `✗ interactive join is not yet supported on user-auth space "${space}" - sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`) and use \`cotal send\`, or run agents properly: \`cotal spawn <persona>\` (they get their own managed identity under you)`,
         ),
       );
       process.exit(1);
@@ -193,7 +193,7 @@ export async function join(args: ParsedArgs): Promise<void> {
       print(c.dim(`← ${who(ev.presence.card)} went offline`));
     else
       print(
-        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(" — " + ev.presence.activity) : ""}`,
+        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(" - " + ev.presence.activity) : ""}`,
       );
   });
 
@@ -219,7 +219,7 @@ export async function join(args: ParsedArgs): Promise<void> {
 
   if (!interactive || !rl) {
     console.log(
-      c.dim(`${name} (${values.role ?? "no role"}) holding presence in ${space} — headless`),
+      c.dim(`${name} (${values.role ?? "no role"}) holding presence in ${space} - headless`),
     );
     await new Promise<void>(() => {}); // park; event handlers do the work
     return;
@@ -265,7 +265,7 @@ export async function join(args: ParsedArgs): Promise<void> {
               who(p.card) +
               " " +
               statusBadge(p.status) +
-              (p.activity ? c.dim(" — " + p.activity) : "") +
+              (p.activity ? c.dim(" - " + p.activity) : "") +
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
@@ -291,7 +291,7 @@ export async function join(args: ParsedArgs): Promise<void> {
             }
           } catch (e) {
             if (!(e instanceof AmbiguousPeerError)) throw e;
-            print(c.red(`"${target}" is ambiguous — DM by instance id:`));
+            print(c.red(`"${target}" is ambiguous - DM by instance id:`));
             for (const cand of e.candidates) print(c.dim(`  ${cand.name} (${cand.status})  ${cand.id}`));
           }
         }

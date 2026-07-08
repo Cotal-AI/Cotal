@@ -154,7 +154,7 @@ function edit(name?: string): void {
   if (!existsSync(path)) return notFound(name, path);
   const editor = process.env.VISUAL || process.env.EDITOR;
   if (!editor) {
-    console.error(c.red("no editor set — export EDITOR (or VISUAL), e.g. export EDITOR=vim"));
+    console.error(c.red("no editor set - export EDITOR (or VISUAL), e.g. export EDITOR=vim"));
     process.exit(1);
   }
   // Hand the terminal to the editor (inherit stdio so it draws). $EDITOR may carry flags
@@ -165,14 +165,14 @@ function edit(name?: string): void {
     process.exit(1);
   }
   if (res.status !== 0) {
-    console.error(c.red(`editor exited ${res.signal ? `on ${res.signal}` : `with status ${res.status}`} — not saved`));
+    console.error(c.red(`editor exited ${res.signal ? `on ${res.signal}` : `with status ${res.status}`} - not saved`));
     process.exit(1);
   }
   // Re-validate: a save that breaks the frontmatter must fail loud, not ship a broken card.
   try {
     loadAgentFile(path);
   } catch (e) {
-    console.error(c.red(`⨯ "${name}" is now unparseable — fix it:`));
+    console.error(c.red(`⨯ "${name}" is now unparseable - fix it:`));
     console.error(c.dim(`  ${(e as Error).message}`));
     process.exit(1);
   }
@@ -189,7 +189,7 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
 
   const path = agentFilePath(cotalRoot(), name);
   if (existsSync(path) && !v.force) {
-    console.error(c.red(`persona "${name}" already exists — pass --force to overwrite`));
+    console.error(c.red(`persona "${name}" already exists - pass --force to overwrite`));
     console.error(c.dim(path));
     process.exit(1);
   }

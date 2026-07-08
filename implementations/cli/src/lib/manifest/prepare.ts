@@ -97,7 +97,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
     for (const [field, list] of [["subscribe", persona.subscribe], ["allowSubscribe", personaAllowSub], ["allowPublish", persona.allowPublish]] as const)
       for (const ch of list ?? [])
         if (!isConcreteChannel(ch))
-          issues.push({ message: `persona ${field} "${ch}" is a wildcard — not supported in v1 (declare concrete channels)`, path: at });
+          issues.push({ message: `persona ${field} "${ch}" is a wildcard - not supported in v1 (declare concrete channels)`, path: at });
 
     // Persona grants apply ONLY to channels the manifest does not declare (manifest owns its own).
     const undeclared = (list: string[] | undefined) => (list ?? []).filter((c) => isConcreteChannel(c) && !declared.has(c));
@@ -124,7 +124,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       agent: agent.name,
       loud: capabilities.length > 0,
       message: capabilities.length
-        ? `declared with capabilities [${capabilities.join(", ")}] but NO channel access (DM/control-only — a powerful non-channel grant)`
+        ? `declared with capabilities [${capabilities.join(", ")}] but NO channel access (DM/control-only - a powerful non-channel grant)`
         : `declared but has no channel access from the manifest (DM/control-only unless a persona under \`include\` grants scopes)`,
     });
 

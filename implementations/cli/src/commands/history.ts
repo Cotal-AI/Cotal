@@ -1,5 +1,5 @@
 import { clearSpaceHistory, type ParsedArgs } from "@cotal-ai/core";
-import { connectOrExit, refuseUserModeOrExit } from "../lib/connect.js";
+import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /** Administrative history operations. Purges JetStream backlog only; live in-process
@@ -20,12 +20,14 @@ export async function history(args: ParsedArgs): Promise<void> {
   // grant (STREAM.PURGE on CHAT + DM), not the broad operator cred; targeting the RIGHT mesh matters, so
   // this no longer blindly hits DEFAULT_SERVER + the cwd space.
   const conn = await connectOrExit(values, "purger");
-  refuseUserModeOrExit(conn, "history");
+  // USER MODE: the destructive purge rides a one-shot "purger" VIEW bearer, exchange-gated on
+  // ledger scope "admin" (the refusal names the exact re-grant).
+  const user = conn.bearer ? await userViewAuthOrExit(conn, "purger") : undefined;
   const { server, space, creds } = conn;
   const result = await clearSpaceHistory({
     servers: server,
     space,
-    creds,
+    ...(user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds } : { creds }),
     includeDms: values.dms,
   });
 

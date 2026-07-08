@@ -113,7 +113,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   const rwCredsPinned = () => {
     const creds = readRw();
     const id = idFromCreds(creds);
-    if (id !== rwSelfId) throw new Error(`membership rw creds re-read returned identity ${id}, expected ${rwSelfId} — a renewal may not swap the feed's nkey`);
+    if (id !== rwSelfId) throw new Error(`membership rw creds re-read returned identity ${id}, expected ${rwSelfId} - a renewal may not swap the feed's nkey`);
     return creds;
   };
   const connB = await connect({
@@ -180,7 +180,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
       if (replies.length === 0) {
-        if (page === 0) log(`CONNZ returned no replies (offset 0) — broker unreachable or cred denied; keeping last membership this tick`);
+        if (page === 0) log(`CONNZ returned no replies (offset 0) - broker unreachable or cred denied; keeping last membership this tick`);
         break;
       }
       gotReply = true;
@@ -202,7 +202,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       }
       if (serverMore.size === 0) { exhausted = true; break; }
       if (page === MAX_PAGES - 1)
-        log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) — UNDER-REPORTING; skipping this sweep`);
+        log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) - UNDER-REPORTING; skipping this sweep`);
     }
     // SELF-PRESENCE completeness check (socrates): the data account ALWAYS holds at least conn B, so a
     // sweep that doesn't even include our own rw connection missed connections (a mid-reconnect blip, or
@@ -213,13 +213,13 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     // == expected server count` (expected set discovered via $SYS.REQ.SERVER.PING); deferred with the rest
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
     if (gotReply && exhausted && !seenSelf)
-      log(`CONNZ sweep omitted our own rw connection — treating as incomplete (keeping last membership)`);
+      log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until
     // multi-broker responder-accounting ships, surface that limit LOUDLY (once) rather than degrade quietly.
     if (serversSeen.size > 1 && !clusterWarned) {
       clusterWarned = true;
-      log(`multi-server cluster detected (${serversSeen.size} responders) — membership completeness uses the conn-B floor only; a silent peer server can under-report (multi-broker accounting deferred, see core-sub-fabric.md)`);
+      log(`multi-server cluster detected (${serversSeen.size} responders) - membership completeness uses the conn-B floor only; a silent peer server can under-report (multi-broker accounting deferred, see core-sub-fabric.md)`);
     }
     return { live, complete: gotReply && exhausted && seenSelf };
   }

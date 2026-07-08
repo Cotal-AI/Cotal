@@ -14,6 +14,10 @@ what is (not) defended**.
 
 - One Cotal space maps to one NATS account.
 - The broker, operator, account signing key holder, and any `admin` credential are trusted.
+- On a per-user-auth mesh, ledger scope `admin` is the same trust grade as an `admin`
+  credential: it unlocks the elevated views (the whole-space read tap, history and channel
+  purges, channel-registry writes, cross-owner control), so grant it as operator authority,
+  not as a convenience ([identity & auth](identity-and-auth.md)).
 - Agents are not trusted to self-report sender identity, channel permissions, or DM access.
 
 ## Adversaries

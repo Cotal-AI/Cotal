@@ -62,7 +62,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   try {
     parsed = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
-    throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} — fix or delete it, then \`cotal ext add\` again`);
+    throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} - fix or delete it, then \`cotal ext add\` again`);
   }
   const m = parsed as ExtensionsManifest;
   if (!Array.isArray(m.extensions)) throw new Error(`corrupt extensions manifest ${p}: no "extensions" array`);

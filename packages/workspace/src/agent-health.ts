@@ -27,11 +27,11 @@ export function agentAuthState(
   staleMs = 15 * 60_000,
 ): { state: "ok" | "auth-renewal-failed" | "auth-unknown" | "auth-stale"; reason?: string } {
   const rec = readAgentAuthHealth(path);
-  if (!rec) return { state: "auth-unknown", reason: "no readable bearer-refresh record — if this persists, respawn the agent" };
+  if (!rec) return { state: "auth-unknown", reason: "no readable bearer-refresh record - if this persists, respawn the agent" };
   if (rec.state === "failed") return { state: "auth-renewal-failed", ...(rec.reason ? { reason: rec.reason } : {}) };
   const age = Date.now() - Date.parse(rec.at);
   if (!Number.isFinite(age) || age > staleMs)
-    return { state: "auth-stale", reason: `last successful bearer refresh was ${Number.isFinite(age) ? Math.round(age / 60_000) + " min" : "an unreadable time"} ago — the agent may be wedged; respawn it` };
+    return { state: "auth-stale", reason: `last successful bearer refresh was ${Number.isFinite(age) ? Math.round(age / 60_000) + " min" : "an unreadable time"} ago - the agent may be wedged; respawn it` };
   return { state: "ok" };
 }
 

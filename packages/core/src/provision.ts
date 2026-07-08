@@ -42,6 +42,7 @@ import {
   CONTROL_ADMIN,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
+  type ControlTier,
   chatStream,
   dmStream,
   taskStream,
@@ -135,8 +136,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
-  delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less — the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop (D5 slice 5 class 2)" },
-  "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less — the manager re-signs .cotal/membership-rw.creds for the SAME nkey, delivery-admin reloadCreds reconnects the rw feed explicitly, and source re-read is only a backstop (D5 slice 5 class 2)" },
+  delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop (D5 slice 5 class 2)" },
+  "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs .cotal/membership-rw.creds for the SAME nkey, delivery-admin reloadCreds reconnects the rw feed explicitly, and source re-read is only a backstop (D5 slice 5 class 2)" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
@@ -148,7 +149,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
-  "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) — bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
+  "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
 
@@ -181,7 +182,7 @@ export function inspectCredHealth(creds: string, nowSec = Math.floor(Date.now() 
   }
   const { iat, exp } = claims;
   if (typeof exp !== "number") return { state: "unbounded", iat };
-  if (typeof iat !== "number") return { state: "unreadable", iat: undefined, exp, error: "user JWT carries exp but no iat — cannot place the renewal point" };
+  if (typeof iat !== "number") return { state: "unreadable", iat: undefined, exp, error: "user JWT carries exp but no iat - cannot place the renewal point" };
   const renewAt = Math.floor(iat + 0.75 * (exp - iat));
   if (nowSec >= exp) return { state: "expired", iat, exp, renewAt };
   if (nowSec >= renewAt) return { state: "near-expiry", iat, exp, renewAt };
@@ -350,6 +351,12 @@ export interface MintOpts {
    *  footprint and nothing else — never a peer's, never the role-shared `svc_<role>`. Ignored by every
    *  other profile. */
   deprovisionTarget?: string;
+  /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
+   *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
+   *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
+   *  where its owner-equality launch authorization governs — never the admin-tier bypass. Ignored
+   *  by every other profile. */
+  controlTier?: ControlTier;
   /** Override the profile default lifetime. Internal/test hook; command surfaces should prefer the
    * centralized {@link CREDENTIAL_LIFETIMES} defaults so profile behavior stays auditable. */
   expiresInSeconds?: number;
@@ -561,7 +568,7 @@ export function permissionsFor(
   if (profile === "teardown") return teardownPermissions(space, pr); // sole STREAM.DELETE holder (PR 1.5)
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, CONTROL_PRIVILEGED); // ps/start (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, CONTROL_ADMIN); // stop/attach (PR 1.5)
-  if (profile === "deployer") return deployerPermissions(space, pr); // spawn -f deploy authority (PR 1.5)
+  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? CONTROL_ADMIN); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
@@ -638,7 +645,7 @@ export function permissionsFor(
   // stale/unwired profile string (e.g. a JS caller bypassing the closed `Profile` union). Fail loud rather
   // than mint it agent perms by accident (the no-fallbacks rule; matches the deleted `manager`'s intent).
   if (profile !== "agent")
-    throw new Error(`permissionsFor: unhandled profile "${profile}" — add an explicit arm, do not fall through to agent`);
+    throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
@@ -1023,7 +1030,7 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
  *  boundary. Containment is therefore the LIFETIME, not a manager re-check: minted from LOCAL same-checkout
  *  auth for one `spawn -f`, memory-only, dropped after deploy. If it is ever persisted, handed to
  *  user-supplied `--creds`, or reused as a general "read + admin" cred, revisit. */
-function deployerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier = CONTROL_ADMIN): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
   // Read verbs for a KV bucket SCANNED/WATCHED via an ordered consumer (presence, channel registry, and
@@ -1052,14 +1059,16 @@ function deployerPermissions(space: string, pr: MintPrincipal): Record<string, u
         ...kvScan(MSHIP), // membership FEED read (readMembership → detectUnmanagedActors) — the membership_ bucket
         ...kvPointRead(MGRKV), // manager-singleton lease keyed read (waitManagerReady) — point-get, NO write, NO watch
         "$JS.FC.>", // ordered-consumer flow control
-        // Admin control tier ONLY — launch + ps readiness (both CONTROL_ADMIN). No privileged subject.
-        controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor),
+        // ONE control tier — launch + ps readiness. Static operator deploy creds ride CONTROL_ADMIN
+        // (the historical shape); the user-mode `deployer` VIEW rides CONTROL_PRIVILEGED so the
+        // manager's owner-equality launch authorization governs (never the admin-tier bypass).
+        controlServiceSubject(space, tier, pr.owner, pr.actor),
       ],
     },
-    // Own inbox (presence/registry watch delivery + JS API responses) + the BOUNDED admin control-reply
-    // subtree: `requestControl(CONTROL_ADMIN, launch/ps)` subscribes `ctl.admin.<id>.reply.<uuid>`, so
-    // without this grant the launch + ps-readiness calls hang to timeout.
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`] },
+    // Own inbox (presence/registry watch delivery + JS API responses) + the BOUNDED control-reply
+    // subtree for the same tier: `requestControl(tier, launch/ps)` subscribes `ctl.<tier>.<id>.reply.<uuid>`,
+    // so without this grant the launch + ps-readiness calls hang to timeout.
+    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, tier, pr.owner, pr.actor)}.reply.>`] },
   };
 }
 
@@ -1331,7 +1340,7 @@ function membershipObserverPermissions(accountId: string): Record<string, unknow
 export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
   if (!auth.sys.signingSeed)
     throw new Error(
-      "mintMembershipObserverCreds: no in-memory system-account signing seed — the observer can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable broker-sourced membership.",
+      "mintMembershipObserverCreds: no in-memory system-account signing seed - the observer can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable broker-sourced membership.",
     );
   const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
   const perms = membershipObserverPermissions(auth.account.pub);
@@ -1374,7 +1383,7 @@ function connectionEvictorPermissions(): Record<string, unknown> {
 export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
   if (!auth.sys.signingSeed)
     throw new Error(
-      "mintConnectionEvictorCreds: no in-memory system-account signing seed — the evictor can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable live eviction.",
+      "mintConnectionEvictorCreds: no in-memory system-account signing seed - the evictor can only be minted at the `up` that provisions the account (the $SYS seed is never persisted). Re-provision (down/up) to enable live eviction.",
     );
   const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
   // Bounded exp (D5 slice 5): `rotation-renewed`, same posture as the observer above.
@@ -1412,7 +1421,7 @@ export function serverConfig(
   // agent JWT — but right-sized, not generous: the CONNECT line is parsed BEFORE auth, so the cap
   // is a per-connection pre-auth allocation under connection flooding. 64 KB clears a many-channel
   // agent JWT (~4–8 KB) with wide margin while keeping the pre-auth surface ~16× tighter than 1 MB.
-  return `# Generated by \`cotal up\` — do not edit by hand.
+  return `# Generated by \`cotal up\` - do not edit by hand.
 host: ${host}
 port: ${port}
 max_control_line: 65536

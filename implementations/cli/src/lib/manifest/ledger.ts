@@ -187,9 +187,9 @@ export function listLedgers(root: string): Array<{ path: string; ledger: MeshLed
 export function findLedgerByHash(root: string, manifestHash: string): { path: string; ledger: MeshLedger } {
   const matches = listLedgers(root).filter((l) => l.ledger.manifestHash === manifestHash);
   if (matches.length === 0)
-    throw new Error(`no ledger matches this manifest's current contents (was it edited since \`spawn -f\`?) — tear down by run id: \`cotal down -f <file> --run <id>\``);
+    throw new Error(`no ledger matches this manifest's current contents (was it edited since \`spawn -f\`?) - tear down by run id: \`cotal down -f <file> --run <id>\``);
   if (matches.length > 1)
-    throw new Error(`${matches.length} runs share this manifest — name one: ${matches.map((m) => m.ledger.runId).join(", ")} (\`--run <id>\`)`);
+    throw new Error(`${matches.length} runs share this manifest - name one: ${matches.map((m) => m.ledger.runId).join(", ")} (\`--run <id>\`)`);
   return matches[0];
 }
 
@@ -203,7 +203,7 @@ export function findLedgerByRun(root: string, runId: string): { path: string; le
   const ledger = loadLedger(path); // loadLedger refuses a symlinked ledger file
   // Bind the filename to the contents: a tampered `<runId>.json` whose body declares a DIFFERENT
   // runId must not redirect teardown to that other run's derived run dir / resources.
-  if (ledger.runId !== runId) throw new Error(`ledger ${path}: declares runId "${ledger.runId}", not "${runId}" — refusing`);
+  if (ledger.runId !== runId) throw new Error(`ledger ${path}: declares runId "${ledger.runId}", not "${runId}" - refusing`);
   return { path, ledger };
 }
 
@@ -214,6 +214,6 @@ export function ownedCredPath(root: string, spawnedName: string): string {
   assertValidName(spawnedName);
   const dir = resolve(authDir(root), "creds");
   const path = resolve(dir, `${spawnedName}.creds`);
-  if (dirname(path) !== dir) throw new Error(`unsafe owned agent name "${spawnedName}" — cred path escapes ${dir}`);
+  if (dirname(path) !== dir) throw new Error(`unsafe owned agent name "${spawnedName}" - cred path escapes ${dir}`);
   return path;
 }

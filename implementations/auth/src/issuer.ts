@@ -25,7 +25,7 @@
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
 import { assertDerivedOwnerToken, assertValidOwnerToken } from "@cotal-ai/core";
-import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VER } from "./token.js";
+import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VER, USER_TOKEN_VIEWS, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
 export const USER_TOKEN_ALG = "EdDSA";
@@ -92,6 +92,9 @@ export interface IssueClaims {
   scope?: string[];
   /** At most one spawner audit link, `<owner>.<actor>` dot-form. */
   parent?: string;
+  /** Exchange-authorized elevated view (already ledger-checked upstream; the issuer only stamps —
+   *  and re-asserts the closed enum, mint ↔ validate inverse). */
+  view?: UserTokenView;
   /** Requested lifetime; capped at {@link MAX_TOKEN_TTL_SEC} (an overlong ask THROWS). */
   ttlSec?: number;
 }
@@ -146,16 +149,20 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       assertDerivedOwnerToken(parts[0]);
       assertValidOwnerToken(parts[1]);
     }
+    if (claims.view !== undefined && !USER_TOKEN_VIEWS.includes(claims.view))
+      throw new Error(
+        `issue: view "${String(claims.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - the enum is closed on the mint side too`,
+      );
     const ttl = claims.ttlSec ?? MAX_TOKEN_TTL_SEC;
     if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > MAX_TOKEN_TTL_SEC)
-      throw new Error(`issue: ttlSec ${ttl} out of range (0, ${MAX_TOKEN_TTL_SEC}] — the cap is the revocation lever`);
+      throw new Error(`issue: ttlSec ${ttl} out of range (0, ${MAX_TOKEN_TTL_SEC}] - the cap is the revocation lever`);
     const signer = keys.get(active);
     if (!signer) throw new Error("issue: no active signing key");
     const now = Math.floor(Date.now() / 1000);
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
-      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}) },
+      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.view ? { view: claims.view } : {}) },
     })
       .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
       .setSubject(claims.owner)
@@ -174,7 +181,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     jwks: () => ({ keys: [...keys.values()].map((k) => k.publicJwk) }),
     rotate: (key: SigningKey) => { keys.set(key.kid, key); active = key.kid; },
     retire: (kid: string) => {
-      if (kid === active) throw new Error(`issuer: refusing to retire the active kid ${kid} — rotate to a new key first`);
+      if (kid === active) throw new Error(`issuer: refusing to retire the active kid ${kid} - rotate to a new key first`);
       keys.delete(kid);
     },
     localKeySet: (): JWTVerifyGetKey => async (header) => {

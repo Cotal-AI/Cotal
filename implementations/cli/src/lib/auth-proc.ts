@@ -65,7 +65,7 @@ export async function ensureAuthService(opts: {
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir });
   } catch (e) {
-    throw new Error(`${e instanceof Error ? e.message : String(e)} — see ${LOG_PATH(opts.space)}`);
+    throw new Error(`${e instanceof Error ? e.message : String(e)} - see ${LOG_PATH(opts.space)}`);
   }
 }
 

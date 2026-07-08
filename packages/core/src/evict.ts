@@ -218,11 +218,11 @@ export async function evictDeniedPrincipal(
   };
   const first = await scanLive(observerConn, accountId, opts);
   if (!first.complete)
-    return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note: "CONNZ scan under-reported (no responder or truncated) — eviction UNKNOWN, not attempted" };
+    return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note: "CONNZ scan under-reported (no responder or truncated) - eviction UNKNOWN, not attempted" };
 
   const targets = first.conns.filter((c) => c.principal === principal);
   if (targets.length === 0)
-    return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, note: "principal not currently live — nothing to evict" };
+    return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, note: "principal not currently live - nothing to evict" };
 
   let kicked = 0;
   let note: string | undefined;
@@ -240,7 +240,7 @@ export async function evictDeniedPrincipal(
   for (let round = 0; round < opts.maxVerifyRounds; round++) {
     const rescan = await scanLive(observerConn, accountId, opts);
     if (!rescan.complete)
-      return { principal, kicked, remaining: 0, verifiedGone: false, scanComplete: false, note: note ?? "verify re-scan under-reported — eviction UNKNOWN" };
+      return { principal, kicked, remaining: 0, verifiedGone: false, scanComplete: false, note: note ?? "verify re-scan under-reported - eviction UNKNOWN" };
     const still = rescan.conns.filter((c) => c.principal === principal);
     if (still.length === 0)
       return { principal, kicked, remaining: 0, verifiedGone: true, scanComplete: true, note };
@@ -249,7 +249,7 @@ export async function evictDeniedPrincipal(
       try { await kick(evictorConn, t); kicked++; } catch (e) { note = e instanceof Error ? e.message : String(e); }
     }
     if (round === opts.maxVerifyRounds - 1)
-      return { principal, kicked, remaining: still.length, verifiedGone: false, scanComplete: true, note: note ?? `${still.length} connection(s) still live after ${opts.maxVerifyRounds} verify rounds — is deny-new committed?` };
+      return { principal, kicked, remaining: still.length, verifiedGone: false, scanComplete: true, note: note ?? `${still.length} connection(s) still live after ${opts.maxVerifyRounds} verify rounds - is deny-new committed?` };
   }
   // Unreachable (the loop returns), but satisfies the type checker.
   return { principal, kicked, remaining: 0, verifiedGone: false, scanComplete: true, note };

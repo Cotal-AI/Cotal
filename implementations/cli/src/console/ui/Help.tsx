@@ -50,7 +50,7 @@ export function Help({
     [":", "command palette (send / call / ask)"],
     ["c", "compose to channel / DM selected agent"],
     ["r", "reply to current message"],
-    ["D", "delete — kill agent / drop space"],
+    ["D", "delete - kill agent / drop space"],
     ["/", "search / filter"],
     ["Esc / b", "back / cancel (→ spaces)"],
     ["?", "toggle this help"],
@@ -82,7 +82,7 @@ export function Help({
       flexDirection="column"
     >
       <Text bold color="cyan">
-        cotal console — help
+        cotal console - help
       </Text>
       <Text dimColor>{"context: " + focusedId + " panel"}</Text>
       {section(focusedId + " panel", panel)}

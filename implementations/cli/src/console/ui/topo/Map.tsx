@@ -76,7 +76,7 @@ export function RingMap({
   if (width < MIN_W || height < MIN_H)
     return (
       <Box flexGrow={1} alignItems="center" justifyContent="center">
-        <Text dimColor>(terminal too small for the map — try ② matrix)</Text>
+        <Text dimColor>(terminal too small for the map - try ② matrix)</Text>
       </Box>
     );
   if (!ring.length) return <Text dimColor>(no agents in the space yet)</Text>;

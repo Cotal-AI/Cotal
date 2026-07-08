@@ -15,7 +15,7 @@
  *
  * Run: pnpm smoke:own-agent-control
  */
-import { authorizeNamedControl } from "../src/authorize.js";
+import { authorizeLaunch, authorizeNamedControl } from "../src/authorize.js";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -114,6 +114,28 @@ check(
     userMode: true,
     scopeOf: noScope,
   })) === "string",
+);
+
+// 8. authorizeLaunch — the user-mesh manifest-deploy policy (pure; the static privileged-tier
+//    reject lives in the dispatch, and the live deploy path is covered by user-auth-launch).
+check(
+  "launch: admin tier passes regardless of owners",
+  authorizeLaunch({ specOwner: OWNER_A, caller: `${OWNER_B}.cli`, admin: true, runId: "r1" }) === undefined,
+);
+check(
+  "launch: own-owner spec passes on the privileged tier",
+  authorizeLaunch({ specOwner: OWNER_A, caller: `${OWNER_A}.cli`, admin: false, runId: "r1" }) === undefined,
+);
+const launchCross = authorizeLaunch({ specOwner: OWNER_A, caller: `${OWNER_B}.cli`, admin: false, runId: "r1" });
+check("launch: cross-owner spec is denied", typeof launchCross === "string");
+check("…naming the owner boundary + the ADD-to-current re-grant", !!launchCross?.includes("another owner") && !!launchCross?.includes("ADDED"), launchCross);
+check(
+  "launch: an ownerless spec never matches (fail-closed)",
+  typeof authorizeLaunch({ specOwner: undefined, caller: `${OWNER_A}.cli`, admin: false, runId: "r1" }) === "string",
+);
+check(
+  "launch: an unparseable caller is denied (fail-closed)",
+  typeof authorizeLaunch({ specOwner: OWNER_A, caller: "not-a-principal", admin: false, runId: "r1" }) === "string",
 );
 
 if (failures) {

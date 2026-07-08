@@ -73,7 +73,7 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
   } catch (e) {
     throw new Error(
       `failed to harden ${kind} "${path}" to private via icacls: ${(e as Error).message.trim()}. ` +
-        `Cotal will not leave a secret with a permissive ACL — ensure the path is on an NTFS volume and %SystemRoot%\\System32\\icacls.exe is available.`,
+        `Cotal will not leave a secret with a permissive ACL - ensure the path is on an NTFS volume and %SystemRoot%\\System32\\icacls.exe is available.`,
     );
   }
 }

@@ -433,7 +433,7 @@ export class CotalEndpoint extends EventEmitter {
       } else {
         const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
         if (opts.card.id && credId && opts.card.id !== credId)
-          throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
+          throw new Error(`card.id ${opts.card.id} != creds identity ${credId} - they must be the same nkey`);
         this.currentCreds = opts.creds;
         this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
       }
@@ -503,7 +503,7 @@ export class CotalEndpoint extends EventEmitter {
       this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     } catch (e) {
       if (initial) throw e;
-      this.emit("error", new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) — retrying; this connection dies at its current token's expiry if the auth service stays down`));
+      this.emit("error", new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
       this.armBearerRefresh(CotalEndpoint.BEARER_RETRY_MS);
     }
   }
@@ -527,7 +527,7 @@ export class CotalEndpoint extends EventEmitter {
     const creds = await this.credsSource!();
     const id = idFromCreds(creds);
     if (id !== this.connId)
-      throw new Error(`creds source returned identity ${id}, expected ${this.connId} — renewal may not swap the connection's nkey`);
+      throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
     this.currentCreds = creds;
     this.armCredsRefresh(credsRenewalDelayMs(creds));
     const { iat, exp } = credsClaims(creds);
@@ -554,7 +554,7 @@ export class CotalEndpoint extends EventEmitter {
       if (!initial) await this.swapConnectionOntoFreshCreds();
     } catch (e) {
       if (initial) throw e;
-      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) — retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
+      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
       this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
     }
   }
@@ -745,7 +745,7 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("connection", { connected: false }); // dropped — report it before the rebuild kicks in
       this.emit(
         "error",
-        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} — re-establishing`),
+        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} - re-establishing`),
       );
       void this.reestablishLoop();
     });
@@ -843,7 +843,7 @@ export class CotalEndpoint extends EventEmitter {
    *  running in the background so the endpoint never stays dead, and rethrows so the caller
    *  can report it. */
   async reconnect(): Promise<void> {
-    if (this.stopped) throw new Error("endpoint stopped — cannot reconnect");
+    if (this.stopped) throw new Error("endpoint stopped - cannot reconnect");
     this.kickBackoff();
     try {
       await this.rebuild();
@@ -897,7 +897,7 @@ export class CotalEndpoint extends EventEmitter {
     // itself be a wildcard subscription like `team.>`).
     const channel = opts?.channel ?? this.channels.find(isConcreteChannel) ?? "general";
     if (!isConcreteChannel(channel))
-      throw new Error(`cannot publish to wildcard channel "${channel}" — pick a concrete sub-channel`);
+      throw new Error(`cannot publish to wildcard channel "${channel}" - pick a concrete sub-channel`);
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
@@ -1032,7 +1032,7 @@ export class CotalEndpoint extends EventEmitter {
                   `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
               ),
             );
-            reply = { ok: false, error: "sender mismatch — request rejected" };
+            reply = { ok: false, error: "sender mismatch - request rejected" };
           } else {
             reply = await handler(req);
           }
@@ -1497,7 +1497,7 @@ export class CotalEndpoint extends EventEmitter {
    *  else "endpoint not started" (genuine pre-start). */
   private notLiveMsg(): string {
     return this.reconnecting || this.reestablishing
-      ? "reconnecting — try again shortly"
+      ? "reconnecting - try again shortly"
       : "endpoint not started";
   }
 
@@ -2196,7 +2196,7 @@ export class CotalEndpoint extends EventEmitter {
         if (attempt === 0)
           this.emit(
             "error",
-            new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub — retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`),
+            new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`),
           );
         await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
       }
@@ -2284,7 +2284,7 @@ export class CotalEndpoint extends EventEmitter {
         // honestly degraded meanwhile, never silently "active".
       } catch (e) {
         if (attempt === 0 && !this.isNoResponders(e))
-          this.emit("error", new Error(`channel "${channel}": boot durable self-join not yet established — retrying until the delivery daemon is reachable (${(e as Error).message})`));
+          this.emit("error", new Error(`channel "${channel}": boot durable self-join not yet established - retrying until the delivery daemon is reachable (${(e as Error).message})`));
       }
     }
   }
@@ -3014,7 +3014,7 @@ function authOpts(a: AuthOpts) {
 function credsRenewalDelayMs(creds: string): number {
   const claims = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
   if (typeof claims.exp !== "number")
-    throw new Error("creds source returned a cred without a numeric exp — a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
+    throw new Error("creds source returned a cred without a numeric exp - a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
   const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
   const expMs = claims.exp * 1000;
   return iatMs + 0.75 * (expMs - iatMs) - Date.now();
@@ -3055,7 +3055,7 @@ function decodeBearerPrincipal(bearer: string): { owner: string; actor: string }
 function describeStatusError(err: Error): Error {
   if (err instanceof PermissionViolationError) {
     return new Error(
-      `NATS permission denied: cannot ${err.operation} "${err.subject}" — check this ` +
+      `NATS permission denied: cannot ${err.operation} "${err.subject}" - check this ` +
         `endpoint's ACLs (a denied peer looks "absent" rather than blocked)`,
       { cause: err },
     );

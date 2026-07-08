@@ -35,8 +35,13 @@ export interface AuthProvider extends Extension {
    * action when anything is missing — not logged in (`cotal login --idp …`), the auth service
    * down (how to restart it), the actor ungranted (how to grant) — and NEVER falls back to any
    * other auth mode.
+   *
+   * `view` requests an ELEVATED per-connection profile (opaque to core; the provider validates it
+   * against its closed view enum and the fresh ledger grant) — the god-view/purge/registry-write/
+   * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
+   * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: { dir: string; space: string; actor: string }): Promise<{ bearer: string; sentinelCreds: string }>;
+  userCredentials(opts: { dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).
@@ -102,10 +107,10 @@ export function resolveAuthProvider(): AuthProvider {
   const providers = registry.all<AuthProvider>("auth-provider");
   if (providers.length === 0)
     throw new Error(
-      "no auth provider is registered in this build — user auth needs one (the `cotal` binary registers @cotal-ai/auth; a custom composition root must import an auth package)",
+      "no auth provider is registered in this build - user auth needs one (the `cotal` binary registers @cotal-ai/auth; a custom composition root must import an auth package)",
     );
   if (providers.length > 1)
-    throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) — cannot choose between them`);
+    throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) - cannot choose between them`);
   return providers[0];
 }
 

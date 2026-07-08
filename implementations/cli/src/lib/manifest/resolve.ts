@@ -46,7 +46,7 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
   // Targeted message for the single-space deferral before the strict schema rejects it generically.
   if (doc.has("spaces"))
     throw new ManifestError(sourcePath, [
-      { message: "`spaces:` is not supported in v1 (single-space) — use a scalar `space:`", path: ["spaces"], ...locate(["spaces"]) },
+      { message: "`spaces:` is not supported in v1 (single-space) - use a scalar `space:`", path: ["spaces"], ...locate(["spaces"]) },
     ]);
 
   // 2. Schema (strict): shape + unknown-key rejection. Map every Zod issue back to a located line.
@@ -105,7 +105,7 @@ function normalizeChannels(
   for (const [name, entry] of Object.entries(raw.channels)) {
     try {
       assertValidChannel(name);
-      if (!isConcreteChannel(name)) throw new Error(`channel "${name}" must be concrete — wildcard channels are not supported in v1`);
+      if (!isConcreteChannel(name)) throw new Error(`channel "${name}" must be concrete - wildcard channels are not supported in v1`);
     } catch (e) {
       add((e as Error).message, ["channels", name]);
     }
@@ -121,7 +121,7 @@ function normalizeChannels(
     // An explicit allowSubscribe must be a superset of subscribe (the read-ACL invariant).
     const missing = subscribe.filter((n) => !allowSubscribe.includes(n));
     if (missing.length)
-      add(`subscribe [${missing.join(", ")}] not in allowSubscribe — a subscriber must be allowed to read`, ["channels", name, "allowSubscribe"]);
+      add(`subscribe [${missing.join(", ")}] not in allowSubscribe - a subscriber must be allowed to read`, ["channels", name, "allowSubscribe"]);
 
     out.push({
       name,
@@ -154,7 +154,7 @@ function resolveAgents(
   // top-level default. Fail loud rather than guessing claude/opencode.
   const connector = (name: string, own?: string): string => {
     const t = own ?? raw.agent;
-    if (!t) add(`no connector for "${name}" — set \`agent:\` on it or a top-level \`agent:\` default`, ["agents", name]);
+    if (!t) add(`no connector for "${name}" - set \`agent:\` on it or a top-level \`agent:\` default`, ["agents", name]);
     return t ?? "";
   };
 
@@ -189,7 +189,7 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
  *  a URL. Each server entry must parse as a URL (no silent fallback). */
 function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
   if (broker.host?.includes("://"))
-    add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL — drop the scheme`, ["broker", "host"]);
+    add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
   if (broker.servers)
     for (const s of broker.servers.split(",").map((x) => x.trim()).filter(Boolean)) {
       let u: URL;
@@ -200,13 +200,13 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
         continue;
       }
       if (u.username || u.password)
-        add(`broker.servers must not embed credentials ("${u.username}:***@…") — use auth creds/profile, not inline secrets`, ["broker", "servers"]);
+        add(`broker.servers must not embed credentials ("${u.username}:***@…") - use auth creds/profile, not inline secrets`, ["broker", "servers"]);
     }
   // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a
   // silently-ignored identity provider is exactly the kind of drift the no-fallback rule exists for.
   if (broker.idp !== undefined) {
     if (broker.auth !== "user")
-      add(`broker.idp is for user-auth spaces — set broker.auth: "user" (or drop idp)`, ["broker", "idp"]);
+      add(`broker.idp is for user-auth spaces - set broker.auth: "user" (or drop idp)`, ["broker", "idp"]);
     try {
       new URL(broker.idp);
     } catch {

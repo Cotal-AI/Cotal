@@ -89,7 +89,7 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
   if (oldHostingManagerLive()) {
     console.error(
-      "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon — run `cotal down` first, then retry.",
+      "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
     );
     return { running: false };
   }
@@ -113,7 +113,7 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   // which is the real safety net for a slow start or a later outage.
   const ready = await waitForDeliveryLease({ servers: server, space, creds, id: id.id });
   if (!ready)
-    console.error("• delivery daemon not yet ready (responder not bound) — boot durable joins will reconcile when it is");
+    console.error("• delivery daemon not yet ready (responder not bound) - boot durable joins will reconcile when it is");
   return { running: true };
 }
 

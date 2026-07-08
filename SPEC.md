@@ -638,7 +638,11 @@ connect time and mints the scoped data-account JWT then (user mode, §2/§10): t
 deny-all sentinel credential plus its bearer, the callout derives the owner+actor principal and grants,
 and re-binds the connection into the data account. The owner-token *derivation* (how a bearer maps to
 an owner token) is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
-contract; the callout *mechanism* and the resulting grants are.
+contract; the callout *mechanism* and the resulting grants are. A bearer MAY carry a server-authored
+**view** claim, minted only by the deployment's signed-in human exchange (never accepted from the
+client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
+every connect: the callout then mints the connection as the named elevated profile (Appendix B:
+`admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
 
 ---
 
@@ -952,7 +956,9 @@ adoption for the seed-less daemons); the two system-account credentials (`member
 `connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
 broker restart; no persisted system-account minting secret exists, by design. On per-user-auth
 spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
-exist only as owner+actor principals under a logged-in user. The flip is deny-new: a static
+exist only as owner+actor principals under a logged-in user, and the elevated profiles of this
+appendix are reached per-connection via the exchange-authored view claim instead (§10). The flip is
+deny-new: a static
 credential signed before it (or minted out-of-band with the account signing key) remains
 broker-valid until signing-key rotation, which is the revocation lever for static material; the
 guarantee therefore applies to spaces that never issued static user-facing credentials.
