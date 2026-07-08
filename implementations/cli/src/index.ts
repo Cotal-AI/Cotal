@@ -78,7 +78,7 @@ const baseCommands: Command[] = [
       { name: "host", type: "string", value: "<host>", description: "bind host override" },
       { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
       { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
-      { name: "channels", type: "string", value: "<a,b>", description: "channels to pre-create" },
+      { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
       { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
       { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
       { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },

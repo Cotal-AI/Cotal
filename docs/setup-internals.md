@@ -1,5 +1,7 @@
 # Setup internals (maintainer notes)
 
+> **Project** (non-normative maintainer notes) · **For:** maintainers changing how setup works
+>
 > How `cotal setup` works, and the cross-repo couplings it depends on. If you change one of
 > the things in the **Invariants** table, update the listed siblings in the same change, or
 > setup silently breaks for npx users.
@@ -9,26 +11,25 @@
 `cotal setup`
 ([`implementations/cli/src/commands/setup.ts`](../implementations/cli/src/commands/setup.ts))
 is **configure-only and state-independent**: it checks prerequisites, installs the Claude Code
-plugin, and seeds persona files, and it **launches nothing** — no mesh, no web dashboard, no
+plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
 manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
 dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`).
 It is two-tier, gated on a machine marker.
 
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
 
-- splash → intro → core **checks** (Node >= 20; **locate** `nats-server` — located, never
+- splash → intro → core **checks** (Node >= 20; **locate** `nats-server`: located, never
   started) → **connector picker** → write the demo personas (david/sven/me) and seed the generic
   `default` → **offer a global install** (`offerGlobalInstall`) → onboarded marker → a finale that
   lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
   `cotal console`, `cotal down`). Nothing is running when it returns.
 - The old `--auth` / `--open` flags are **gone**: they set the mesh MODE at launch time, and setup
-  no longer launches — mode is now `cotal up [--open]`'s concern (an unknown-option error names
+  no longer launches; mode is now `cotal up [--open]`'s concern (an unknown-option error names
   them, no silent no-op).
 
 **Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced), then
-print the **status card** (`readyCard`). The card is **read-only probes** —
-`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
-dashboard, and the manager — and for anything down it prints the exact command to start it
+print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
+dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
@@ -48,7 +49,7 @@ persona `cotal spawn me` drives.
 
 **`--yes`** forces non-interactive accept-all even on a TTY: optional plus `confirm` steps run
 (so the demo personas are written), the global install takes its default, and a failure aborts
-with the log path and a non-zero exit. It still launches nothing — the control plane comes up with
+with the log path and a non-zero exit. It still launches nothing. The control plane comes up with
 `cotal up --detach`. This is the agent/CI contract; keep it working.
 
 ## Invariants
@@ -66,10 +67,10 @@ with the log path and a non-zero exit. It still launches nothing — the control
 
 ## Background processes (`cotal up`)
 
-`cotal up` brings up the whole local stack in one place — since setup became configure-only
+`cotal up` brings up the whole local stack in one place; since setup became configure-only
 (stage 2b), this is where the mesh and control plane start, so `cotal spawn --detach` /
-`cotal_spawn` find a manager right after `up`. The control plane comes up in cutover order —
-old-manager preflight → **delivery daemon** (auth mode only) → **manager** — via
+`cotal_spawn` find a manager right after `up`. The control plane comes up in cutover order:
+old-manager preflight → **delivery daemon** (auth mode only) → **manager**, via
 `ensureControlPlane`
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The detached
 processes, all stopped by `cotal down`:
@@ -84,15 +85,15 @@ fail-loud on collision.
   `.cotal/nats.pid` and tails `.cotal/nats.log`.
 - **Delivery daemon:** `startDeliveryDetached` / `ensureDelivery`
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
-  deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only — the durable
+  deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable
   backstop; open mode has none). Writes `.cotal/delivery.pid` and `.cotal/delivery.log`.
 - **Manager:** `startManagerDetached` / `ensureManager`
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
   supervise` detached (pty runtime); it answers the control plane
-  (`cotal_spawn`/`despawn`/`purge`/`persona`). Writes `.cotal/manager.pid` and
+  (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.pid` and
   `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
 
-The **web dashboard** is *not* part of `cotal up` — it ships as the `cotal-web` extension.
+The **web dashboard** is *not* part of `cotal up`. It ships as the `cotal-web` extension.
 `cotal setup` installs it automatically by reusing the same path as `cotal ext add cotal-web`
 (best-effort; failed install leaves the manual retry command). Start it with `cotal web`
 (re-execs the CLI detached; `.cotal/web.pid` / `.cotal/web.log`), addressed as
@@ -101,7 +102,7 @@ Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status
 
 All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 ([`lib/self-exec.ts`](../implementations/cli/src/lib/self-exec.ts)) = `[node, ...loaderFlags,
-entry]` (tsx loader in dev, compiled JS in prod), so they never need `cotal` on PATH — the stack
+entry]` (tsx loader in dev, compiled JS in prod), so they never need `cotal` on PATH; the stack
 comes up identically via `npx`, `npm i -g`, and a dev clone.
 
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`

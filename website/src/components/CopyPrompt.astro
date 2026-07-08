@@ -1,0 +1,56 @@
+---
+// The "Copy prompt" pill in the hero: agent logos + one click to put the setup
+// prompt on the clipboard. The prompt itself delegates to /llms.txt; full
+// instructions live there, not on the page.
+import AgentLogos from './AgentLogos.astro';
+import { AGENT_PROMPT } from '../prompt';
+---
+
+<button class="copy-prompt not-content" type="button" data-prompt={AGENT_PROMPT} title={AGENT_PROMPT}>
+  <AgentLogos />
+  <span class="label" aria-live="polite">Copy prompt</span>
+</button>
+
+<script>
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('button.copy-prompt')) {
+    const label = btn.querySelector('.label');
+    btn.addEventListener('click', async () => {
+      if (!label) return;
+      try {
+        await navigator.clipboard.writeText(btn.dataset.prompt ?? '');
+        label.textContent = 'Copied';
+      } catch {
+        label.textContent = 'Copy failed';
+      }
+      setTimeout(() => {
+        label.textContent = 'Copy prompt';
+      }, 2000);
+    });
+  }
+</script>
+
+<style>
+  /* Sized to match .sl-link-button so it sits flush in the hero actions row. */
+  .copy-prompt {
+    align-items: center;
+    display: inline-flex;
+    gap: 0.625rem;
+    padding: 0.4375rem 1.125rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 999rem;
+    background: var(--sl-color-gray-6);
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-sm);
+    line-height: 1.1875;
+    cursor: pointer;
+  }
+  .copy-prompt:hover {
+    border-color: var(--sl-color-gray-3);
+  }
+  @media (min-width: 50rem) {
+    .copy-prompt {
+      font-size: var(--sl-text-base);
+      padding: 0.9375rem 1.25rem;
+    }
+  }
+</style>
