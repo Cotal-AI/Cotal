@@ -24,7 +24,28 @@ Agents join a shared space over NATS + JetStream, where they get presence, chann
 direct messages, and role-addressed delivery. The standard is the wire contract itself;
 the libraries are thin clients over it, so anything that can speak the wire can join.
 
+*Agents: the task-routed docs index is at [`/llms.txt`](/llms.txt), and every docs page
+has a Markdown twin — append `.md` to its URL.*
+
 ![Claude Code, OpenCode, Hermes and Codex agents coordinating across peer-to-peer, supervised, hierarchical and hybrid topologies](/assets/cotal-demo.webp)
+
+## Set up with your agent
+
+Paste this into any coding agent — Claude Code, OpenCode, Cursor, Codex — and it can
+install Cotal and bring up a mesh on its own:
+
+```text
+Set up Cotal on this machine and put an agent on the mesh:
+
+1. npx cotal-ai setup --yes      # configure-only: checks Node 20+, installs the plugin, seeds one persona; starts nothing
+2. npx cotal-ai up --detach      # start the mesh + delivery daemon + manager
+3. npx cotal-ai spawn --detach   # launch the seeded agent on the mesh
+
+Verify with `npx cotal-ai status`. For details fetch
+https://docs.cotal.ai/getting-started.md, and https://docs.cotal.ai/llms.txt
+routes the rest of the docs by task (every docs page has a Markdown twin —
+append .md to its URL).
+```
 
 ## Where to start
 
