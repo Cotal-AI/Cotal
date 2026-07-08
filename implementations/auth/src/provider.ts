@@ -15,9 +15,9 @@
  */
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider } from "@cotal-ai/core";
 import { assertUserAuthInfo, homeCotalDir, type UserAuthInfo } from "@cotal-ai/workspace";
-import { fetchIdpJwt, requireIdpSession } from "./login.js";
+import { fetchIdpJwt, loadIdpSession, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
+import { findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import {
   ensureCalloutAuth,
   ensureIssuer,
@@ -154,6 +154,38 @@ export const cotalAuthProvider: AuthProvider = {
     if (!session.sub)
       throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) — re-run \`cotal login --idp ${idp.url}\``);
     return deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
+  },
+
+  /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
+   *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
+   *  status` must be able to say "not signed in" without becoming a connect. */
+  async userStatus({ dir, space, actor }) {
+    const idp = loadPinnedIdp(dir);
+    if (!idp)
+      throw new Error(
+        `space "${space}" has no user-auth material on this machine — user-mode status reads run where \`cotal up --user-auth\` provisioned the space`,
+      );
+    const session = loadIdpSession(homeCotalDir(), idp.url);
+    if (!session?.sub) return { idpUrl: idp.url };
+    const login = { sub: session.sub, expiresAt: session.expiresAt };
+    const secret = loadOwnerSecret(dir);
+    if (!secret) return { idpUrl: idp.url, login };
+    const owner = deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
+    const row = findInteractiveActor(dir, owner, actor);
+    return {
+      idpUrl: idp.url,
+      login,
+      owner,
+      grant: row
+        ? {
+            scope: row.scope,
+            allowSubscribe: row.allowSubscribe,
+            allowPublish: row.allowPublish,
+            ...(row.role ? { role: row.role } : {}),
+            ...(row.label ? { label: row.label } : {}),
+          }
+        : "not-granted",
+    };
   },
 
   /** Spawn-path grant authorship: one atomic MANAGED-AGENT row (its own row space — never

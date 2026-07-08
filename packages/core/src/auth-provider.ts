@@ -46,6 +46,14 @@ export interface AuthProvider extends Extension {
    */
   ownerForLogin(opts: { dir: string; space: string }): Promise<string>;
   /**
+   * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
+   * login for the space and — where the space's ledger is locally readable — whether that login's
+   * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state
+   * here, not a thrown one. Throws only when the space has no user-auth material under `dir`
+   * (there is nothing to report status about).
+   */
+  userStatus(opts: { dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
+  /**
    * SERVER side, agent lifecycle: author an agent grant for `(owner, actor)` in this space's
    * ledger — the spawn path's half of "actors are server-ledger-authorized, never taken from
    * connect payloads". Returns the ONE-TIME plaintext agent secret (persisted only as a hash;
@@ -91,6 +99,22 @@ export function resolveAuthProvider(): AuthProvider {
   if (providers.length > 1)
     throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) — cannot choose between them`);
   return providers[0];
+}
+
+/** What {@link AuthProvider.userStatus} reports. Fields are absent when locally unknowable —
+ *  absence is honest ("can't tell from here"), never a guess. */
+export interface UserAuthStatus {
+  /** The space's pinned IdP base URL (always known — it is part of the user-auth material). */
+  idpUrl: string;
+  /** This machine's cached login for that IdP; absent = not signed in. */
+  login?: { sub: string; expiresAt: number };
+  /** The login's derived owner token (`u_…`) for this space. */
+  owner?: string;
+  /** The (owner, actor) interactive ledger row: its lists when granted, `"not-granted"` when the
+   *  locally-readable ledger has no row. Absent when the ledger is not on this machine. */
+  grant?:
+    | { scope: string[]; allowSubscribe: string[]; allowPublish: string[]; role?: string; label?: string }
+    | "not-granted";
 }
 
 /** The provisioning input — deliberately NARROW (a capability boundary, not a convenience): the
