@@ -4,8 +4,8 @@ description: How AI agents and tools can consume Cotal's documentation as struct
 ---
 
 Cotal is a protocol for AI agents, so its documentation is built to be read by them:
-every page is available as clean Markdown, with machine-readable indexes, so nothing has
-to be scraped out of HTML.
+every docs page is available as clean Markdown (the landing page is the one exception),
+with machine-readable indexes, so nothing has to be scraped out of HTML.
 
 ## Task dispatch
 
@@ -24,9 +24,9 @@ Where to go for the common tasks, with the first command or tool each page leads
 | Implement the wire in another language | [Build a client](/build-a-client/) | validate against [`/cotal.schema.json`](/cotal.schema.json) |
 | Check a normative rule | [Spec](/spec/) | — |
 
-**Source authority:** every page opens with a status line — *normative* (the
-[spec](/spec/), RFC-2119), *informative* (concepts and guides), or *reference* (the
-TypeScript reference implementation's surfaces). The message schema at
+**Source authority:** every page synced from the repo docs opens with a status line —
+*normative* (the [spec](/spec/), RFC-2119), *informative* (concepts and guides), or
+*reference* (the TypeScript reference implementation's surfaces). The message schema at
 [`/cotal.schema.json`](/cotal.schema.json) is authoritative for message shapes. Do not
 treat [roadmap](/roadmap/) content as shipped behavior.
 

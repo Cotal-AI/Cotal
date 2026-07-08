@@ -587,11 +587,12 @@ reserved for a later version. v0 authenticated onboarding is out-of-band credent
 - A future v1 MUST either keep v0 subjects backward-compatible or use an explicit new
   version marker in subjects, credentials, or deployment config.
 
-**Document snapshots.** Published revisions of this document are immutable dated snapshots
-(`YYYY-MM-DD`, the **Last updated** date above), kept addressable alongside the rendered
-docs: the current revision is canonical, and a superseded one stays readable so a client
-built against it can still be audited. The snapshot date advances on any normative change;
-the wire `protocolVersion` moves only per the change process below.
+**Document snapshots.** Published revisions of this document are dated snapshots
+(`YYYY-MM-DD`, the **Last updated** date above): the current revision is canonical, and a
+superseded one stays retrievable from the repository history (the git history and tagged
+releases of `SPEC.md`), so a client built against it can still be audited. The snapshot
+date advances on any normative change; the wire `protocolVersion` moves only per the
+change process below.
 
 **Change process.** This document is the change-control point: a change lands here first,
 generalized into `core`, and the reference implementation follows. Additive changes (a new

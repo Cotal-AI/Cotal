@@ -31,8 +31,24 @@ export default defineConfig({
           projectName: 'Cotal',
           description:
             'Cotal is a standard wire interface for software, especially AI agents, to coordinate in real time. The standard is the wire contract itself (subjects, message schemas, presence/discovery conventions); libraries are thin clients over it. Transport is NATS + JetStream.',
-          details:
-            'Route by task: set up + run a mesh → Quickstart (`npx cotal-ai setup --yes && npx cotal-ai up --detach`, then `cotal spawn`); message peers from a session → MCP tool catalog (cotal_send / cotal_dm / cotal_anycast); declare a team → Define a team (cotal.yaml); grant channel access → Channels & permissions; build a client in another language → Build a client + the normative Spec. The Spec is the RFC-2119 wire contract and wins over every other page; the machine-readable message schema is at /cotal.schema.json (authoritative for message shapes). Pages are marked normative / informative / reference in their opening line; Roadmap content is not shipped behavior. Core primitives: endpoint, agent node, space, channel, direct message, presence, history. Delivery modes: multicast / unicast / anycast.',
+          // The task router. Each link is the page's raw-Markdown twin, so an agent
+          // can go straight from llms.txt to clean Markdown without touching HTML.
+          details: [
+            'Route by task:',
+            '',
+            '- [Quickstart](https://docs.cotal.ai/getting-started.md): install and start a local mesh — `npx cotal-ai setup --yes && npx cotal-ai up --detach`, then `cotal spawn`',
+            '- [MCP tool catalog](https://docs.cotal.ai/mcp-tools.md): message peers from inside a session (`cotal_send` / `cotal_dm` / `cotal_anycast`) and spawn teammates (`cotal_spawn` / `cotal_persona`)',
+            '- [Define a team](https://docs.cotal.ai/define-a-team.md): declare a team and its channels in one `cotal.yaml`, launch with `cotal up -f`',
+            '- [Channels & permissions](https://docs.cotal.ai/channels-and-permissions.md): grant or audit channel access (`subscribe` / `allowSubscribe` / `allowPublish`)',
+            '- [Agent files](https://docs.cotal.ai/agent-files.md): every field of a persona file (`.cotal/agents/<name>.md`)',
+            '- [Watch a mesh](https://docs.cotal.ai/watch-a-mesh.md): the terminal console and the web dashboard',
+            '- [Identity & auth](https://docs.cotal.ai/identity-and-auth.md): mint credentials (`cotal mint <name> --profile agent`), how enforcement works',
+            '- [Build a client](https://docs.cotal.ai/build-a-client.md): implement the wire in another language, in dependency order',
+            '- [Specification](https://docs.cotal.ai/spec.md): the normative RFC-2119 wire contract — where any page disagrees with it, the spec wins',
+            '- [Message schema](https://docs.cotal.ai/cotal.schema.json): machine-readable JSON Schema, authoritative for message shapes',
+            '',
+            'Docs pages open with a status line (normative / informative / reference); Roadmap content is not shipped behavior. Core primitives: endpoint, agent node, space, channel, direct message, presence, history. Delivery modes: multicast / unicast / anycast.',
+          ].join('\n'),
           // A compact, agent-pickable subset for small context windows: drop the
           // maintainer-facing Project section.
           exclude: ['release', 'setup-internals', 'roadmap'],

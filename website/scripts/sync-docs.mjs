@@ -88,37 +88,48 @@ const knownSlugs = new Map(
   sources.map((rel) => [basename(rel).replace(/\.md$/, ''), slugFor(basename(rel).replace(/\.md$/, ''))]),
 );
 
-// Rewrite cross-links to site routes. Four cases, everything else untouched:
-//  1. same-dir doc links (`getting-started.md`, `../SPEC.md`, `README.md`) → /slug/
-//  2. the generated schema (`../spec/cotal.schema.json`) → the published /cotal.schema.json
-//  3. repo images (`../assets/...`) → /assets/... (copied into public/ below)
-//  4. other repo-relative links (`../packages/...`, `../examples/...`) → GitHub
+// Rewrite repo-relative links to site routes. Every link is first resolved
+// against its source file's directory to a repo-root-relative path (sources live
+// at different depths: docs/*.md vs the root SPEC.md), then mapped:
+//   docs/<page>.md, SPEC.md   → the published Starlight slug (docs/README.md → /)
+//   spec/cotal.schema.json    → the published /cotal.schema.json
+//   assets/*                  → /assets/* (copied into public/ below)
+//   anything else in the repo → GitHub
+// Absolute URLs and same-page #anchors pass through. A doc link that resolves to
+// an unpublished page throws — no silent drift.
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
 const assetRefs = new Set(['assets/cotal-demo.webp']);
-function rewriteLinks(md) {
-  // Case 2 first (not a .md link).
-  md = md.replaceAll('](../spec/cotal.schema.json)', '](/cotal.schema.json)');
-  // Cases 1 + 3 + 4.
+
+function resolveRepoPath(srcDir, target) {
+  const out = srcDir ? srcDir.split('/') : [];
+  for (const part of target.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (out.length === 0) throw new Error(`link escapes the repo: ${target}`);
+      out.pop();
+    } else out.push(part);
+  }
+  return out.join('/');
+}
+
+function rewriteLinks(md, srcDir) {
   return md.replace(/\]\(([^)#]+?)(#[^)]*)?\)/g, (whole, target, anchor = '') => {
-    if (/^[a-z]+:\/\//.test(target) || target.startsWith('/') || target.startsWith('#')) return whole;
-    if (target.startsWith('../assets/')) {
-      const rel = target.slice(3); // assets/foo.webp
-      assetRefs.add(rel);
-      return `](/${rel})`;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/')) return whole;
+    const repoPath = resolveRepoPath(srcDir, target);
+    if (repoPath === 'spec/cotal.schema.json') return `](/cotal.schema.json${anchor})`;
+    if (repoPath.startsWith('assets/')) {
+      assetRefs.add(repoPath);
+      return `](/${repoPath}${anchor})`;
     }
-    const isDocLink =
-      (target.endsWith('.md') && !target.includes('/')) || target === '../SPEC.md' || target === 'README.md';
-    if (isDocLink) {
-      const name = basename(target).replace(/\.md$/, '');
+    if (repoPath === 'SPEC.md' || (repoPath.startsWith('docs/') && repoPath.endsWith('.md'))) {
+      const name = basename(repoPath).replace(/\.md$/, '');
       if (name === 'README') return `](/${anchor})`;
       if (!knownSlugs.has(name)) throw new Error(`link to unpublished doc: ${target}`);
-      const slug = knownSlugs.get(name);
-      return `](/${slug}/${anchor})`;
+      return `](/${knownSlugs.get(name)}/${anchor})`;
     }
-    // Repo-relative source/example link → GitHub.
-    if (target.startsWith('../')) return `](${GITHUB_BLOB}/${target.replace(/^(\.\.\/)+/, '')}${anchor})`;
-    return whole;
+    // Anything else in the repo (sources, examples, extension READMEs) → GitHub.
+    return `](${GITHUB_BLOB}/${repoPath}${anchor})`;
   });
 }
 
@@ -160,7 +171,8 @@ for (const group of groups) {
     const title = firstH1(md) ?? name;
     const description = firstParagraph(md);
     md = md.replace(/^\s*#\s+.+\n+/, ''); // drop the H1 (Starlight renders title)
-    md = rewriteLinks(md);
+    const srcDir = dirname(rel);
+    md = rewriteLinks(md, srcDir === '.' ? '' : srcDir);
     const fm = [
       '---',
       `title: ${yamlEscape(title)}`,

@@ -17,9 +17,10 @@ JetStream.
 
 ## For agents
 
-These docs are agent-native: `https://docs.cotal.ai/llms.txt` routes by task, every page
-has a Markdown twin (append `.md` to its URL, or send `Accept: text/markdown`), and the
-message schema is machine-readable at [`spec/cotal.schema.json`](../spec/cotal.schema.json).
+These docs are agent-native: `https://docs.cotal.ai/llms.txt` routes by task, every docs
+page has a Markdown twin (append `.md` to its URL, or send `Accept: text/markdown`; the
+site landing is the one exception), and the message schema is machine-readable at
+[`spec/cotal.schema.json`](../spec/cotal.schema.json).
 Task dispatch:
 
 | Task | Page | First command / tool |
