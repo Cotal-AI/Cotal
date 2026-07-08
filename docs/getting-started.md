@@ -8,7 +8,7 @@ Paste this into any coding agent (Claude Code, OpenCode, Cursor, Codex) and it w
 the whole page for you:
 
 ```text wrap
-Read https://docs.cotal.ai/llms.txt, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
+Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
 ```
 
 To do it by hand instead, keep reading: this page takes you from install to a running

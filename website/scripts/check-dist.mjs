@@ -13,8 +13,15 @@ const fail = (msg) => {
 };
 
 const llms = readFileSync(join(dist, 'llms.txt'), 'utf8');
-for (const needle of ['/getting-started.md', '/mcp-tools.md', '/spec.md', '/cotal.schema.json']) {
+for (const needle of ['/prompt.md', '/getting-started.md', '/mcp-tools.md', '/spec.md', '/cotal.schema.json']) {
   if (!llms.includes(needle)) fail(`llms.txt lost its task link to ${needle}`);
+}
+
+// The agent setup runbook must ship, keep its commands, and stay in step with
+// the Quickstart (same commands, so neither can drift alone).
+const runbook = readFileSync(join(dist, 'prompt.md'), 'utf8');
+for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+  if (!runbook.includes(cmd)) fail(`prompt.md lost its command: ${cmd}`);
 }
 
 // The Quickstart ships the interactive prompt card on the page, and its
@@ -23,8 +30,11 @@ for (const needle of ['/getting-started.md', '/mcp-tools.md', '/spec.md', '/cota
 const quickstartHtml = readFileSync(join(dist, 'getting-started', 'index.html'), 'utf8');
 if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt card');
 const quickstartTwin = readFileSync(join(dist, 'getting-started.md'), 'utf8');
-if (!quickstartTwin.includes('llms.txt, then set up Cotal'))
+if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
   fail('quickstart twin lost the setup prompt');
+for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+  if (!quickstartTwin.includes(cmd)) fail(`quickstart lost the runbook command: ${cmd}`);
+}
 for (const f of ['getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
   if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))
     fail(`AgentPrompt component leaked into ${f}`);
