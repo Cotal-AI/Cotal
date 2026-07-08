@@ -488,7 +488,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         launchOptions: z
           .record(z.string(), z.unknown())
           .optional()
-          .describe("Optional connector-specific launch options — an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused."),
+          .describe("Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused."),
         cwd: z
           .string()
           .optional()
