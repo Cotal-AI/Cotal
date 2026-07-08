@@ -38,9 +38,13 @@ const prompt =
   for (const btn of document.querySelectorAll<HTMLButtonElement>('button.copy-prompt')) {
     const label = btn.querySelector('.label');
     btn.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(btn.dataset.prompt ?? '');
       if (!label) return;
-      label.textContent = 'Copied';
+      try {
+        await navigator.clipboard.writeText(btn.dataset.prompt ?? '');
+        label.textContent = 'Copied';
+      } catch {
+        label.textContent = 'Copy failed';
+      }
       setTimeout(() => {
         label.textContent = 'Copy prompt';
       }, 2000);
