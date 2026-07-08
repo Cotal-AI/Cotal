@@ -73,9 +73,8 @@ The guarantees, at a glance, each enforced by the broker per
 
 - **Untrusted broker or relay:** the broker can read, drop, replay, or alter plaintext
   traffic. Signed envelopes are reserved for a later version.
-- **End-to-end secrecy:** DMs are plaintext to the broker and to `admin`. (SLIM puts MLS
-  end-to-end encryption under its pub/sub; Cotal v0 deliberately does not, trading secrecy for
-  a single trusted broker.)
+- **End-to-end secrecy:** DMs are plaintext to the broker and to `admin`. Cotal v0
+  deliberately does not add end-to-end encryption, trading secrecy for a single trusted broker.
 - **Non-repudiation:** sender authenticity is broker-enforced, not portable proof. (A2A signs
   every message for this; here it is reserved as signed envelopes.)
 - **Availability:** an authenticated peer can flood any channel or inbox it may write to. v0
