@@ -78,8 +78,14 @@ const repoRoot = join(here, "..", "..", "..");
     "exact identifier ‘allowSubscribe’ retrieves the channels page",
   );
 
-  // A subject wildcard resolves to its base subject (trailing operators stripped, segments emitted).
-  assert.ok(searchDocs("$SYS.>").length > 0, "‘$SYS.>’ retrieves the sections that document $SYS");
+  // Subject wildcards hit the intended sections: the exact wildcard form keeps its boost so it
+  // ranks the Wildcards section first; a wildcard with no literal form still resolves to its base
+  // subject and surfaces the spec section that documents it.
+  assert.equal(searchDocs("team.>")[0].slug, "channels-and-permissions", "‘team.>’ ranks the Wildcards section first");
+  assert.equal(searchDocs("team.*")[0].slug, "channels-and-permissions", "‘team.*’ ranks the Wildcards section first");
+  const sys = searchDocs("$SYS.>");
+  assert.ok(sys.length > 0, "‘$SYS.>’ resolves to its base subject");
+  assert.ok(sys.some((h) => h.slug === "spec"), "‘$SYS.>’ surfaces the spec section that documents $SYS");
   assert.ok(searchDocs("cotal.schema.json").length > 0, "a dotted path matches on its segments");
 
   // `refresh` is page-only: on a search it is flagged, not silently ignored.

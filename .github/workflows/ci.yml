@@ -31,6 +31,8 @@ jobs:
         run: pnpm typecheck
       - name: Build
         run: pnpm build
+      - name: Docs bundle in sync
+        run: pnpm check:docsbundle
       - name: Unit tests
         run: pnpm test
       - name: View smoke

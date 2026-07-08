@@ -13,7 +13,7 @@ import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDeni
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
-import { runDocs, DOCS_VERSION } from "./docs.js";
+import { runDocs } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
  *  `content`; the OpenCode plugin returns the string. */
@@ -159,7 +159,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_docs",
       title: "Cotal: read the docs (version-exact)",
       description:
-        `Read the authoritative Cotal docs for the exact version installed here (v${DOCS_VERSION}): the ` +
+        "Read the authoritative Cotal docs for the exact version installed here: the " +
         "wire spec, the message schema, and every guide, bundled so they always match this version. " +
         "Use it before you answer or write code about anything Cotal — subjects, message shapes, the auth " +
         "grammar, channels and ACLs, the CLI, the cotal_* tools — and prefer it over your training memory, " +

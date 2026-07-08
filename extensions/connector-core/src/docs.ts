@@ -7,10 +7,11 @@
  * version. That makes the baseline authoritative by construction: it matches the exact
  * version running, works offline, and cannot drift newer or older than what's installed.
  *
- * `refresh: true` layers an OPTIONAL remote pass on top: it fetches the same page from
- * docs.cotal.ai, but only serves it when the site reports the SAME version — so a remote
- * that has moved ahead (or is unreachable) can never feed the agent docs for a version it
- * isn't running. The tool always reports which source answered and why.
+ * `refresh: true` layers an OPTIONAL remote pass on top: it fetches the page from an IMMUTABLE
+ * version-pinned path on docs.cotal.ai (/v/<installed-version>/…), so a fetched body provably
+ * belongs to the installed version — there is nothing to skew against. When that path is absent
+ * (version-pinned docs aren't published yet) or unreachable, it falls back to the version-exact
+ * bundle. The tool always reports which source answered.
  */
 import { DOCS_BUNDLE } from "./docs-bundle.generated.js";
 import type { ToolResult } from "./tool-specs.js";
@@ -123,11 +124,13 @@ function tokenize(s: string): string[] {
   if (!raw) return [];
   const out: string[] = [];
   for (const r of raw) {
+    // The raw form first, so an exact wildcard/identifier match (`team.>`, `cotal_send`) keeps
+    // its full weight and out-scores a mere base-subject match.
+    if (r.length >= 2) out.push(r);
+    // The wildcard-stripped base, so `$SYS.>` still finds the section documenting `$SYS`.
     const t = r.replace(EDGE, "");
-    if (t.length < 2) continue;
-    out.push(t); // whole identifier, keeps the exact-match boost
-    // A dotted subject/path also matches on any of its segments, so `$SYS.>` finds the
-    // section that documents `$SYS`, and `cotal.schema.json` matches a `schema` query.
+    if (t.length >= 2 && t !== r) out.push(t);
+    // Dotted segments, so `cotal.schema.json` matches a `schema` query.
     if (t.includes(".")) for (const seg of t.split(".")) if (seg.length >= 2) out.push(seg);
   }
   return out;
