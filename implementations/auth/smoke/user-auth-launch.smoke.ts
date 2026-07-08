@@ -154,11 +154,16 @@ try {
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--label", "smoke human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out);
+  // The flagless grant is the FULL one: all channels + spawn + the stock role (the golden path —
+  // login, grant, spawn just works; narrowing is the operator's explicit act).
+  check("flagless grant defaults to the full envelope", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("spawn"), grant.out);
 
-  // The ENVELOPE rule on the foreground CLI spawn path: an over-ask beyond the cli grant
-  // ([general] by default) is refused at the grant write — before any broker footprint — and the
+  // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
+  // over-ask beyond it is refused at the grant write — before any broker footprint — and the
   // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
   // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
+  const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
+  check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
   const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);

@@ -64,7 +64,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // Signing in proves WHO you are; each mesh separately lets you in. Hand the human the exact
     // next step — their sub is the one thing the operator needs from them.
     console.log(
-      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (add --scope spawn,role:default to allow spawning the stock agent; role:<r> delegates a role)`,
+      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (that's the full grant — all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)`,
     );
   });
 }
@@ -191,12 +191,16 @@ async function runActor(args: ParsedArgs): Promise<void> {
     if (sub === "grant") {
       if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]");
       const owner = resolveGrantOwner(dir, values);
+      // Default = the FULL grant (all channels, spawn + the stock role): `actor grant` is an
+      // operator act of letting a user in, so omitting flags means "fully", and narrowing is the
+      // explicit choice (`--allow-subscribe general --scope ''`). The user's agents are still
+      // attenuated from whatever this row says (the envelope rule).
       const row = grantActor(dir, {
         owner,
         actor,
-        scope: csv(values.scope, []),
-        allowSubscribe: csv(values["allow-subscribe"], ["general"]),
-        allowPublish: csv(values["allow-publish"], ["general"]),
+        scope: csv(values.scope, ["spawn", "role:default"]),
+        allowSubscribe: csv(values["allow-subscribe"], [">"]),
+        allowPublish: csv(values["allow-publish"], [">"]),
         ...(values.role ? { role: values.role } : {}),
         ...(values.label ? { label: values.label } : {}),
         ...(values.parent ? { parent: values.parent } : {}),
@@ -310,9 +314,9 @@ const authCommands: Command[] = [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the folder's)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: none; spawn = may run agents, role:<r> = may delegate role r)" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: general) — the user's envelope: their agents can never read beyond it" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: general) — also the envelope for their agents' posting" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: > = all channels) — the user's envelope: their agents can never read beyond it" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: > = all channels) — also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority — this does not attenuate)" },
