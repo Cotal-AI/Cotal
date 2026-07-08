@@ -50,7 +50,7 @@ export function Help({
     ["d", "direct-message lens"],
     ["t", "topology lens (v / 1-3 variants)"],
     ["V", "views lens (peer-pushed views)"],
-    [":", "command palette (send / call / spawn / purge / status)"],
+    [":", "command palette (send / call / spawn / purge / delchan / status)"],
     ["c", "compose to channel / DM selected agent"],
     ["r", "reply to current message"],
     ["D", "delete — kill agent / drop space"],

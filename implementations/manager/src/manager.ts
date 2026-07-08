@@ -5,8 +5,10 @@ import {
   DEFAULT_SERVER,
   MANAGER_LEASE_TTL_MS,
   agentFilePath,
+  clearChannel,
   clearSpaceHistory,
   connectorServers,
+  isConcreteChannel,
   deprovisionAgent,
   firstFreeName,
   loadAgentFile,
@@ -1112,10 +1114,25 @@ export class Manager {
   /** Purge the space's retained message backlog (chat, optionally DMs). Privileged — the manager mints a
    *  short-lived "purger" cred (same destructive grant as `cotal history clear`, isolated off the
    *  supervisor); regular agents are denied STREAM.PURGE under auth. Cleanup only: leaves live agents and
-   *  the TASK queue alone. */
+   *  the TASK queue alone. With `args.channel` it narrows to ONE channel — a filtered purge plus the
+   *  channel-registry key delete via {@link clearChannel}, under the tighter "channel-purger" mint (the
+   *  role holding the scoped STREAM.PURGE + channel-KV grants; the dashboard's delete uses the same). */
   private async opPurge(args: Record<string, unknown>, _caller: string): Promise<ControlReply> {
     const includeDms = args.includeDms === true;
     try {
+      if (args.channel !== undefined) {
+        const channel = String(args.channel).trim();
+        if (!isConcreteChannel(channel))
+          return { ok: false, error: `"${channel}" must be a concrete channel (no wildcard) to purge it` };
+        const creds = this.auth ? await mintCreds(this.auth, newIdentity(), "channel-purger") : undefined;
+        const result = await clearChannel({
+          servers: this.servers ?? DEFAULT_SERVER,
+          space: this.space,
+          channel,
+          creds,
+        });
+        return { ok: true, data: result };
+      }
       const creds = this.auth ? await mintCreds(this.auth, newIdentity(), "purger") : undefined;
       const result = await clearSpaceHistory({
         servers: this.servers ?? DEFAULT_SERVER,

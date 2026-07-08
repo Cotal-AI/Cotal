@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Box, Text, useInput } from "ink";
 
 /** A destructive action awaiting confirmation. `kill` is a quick y/n (with `f` for a hard kill);
- *  `deleteSpace` and `purge` (irreversible) require typing the space name. */
+ *  `deleteSpace` and `purge` (irreversible) require typing the space name, `delchan` the channel name. */
 export type ConfirmTarget =
   | { kind: "kill"; name: string }
   | { kind: "deleteSpace"; space: string }
-  | { kind: "purge"; space: string };
+  | { kind: "purge"; space: string }
+  | { kind: "delchan"; channel: string };
 
 /** Full-screen red danger overlay. Owns input while shown. Calls onConfirm only when the gate is
  *  satisfied (y/f for kill, exact name typed for deleteSpace/purge); Esc/n cancels. Kill's choice
@@ -25,7 +26,8 @@ export function Confirm({
   onCancel: () => void;
 }) {
   const [typed, setTyped] = useState("");
-  const match = target.kind !== "kill" && typed === target.space;
+  const wanted = target.kind === "kill" ? undefined : target.kind === "delchan" ? target.channel : target.space;
+  const match = wanted !== undefined && typed === wanted;
 
   useInput((input, key) => {
     if (key.escape) return onCancel();
@@ -35,7 +37,7 @@ export function Confirm({
       if (input === "n" || input === "N") return onCancel();
       return;
     }
-    // deleteSpace / purge: type the name to arm Enter
+    // deleteSpace / purge / delchan: type the name to arm Enter
     if (key.return) {
       if (match) onConfirm();
       return;
@@ -74,6 +76,11 @@ export function Confirm({
                 Delete space <Text bold>{target.space}</Text> —{" "}
                 <Text color="red">irreversible</Text> (all history + presence gone).
               </>
+            ) : target.kind === "delchan" ? (
+              <>
+                Delete channel <Text bold>#{target.channel}</Text> —{" "}
+                <Text color="red">irreversible</Text> (its history + registry entry gone; other channels stay).
+              </>
             ) : (
               <>
                 Purge <Text bold>{target.space}</Text>'s history (all channels + DMs) —{" "}
@@ -87,7 +94,7 @@ export function Confirm({
             <Text inverse> </Text>
           </Box>
           <Box marginTop={1}>
-            <Text dimColor>{match ? (target.kind === "deleteSpace" ? "Enter = delete" : "Enter = purge") : "Esc = cancel"}</Text>
+            <Text dimColor>{match ? (target.kind === "purge" ? "Enter = purge" : "Enter = delete") : "Esc = cancel"}</Text>
           </Box>
         </Box>
       )}

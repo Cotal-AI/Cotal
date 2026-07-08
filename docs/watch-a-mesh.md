@@ -58,8 +58,10 @@ is `canControl`, distinct from `canWrite` (chat publishes). Affordances follow h
 they are: `p` pauses or resumes with no confirm (recoverable; the roster shows a `⏸ paused`
 badge merged from a low-rate `ps` poll, since a frozen agent's presence reads offline), `D`
 kills behind a confirm (`y` graceful stop, `f` force-kill), and the `:` palette adds
-`spawn <persona> [name]`, `status <agent>`, `ps`, and `purge` (type the space name to confirm,
-like the space delete). `a` on a roster agent (or `:attach <agent>`) suspends the console and
+`spawn <persona> [name]`, `status <agent>`, `ps`, `purge` (type the space name to confirm,
+like the space delete), and `delchan <channel>` (type the channel name to confirm) — the same
+admin purge op narrowed to one channel, a filtered purge of its history plus its registry entry;
+the web dashboard's channel delete is the same operation. `a` on a roster agent (or `:attach <agent>`) suspends the console and
 hands the terminal to the agent's live PTY over the manager's loopback attach endpoint;
 `Ctrl-]` (or `COTAL_DETACH_KEY`) returns and repaints the console, with the observer running in
 the background throughout. Attach is `canControl`-gated, pty-runtime only (tmux/cmux are watched

@@ -3,7 +3,16 @@ import { Box, Text, useFocus, useInput } from "ink";
 import type { Presence } from "@cotal-ai/core";
 import { agentColor, STATUS, ago } from "./theme.js";
 
-function RosterRow({ p, selected, wide, paused }: { p: Presence; selected: boolean; wide: boolean; paused: boolean }) {
+/** Short display tag for an agent's harness (which tool it IS): known connectors get a familiar
+ *  abbreviation (`cc` = Claude Code — "cotal" is its manager-default alias), anything else its
+ *  first two letters. Pure presentation; undefined in = undefined out (never fake a tag). */
+export function harnessTag(connector: string | undefined): string | undefined {
+  if (!connector) return undefined;
+  const known: Record<string, string> = { claude: "cc", cotal: "cc", opencode: "oc", hermes: "hm" };
+  return known[connector] ?? connector.slice(0, 2).toLowerCase();
+}
+
+function RosterRow({ p, selected, wide, paused, tag }: { p: Presence; selected: boolean; wide: boolean; paused: boolean; tag?: string }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   // A manager-paused (SIGSTOPped) agent can't heartbeat, so presence soon reads "offline" — the
@@ -14,7 +23,7 @@ function RosterRow({ p, selected, wide, paused }: { p: Presence; selected: boole
     const act = p.activity ? "  " + p.activity : "";
     return (
       <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? (paused ? "⏸" : s.dot) : "⚙") + " " + p.card.name + kind + act + "  " + ago(p.ts)}
+        {(isAgent ? (paused ? "⏸" : s.dot) : "⚙") + " " + p.card.name + (tag ? " " + tag : "") + kind + act + "  " + ago(p.ts)}
       </Text>
     );
   }
@@ -24,6 +33,7 @@ function RosterRow({ p, selected, wide, paused }: { p: Presence; selected: boole
       <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
         {p.card.name}
       </Text>
+      {tag ? <Text dimColor>{" " + tag}</Text> : null}
       {wide ? (
         isAgent ? (
           paused ? (
@@ -61,6 +71,7 @@ export function Roster({
   onPause,
   onAttach,
   paused,
+  harness,
   onCompose,
 }: {
   agents: Presence[];
@@ -79,6 +90,8 @@ export function Roster({
   onAttach?: (p: Presence) => void;
   /** Ids the manager reports as paused — authoritative over presence for the badge. */
   paused?: Set<string>;
+  /** id → short harness tag (see {@link harnessTag}); rows without an entry show no tag. */
+  harness?: Map<string, string>;
   onCompose?: (p: Presence) => void;
 }) {
   const { isFocused } = useFocus({ id: "roster" });
@@ -143,6 +156,7 @@ export function Roster({
             selected={isFocused && start + i === selClamped}
             wide={wide}
             paused={paused?.has(p.card.id) ?? false}
+            tag={harness?.get(p.card.id)}
           />
         ))
       )}

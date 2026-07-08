@@ -65,13 +65,27 @@ function MessageDetail({ entry, width }: { entry: FeedEntry; width: number }) {
   );
 }
 
-function AgentDetail({ agent, feed, width }: { agent: Presence; feed: FeedEntry[]; width: number }) {
+/** The manager's managed-state for one agent (from the console's low-rate `ps` merge). */
+export interface ManagedInfo {
+  paused: boolean;
+  agent?: string; // connector name the manager launched (e.g. "claude")
+  mode?: string; // runtime kind (pty / tmux / cmux)
+}
+
+function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: FeedEntry[]; width: number; managed?: ManagedInfo }) {
   const { card, status, activity, ts } = agent;
   const s = STATUS[status];
   const mine = feed.filter(
     (e) => e.from.name === card.name || (e.toNames ?? []).includes(card.name),
   );
   const recent = mine.slice(-6).reverse();
+  // What the agent IS: the card's self-published harness metadata first (works on any mesh), the
+  // manager's launch record filling in for children whose card carries no meta. Omitted when
+  // neither knows — never faked.
+  const meta = card.meta as Record<string, unknown> | undefined;
+  const connector = typeof meta?.connector === "string" ? meta.connector : managed?.agent;
+  const runs = connector ? connector + (managed?.mode ? " · " + managed.mode : "") : undefined;
+  const model = typeof meta?.model === "string" ? meta.model : undefined;
   return (
     <Box flexDirection="column">
       <Field label="name">
@@ -103,6 +117,29 @@ function AgentDetail({ agent, feed, width }: { agent: Presence; feed: FeedEntry[
         <Field label="tags">
           <Text dimColor>{card.tags.join(", ")}</Text>
         </Field>
+      ) : null}
+      {runs ? (
+        <Field label="runs">
+          <Text>{runs}</Text>
+        </Field>
+      ) : null}
+      {model ? (
+        <Field label="model">
+          <Text dimColor>{model}</Text>
+        </Field>
+      ) : null}
+      {card.skills?.length ? (
+        <Box flexDirection="column">
+          <Field label="skills">
+            <Text dimColor>{String(card.skills.length)}</Text>
+          </Field>
+          {card.skills.map((sk, i) => (
+            <Text key={i} wrap="truncate-end">
+              <Text>{" ".repeat(11) + (sk.name || sk.id)}</Text>
+              {sk.description ? <Text dimColor>{"  " + sk.description}</Text> : null}
+            </Text>
+          ))}
+        </Box>
       ) : null}
       <Box marginTop={1} flexDirection="column">
         <Text bold>{"recent traffic (" + mine.length + ")"}</Text>
@@ -138,11 +175,14 @@ export function Detail({
   feed,
   width,
   height,
+  managed,
 }: {
   target: DetailTarget;
   feed: FeedEntry[];
   width: number;
   height: number;
+  /** id → managed-state, for the agent view's `runs` field (absent on unmanaged meshes). */
+  managed?: Map<string, ManagedInfo>;
 }) {
   const title = target.kind === "message" ? "message detail" : "agent detail";
   return (
@@ -162,7 +202,7 @@ export function Detail({
         {target.kind === "message" ? (
           <MessageDetail entry={target.entry} width={width - 4} />
         ) : (
-          <AgentDetail agent={target.agent} feed={feed} width={width - 4} />
+          <AgentDetail agent={target.agent} feed={feed} width={width - 4} managed={managed?.get(target.agent.card.id)} />
         )}
       </Box>
       <Box marginTop={1}>

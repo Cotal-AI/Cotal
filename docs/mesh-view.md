@@ -100,13 +100,13 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 |---|---|---|---|---|
 | roster (status, activity, age) | `agents` / `endpoints` | ✓ panel | ✓ presence lines | ✓ sidebar |
 | all-activity feed | `feed` | ✓ feed panel | ✓ log | ✓ Monitor view |
-| channels plus counts | `channels` | ✓ tabs (`1`–`9`) |  | ✓ sidebar + Channel view |
+| channels plus counts, unread badges | `channels` (+ client state) | ✓ tabs (`1`–`9`, `+N`) |  | ✓ sidebar + Channel view |
 | golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ tiles |
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
 | topology (membership + who-talks-to-whom) | `feed` + `agents` + `membership` | ✓ lens (`t`, 3 variants) |  | ✓ graph |
 | peer-pushed views (json-render) | `views` | ✓ lens (`V`) |  |  |
-| message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
+| message / agent **detail** (incl. skills, harness) | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
 | msgs/s + activity sparkline, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
 
@@ -123,8 +123,12 @@ timeline. With no delivery daemon (or on an open mesh whose bare cred cannot rea
 lens degrades to the traffic-only view and the pill reads `traffic-only`. The views
 lens (`V`) shows the latest peer-published json-render view, validated against the console's
 fixed Ink component catalog (an invalid spec shows its rejection reason instead); the tiles strip
-renders through the same catalog, so the console dogfoods its own guardrail. The stream is
-line-oriented, so the signals stay out of it.
+renders through the same catalog, so the console dogfoods its own guardrail. Channel tabs carry a
+per-channel unread badge (`+N`, viewer-local: messages since that channel was last viewed, like
+the web sidebar's pill), the roster tags each agent with its harness when known (`cc` = Claude
+Code, `oc` = OpenCode … from the card's `meta.connector`, or the manager's launch record via the
+`ps` merge), and the agent detail adds `runs` / `model` / `skills` from the same sources. The
+stream is line-oriented, so the signals stay out of it.
 
 ## Future: not yet on the wire
 

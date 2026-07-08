@@ -29,6 +29,8 @@ export interface CommandCtx {
   control: (op: string, args: Record<string, unknown>, tier: ControlTier) => Promise<ControlReply>;
   /** Open the type-the-space-name purge confirm (the palette never purges directly). */
   confirmPurge: () => void;
+  /** Open the type-the-channel-name delete confirm for one channel's history + registry entry. */
+  confirmDelchan: (channel: string) => void;
   /** Upgrade the console to a participant on the operator's first send (presence + own inbox), so
    *  agents can reply. Idempotent, canWrite-gated. Await before the send. */
   ensureParticipant: () => Promise<void>;
@@ -208,6 +210,17 @@ export const COMMANDS: ConsoleCommand[] = [
     summary: "clear the space's history (confirm)",
     control: true,
     run: (ctx) => ctx.confirmPurge(),
+  },
+  {
+    name: "delchan",
+    summary: "delete one channel's history + registry entry (confirm)",
+    usage: "delchan <channel>",
+    control: true,
+    run: (ctx, rest) => {
+      const channel = rest.replace(/^#/, "").trim().split(/\s+/)[0] ?? "";
+      if (!channel) return ctx.notify("usage: delchan <channel>");
+      ctx.confirmDelchan(channel);
+    },
   },
   { name: "dms", summary: "toggle the DM lens", run: (ctx) => ctx.setMode("dm") },
   { name: "topo", summary: "toggle the topology lens", run: (ctx) => ctx.setMode("topo") },

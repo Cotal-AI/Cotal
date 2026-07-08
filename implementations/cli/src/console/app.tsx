@@ -1,5 +1,5 @@
 import { writeSync } from "node:fs";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import {
   CONTROL_ADMIN,
@@ -12,7 +12,7 @@ import { useMesh } from "./mesh.js";
 import { control, type ControlCtx } from "./control.js";
 import { attachClient, detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
-import { Roster } from "./ui/Roster.js";
+import { Roster, harnessTag } from "./ui/Roster.js";
 import { Feed } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
 import { Dm } from "./ui/Dm.js";
@@ -140,11 +140,16 @@ export function App({
     [ep.space, controlCtx],
   );
 
-  // Paused-ness lives in the manager's managed-state, NOT presence — a SIGSTOPped agent's
-  // heartbeat freezes, so its presence key TTLs out to "offline" and would lie. Poll `ps` at a
-  // low rate and merge by non-forgeable id; fail QUIET and stop polling when no manager answers
-  // (an open mesh without a supervisor must not spin or flash errors).
-  const [pausedIds, setPausedIds] = useState<Set<string>>(new Set());
+  // Managed-state lives in the manager, NOT presence — a SIGSTOPped agent's heartbeat freezes, so
+  // its presence key TTLs out to "offline" and would lie; and only the manager knows WHICH harness
+  // it launched (`agent` = connector, `mode` = runtime) for children whose card carries no meta.
+  // Poll `ps` at a low rate and merge by non-forgeable id; fail QUIET and stop polling when no
+  // manager answers (an open mesh without a supervisor must not spin or flash errors).
+  const [managed, setManaged] = useState<Map<string, { paused: boolean; agent?: string; mode?: string }>>(new Map());
+  const pausedIds = useMemo(
+    () => new Set([...managed.entries()].filter(([, m]) => m.paused).map(([id]) => id)),
+    [managed],
+  );
   const psDead = useRef(false);
   useEffect(() => {
     if (!canControl || !controlCtx) return;
@@ -158,11 +163,16 @@ export function App({
         psDead.current = true; // no manager on this mesh — don't keep knocking
         return;
       }
-      const list = (r.data ?? []) as { id: string; paused?: boolean }[];
-      setPausedIds((prev) => {
-        const next = new Set(list.filter((a) => a.paused).map((a) => a.id));
-        if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev;
-        return next;
+      const list = (r.data ?? []) as { id: string; paused?: boolean; agent?: string; mode?: string }[];
+      setManaged((prev) => {
+        const next = new Map(list.map((a) => [a.id, { paused: a.paused === true, agent: a.agent, mode: a.mode }]));
+        const same =
+          next.size === prev.size &&
+          [...next].every(([id, m]) => {
+            const p = prev.get(id);
+            return p !== undefined && p.paused === m.paused && p.agent === m.agent && p.mode === m.mode;
+          });
+        return same ? prev : next;
       });
     };
     void poll();
@@ -225,6 +235,58 @@ export function App({
   const counts: Record<string, number> = {};
   for (const ch of mesh.channels) counts[ch.channel] = ch.messages;
 
+  // Per-channel unread — pure client state over the cumulative channel counts (like the web's
+  // sidebar badges). Baseline at the FIRST snapshot that carries channels (history isn't unread);
+  // viewing a concrete channel keeps its watermark pinned to the live count (viewing clears);
+  // a channel that appears after the baseline has no watermark, so its whole count is unread.
+  const [seen, setSeen] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+    if (!mesh.channels.length) return;
+    setSeen((s) => {
+      if (s === null) {
+        const base: Record<string, number> = {};
+        for (const ch of mesh.channels) base[ch.channel] = ch.messages;
+        return base;
+      }
+      let next = s;
+      const bump = (channel: string, v: number) => {
+        if (next === s) next = { ...s };
+        next[channel] = v;
+      };
+      // A watermark above the live count means the stream was rewound (purge/delchan) — clamp it,
+      // or fresh messages would stay invisible until the count re-climbs past the old mark.
+      for (const ch of mesh.channels) {
+        const w = next[ch.channel];
+        if (w !== undefined && w > ch.messages) bump(ch.channel, ch.messages);
+      }
+      // Viewing a concrete channel pins its watermark to the live count (viewing clears).
+      const cur = counts[activeChannel];
+      if (activeChannel !== "all" && cur !== undefined && next[activeChannel] !== cur) bump(activeChannel, cur);
+      return next;
+    });
+    // counts derives from mesh.channels; activeChannel changes must also re-pin the watermark.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mesh.channels, activeChannel]);
+  const unread: Record<string, number> = {};
+  if (seen !== null)
+    for (const ch of mesh.channels) {
+      const n = ch.messages - (seen[ch.channel] ?? 0);
+      if (n > 0 && ch.channel !== activeChannel) unread[ch.channel] = n;
+    }
+
+  // id → short harness tag for the roster (what the agent IS): the card's self-published
+  // meta.connector first, the manager's launch record for children without card meta.
+  const harness = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of mesh.agents) {
+      const meta = p.card.meta as Record<string, unknown> | undefined;
+      const connector = typeof meta?.connector === "string" ? meta.connector : managed.get(p.card.id)?.agent;
+      const tag = harnessTag(connector);
+      if (tag) m.set(p.card.id, tag);
+    }
+    return m;
+  }, [mesh.agents, managed]);
+
   const onFocus = useCallback((id: FocusId) => setFocusedId(id), []);
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
   const openMessage = useCallback((e: FeedEntry) => setDetail({ kind: "message", entry: e }), []);
@@ -238,10 +300,10 @@ export function App({
         .then((r) => {
           setNotice(r.ok ? `${op === "pause" ? "paused" : "resumed"} ${p.card.name}` : `${op}: ${r.error ?? "failed"}`);
           if (r.ok)
-            setPausedIds((prev) => {
-              const next = new Set(prev);
-              if (op === "pause") next.add(p.card.id);
-              else next.delete(p.card.id);
+            setManaged((prev) => {
+              const next = new Map(prev);
+              const cur = next.get(p.card.id);
+              next.set(p.card.id, { ...cur, paused: op === "pause" });
               return next;
             });
         })
@@ -352,6 +414,7 @@ export function App({
       notify: setNotice,
       control: ctl,
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
+      confirmDelchan: (channel: string) => setConfirm({ kind: "delchan", channel }),
       ensureParticipant,
       recordOutboundDm,
       startAttach: handleAttach,
@@ -374,6 +437,23 @@ export function App({
       void ctl("purge", {}, CONTROL_ADMIN)
         .then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`))
         .catch((e) => setNotice("purge: " + (e as Error).message));
+    } else if (c?.kind === "delchan") {
+      // Same manager op as purge, narrowed by the channel arg (filtered STREAM.PURGE + registry
+      // key delete — the web dashboard's delete path). The deleted tab vanishes on the next
+      // channel poll; leave it now if it's the one being viewed, and drop its unread bookkeeping.
+      void ctl("purge", { channel: c.channel }, CONTROL_ADMIN)
+        .then((r) => {
+          if (!r.ok) return setNotice(`delchan: ${r.error ?? "failed"}`);
+          const purged = (r.data as { purged?: number } | undefined)?.purged;
+          setNotice(`deleted #${c.channel}${typeof purged === "number" ? ` · ${purged} messages purged` : ""}`);
+          setSeen((s) => {
+            if (s === null || !(c.channel in s)) return s;
+            const { [c.channel]: _gone, ...rest } = s;
+            return rest;
+          });
+          setActiveChannel((ch) => (ch === c.channel ? "all" : ch));
+        })
+        .catch((e) => setNotice("delchan: " + (e as Error).message));
     }
   };
 
@@ -421,7 +501,7 @@ export function App({
   // the terminal). App stays mounted → the observer endpoint + MeshView survive in the background.
   if (attachTarget) return null;
   if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
-  if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} />;
+  if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
   if (confirm)
     return (
       <Confirm target={confirm} width={size.cols} height={size.rows} onConfirm={onConfirmed} onCancel={() => setConfirm(null)} />
@@ -440,7 +520,7 @@ export function App({
 
   return (
     <Box flexDirection="column" width={size.cols} height={size.rows}>
-      <Tabs tabs={tabs} active={activeChannel} counts={counts} width={size.cols} />
+      <Tabs tabs={tabs} active={activeChannel} counts={counts} unread={unread} width={size.cols} />
       {/* Golden-signal strip — rendered through json-render's Ink catalog (dogfoods the same
           renderer that paints peer-pushed views). */}
       <SpecView spec={tilesSpec(mesh.signals.counts, mesh.signals.oldestWaitingTs, size.cols)} />
@@ -488,6 +568,7 @@ export function App({
               onPause={canControl ? handlePause : undefined}
               onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}
               paused={pausedIds}
+              harness={harness}
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed
