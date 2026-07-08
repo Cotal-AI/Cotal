@@ -52,10 +52,12 @@ function resolvePage(page: string): DocsPage | undefined {
   return DOCS_BUNDLE.pages.find((p) => p.slug === key);
 }
 
-/** Map a resolved slug to its markdown twin on docs.cotal.ai. */
+/** Map a resolved slug to an IMMUTABLE, version-pinned URL on docs.cotal.ai. Pinning the version
+ *  into the path is what makes a fetched body provably belong to the installed version. */
 function remoteUrl(slug: string): string {
-  if (slug === "schema") return `${REMOTE_BASE}/cotal.schema.json`;
-  return `${REMOTE_BASE}/${slug}.md`;
+  const base = `${REMOTE_BASE}/v/${DOCS_BUNDLE.version}`;
+  if (slug === "schema") return `${base}/cotal.schema.json`;
+  return `${base}/${slug}.md`;
 }
 
 /** The index: version banner + every page (slug · kind · summary) + spec/schema + how to
@@ -112,11 +114,23 @@ interface Section {
   len: number;
 }
 
-/** Keep identifiers and subjects whole: `cotal_send`, `$SYS.>`, `#general`, `allowSubscribe`. */
-const TOKEN = /[a-z0-9_$.#>-]+/gi;
+/** Keep identifiers and subjects whole: `cotal_send`, `$SYS.ACCOUNT`, `#general`, `allowSubscribe`. */
+const TOKEN = /[a-z0-9_$.#>*-]+/gi;
+/** Trailing/leading subject-wildcard and punctuation noise: `$SYS.>` → `$SYS`, `team.*` → `team`. */
+const EDGE = /^[.>*#-]+|[.>*#-]+$/g;
 function tokenize(s: string): string[] {
-  const m = s.toLowerCase().match(TOKEN);
-  return m ? m.filter((t) => t.length >= 2) : [];
+  const raw = s.toLowerCase().match(TOKEN);
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const r of raw) {
+    const t = r.replace(EDGE, "");
+    if (t.length < 2) continue;
+    out.push(t); // whole identifier, keeps the exact-match boost
+    // A dotted subject/path also matches on any of its segments, so `$SYS.>` finds the
+    // section that documents `$SYS`, and `cotal.schema.json` matches a `schema` query.
+    if (t.includes(".")) for (const seg of t.split(".")) if (seg.length >= 2) out.push(seg);
+  }
+  return out;
 }
 
 // Query-side stopwords only (the corpus keeps everything so IDF stays honest).
@@ -245,18 +259,6 @@ function renderSearch(query: string, hits: DocHit[]): string {
   ].join("\n\n");
 }
 
-/** Fetch the version docs.cotal.ai is currently serving, or null if unavailable. */
-async function remoteVersion(): Promise<string | null> {
-  try {
-    const r = await fetch(`${REMOTE_BASE}/docs-version.json`, { signal: AbortSignal.timeout(4000) });
-    if (!r.ok) return null;
-    const j = (await r.json()) as { version?: unknown };
-    return typeof j.version === "string" ? j.version : null;
-  } catch {
-    return null;
-  }
-}
-
 async function remoteBody(slug: string): Promise<string | null> {
   try {
     const r = await fetch(remoteUrl(slug), { signal: AbortSignal.timeout(6000) });
@@ -269,27 +271,21 @@ async function remoteBody(slug: string): Promise<string | null> {
 }
 
 /**
- * Version-guarded remote refresh for a page. Returns the remote body ONLY when the site
- * reports the same version as the installed bundle; otherwise returns null with a reason,
- * and the caller serves the version-exact bundle. This is what keeps `refresh` from ever
- * feeding the agent docs for a version it isn't running.
+ * Remote refresh for a page. It fetches the IMMUTABLE, version-pinned path
+ * (docs.cotal.ai/v/<installed-version>/…): a 200 body provably belongs to the installed
+ * version, so there is no separate version check to race or skew against. When that path is
+ * absent (version-pinned docs aren't published yet) or unreachable, it returns null and the
+ * caller serves the version-exact bundle. Fail-closed — an unverifiable remote is never served.
  */
 async function refreshPage(slug: string): Promise<{ body: string | null; note: string }> {
-  const rv = await remoteVersion();
-  if (rv === null) {
-    return { body: null, note: `(bundled v${DOCS_BUNDLE.version}; docs.cotal.ai unreachable — showing bundled docs)` };
-  }
-  if (rv !== DOCS_BUNDLE.version) {
-    return {
-      body: null,
-      note: `(bundled v${DOCS_BUNDLE.version}; docs.cotal.ai is on v${rv} — showing bundled docs to stay version-accurate)`,
-    };
-  }
   const body = await remoteBody(slug);
   if (body === null) {
-    return { body: null, note: `(bundled v${DOCS_BUNDLE.version}; remote page fetch failed — showing bundled docs)` };
+    return {
+      body: null,
+      note: `(bundled v${DOCS_BUNDLE.version}; no version-pinned copy at docs.cotal.ai/v/${DOCS_BUNDLE.version} — showing bundled docs)`,
+    };
   }
-  return { body, note: `(refreshed from docs.cotal.ai, v${rv})` };
+  return { body, note: `(refreshed from docs.cotal.ai — version-pinned copy for v${DOCS_BUNDLE.version})` };
 }
 
 export interface DocsArgs {
@@ -322,7 +318,14 @@ export async function runDocs(args: DocsArgs): Promise<ToolResult> {
     return { text: renderPage({ ...found, body }, note) };
   }
 
-  if (query) return { text: renderSearch(query, searchDocs(query)) };
+  // `refresh` only applies to reading a page; say so rather than silently ignore it, so an
+  // agent never believes a searched/indexed result was patched from the remote.
+  const refreshNote =
+    args.refresh && !page
+      ? "\n\n(note: `refresh` applies only when reading a page; the index and search use the bundled docs.)"
+      : "";
 
-  return { text: renderDocsIndex() };
+  if (query) return { text: renderSearch(query, searchDocs(query)) + refreshNote };
+
+  return { text: renderDocsIndex() + refreshNote };
 }

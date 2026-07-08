@@ -78,6 +78,14 @@ const repoRoot = join(here, "..", "..", "..");
     "exact identifier ‘allowSubscribe’ retrieves the channels page",
   );
 
+  // A subject wildcard resolves to its base subject (trailing operators stripped, segments emitted).
+  assert.ok(searchDocs("$SYS.>").length > 0, "‘$SYS.>’ retrieves the sections that document $SYS");
+  assert.ok(searchDocs("cotal.schema.json").length > 0, "a dotted path matches on its segments");
+
+  // `refresh` is page-only: on a search it is flagged, not silently ignored.
+  const searchRefresh = await runDocs({ query: "channel", refresh: true });
+  assert.match(searchRefresh.text, /`refresh` applies only when reading a page/, "refresh on search is flagged");
+
   // Diversity: at most two sections per page in the results.
   const perPage = new Map<string, number>();
   for (const h of searchDocs("cotal")) perPage.set(h.slug, (perPage.get(h.slug) ?? 0) + 1);

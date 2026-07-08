@@ -168,9 +168,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         'pass "spec", "schema", or a guide slug from the index like "architecture" or ' +
         '"channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant ' +
         "sections with a pointer to each full page. Read the full page before writing code against it. " +
-        "Read-only, offline, instant. Optionally set `refresh: true` to also pull post-release doc patches " +
-        "from docs.cotal.ai (used only when the site reports this same version, so it can never return " +
-        "docs for a different version).",
+        "Read-only, offline, instant. Optionally set " +
+        "`refresh: true` when reading a page to also pull a version-pinned copy from docs.cotal.ai " +
+        "(post-release patches); being version-pinned it can never return docs for a different version, and " +
+        "it falls back to the bundled copy when none is published.",
       schema: {
         page: z
           .string()
@@ -183,7 +184,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         refresh: z
           .boolean()
           .optional()
-          .describe("Default false serves the bundled, version-exact docs (offline). Set true to also try docs.cotal.ai for post-release patches; it is used only if the site reports this same version, otherwise the bundled copy is served and the response says so."),
+          .describe("Applies only when reading a `page` (ignored for the index and search). Default false serves the bundled, version-exact docs (offline). Set true to also try a version-pinned copy at docs.cotal.ai for post-release patches; if none is published or it is unreachable, the bundled copy is served and the response says which was used."),
       },
       run(_agent, _config, args: { page?: string; query?: string; refresh?: boolean }) {
         return runDocs(args);
