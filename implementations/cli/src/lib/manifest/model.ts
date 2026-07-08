@@ -46,6 +46,8 @@ export interface ResolvedAgent {
   model?: string;
   /** Manifest override of the persona's connector-defined model variant. */
   variant?: string;
+  /** Opaque connector launch options, merged per key over the persona's `launchOptions:`. */
+  launchOptions?: Record<string, unknown>;
   role?: string;
   /** Manifest card blurb (override / inline). */
   description?: string;

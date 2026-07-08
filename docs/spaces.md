@@ -42,8 +42,7 @@ Collapsing space into "just channels" would drop the per-collaboration roster an
 isolation boundary; you would be back to one global namespace with topic prefixes (exactly
 `--open` mode's soft isolation). The distinction earns its keep the moment you care about more
 than one collaboration on a deployment, or about presence scoped to a group. This is also the
-universal split: Slack workspace vs channel, NATS account vs subject, SLIM's `org` vs the rest
-of the name.
+universal split: Slack workspace vs channel, NATS account vs subject.
 
 Who may read and post a channel is a separate, per-agent question:
 [channels & permissions](channels-and-permissions.md).
@@ -96,8 +95,7 @@ The model above is derived from how existing systems handle the same problems:
   [Confluent Cluster
   Linking](https://docs.confluent.io/platform/current/multi-dc-deployments/cluster-linking/index.html),
   [Discord threads](https://docs.discord.com/developers/topics/threads).
-- **Agent-native:** [SLIM](https://www.ietf.org/archive/id/draft-mpsb-agntcy-slim-00.html),
-  [A2A discovery](https://a2a-protocol.org/latest/topics/agent-discovery/),
+- **Agent-native:** [A2A discovery](https://a2a-protocol.org/latest/topics/agent-discovery/),
   [MCP
   authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
   [libp2p

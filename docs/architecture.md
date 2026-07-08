@@ -9,22 +9,21 @@ blocks. Identity, transport, storage, and discovery compose from proven pieces (
 JetStream, JWT/nkeys) rather than being reinvented. Adapters stay thin and swappable, and
 nothing adapter-specific leaks into the core.
 
-## Influences: A2A + SLIM
+## Influences: A2A
 
-Cotal borrows vocabulary and shapes from two agent frameworks so it stays interoperable
-rather than siloed, and implements them over NATS/JetStream.
+Cotal reuses A2A's vocabulary and shapes so it stays interoperable rather than siloed, and
+implements them over NATS/JetStream.
 
 **From A2A** come the *data shapes*: `AgentCard` (identity / role / tags / skills),
 `Message` / `Part` (text and data), and correlation ids (`contextId`). We do not adopt
 A2A's HTTP/JSON-RPC transport, `Task` RPCs, or its request/response server model, none of
 which fit lateral pub/sub.
 
-**From SLIM** comes the *addressing model*: the hierarchical address
-`space / service / instance` and the three delivery modes: multicast, unicast, anycast
-([presence & delivery](presence-and-delivery.md)). **Mentions** are a Cotal addition: a
-priority hint on a multicast, not a routing target. We do **not** adopt SLIM's Rust data
-plane, gRPC transport, or MLS encryption; NATS/JetStream replaces that layer and adds the
-durability and presence SLIM leaves to the app.
+The *addressing model* is Cotal's own: the hierarchical address `space / service / instance`
+and three delivery modes, multicast, unicast, anycast
+([presence & delivery](presence-and-delivery.md)). **Mentions** are a priority hint on a
+multicast, not a routing target. NATS/JetStream is the data plane, adding the durability and
+presence a bare pub/sub layer leaves to the app.
 
 Identity is an A2A `AgentCard` whose instance id is shaped to later become a **DID**
 (`did:key`) so authenticity can survive an untrusted relay ([roadmap](roadmap.md)).
