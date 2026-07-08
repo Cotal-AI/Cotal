@@ -311,7 +311,7 @@ try {
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   // Personas (identity + file ACL) for the two spawns.
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-  for (const n of ["alpha", "beta"])
+  for (const n of ["alpha", "beta", "delta"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
 
   authChild = spawnAuthService();
@@ -363,6 +363,30 @@ try {
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
   const listed = manager.list().find((a) => a.name === "alpha");
   check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && listed?.mesh !== "absent", listed);
+
+  // ---------- B2. delegation attenuation (the ENVELOPE rule, end to end) ----------
+  console.log("B2) a spawner-attributed spawn is attenuated to the spawner's own grant");
+  // The cli grant is [general] + scope [spawn]: an imperative over-ask (`spawn --allow-subscribe`
+  // beyond the spawner's own read ACL — the exact escalation vector) must be refused at the grant
+  // write, name the operator's widening re-grant, and leave no row behind.
+  const overReply: ControlReply = await manager.startAgent(
+    { name: "delta", agent: "e2e", allowSubscribe: ["general", "ops.secret"] }, `${OWNER}.cli`);
+  check("an over-envelope spawn is refused (read beyond the spawner's [general])",
+    overReply.ok === false && /delegation only narrows/.test(overReply.error ?? ""), overReply);
+  check("…the refusal names the exact widening re-grant", /cotal actor grant cli --owner/.test(overReply.error ?? ""), overReply.error);
+  check("…and left no managed row", !existsSync(rowFile("managed", OWNER, "delta")));
+  // The delta persona carries `role: worker` — a ROLE is receive reach on the shared task queue,
+  // so it too is delegated: refused until the spawner's scope carries `role:worker`.
+  const roleReply: ControlReply = await manager.startAgent(
+    { name: "delta", agent: "e2e", allowSubscribe: ["general"] }, `${OWNER}.cli`);
+  check("a persona ROLE outside the spawner's scope is refused (role = delegated capability)",
+    roleReply.ok === false && /role "worker" beyond scope/.test(roleReply.error ?? ""), roleReply);
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
+  const withinReply: ControlReply = await manager.startAgent(
+    { name: "delta", agent: "e2e", allowSubscribe: ["general"] }, `${OWNER}.cli`);
+  check("the same spawn within the envelope (read + role delegated) succeeds", withinReply.ok === true, withinReply);
+  const deltaRow = JSON.parse(readFileSync(rowFile("managed", OWNER, "delta"), "utf8")) as { parent?: string };
+  check("the delegated row records the spawner as parent", deltaRow.parent === `${OWNER}.cli`, deltaRow);
 
   // ---------- C. exchange-mode confinement ----------
   console.log("C) a managed agent is NOT IdP-exchangeable, cannot be shadowed, and fails closed on tamper");

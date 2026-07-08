@@ -64,7 +64,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // Signing in proves WHO you are; each mesh separately lets you in. Hand the human the exact
     // next step — their sub is the one thing the operator needs from them.
     console.log(
-      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (add --scope spawn to allow spawning agents)`,
+      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (add --scope spawn,role:default to allow spawning the stock agent; role:<r> delegates a role)`,
     );
   });
 }
@@ -310,12 +310,12 @@ const authCommands: Command[] = [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the folder's)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: none)" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: general)" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: general)" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: general) — the user's envelope: their agents can never read beyond it" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: general) — also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
-      { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link" },
+      { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority — this does not attenuate)" },
     ],
     run: runActor,
   },

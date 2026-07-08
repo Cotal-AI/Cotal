@@ -589,22 +589,18 @@ export class Manager {
     }
     const dir = userAuthStateDir(this.workspaceRoot, this.space);
     // The agent's capability scope rides its ledger row (act.scope in every bearer) — same
-    // vocabulary as static capabilities; the broker maps them to the ctl tiers.
-    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin");
+    // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
+    // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
+    // attenuates every one of these against the spawner chain.
+    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
     const credsDir = join(authDir(this.workspaceRoot), "creds");
     const tokenPath = join(credsDir, `${name}.actor-token`);
     const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
     const healthPath = join(credsDir, `${name}.auth-health.json`);
     try {
-      // Durables + ACL row, principal-keyed — the same onboarding as static agents minus the mint
-      // (a user agent's credential is its bearer, minted by the callout per connect).
-      await this.withProvisioner((prov) =>
-        provisionAgentDurables(prov, { owner, actor: name }, {
-          subscribe: opts.subscribe,
-          allowSubscribe: opts.allowSubscribe,
-          role: opts.role,
-        }),
-      );
+      // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
+      // the spawner's own grant), so a refused delegation exits here having touched nothing beyond
+      // the ledger: no durables, no broker footprint, nothing for a corrected respawn to race.
       const grant = await provider.grantAgent({
         dir,
         space: this.space,
@@ -617,6 +613,15 @@ export class Manager {
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
       });
+      // Durables + ACL row, principal-keyed — the same onboarding as static agents minus the mint
+      // (a user agent's credential is its bearer, minted by the callout per connect).
+      await this.withProvisioner((prov) =>
+        provisionAgentDurables(prov, { owner, actor: name }, {
+          subscribe: opts.subscribe,
+          allowSubscribe: opts.allowSubscribe,
+          role: opts.role,
+        }),
+      );
       mkSecretDir(credsDir);
       writeSecretFile(tokenPath, grant.actorToken);
       writeSecretFile(sentinelPath, grant.sentinelCreds);
@@ -641,12 +646,14 @@ export class Manager {
       return { owner, launch: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd } };
     } catch (e) {
       // Roll back everything this attempt materialized — a refused spawn must leave no standing
-      // secret, no ledger row, no durable footprint.
+      // secret, no ledger row, no durable footprint — and AWAIT the broker teardown: the caller
+      // may respawn the moment it reads the refusal, and a detached teardown would race (and
+      // delete) that fresh spawn's just-provisioned durables.
       await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
       rmSync(tokenPath, { force: true });
       rmSync(sentinelPath, { force: true });
       rmSync(healthPath, { force: true });
-      void this.deprovision({ id: principalKey(owner, name).key, name, userOwner: owner }).catch((err) =>
+      await this.deprovision({ id: principalKey(owner, name).key, name, userOwner: owner }).catch((err) =>
         console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
       return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
     }

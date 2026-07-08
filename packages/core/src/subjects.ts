@@ -369,6 +369,38 @@ export function channelInAllow(allow: string[], channel: string): boolean {
   return allow.some((a) => subjectMatches(a, channel));
 }
 
+/** Does policy pattern `cap` COVER policy pattern `pattern` — i.e. is every channel matched by
+ *  `pattern` also matched by `cap`? Both sides use the {@link assertValidChannel} grammar
+ *  (`*` = one token, `>` = one-or-more trailing). This is the DELEGATION primitive
+ *  ({@link patternInAllow}): where {@link channelInAllow} asks "is this concrete channel readable
+ *  under this ACL", this asks "is this ACL *entry* grantable under this ACL" — pattern vs pattern,
+ *  so `review.>` is within `review.>` but exceeds `review.pua`. */
+export function patternCovers(cap: string, pattern: string): boolean {
+  const c = cap.split(".");
+  const p = pattern.split(".");
+  // A non-terminal '>' is outside the policy grammar (assertValidChannel) — fail closed on BOTH
+  // sides: a malformed cap must never widen an envelope (`review.>.x` is not `review.>`), and a
+  // malformed request must never be admitted.
+  if (c.slice(0, -1).includes(">") || p.slice(0, -1).includes(">")) return false;
+  for (let i = 0; i < c.length; i++) {
+    if (c[i] === ">") return p.length > i; // every match of `pattern` has ≥ i+1 tokens iff pattern still has a token here
+    if (i >= p.length) return false; // pattern's matches are exactly p.length tokens — shorter than cap requires
+    if (p[i] === ">") return false; // pattern fans out into arbitrary depth this cap segment can't cover
+    if (c[i] === "*") continue; // any single token is covered
+    if (p[i] === "*") return false; // pattern admits tokens this literal cap segment does not
+    if (c[i] !== p[i]) return false;
+  }
+  return c.length === p.length;
+}
+
+/** Is ACL entry `pattern` within capability list `allow` — covered by SOME single entry? A union of
+ *  entries is deliberately NOT considered (`[a.b, a.c]` does not admit `a.*`): per-entry containment
+ *  is conservative — it can refuse a technically-covered pattern, never admit an uncovered one —
+ *  and keeps the refusal explainable ("name the entry that covers it, or widen the grant"). */
+export function patternInAllow(allow: string[], pattern: string): boolean {
+  return allow.some((a) => patternCovers(a, pattern));
+}
+
 /** Drop exact duplicates and any subject subsumed by a more-general one — JetStream
  *  rejects a consumer whose `filter_subjects` overlap, so `[team.>, team.backend]`
  *  must collapse to `[team.>]` before binding the chat consumer. A parent and its subtree

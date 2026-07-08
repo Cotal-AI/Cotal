@@ -533,48 +533,51 @@ async function provisionUserForeground(
   // loaded explicitly here for durable pre-creation only, never for the agent's identity.
   const infra = loadSpaceAuth(authDir(target.root));
   if (!infra) return fail(`space "${space}" has user-auth state but no auth.json under ${authDir(target.root)} — re-run \`cotal up --user-auth\` here`);
-  const prov = new CotalEndpoint({
-    space,
-    servers: server,
-    creds: await mintCreds(infra, newIdentity(), "provisioner"),
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: false,
-    watchChannels: false,
-    card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
-  });
-  prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
-  await prov.start();
-  try {
-    // Live-only, like static foreground spawn: no ACL row → no durable backstop (that requires a
-    // managing daemon; use `cotal spawn --detach` / `cotal up` for one).
-    await provisionAgentDurables(prov, { owner, actor: name }, {
-      subscribe: opts.subscribe,
-      allowSubscribe: opts.allowSubscribe,
-      role: opts.role,
-      durableMembership: false,
-    });
-  } finally {
-    await prov.stop();
-  }
   const credsDir = join(authDir(target.root), "creds");
   const tokenPath = join(credsDir, `${name}.actor-token`);
   const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
   const healthPath = join(credsDir, `${name}.auth-health.json`);
   try {
+    // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
+    // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
+    // the same ordering as Manager.provisionUserAgent, for the same reason.
     const grant = await provider.grantAgent({
       dir,
       space,
       owner,
       actor: name,
-      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "admin"),
+      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
       allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe?.length ? opts.subscribe : ["general"]),
       allowPublish: opts.allowPublish ?? [],
       role: opts.role,
       parent: `${owner}.cli`,
       label: ref,
     });
+    const prov = new CotalEndpoint({
+      space,
+      servers: server,
+      creds: await mintCreds(infra, newIdentity(), "provisioner"),
+      channels: [],
+      consume: false,
+      registerPresence: false,
+      watchPresence: false,
+      watchChannels: false,
+      card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
+    });
+    prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
+    await prov.start();
+    try {
+      // Live-only, like static foreground spawn: no ACL row → no durable backstop (that requires a
+      // managing daemon; use `cotal spawn --detach` / `cotal up` for one).
+      await provisionAgentDurables(prov, { owner, actor: name }, {
+        subscribe: opts.subscribe,
+        allowSubscribe: opts.allowSubscribe,
+        role: opts.role,
+        durableMembership: false,
+      });
+    } finally {
+      await prov.stop();
+    }
     mkSecretDir(credsDir);
     writeSecretFile(tokenPath, grant.actorToken);
     writeSecretFile(sentinelPath, grant.sentinelCreds);
