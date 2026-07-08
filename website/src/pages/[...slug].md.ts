@@ -3,8 +3,21 @@
 // canonical URL) is layered on at the edge in functions/_middleware.ts.
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection } from 'astro:content';
+import { AGENT_PROMPT } from '../prompt';
 
 const isIndex = (id: string) => id === '' || id === 'index';
+
+// The Quickstart is synced as MDX so its prompt fence renders as the
+// interactive card; its twin must stay clean Markdown, so restore the fence.
+const PROMPT_FENCE = '```text wrap\n' + AGENT_PROMPT + '\n```';
+function restorePrompt(body: string): string {
+  const restored = body
+    .replace(/^import AgentPrompt from[^\n]*\n+/m, '')
+    .replace('<AgentPrompt />', PROMPT_FENCE);
+  if (restored.includes('AgentPrompt'))
+    throw new Error('unrestored AgentPrompt component in a Markdown twin');
+  return restored;
+}
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection('docs');
@@ -16,7 +29,7 @@ export const getStaticPaths: GetStaticPaths = async () => {
 export const GET: APIRoute = ({ props }) => {
   const { entry } = props as { entry: { id: string; body?: string; data: { title?: string } } };
   const title = entry.data.title ?? entry.id;
-  const body = (entry.body ?? '').trim();
+  const body = restorePrompt((entry.body ?? '').trim());
   const markdown = `# ${title}\n\n${body}\n`;
   return new Response(markdown, {
     headers: {

@@ -19,6 +19,16 @@ const pubDir = join(here, '..', 'public');
 // Where repo-relative (non-docs) links point on the web.
 const GITHUB_BLOB = 'https://github.com/Cotal-AI/Cotal/blob/main';
 
+// The Quickstart's paste-into-your-agent fence renders as the interactive
+// AgentPrompt card on the site (the page is emitted as MDX; the .md twin
+// endpoint restores the plain fence). The prompt's source of truth is
+// src/prompt.ts; the fence in docs/getting-started.md must match it exactly.
+const promptSource = readFileSync(join(here, '..', 'src', 'prompt.ts'), 'utf8');
+const promptMatch = promptSource.match(/AGENT_PROMPT =\s*\n?\s*'([^']+)'/);
+if (!promptMatch) throw new Error('AGENT_PROMPT not found in src/prompt.ts');
+const PROMPT_FENCE = '```text wrap\n' + promptMatch[1] + '\n```';
+const QUICKSTART_SRC = 'docs/getting-started.md';
+
 // Map a source basename (no extension) to its Starlight slug. README is the docs
 // index (its front-door content lives on the generated landing page), so it is
 // excluded from the sync and links to it go to the site root.
@@ -149,10 +159,11 @@ function yamlEscape(s) {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-// Clean generated markdown (keep hand-authored .mdx like index.mdx).
+// Clean generated markdown (keep hand-authored .mdx like index.mdx; the
+// generated getting-started.mdx is ours to remove).
 mkdirSync(outDir, { recursive: true });
 for (const f of readdirSync(outDir)) {
-  if (f.endsWith('.md')) rmSync(join(outDir, f));
+  if (f.endsWith('.md') || f === 'getting-started.mdx') rmSync(join(outDir, f));
 }
 mkdirSync(genDir, { recursive: true });
 
@@ -182,7 +193,16 @@ for (const group of groups) {
     ]
       .filter((l) => l !== null)
       .join('\n');
-    writeFileSync(join(outDir, `${slug}.md`), fm + md);
+    let ext = 'md';
+    let imports = '';
+    if (rel === QUICKSTART_SRC) {
+      if (!md.includes(PROMPT_FENCE))
+        throw new Error(`quickstart prompt fence not found: ${rel} drifted from src/prompt.ts`);
+      md = md.replace(PROMPT_FENCE, '<AgentPrompt />');
+      imports = "import AgentPrompt from '../../components/AgentPrompt.astro';\n\n";
+      ext = 'mdx';
+    }
+    writeFileSync(join(outDir, `${slug}.${ext}`), fm + imports + md);
     items.push({ label: title, slug });
   }
   sidebar.push({ label: group.label, items });

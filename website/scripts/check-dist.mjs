@@ -17,6 +17,19 @@ for (const needle of ['/getting-started.md', '/mcp-tools.md', '/spec.md', '/cota
   if (!llms.includes(needle)) fail(`llms.txt lost its task link to ${needle}`);
 }
 
+// The Quickstart ships the interactive prompt card on the page, and its
+// Markdown twin (plus the llms dumps) must stay clean Markdown: the plain
+// fence restored, no component tag leaking through.
+const quickstartHtml = readFileSync(join(dist, 'getting-started', 'index.html'), 'utf8');
+if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt card');
+const quickstartTwin = readFileSync(join(dist, 'getting-started.md'), 'utf8');
+if (!quickstartTwin.includes('llms.txt, then set up Cotal'))
+  fail('quickstart twin lost the setup prompt');
+for (const f of ['getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
+  if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))
+    fail(`AgentPrompt component leaked into ${f}`);
+}
+
 const BAD = /(?:href="|\]\()(?:\.\.\/|docs\/|spec\/|packages\/|extensions\/|implementations\/|examples\/)/;
 function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
