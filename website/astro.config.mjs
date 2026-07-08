@@ -24,8 +24,9 @@ export default defineConfig({
       logo: { src: './src/assets/cotal-mark.svg', alt: '' },
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/cotal-ai/cotal' }],
       sidebar: [...sidebar, { label: 'For agents', items: [{ label: 'Docs for agents', slug: 'docs-for-agents' }] }],
-      // Advertise each page's Markdown twin in <head> (agent auto-discovery).
-      components: { Head: './src/components/Head.astro' },
+      // Head: advertise each page's Markdown twin (agent auto-discovery).
+      // Hero: add the "Copy prompt" pill to the landing hero.
+      components: { Head: './src/components/Head.astro', Hero: './src/components/Hero.astro' },
       plugins: [
         starlightLlmsTxt({
           projectName: 'Cotal',
