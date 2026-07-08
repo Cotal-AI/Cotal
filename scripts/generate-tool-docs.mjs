@@ -76,7 +76,7 @@ const ANNOTATIONS = {
     availability:
       "capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive",
     notes:
-      "Fails apart by cause: a permission denial names the missing capability; an unreachable manager is reported as such.",
+      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such.",
   },
   cotal_feedback: {
     effect: "sends data to an external HTTPS intake (network egress)",

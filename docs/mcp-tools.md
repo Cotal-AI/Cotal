@@ -198,7 +198,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 
 - **Side-effect:** starts a new agent process via the manager.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive.
-- Fails apart by cause: a permission denial names the missing capability; an unreachable manager is reported as such.
+- Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
