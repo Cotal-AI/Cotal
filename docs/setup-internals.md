@@ -91,7 +91,7 @@ fail-loud on collision.
 - **Manager:** `startManagerDetached` / `ensureManager`
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
   supervise` detached (pty runtime); it answers the control plane
-  (`cotal_spawn`/`despawn`/`purge`/`persona`). Writes `.cotal/manager.pid` and
+  (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.pid` and
   `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
 
 The **web dashboard** is *not* part of `cotal up` — it ships as the `cotal-web` extension.

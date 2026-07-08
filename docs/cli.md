@@ -36,6 +36,7 @@ ships this way; see [`web`](#web)).
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#meshes-use-status) | Read-only diagnostics for setup, processes, and the selected mesh |
 | Agents & personas | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
+| Agents & personas | [`models`](#models) | List connector model catalogs and variants from the manager |
 | Agents & personas | [`ps`](#ps-stop-attach) | List managed agents and their mesh status |
 | Agents & personas | [`stop`](#ps-stop-attach) | Ask the manager to stop a managed agent |
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
@@ -79,7 +80,7 @@ maintainers, [setup internals](setup-internals.md).
 ## up
 
 ```bash
-cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <a,b>]
+cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
 ```
 
@@ -89,7 +90,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
 | `--host <host>` | — | Bind host override |
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | — | JetStream store directory |
-| `--channels <a,b>` | — | Channels to pre-create |
+| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
 | `--open` | off (auth) | Unauthenticated dev mesh — no JWT, no ACLs |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
@@ -136,7 +137,7 @@ recorded meshes, and a live snapshot of the selected mesh (roster, channels, mem
 ## spawn
 
 ```bash
-cotal spawn [<persona>] [--detach] [--name <n>] [--agent <a>] [--model <m>] [--prompt <text>] [--cwd <dir>]
+cotal spawn [<persona>] [--detach] [--name <n>] [--agent <a>] [--model <m>] [--variant <v>] [--prompt <text>] [--cwd <dir>]
 cotal spawn -f <cotal.yaml> [--dry-run]
 ```
 
@@ -146,10 +147,11 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--server <url>` | registry entry | Broker URL override |
 | `--creds <path>` | — | Control-caller creds for an off-registry manager (`--detach` only) |
 | `--name <n>` | persona's `name:` | Presence-name override (does not choose the persona) |
-| `--config <persona-or-path>` | positional, else `COTAL_DEFAULT_PERSONA`, else `default` | Persona catalog name or file path |
+| `--config <persona-or-path>` | — | Persona catalog name or file path; wins over the positional |
 | `--agent <a>` | `COTAL_DEFAULT_AGENT`, else `claude` | Connector type (`claude`, `opencode`, `hermes`, …) |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
+| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
 | `--cwd <dir>` | this cwd | Working directory to root the agent at |
 | `--prompt <text>` | — | Initial prompt auto-submitted at start |
 | `--resume <id>` | — | Fork an existing session id into the mesh (claude only) |
@@ -164,12 +166,28 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <pty\|tmux\|cmux>` | manifest's | With `-f`: override the manifest's runtime |
 
-The persona (positional > `--config` > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
+The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
 attached to your terminal; `--detach` hands the launch to the running manager. `--detach` is the
 only mode that registers a durable delivery membership; a foreground spawn reads live only. See
 [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
 [manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
+
+## models
+
+```bash
+cotal models [--agent <connector>] [--refresh]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--agent <connector>` | all registered connectors | Connector whose catalog to list |
+| `--refresh` | off | Ask the connector to refresh its provider cache |
+
+Asks the running manager for each connector's model catalog — model ids plus their variants —
+for connectors that expose one (OpenCode today; a connector without a catalog says so). Pick a
+result with `cotal spawn --model <provider/model> --variant <v>`.
 
 ## ps, stop, attach
 

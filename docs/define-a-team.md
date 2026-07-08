@@ -125,7 +125,8 @@ declared item against the live mesh:
 
 Every mesh-touching command resolves the broker from the mesh registry, so `--space <name>` is
 enough — `send`, `channels`, `console`, `web`, the manifest verbs, and the manager control commands
-(`cotal ps` / `start` / `stop` / `attach`) all reach a manifest mesh on any port with no `--server`:
+(`cotal ps` / `stop` / `attach`, plus `cotal spawn --detach`) all reach a manifest mesh on any port
+with no `--server`:
 
 ```bash
 cotal ps --space research-team        # finds research-team's broker via the registry
