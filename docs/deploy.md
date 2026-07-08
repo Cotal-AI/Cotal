@@ -4,7 +4,7 @@
 
 The `deploy/` tree runs a team of agents in an isolated container that dials **out** to an
 existing Cotal broker. The container gets no host file access; only NATS traffic crosses the wall.
-One image, configured entirely by env and mounts — add or reshape a team by editing the roster and
+One image, configured entirely by env and mounts; add or reshape a team by editing the roster and
 agent files, never the image.
 
 `deploy/README.md` is the full walkthrough (a local quickstart plus production notes). This page
@@ -19,12 +19,12 @@ is the map: what the tree provides, what you need, and how creds flow.
 | `deploy/docker/compose.yaml` | Two example services: `team-a` (a manager + roster) and `solo` (one agent). |
 | `deploy/docker/roster.example.yaml` | A roster template to copy. |
 
-**What it does *not* provide:** the broker (external — you point at it), and, per the README,
+**What it does *not* provide:** the broker (external: you point at it), and, per the README,
 host-side per-agent cred provisioning and stronger sandbox isolation are called out as *later*
-hardening — they are **not built yet**. What ships today is the phase-1 container boundary
+hardening; they are **not built yet**. What ships today is the phase-1 container boundary
 described under [Isolation](#isolation).
 
-The image supports **Claude Code and OpenCode** agents only — it does not bundle `uv`/`hermes-agent`,
+The image supports **Claude Code and OpenCode** agents only; it does not bundle `uv`/`hermes-agent`,
 so [Hermes](connect-hermes.md) cannot run in a container today.
 
 ## Two shapes
@@ -43,11 +43,11 @@ Mix connector types freely within a roster (`agent: claude` / `agent: opencode` 
 
 - **Docker.**
 - **An external broker**, reachable from the container. `cotal up` binds loopback by default; a
-  broker containers dial out to needs `cotal up --host 0.0.0.0` (and auth — the default). Point
+  broker containers dial out to needs `cotal up --host 0.0.0.0` (and auth, the default). Point
   `COTAL_SERVERS` at it: `nats://host.docker.internal:4222` for a broker on your machine, or
   `tls://broker.host:4222` for a hosted one. The deploy tree never runs the broker.
 - **The account signer:** on the host beside your broker, `cotal mint --signer` writes
-  `signer.json` — account signing material with no operator key.
+  `signer.json`: account signing material with no operator key.
 - **A model credential per connector type** (see below).
 
 ## Steps
@@ -87,9 +87,9 @@ forwards the named vars and each CLI reads only the ones it understands:
 | connector | env | notes |
 |---|---|---|
 | `claude` | `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` on your host; runs on your Claude Pro/Max subscription, same as local |
-| `opencode` | the env var of the provider behind each agent's `model:` | per provider — `OPENCODE_API_KEY` for OpenCode's hosted models, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. |
+| `opencode` | the env var of the provider behind each agent's `model:` | per provider: `OPENCODE_API_KEY` for OpenCode's hosted models, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. |
 
-Every var set on a team container reaches every agent in it — **the container is the team's trust
+Every var set on a team container reaches every agent in it; **the container is the team's trust
 boundary**, so secrets are not isolated *between* agents in the same container. For hard per-agent
 isolation, run one agent per container (the `solo` service: same image, `spawn <name>`).
 
@@ -113,6 +113,6 @@ change.
 
 ## See also
 
-- [Define a team](define-a-team.md) — roster and persona files
-- [Identity and auth](identity-and-auth.md) — the signer, minting, and account scoping
+- [Define a team](define-a-team.md): roster and persona files
+- [Identity and auth](identity-and-auth.md): the signer, minting, and account scoping
 - [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md)

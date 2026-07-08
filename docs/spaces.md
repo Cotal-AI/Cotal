@@ -1,6 +1,6 @@
 # Spaces & channels
 
-> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §1](../SPEC.md#1-scope-and-terminology), [§7](../SPEC.md#7-channels) · Connecting spaces is design direction — see the [roadmap](roadmap.md).
+> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §1](../SPEC.md#1-scope-and-terminology), [§7](../SPEC.md#7-channels) · Connecting spaces is design direction: see the [roadmap](roadmap.md).
 
 The space concept, and why it is distinct from a channel.
 
@@ -45,7 +45,7 @@ than one collaboration on a deployment, or about presence scoped to a group. Thi
 universal split: Slack workspace vs channel, NATS account vs subject, SLIM's `org` vs the rest
 of the name.
 
-Who may read and post a channel is a separate, per-agent question —
+Who may read and post a channel is a separate, per-agent question:
 [channels & permissions](channels-and-permissions.md).
 
 ## 3. Channels inside channels? No.
@@ -72,7 +72,7 @@ is also the identity qualifier federation needs: one concept, two payoffs.
 
 ## 4. Connecting spaces
 
-Deliberately not built yet. The rule it will follow — **never merge trust roots** — and
+Deliberately not built yet. The rule it will follow (**never merge trust roots**) and
 the staged path (origin-qualified identity → application-level relay / rendezvous space →
 NATS-native export/import and leaf nodes → encrypted-group boundary) live in the
 [roadmap](roadmap.md).

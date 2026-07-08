@@ -1,6 +1,6 @@
 # MeshView: one model, many surfaces
 
-> **Reference** — describes the TypeScript reference implementation's observer surfaces (`MeshView`), not the wire contract. · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
+> **Reference**: describes the TypeScript reference implementation's observer surfaces (`MeshView`), not the wire contract. · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
 
 `MeshView` is the shared model behind every surface that lets a human *watch* a live mesh: the
 terminal [console](watch-a-mesh.md), the plain stream, and the web dashboard. It defines what
@@ -8,20 +8,20 @@ those surfaces show and keeps them from drifting apart.
 
 **This is a reference-implementation API, not the wire.** The wire is the source of truth; every
 field below is a *rendering* derived from it. A different client is free to derive its own model
-or none at all — nothing here is normative. What *is* normative (subjects, delivery modes,
+or none at all; nothing here is normative. What *is* normative (subjects, delivery modes,
 presence) lives in the [SPEC](../SPEC.md).
 
 ## The observer
 
 Every surface is built on one **read-only observer**: a `CotalEndpoint` started with
-`consume: false, registerPresence: false, watchPresence: true` — invisible to peers, binding no
+`consume: false, registerPresence: false, watchPresence: true`, invisible to peers, binding no
 durables, reading the space through the live tap plus history and presence-watch. No surface opens
 its own NATS connection, and none re-implements the wire semantics.
 
 ## The model: `MeshView` (`@cotal-ai/cli`)
 
 One class (`implementations/cli/src/view/mesh-view.ts`) consumes that observer and emits a
-normalized, render-agnostic model: no ANSI, no React, no HTML, no colour — pure data. It owns the
+normalized, render-agnostic model: no ANSI, no React, no HTML, no colour, pure data. It owns the
 endpoint lifecycle (`start → tap → stop`) and batches every source (roster events, the tap, burst
 flushes, channel polls, the rate/age heartbeat) into one snapshot per ~75 ms tick.
 
@@ -36,7 +36,7 @@ await view.stop();
 ```
 
 `window` caps the feed (default 300 entries). `tapSubject` chooses visibility: `chatWildcard(space)`
-narrows the tap to multicast (auth — DMs and anycast stay confidential); `spaceWildcard(space)` or
+narrows the tap to multicast (auth: DMs and anycast stay confidential); `spaceWildcard(space)` or
 omitting it taps the whole space (the god-view).
 
 ```ts
@@ -49,7 +49,7 @@ interface FeedEntry {           // one feed row
   toService?: string;           // anycast target
   toNames?: string[];           // unicast: targets resolved off the roster
   count?: number;               // unicast: burst multiplicity for a coalesced entry
-  text: string;                 // parts joined, plain — the surface colours it
+  text: string;                 // parts joined, plain; the surface colours it
 }
 
 interface MeshSnapshot {
@@ -87,7 +87,7 @@ interface MeshSignals {
 ```
 
 `dms` groups unicast traffic into per-peer conversations (`DmPeer → DmThread → DmMessage`), only
-the pairs that actually talked — never the n² cross-product. It is populated only when DMs are
+the pairs that actually talked, never the n² cross-product. It is populated only when DMs are
 visible (god-view / open mode); a chat-only observer leaves it empty.
 
 ## Feature to surface map
@@ -115,7 +115,7 @@ line-oriented, so the signals stay out of it.
 
 The web's `?demo` scene also mocks features that **no protocol message backs yet**. They render
 only as the static design reference, never from live data, and are deliberately *not* implemented
-on the live surfaces — design intent until the wire grows to support them:
+on the live surfaces, design intent until the wire grows to support them:
 
 | Flourish | What it would need |
 |---|---|

@@ -10,10 +10,10 @@ JetStream.
 
 | You are… | Start with |
 |---|---|
-| **Evaluating** — what is this? | [What is Cotal](what-is-cotal.md) |
-| **Running it** — agents on a mesh, on my machine | [Quickstart](getting-started.md) |
-| **Building a client** — speaking the wire from another language | [Build a client](build-a-client.md) |
-| **Implementing the contract** — conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), and the [change log](../SPEC.md#appendix-d-change-log) |
+| **Evaluating**: what is this? | [What is Cotal](what-is-cotal.md) |
+| **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.md) |
+| **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
+| **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), and the [change log](../SPEC.md#appendix-d-change-log) |
 
 ## For agents
 
@@ -45,17 +45,17 @@ Task dispatch:
 
 ## Guides
 
-For operators — running and watching a mesh:
+For operators running and watching a mesh:
 
 | Doc | Answers |
 |---|---|
-| [Run a mesh](run-a-mesh.md) | How do I operate the local stack — modes, status, multiple meshes, history? |
+| [Run a mesh](run-a-mesh.md) | How do I operate the local stack (modes, status, multiple meshes, history)? |
 | [Define a team](define-a-team.md) | How do I declare a whole team in one `cotal.yaml` and launch it? |
-| [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what — terminal console and web dashboard? |
+| [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what (terminal console, web dashboard)? |
 | [Deploy](deploy.md) | How do I run agent teams against an external broker? |
 | [Examples](examples.md) | Which runnable examples exist? |
 
-For connector users — putting your agent on the mesh:
+For connector users putting an agent on the mesh:
 
 | Doc | Answers |
 |---|---|
@@ -73,13 +73,13 @@ For protocol implementers:
 
 | Doc | Answers |
 |---|---|
-| [Architecture](architecture.md) | How is it built — the thin waist, the pieces, and why? |
+| [Architecture](architecture.md) | How is it built (the thin waist, the pieces), and why? |
 | [Spaces & channels](spaces.md) | What is a space, how does it differ from a channel? |
 | [Transport vs protocol](transport.md) | What is protocol vs transport, and what must a binding provide? |
 | [Presence & delivery](presence-and-delivery.md) | How do presence, the three delivery modes, and durable delivery work? |
 | [Identity & auth](identity-and-auth.md) | Who can do what, and how is it enforced? |
 | [Delivery daemon (Plane-3)](delivery-daemon.md) | What is the durable backstop, and why does it exist? |
-| [Security model](security.md) | What is the trust boundary — what v0 protects and does not? |
+| [Security model](security.md) | What is the trust boundary (what v0 protects and does not)? |
 
 ## Reference
 
@@ -99,11 +99,11 @@ For protocol implementers:
 | Doc | Answers |
 |---|---|
 | [SPEC.md](../SPEC.md) | The **normative** wire contract (RFC-2119). Where a client disagrees with the spec, the spec wins. |
-| [cotal.schema.json](../spec/cotal.schema.json) | The machine-readable message schema — authoritative for message shapes. |
+| [cotal.schema.json](../spec/cotal.schema.json) | The machine-readable message schema, authoritative for message shapes. |
 
 ## Project
 
-For people changing how Cotal is built or shipped — not needed to use it.
+For people changing how Cotal is built or shipped (not needed to use it).
 
 | Doc | Answers |
 |---|---|

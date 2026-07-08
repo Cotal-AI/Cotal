@@ -1,10 +1,10 @@
 # `cotal` CLI reference
 
-> **Reference** — describes the TypeScript reference implementation (the `cotal` CLI), not the wire contract. · **For:** operators · **Wire contract:** [SPEC](../SPEC.md)
+> **Reference**: describes the TypeScript reference implementation (the `cotal` CLI), not the wire contract. · **For:** operators · **Wire contract:** [SPEC](../SPEC.md)
 
 `cotal` is the operator command line for the reference implementation: bring a mesh up, mint
 identities, launch agents, watch what they do, and tear it all down. It is a thin client over the
-wire contract — the normative subjects and schemas live in the [SPEC](../SPEC.md); this page is
+wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md); this page is
 lookup material for the commands, not a walkthrough; if you are new, start with
 [Getting started](getting-started.md).
 
@@ -20,8 +20,8 @@ cotal <command> --help    # one command's flags and usage
 runs it through `tsx` with no build step. Bare `cotal` prints help. Every command generates its own
 `--help`, usage, and shell completion from its declared flags.
 
-Commands come from the surfaces the binary composes — the base mesh CLI, the manager
-(`supervise`), and the delivery daemon (`deliver`) — plus any operator-installed extensions.
+Commands come from the surfaces the binary composes: the base mesh CLI, the manager
+(`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
 `cotal ext add <npm-package>` adds a package's commands to this same surface (the `web` dashboard
 ships this way; see [`web`](#web)).
 
@@ -42,7 +42,7 @@ ships this way; see [`web`](#web)).
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
-| Messaging & watching | [`send`](#send) | Send one message, then exit — DM a peer, post a channel, or ask a role |
+| Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
@@ -91,7 +91,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | — | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
-| `--open` | off (auth) | Unauthenticated dev mesh — no JWT, no ACLs |
+| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
@@ -130,7 +130,7 @@ cotal status [--space <s>] [--server <url>]
 
 `meshes` lists the running meshes on this machine; a `*` marks the `current` default a bare
 `cotal spawn` joins. `use <space>` sets that default when several are running. `status` is a
-read-only report across four sections — machine prerequisites, this folder's `.cotal/`, the
+read-only report across four sections: machine prerequisites, this folder's `.cotal/`, the
 recorded meshes, and a live snapshot of the selected mesh (roster, channels, membership feed).
 `status` takes only `--space` / `--server` to pick the mesh to inspect; it starts nothing.
 
@@ -185,7 +185,7 @@ cotal models [--agent <connector>] [--refresh]
 | `--agent <connector>` | all registered connectors | Connector whose catalog to list |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
 
-Asks the running manager for each connector's model catalog — model ids plus their variants —
+Asks the running manager for each connector's model catalog (model ids plus their variants)
 for connectors that expose one (OpenCode today; a connector without a catalog says so). Pick a
 result with `cotal spawn --model <provider/model> --variant <v>`.
 
@@ -204,7 +204,7 @@ cotal attach --name <n> [--space <s>]
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`). `attach` streams and drives an
-agent's terminal on the `pty` runtime — detach with the escape key (Ctrl-] by default; see
+agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
 [`COTAL_DETACH_KEY`](config.md)). `stop` and `attach` are cross-agent admin operations, so they need
 a manager to talk to; launch detached agents with [`spawn --detach`](#spawn).
 
@@ -227,7 +227,7 @@ cotal personas rm <name> --force
 | `--from <f>` | — | `new`: seed the prompt from a file |
 | `--verbose`, `-v` | off | `list`: include role / model / description |
 | `--running` | off | `list`: mark personas live on the mesh |
-| `--force` | — | `rm`: required — delete without prompting |
+| `--force` | — | `rm`: required, delete without prompting |
 
 Personas are the local agent files under `.cotal/agents/` that `cotal spawn` launches. See
 [Agent files](agent-files.md) for the file format.
@@ -285,7 +285,7 @@ cotal channels default --replay | --no-replay
 | `--desc <s>` | — | `set`: one-line channel description |
 | `--instructions <s>` | — | `set`: instructions shown to joiners |
 
-Inspects and edits the channel registry — replay policy, description, and joiner instructions. ACL
+Inspects and edits the channel registry: replay policy, description, and joiner instructions. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
 [Channels and permissions](channels-and-permissions.md).
 
@@ -299,7 +299,7 @@ cotal history clear --force [--dms] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
 | `--dms` | off | Also clear DM history |
-| `--force` | — | Required — clear without prompting |
+| `--force` | — | Required: clear without prompting |
 
 Purges retained channel history; `--dms` extends it to direct-message history.
 
@@ -314,7 +314,7 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space — a lazygit-style TUI, or a plain line stream on `--plain`. See
+A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. See
 [Watch a mesh](watch-a-mesh.md).
 
 ## web
@@ -330,10 +330,10 @@ cotal web [--port <n>] [--no-open] [--space <s>]
 | `--port <n>` | `7799` | HTTP port |
 | `--no-open` | off | Don't open the browser |
 
-The browser observability dashboard — presence, channels, and a live feed. It is **not** part of
+The browser observability dashboard: presence, channels, and a live feed. It is **not** part of
 `cotal up`: it ships as the `cotal-web` extension (`cotal setup` installs it automatically; otherwise
 `cotal ext add cotal-web`). It self-registers `cotal web` into this surface and serves
-`http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge — Safari may
+`http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). See [Watch a mesh](watch-a-mesh.md).
 
 ## mint
@@ -379,7 +379,7 @@ harness. A `--link` or `--token` supplies the where and the auth in one value. S
 
 ## Manifest deploys
 
-A `cotal.yaml` manifest declares a whole mesh — channels, personas, roles, and ACLs — in one file.
+A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.
 Three commands consume it, plus a read-only validator:
 
 ```bash
@@ -442,7 +442,7 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 
 ## Server daemons
 
-Two long-lived infra roles ship with the CLI. They are not part of everyday operation — the delivery
+Two long-lived infra roles ship with the CLI. They are not part of everyday operation; the delivery
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
@@ -450,7 +450,7 @@ cotal deliver --space <s> [--server <url>] [--creds <file>]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
 
-`deliver` runs the server-side Plane-3 delivery daemon — the durable backstop and membership/ACL
+`deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
 `--dev-mint` mints a scoped cred from the local signer for standalone dev. See the
 [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
@@ -460,5 +460,5 @@ include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and 
 ## Plumbing
 
 `cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
-for the current command line — you never run it directly. (`cotal start` is a removed tombstone: it
+for the current command line; you never run it directly. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)

@@ -1,6 +1,6 @@
 # Security model
 
-> **Concept** (informative threat model) · **For:** operators and security reviewers · **Normative:** [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) — this page is the threat model SPEC §9 references; where the two disagree, the spec wins.
+> **Concept** (informative threat model) · **For:** operators and security reviewers · **Normative:** [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization). This page is the threat model SPEC §9 references; where the two disagree, the spec wins.
 
 Cotal v0 provides containment and sender authenticity for peers sharing one trusted NATS
 broker. It is not an end-to-end encrypted or untrusted-relay protocol. The enforcement
@@ -44,28 +44,28 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
 
 ## What v0 protects
 
-The guarantees, at a glance — each enforced by the broker per
+The guarantees, at a glance, each enforced by the broker per
 [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization):
 
-- **Sender authenticity** — the sender id is encoded in the subject and enforced by NATS
+- **Sender authenticity**: the sender id is encoded in the subject and enforced by NATS
   permissions; receivers reject payloads whose `from.id` mismatches.
-- **Space containment** — account boundaries isolate one space's subjects, streams, and KV
+- **Space containment**: account boundaries isolate one space's subjects, streams, and KV
   buckets from another.
-- **Channel publish scope** — posting only as self, only to declared `allowPublish`
+- **Channel publish scope**: posting only as self, only to declared `allowPublish`
   channels (default-deny).
-- **Channel read scope** — reads bounded to the `allowSubscribe` ACL: live joins are
+- **Channel read scope**, reads bounded to the `allowSubscribe` ACL: live joins are
   broker-refused outside it, and history reads ride server-pinned single-channel consumers.
   - **Known metadata leak (not content):** agents hold `STREAM.INFO` on the chat stream, so
-    a `subjects_filter` query can enumerate retained chat *subjects* — channel names, sender
-    ids, per-subject counts — including channels outside `allowSubscribe`. This is metadata,
+    a `subjects_filter` query can enumerate retained chat *subjects* (channel names, sender
+    ids, per-subject counts) including channels outside `allowSubscribe`. This is metadata,
     never message content, and channel *names* are already public via the registry. Hiding
     even the existence/volume of other channels requires the per-channel-stream model and is
     deferred strict-containment work ([roadmap](roadmap.md)).
-- **DM / task peer confidentiality** — per-identity inbox prefixes plus
+- **DM / task peer confidentiality**: per-identity inbox prefixes plus
   provisioner-created bind-only consumers, so an agent cannot read someone else's inbox or
   steal another role's work; durable-channel backstop reads are re-authorized by a trusted
   reader ([delivery daemon](delivery-daemon.md)).
-- **Transport secrecy (optional)** — `cotals://` enforces TLS for the hop to the broker.
+- **Transport secrecy (optional)**: `cotals://` enforces TLS for the hop to the broker.
   It protects that hop, not the broker itself.
 
 ## What v0 does not protect
@@ -85,12 +85,12 @@ The guarantees, at a glance — each enforced by the broker per
 - **Credential revocation/TTL:** minted credentials are long-lived in v0 unless rotated out of
   band. Despawn cuts a session, not a credential ([identity & auth](identity-and-auth.md)).
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there
-  is **no allow-all cred**) — the long-lived **supervisor** serves control and touches
+  is **no allow-all cred**); the long-lived **supervisor** serves control and touches
   presence/its lease but cannot read a DM, create a consumer, or delete a stream; the destructive
   verbs (`STREAM.DELETE`/`PURGE`, cross-agent stop, per-agent provisioning) ride ephemeral
   per-command creds (teardown / control-caller-admin / deployer / provisioner). What stays hot is
-  the account **signing key** on the mint/manager box — a compromise there can still mint fresh
-  creds — and confining it is the auth-callout stage ([roadmap](roadmap.md)).
+  the account **signing key** on the mint/manager box (a compromise there can still mint fresh
+  creds) and confining it is the auth-callout stage ([roadmap](roadmap.md)).
 
 ## Prompt-facing data
 

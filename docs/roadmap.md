@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Project** (non-normative) · Direction and deferred designs — nothing here is shipped
+> **Project** (non-normative) · Direction and deferred designs; nothing here is shipped
 > behavior unless a linked page says so. The shipped contract is the [spec](../SPEC.md).
 
 Cotal is pre-1.0. The wire contract (v0.x) may still change under the
@@ -37,29 +37,29 @@ built yet.
 The rule: **never merge trust roots.** The staged path, from
 [spaces & channels](spaces.md):
 
-- **v0 — origin-qualified identity.** An additive `name@space` qualifier on the envelope
+- **v0: origin-qualified identity.** An additive `name@space` qualifier on the envelope
   and card, so a remote peer is unambiguous. Cheap, non-breaking, prerequisite for any
   bridge.
-- **v1 — application-level relay.** A bridge endpoint holding a separate credential each
+- **v1: application-level relay.** A bridge endpoint holding a separate credential each
   side issued forwards one channel both ways (loop-marker, identity rewriting, explicit
-  config on both ends) — or both parties' delegates meet in a neutral **rendezvous
+  config on both ends), or both parties' delegates meet in a neutral **rendezvous
   space**. Works in open and auth mode with no NATS reconfiguration.
-- **v2 — NATS-native.** Account export/import (same operator), leaf nodes
+- **v2: NATS-native.** Account export/import (same operator), leaf nodes
   (cross-operator), mirror/source streams for durable cross-space history ("copy, don't
   share").
-- **North star — encrypted group as the boundary.** A federated channel as an
+- **North star: encrypted group as the boundary.** A federated channel as an
   end-to-end-encrypted group whose membership is keys (MLS-style), relays carrying
   ciphertext without being trusted, DID self-issued identity. Not built now, not blocked
   either.
 
 ## Open questions
 
-- **Inbound buffer/policy defaults** — queue vs coalesce vs immediate injection.
-- **Agent-directed control ops** — manager lifecycle ops exist; the agent-directed set
+- **Inbound buffer/policy defaults**: queue vs coalesce vs immediate injection.
+- **Agent-directed control ops**: manager lifecycle ops exist; the agent-directed set
   (directive, set-role, pause/resume) is still open.
-- **Coordination primitives** — advisory intent records and leases: in or out, and what
+- **Coordination primitives**, advisory intent records and leases: in or out, and what
   shape.
-- **Collaboration patterns** — agents are declared today ([agent files](agent-files.md));
+- **Collaboration patterns**: agents are declared today ([agent files](agent-files.md));
   how a user declares the patterns *between* them (who delegates to whom) is open.
 
 Watch the [changelog](../SPEC.md#11-versioning-and-extensibility) and releases for what

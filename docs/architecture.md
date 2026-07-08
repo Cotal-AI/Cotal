@@ -20,7 +20,7 @@ A2A's HTTP/JSON-RPC transport, `Task` RPCs, or its request/response server model
 which fit lateral pub/sub.
 
 **From SLIM** comes the *addressing model*: the hierarchical address
-`space / service / instance` and the three delivery modes — multicast, unicast, anycast
+`space / service / instance` and the three delivery modes: multicast, unicast, anycast
 ([presence & delivery](presence-and-delivery.md)). **Mentions** are a Cotal addition: a
 priority hint on a multicast, not a routing target. We do **not** adopt SLIM's Rust data
 plane, gRPC transport, or MLS encryption; NATS/JetStream replaces that layer and adds the
@@ -63,22 +63,22 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
                 (interoperate at runtime over NATS, not via imports)
 ```
 
-- **`@cotal-ai/core`** — the protocol: subjects, schemas, the NATS client layer, and the
+- **`@cotal-ai/core`**, the protocol: subjects, schemas, the NATS client layer, and the
   extension contracts (`Connector`, `Command`, `Runtime`) with the `Registry` they
   self-register into. Depends on nothing else in the repo.
-- **`@cotal-ai/workspace`** — the machine-local operator layer over `~/.cotal`: mesh
+- **`@cotal-ai/workspace`**, the machine-local operator layer over `~/.cotal`: mesh
   registry, target resolution, auth-path helpers. Not part of the wire standard, so a
   third party can embed core without inheriting workstation plumbing.
-- **`extensions/*`** — pluggable adapters (connectors, runtimes). Each **peer-depends** on
+- **`extensions/*`**: pluggable adapters (connectors, runtimes). Each **peer-depends** on
   core (binding to the host's single core instance) and self-registers on import; an
   unknown agent type **throws**, no silent fallback.
-- **`implementations/*`** — opinionated surfaces over core: the CLI, the manager, the
+- **`implementations/*`**, opinionated surfaces over core: the CLI, the manager, the
   delivery daemon, the web dashboard. Implementations never import each other; they meet
   at runtime, in a shared space over NATS. A composition root (the `cotal` binary, or an
   example) wires the pieces it wants.
-- **`examples/*`** — use-cases and composition roots, never published
+- **`examples/*`**: use-cases and composition roots, never published
   ([examples](examples.md)). An example only configures and orchestrates; new message
-  kinds or subjects go into core, generalized — never into an example.
+  kinds or subjects go into core, generalized, never into an example.
 
 The published binary also loads **operator-installed CLI extensions**: `cotal ext add
 <npm-package>` installs into a cotal-owned prefix, imports once so the package
@@ -116,7 +116,7 @@ messages redeliver on the rebound durables, so nothing is lost across the gap. A
 
 The CLI does not spawn agents itself; a long-lived **manager** owns their lifecycle,
 asked over the mesh (it is the control plane's first real consumer). It owns process
-lifecycle and config binding — start / stop / restart, binding env and policy — and has
+lifecycle and config binding (start / stop / restart, binding env and policy) and has
 no say in what work the agents do. Agents coordinate laterally; the manager only births
 and configures them.
 
@@ -133,7 +133,7 @@ and configures them.
   upgrade path ([roadmap](roadmap.md)).
 - **Control schema:** `start {role, name, agent, model?, variant?}` · `models {agent?,
   refresh?}` · `stop {name, graceful?}` · `definePersona {name, persona, model?}` · `ps` ·
-  `status` · `attach` · `bind` — request/reply messages any authorized node can send,
+  `status` · `attach` · `bind`, request/reply messages any authorized node can send,
   policy-gated ([identity & auth](identity-and-auth.md)).
 - **Bounded spawn.** A synchronous gate caps concurrent + in-flight agents and a
   minimum-lifetime floor bounds spawn↔despawn churn, so a capability-holding but
@@ -177,12 +177,12 @@ Three identity layers, in increasing permanence
   the credential subject.
 
 **Instance continuity:** the id tracks *context* continuity, not the label. A resumed
-session (same context window) keeps its id — presence, thread correlation, and in-flight
+session (same context window) keeps its id; presence, thread correlation, and in-flight
 DMs stay continuous. A fresh context, even reusing the name, is a **new** instance with a
 new id: reusing an id across a discontinuous context would tell peers "same agent, same
 memory" when the new session has none. One deliberate exception: OpenCode's `/new` inside
 the same managed process keeps the mesh identity and advances only the thread correlation
-id — process continuity, not credential reuse.
+id: process continuity, not credential reuse.
 
 ## Deferred
 

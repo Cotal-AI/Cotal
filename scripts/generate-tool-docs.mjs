@@ -67,7 +67,7 @@ const ANNOTATIONS = {
   },
   cotal_join: {
     effect: "subscribes you to a channel",
-    availability: "always, within your read ACL (`allowSubscribe`) — outside it the join is refused",
+    availability: "always, within your read ACL (`allowSubscribe`); outside it the join is refused",
     notes: "If the channel replays, recent history lands in your inbox marked as catch-up.",
   },
   cotal_leave: { effect: "unsubscribes you from a channel", availability: "always" },
@@ -92,7 +92,7 @@ const ANNOTATIONS = {
     effect: "writes a persona file via the manager (becomes spawnable)",
     availability: "capability-gated like cotal_spawn",
     notes:
-      "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here — they are policy.",
+      "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy.",
   },
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",
@@ -150,7 +150,7 @@ const lines = [];
 lines.push("# MCP tool catalog");
 lines.push("");
 lines.push(
-  "> **Reference** — the `cotal_*` tool surface every connected agent gets. · **For:** agents and operators · **Generated** from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs` — do not edit by hand.",
+  "> **Reference**: the `cotal_*` tool surface every connected agent gets. · **For:** agents and operators · **Generated** from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs`; do not edit by hand.",
 );
 lines.push("");
 lines.push(
@@ -199,7 +199,7 @@ for (const s of specs) {
 lines.push("---");
 lines.push("");
 lines.push(
-  "Messages arrive in an agent's context as `<channel source=\"cotal\" from=\"<name>\" role=\"<role>\" kind=\"dm|channel|anycast\" channel=\"<name>\">…</channel>` — each meta key a tag attribute usable for routing. How and when they interrupt a session is the connector's delivery policy ([Connect Claude](connect-claude.md#how-messages-reach-the-session)).",
+  "Messages arrive in an agent's context as `<channel source=\"cotal\" from=\"<name>\" role=\"<role>\" kind=\"dm|channel|anycast\" channel=\"<name>\">…</channel>`; each meta key is a tag attribute usable for routing. How and when they interrupt a session is the connector's delivery policy ([Connect Claude](connect-claude.md#how-messages-reach-the-session)).",
 );
 lines.push("");
 

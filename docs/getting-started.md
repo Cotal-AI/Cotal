@@ -2,14 +2,23 @@
 
 > **Start here** (informative) · **For:** everyone · **Next:** [Connect Claude](connect-claude.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
 
-This page takes you from install to a running local mesh with an agent on it, in a few
-minutes.
+## Set up with your agent
+
+Paste this into any coding agent (Claude Code, OpenCode, Cursor, Codex) and it will do
+the whole page for you:
+
+```text
+Read https://docs.cotal.ai/llms.txt, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
+```
+
+To do it by hand instead, keep reading: this page takes you from install to a running
+local mesh with an agent on it, in a few minutes.
 
 ## Install and run
 
 ```bash
 npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 20+)
-cotal setup                # one-time, configure-only — launches nothing
+cotal setup                # one-time, configure-only; launches nothing
 ```
 
 Bare `cotal` prints help; `cotal setup` runs the guided setup. If you prefer `npx`,
@@ -76,7 +85,7 @@ The vocabulary behind those three commands, which every other page builds on:
 |---|---|
 | **Space** | One collaboration, isolated from other spaces. Your mesh is a space. |
 | **Endpoint** | Any software on the mesh: a long-lived connection with presence. |
-| **Agent node** | An endpoint with identity, role, and tags — what `cotal spawn` launches. |
+| **Agent node** | An endpoint with identity, role, and tags (what `cotal spawn` launches). |
 | **Channel** | A named topic participants broadcast on and subscribe to. |
 | **Direct message** | A message addressed to one peer. |
 | **Presence** | The live roster: who is here, `idle` / `waiting` / `working` / `offline`. |
@@ -95,9 +104,9 @@ Every later `cotal setup` prints a **read-only status card**:
 cotal · status
 ✓ NATS     nats://127.0.0.1:4222
 ✓ plugin   installed
-○ mesh     down — start: cotal up --detach
-○ web      down — start: cotal web
-○ manager  not running — start: cotal up, or: cotal supervise
+○ mesh     down · start: cotal up --detach
+○ web      down · start: cotal web
+○ manager  not running · start: cotal up, or: cotal supervise
 ```
 
 It probes the current folder (the mesh, the browser dashboard, and the manager behind
@@ -117,7 +126,7 @@ peers, spawn teammates, and send feedback (the full surface is the
 cotal up --detach                    # start the mesh + delivery daemon + manager
 cotal status                         # detailed setup, process, registry, and live mesh status
 cotal spawn                          # your agent (edit .cotal/agents/default.md)
-cotal spawn david                    # a guided expert — needs `cotal setup --demo` first (also sven, me)
+cotal spawn david                    # a guided expert, needs `cotal setup --demo` first (also sven, me)
 cotal console --space main           # live mesh view in the terminal (TUI)
 cotal web --space main               # open the browser dashboard
 cotal down                           # stop the background mesh, delivery daemon, and manager
@@ -134,7 +143,7 @@ something. Defaults (persona, harness, model selection) and day-to-day operation
 ## Launch a team from a manifest
 
 The guided flow gives you one agent (or the expert team with `--demo`). To run a **specific
-team** — your own channels, agents, and who may read and post where — describe it once in a
+team** (your own channels, agents, and who may read and post where), describe it once in a
 `cotal.yaml` and launch it with `cotal up -f cotal.yaml`. The walkthrough is
 **[Define a team](define-a-team.md)**; the file format is the
 [manifest reference](manifest.md).
@@ -151,7 +160,7 @@ npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
 `setup --yes` accepts every default with no prompts and exits non-zero with the log path if a
 step fails, so an agent or a CI job can check the result (add `--demo` for the guided team).
 `cotal up --detach` then brings up the mesh, the delivery daemon, and the background manager,
-so an agent can use the `cotal_*` tools — spawn/despawn/persona — right away. `cotal down`
+so an agent can use the `cotal_*` tools (spawn/despawn/persona) right away. `cotal down`
 stops the background processes.
 
 ## Troubleshooting

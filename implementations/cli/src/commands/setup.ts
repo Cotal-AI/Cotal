@@ -311,9 +311,9 @@ async function readyCard(cwd: string): Promise<void> {
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
-      line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down — start: ${cmd} up --detach`)}`),
-      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down — start: ${cmd} web` : `not installed — retry: ${cmd} setup`)}`),
-      line(mgr, `manager  ${dim(mgr ? "running" : `not running — start: ${cmd} up, or: ${cmd} supervise`)}`),
+      line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down · start: ${cmd} up --detach`)}`),
+      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
+      line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,
       // Match the hint to what's actually on disk: the guided team (with --demo) vs the one default agent.
