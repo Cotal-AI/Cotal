@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { MODEL_PROVIDER_KEYS, aclEnv, launchEnv } from "@cotal-ai/connector-core";
 
 /** The extension is loaded with the same file extension as this module — `extension.ts`
@@ -40,11 +43,29 @@ export const piConnector: Connector = {
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
-    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
     const args = ["--extension", EXTENSION];
-    if (opts.model) {
-      env.COTAL_MODEL = opts.model; // presence metadata (AgentCard.meta.model), display-only
-      args.push("--model", opts.model); // applies even with no agent file (sibling contract)
+    let model = opts.model; // the spawn flag applies even with no agent file (sibling contract)
+    if (opts.configPath) {
+      env.COTAL_AGENT_FILE = opts.configPath;
+      // Parse the persona file here (not in the child) so a malformed persona fails loud
+      // at `cotal spawn`, matching the sibling connectors. The frontmatter-stripped body
+      // goes to pi via --append-system-prompt with a FILE path (pi reads paths natively),
+      // so a large persona never rides in argv (ARG_MAX ceiling); the raw agent file can't
+      // be passed directly or its `---` metadata would enter the system prompt. The model
+      // pin rides --model (`cotal spawn --model` wins over the file's `model:`), resolved
+      // by pi's own CLI semantics.
+      const def = loadAgentFile(opts.configPath);
+      if (def.persona) {
+        const dir = mkdtempSync(join(tmpdir(), "cotal-persona-"));
+        const persona = join(dir, "persona.md");
+        writeFileSync(persona, def.persona, { mode: 0o600 });
+        args.push("--append-system-prompt", persona);
+      }
+      model ??= def.model; // `cotal spawn --model` wins over the file's `model:` pin
+    }
+    if (model) {
+      env.COTAL_MODEL = model; // presence metadata (AgentCard.meta.model), display-only
+      args.push("--model", model);
     }
     return { command: "pi", args, env };
   },
