@@ -192,6 +192,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   const useAuth = !values.open;
   const space = values.space ?? resolveSpace(process.cwd());
   ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
+  refuseOpenOverUserState(Boolean(values.open), space);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
@@ -493,6 +494,7 @@ export async function startMeshDetached(
   const useAuth = !opts.open;
   const space = opts.space ?? resolveSpace(process.cwd());
   ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
+  refuseOpenOverUserState(Boolean(opts.open), space);
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
@@ -535,6 +537,22 @@ export async function startMeshDetached(
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
   const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
   return { server, pid: child.pid ?? 0, source, controlPlane, authService: svc.ok };
+}
+
+/** THE FLIP, open-boot edition: `--open` must never boot a credless broker over a root whose
+ *  space has user-auth state on disk — that would serve the space's existing JetStream store to
+ *  anyone and re-record the mesh "open" over its user entry. The same fail-closed rule authSetup
+ *  enforces for static re-ups, applied to the one boot path that skips authSetup entirely. */
+function refuseOpenOverUserState(open: boolean, space: string): void {
+  if (!open) return;
+  const stateDir = userAuthStateDir(cotalRoot(), space);
+  if (!existsSync(stateDir)) return;
+  console.error(
+    c.red(
+      `✗ space "${space}" has user auth enabled (state under ${stateDir}) — \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
+    ),
+  );
+  process.exit(1);
 }
 
 /** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so an

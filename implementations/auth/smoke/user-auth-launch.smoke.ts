@@ -248,6 +248,15 @@ try {
   check("broker is gone", brokerGone);
   const reup = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
   check("re-up WITHOUT --user-auth is refused fail-closed (names --user-auth)", reup.status !== 0 && reup.out.includes("--user-auth"), reup.out);
+  // THE FLIP, open-boot edition: `--open` skips authSetup, so it needs its own fail-closed guard —
+  // otherwise it would boot a CREDLESS broker over the user space's existing JetStream store and
+  // re-record the mesh "open" over its user entry.
+  const openReup = await cotal(["up", "--open", "--detach", "--server", SERVER, "--space", SPACE]);
+  check(
+    "the flip: `up --open` on a downed user-auth root is refused (no credless boot over the store)",
+    openReup.status !== 0 && openReup.out.includes("--user-auth"),
+    openReup.out,
+  );
 
   console.log(`\nUSER-AUTH LAUNCH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
