@@ -1,0 +1,73 @@
+name: Docs
+
+# Build and deploy the docs site (website/) to Cloudflare Pages.
+#  - push to main touching docs sources   -> production deploy (docs.cotal.ai)
+#  - pull request touching docs sources   -> preview deploy (URL in the job summary)
+#  - release published                    -> immutable snapshot on a branch alias
+#                                             (<tag>.cotal-docs.pages.dev)
+# Needs repo secrets CLOUDFLARE_API_TOKEN (Pages:Edit + Account Settings:Read)
+# and CLOUDFLARE_ACCOUNT_ID. Fork PRs build but skip the deploy (no secrets).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'docs/**'
+      - 'spec/**'
+      - 'SPEC.md'
+      - 'assets/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'docs/**'
+      - 'spec/**'
+      - 'SPEC.md'
+      - 'assets/**'
+      - '.github/workflows/docs.yml'
+  release:
+    types: [published]
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+        working-directory: website
+      - run: npm run build
+        working-directory: website
+
+      - name: Pick the Pages branch
+        id: target
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-*$//')" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "branch=${{ github.head_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        # Fork PRs have no secrets; they stop at the build check above.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: website
+          command: pages deploy dist --project-name=cotal-docs --branch=${{ steps.target.outputs.branch }}
+
+      - name: Summary
+        if: steps.deploy.outcome == 'success'
+        run: echo "Deployed to ${{ steps.deploy.outputs.deployment-url }}" >> "$GITHUB_STEP_SUMMARY"

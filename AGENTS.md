@@ -29,9 +29,9 @@ implementation is **TypeScript**.
 
 - [README.md](README.md): what Cotal is, for a general audience.
 - [docs/README.md](docs/README.md): the docs index and reading path.
-- [docs/OVERVIEW.md](docs/OVERVIEW.md) (*what* it does) →
+- [docs/what-is-cotal.md](docs/what-is-cotal.md) (*what* it does) →
   [docs/architecture.md](docs/architecture.md) (*how*) →
-  [docs/claude-code-integration.md](docs/claude-code-integration.md) (the connector).
+  [docs/connect-claude.md](docs/connect-claude.md) (the connector).
 - [SPEC.md](SPEC.md): the **normative** wire contract. Where a client disagrees with the spec,
   the spec wins.
 - `.internal/` (private submodule): working build-plans, research, and guidelines. Make sure it
@@ -117,9 +117,8 @@ endpoint methods; those go into `core`, generalized.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
   not explicitly requested or clearly needed.
 - **Keep docs short and human**, and **keep them updated in the same change** as the behavior:
-  when behavior changes, update the affected docs ([OVERVIEW](docs/OVERVIEW.md),
-  [architecture](docs/architecture.md),
-  [claude-code-integration](docs/claude-code-integration.md)) so they never drift from the code.
+  when behavior changes, update the affected pages under [docs/](docs/README.md) (and
+  [SPEC.md](SPEC.md) for wire changes) so they never drift from the code.
   `docs/` describes the **protocol** only; each example documents itself in its own
   `examples/*/README.md`.
 - **No fallbacks.** Throw if something is not supported in the current environment or config,

@@ -124,14 +124,14 @@ cotal spawn dave                                                                
 ```
 
 A bare `cotal spawn --detach dave` also auto-discovers `.cotal/agents/dave.md` in the manager's
-workspace (gitignored, user-local). See [agent files](../../docs/claude-code-integration.md#agent-files-persona--identity).
+workspace (gitignored, user-local). See [agent files](../../docs/agent-files.md).
 
 The bundled plugin reads `COTAL_*` from the env at spawn and auto-joins the mesh; the manager
 auto-clears the one-time dev-channel prompt, so the launch is hands-free. From there the agent is
 a peer like any other: its presence flips `working` / `idle` from lifecycle hooks, and mesh
 messages reach it two ways — **hook injection** at turn boundaries (the spine) and a **channel
 nudge** that wakes it the instant a message arrives while idle. See
-[claude-code-integration.md](../../docs/claude-code-integration.md) for the launch / install /
+[connect-claude.md](../../docs/connect-claude.md) for the launch / install /
 channel mechanics, and [architecture.md](../../docs/architecture.md) for the surface mapping.
 
 ## Inside a `join` session

@@ -13,6 +13,7 @@
 
 [![CI](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml/badge.svg)](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cotal-ai/core?label=%40cotal-ai%2Fcore)](https://www.npmjs.com/package/@cotal-ai/core)
+[![Docs](https://img.shields.io/badge/docs-docs.cotal.ai-e9c46a)](https://docs.cotal.ai)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/fhPqe3b4qu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
@@ -83,7 +84,13 @@ Cotal's guided setup is one command on a fresh machine:
 npx cotal-ai setup  # checks your machine, installs `cotal`, and configures your first agent mesh
 ```
 
-It gets your machine ready and **starts nothing**: checks Node/NATS, lets you pick connectors
+Or skip the terminal and paste one line into any coding agent, which sets everything up itself:
+
+```text
+Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
+```
+
+`setup` gets your machine ready and **starts nothing**: checks Node/NATS, lets you pick connectors
 (Claude installs a plugin; OpenCode auto-wires at spawn), installs the web dashboard extension,
 seeds one default agent, and offers to put `cotal` on your PATH. Then run:
 
@@ -119,7 +126,7 @@ cotal console       # terminal view of presence, channels, and messages
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
 > pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
-> on the mesh via `cotal_spawn`. See [docs/claude-code-integration.md](docs/claude-code-integration.md).
+> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
 
 **Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), agents in
 cmux/tmux panes, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
@@ -220,9 +227,13 @@ package list is in [AGENTS.md](AGENTS.md).
 
 ## Documentation
 
-- [docs/getting-started.md](docs/getting-started.md): install, run, and resume a local mesh.
-- [docs/OVERVIEW.md](docs/OVERVIEW.md): what Cotal does and the core primitives.
-- [docs/architecture.md](docs/architecture.md): how it's built (subjects, streams,
+The full docs live at **[docs.cotal.ai](https://docs.cotal.ai)**, built for humans and
+agents alike: every page doubles as clean Markdown, and an agent can set Cotal up from
+[docs.cotal.ai/prompt.md](https://docs.cotal.ai/prompt.md) alone.
+
+- [Getting started](https://docs.cotal.ai/getting-started/): install, run, and resume a local mesh.
+- [What is Cotal](https://docs.cotal.ai/what-is-cotal/): what Cotal does and the core primitives.
+- [Architecture](https://docs.cotal.ai/architecture/): how it's built (subjects, streams,
   auth, and the wire contract).
 - [deploy/README.md](deploy/README.md): run containerized agent teams against an
   external broker.
