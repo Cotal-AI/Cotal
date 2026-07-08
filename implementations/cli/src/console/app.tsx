@@ -10,7 +10,7 @@ import {
 } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { control, type ControlCtx } from "./control.js";
-import { attachClient } from "../lib/attach-client.js";
+import { attachClient, detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Roster } from "./ui/Roster.js";
 import { Feed } from "./ui/Feed.js";
@@ -189,9 +189,11 @@ export function App({
     if (!attachTarget) return;
     let cancelled = false;
     void (async () => {
+      let failed = false;
       try {
         await attachClient(attachTarget.ws);
       } catch (e) {
+        failed = true;
         if (!cancelled) setNotice("attach: " + (e as Error).message);
       } finally {
         try {
@@ -201,7 +203,8 @@ export function App({
         }
         if (!cancelled) {
           setAttachTarget(null);
-          setNotice(`detached from ${attachTarget.name}`);
+          // On failure the catch's error notice must survive the resume — don't overwrite it.
+          if (!failed) setNotice(`detached from ${attachTarget.name}`);
         }
       }
     })();
@@ -252,6 +255,13 @@ export function App({
   const handleAttach = useCallback(
     (name: string) => {
       if (!canControl) return setNotice("no control authority — pass --creds, or run against a mesh whose auth you hold");
+      // Validate COTAL_DETACH_KEY before suspending: a bad value stays a notice (never blanks the
+      // screen, never exits the console — attachClient would only throw it after the takeover).
+      try {
+        detachKey();
+      } catch (e) {
+        return setNotice("attach: " + (e as Error).message);
+      }
       setNotice(`attaching to ${name}…`);
       void ctl("attach", { name }, CONTROL_ADMIN)
         .then((r) => {

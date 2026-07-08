@@ -6,8 +6,9 @@ import { c } from "../ui.js";
  * rebinds it to another control key when Ctrl-] clashes with a keybinding inside the agent's TUI;
  * accepts `ctrl-<char>` or `^<char>` (e.g. `ctrl-b`, `^_`). Read at point of use, per the repo's
  * `COTAL_*` convention. An unparseable value — including a set-but-empty or whitespace-only one —
- * throws (named), never silently falling back; the caller turns that into a loud exit. Only an
- * unset var = the Ctrl-] default.
+ * throws (named), never silently falling back; each caller owns the failure mode (the standalone
+ * `cotal attach` command exits loudly, the console flashes a notice). Only an unset var = the
+ * Ctrl-] default.
  */
 export function detachKey(): { byte: number; label: string; overridden: boolean } {
   const spec = process.env.COTAL_DETACH_KEY;
@@ -83,15 +84,10 @@ const lastIndexOfRe = (re: RegExp, s: string): number => {
  * The detach key (Ctrl-] by default, {@link detachKey}) detaches without killing the agent.
  */
 export function attachClient(url: string): Promise<void> {
-  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
-  // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
-  let detach: ReturnType<typeof detachKey>;
-  try {
-    detach = detachKey();
-  } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
-    process.exit(1);
-  }
+  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails up front (a named
+  // throw, before an attach we'd only tear down). The caller owns the failure mode: the standalone
+  // command exits loudly, the console catches its awaited rejection into a notice.
+  const detach = detachKey();
   return new Promise<void>((resolve, reject) => {
     const ws = new WebSocket(url);
     const stdin = process.stdin;
@@ -134,7 +130,13 @@ export function attachClient(url: string): Promise<void> {
 
     const sendResize = () =>
       ws.send(`r:${process.stdout.columns ?? 80},${process.stdout.rows ?? 24}`);
-    const onInput = (d: Buffer) => {
+    const onInput = (data: Buffer | string) => {
+      // Under the console, Ink has called stdin.setEncoding("utf8") — and an encoding persists on
+      // the stream after Ink releases raw mode — so data arrives as a STRING there (standalone
+      // `cotal attach` gets Buffers). Normalize first: the 1-byte detach compare below would
+      // otherwise silently never match (a one-char string is not the number 0x1d) and Ctrl-] would just forward to the
+      // child, making detach impossible.
+      const d = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
       if (d.length === 1 && d[0] === detach.byte) {
         ws.close();
         return;

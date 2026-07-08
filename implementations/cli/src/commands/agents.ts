@@ -87,13 +87,22 @@ export async function attach(args: ParsedArgs): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
+  // A bad COTAL_DETACH_KEY fails loudly before connecting (attachClient itself just throws — the
+  // console turns the same error into a notice instead).
+  let detach: ReturnType<typeof detachKey>;
+  try {
+    detach = detachKey();
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   // Operator attach is a cross-agent (admin) op — same reasoning as stop (the operator isn't the
   // spawner; admin reaches any agent). Scoped `control-caller-admin`: ctl.<admin> only.
   const t = await resolveControlTarget(v, "control-caller-admin");
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.creds, CONTROL_ADMIN);
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
-  console.error(c.dim(`attached to ${v.name} — ${detachKey().label} to detach`));
+  console.error(c.dim(`attached to ${v.name} — ${detach.label} to detach`));
   await attachClient(ws);
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
