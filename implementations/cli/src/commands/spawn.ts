@@ -26,6 +26,7 @@ import {
   type FlagSpec,
   type FlagValues,
   type LaunchOpts,
+  type LaunchSpec,
   type ParsedArgs,
   type SpaceAuth,
   CONTROL_PRIVILEGED,
@@ -40,6 +41,8 @@ import {
   launchFlags,
   loadMeshes,
   loadSpaceAuth,
+  mergeLaunchOptions,
+  parseLaunchOptions,
   provenance,
   resolveMeshTarget,
   serverFlag,
@@ -201,6 +204,7 @@ async function spawnDetached(
   values: FlagValues<typeof spawnFlags>,
   positionals: string[],
   transcript: boolean | undefined,
+  launchOptions: Record<string, string> | undefined,
 ): Promise<void> {
   // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
@@ -223,6 +227,7 @@ async function spawnDetached(
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
+    launchOptions,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
     prompt: values.prompt,
@@ -275,6 +280,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red("✗ --dry-run only applies to a manifest deploy (`cotal spawn -f <manifest> --dry-run`)"));
     process.exit(1);
   }
+  // Parse `--opt k=v` pairs once, up front — a malformed pair fails loud before either launch path
+  // (foreground or detached) does any work. The opaque map is core-agnostic; the connector validates.
+  let cliLaunchOptions: Record<string, string> | undefined;
+  try {
+    cliLaunchOptions = parseLaunchOptions(values.opt);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(1);
+  }
   // Transcript mirroring to `tr-<name>` is OFF by default. Tri-state: true (--transcript),
   // false (--no-transcript, explicit), undefined (absent). Foreground treats absent as off;
   // detached forwards the tri-state so absent defers to the manager's default.
@@ -284,7 +298,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
   // request and override the file exactly as the foreground path does.
   if (values.detach) {
-    return spawnDetached(values, positionals, transcript);
+    return spawnDetached(values, positionals, transcript, cliLaunchOptions);
   }
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
@@ -438,12 +452,32 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     parseShareSelection(values["share-tools"]),
   );
 
-  // From here through a successful child launch, a THROW must run the user-mode cleanup — otherwise
-  // a buildLaunch/spawn rejection (unsupported resume/model, a bad connector) leaves the just-granted
-  // managed row + secret files standing (the freelance's blocker: cleanup only ran on normal exit).
+  // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
+  // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. If either
+  // fails the agent never joins the mesh, so roll the provision back — mirror the manager's
+  // `deprovision`: drop the creds file and tear down the broker footprint (durables + ACL) with an
+  // ephemeral, target-pinned deprovisioner cred. A no-op in open mode (nothing was minted).
+  const rollbackProvision = async (why: string): Promise<void> => {
+    if (!auth || !id || !credsPath) return;
+    rmSync(credsPath, { force: true });
+    console.error(`  ↩ rolled back creds for ${name} (${why})`);
+    try {
+      const dc = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: id });
+      await deprovisionAgent({ servers: server, space, targetId: id, creds: dc });
+    } catch (e) {
+      console.error(`! rollback: broker teardown for ${name} failed: ${(e as Error).message}`);
+    }
+  };
+
+  // From here through a successful child launch, a THROW must undo whatever this spawn provisioned —
+  // the user-mode actor grant (userCleanup) OR the static-auth creds + broker footprint
+  // (rollbackProvision) — otherwise a buildLaunch/spawn rejection (unsupported resume/model/`--opt`,
+  // a bad connector) leaves the just-granted identity standing. The planes are exclusive, so each
+  // cleanup is a no-op in the other's mode.
   let child: ReturnType<typeof spawnProcess>;
+  let spec: LaunchSpec;
   try {
-    const spec = connector.buildLaunch({
+    spec = connector.buildLaunch({
       space,
       name,
       role,
@@ -455,6 +489,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
       model: values.model,
       variant,
+      // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+      launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
       subscribe,
       allowSubscribe,
       allowPublish,
@@ -480,16 +516,22 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       cwd: values.cwd ? resolvePath(values.cwd) : undefined,
     });
   } catch (e) {
-    // Launch construction threw AFTER the user-mode grant landed — revoke + shred before rethrowing,
-    // so no standing managed grant survives a spawn that never started.
+    // Launch construction / spawn threw AFTER provisioning — undo BOTH planes (each a no-op in the
+    // other's mode): revoke the user-mode actor grant AND roll back the static-auth creds + footprint,
+    // before rethrowing, so no standing grant survives a spawn that never started.
     if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(err as Error).message}`)));
+    await rollbackProvision("launch build failed");
     throw e;
   }
   await new Promise<void>((resolve) => {
     child.on("error", (e) => {
-      console.error(`✗ failed to launch the agent process: ${e.message}`);
-      process.exitCode = 1;
-      resolve();
+      // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
+      // back. (User-mode revoke runs unconditionally once this promise settles, below.)
+      console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
+      void rollbackProvision("exec failed").finally(() => {
+        process.exitCode = 1;
+        resolve();
+      });
     });
     child.on("exit", (code) => {
       process.exitCode = code ?? 0;

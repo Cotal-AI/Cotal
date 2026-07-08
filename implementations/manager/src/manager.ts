@@ -31,7 +31,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -120,6 +120,9 @@ export interface StartAgentOpts {
   model?: string;
   /** Model variant override (the `--variant` flag). Takes precedence over the agent file's `variant:`. */
   variant?: string;
+  /** Opaque connector launch options (the `--opt k=v` flags). Merged per key over the agent file's
+   *  `launchOptions:` (imperative wins); forwarded verbatim to the connector, which validates them. */
+  launchOptions?: Record<string, unknown>;
   /** USER-MESH manifest launches only: the derived owner (`u_…`) from the launch spec (the
    *  logged-in operator who applied it). Imperative spawns resolve the owner from the ctl
    *  CALLER's principal instead — never from a payload field. */
@@ -797,6 +800,10 @@ export class Manager {
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
     if (args.variant !== undefined && !String(args.variant).trim())
       return Promise.resolve({ ok: false, error: "variant: must not be empty" });
+    // Opaque launch options, when present, must be a mapping — a raw control message could send a
+    // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
+    if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
+      return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
     // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
     // not something to coerce (no fallbacks).
     const strList = (v: unknown, flag: string): string[] | undefined => {
@@ -822,6 +829,7 @@ export class Manager {
         identity: args.identity ? String(args.identity) : undefined,
         model: args.model ? String(args.model) : undefined,
         variant: args.variant ? String(args.variant) : undefined,
+        launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
@@ -985,6 +993,7 @@ export class Manager {
     let capabilities: string[] | undefined;
     let model = opts.model;
     let variant = opts.variant;
+    let launchOptions = opts.launchOptions;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -999,6 +1008,7 @@ export class Manager {
       capabilities = r.capabilities;
       model = opts.model ?? r.model;
       variant = opts.variant ?? r.variant;
+      launchOptions = mergeLaunchOptions(r.launchOptions, opts.launchOptions);
     } else {
       let def: AgentDef;
       try {
@@ -1021,6 +1031,7 @@ export class Manager {
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
       variant = opts.variant ?? def.variant;
+      launchOptions = mergeLaunchOptions(def.launchOptions, opts.launchOptions);
     }
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
@@ -1125,6 +1136,7 @@ export class Manager {
         configPath,
         model,
         variant,
+        launchOptions,
         // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.

@@ -73,9 +73,8 @@ The guarantees, at a glance, each enforced by the broker per
 
 - **Untrusted broker or relay:** the broker can read, drop, replay, or alter plaintext
   traffic. Signed envelopes are reserved for a later version.
-- **End-to-end secrecy:** DMs are plaintext to the broker and to `admin`. (SLIM puts MLS
-  end-to-end encryption under its pub/sub; Cotal v0 deliberately does not, trading secrecy for
-  a single trusted broker.)
+- **End-to-end secrecy:** DMs are plaintext to the broker and to `admin`. Cotal v0
+  deliberately does not add end-to-end encryption, trading secrecy for a single trusted broker.
 - **Non-repudiation:** sender authenticity is broker-enforced, not portable proof. (A2A signs
   every message for this; here it is reserved as signed envelopes.)
 - **Availability:** an authenticated peer can flood any channel or inbox it may write to. v0
@@ -98,6 +97,12 @@ The guarantees, at a glance, each enforced by the broker per
   a static-auth mesh is the account **signing key** on the mint/manager box (a compromise there
   can still mint fresh creds); on a per-user-auth mesh it is confined to the auth service (the
   callout stage, shipped for user mode; [identity & auth](identity-and-auth.md)).
+- **`spawn` is host-launch authority:** launch options are a raw passthrough (no allow/deny
+  list), so a persona holding `capabilities: [spawn]` can drive the connector's full launch
+  surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode
+  agent-config keys). The boundary is *who* may spawn (the authenticated caller, gated by the
+  capability), not *which* flags they pass. Grant `spawn` as host-launch authority, not a narrow
+  "add a teammate" permission ([run a mesh](run-a-mesh.md#spawning-agents)).
 
 ## Prompt-facing data
 

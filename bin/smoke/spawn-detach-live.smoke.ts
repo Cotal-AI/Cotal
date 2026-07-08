@@ -157,7 +157,8 @@ try {
     run("spawn", [
       "poet", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "bard",
       "--prompt", "compose", "--subscribe", "ops,ops.x", "--allow-subscribe", "ops,ops.>",
-      "--allow-publish", "ops", "--model", "fancy", "--variant", "high", "--cwd", agentCwd, "--share-tools", "alpha",
+      "--allow-publish", "ops", "--model", "fancy", "--variant", "high", "--opt", "temperature=0.2", "--opt", "seed=7",
+      "--cwd", agentCwd, "--share-tools", "alpha",
     ]),
   );
   ok("detached spawn reached the connector", lastOpts !== undefined);
@@ -168,6 +169,7 @@ try {
   ok("allow-publish override arrived", JSON.stringify(lastOpts?.allowPublish) === JSON.stringify(["ops"]), lastOpts?.allowPublish);
   ok("model override arrived", lastOpts?.model === "fancy", lastOpts?.model);
   ok("variant override arrived", lastOpts?.variant === "high", lastOpts?.variant);
+  ok("launch options (--opt k=v) rode the control plane", JSON.stringify(lastOpts?.launchOptions) === JSON.stringify({ temperature: "0.2", seed: "7" }), lastOpts?.launchOptions);
   ok("share-tools narrowed the config servers", JSON.stringify(Object.keys(lastOpts?.mcpServers ?? {})) === JSON.stringify(["alpha"]), lastOpts?.mcpServers);
   ok("persona role survived (no override given)", lastOpts?.role === "writer", lastOpts?.role);
   // --cwd is proven by the real child: it wrote its actual working directory.

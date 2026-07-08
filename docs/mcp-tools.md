@@ -224,6 +224,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `agent` | string | no | Optional harness the new peer runs on: the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's COTAL_DEFAULT_AGENT, else Claude. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. |
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
+| `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
 
 ## `cotal_feedback`

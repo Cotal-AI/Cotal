@@ -9,6 +9,7 @@
  * (one authority per channel), concrete-only (wildcards rejected), and surfaced loudly.
  */
 import { isConcreteChannel, type AgentDef } from "@cotal-ai/core";
+import { mergeLaunchOptions } from "@cotal-ai/workspace";
 import type { AgentPolicy, ResolvedAgent } from "./model.js";
 import type { ManifestIssue } from "./errors.js";
 
@@ -38,6 +39,8 @@ export interface PreparedAgent {
   /** Effective values (manifest override ?? persona default). */
   model?: string;
   variant?: string;
+  /** Effective opaque connector launch options (manifest merged per key over persona). */
+  launchOptions?: Record<string, unknown>;
   role?: string;
   description?: string;
   /** Effective persona body (manifest `instructions` REPLACES the file body; sole body for inline). */
@@ -67,6 +70,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
   // Behavior: persona default, manifest override wins. Inline `instructions` REPLACE the body.
   const model = agent.model ?? persona?.model;
   const variant = agent.variant ?? persona?.variant;
+  const launchOptions = mergeLaunchOptions(persona?.launchOptions, agent.launchOptions);
   const role = agent.role ?? persona?.role;
   const description = agent.description ?? persona?.description;
   const body = agent.instructions ?? persona?.persona;
@@ -135,6 +139,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       persona: agent.persona,
       model,
       variant,
+      launchOptions,
       role,
       description,
       body,
