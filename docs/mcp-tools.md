@@ -9,6 +9,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | Tool | Does | Side-effect |
 |---|---|---|
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
+| [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
 | [`cotal_roster`](#cotalroster) | who's present | read-only |
 | [`cotal_inbox`](#cotalinbox) | read incoming messages | drains your inbox (pass `peek` to read without clearing) |
 | [`cotal_send`](#cotalsend) | broadcast to a channel | publishes to a channel |
@@ -37,6 +38,22 @@ Your orientation card: who you are (name/role/space), the channels you can read 
 - Call it first; safe to re-check anytime.
 
 No arguments.
+
+## `cotal_docs`
+
+*read the docs (version-exact)*
+
+Read the authoritative Cotal docs for the exact version installed here: the wire spec, the message schema, and every guide, bundled so they always match this version. Use it before you answer or write code about anything Cotal — subjects, message shapes, the auth grammar, channels and ACLs, the CLI, the cotal_* tools — and prefer it over your training memory, which may be stale or wrong for this version. Three ways to call it: (1) no arguments returns the page index (a table of contents; start here when unsure); (2) `page` returns one page in full — pass "spec", "schema", or a guide slug from the index like "architecture" or "channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant sections with a pointer to each full page. Read the full page before writing code against it. Read-only, offline, instant. Optionally set `refresh: true` when reading a page to also pull a version-pinned copy from docs.cotal.ai (post-release patches); being version-pinned it can never return docs for a different version, and it falls back to the bundled copy when none is published.
+
+- **Side-effect:** read-only.
+- **Available:** always.
+- Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `page` | string | no | Read one page in full. Use "spec" for the normative wire contract, "schema" for the message JSON Schema, or a guide slug from the index (e.g. "architecture", "channels-and-permissions", "mcp-tools"). Leave page and query both empty to get the index. |
+| `query` | string | no | Keyword search across all docs when you do not know which page to read. Best with exact Cotal identifiers — a subject, a cotal_* tool name, a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set. |
+| `refresh` | boolean | no | Applies only when reading a `page` (ignored for the index and search). Default false serves the bundled, version-exact docs (offline). Set true to also try a version-pinned copy at docs.cotal.ai for post-release patches; if none is published or it is unreachable, the bundled copy is served and the response says which was used. |
 
 ## `cotal_roster`
 

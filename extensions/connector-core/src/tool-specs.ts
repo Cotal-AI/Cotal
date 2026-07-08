@@ -13,6 +13,7 @@ import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDeni
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
+import { runDocs } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
  *  `content`; the OpenCode plugin returns the string. */
@@ -152,6 +153,41 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             ? card
             : `(not connected to the mesh yet — the live context below is empty)\n\n${card}`,
         );
+      },
+    },
+    {
+      name: "cotal_docs",
+      title: "Cotal: read the docs (version-exact)",
+      description:
+        "Read the authoritative Cotal docs for the exact version installed here: the " +
+        "wire spec, the message schema, and every guide, bundled so they always match this version. " +
+        "Use it before you answer or write code about anything Cotal — subjects, message shapes, the auth " +
+        "grammar, channels and ACLs, the CLI, the cotal_* tools — and prefer it over your training memory, " +
+        "which may be stale or wrong for this version. Three ways to call it: (1) no arguments returns the " +
+        "page index (a table of contents; start here when unsure); (2) `page` returns one page in full — " +
+        'pass "spec", "schema", or a guide slug from the index like "architecture" or ' +
+        '"channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant ' +
+        "sections with a pointer to each full page. Read the full page before writing code against it. " +
+        "Read-only, offline, instant. Optionally set " +
+        "`refresh: true` when reading a page to also pull a version-pinned copy from docs.cotal.ai " +
+        "(post-release patches); being version-pinned it can never return docs for a different version, and " +
+        "it falls back to the bundled copy when none is published.",
+      schema: {
+        page: z
+          .string()
+          .optional()
+          .describe('Read one page in full. Use "spec" for the normative wire contract, "schema" for the message JSON Schema, or a guide slug from the index (e.g. "architecture", "channels-and-permissions", "mcp-tools"). Leave page and query both empty to get the index.'),
+        query: z
+          .string()
+          .optional()
+          .describe('Keyword search across all docs when you do not know which page to read. Best with exact Cotal identifiers — a subject, a cotal_* tool name, a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set.'),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe("Applies only when reading a `page` (ignored for the index and search). Default false serves the bundled, version-exact docs (offline). Set true to also try a version-pinned copy at docs.cotal.ai for post-release patches; if none is published or it is unreachable, the bundled copy is served and the response says which was used."),
+      },
+      run(_agent, _config, args: { page?: string; query?: string; refresh?: boolean }) {
+        return runDocs(args);
       },
     },
     {

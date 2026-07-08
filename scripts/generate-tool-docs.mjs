@@ -35,6 +35,12 @@ const ANNOTATIONS = {
     notes: "Call it first; safe to re-check anytime.",
   },
   cotal_roster: { effect: "read-only", availability: "always" },
+  cotal_docs: {
+    effect: "read-only",
+    availability: "always",
+    notes:
+      "Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
+  },
   cotal_inbox: {
     effect: "drains your inbox (pass `peek` to read without clearing)",
     availability: "always",
