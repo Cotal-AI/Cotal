@@ -883,13 +883,17 @@ export class Manager {
     }
     const la = spec.agents.find((a) => a.name === name);
     if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
+    // USER mesh: a manifest launch runs under the spec's apply-time owner, never the ctl caller —
+    // fail loud on a spec without one rather than guess (core `MeshLaunchSpec.owner`).
+    if (this.userMode && !spec.owner)
+      return { ok: false, error: `user-auth space "${this.space}": launch spec for run ${runId} carries no owner — re-apply the manifest as a logged-in operator` };
     let configPath: string;
     try {
       configPath = materializePersona(this.workspaceRoot, runId, la);
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath), caller);
+    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner), caller);
     if (reply.ok)
       // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
       // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.

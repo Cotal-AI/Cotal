@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -35,10 +35,19 @@ const LaunchAgentSchema = z.strictObject({
   hash: z.string().regex(/^[A-Za-z0-9]+$/, "hash must be alphanumeric"),
 });
 
+// USER-AUTH meshes: the derived owner every launched agent runs under, stamped at apply time by
+// the logged-in operator (core `MeshLaunchSpec.owner`). Validated as a real derived token so a
+// hand-edited spec can't smuggle an arbitrary string into ownership attribution.
+const DerivedOwner = z.string().refine(
+  (o) => { try { assertDerivedOwnerToken(o); return true; } catch { return false; } },
+  "owner must be a derived owner token (u_ + 26 lowercase base32)",
+);
+
 const LaunchSpecSchema = z.strictObject({
   apiVersion: z.literal("cotal-launch/v1"),
   space: z.string().min(1),
   runId: RunId,
+  owner: DerivedOwner.optional(),
   agents: z.array(LaunchAgentSchema),
 });
 

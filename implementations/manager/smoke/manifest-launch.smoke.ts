@@ -107,6 +107,8 @@ registry.register(recCon);
   // fail "no persona scout"; the resolved path must succeed from the launch object alone.
   const startOpts = launchAgentToStartOpts(resolved, personaPath);
   check("launchAgentToStartOpts carries variant", startOpts.variant === "high", startOpts.variant);
+  const OWNER = "u_" + "a".repeat(26);
+  check("launchAgentToStartOpts forwards the apply-time owner", launchAgentToStartOpts(resolved, personaPath, OWNER).owner === OWNER);
   const reply = await mgr.startAgent(startOpts);
   check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, JSON.stringify(reply));
   check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
@@ -151,6 +153,12 @@ function writeSpec(name: string, body: unknown): string {
   throws("unknown capability rejected (not just unsafe token)", () => loadLaunchSpec(writeSpec("p3.json", agent1({ capabilities: ["teleport"] }))));
   // Belt-and-suspenders (review-fact): allowPublish-only wildcard is rejected too (same validateLaunchPolicy loop).
   throws("wildcard allowPublish rejected", () => loadLaunchSpec(writeSpec("p4.json", agent1({ allowPublish: ["team.>"] }))));
+  // USER-AUTH: the apply-time owner (`up -f --user-auth`) survives the strict schema — and only as
+  // a real derived token (an arbitrary string can't become ownership attribution).
+  const OWNER = "u_" + "b".repeat(26);
+  const owned = loadLaunchSpec(writeSpec("o1.json", { ...(specOf() as object), owner: OWNER }));
+  check("apply-time owner loads through the strict schema", owned.owner === OWNER, owned.owner);
+  throws("malformed owner rejected (not a derived token)", () => loadLaunchSpec(writeSpec("o2.json", { ...(specOf() as object), owner: "u_HACK" })));
 }
 
 // --- launchSpecForRun + the `launch` control op: spawn -f onto a RUNNING manager ----------------
@@ -160,6 +168,7 @@ function writeSpec(name: string, body: unknown): string {
     apiVersion: "cotal-launch/v1",
     space: "demo",
     runId: runId2,
+    owner: "u_" + "c".repeat(26),
     agents: [{
       name: "scout", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
       body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
@@ -171,6 +180,7 @@ function writeSpec(name: string, body: unknown): string {
 
   // The op takes a runId, NOT a path — the manager derives + validates the spec location itself.
   check("launchSpecForRun derives + loads the spec by runId", launchSpecForRun(root, runId2).agents[0].name === "scout");
+  check("launchSpecForRun preserves the apply-time owner", launchSpecForRun(root, runId2).owner === spec2.owner, launchSpecForRun(root, runId2).owner);
   throws("launchSpecForRun rejects an unsafe runId token", () => launchSpecForRun(root, "../evil"));
   throws("launchSpecForRun rejects a missing run", () => launchSpecForRun(root, "nosuchrun"));
 
