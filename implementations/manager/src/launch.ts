@@ -27,7 +27,7 @@ const LaunchAgentSchema = z.strictObject({
   variant: z.string().min(1).optional(),
   description: z.string().optional(),
   body: z.string().optional(),
-  capabilities: z.array(z.string().regex(TOKEN, "capability must be a safe token ([A-Za-z0-9_-])")).optional(),
+  capabilities: z.array(z.string().regex(/^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$/, "capability must be a safe token, optionally role-namespaced (role:<r>)")).optional(),
   subscribe: z.array(z.string()),
   allowSubscribe: z.array(z.string()),
   allowPublish: z.array(z.string()),
@@ -93,9 +93,13 @@ export function launchSpecForRun(root: string, runId: string): MeshLaunchSpec {
   return spec;
 }
 
-// Capabilities that actually grant anything in v1 (provisionAgent only acts on `spawn`); an unknown
-// capability is inert downstream, so reject it at the boundary rather than carry a no-op grant.
-const KNOWN_CAPABILITIES = new Set(["spawn"]);
+// Capabilities that actually grant anything in v1: `spawn` (the privileged control tier), and — on
+// user-auth meshes — `role:<r>` delegation tokens the provision filter passes into the agent's
+// ledger scope (the envelope walk still attenuates them against the spawner chain). `admin` is
+// deliberately NOT accepted from a manifest: a hand-editable file must not be what mints an
+// authority-root agent. An unknown capability is inert downstream, so reject it at the boundary
+// rather than carry a no-op grant.
+const isKnownCapability = (c: string): boolean => c === "spawn" || /^role:[A-Za-z0-9_-]+$/.test(c);
 
 /** Re-enforce the v1 manifest's policy constraints at the manager boundary so a hand-edited/malicious
  *  launch spec can't smuggle in what the CLI schema would reject: concrete channels only (no wildcard
@@ -115,7 +119,7 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
   const missing = a.subscribe.filter((c) => !a.allowSubscribe.includes(c));
   if (missing.length) throw new Error(`${where}: subscribe [${missing.join(", ")}] not within allowSubscribe`);
   for (const cap of a.capabilities ?? [])
-    if (!KNOWN_CAPABILITIES.has(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: ${[...KNOWN_CAPABILITIES].join(", ")})`);
+    if (!isKnownCapability(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: spawn, role:<r>)`);
 }
 
 /** Materialize one resolved agent's persona to a transient file the connector reads, and return its

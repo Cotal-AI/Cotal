@@ -135,8 +135,9 @@ agents:
 ```
 
 Per-agent keys: `persona`, `agent` (harness override), `model`, `variant`, `role`, `description`,
-`instructions`, `capabilities` (e.g. `[spawn]`), `personaPermissions` (override the top-level
-policy). Model strings and variants pass to the harness as-is — for Claude use the short form
+`instructions`, `capabilities` (`spawn`; on per-user-auth meshes also `role:<r>` so the agent may
+delegate that role when spawning — `admin` is never accepted from a manifest), `personaPermissions`
+(override the top-level policy). Model strings and variants pass to the harness as-is — for Claude use the short form
 (`opus`, `sonnet`) or the full id; for OpenCode use `provider/model` plus an optional variant.
 
 ### `channels:` — the three access verbs
