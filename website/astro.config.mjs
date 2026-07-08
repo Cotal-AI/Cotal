@@ -36,7 +36,7 @@ export default defineConfig({
           details: [
             'Route by task:',
             '',
-            '- [Quickstart](https://docs.cotal.ai/getting-started.md): install and start a local mesh — `npx cotal-ai setup --yes && npx cotal-ai up --detach`, then `cotal spawn`',
+            '- [Quickstart](https://docs.cotal.ai/getting-started.md): install and start a local mesh — `npx cotal-ai setup --yes && npx cotal-ai up --detach`, then `npx cotal-ai spawn --detach`; verify with `npx cotal-ai status`',
             '- [MCP tool catalog](https://docs.cotal.ai/mcp-tools.md): message peers from inside a session (`cotal_send` / `cotal_dm` / `cotal_anycast`) and spawn teammates (`cotal_spawn` / `cotal_persona`)',
             '- [Define a team](https://docs.cotal.ai/define-a-team.md): declare a team and its channels in one `cotal.yaml`, launch with `cotal up -f`',
             '- [Channels & permissions](https://docs.cotal.ai/channels-and-permissions.md): grant or audit channel access (`subscribe` / `allowSubscribe` / `allowPublish`)',
