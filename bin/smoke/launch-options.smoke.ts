@@ -1,15 +1,15 @@
 /**
- * LAUNCH-OPTIONS guard smoke — the security contract of the opaque `launchOptions` passthrough.
+ * LAUNCH-OPTIONS smoke — the contract of the opaque `launchOptions` RAW passthrough.
  *
- * Two layers:
- *  A. `connectorLaunchOptions` (the shared chokepoint every connector routes through): the key-shape
- *     grammar (rejects an `=`-in-key that would smuggle a reserved flag as one `--flag=value` argv
- *     token; rejects the prototype-pollution keys `__proto__`/`constructor`/`prototype`; rejects
- *     whitespace / leading-digit / empty keys), and the two policy modes (allow-list fails CLOSED,
- *     deny-list fails on named reserved keys).
- *  B. The two consuming connectors render/refuse per their own policy: claude ALLOW-lists a small set
- *     of benign tuning flags and refuses everything else (its flag surface is large + evolving);
- *     opencode DENY-lists the model/policy/structural keys of its fixed agent-config schema.
+ * launchOptions is a raw passthrough: the spawn capability is the trust boundary (WHO may spawn, via
+ * the caller's authenticated identity), not WHICH flags a spawn carries. So there is no allow-list and
+ * no deny-list — every option is forwarded to the host verbatim. Two layers:
+ *  A. `connectorLaunchOptions` (the shared chokepoint every connector routes through): forwards every
+ *     entry, guarding ONLY key shape for process integrity — it rejects an `=`-in-key that would garble
+ *     a rendered flag, the prototype-pollution keys `__proto__`/`constructor`/`prototype`, and
+ *     whitespace / leading-digit / empty keys. It does NOT police which flags are permitted.
+ *  B. The two consuming connectors render every entry: claude as `--key value` (bare `--key` for
+ *     empty), opencode by merging into `config.agent.cotal` — including keys a former policy refused.
  *
  * The map sources (persona/manifest/MCP) arrive as JSON — a `__proto__` there is an OWN enumerable
  * key, unlike a JS object literal — so those cases use `JSON.parse` to reproduce the real vector.
@@ -37,31 +37,29 @@ function throws(label: string, fn: () => unknown): void {
 const eq = (label: string, got: unknown, want: unknown): void =>
   check(label, JSON.stringify(got) === JSON.stringify(want), got);
 
-// -- A. the shared guard ---------------------------------------------------------------------------
-// #1 the `=`-in-key bypass: a map source doesn't split on `=`, so this key would otherwise render as
-// the single token `--mcp-config=/tmp/evil.json` and defeat the reserved/allow check.
-throws("`=`-in-key rejected (reserved-flag smuggle)", () =>
-  connectorLaunchOptions("t", { "mcp-config=/tmp/evil.json": "" }, { allow: [] }));
+// -- A. the shared guard (key shape ONLY — process integrity, not flag policy) ---------------------
+// #1 the `=`-in-key: a map source doesn't split on `=`, so this key would otherwise render as the
+// single token `--mcp-config=/tmp/evil.json` — a garbled flag rather than `--mcp-config /tmp/...`.
+throws("`=`-in-key rejected (would garble the rendered flag)", () =>
+  connectorLaunchOptions("t", { "mcp-config=/tmp/evil.json": "" }));
 // #2 prototype pollution — JSON.parse makes __proto__ an OWN enumerable key (the real MCP/manifest vector).
-throws("__proto__ rejected", () => connectorLaunchOptions("t", JSON.parse('{"__proto__":"x"}'), { reserved: [] }));
-throws("constructor rejected", () => connectorLaunchOptions("t", { constructor: "x" }, { reserved: [] }));
-throws("prototype rejected", () => connectorLaunchOptions("t", { prototype: "x" }, { reserved: [] }));
+throws("__proto__ rejected", () => connectorLaunchOptions("t", JSON.parse('{"__proto__":"x"}')));
+throws("constructor rejected", () => connectorLaunchOptions("t", { constructor: "x" }));
+throws("prototype rejected", () => connectorLaunchOptions("t", { prototype: "x" }));
 // key shape
-throws("whitespace-in-key rejected", () => connectorLaunchOptions("t", { "a b": "x" }, { reserved: [] }));
-throws("leading-digit key rejected", () => connectorLaunchOptions("t", { "1flag": "x" }, { reserved: [] }));
-throws("empty key rejected", () => connectorLaunchOptions("t", { "": "x" }, { reserved: [] }));
-eq("hyphen/underscore key accepted", connectorLaunchOptions("t", { "top_p": "1", "max-budget-usd": "5" }, { reserved: [] }),
+throws("whitespace-in-key rejected", () => connectorLaunchOptions("t", { "a b": "x" }));
+throws("leading-digit key rejected", () => connectorLaunchOptions("t", { "1flag": "x" }));
+throws("empty key rejected", () => connectorLaunchOptions("t", { "": "x" }));
+eq("hyphen/underscore key accepted", connectorLaunchOptions("t", { "top_p": "1", "max-budget-usd": "5" }),
   [["top_p", "1"], ["max-budget-usd", "5"]]);
-// #3 allow-list fails CLOSED
-eq("allow: permitted key returned", connectorLaunchOptions("t", { verbose: "" }, { allow: ["verbose"] }), [["verbose", ""]]);
-throws("allow: non-permitted key refused", () => connectorLaunchOptions("t", { settings: "/x" }, { allow: ["verbose"] }));
-// deny-list
-throws("reserved: reserved key refused", () => connectorLaunchOptions("t", { model: "x" }, { reserved: ["model"] }));
-eq("reserved: non-reserved key returned", connectorLaunchOptions("t", { temperature: "0.2" }, { reserved: ["model"] }), [["temperature", "0.2"]]);
+// RAW passthrough: any well-shaped key is returned — no allow-list, no deny-list.
+eq("any well-shaped key returned (no allow-list)",
+  connectorLaunchOptions("t", { settings: "/x", model: "y", "add-dir": "/" }),
+  [["settings", "/x"], ["model", "y"], ["add-dir", "/"]]);
 // nothing to render
-eq("undefined bag → []", connectorLaunchOptions("t", undefined, { reserved: [] }), []);
+eq("undefined bag → []", connectorLaunchOptions("t", undefined), []);
 
-// -- B. per-connector consumption ------------------------------------------------------------------
+// -- B. per-connector consumption (RAW — every well-shaped flag renders) ----------------------------
 const base = {
   space: "smoke", name: "t", role: "worker", id: "id1", creds: "/tmp/none.creds",
   servers: "nats://127.0.0.1:1", subscribe: ["general"], allowSubscribe: ["general"], allowPublish: [],
@@ -71,35 +69,24 @@ const argPair = (args: readonly string[], flag: string, val: string): boolean =>
   return i >= 0 && args[i + 1] === val;
 };
 
-// claude ALLOW-list: benign tuning flags render (`--k v`, bare `--k` for empty), boundary flags refused.
+// claude renders every flag (`--k v`, bare `--k` for empty) — including ones a former allow-list refused.
 const cs = claudeConnector.buildLaunch({ ...base, launchOptions: { verbose: "", "max-budget-usd": "5" } });
 check("claude renders bare --verbose", cs.args.includes("--verbose"), cs.args);
 check("claude renders --max-budget-usd 5", argPair(cs.args, "--max-budget-usd", "5"), cs.args);
-throws("claude refuses --settings (allow-list, config-file load)", () =>
-  claudeConnector.buildLaunch({ ...base, launchOptions: { settings: "/tmp/evil.json" } }));
-throws("claude refuses --model override via --opt", () =>
-  claudeConnector.buildLaunch({ ...base, launchOptions: { model: "x" } }));
-throws("claude refuses --add-dir (filesystem scope)", () =>
-  claudeConnector.buildLaunch({ ...base, launchOptions: { "add-dir": "/" } }));
-throws("claude refuses --betas (opaque experimental-feature indirection)", () =>
-  claudeConnector.buildLaunch({ ...base, launchOptions: { betas: "some-preview" } }));
-throws("claude refuses `=`-in-key smuggle at buildLaunch", () =>
+const csRaw = claudeConnector.buildLaunch({ ...base, launchOptions: { settings: "/tmp/s.json", "add-dir": "/", betas: "some-preview" } });
+check("claude renders --settings (raw passthrough)", argPair(csRaw.args, "--settings", "/tmp/s.json"), csRaw.args);
+check("claude renders --add-dir (raw passthrough)", argPair(csRaw.args, "--add-dir", "/"), csRaw.args);
+check("claude renders --betas (raw passthrough)", argPair(csRaw.args, "--betas", "some-preview"), csRaw.args);
+throws("claude still rejects `=`-in-key smuggle at buildLaunch", () =>
   claudeConnector.buildLaunch({ ...base, launchOptions: JSON.parse('{"mcp-config=/tmp/e.json":""}') }));
 
-// opencode DENY-list: model-tuning keys merge into config.agent.cotal; model/policy/structural refused.
-const os = opencodeConnector.buildLaunch({ ...base, launchOptions: { temperature: "0.2", topP: "0.9" } });
+// opencode merges every key into config.agent.cotal — including ones a former deny-list reserved.
+const os = opencodeConnector.buildLaunch({ ...base, launchOptions: { temperature: "0.2", topP: "0.9", permission: "allow", tools: "x" } });
 const oc = JSON.parse(os.env!.OPENCODE_CONFIG_CONTENT!) as { agent?: { cotal?: Record<string, unknown> }; default_agent?: string };
 check("opencode merges tuning keys into config.agent.cotal", oc.agent?.cotal?.temperature === "0.2" && oc.agent?.cotal?.topP === "0.9", oc.agent?.cotal);
+check("opencode merges former-reserved keys (raw passthrough)", oc.agent?.cotal?.permission === "allow" && oc.agent?.cotal?.tools === "x", oc.agent?.cotal);
 check("opencode pins the cotal agent as default", oc.default_agent === "cotal" && oc.agent?.cotal?.mode === "primary", oc);
-throws("opencode refuses `permission` (per-agent policy injection)", () =>
-  opencodeConnector.buildLaunch({ ...base, launchOptions: { permission: "allow" } }));
-throws("opencode refuses `tools` (tool injection)", () =>
-  opencodeConnector.buildLaunch({ ...base, launchOptions: { tools: "x" } }));
-throws("opencode refuses `mcp` (server injection)", () =>
-  opencodeConnector.buildLaunch({ ...base, launchOptions: { mcp: "x" } }));
-throws("opencode refuses `plugin` (plugin injection)", () =>
-  opencodeConnector.buildLaunch({ ...base, launchOptions: { plugin: "x" } }));
-throws("opencode refuses proto pollution at buildLaunch", () =>
+throws("opencode still rejects proto pollution at buildLaunch", () =>
   opencodeConnector.buildLaunch({ ...base, launchOptions: JSON.parse('{"__proto__":"x"}') }));
 
 console.log(`\nLAUNCH-OPTIONS SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

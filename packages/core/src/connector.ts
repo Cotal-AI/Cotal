@@ -50,10 +50,9 @@ export interface LaunchOpts {
    *  connectors fail loud rather than silently ignoring it. */
   variant?: string;
   /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
-   *  and never inspects. Each connector reads only the keys it understands (rendering them into its
-   *  own host form — CLI flags, config, env) and throws on anything it doesn't, and MUST refuse keys
-   *  that would override the launch flags it controls (isolation/ACL/model). Fed by `--opt k=v`, a
-   *  persona's `launchOptions:` mapping, or a manifest `launchOptions:` — merged per key. */
+   *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,
+   *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
+   *  `launchOptions:` mapping, or a manifest `launchOptions:` — merged per key. */
   launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts. Connectors
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others

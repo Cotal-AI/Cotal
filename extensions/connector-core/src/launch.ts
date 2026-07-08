@@ -140,57 +140,37 @@ export function aclEnv(opts: {
 
 /** Property names that, assigned onto a plain object as `obj[k] = v`, corrupt its prototype chain
  *  (`__proto__`) or shadow a built-in the connector relies on (`constructor`/`prototype`). Refused
- *  for every connector under every policy — a launch option is a flag/config field, never these. */
+ *  for every connector — a launch option is a flag/config field, never these. This is process
+ *  integrity (don't corrupt the JS config object a connector builds), not flag policy. */
 const UNSAFE_LAUNCH_OPTION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 /** A launch-option key must name ONE flag / config field: a letter-led token of letters, digits,
  *  `-` and `_`. This rejects, in particular, a key that embeds `=` — the CLI `--opt k=v` parser
  *  splits on the first `=`, but the map sources (persona `launchOptions:`, manifest, MCP `cotal_spawn`)
  *  do not, so a key like `"mcp-config=/tmp/evil.json"` would otherwise render as the single argv token
- *  `--mcp-config=/tmp/evil.json` and smuggle a reserved flag past the reserved/allow checks below. It
+ *  `--mcp-config=/tmp/evil.json` — a garbled flag rather than the intended `--mcp-config /tmp/...`. It
  *  also rejects whitespace, control characters, and the empty key. */
 const LAUNCH_OPTION_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 /** Validate a connector's opaque {@link LaunchOpts.launchOptions} bag and return its entries for the
- *  connector to render into its host form (CLI flags / config / env). Every key is first checked for
- *  a safe flag-name shape (see {@link LAUNCH_OPTION_KEY}, {@link UNSAFE_LAUNCH_OPTION_KEYS}), then
- *  against the connector's policy:
- *   - `allow` (allow-list, fail-CLOSED): only these keys pass; any other throws. Use where the host's
- *     flag surface is large and evolving (claude's CLI), so denying a fixed set can never be complete
- *     — an unknown flag that could touch the model/tools/permissions/session/filesystem/persona the
- *     connector pins must be refused, not forwarded on the hope it is benign.
- *   - `reserved` (deny-list): these keys throw; the rest pass. Use where the host's option surface is
- *     small and fixed (opencode's agent config), so the dangerous keys are nameable in full.
- *  Core never sees this; each connector calls it with the policy for the surface IT controls. */
+ *  connector to render into its host form (CLI flags / config / env). This is a RAW passthrough: the
+ *  connector forwards every option as-is. The trust boundary is the spawn capability itself — WHO may
+ *  spawn (the caller's authenticated identity), not WHICH flags a spawn carries. An operator running
+ *  `cotal spawn --opt` on their own host can already run the agent binary directly with any flag, so
+ *  capping their flags is theater; a mesh peer's `cotal_spawn` is bounded by whether it holds the
+ *  spawn capability at all. So no allow-list, no deny-list — the only check is a key-SHAPE guard for
+ *  process integrity (see {@link LAUNCH_OPTION_KEY}, {@link UNSAFE_LAUNCH_OPTION_KEYS}): a key must
+ *  name one flag / config field, never a prototype-polluting name or an `=`-embedding token that
+ *  would corrupt the config object or garble a rendered flag. Core never sees this; each connector
+ *  calls it for the surface IT renders. */
 export function connectorLaunchOptions(
   connector: string,
   launchOptions: Record<string, unknown> | undefined,
-  policy: { allow?: readonly string[]; reserved?: readonly string[] },
 ): [string, unknown][] {
   if (!launchOptions) return [];
-  const keys = Object.keys(launchOptions);
-  for (const k of keys)
+  for (const k of Object.keys(launchOptions))
     if (UNSAFE_LAUNCH_OPTION_KEYS.has(k) || !LAUNCH_OPTION_KEY.test(k))
       throw new Error(`${connector} connector: launch option key ${JSON.stringify(k)} is not a valid flag name`);
-  if (policy.allow) {
-    const allowSet = new Set(policy.allow);
-    const bad = keys.filter((k) => !allowSet.has(k));
-    if (bad.length)
-      throw new Error(
-        `${connector} connector: launch option(s) ${bad.join(", ")} are not permitted passthrough flags — they ` +
-          `could affect the model, tools, permissions, session, filesystem, or persona the connector controls; ` +
-          `permitted: ${policy.allow.join(", ")}`,
-      );
-  }
-  if (policy.reserved) {
-    const reservedSet = new Set(policy.reserved);
-    const clash = keys.filter((k) => reservedSet.has(k));
-    if (clash.length)
-      throw new Error(
-        `${connector} connector: launch option(s) ${clash.join(", ")} are reserved — the connector sets them ` +
-          `itself and a passthrough must not override the model/tools/permissions/isolation they control`,
-      );
-  }
   return Object.entries(launchOptions);
 }
 

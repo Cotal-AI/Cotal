@@ -60,15 +60,19 @@ export interface AgentDef {
   /** Connector-defined model variant handed to the launcher (e.g. OpenCode reasoning effort). */
   variant?: string;
   /** Opaque, connector-specific launch options — an arbitrary key→value map that core never
-   *  interprets. Each connector reads the keys it understands (rendering them into its own host
-   *  form) and throws on anything it doesn't. `--opt k=v` on the CLI, a `launchOptions:` mapping in
-   *  a manifest, or a nested `launchOptions:` block here all feed the same bag. */
+   *  interprets. Connectors forward well-shaped keys raw into their host form (`claude` flags,
+   *  OpenCode config); a connector with no option surface fails loud. `--opt k=v` on the CLI, a
+   *  manifest `launchOptions:`, or a nested `launchOptions:` block here all feed the same bag. */
   launchOptions?: Record<string, unknown>;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
    *  cred's publish allow-list). Today `spawn` is the only one: it grants publish to the
    *  privileged control subject (start/purge/definePersona/named stop). Default-deny when
    *  absent — nats-server, not a handler, is the boundary. Granting authority is operator-level
-   *  (`definePersona` is itself privileged), so no peer can self-grant via its own agent file. */
+   *  (`definePersona` is itself privileged), so no peer can self-grant via its own agent file.
+   *  NOTE: because launchOptions is a raw passthrough, `spawn` is HOST-LAUNCH AUTHORITY — its holder
+   *  can drive the connector's full launch surface on the manager host (Claude `--mcp-config` /
+   *  `--add-dir` / permission flags, OpenCode agent-config keys). Grant it as host-launch authority,
+   *  not as a narrow "add a teammate" permission. */
   capabilities?: string[];
   /** Authenticated id of the agent that first defined this persona via `definePersona` (P6). A
    *  POLICY field, not content: the privileged tier may *redefine* an existing file only if its

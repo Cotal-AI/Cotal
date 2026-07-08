@@ -138,22 +138,12 @@ export const claudeConnector: Connector = {
     // above still applies, so the forked context runs under the current mesh persona.
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
 
-    // Opaque connector options → native `claude` flags: `key=value` renders `--key value`, and an
-    // empty value (`--opt foo=`) renders a bare boolean `--foo`. This is an ALLOW-LIST, not a
-    // deny-list: `claude` has ~50 flags and most touch the launch boundary the connector owns — the
-    // model (--model/--fallback-model), MCP + tool policy (--mcp-config/--settings/--tools/--allowed-tools),
-    // permissions (--permission-mode/--dangerously-skip-permissions), config-file loading
-    // (--settings/--setting-sources), the persona/system prompt (--append-system-prompt/--system-prompt/
-    // --file), the session/identity (--resume/--session-id/--fork-session), the filesystem scope
-    // (--add-dir/--worktree), plugins (--plugin-dir/--plugin-url) and subagents (--agent/--agents). The
-    // list also grows across `claude` releases, so a fixed deny-list can never stay complete. We instead
-    // forward only a small set of flags known to tune behavior without touching that boundary, and refuse
-    // everything else (fail closed). Deliberately NOT here: `--betas`, whose value is an opaque name that
-    // opts the child into experimental behavior which may itself reach tools/MCP/permissions/prompts/
-    // plugins/session — an indirection this connector can't review, so it stays refused. Widen this list
-    // only for a flag whose every value is known not to affect launch isolation.
-    const CLAUDE_PASSTHROUGH = ["verbose", "debug", "effort", "max-budget-usd"];
-    for (const [k, v] of connectorLaunchOptions("claude", opts.launchOptions, { allow: CLAUDE_PASSTHROUGH })) {
+    // Opaque connector options → native `claude` flags, RAW passthrough: `key=value` renders
+    // `--key value`, and an empty value (`--opt foo=`) renders a bare boolean `--foo`. No allow-list,
+    // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
+    // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
+    // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
+    for (const [k, v] of connectorLaunchOptions("claude", opts.launchOptions)) {
       const val = String(v);
       if (val === "") args.push(`--${k}`);
       else args.push(`--${k}`, val);
