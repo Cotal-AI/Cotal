@@ -79,6 +79,14 @@ export interface AuthProvider extends Extension {
    *  connection dies at its bearer-bound JWT expiry (live eviction is a separate lever). */
   revokeAgent(opts: { dir: string; owner: string; actor: string }): Promise<boolean>;
   /**
+   * Read-only FRESH capability-scope read for one granted principal — `undefined` when the
+   * principal holds no grant (for an authorization read, unknowable is "no grant": fail-closed).
+   * Never a mint, never a write. The manager's named-target control authorization (owner-domain
+   * stop/attach) consults it for its else-branch — "does the caller hold `admin`?" — reading
+   * fresh so a scope edit bites the caller's next control op with no restart or reconnect.
+   */
+  actorScope(opts: { dir: string; owner: string; actor: string }): Promise<string[] | undefined>;
+  /**
    * Registry name of the provider's self-registered {@link Command} that prints ONE fresh agent
    * bearer to stdout and exits (flags: `--dir <state-dir> --space <space> --owner <o> --actor <a>
    * --token-file <path>`). A long-lived agent endpoint execs it per refresh — the exchange

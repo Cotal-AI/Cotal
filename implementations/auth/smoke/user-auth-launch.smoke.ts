@@ -196,6 +196,16 @@ try {
     unsupportedOperatorSurface.out,
   );
 
+  // Own-agent control TIER ROUTING: on a user mesh, `cotal stop`/`attach` ride the operator's own
+  // bearer on the SPAWN (privileged) tier — a spawn-scoped grant (no admin) must REACH the manager
+  // and get ITS decision back. Before this routing, the CLI published on ctl.admin and the broker
+  // dropped it (a timeout + scope hint, never a manager reply); `no agent "ghost"` IS the manager
+  // answering. The authorization matrix itself is pinned in user-spawn + own-agent-control smokes.
+  const ghostStop = await cotal(["stop", "--name", "ghost", "--space", SPACE]);
+  check("spawn-scoped `cotal stop` reaches the manager on the spawn tier (its reply, not a broker drop)", ghostStop.status !== 0 && ghostStop.out.includes('no agent "ghost"'), ghostStop.out);
+  const ghostAttach = await cotal(["attach", "--name", "ghost", "--space", SPACE]);
+  check("spawn-scoped `cotal attach` reaches the manager the same way", ghostAttach.status !== 0 && ghostAttach.out.includes('no agent "ghost"'), ghostAttach.out);
+
   // ---------- D. the deny matrix at the operator surface ----------
   console.log("D) revoke → refused; logout → the exact login line");
   const revoke = await cotal(["actor", "revoke", "cli", "--sub", sub]);

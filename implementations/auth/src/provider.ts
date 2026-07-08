@@ -17,7 +17,7 @@ import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider }
 import { assertUserAuthInfo, homeCotalDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { fetchIdpJwt, loadIdpSession, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
+import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import {
   ensureCalloutAuth,
   ensureIssuer,
@@ -213,6 +213,14 @@ export const cotalAuthProvider: AuthProvider = {
 
   async revokeAgent({ dir, owner, actor }) {
     return revokeManagedActor(dir, owner, actor);
+  },
+
+  /** Fresh read across BOTH row spaces (actor names are disjoint between them, so the unified
+   *  lookup is unambiguous): the manager's control authorization must see an operator's
+   *  `actor grant` scope edit — or a revoke — on the very next stop/attach, hence no caching. */
+  async actorScope({ dir, owner, actor }) {
+    const row = findActorUnified(dir, owner, actor);
+    return row ? [...row.scope] : undefined;
   },
 
   agentBearerCommand: "agent-bearer",

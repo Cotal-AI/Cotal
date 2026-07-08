@@ -50,10 +50,11 @@ export async function resolveControlTarget(
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
  *  disconnect. The target is already reachability- + auth-preflighted by
  *  {@link resolveControlTarget}, so this connects straight through. `tier` picks the control
- *  subject: privileged for spawn --detach/ps; admin for the operator's cross-agent ops
- *  (stop/attach), which the manager refuses on the privileged subject for a non-owner. `creds` is
- *  the tier-scoped caller cred (`control-caller-privileged` / `control-caller-admin` — each holds
- *  ONLY its own tier's pub grant), or undefined on an open mesh. */
+ *  subject: privileged for spawn --detach/ps — and, on a user mesh, for stop/attach too (the
+ *  operator's bearer publishes there with scope "spawn"; the MANAGER authorizes owner-domain vs
+ *  ledger-admin). On a static mesh stop/attach stay admin-tier ops. `creds` is the tier-scoped
+ *  caller cred (`control-caller-privileged` / `control-caller-admin` — each holds ONLY its own
+ *  tier's pub grant), or undefined on an open mesh. */
 export async function askManager(
   space: string,
   server: string,

@@ -218,9 +218,11 @@ These are operator clients over the running manager's control plane. `ps` lists 
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
 renders each managed agent's last credential-refresh outcome, fail-closed. `attach` streams and
 drives an agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
-[`COTAL_DETACH_KEY`](config.md)). `stop` and `attach` are cross-agent admin operations, so they need
-a manager to talk to; on a user-auth mesh they need the `admin` scope on your ledger row
-([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
+[`COTAL_DETACH_KEY`](config.md)). `stop` and `attach` need a running manager to talk to. On a
+static mesh they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent
+under your owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger
+row ([identity & auth](identity-and-auth.md)). Launch detached agents with
+[`spawn --detach`](#spawn).
 
 ## personas
 

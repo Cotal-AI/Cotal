@@ -41,6 +41,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
@@ -497,13 +498,21 @@ export class Manager {
 
   /** Collapsed despawn/attach authorization (P4b). The caller already reached the privileged or
    *  admin tier (cred-gated). On the admin tier any named target is allowed (operator). On the
-   *  privileged tier a named target is allowed ONLY if it's the caller's OWN child
-   *  (`spawner == caller`) — so a spawn-capable peer can tear down what it spawned, never a peer's.
-   *  Returns an error string when denied, `undefined` when allowed. */
-  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): string | undefined {
-    if (admin) return undefined;
-    if (target.spawner === caller) return undefined;
-    return `not authorized: ${target.name} was not spawned by ${caller} (admin tier required)`;
+   *  privileged tier a named target is allowed if it's the caller's OWN child (`spawner ==
+   *  caller`) — and, on a user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the
+   *  caller's ledger row holds `admin`, read fresh. The policy is the pure
+   *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
+   *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
+   *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
+  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): Promise<string | undefined> {
+    return authorizeNamedControl({
+      target: { name: target.name, spawner: target.spawner, userOwner: target.userOwner },
+      caller,
+      admin,
+      userMode: this.userMode,
+      scopeOf: (owner, actor) =>
+        resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner, actor }),
+    });
   }
 
   /** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
@@ -1297,11 +1306,11 @@ export class Manager {
     return this.cooling.length;
   }
 
-  private opStop(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+  private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    const denied = this.authorizeNamed(a, caller, admin);
+    const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
     const graceful = args.graceful !== false;
     this.stopHandle(a, graceful);
@@ -1403,13 +1412,13 @@ export class Manager {
     return { ok: true, data: { name, path } };
   }
 
-  private opAttach(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+  private async opAttach(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    // attach grants terminal read+write — same own/admin scoping as despawn: own child on the
-    // privileged tier, any agent on admin.
-    const denied = this.authorizeNamed(a, caller, admin);
+    // attach grants terminal read+write — same scoping as despawn: own child (and, on a user
+    // mesh, the caller's owner-domain) on the privileged tier, any agent on admin.
+    const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
     // Only pty streams over the WS attach endpoint. tmux/cmux are watched natively, and
     // each handle's attach() throws with the right per-runtime guidance (tmux attach … /

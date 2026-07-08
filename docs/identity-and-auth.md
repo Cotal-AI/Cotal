@@ -125,10 +125,11 @@ exchange, so narrowing a user's grant reaches their agents within minutes, and r
 the user revokes everything under them, grandchildren included. A spawn beyond the
 envelope is refused with the exact widening re-grant to ask the operator for.
 
-**Control ops ride your own login**, gated by ledger scope: `spawn` covers launching and
-`ps`; `admin` covers cross-agent stop and attach. `admin` is never part of a default
-grant and is never accepted from a manifest; it is the explicit opt-in for touching other
-owners' agents.
+**Control ops ride your own login**, gated by ledger scope. `spawn` covers launching,
+`ps`, and stop/attach of the agents under **your own owner**: the owner is the
+administrative boundary of its own subtree, so you (and your agents) manage what you own
+without any extra grant. `admin` is the explicit opt-in for touching **other owners'**
+agents; it is never part of a default grant and never accepted from a manifest.
 
 **A hard branch, not a fallback.** On a user-auth space, commands never fall back to
 static minting or credless connects: a missing login or a down auth service is one
