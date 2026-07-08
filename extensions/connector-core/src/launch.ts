@@ -73,7 +73,7 @@ const OS_ENV_ALLOW = [
 ] as const;
 
 /** Model-provider API keys a key-based connector may forward to its child. claude needs none
- *  (macOS Keychain / OAuth token, not an env key) → strong isolation for free; opencode/hermes
+ *  (macOS Keychain / OAuth token, not an env key) → strong isolation for free; opencode/hermes/pi
  *  need the key for the provider behind the agent's model → forward just these, by NAME, only if
  *  present. This is the single chokepoint for model-key forwarding — the seam for spawner-
  *  conditional gating (per-agent model auth) later. Never `...process.env`. */
@@ -83,6 +83,12 @@ export const MODEL_PROVIDER_KEYS = [
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
   "NOUS_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GROQ_API_KEY",
+  "XAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
 ] as const;
 
 /** Build the base env a spawned agent runs with: the OS allow-list plus any named keys the

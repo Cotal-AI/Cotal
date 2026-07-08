@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
+import { assertValidChannel, isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -63,9 +63,19 @@ const ATTENTION_DESC: Record<"open" | "dnd" | "focus", string> = {
     "focus — only DMs and anycast reach your context; an @mention wakes you to pull; untagged channel chatter is held on the channel — read it with cotal_inbox",
 };
 
-/** "name/role" (or just "name") for a message's sender. */
+/** A channel arg as models write it → the wire name. Every rendered surface displays channels
+ *  as `#name`, so models mirror that form back; strip the display prefix, then fail loud on
+ *  anything still invalid — the wire layer's `token()` would otherwise silently rewrite an
+ *  illegal name and deliver to a channel nobody reads. */
+function wireChannel(channel: string): string {
+  return assertValidChannel(channel.replace(/^#+/, ""));
+}
+
+/** Sender label with the bare peer NAME quoted as its own token — the name is what `cotal_dm`
+ *  addresses, so a fused `name/role` form must never look like one (models were observed DM'ing
+ *  the literal "me/human"). Mirrors the injected-message framing in control.ts. */
 export function fmtFrom(i: InboxItem): string {
-  return i.fromRole ? `${i.fromName}/${i.fromRole}` : i.fromName;
+  return i.fromRole ? `"${i.fromName}" (${i.fromRole})` : `"${i.fromName}"`;
 }
 
 function fmtItem(i: InboxItem): string {
@@ -247,7 +257,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
       async run(agent, _config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
         try {
-          const m = await agent.send(msg, channel, mentions);
+          const m = await agent.send(msg, channel === undefined ? undefined : wireChannel(channel), mentions);
           return ok(`Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(", @")})` : ""}.`);
         } catch (e) {
           return err(`Couldn't send: ${(e as Error).message}`);
@@ -343,9 +353,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         channel: z.string().describe("The channel to look up (e.g. review)."),
       },
-      run(agent, _config, { channel }: { channel: string }) {
+      run(agent, _config, { channel: raw }: { channel: string }) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
-        return ok(renderChannelInfo(channel, agent.channelInfo(channel)));
+        try {
+          const channel = wireChannel(raw);
+          return ok(renderChannelInfo(channel, agent.channelInfo(channel)));
+        } catch (e) {
+          return err(`Couldn't look up "${raw}": ${(e as Error).message}`);
+        }
       },
     },
     {
@@ -391,9 +406,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .enum(["normal", "quiet", "muted"])
           .describe("quiet = receive silently, @mentions still wake; muted = stop receiving it (incl. @mentions); normal = follow global attention."),
       },
-      async run(agent, _config, { channel, mode }: { channel: string; mode: "normal" | "quiet" | "muted" }) {
+      async run(agent, _config, { channel: raw, mode }: { channel: string; mode: "normal" | "quiet" | "muted" }) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
         try {
+          const channel = wireChannel(raw);
           await agent.setChannelMode(channel, mode);
           const desc =
             mode === "quiet"
@@ -403,7 +419,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 : "back to following your global attention";
           return ok(`#${channel} is now ${mode} — ${desc}.`);
         } catch (e) {
-          return err(`Couldn't set #${channel} to ${mode}: ${(e as Error).message}`);
+          return err(`Couldn't set "${raw}" to ${mode}: ${(e as Error).message}`);
         }
       },
     },
@@ -415,7 +431,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         channel: z.string().describe("The channel to join (e.g. incident)."),
       },
-      async run(agent, _config, { channel }: { channel: string }) {
+      async run(agent, _config, { channel: raw }: { channel: string }) {
+        let channel: string;
+        try {
+          channel = wireChannel(raw);
+        } catch (e) {
+          return err(`Couldn't join "${raw}": ${(e as Error).message}`);
+        }
         // Bound by the read ACL before touching the mesh — a clear refusal beats a broker/manager
         // rejection. (Auth mode also enforces this server-side; this is the friendly client gate.)
         if (!channelInAllow(config.allowSubscribe, channel))
@@ -453,12 +475,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         channel: z.string().describe("The channel to leave."),
       },
-      async run(agent, _config, { channel }: { channel: string }) {
+      async run(agent, _config, { channel: raw }: { channel: string }) {
         try {
+          const channel = wireChannel(raw);
           const r = await agent.leaveChannel(channel);
           return ok(r.left ? `Left #${channel}.` : `You weren't on #${channel}.`);
         } catch (e) {
-          return err(`Couldn't leave #${channel}: ${(e as Error).message}`);
+          return err(`Couldn't leave "${raw}": ${(e as Error).message}`);
         }
       },
     },
