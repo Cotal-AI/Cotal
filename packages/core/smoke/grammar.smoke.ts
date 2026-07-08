@@ -15,7 +15,7 @@ import {
   chatSubject, unicastSubject, anycastSubject, controlServiceSubject, dinboxSubject,
   parseSubject, principalKey, parsePrincipalKey, parseDinboxPrincipal, unicastRecvFilter,
   anycastServeFilter, dmDurable, isPrincipalOwnerToken, assertInboxConnId, principalTags,
-  principalFromTags, DEV_OWNER,
+  principalFromTags, patternCovers, patternInAllow, DEV_OWNER,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -76,6 +76,33 @@ c("principalFromTags(non-principal tags) === null", principalFromTags(["owner:lo
 // Same trust boundary as message surfacing: a syntactically-valid but nkey-OWNER principal tag is dropped.
 c("principalFromTags(nkey-owner) === null (not just dot-form valid)", principalFromTags([`principal:${NKEY}.team`]) === null);
 c("principalFromTags(u_ owner) recovers", principalFromTags(["principal:u_nd77wkm3o3eyk6qvuwhy76b2nm.act1"]) === "u_nd77wkm3o3eyk6qvuwhy76b2nm.act1");
+
+// ── patternCovers / patternInAllow (the delegation-attenuation primitive) ──
+// Pattern-vs-pattern containment: cap covers pattern iff EVERY channel matching the pattern also
+// matches the cap. This is the envelope rule's boundary — each case below is a security decision.
+const covers: Array<[string, string]> = [
+  ["a", "a"], ["a.b", "a.b"], ["*", "a"], ["a.*", "a.b"], ["a.*", "a.*"], ["*.b", "a.b"],
+  ["a.>", "a.b"], ["a.>", "a.b.c"], ["a.>", "a.>"], ["a.>", "a.b.>"], ["a.>", "a.*"],
+  ["a.b.>", "a.b.c"], [">", "a"], [">", "a.b"], [">", "a.>"], [">", "*.b"], [">", ">"],
+];
+for (const [cap, pat] of covers) c(`patternCovers("${cap}", "${pat}")`, patternCovers(cap, pat) === true);
+const notCovers: Array<[string, string]> = [
+  ["a", "b"], ["a.b", "a"], ["a", "a.b"], ["a", "a.>"], ["a.b", "a.*"], ["*.b", "a.*"],
+  ["a.*", "a"], ["a.*", "a.b.c"], ["a.*", "a.>"], ["*", "a.b"], ["*", ">"],
+  ["a.>", "a"], ["a.>", "b.c"], ["a.>", ">"], ["a.b.>", "a.b"], ["a.b.>", "a.>"],
+];
+for (const [cap, pat] of notCovers) c(`!patternCovers("${cap}", "${pat}")`, patternCovers(cap, pat) === false);
+c("patternInAllow: concrete within a subtree entry", patternInAllow(["general", "review.>"], "review.pua") === true);
+c("patternInAllow: subtree within the same subtree", patternInAllow(["general", "review.>"], "review.>") === true);
+c("patternInAllow: `review` itself is NOT within `review.>` (NATS: a.> excludes bare a)", patternInAllow(["review.>"], "review") === false);
+c("patternInAllow: empty allow admits nothing", patternInAllow([], "general") === false);
+c("patternInAllow: union of entries is NOT considered (single-entry containment, conservative)",
+  patternInAllow(["a.b", "a.c"], "a.*") === false);
+// Malformed policy (non-terminal '>') is outside the assertValidChannel grammar — containment must
+// fail CLOSED on both sides, never interpret it (`review.>.x` read as `review.>` would widen an envelope).
+c("!patternCovers with a malformed cap (non-terminal '>') — never widens", patternCovers("review.>.x", "review.secret") === false);
+c("!patternCovers with a malformed pattern (non-terminal '>') — never admitted", patternCovers("a.>", "a.>.x") === false);
+c("!patternCovers('>.x', 'a') — malformed leading '>' cap", patternCovers(">.x", "a") === false);
 
 console.log(`\nGRAMMAR SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);

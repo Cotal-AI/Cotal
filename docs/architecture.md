@@ -871,6 +871,16 @@ files to hand out, and revocation actually bites.
   silently healthy). Control ops ride the operator's own bearer, gated by ledger scope
   (`spawn` → spawn/ps, `admin` → cross-agent stop/attach); manifest `up -f` stamps the logged-in
   owner into the launch, so those agents are yours too.
+- **Delegation only narrows (the envelope rule).** A user's grant is their *envelope*: everything
+  under their owner — their CLI, every agent they spawn, every agent those spawn — stays within
+  its channel lists (pattern containment: `review.pua` fits inside `review.>`, never the reverse)
+  and its capability scope. A role is receive reach too (the shared `svc_<role>` task queue), so
+  handing one to an agent needs the `role:<r>` capability in the spawner's scope. The whole
+  delegation *chain* is checked, not just the last link, and re-checked at **every agent bearer
+  exchange** — so narrowing a user's grant bites their agents at the next refresh (≤ 5 min), and
+  revoking the user revokes everything under them, grandchildren included. A spawn beyond the
+  envelope is refused with the exact widening re-grant to ask the operator for; an `admin`-scoped
+  or operator (parentless) spawn is the authority and is exempt.
 - **The client path** (`cotal login --idp …` once per machine, then any command): cached IdP
   session → fresh IdP JWT per connect (IdP-side revocation bites here) → local exchange → connect
   with sentinel creds + bearer. A user-mode mesh is a **hard branch**: commands never fall back

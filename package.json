@@ -14,7 +14,7 @@
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "test": "pnpm -r --if-present test",
     "check": "pnpm typecheck && pnpm test && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:ci && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live",
-    "smoke:ci": "pnpm smoke:principal-key && pnpm smoke:grammar && pnpm smoke:owner-token && pnpm smoke:auth-owner-token && pnpm smoke:auth-issuer && pnpm smoke:auth-idp-bridge && pnpm smoke:auth-login && pnpm smoke:callout-shape && pnpm smoke:auth-callout:auth && pnpm smoke:endpoint-usermode:auth && pnpm smoke:callout-deny:auth && pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:cred-lifetime && pnpm smoke:standing-renewal && pnpm smoke:delivery-renewal && pnpm smoke:signing-key-rotation && pnpm smoke:system-account-rotation && pnpm smoke:cutover-restart-eviction && pnpm smoke:deprovision && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:cross-owner:auth && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:evict-live:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl && pnpm smoke:cli-kernel && pnpm smoke:flag-inventory && pnpm smoke:start-overrides && pnpm smoke:launch-parity && pnpm smoke:spawn-args && pnpm smoke:agent-file && pnpm smoke:launch-options",
+    "smoke:ci": "pnpm smoke:principal-key && pnpm smoke:grammar && pnpm smoke:owner-token && pnpm smoke:auth-owner-token && pnpm smoke:auth-issuer && pnpm smoke:auth-idp-bridge && pnpm smoke:auth-login && pnpm smoke:auth-attenuation && pnpm smoke:callout-shape && pnpm smoke:auth-callout:auth && pnpm smoke:endpoint-usermode:auth && pnpm smoke:callout-deny:auth && pnpm smoke:read-acl:auth && pnpm smoke:sub-acl:auth && pnpm smoke:self-serve-join:auth && pnpm smoke:control-auth && pnpm smoke:manager-split && pnpm smoke:cred-lifetime && pnpm smoke:standing-renewal && pnpm smoke:delivery-renewal && pnpm smoke:signing-key-rotation && pnpm smoke:system-account-rotation && pnpm smoke:cutover-restart-eviction && pnpm smoke:deprovision && pnpm smoke:control-reply-bound && pnpm smoke:channels:auth && pnpm smoke:e2e:acl && pnpm smoke:cross-owner:auth && pnpm smoke:plane3:auth && pnpm smoke:delivery-lease:auth && pnpm smoke:delivery-leave-tombstone:auth && pnpm smoke:delivery-reconnect:auth && pnpm smoke:delivery-cred:auth && pnpm smoke:delivery-reply-injection:auth && pnpm smoke:evict-live:auth && pnpm smoke:membership:auth && pnpm smoke:membership-feed-confinement:auth && pnpm smoke:wildcard-backfill && pnpm smoke:opencode && pnpm smoke:opencode-coop && pnpm smoke:opencode-transcript && pnpm smoke:transcript-grant && pnpm smoke:persona-acl && pnpm smoke:cli-kernel && pnpm smoke:flag-inventory && pnpm smoke:start-overrides && pnpm smoke:launch-parity && pnpm smoke:spawn-args && pnpm smoke:agent-file && pnpm smoke:launch-options",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "clean": "git clean -fdX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "cotal": "tsx bin/cotal.ts",
@@ -112,6 +112,7 @@
     "smoke:auth-issuer": "tsx implementations/auth/smoke/issuer.smoke.ts",
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",
     "smoke:auth-login": "tsx implementations/auth/smoke/login.smoke.ts",
+    "smoke:auth-attenuation": "tsx implementations/auth/smoke/attenuation.smoke.ts",
     "smoke:auth-callout:auth": "tsx implementations/auth/smoke/auth-callout.smoke.ts",
     "smoke:endpoint-usermode:auth": "tsx implementations/auth/smoke/endpoint-usermode.smoke.ts",
     "smoke:callout-deny:auth": "tsx implementations/auth/smoke/callout-deny.smoke.ts",
@@ -145,7 +146,7 @@
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.20.0",
     "ts-json-schema-generator": "^2.9.0",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.0",
     "typescript": "^5.9.3"
   }
 }

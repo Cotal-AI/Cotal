@@ -38,8 +38,10 @@ import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:
 import { join } from "node:path";
 import {
   assertDerivedOwnerToken,
+  assertValidChannel,
   assertValidOwnerToken,
   mkSecretDir,
+  patternInAllow,
   writeSecretFile,
 } from "@cotal-ai/core";
 import type { ActorGrant } from "./idp.js";
@@ -184,12 +186,33 @@ function assertRowInputs(row: Omit<ActorRow, "grantedAt">): void {
   }
   if (!Array.isArray(row.scope) || !Array.isArray(row.allowSubscribe) || !Array.isArray(row.allowPublish))
     throw new Error("grantActor: explicit scope/allowSubscribe/allowPublish lists are required");
+  // Policy-grammar validation at the WRITE boundary (mirroring the mint chokepoint's re-assert in
+  // core `permissionsFor`): a row's ACL lists are the delegation envelope for everything under it,
+  // so a malformed entry (`a.>.b`) must never be stored where containment would later read it.
+  for (const ch of [...row.allowSubscribe, ...row.allowPublish]) assertValidChannel(ch);
+  // Scope entries are capability TOKENS (compared by equality, embedded in bearers and repair
+  // commands) — an open vocabulary (`spawn`, `admin`, `role:<r>`, …), but a closed grammar: no
+  // whitespace, no shell/subject metacharacters, nothing `--scope` CSV can't round-trip.
+  for (const s of row.scope)
+    if (!/^[A-Za-z0-9_:-]+$/.test(s))
+      throw new Error(`grantActor: scope entry "${s}" must be a plain capability token ([A-Za-z0-9_:-])`);
+  // The role is embedded in `role:<r>` capability tokens and `svc_<role>` durable names — same
+  // closed grammar, validated where it enters the ledger.
+  if (row.role !== undefined && !/^[A-Za-z0-9_-]+$/.test(row.role))
+    throw new Error(`grantActor: role "${row.role}" must be a plain token ([A-Za-z0-9_-])`);
 }
 
 /** Grant (or update — an upsert, so re-granting narrows/widens in place) an INTERACTIVE (owner,
  *  actor) row. Refuses a token hash (that's the managed space's shape, written only by the spawn
  *  path) and refuses to shadow an existing managed-agent row — the two spaces stay disjoint at the
- *  write, so the read sides never disambiguate. */
+ *  write, so the read sides never disambiguate.
+ *
+ *  NOT attenuated by design: interactive rows are OPERATOR-authored (the local `cotal actor grant`
+ *  CLI is the only writer), and the operator is the authority the envelope rule bottoms out in. An
+ *  optional `parent` here is an audit link only — do not build a delegated-USER write path on this
+ *  function; user-authored delegation belongs in the managed space, where the chain walk enforces
+ *  the envelope (an interactive row that carries a parent still gets link-checked when a managed
+ *  chain passes THROUGH it). */
 export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
   assertRowInputs(row);
   if (row.tokenHash !== undefined)
@@ -210,12 +233,115 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
   return full;
 }
 
+/** Delegation attenuation — the ENVELOPE rule: everything under an owner stays within the
+ *  spawner's own grant. A spawn-scoped actor can delegate only a SUBSET of what it holds — channel
+ *  ACLs by NATS-pattern containment ({@link patternInAllow}), capability scope by set inclusion —
+ *  never more; a spawner whose row carries `admin` is the operator authority and is exempt, and a
+ *  row with NO parent is an operator/roster boot (the operator is the authority). Enforced at BOTH
+ *  managed-row boundaries: authorship ({@link grantManagedActor}) and every agent bearer exchange
+ *  ({@link ledgerAuthorizeAgentExchange}) — so narrowing or revoking a spawner bites its agents at
+ *  their next refresh (≤ {@link AGENT_BEARER_TTL_SEC}s), instead of leaving them orphaned. */
+function assertWithinSpawnerGrant(
+  dir: string,
+  row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role">,
+  boundary: "spawn" | "exchange",
+): void {
+  // Walk the WHOLE delegation chain, not just the immediate link: per-link containment composes
+  // transitively (child ⊆ parent at every hop ⇒ leaf ⊆ root), and every link must still EXIST — a
+  // single-hop check would let grandchildren outlive a revoked root (their immediate parent row
+  // survives the root's deletion) and let a revoked root's still-live child keep minting. The walk
+  // stops at an authority root: an admin-scoped ancestor or a parentless (operator/roster) row.
+  // `seen` is the cycle guard — legitimate upserts can close a parent loop (re-parent a root under
+  // its own descendant), which must deny, not spin.
+  const leaf = row.actor;
+  let child = row;
+  const seen = new Set<string>([`${row.owner}.${row.actor}`]);
+  while (child.parent) {
+    const parentKey = child.parent;
+    const childKey = `${child.owner}.${child.actor}`;
+    const deep = child !== row;
+    if (seen.has(parentKey))
+      throw new Error(
+        `agent "${leaf}": its delegation chain contains a cycle at "${parentKey}" — a broken ledger denies; repair the parent links (\`cotal actor list\`)`,
+      );
+    seen.add(parentKey);
+    const dot = parentKey.indexOf(".");
+    const pOwner = parentKey.slice(0, dot);
+    const pActor = parentKey.slice(dot + 1);
+    const parent = findActorUnified(dir, pOwner, pActor);
+    if (!parent)
+      throw new Error(
+        boundary === "spawn"
+          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space — delegation flows from a granted spawner chain; grant it first (\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\`)`
+          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted — revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`)`,
+      );
+    if (parent.scope.includes("admin")) return;
+    if (child.owner !== pOwner)
+      throw new Error(
+        `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner — cross-owner spawns are operator (admin) launches only`,
+      );
+    const overScope = child.scope.filter((s) => !parent.scope.includes(s));
+    const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
+    const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));
+    // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
+    // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
+    // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
+    // role delegation transitive for free.
+    const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
+    if (overScope.length || overSub.length || overPub.length || needRole) {
+      const wrongs = [
+        overScope.length ? `scope [${overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
+        overSub.length ? `read [${overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
+        overPub.length ? `post [${overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
+        needRole ? `role "${child.role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${needRole}\` capability)` : "",
+      ].filter(Boolean);
+      const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
+      const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
+      throw new Error(
+        (boundary === "spawn"
+          ? `${who} would exceed its spawner's grant — delegation only narrows: `
+          : `${who} exceeds its spawner's CURRENT grant (narrowed since spawn): `) +
+          wrongs.join("; ") +
+          ` — the mesh operator widens the spawner with \`${widen}\`` +
+          (boundary === "spawn" ? ", then respawn" : ", or respawn within it"),
+      );
+    }
+    child = parent;
+  }
+}
+
+/** The exact re-grant that would admit the refused delegation: the spawner's CURRENT row with the
+ *  missing entries unioned in. A grant is an upsert of the WHOLE row, so the repair must carry
+ *  every field — a bare `--allow-subscribe` would silently narrow the rest. */
+function widenGrantCommand(
+  pOwner: string,
+  pActor: string,
+  parent: ActorRow,
+  addScope: string[],
+  addSub: string[],
+  addPub: string[],
+): string {
+  const union = (base: string[], add: string[]) => [...new Set([...base, ...add])];
+  // The command is offered for copy-paste into a shell, so every free-form field is POSIX
+  // single-quote escaped — a row label like `x'; rm -rf ~` must never become a live command.
+  const shq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+  const parts = [`cotal actor grant ${pActor} --owner ${pOwner}`];
+  const scope = union(parent.scope, addScope);
+  if (scope.length) parts.push(`--scope ${shq(scope.join(","))}`);
+  parts.push(`--allow-subscribe ${shq(union(parent.allowSubscribe, addSub).join(","))}`);
+  parts.push(`--allow-publish ${shq(union(parent.allowPublish, addPub).join(","))}`);
+  if (parent.role) parts.push(`--role ${shq(parent.role)}`);
+  if (parent.label) parts.push(`--label ${shq(parent.label)}`);
+  return parts.join(" ");
+}
+
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
  *  with the secret hash REQUIRED — and never shadowing an interactive row. */
 export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> & { tokenHash: string }): ActorRow {
   assertRowInputs(row);
   if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
+  assertWithinSpawnerGrant(dir, row, "spawn");
   const shadowRefusal = () =>
     new Error(`actor "${row.actor}" already has an interactive grant — a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
   if (findIn(dir, "interactive", row.owner, row.actor)) throw shadowRefusal();
@@ -347,5 +473,10 @@ export function ledgerAuthorizeAgentExchange(
   const presented = Buffer.from(hashActorToken(actorToken), "hex");
   const stored = Buffer.from(row.tokenHash, "hex");
   if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) throw deny();
+  // Post-authentication (the secret matched), so a SPECIFIC refusal is safe on this surface — and
+  // required: rechecking the envelope here makes it a STANDING invariant (an operator narrowing or
+  // revoking the spawner bites its agents at their next ≤ AGENT_BEARER_TTL_SEC refresh), the same
+  // posture as the connect boundary's "bearer scope vs CURRENT row" check.
+  assertWithinSpawnerGrant(dir, row, "exchange");
   return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}) };
 }

@@ -155,6 +155,17 @@ try {
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--label", "smoke human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out);
 
+  // The ENVELOPE rule on the foreground CLI spawn path: an over-ask beyond the cli grant
+  // ([general] by default) is refused at the grant write — before any broker footprint — and the
+  // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
+  // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
+  mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
+  const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
+  check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
+    overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);
+  check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
+
   // The witness: a directly-minted static admin tap (pre-flip static+user coexist) on the chat wire.
   const auth = loadSpaceAuth(authDir(root))!;
   witnessNc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "admin"))) });
