@@ -84,7 +84,13 @@ Cotal's guided setup is one command on a fresh machine:
 npx cotal-ai setup  # checks your machine, installs `cotal`, and configures your first agent mesh
 ```
 
-It gets your machine ready and **starts nothing**: checks Node/NATS, lets you pick connectors
+Or skip the terminal and paste one line into any coding agent, which sets everything up itself:
+
+```text
+Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
+```
+
+`setup` gets your machine ready and **starts nothing**: checks Node/NATS, lets you pick connectors
 (Claude installs a plugin; OpenCode auto-wires at spawn), installs the web dashboard extension,
 seeds one default agent, and offers to put `cotal` on your PATH. Then run:
 
