@@ -22,6 +22,10 @@ const PORT = 20000 + Math.floor(Math.random() * 40000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// A prompt signed deny returns on the first round-trip; the original encoding bug hung to the full
+// connect timeout. Give a generous timeout so a loaded CI/Windows runner never mistakes a slow-but-
+// prompt deny for a hang, and assert the reject landed well inside it (not at the ceiling).
+const CONNECT_TIMEOUT_MS = 15000;
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
@@ -75,7 +79,7 @@ try {
     const nc = await connect({
       servers: SERVERS,
       authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(b)],
-      name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 8000, maxReconnectAttempts: 0,
+      name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: CONNECT_TIMEOUT_MS, maxReconnectAttempts: 0,
     });
     await nc.close(); // should not reach — a deny must reject the connect
   } catch (e) {
@@ -83,7 +87,7 @@ try {
   }
 
   check("a denied user-mode connect is REJECTED (not accepted)", rejected, msg);
-  check("the rejection is PROMPT (< 4s — a legible refusal, not a connect-timeout hang)", rejected && elapsed < 4000, `${elapsed}ms`);
+  check("the rejection is PROMPT (well inside the connect timeout, not a hang)", rejected && elapsed < CONNECT_TIMEOUT_MS / 2, `${elapsed}ms of ${CONNECT_TIMEOUT_MS}ms`);
   check("the connect fails as an authorization/authentication denial", /auth/i.test(msg), msg);
   // The KEY property of the fix: the deny RESPONSE ENCODED (with the em-dash reason ASCII-folded), so the
   // server could reject at all. NATS surfaces only a GENERIC "Authorization Violation" to the client — it

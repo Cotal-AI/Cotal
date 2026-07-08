@@ -117,7 +117,10 @@ try {
   check("expired copied cred is broker-denied on connect", await tryConnect(expiredCreds, expired.id) === "rejected");
   // D5 slice 6: the probe CLASSIFIES credential death — an expired cred on a LIVE broker is
   // "stale-auth" (repair: doctor auth), never conflated with "wrong creds" or "mesh down".
-  const staleProbe = await probeConnect(SERVERS, { creds: expiredCreds });
+  // Give the probe a generous connect budget: the default 1s doctor timeout can be beaten by a slow
+  // CI/Windows TCP+auth round-trip, misclassifying a provably-expired cred as "unreachable". The
+  // classification (expired -> stale-auth) is what's under test here, not connect latency.
+  const staleProbe = await probeConnect(SERVERS, { creds: expiredCreds, timeoutMs: 8000 });
   check("probeConnect classifies an expired cred as stale-auth (the structured diagnostic)", !staleProbe.ok && staleProbe.reason === "stale-auth", staleProbe);
 
   const fresh = newIdentity();
