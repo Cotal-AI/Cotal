@@ -15,6 +15,7 @@ import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Pla
 import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn resolves
 import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
 import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)
+import "@cotal-ai/pi"; // registers the `pi` connector (mesh extension loaded into the user's own pi)
 import "@cotal-ai/cmux"; // opt into the cmux integration — registers the `cmux` runtime + TerminalLayout providers
 import "@cotal-ai/tmux"; // opt into the tmux integration — registers the `tmux` runtime + TerminalLayout providers
 import { claudeConnector } from "@cotal-ai/connector-claude-code";

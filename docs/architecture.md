@@ -87,6 +87,11 @@ command imports lazily and parses live. Version skew or a stranded link fails lo
 with instructions to re-add, rather than leaving a silently missing command. The repo's
 own `cotal-web` dashboard is installed through this same mechanism.
 
+Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
+loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the
+session's process and driving its run loop off the inbox — see
+[agent-frameworks](agent-frameworks.md).
+
 ## Connectors: four surfaces, one runtime
 
 Every coding-agent integration exposes the same four surfaces:

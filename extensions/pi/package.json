@@ -1,0 +1,44 @@
+{
+  "name": "@cotal-ai/pi",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.js"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@cotal-ai/connector-core": "workspace:*",
+    "typebox": "^1.1.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@earendil-works/pi-coding-agent": "^0.79.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
