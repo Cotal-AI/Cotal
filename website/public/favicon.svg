@@ -1,0 +1,10 @@
+<svg viewBox="0 0 1000 1000" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<mask id="mTOP" maskUnits="userSpaceOnUse" x="0" y="0" width="1000" height="1000"><rect width="1000" height="1000" fill="white"/><circle cx="655.88" cy="590.00" r="246" fill="none" stroke="black" stroke-width="126"/></mask>
+<mask id="mBL" maskUnits="userSpaceOnUse" x="0" y="0" width="1000" height="1000"><rect width="1000" height="1000" fill="white"/><circle cx="500.00" cy="320.00" r="246" fill="none" stroke="black" stroke-width="126"/></mask>
+<mask id="mBR" maskUnits="userSpaceOnUse" x="0" y="0" width="1000" height="1000"><rect width="1000" height="1000" fill="white"/><circle cx="344.12" cy="590.00" r="246" fill="none" stroke="black" stroke-width="126"/></mask>
+</defs>
+<path d="M 221.00 320.00 A 279.0 279.0 0 1 1 779.00 320.00 A 279.0 279.0 0 1 1 221.00 320.00 Z M 287.00 320.00 A 213.0 213.0 0 1 0 713.00 320.00 A 213.0 213.0 0 1 0 287.00 320.00 Z" fill="#E9C46A" fill-rule="evenodd" mask="url(#mTOP)"/>
+<path d="M 65.12 590.00 A 279.0 279.0 0 1 1 623.12 590.00 A 279.0 279.0 0 1 1 65.12 590.00 Z M 131.12 590.00 A 213.0 213.0 0 1 0 557.12 590.00 A 213.0 213.0 0 1 0 131.12 590.00 Z" fill="#E9C46A" fill-rule="evenodd" mask="url(#mBL)"/>
+<path d="M 376.88 590.00 A 279.0 279.0 0 1 1 934.88 590.00 A 279.0 279.0 0 1 1 376.88 590.00 Z M 442.88 590.00 A 213.0 213.0 0 1 0 868.88 590.00 A 213.0 213.0 0 1 0 442.88 590.00 Z" fill="#E9C46A" fill-rule="evenodd" mask="url(#mBR)"/>
+</svg>

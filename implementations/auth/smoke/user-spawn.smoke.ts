@@ -89,7 +89,7 @@ const { createServer } = await import("node:http");
 type AddressInfo = import("node:net").AddressInfo;
 
 const {
-  CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
+  CotalEndpoint, CONTROL_PRIVILEGED, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, principalKey, registry,
 } = await import("@cotal-ai/core");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
@@ -286,6 +286,7 @@ let authChild: ChildProcess | undefined;
 let managerStopped = false;
 let observer: InstanceType<typeof CotalEndpoint> | undefined;
 let shortEp: InstanceType<typeof CotalEndpoint> | undefined;
+const ctlEps: Array<InstanceType<typeof CotalEndpoint>> = []; // section O control callers, closed in finally
 try {
   // ---------- A. setup ----------
   console.log("A) user-auth broker + streams + auth service + login + grant");
@@ -470,6 +471,54 @@ try {
   const gammaFilesGone = ["gamma.actor-token", "gamma.sentinel.creds", "gamma.auth-health.json"].every((f) => !existsSync(join(credsDir, f)));
   check("the failed spawn left NO managed row and NO secret files (orphan rollback ran the user-mode teardown)", gammaRowGone && gammaFilesGone, { gammaRowGone, gammaFilesGone });
 
+  // ---------- O. own-agent control (owner-domain attach/stop on the SPAWN tier) ----------
+  // The live half of the own-agent-control matrix (the pure policy is pinned broker-free in
+  // implementations/manager/smoke/own-agent-control.smoke.ts): REAL wire requests on the
+  // PRIVILEGED ctl subject, admitted by the callout-minted scope grants and decided by the
+  // manager's owner-domain authorization.
+  console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
+  const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
+    const g = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [] });
+    const ex = await agentExchange(actor, g.actorToken, owner);
+    if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
+    const ep = new CotalEndpoint({
+      space: SPACE, servers: SERVER, bearer: ex.body.token, sentinelCreds: g.sentinelCreds,
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: { name: actor, owner, actor, kind: "endpoint" },
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    ctlEps.push(ep);
+    return ep;
+  };
+  // The target: `delta`, already live from the envelope section (spawned WITH spawner `u_….cli`),
+  // so a DIFFERENT actor under the same owner is a true sibling — not the spawner, not the manager.
+  check("precondition: delta is live under the operator's owner", manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  const opsmate = await ctlCaller("opsmate", OWNER, ["spawn"]);
+  const sibAttach: ControlReply = await opsmate.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "delta" } });
+  check("owner-domain: a spawn-scoped SIBLING actor attaches an agent under its owner (priv tier)", sibAttach.ok === true && typeof (sibAttach.data as { ws?: string })?.ws === "string", sibAttach);
+  const sibStop: ControlReply = await opsmate.requestControl(CONTROL_PRIVILEGED, { op: "stop", args: { name: "delta" } });
+  check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
+  check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  // A CROSS-OWNER caller with only spawn scope: broker admits the priv publish, the manager refuses.
+  const OWNER_B = "u_" + "b".repeat(26);
+  const intruder = await ctlCaller("intruder", OWNER_B, ["spawn"]);
+  const crossAttach: ControlReply = await intruder.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "alpha" } });
+  check("cross-owner attach is refused fail-closed", crossAttach.ok === false, crossAttach);
+  check("…naming the owner boundary + the ADD-to-current re-grant", /another owner/.test(crossAttach.error ?? "") && /ADDED/.test(crossAttach.error ?? ""), crossAttach.error);
+  const crossStop: ControlReply = await intruder.requestControl(CONTROL_PRIVILEGED, { op: "stop", args: { name: "alpha" } });
+  check("cross-owner stop is refused the same way", crossStop.ok === false && /another owner/.test(crossStop.error ?? ""), crossStop.error);
+  check("alpha survived the refused cross-owner stop", manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
+  // A cross-owner caller whose LEDGER row carries admin: the manager reads the ledger fresh → allowed.
+  const auditor = await ctlCaller("auditor", OWNER_B, ["spawn", "admin"]);
+  const adminAttach: ControlReply = await auditor.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "alpha" } });
+  check("cross-owner attach with ledger admin passes (fresh ledger read)", adminAttach.ok === true, adminAttach);
+  // Narrow the auditor back to [spawn] (upsert) — the SAME live connection loses cross-owner reach
+  // on its very next op: the ledger read is fresh, no reconnect or bearer refresh involved.
+  await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
+  const narrowedAttach: ControlReply = await auditor.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "alpha" } });
+  check("narrowing the auditor's scope bites its NEXT op on the same live connection", narrowedAttach.ok === false && /another owner/.test(narrowedAttach.error ?? ""), narrowedAttach);
+
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
   await manager.stop(); // teardown deprovisions alpha: user-mode revoke (row delete) + token/sentinel/health shred
@@ -489,6 +538,7 @@ try {
 } finally {
   try { await observer?.stop(); } catch { /* */ }
   try { await shortEp?.stop(); } catch { /* */ }
+  for (const e of ctlEps) { try { await e.stop(); } catch { /* */ } }
   if (manager && !managerStopped) await manager.stop().catch(() => {});
   await killPid(authChild?.pid);
   broker?.kill("SIGKILL");

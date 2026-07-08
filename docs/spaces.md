@@ -1,8 +1,8 @@
-# Spaces
+# Spaces & channels
 
-> The space concept, why it is distinct from a channel, and how spaces connect. Sections 1
-> to 3 describe what Cotal does **today**; sections 4 to 6 are **design direction**, not yet
-> built.
+> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §1](../SPEC.md#1-scope-and-terminology), [§7](../SPEC.md#7-channels) · Connecting spaces is design direction: see the [roadmap](roadmap.md).
+
+The space concept, and why it is distinct from a channel.
 
 ## 1. What a space is
 
@@ -13,11 +13,11 @@ structureless by comparison.
 Concretely, today:
 
 - Every subject is scoped to it: `cotal.<space>.{chat,inst,svc,ctl}.…`
-  ([`subjects.ts`](../packages/core/src/subjects.ts)).
+  ([SPEC §3](../SPEC.md#3-subject-layout)).
 - Each space has its own streams (`CHAT_<space>` / `DM_<space>` / `TASK_<space>`) and its own
-  presence KV bucket (`cotal_presence_<space>`).
+  presence KV bucket ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
 - **In auth mode a space is one NATS account**, a real, server-enforced boundary
-  ([`provision.ts`](../packages/core/src/provision.ts)). In `--open` dev mode it is one shared
+  ([identity & auth](identity-and-auth.md)). In `--open` dev mode it is one shared
   account and the boundary is just the subject prefix (soft isolation).
 - An endpoint is bound to one space for its lifetime. To be in two spaces, run two endpoints.
 
@@ -45,6 +45,9 @@ than one collaboration on a deployment, or about presence scoped to a group. Thi
 universal split: Slack workspace vs channel, NATS account vs subject, SLIM's `org` vs the rest
 of the name.
 
+Who may read and post a channel is a separate, per-agent question:
+[channels & permissions](channels-and-permissions.md).
+
 ## 3. Channels inside channels? No.
 
 Keep **one** membership boundary (the space). For everything below it, two cheaper tools
@@ -54,7 +57,7 @@ already exist:
   `team.backend`, `team.backend.api` already nest. Subscribe `team.>` for the subtree or
   `team.*` for one level. No new concept needed.
 - **Sub-conversations map to flat threads.** The envelope already carries `replyTo` and
-  `contextId` ([`types.ts`](../packages/core/src/types.ts)); a thread is a relation to a root
+  `contextId` ([SPEC §5](../SPEC.md#5-envelopes)); a thread is a relation to a root
   message, one level deep.
 
 A channel that had its own roster and access control would just be a sub-space, two mechanisms
@@ -65,61 +68,14 @@ level everywhere.
 
 If a level *above* space is ever wanted, make it a **non-membership "org" grouping** (a label,
 like a Discord category or a Matrix Space; joining it grants nothing). Usefully, that org label
-is also the identity qualifier federation needs (§5): one concept, two payoffs.
+is also the identity qualifier federation needs: one concept, two payoffs.
 
-## 4. Connecting spaces: the rule
+## 4. Connecting spaces
 
-**Never merge trust roots.** In NATS the *operator* is the trust anchor: a server trusts
-exactly one operator, and two independent operators cannot federate. Since a space is an
-account under an operator, "connect two spaces" splits cleanly by whether they share one:
-
-- **Same operator** (two collaborations in one deployment): connect them *inside* NATS with
-  **account export/import**. An account exports specific subjects (a stream) or a request/reply
-  endpoint (a service); the other imports them, with subject remapping and (for private
-  exports) an activation token. Server-enforced, no relay process.
-- **Different operators** (two parties, each running their own cluster/auth): real
-  **federation**. You do not fuse them; you bridge a **narrow surface**, with each side keeping
-  its own operator. NATS's sanctioned cross-operator mechanism is the **leaf node**: the
-  bridging side authenticates into the remote with a credential the remote issued, binds as one
-  account there, and its permissions whitelist exactly which subjects cross.
-
-Every federated system agrees on the shape: bridge **one channel**, not the whole tenant (Slack
-Connect shares a single channel with admin approval on both sides); keep identity **namespaced
-by home** (`alice@spaceB`); and at the boundary, **trust the signature, not the pipe**.
-
-## 5. The staged path (proposed)
-
-- **v0, origin-qualified identity.** Add an additive `name@space` qualifier to the envelope and
-  `AgentCard` so a remote peer is unambiguous. Cheap, non-breaking, and a prerequisite for any
-  bridge; it is the one thing every federated system requires.
-- **v1, application-level relay.** A bridge endpoint that holds **a separate credential each
-  side issued independently** (so no trust-root merge) forwards one channel both ways and
-  mirrors designated presence. Needs: a forwarded-message marker (loop prevention), identity
-  rewriting with the origin qualifier, and explicit config on both ends (the approval
-  handshake). Works in **open *and* auth mode** with **no NATS reconfiguration**, and fits
-  Cotal's "thin client over the wire" ethos. A clean variant is a **rendezvous space**: both
-  parties' delegates meet in a neutral third space rather than reaching into each other's,
-  self-similar with Cotal's own primitive, and nobody holds the other's creds.
-- **v2, NATS-native, server-enforced.** Graduate to account **export/import** (same operator),
-  **leaf nodes** (cross-operator), and **mirror/source** streams if durable cross-space history
-  is needed ("copy, don't share"; pull-only). Heavier (activation tokens, JetStream domains)
-  but no relay hop.
-- **North star, encrypted group as the boundary.** Make a federated channel an
-  end-to-end-encrypted group whose membership is *keys* (MLS-style), so relays carry ciphertext
-  without being trusted, with DID/keypair self-issued identity. This is where the agent
-  ecosystem (SLIM, AGNTCY, NANDA) is heading; cross-fabric routing/presence is still unsolved,
-  room for Cotal to lead. Do not build now, but do not block it.
-
-## 6. Status
-
-| Area | Today | Proposed |
-|---|---|---|
-| Space = membership/trust/presence boundary | ✅ | |
-| Hierarchical channel names plus `replyTo`/`contextId` threads | ✅ | |
-| `name@space` origin-qualified identity | | v0 |
-| App-level channel bridge / rendezvous space | | v1 |
-| Account export/import · leaf nodes · mirror/source | | v2 |
-| Encrypted-group boundary plus DID identity | | north star |
+Deliberately not built yet. The rule it will follow (**never merge trust roots**) and
+the staged path (origin-qualified identity → application-level relay / rendezvous space →
+NATS-native export/import and leaf nodes → encrypted-group boundary) live in the
+[roadmap](roadmap.md).
 
 ## Prior art
 

@@ -50,10 +50,11 @@ export async function resolveControlTarget(
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
  *  disconnect. The target is already reachability- + auth-preflighted by
  *  {@link resolveControlTarget}, so this connects straight through. `tier` picks the control
- *  subject: privileged for spawn --detach/ps; admin for the operator's cross-agent ops
- *  (stop/attach), which the manager refuses on the privileged subject for a non-owner. `creds` is
- *  the tier-scoped caller cred (`control-caller-privileged` / `control-caller-admin` — each holds
- *  ONLY its own tier's pub grant), or undefined on an open mesh. */
+ *  subject: privileged for spawn --detach/ps — and, on a user mesh, for stop/attach too (the
+ *  operator's bearer publishes there with scope "spawn"; the MANAGER authorizes owner-domain vs
+ *  ledger-admin). On a static mesh stop/attach stay admin-tier ops. `creds` is the tier-scoped
+ *  caller cred (`control-caller-privileged` / `control-caller-admin` — each holds ONLY its own
+ *  tier's pub grant), or undefined on an open mesh. */
 export async function askManager(
   space: string,
   server: string,
@@ -80,8 +81,11 @@ export async function askManager(
   } catch (e) {
     // A user-mode caller whose cli actor lacks the tier's scope gets a broker publish denial (the
     // red endpoint error above) and then this timeout — name the grant, not just the silence.
+    // The re-grant REPLACES the scope list, so the hint must say "add", never a bare one-token
+    // --scope that would silently strip the caller's spawn/role capabilities.
+    const need = tier === CONTROL_ADMIN ? "admin" : "spawn";
     const scopeHint = auth.bearer
-      ? ` — on a user-auth mesh this op needs your cli actor granted scope "${tier === CONTROL_ADMIN ? "admin" : "spawn"}": \`cotal actor grant cli --sub <your IdP subject> --scope ${tier === CONTROL_ADMIN ? "admin" : "spawn"}\``
+      ? ` — on a user-auth mesh this op needs scope "${need}" on your cli actor. Re-grant with "${need}" ADDED to your current scope (the upsert replaces the list; see \`cotal actor list\`), e.g. \`cotal actor grant cli --sub <your IdP subject> --scope 'spawn,role:default,${need}'\``
       : "";
     return { ok: false, error: `no manager reachable (${(e as Error).message})${scopeHint}` };
   } finally {

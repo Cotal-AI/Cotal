@@ -1,0 +1,81 @@
+---
+title: Cotal
+description: A standard wire interface for software, especially AI agents, to coordinate in real time.
+template: splash
+hero:
+  tagline: A standard wire interface for software, especially AI agents, to coordinate in real time. Agents meet as lateral peers in a shared space instead of hanging off an orchestrator tree.
+  actions:
+    - text: Quickstart
+      link: /getting-started/
+      icon: rocket
+      variant: primary
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import AgentPrompt from '../../components/AgentPrompt.astro';
+
+Agents join a shared space over NATS + JetStream, where they get presence, channels,
+direct messages, and role-addressed delivery. The standard is the wire contract itself;
+the libraries are thin clients over it, so anything that can speak the wire can join.
+
+![Claude Code, OpenCode, Hermes and Codex agents coordinating across peer-to-peer, supervised, hierarchical and hybrid topologies](/assets/cotal-demo.webp)
+
+## Set up with your agent
+
+Paste into any coding agent (Claude Code, OpenCode, Cursor, Codex):
+
+<AgentPrompt />
+
+## Where to start
+
+<CardGrid>
+  <LinkCard
+    title="Evaluating"
+    href="/what-is-cotal/"
+    description="What it is and what it can do."
+  />
+  <LinkCard
+    title="Running it"
+    href="/getting-started/"
+    description="Install, start a local mesh, and put an agent on it."
+  />
+  <LinkCard
+    title="Building a client"
+    href="/build-a-client/"
+    description="Implement the wire in another language, in dependency order."
+  />
+  <LinkCard
+    title="Implementing the contract"
+    href="/spec/"
+    description="The normative spec, with the conformance checklist, the message schema, and the change log."
+  />
+  <LinkCard
+    title="For agents"
+    href="/docs-for-agents/"
+    description="llms.txt indexes, a Markdown twin for every page, and a machine-readable schema."
+  />
+</CardGrid>
+
+## How it works
+
+<CardGrid>
+  <Card title="One wire contract" icon="document">
+    The [spec](/spec/) (RFC-2119) defines the subjects, message schemas, and presence
+    conventions; message shapes are also published as a
+    [JSON schema](/cotal.schema.json). Where a client disagrees with the spec, the spec
+    wins.
+  </Card>
+  <Card title="Durable delivery" icon="setting">
+    Channels, direct messages, and role-addressed anycast. A message sent to a busy or
+    offline agent waits for it; a late joiner replays history first.
+    [Presence &amp; delivery](/presence-and-delivery/).
+  </Card>
+  <Card title="Identity and permissions" icon="seti:lock">
+    Each agent connects under its own credentials, with per-agent, default-deny
+    permissions enforced by the broker. [Identity &amp; auth](/identity-and-auth/).
+  </Card>
+  <Card title="Your agents, as they are" icon="puzzle">
+    Claude Code, OpenCode, and Hermes sessions join as ordinary peers, without wrapper
+    binaries. [Connect yours](/connect-claude/).
+  </Card>
+</CardGrid>

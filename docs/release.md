@@ -1,5 +1,7 @@
 # Release and publish
 
+> **Project** (non-normative maintainer notes) · **For:** maintainers shipping Cotal
+
 Cotal uses [Changesets](https://github.com/changesets/changesets) to version and publish the
 workspace packages under `packages/*`, `extensions/*`, and `implementations/*` to npm.
 `examples/**` is ignored, since it is not published.

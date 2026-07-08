@@ -154,11 +154,16 @@ try {
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--label", "smoke human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out);
+  // The flagless grant is the FULL one: all channels + spawn + the stock role (the golden path —
+  // login, grant, spawn just works; narrowing is the operator's explicit act).
+  check("flagless grant defaults to the full envelope", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("spawn"), grant.out);
 
-  // The ENVELOPE rule on the foreground CLI spawn path: an over-ask beyond the cli grant
-  // ([general] by default) is refused at the grant write — before any broker footprint — and the
+  // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
+  // over-ask beyond it is refused at the grant write — before any broker footprint — and the
   // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
   // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
+  const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
+  check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
   const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
@@ -190,6 +195,16 @@ try {
       !unsupportedOperatorSurface.out.includes("--profile"),
     unsupportedOperatorSurface.out,
   );
+
+  // Own-agent control TIER ROUTING: on a user mesh, `cotal stop`/`attach` ride the operator's own
+  // bearer on the SPAWN (privileged) tier — a spawn-scoped grant (no admin) must REACH the manager
+  // and get ITS decision back. Before this routing, the CLI published on ctl.admin and the broker
+  // dropped it (a timeout + scope hint, never a manager reply); `no agent "ghost"` IS the manager
+  // answering. The authorization matrix itself is pinned in user-spawn + own-agent-control smokes.
+  const ghostStop = await cotal(["stop", "--name", "ghost", "--space", SPACE]);
+  check("spawn-scoped `cotal stop` reaches the manager on the spawn tier (its reply, not a broker drop)", ghostStop.status !== 0 && ghostStop.out.includes('no agent "ghost"'), ghostStop.out);
+  const ghostAttach = await cotal(["attach", "--name", "ghost", "--space", SPACE]);
+  check("spawn-scoped `cotal attach` reaches the manager the same way", ghostAttach.status !== 0 && ghostAttach.out.includes('no agent "ghost"'), ghostAttach.out);
 
   // ---------- D. the deny matrix at the operator surface ----------
   console.log("D) revoke → refused; logout → the exact login line");

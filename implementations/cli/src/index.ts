@@ -79,7 +79,7 @@ const baseCommands: Command[] = [
       { name: "host", type: "string", value: "<host>", description: "bind host override" },
       { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
       { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
-      { name: "channels", type: "string", value: "<a,b>", description: "channels to pre-create" },
+      { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
       { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
       { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
       { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },

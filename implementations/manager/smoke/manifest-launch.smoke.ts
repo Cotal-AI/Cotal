@@ -157,6 +157,15 @@ function writeSpec(name: string, body: unknown): string {
   throws("unknown capability rejected (not just unsafe token)", () => loadLaunchSpec(writeSpec("p3.json", agent1({ capabilities: ["teleport"] }))));
   // Belt-and-suspenders (review-fact): allowPublish-only wildcard is rejected too (same validateLaunchPolicy loop).
   throws("wildcard allowPublish rejected", () => loadLaunchSpec(writeSpec("p4.json", agent1({ allowPublish: ["team.>"] }))));
+  // Envelope-rule vocabulary: a delegable `role:<r>` capability is a KNOWN manifest capability
+  // (strict shape), while `admin` stays deliberately manifest-inadmissible — a hand-editable file
+  // must not mint an authority-root agent.
+  const roleCap = loadLaunchSpec(writeSpec("c1.json", agent1({ capabilities: ["spawn", "role:worker"] })));
+  check("role:<r> capability accepted", roleCap.agents[0].capabilities?.includes("role:worker") === true, roleCap.agents[0].capabilities);
+  throws("unsafe role capability rejected", () => loadLaunchSpec(writeSpec("c2.json", agent1({ capabilities: ["role:a b"] }))));
+  throws("nested role capability rejected", () => loadLaunchSpec(writeSpec("c3.json", agent1({ capabilities: ["role:a:b"] }))));
+  throws("unknown namespaced capability rejected", () => loadLaunchSpec(writeSpec("c4.json", agent1({ capabilities: ["teleport:x"] }))));
+  throws("admin capability rejected at the manifest boundary", () => loadLaunchSpec(writeSpec("c5.json", agent1({ capabilities: ["admin"] }))));
   // USER-AUTH: the apply-time owner (`up -f --user-auth`) survives the strict schema — and only as
   // a real derived token (an arbitrary string can't become ownership attribution).
   const OWNER = "u_" + "b".repeat(26);

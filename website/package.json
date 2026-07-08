@@ -1,0 +1,23 @@
+{
+  "name": "@cotal-ai/website",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cotal documentation site — Astro Starlight, agent-native (llms.txt, per-page Markdown, content negotiation).",
+  "scripts": {
+    "sync": "node scripts/sync-docs.mjs",
+    "dev": "npm run sync && astro dev",
+    "build": "npm run sync && astro build && node scripts/check-dist.mjs",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.1",
+    "astro": "^7.0.3",
+    "sharp": "^0.34.0",
+    "starlight-llms-txt": "^0.11.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.105.0"
+  }
+}
