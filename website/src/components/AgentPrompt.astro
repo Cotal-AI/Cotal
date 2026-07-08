@@ -1,14 +1,15 @@
 ---
 // The landing-page prompt card: the setup one-liner in a framed box with the
-// agent marks and an always-visible copy button. Same prompt as the hero pill.
+// agent marks and a copy affordance. The whole card is the click target; a
+// click puts the prompt on the clipboard. Same prompt as the hero pill.
 import AgentLogos from './AgentLogos.astro';
 import { AGENT_PROMPT } from '../prompt';
 ---
 
-<div class="agent-prompt not-content">
+<button class="agent-prompt not-content" type="button" data-prompt={AGENT_PROMPT} aria-label="Copy the setup prompt">
   <AgentLogos />
   <code>{AGENT_PROMPT}</code>
-  <button type="button" data-prompt={AGENT_PROMPT} aria-label="Copy the setup prompt">
+  <span class="copy-pill">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path
         fill="none"
@@ -20,11 +21,11 @@ import { AGENT_PROMPT } from '../prompt';
       />
     </svg>
     <span class="label" aria-live="polite">Copy</span>
-  </button>
-</div>
+  </span>
+</button>
 
 <script>
-  for (const btn of document.querySelectorAll<HTMLButtonElement>('.agent-prompt button')) {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('button.agent-prompt')) {
     const label = btn.querySelector('.label');
     btn.addEventListener('click', async () => {
       if (!label) return;
@@ -48,6 +49,7 @@ import { AGENT_PROMPT } from '../prompt';
     display: flex;
     align-items: center;
     gap: 1rem;
+    width: 100%;
     margin-top: 1rem;
     padding: 1rem 1rem 1rem 1.25rem;
     border: 1px solid var(--sl-color-gray-5);
@@ -59,10 +61,31 @@ import { AGENT_PROMPT } from '../prompt';
         transparent 45%
       ),
       var(--sl-color-gray-6);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color 0.2s,
+      box-shadow 0.2s,
+      transform 0.2s;
+  }
+  .agent-prompt:hover,
+  .agent-prompt:focus-visible,
+  .agent-prompt.copied {
+    border-color: color-mix(in srgb, #e9c46a 60%, var(--sl-color-gray-5));
+    box-shadow: 0 4px 18px color-mix(in srgb, #e9c46a 12%, transparent);
+    transform: translateY(-1px);
+  }
+  .agent-prompt:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px color-mix(in srgb, #e9c46a 10%, transparent);
   }
   .agent-prompt > :global(.logos) {
     color: var(--sl-color-gray-2);
     font-size: 1.0625rem;
+    transition: color 0.2s;
+  }
+  .agent-prompt:hover > :global(.logos) {
+    color: var(--sl-color-white);
   }
   .agent-prompt code {
     flex: 1;
@@ -72,7 +95,7 @@ import { AGENT_PROMPT } from '../prompt';
     background: none;
     padding: 0;
   }
-  .agent-prompt button {
+  .copy-pill {
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
@@ -84,19 +107,32 @@ import { AGENT_PROMPT } from '../prompt';
     color: var(--sl-color-white);
     font-size: var(--sl-text-sm);
     line-height: 1;
-    cursor: pointer;
     transition:
-      border-color 0.15s,
-      color 0.15s;
+      border-color 0.2s,
+      color 0.2s;
   }
-  .agent-prompt button svg {
+  .copy-pill svg {
     width: 0.95em;
     height: 0.95em;
   }
-  .agent-prompt button:hover,
-  .agent-prompt button.copied {
+  .agent-prompt:hover .copy-pill,
+  .agent-prompt:focus-visible .copy-pill,
+  .agent-prompt.copied .copy-pill {
     border-color: #e9c46a;
     color: #e9c46a;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .agent-prompt,
+    .agent-prompt > :global(.logos),
+    .copy-pill {
+      transition: none;
+    }
+    .agent-prompt:hover,
+    .agent-prompt:focus-visible,
+    .agent-prompt:active,
+    .agent-prompt.copied {
+      transform: none;
+    }
   }
   @media (max-width: 40rem) {
     .agent-prompt {
