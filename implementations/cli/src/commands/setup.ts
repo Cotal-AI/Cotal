@@ -134,9 +134,9 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ];
   const tail = demo
-    ? [dim(`Visual dashboard: ${cmd} ext add cotal-web · then ${cmd} web`)]
+    ? [dim(`Visual dashboard: ${cmd} ext add @cotal-ai/web · then ${cmd} web`)]
     : [
-        dim(`Want a visual dashboard? ${cmd} ext add cotal-web · then ${cmd} web`),
+        dim(`Want a visual dashboard? ${cmd} ext add @cotal-ai/web · then ${cmd} web`),
         dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
       ];
   note(
@@ -261,7 +261,7 @@ async function runEnsure(demo: boolean): Promise<void> {
 }
 
 /** True when an installed extension contributes the `web` command (the dashboard moved out to
- *  `cotal-web` in stage 4) — decides whether the ready-card says "start it" or "install it". */
+ *  `@cotal-ai/web` in stage 4) — decides whether the ready-card says "start it" or "install it". */
 function webInstalled(): boolean {
   try {
     return loadExtensionsManifest().extensions.some((e) => e.commands.some((cm) => cm.name === "web"));
@@ -272,7 +272,7 @@ function webInstalled(): boolean {
 
 /** Install the dashboard extension once, without turning setup into a launch command. This reuses the
  *  public `ext add` path in a child process so package install, peer linking, command verification,
- *  and manifest writes stay identical to an explicit `cotal ext add cotal-web`. Best-effort: setup is
+ *  and manifest writes stay identical to an explicit `cotal ext add @cotal-ai/web`. Best-effort: setup is
  *  still useful on locked-down machines where npm/registry access is unavailable. */
 async function ensureWebExtension(): Promise<void> {
   if (webInstalled()) return;
@@ -289,12 +289,12 @@ async function ensureWebExtension(): Promise<void> {
   }
   s.stop("Couldn't install the web dashboard extension");
   const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-6).join("\n");
-  p.log.warn(`${tail ? `${tail}\n\n` : ""}Install it later with ${dim(`${displayCmd()} ext add cotal-web`)}.`);
+  p.log.warn(`${tail ? `${tail}\n\n` : ""}Install it later with ${dim(`${displayCmd()} ext add @cotal-ai/web`)}.`);
 }
 
 function defaultWebExtensionSpec(): string {
   const local = join(import.meta.dirname, "..", "..", "..", "web");
-  return existsSync(join(local, "package.json")) ? local : "cotal-web";
+  return existsSync(join(local, "package.json")) ? local : "@cotal-ai/web";
 }
 
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only

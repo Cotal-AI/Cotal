@@ -5,7 +5,7 @@
 "@cotal-ai/manager": minor
 "@cotal-ai/delivery": minor
 "@cotal-ai/auth": minor
-"cotal-web": minor
+"@cotal-ai/web": minor
 "@cotal-ai/connector-core": minor
 "@cotal-ai/connector-claude-code": minor
 "@cotal-ai/connector-opencode": minor

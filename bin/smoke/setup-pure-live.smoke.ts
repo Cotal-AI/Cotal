@@ -3,7 +3,7 @@
  * REAL subprocess in a sandboxed COTAL_HOME with claude/opencode OFF the PATH, and must:
  *   A. exit 0 — configuring a machine never depends on (or mutates) running state;
  *   B. LAUNCH NOTHING — no broker appears on the default port, no manager pid file lands;
- *   C. WRITE the default persona, install cotal-web in a sandboxed config dir, and write the
+ *   C. WRITE the default persona, install @cotal-ai/web in a sandboxed config dir, and write the
  *      onboarded stamp, with persona/stamp writes announced on stderr;
  *   D. `setup --demo` on an onboarded machine writes the guided team;
  *   E. a REPEAT run (now onboarded) prints the status card, still launches nothing, and exits 0;

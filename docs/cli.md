@@ -46,7 +46,7 @@ ships this way; see [`web`](#web)).
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
-| Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `cotal-web` extension) |
+| Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
 | Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
 | Auth & meshes | [`login`](#login-logout) | Sign in to a per-user-auth mesh's IdP (once per machine) |
 | Auth & meshes | [`logout`](#login-logout) | Revoke the IdP session and clear the cached login |
@@ -341,7 +341,7 @@ user-auth mesh it rides the read-only admin view over your login, which needs le
 ## web
 
 ```bash
-cotal ext add cotal-web   # install once
+cotal ext add @cotal-ai/web   # install once
 cotal web [--port <n>] [--no-open] [--space <s>]
 ```
 
@@ -352,8 +352,8 @@ cotal web [--port <n>] [--no-open] [--space <s>]
 | `--no-open` | off | Don't open the browser |
 
 The browser observability dashboard: presence, channels, and a live feed. It is **not** part of
-`cotal up`: it ships as the `cotal-web` extension (`cotal setup` installs it automatically; otherwise
-`cotal ext add cotal-web`). It self-registers `cotal web` into this surface and serves
+`cotal up`: it ships as the `@cotal-ai/web` extension (`cotal setup` installs it automatically; otherwise
+`cotal ext add @cotal-ai/web`). It self-registers `cotal web` into this surface and serves
 `http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need
@@ -485,7 +485,7 @@ cotal ext list
 
 Operator-installed CLI extensions: `add` installs an npm package into a cotal-owned prefix and makes
 its commands appear in help, completion, and dispatch; `remove` and `list` manage them. The
-`cotal-web` dashboard is the canonical example. Installed packages and their location are described
+`@cotal-ai/web` dashboard is the canonical example. Installed packages and their location are described
 in [config](config.md).
 
 ## completion

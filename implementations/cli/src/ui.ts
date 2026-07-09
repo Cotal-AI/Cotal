@@ -1,7 +1,7 @@
 import type { PresenceStatus } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
-// The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with cotal-web.
+// The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
 // Re-exported so the CLI's many importers keep resolving them from here.
 export { c, color256 } from "@cotal-ai/workspace";
 

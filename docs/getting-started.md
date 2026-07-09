@@ -48,7 +48,7 @@ time, it walks you through:
    **me** (the session you drive). Every file setup writes is announced with a
    `→ wrote …` line.
 4. **Installs the dashboard extension.** It runs the same installer as
-   `cotal ext add cotal-web`, so `cotal web` is available after setup. If npm or the
+   `cotal ext add @cotal-ai/web`, so `cotal web` is available after setup. If npm or the
    registry is unavailable, setup warns and tells you the retry command.
 5. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
    `npm i -g cotal-ai` so you can just type `cotal`.
@@ -63,7 +63,7 @@ cotal down                 # stop everything
 ```
 
 Open the browser dashboard with `cotal web` (setup installs the extension; if it warned, retry with
-`cotal ext add cotal-web`). Add the guided expert team with `cotal setup --demo`, then `cotal spawn
+`cotal ext add @cotal-ai/web`). Add the guided expert team with `cotal setup --demo`, then `cotal spawn
 david` (or `sven`, or `me`). Watch the mesh in this terminal anytime with `cotal console`:
 
 ![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI](../assets/quickstart.gif)
@@ -123,7 +123,7 @@ that is down. It starts nothing itself.
 The dashboard is an extension that setup installs automatically. It runs at
 `http://cotal.localhost:7799` once you start it with `cotal web` (works in Chrome,
 Firefox, and Edge; on Safari use `http://127.0.0.1:7799`). If setup could not
-install it, retry with `cotal ext add cotal-web`.
+install it, retry with `cotal ext add @cotal-ai/web`.
 
 You drive Cotal through an agent: spawn one and talk to it. It has the tools to message
 peers, spawn teammates, and send feedback (the full surface is the

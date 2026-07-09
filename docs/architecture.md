@@ -89,7 +89,7 @@ The published binary also loads **operator-installed CLI extensions**: `cotal ex
 self-registers, then caches its command metadata for `--help`/completion; running a
 command imports lazily and parses live. Version skew or a stranded link fails loudly
 with instructions to re-add, rather than leaving a silently missing command. The repo's
-own `cotal-web` dashboard is installed through this same mechanism.
+own `@cotal-ai/web` dashboard is installed through this same mechanism.
 
 ## Connectors: four surfaces, one runtime
 

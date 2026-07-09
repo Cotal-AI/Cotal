@@ -335,7 +335,7 @@ const baseCommands: Command[] = [
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
     run: console_,
   },
-  // `web` (dashboard) moved out to the `cotal-web` extension package (stage 4) — installed via
+  // `web` (dashboard) moved out to the `@cotal-ai/web` extension package (stage 4) — installed via
   // `cotal ext add`, it self-registers here and appears in this same surface.
 ];
 
