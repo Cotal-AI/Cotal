@@ -23,7 +23,7 @@ function help(commands: Command[]): void {
   };
   const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
   const pad = Math.max(...visible.map((c) => c.name.length));
-  let out = `${c.bold("cotal")} — lateral agent coordination over NATS\n`;
+  let out = `${c.bold("cotal")} - lateral agent coordination over NATS\n`;
   for (const [group, cmds] of ordered) {
     out += `\n${c.bold(group)}\n`;
     for (const cmd of cmds) out += `  ${cmd.name.padEnd(pad)}  ${c.dim(cmd.summary)}\n`;
@@ -34,7 +34,7 @@ function help(commands: Command[]): void {
 /** Full help for one command, generated from its declared specs: summary, usage line, and a
  *  flag table (short, long, metavar, description). */
 function commandHelp(cmd: Command): void {
-  console.log(`${c.bold(`cotal ${cmd.name}`)} — ${cmd.summary}`);
+  console.log(`${c.bold(`cotal ${cmd.name}`)} - ${cmd.summary}`);
   console.log(c.dim(`usage: ${commandUsage(cmd)}`));
   const flags = cmd.flags ?? [];
   if (!flags.length) return;
@@ -116,6 +116,13 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       commandHelp(cmd);
       process.exit(1);
     }
-    throw e;
+    // Every other command failure (a broker permission denial, a missing --creds file, a failed
+    // connect) is presented as ONE clean line, never a raw Node stack trace: the CLI's fail-loud
+    // contract is "denied, not absent", not a crash. The full stack stays available under
+    // COTAL_DEBUG for diagnosis.
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(c.red(`✗ ${msg}`));
+    if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
+    process.exit(1);
   }
 }

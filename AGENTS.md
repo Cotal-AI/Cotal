@@ -93,8 +93,8 @@ with no silent fallback.
 - **`@cotal-ai/tmux`** (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
   plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
 - **`@cotal-ai/cli`** (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,
-  `spawn`, `mint`, `channels`, `history`, `ext` (operator-installed command extensions).
-- **`cotal-web`** (`implementations/web`): the browser dashboard as a `cotal ext`-installable
+  `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
+- **`@cotal-ai/web`** (`implementations/web`): the browser dashboard as a `cotal ext`-installable
   extension package — it peer-depends on core + workspace (linked to the binary's copies at add
   time) and self-registers its command.
 - **`@cotal-ai/manager`** (`implementations/manager`): the agent supervisor: spawns and manages

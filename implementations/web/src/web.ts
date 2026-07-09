@@ -13,7 +13,7 @@ import {
   clearChannel,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { c, connectOrExit } from "@cotal-ai/workspace";
+import { c, connectOrExit, userViewAuth, userViewAuthOrExit, type UserViewAuth } from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -43,23 +43,32 @@ export async function web(args: ParsedArgs): Promise<void> {
   // = filtered CHAT purge + a channel-registry key delete) and let the seed fall out of scope here, so
   // it isn't reachable from the request handlers. `--creds` / open mode have no seed → the connection
   // creds carry the purge rights.
-  const { server, space, creds, purgeCreds } = await (async () => {
+  //
+  // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
+  // fresh-checked at every mint and every connect) — standing via a bearer SOURCE so the tap
+  // survives the ≤5-minute token life. No pre-minted purge cred: channel delete mints a one-shot
+  // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
+  // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
+  // refresh.
+  const { conn, user } = await (async () => {
     const conn = await connectOrExit(values, "admin");
-    const purge = conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
-    return { server: conn.server, space: conn.space, creds: conn.creds, purgeCreds: purge };
+    return { conn, user: conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined };
   })();
+  const { server, space } = conn;
+  const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
   const port = values.port ? Number(values.port) : WEB_PORT;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...(user
+      ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
+      : { creds: conn.creds, card: { name: "web", kind: "endpoint" as const } }),
     channels: [],
     consume: false, // observer: reads via tap + history + presence-watch, binds no durables
     registerPresence: false,
     watchPresence: true,
-    card: { name: "web", kind: "endpoint" },
   });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
@@ -85,7 +94,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   try {
     membershipWatch = await ep.watchMembership(pushMembership);
   } catch (e) {
-    console.error(c.dim(`• membership feed unavailable — graph shows traffic only (${(e as Error).message})`));
+    console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
   // Every comm on the mesh (chat / unicast / anycast) → push to the live feed. The admin cred
   // allows the whole space, so the observer taps everything — DMs + anycast included.
@@ -164,7 +173,13 @@ export async function web(args: ParsedArgs): Promise<void> {
         return;
       }
       try {
-        const result = await clearChannel({ servers: server, space, channel, creds: purgeCreds });
+        // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
+        // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.
+        const result = user
+          ? await userViewAuth(conn, "channel-purger").then((p: UserViewAuth) =>
+              clearChannel({ servers: server, space, channel, bearer: p.bearer, sentinelCreds: p.sentinelCreds }),
+            )
+          : await clearChannel({ servers: server, space, channel, creds: purgeCreds });
         return json(res, { ok: true, ...result });
       } catch (e) {
         res.writeHead(400, { "content-type": "application/json" });
@@ -198,8 +213,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   await new Promise<void>((ready) => httpServer.listen(port, "127.0.0.1", ready));
   // Branded URL only when on the default port; a custom --port keeps the plain loopback address.
   const url = port === WEB_PORT ? WEB_URL : `http://127.0.0.1:${port}/`;
-  console.log(`${c.bold("Cotal web")} — observing space ${c.bold(space)}`);
-  console.log(c.dim("  god-view — DMs + anycast visible"));
+  console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
+  console.log(c.dim("  god-view - DMs + anycast visible"));
   console.log(`  ${c.cyan(url)}  ${c.dim("(Ctrl-C to stop)")}`);
   if (!values["no-open"]) openBrowser(url);
 

@@ -13,7 +13,7 @@
  *                 DM-lane tap (sub), chat publish, ACL write, peer-presence forge: DENIED.
  *   provisioner — stream/bucket create + DM/DLV/TASK consumer-create + ACL/channel write+read: ALLOWED.
  *                 STREAM.DELETE/PURGE, DM body read (MSG.NEXT), chat publish, lease write: DENIED.
- *   deprovisioner — TARGET-PINNED delete of ITS agent's dm_<id>/dlv_<id> durable + ACL row: ALLOWED.
+ *   deprovisioner — TARGET-PINNED delete of ITS agent's dm_local-<id>/dlv_local-<id> durable + ACL row: ALLOWED.
  *                 a PEER's durable/ACL (target-pinned), role-shared svc_<role>, DM create/read, STREAM
  *                 DELETE/PURGE, chat publish: DENIED (#159 B).
  *   purger      — STREAM.PURGE on CHAT + DM: ALLOWED.
@@ -51,6 +51,9 @@ import {
   taskDurable,
   aclKey,
   unicastSubject,
+  unicastRecvFilter,
+  principalKey,
+  DEV_OWNER,
   presenceBucket,
   managerBucket,
   membersBucket,
@@ -192,18 +195,18 @@ try {
   const PKV = `KV_${presenceBucket(space)}`;
   // The DM/DLV consumer-create push-bypass (the create-time deliver_subject isn't ACL-constrained, so a
   // consumer-create = body read). The supervisor MUST NOT have it; the provisioner must.
-  const dmCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable("victim")}`;
-  const dlvCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.dlv_victim`;
-  const dmRead = `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable("victim")}`;
-  const dlvRead = `$JS.API.CONSUMER.MSG.NEXT.${DLV}.dlv_victim`;
+  const dmCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable(DEV_OWNER, "victim")}`;
+  const dlvCreate = `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.${dlvDurable(DEV_OWNER, "victim")}`;
+  const dmRead = `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, "victim")}`;
+  const dlvRead = `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvDurable(DEV_OWNER, "victim")}`;
   // Body reads also ride the direct STREAM.MSG.GET path — assert both DM and DLV are denied there too,
   // so the matrix mirrors the DM AND DLV confidentiality claim directly (review-security), not by omission.
   const dmGet = `$JS.API.STREAM.MSG.GET.${DM}`, dlvGet = `$JS.API.STREAM.MSG.GET.${DLV}`;
 
   console.log("supervisor (the always-on daemon — the residual-2 gate):");
   check("acquire lease (own key) ALLOWED", await tryPublish(supCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, sup.id) === "allowed");
-  check("publish OWN presence key ALLOWED", await tryPublish(supCreds, `$KV.${presenceBucket(space)}.${sup.id}`, sup.id) === "allowed");
-  check("reply on a served control tier ALLOWED", await tryPublish(supCreds, `${controlServiceSubject(space, CONTROL_PRIVILEGED, prov.id)}.reply.${randomUUID()}`, sup.id) === "allowed");
+  check("publish OWN presence key ALLOWED", await tryPublish(supCreds, `$KV.${presenceBucket(space)}.${principalKey(DEV_OWNER, sup.id).key}`, sup.id) === "allowed");
+  check("reply on a served control tier ALLOWED", await tryPublish(supCreds, `${controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, prov.id)}.reply.${randomUUID()}`, sup.id) === "allowed");
   check("create a DM consumer (push-bypass) DENIED", await tryPublish(supCreds, dmCreate, sup.id) === "denied");
   check("create a DLV consumer (push-bypass) DENIED", await tryPublish(supCreds, dlvCreate, sup.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(supCreds, dmRead, sup.id) === "denied");
@@ -212,9 +215,9 @@ try {
   check("direct-get a DLV body (STREAM.MSG.GET) DENIED", await tryPublish(supCreds, dlvGet, sup.id) === "denied");
   check("STREAM.DELETE the presence bucket (roster wipe) DENIED", await tryPublish(supCreds, `$JS.API.STREAM.DELETE.${PKV}`, sup.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED", await tryPublish(supCreds, `$JS.API.STREAM.PURGE.${DM}`, sup.id) === "denied");
-  check("publish chat DENIED (never posts)", await tryPublish(supCreds, chatSubject(space, sup.id, "general"), sup.id) === "denied");
+  check("publish chat DENIED (never posts)", await tryPublish(supCreds, chatSubject(space, DEV_OWNER, sup.id, "general"), sup.id) === "denied");
   check("write the ACL registry DENIED (not its job)", await tryPublish(supCreds, `$KV.${aclBucket(space)}.${prov.id}`, sup.id) === "denied");
-  check("forge a peer's presence key DENIED", await tryPublish(supCreds, `$KV.${presenceBucket(space)}.${prov.id}`, sup.id) === "denied");
+  check("forge a peer's presence key DENIED", await tryPublish(supCreds, `$KV.${presenceBucket(space)}.${principalKey(DEV_OWNER, prov.id).key}`, sup.id) === "denied");
   // Stream-tamper is enumerated-deny, so prove the other admin verbs too (not just DELETE/PURGE): UPDATE
   // (reconfigure a stream) and selective MSG.DELETE (excise a record) are equally absent from the allow-list.
   check("STREAM.UPDATE the presence bucket DENIED", await tryPublish(supCreds, `$JS.API.STREAM.UPDATE.${PKV}`, sup.id) === "denied");
@@ -222,8 +225,8 @@ try {
   // The live-tap path (the broad `manager` had a space-prefix native `sub`): prove the supervisor cannot
   // natively subscribe a peer's DM lane — and DOES legitimately serve a control tier (so DENIED below is a
   // real boundary, not a broken helper).
-  check("native-subscribe a peer's DM lane (inst.<victim>) DENIED", await trySubscribe(supCreds, sup.id, unicastSubject(space, prov.id, "*")) === "denied");
-  check("serve a control tier (subscribe ctl.<tier>.*) ALLOWED", await trySubscribe(supCreds, sup.id, controlServiceSubject(space, CONTROL_PRIVILEGED, "*")) === "allowed");
+  check("native-subscribe a peer's DM lane (inst.<victim>) DENIED", await trySubscribe(supCreds, sup.id, unicastRecvFilter(space, DEV_OWNER, prov.id)) === "denied");
+  check("serve a control tier (subscribe ctl.<tier>.*) ALLOWED", await trySubscribe(supCreds, sup.id, controlServiceSubject(space, CONTROL_PRIVILEGED, "*", "*")) === "allowed");
 
   console.log("provisioner (ephemeral onboarding — holds the DM/DLV create surface, nothing destructive):");
   check("CONSUMER.DURABLE.CREATE on DM ALLOWED (the onboarding power)", await tryPublish(provCreds, dmCreate, prov.id) === "allowed");
@@ -237,33 +240,35 @@ try {
   check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(provCreds, dmGet, prov.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(provCreds, `$JS.API.STREAM.DELETE.${PKV}`, prov.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED (not a purger)", await tryPublish(provCreds, `$JS.API.STREAM.PURGE.${DM}`, prov.id) === "denied");
-  check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, prov.id, "general"), prov.id) === "denied");
+  check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, prov.id) === "denied");
 
-  console.log("deprovisioner (ephemeral, TARGET-PINNED teardown — deletes ONE agent's id-keyed footprint, nothing else):");
-  const tgtDm = `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(dpvTarget.id)}`;
-  const tgtDlv = `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(dpvTarget.id)}`;
-  const tgtAcl = `$KV.${aclBucket(space)}.${aclKey(dpvTarget.id)}`;
-  check("DELETE the TARGET's dm_<id> durable ALLOWED", await tryPublish(dpvCreds, tgtDm, dpv.id) === "allowed");
-  check("DELETE the TARGET's dlv_<id> durable ALLOWED", await tryPublish(dpvCreds, tgtDlv, dpv.id) === "allowed");
+  console.log("deprovisioner (ephemeral, TARGET-PINNED teardown — deletes ONE agent's local-principal footprint, nothing else):");
+  const dpvTargetPrincipal = principalKey(DEV_OWNER, dpvTarget.id).key;
+  const supPrincipal = principalKey(DEV_OWNER, sup.id).key;
+  const tgtDm = `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(DEV_OWNER, dpvTarget.id)}`;
+  const tgtDlv = `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(DEV_OWNER, dpvTarget.id)}`;
+  const tgtAcl = `$KV.${aclBucket(space)}.${aclKey(dpvTargetPrincipal)}`;
+  check("DELETE the TARGET's dm_local-<id> durable ALLOWED", await tryPublish(dpvCreds, tgtDm, dpv.id) === "allowed");
+  check("DELETE the TARGET's dlv_local-<id> durable ALLOWED", await tryPublish(dpvCreds, tgtDlv, dpv.id) === "allowed");
   check("purge the TARGET's ACL row ($KV.<acl>.<id>) ALLOWED", await tryPublish(dpvCreds, tgtAcl, dpv.id) === "allowed");
-  // Target-PINNED: a PEER's id-keyed footprint (durable + ACL row) is out of reach — the grants name the target.
-  check("DELETE a PEER's dm_<id> durable DENIED (target-pinned)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(sup.id)}`, dpv.id) === "denied");
-  check("DELETE a PEER's dlv_<id> durable DENIED (target-pinned)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(sup.id)}`, dpv.id) === "denied");
-  check("purge a PEER's ACL row DENIED (target-pinned)", await tryPublish(dpvCreds, `$KV.${aclBucket(space)}.${aclKey(sup.id)}`, dpv.id) === "denied");
+  // Target-PINNED: a PEER's local-principal footprint (durable + ACL row) is out of reach — the grants name the target.
+  check("DELETE a PEER's dm_local-<id> durable DENIED (target-pinned)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(DEV_OWNER, sup.id)}`, dpv.id) === "denied");
+  check("DELETE a PEER's dlv_local-<id> durable DENIED (target-pinned)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(DEV_OWNER, sup.id)}`, dpv.id) === "denied");
+  check("purge a PEER's ACL row DENIED (target-pinned)", await tryPublish(dpvCreds, `$KV.${aclBucket(space)}.${aclKey(supPrincipal)}`, dpv.id) === "denied");
   // NEVER the role-SHARED svc_<role> (deleting it would break the role's other agents) — no TASK reach at all.
   check("DELETE the role-shared svc_<role> durable DENIED", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DELETE.${TASK}.${taskDurable("worker")}`, dpv.id) === "denied");
   // It DELETES mailboxes; it never CREATES one (not a provisioner) nor READS a body, nor tears a stream down.
-  check("CREATE the target's DM consumer DENIED (deprovisions, never provisions)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable(dpvTarget.id)}`, dpv.id) === "denied");
-  check("read the target's DM body (MSG.NEXT) DENIED", await tryPublish(dpvCreds, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(dpvTarget.id)}`, dpv.id) === "denied");
+  check("CREATE the target's DM consumer DENIED (deprovisions, never provisions)", await tryPublish(dpvCreds, `$JS.API.CONSUMER.DURABLE.CREATE.${DM}.${dmDurable(DEV_OWNER, dpvTarget.id)}`, dpv.id) === "denied");
+  check("read the target's DM body (MSG.NEXT) DENIED", await tryPublish(dpvCreds, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, dpvTarget.id)}`, dpv.id) === "denied");
   check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(dpvCreds, dmGet, dpv.id) === "denied");
   check("STREAM.DELETE the DM stream DENIED (removes consumers, never a stream)", await tryPublish(dpvCreds, `$JS.API.STREAM.DELETE.${DM}`, dpv.id) === "denied");
   check("STREAM.PURGE the chat stream DENIED (not a purger)", await tryPublish(dpvCreds, `$JS.API.STREAM.PURGE.${CHAT}`, dpv.id) === "denied");
-  check("publish chat DENIED", await tryPublish(dpvCreds, chatSubject(space, dpvTarget.id, "general"), dpv.id) === "denied");
+  check("publish chat DENIED", await tryPublish(dpvCreds, chatSubject(space, DEV_OWNER, dpvTarget.id, "general"), dpv.id) === "denied");
   // Cross-bucket: the KV grant is the acl bucket ONLY (the target's key). Purging the SAME target key in a
   // DIFFERENT bucket, or STREAM.INFO on a different bucket, must be denied — so a future regression that
   // broadened the grant to `$KV.>` / a bare bucket wouldn't slip through green.
-  check("purge the target's key in a DIFFERENT bucket ($KV.<members>.<id>) DENIED", await tryPublish(dpvCreds, `$KV.${membersBucket(space)}.${aclKey(dpvTarget.id)}`, dpv.id) === "denied");
+  check("purge the target's key in a DIFFERENT bucket ($KV.<members>.<id>) DENIED", await tryPublish(dpvCreds, `$KV.${membersBucket(space)}.${aclKey(dpvTargetPrincipal)}`, dpv.id) === "denied");
   check("STREAM.INFO a different bucket (KV_<members>) DENIED", await tryPublish(dpvCreds, `$JS.API.STREAM.INFO.KV_${membersBucket(space)}`, dpv.id) === "denied");
 
   console.log("purger (ephemeral history-purge — purges, never reads):");
@@ -274,14 +279,14 @@ try {
   check("read a DLV body (MSG.NEXT) DENIED", await tryPublish(purCreds, dlvRead, pur.id) === "denied");
   check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(purCreds, dmGet, pur.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(purCreds, `$JS.API.STREAM.DELETE.${PKV}`, pur.id) === "denied");
-  check("publish chat DENIED", await tryPublish(purCreds, chatSubject(space, pur.id, "general"), pur.id) === "denied");
+  check("publish chat DENIED", await tryPublish(purCreds, chatSubject(space, DEV_OWNER, pur.id, "general"), pur.id) === "denied");
   check("write the ACL registry DENIED", await tryPublish(purCreds, `$KV.${aclBucket(space)}.${pur.id}`, pur.id) === "denied");
 
   console.log("operator (human-CLI client — posts as itself + reads the roster, nothing else):");
-  check("post chat AS SELF ALLOWED", await tryPublish(opCreds, chatSubject(space, op.id, "general"), op.id) === "allowed");
-  check("DM (inst) AS SELF ALLOWED", await tryPublish(opCreds, unicastSubject(space, sup.id, op.id), op.id) === "allowed");
+  check("post chat AS SELF ALLOWED", await tryPublish(opCreds, chatSubject(space, DEV_OWNER, op.id, "general"), op.id) === "allowed");
+  check("DM (inst) AS SELF ALLOWED", await tryPublish(opCreds, unicastSubject(space, DEV_OWNER, sup.id, DEV_OWNER, op.id), op.id) === "allowed");
   check("read the presence roster (STREAM.INFO) ALLOWED", await tryPublish(opCreds, `$JS.API.STREAM.INFO.${PKV}`, op.id) === "allowed");
-  check("FORGE chat as another actor DENIED", await tryPublish(opCreds, chatSubject(space, sup.id, "general"), op.id) === "denied");
+  check("FORGE chat as another actor DENIED", await tryPublish(opCreds, chatSubject(space, DEV_OWNER, sup.id, "general"), op.id) === "denied");
   check("create a DM consumer DENIED", await tryPublish(opCreds, dmCreate, op.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(opCreds, dmRead, op.id) === "denied");
   check("write the ACL registry DENIED", await tryPublish(opCreds, `$KV.${aclBucket(space)}.${op.id}`, op.id) === "denied");
@@ -293,18 +298,18 @@ try {
   check("read a DLV body (MSG.NEXT) DENIED", await tryPublish(opCreds, dlvRead, op.id) === "denied");
   check("read chat history (STREAM.MSG.GET on CHAT) DENIED", await tryPublish(opCreds, `$JS.API.STREAM.MSG.GET.${CHAT}`, op.id) === "denied");
   // ...and cannot live-tap a peer's DM lane nor SERVE/steal a control tier (sub.allow is its own inbox only).
-  check("native-subscribe a peer's DM lane (inst.<victim>) DENIED", await trySubscribe(opCreds, op.id, unicastSubject(space, sup.id, "*")) === "denied");
-  check("serve/steal a control tier (subscribe ctl.<tier>.*) DENIED", await trySubscribe(opCreds, op.id, controlServiceSubject(space, CONTROL_PRIVILEGED, "*")) === "denied");
+  check("native-subscribe a peer's DM lane (inst.<victim>) DENIED", await trySubscribe(opCreds, op.id, unicastRecvFilter(space, DEV_OWNER, sup.id)) === "denied");
+  check("serve/steal a control tier (subscribe ctl.<tier>.*) DENIED", await trySubscribe(opCreds, op.id, controlServiceSubject(space, CONTROL_PRIVILEGED, "*", "*")) === "denied");
 
   // ---- PR 1.5 CLI-surface profiles (the last `manager` mints) ----
   const CHKV = `KV_${channelBucket(space)}`, MKV = `KV_${membersBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`; // the membership FEED (readMembership) — distinct from the members registry (MKV)
-  const ctlAdmin = (id: string) => controlServiceSubject(space, CONTROL_ADMIN, id);
-  const ctlPriv = (id: string) => controlServiceSubject(space, CONTROL_PRIVILEGED, id);
+  const ctlAdmin = (id: string) => controlServiceSubject(space, CONTROL_ADMIN, DEV_OWNER, id);
+  const ctlPriv = (id: string) => controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, id);
 
   console.log("probe (connect-only liveness — opens a socket, can do nothing else):");
   check("connects (liveness) ALLOWED", await tryConnect(prbCreds, prb.id) === "ok");
-  check("publish chat DENIED (pub deny >)", await tryPublish(prbCreds, chatSubject(space, prb.id, "general"), prb.id) === "denied");
+  check("publish chat DENIED (pub deny >)", await tryPublish(prbCreds, chatSubject(space, DEV_OWNER, prb.id, "general"), prb.id) === "denied");
   check("$JS.API.INFO DENIED", await tryPublish(prbCreds, "$JS.API.INFO", prb.id) === "denied");
   check("read the presence roster (STREAM.INFO) DENIED", await tryPublish(prbCreds, `$JS.API.STREAM.INFO.${PKV}`, prb.id) === "denied");
 
@@ -315,7 +320,7 @@ try {
   check("create ANY other stream (STREAM.CREATE.CHAT) DENIED", await tryPublish(cwCreds, `$JS.API.STREAM.CREATE.${CHAT}`, cw.id) === "denied");
   check("STREAM.DELETE the channel bucket DENIED", await tryPublish(cwCreds, `$JS.API.STREAM.DELETE.${CHKV}`, cw.id) === "denied");
   check("write the ACL registry DENIED", await tryPublish(cwCreds, `$KV.${aclBucket(space)}.${cw.id}`, cw.id) === "denied");
-  check("publish chat DENIED", await tryPublish(cwCreds, chatSubject(space, cw.id, "general"), cw.id) === "denied");
+  check("publish chat DENIED", await tryPublish(cwCreds, chatSubject(space, DEV_OWNER, cw.id, "general"), cw.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(cwCreds, dmRead, cw.id) === "denied");
 
   console.log("channel-purger (web channel-delete — channel-writer + the CHAT purge only):");
@@ -324,7 +329,7 @@ try {
   check("STREAM.PURGE the DM stream DENIED (CHAT only)", await tryPublish(cpCreds, `$JS.API.STREAM.PURGE.${DM}`, cp.id) === "denied");
   check("STREAM.DELETE the chat stream DENIED", await tryPublish(cpCreds, `$JS.API.STREAM.DELETE.${CHAT}`, cp.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(cpCreds, dmRead, cp.id) === "denied");
-  check("publish chat DENIED", await tryPublish(cpCreds, chatSubject(space, cp.id, "general"), cp.id) === "denied");
+  check("publish chat DENIED", await tryPublish(cpCreds, chatSubject(space, DEV_OWNER, cp.id, "general"), cp.id) === "denied");
 
   console.log("teardown (down -f — the SOLE STREAM.DELETE holder; reads + admin-control + delete, no body read):");
   check("STREAM.DELETE the chat stream ALLOWED", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${CHAT}`, td.id) === "allowed");
@@ -334,7 +339,7 @@ try {
   check("call the admin control tier ALLOWED (stop the agents)", await tryPublish(tdCreds, ctlAdmin(td.id), td.id) === "allowed");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(tdCreds, dmRead, td.id) === "denied");
   check("create a DM consumer DENIED", await tryPublish(tdCreds, dmCreate, td.id) === "denied");
-  check("publish chat DENIED", await tryPublish(tdCreds, chatSubject(space, td.id, "general"), td.id) === "denied");
+  check("publish chat DENIED", await tryPublish(tdCreds, chatSubject(space, DEV_OWNER, td.id, "general"), td.id) === "denied");
   check("write the ACL registry DENIED", await tryPublish(tdCreds, `$KV.${aclBucket(space)}.${td.id}`, td.id) === "denied");
 
   console.log("control-caller-privileged (ps/start — the privileged control tier ONLY, no cross-agent reach):");
@@ -344,7 +349,7 @@ try {
   check("receive an ADMIN control-reply (sub ctl.admin.<id>.reply.>) DENIED (no admin tier)", await trySubscribe(ccpCreds, ccp.id, `${ctlAdmin(ccp.id)}.reply.>`) === "denied");
   check("read the presence roster (STREAM.INFO) DENIED (no $JS)", await tryPublish(ccpCreds, `$JS.API.STREAM.INFO.${PKV}`, ccp.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(ccpCreds, dmRead, ccp.id) === "denied");
-  check("publish chat DENIED", await tryPublish(ccpCreds, chatSubject(space, ccp.id, "general"), ccp.id) === "denied");
+  check("publish chat DENIED", await tryPublish(ccpCreds, chatSubject(space, DEV_OWNER, ccp.id, "general"), ccp.id) === "denied");
 
   console.log("control-caller-admin (stop/attach — the admin control tier ONLY; real cross-agent power, no reads/writes):");
   check("call the admin control tier ALLOWED (stop/attach)", await tryPublish(ccaCreds, ctlAdmin(cca.id), cca.id) === "allowed");
@@ -352,7 +357,7 @@ try {
   check("receive the bounded admin control-reply (sub ctl.admin.<id>.reply.>) ALLOWED", await trySubscribe(ccaCreds, cca.id, `${ctlAdmin(cca.id)}.reply.>`) === "allowed");
   check("read the presence roster (STREAM.INFO) DENIED (no $JS)", await tryPublish(ccaCreds, `$JS.API.STREAM.INFO.${PKV}`, cca.id) === "denied");
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(ccaCreds, dmRead, cca.id) === "denied");
-  check("publish chat DENIED", await tryPublish(ccaCreds, chatSubject(space, cca.id, "general"), cca.id) === "denied");
+  check("publish chat DENIED", await tryPublish(ccaCreds, chatSubject(space, DEV_OWNER, cca.id, "general"), cca.id) === "denied");
   check("write any KV (channel registry) DENIED", await tryPublish(ccaCreds, `$KV.${channelBucket(space)}.log`, cca.id) === "denied");
 
   console.log("deployer (spawn -f — reads + admin-control on one ephemeral cred; no writes, no body read):");
@@ -368,8 +373,8 @@ try {
   check("create a DM consumer DENIED", await tryPublish(dpCreds, dmCreate, dp.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(dpCreds, `$JS.API.STREAM.DELETE.${PKV}`, dp.id) === "denied");
   check("write the channel registry ($KV) DENIED (channel-writer seeds, not deployer)", await tryPublish(dpCreds, `$KV.${channelBucket(space)}.log`, dp.id) === "denied");
-  check("publish chat (self-post) DENIED", await tryPublish(dpCreds, chatSubject(space, dp.id, "general"), dp.id) === "denied");
-  check("native-subscribe a peer's DM lane DENIED", await trySubscribe(dpCreds, dp.id, unicastSubject(space, sup.id, "*")) === "denied");
+  check("publish chat (self-post) DENIED", await tryPublish(dpCreds, chatSubject(space, DEV_OWNER, dp.id, "general"), dp.id) === "denied");
+  check("native-subscribe a peer's DM lane DENIED", await trySubscribe(dpCreds, dp.id, unicastRecvFilter(space, DEV_OWNER, sup.id)) === "denied");
 
   console.log(`\nMANAGER-SPLIT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

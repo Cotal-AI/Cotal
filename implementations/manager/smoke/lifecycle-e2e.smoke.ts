@@ -4,7 +4,7 @@
  * actual production paths and INSPECTING the real broker footprint.
  *
  *   1. STARTED via real presence — startAgent resolves ok only once the agent's assigned id is live in
- *      presence; its footprint (dm_/dlv_ durables + ACL row + creds file) exists on the broker/disk.
+ *      presence; its footprint (dm_local-/dlv_local- durables + ACL row + creds file) exists on the broker/disk.
  *   2. DEPROVISION on despawn — a real despawn tears that footprint down: durables gone, ACL row gone,
  *      creds file gone.
  *   3. FAILED launch — an agent whose process exits on arrival is reported {ok:false} "exited on launch",
@@ -17,7 +17,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -26,7 +26,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
-  openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable,
+  openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable, DEV_OWNER, principalKey,
 } from "@cotal-ai/core";
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
@@ -74,7 +74,8 @@ async function inspect<T>(fn: (jsm: Awaited<ReturnType<typeof jetstreamManager>>
 }
 const consumerExists = (stream: string, name: string) =>
   inspect(async (jsm) => { try { await jsm.consumers.info(stream, name); return true; } catch { return false; } });
-const aclPresent = (id: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), id)) !== undefined);
+const localPrincipal = (id: string) => principalKey(DEV_OWNER, id).key;
+const aclPresent = (id: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id))) !== undefined);
 const credsFile = (name: string) => join(authDir(workspaceRoot), "creds", `${name}.creds`);
 /** Poll until `f()` matches `want`, up to `ms`. */
 async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promise<boolean> {
@@ -82,9 +83,14 @@ async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promi
   while (Date.now() < end) { if ((await f()) === want) return true; await wait(300); }
   return (await f()) === want;
 }
-/** Does the whole id-keyed footprint exist? (dm_ + dlv_ + acl + creds file) */
+/** Does the whole local-principal footprint exist? (dm_local- + dlv_local- + acl + creds file) */
 async function footprint(id: string, name: string): Promise<{ dm: boolean; dlv: boolean; acl: boolean; creds: boolean }> {
-  return { dm: await consumerExists(DM, dmDurable(id)), dlv: await consumerExists(DLV, dlvDurable(id)), acl: await aclPresent(id), creds: existsSync(credsFile(name)) };
+  return {
+    dm: await consumerExists(DM, dmDurable(DEV_OWNER, id)),
+    dlv: await consumerExists(DLV, dlvDurable(DEV_OWNER, id)),
+    acl: await aclPresent(id),
+    creds: existsSync(credsFile(name)),
+  };
 }
 
 // A connector that launches the real stub agent (joins presence) or a die-on-arrival process.
@@ -108,6 +114,17 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   await mgr.start();
 
+  // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered
+  // renewal pass and persists the audit record — here with both daemon files absent (no delivery
+  // daemon staged), recorded honestly as skips, never a fabricated adoption.
+  const renewalPath = join(workspaceRoot, ".cotal", "renewal.json");
+  check("manager start writes the renewal audit record", existsSync(renewalPath));
+  {
+    const rec = JSON.parse(readFileSync(renewalPath, "utf8")) as { owner?: string; results?: Array<{ file: string; ok: boolean; skipped?: string }>; adoption?: unknown };
+    check("renewal record is the manager's pass", rec.owner === "manager", rec);
+    check("absent daemon files are honest skips (no fabricated re-sign/adoption)", rec.results?.every((r) => !r.ok && r.skipped === "missing-file") === true && rec.adoption === undefined, rec);
+  }
+
   // 1 — STARTED via real presence + footprint exists.
   console.log("1. real spawn → started via presence:");
   const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot });
@@ -123,8 +140,8 @@ try {
   console.log("2. despawn → footprint deprovisioned:");
   const callerId = (mgr as unknown as { ep: { ref: () => { id: string } } }).ep.ref().id;
   (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, admin: boolean) => unknown }).opStop({ name: "w1", graceful: false }, callerId, true);
-  check("dm_ durable gone after despawn", await until(() => consumerExists(DM, dmDurable(id1)), false), await footprint(id1, "w1"));
-  check("dlv_ durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(id1)), false));
+  check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1)), false), await footprint(id1, "w1"));
+  check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1)), false));
   check("read-ACL row gone after despawn", await until(() => aclPresent(id1), false));
   check("creds file gone after despawn", await until(async () => existsSync(credsFile("w1")), false));
 

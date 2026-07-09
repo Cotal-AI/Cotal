@@ -31,6 +31,8 @@ import {
   unicastSubject,
   anycastSubject,
   presenceBucket,
+  principalKey,
+  DEV_OWNER,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
@@ -111,11 +113,11 @@ try {
   const capId = newIdentity();
   const capCreds = await provisionAgent(noop, auth, capId, { subscribe: ["general"], allowPublish: ["general"], capabilities: ["spawn"] });
 
-  const plainSelf = controlServiceSubject(space, CONTROL_SELF_SERVICE, plainId.id);
-  const plainPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, plainId.id);
-  const plainAdmin = controlServiceSubject(space, CONTROL_ADMIN, plainId.id);
-  const capPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, capId.id);
-  const capAdmin = controlServiceSubject(space, CONTROL_ADMIN, capId.id);
+  const plainSelf = controlServiceSubject(space, CONTROL_SELF_SERVICE, DEV_OWNER, plainId.id);
+  const plainPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, plainId.id);
+  const plainAdmin = controlServiceSubject(space, CONTROL_ADMIN, DEV_OWNER, plainId.id);
+  const capPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, capId.id);
+  const capAdmin = controlServiceSubject(space, CONTROL_ADMIN, DEV_OWNER, capId.id);
 
   console.log("non-capable agent:");
   check("publish ctl.self.<id> ALLOWED", await tryPublish(plainCreds, plainSelf, plainId.id) === "allowed");
@@ -132,20 +134,20 @@ try {
   // Authorization Violation, so a self-post is "allowed" and a cross-actor forge is "denied".
   console.log("scoped operator (closure (i) — self-scoped publish, no forge):");
   const victim = newIdentity();
-  check("operator post chat AS SELF ALLOWED", await tryPublish(opCreds, chatSubject(space, opId.id, "general"), opId.id) === "allowed");
-  check("operator FORGE chat as another actor DENIED", await tryPublish(opCreds, chatSubject(space, victim.id, "general"), opId.id) === "denied");
-  check("operator DM (inst) AS SELF ALLOWED", await tryPublish(opCreds, unicastSubject(space, victim.id, opId.id), opId.id) === "allowed");
-  check("operator FORGE inst as another actor DENIED", await tryPublish(opCreds, unicastSubject(space, victim.id, victim.id), opId.id) === "denied");
-  check("operator anycast (svc) AS SELF ALLOWED", await tryPublish(opCreds, anycastSubject(space, "worker", opId.id), opId.id) === "allowed");
-  check("operator FORGE svc as another actor DENIED", await tryPublish(opCreds, anycastSubject(space, "worker", victim.id), opId.id) === "denied");
+  check("operator post chat AS SELF ALLOWED", await tryPublish(opCreds, chatSubject(space, DEV_OWNER, opId.id, "general"), opId.id) === "allowed");
+  check("operator FORGE chat as another actor DENIED", await tryPublish(opCreds, chatSubject(space, DEV_OWNER, victim.id, "general"), opId.id) === "denied");
+  check("operator DM (inst) AS SELF ALLOWED", await tryPublish(opCreds, unicastSubject(space, DEV_OWNER, victim.id, DEV_OWNER, opId.id), opId.id) === "allowed");
+  check("operator FORGE inst as another actor DENIED", await tryPublish(opCreds, unicastSubject(space, DEV_OWNER, victim.id, DEV_OWNER, victim.id), opId.id) === "denied");
+  check("operator anycast (svc) AS SELF ALLOWED", await tryPublish(opCreds, anycastSubject(space, "worker", DEV_OWNER, opId.id), opId.id) === "allowed");
+  check("operator FORGE svc as another actor DENIED", await tryPublish(opCreds, anycastSubject(space, "worker", DEV_OWNER, victim.id), opId.id) === "denied");
 
   // closure (i) residual (3) — the scoped operator writes ONLY its OWN presence key (`$KV.<presence>.<id>`),
   // so a leaked operator cred cannot spoof a peer's roster-visible identity/status. (The READ side also
   // drops a presence record whose KV key != its card.id — endpoint.ts applyPresence.) A `$KV` publish to
   // an allowed key replies with a PubAck ("allowed"); a denied key is an Authorization Violation ("denied").
   console.log("scoped operator (closure (i) residual (3) — presence write is self-keyed, no roster spoof):");
-  check("operator write OWN presence key ALLOWED", await tryPublish(opCreds, `$KV.${presenceBucket(space)}.${opId.id}`, opId.id) === "allowed");
-  check("operator FORGE a peer's presence key DENIED", await tryPublish(opCreds, `$KV.${presenceBucket(space)}.${victim.id}`, opId.id) === "denied");
+  check("operator write OWN presence key ALLOWED", await tryPublish(opCreds, `$KV.${presenceBucket(space)}.${principalKey(DEV_OWNER, opId.id).key}`, opId.id) === "allowed");
+  check("operator FORGE a peer's presence key DENIED", await tryPublish(opCreds, `$KV.${presenceBucket(space)}.${principalKey(DEV_OWNER, victim.id).key}`, opId.id) === "denied");
   check("operator PURGE the presence stream (force-offline a peer) DENIED", await tryPublish(opCreds, `$JS.API.STREAM.PURGE.KV_${presenceBucket(space)}`, opId.id) === "denied");
 
   console.log(`\nCONTROL-AUTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

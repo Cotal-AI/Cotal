@@ -35,7 +35,8 @@ receive-side authenticity checks, and the presence/channel loops. See
 
   `cotal mint <name> --profile <agent|observer|admin>` also takes `--allow-subscribe a,b`
   and `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. The creds file
-  binds your instance id (an nkey) and your channel grants; see
+  binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
+  grants; see
   [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.md](run-a-mesh.md).
 
 ## Build order
@@ -46,13 +47,13 @@ map to.
 
 1. **Identity + connection**: [SPEC §2](../SPEC.md#2-identity),
    [§10](../SPEC.md#10-connection-and-onboarding). Connect with the minted creds and adopt the
-   id bound to the credential; set the inbox prefix to `_INBOX_<id>` before any request, pull,
-   or KV watch. *See it:* a wrong or missing cred is refused at connect, so a clean connect
+   principal bound to the credential; set the inbox prefix to your connection's reply inbox
+   (`_INBOX_<connId>`) before any request, pull, or KV watch. *See it:* a wrong or missing cred is refused at connect, so a clean connect
    confirms identity and creds are wired correctly.
 
 2. **Subject construction + parsing**: [SPEC §3](../SPEC.md#3-subject-layout). Build the four
-   delivery/control subject shapes and a parser that locates the sender by kind (the
-   sender-position asymmetry). *See it:* run the five subject-parsing vectors in
+   delivery/control subject shapes and a parser that locates the sender principal (its two
+   adjacent owner + actor tokens) by kind (the sender-position asymmetry). *See it:* run the five subject-parsing vectors in
    [SPEC §12](../SPEC.md#12-conformance) and match every result, including the malformed row.
 
 3. **Envelopes + schema validation**: [SPEC §5](../SPEC.md#5-envelopes). Emit and parse
@@ -72,7 +73,7 @@ map to.
    `historical=true` and no live/backfill duplicates.
 
 6. **DM + anycast**: [SPEC §8](../SPEC.md#8-nats--jetstream-binding). Bind (do not create) your
-   `dm_<id>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
+   `dm_<owner>-<actor>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
    a reference peer unicasts to you and anycasts to your role; exactly one anycast consumer wins.
 
 7. **Receive-side checks**: [SPEC §4](../SPEC.md#4-delivery-modes),

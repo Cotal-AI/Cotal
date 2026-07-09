@@ -63,7 +63,7 @@ function rejectCmdExpansion(s: string, env: NodeJS.ProcessEnv, what: string): vo
     const base = m[1].split(":")[0]; // %VAR:~s,l% / %VAR:a=b% substring/replace forms expand VAR too
     if (CMD_DYNAMIC_VARS.has(base.toUpperCase()) || envGet(env, base) !== undefined) {
       throw new Error(
-        `cannot pass ${what} through cmd.exe — %${m[1]}% would be expanded (unsupported on Windows): ${JSON.stringify(s)}`,
+        `cannot pass ${what} through cmd.exe - %${m[1]}% would be expanded (unsupported on Windows): ${JSON.stringify(s)}`,
       );
     }
   }
@@ -90,7 +90,7 @@ export function resolveComspec(operatorEnv: NodeJS.ProcessEnv = process.env): st
 export function quoteCmdArg(arg: string, env: NodeJS.ProcessEnv): string {
   if (/[\r\n\0]/.test(arg)) {
     throw new Error(
-      `cannot pass argument through cmd.exe — contains a newline or NUL (unsupported on Windows): ${JSON.stringify(arg)}`,
+      `cannot pass argument through cmd.exe - contains a newline or NUL (unsupported on Windows): ${JSON.stringify(arg)}`,
     );
   }
   rejectCmdExpansion(arg, env, "argument");

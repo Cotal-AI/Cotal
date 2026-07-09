@@ -35,6 +35,7 @@ import {
   setupSpaceStreams,
   chatSubject,
   spacePrefix,
+  DEV_OWNER,
   CONTROL_SELF_SERVICE,
   type CotalMessage,
   type Delivery,
@@ -127,13 +128,13 @@ try {
       id: randomUUID(), ts: Date.now(), space, from: pub.ref(), channel: "rev.api",
       to: aId.id, parts: [{ kind: "text", text: "forged-to-probe" }],
     };
-    await rjs.publish(chatSubject(space, pub.card.id, "rev.api"), JSON.stringify(forged), { msgID: forged.id });
+    await rjs.publish(chatSubject(space, pub.card.owner!, pub.card.actor!, "rev.api"), JSON.stringify(forged), { msgID: forged.id });
     // (b) spoof: payload from.id ≠ subject sender token → core-sub must DROP (no delivery).
     const spoofed: CotalMessage = {
       id: randomUUID(), ts: Date.now(), space, from: { ...pub.ref(), id: `imposter-${randomUUID().slice(0, 6)}` },
       channel: "rev.api", parts: [{ kind: "text", text: "spoofed-from-probe" }],
     };
-    await rjs.publish(chatSubject(space, pub.card.id, "rev.api"), JSON.stringify(spoofed), { msgID: spoofed.id });
+    await rjs.publish(chatSubject(space, pub.card.owner!, pub.card.actor!, "rev.api"), JSON.stringify(spoofed), { msgID: spoofed.id });
     await raw.close();
   }
   // Catches a callback that reads payload.to (would be kind="dm") instead of classifying by the chat.* subject.
@@ -269,7 +270,7 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
-  await dlv.startPlane3((id) => (id === aId.id ? aclC : undefined));
+  await dlv.startPlane3((id) => (id === `${DEV_OWNER}.${aId.id}` ? aclC : undefined));
   pub.serveControl(CONTROL_SELF_SERVICE, async (req) => {
     const ch = typeof (req.args as { channel?: unknown })?.channel === "string" ? (req.args as { channel: string }).channel : "";
     if (req.op === "durableJoin") return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };

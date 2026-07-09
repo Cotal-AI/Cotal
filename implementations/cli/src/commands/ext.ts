@@ -112,7 +112,7 @@ async function add(spec: string): Promise<void> {
   // The spec's package must now be a prefix dependency — anything else is a failed install.
   const deps = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> }).dependencies ?? {};
   if (!deps[pkg]) {
-    console.error(c.red(`✗ npm install succeeded but "${pkg}" is not among the prefix dependencies — remove and retry`));
+    console.error(c.red(`✗ npm install succeeded but "${pkg}" is not among the prefix dependencies - remove and retry`));
     process.exit(1);
   }
   const pkgDir = extensionPackageDir(pkg);
@@ -127,10 +127,10 @@ async function add(spec: string): Promise<void> {
   // any other shared package would silently drift from the binary's. Fail with the exact reason.
   const vendored = Object.keys(pkgMeta.dependencies ?? {}).filter((d) => d.startsWith("@cotal-ai/"));
   if (vendored.length) {
-    fail(pkg, `declares ${vendored.join(", ")} as a regular dependency — shared @cotal-ai/* packages must be peerDependencies, or the extension runs its own copy (core's would swallow its command registrations; any other's drifts from this CLI's)`);
+    fail(pkg, `declares ${vendored.join(", ")} as a regular dependency - shared @cotal-ai/* packages must be peerDependencies, or the extension runs its own copy (core's would swallow its command registrations; any other's drifts from this CLI's)`);
   }
   if (!pkgMeta.peerDependencies?.["@cotal-ai/core"]) {
-    fail(pkg, `does not declare @cotal-ai/core as a peerDependency — a cotal CLI extension must (its extension objects register into core's registry)`);
+    fail(pkg, `does not declare @cotal-ai/core as a peerDependency - a cotal CLI extension must (its extension objects register into core's registry)`);
   }
   // Link every shared @cotal-ai/* peer to the RUNNING binary's copy, so the extension's imports
   // land on our singletons — core's registry above all. npm ignored the peers at install
@@ -141,7 +141,7 @@ async function add(spec: string): Promise<void> {
     try {
       src = ourPackageDir(peer);
     } catch {
-      fail(pkg, `peer-depends on ${peer}, which this cotal binary does not carry — the peer can't be linked, so the extension could never resolve it`);
+      fail(pkg, `peer-depends on ${peer}, which this cotal binary does not carry - the peer can't be linked, so the extension could never resolve it`);
     }
     const dest = join(dir, "node_modules", ...peer.split("/"));
     rmSync(dest, { recursive: true, force: true });
@@ -159,7 +159,7 @@ async function add(spec: string): Promise<void> {
   }
   const contributed = registry.all<Command>("command").filter((cm) => !before.has(cm.name));
   if (!contributed.length) {
-    fail(pkg, `imported cleanly but registered no commands in THIS CLI's registry — if it bundles its own @cotal-ai/core, make core a peerDependency`);
+    fail(pkg, `imported cleanly but registered no commands in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
   }
   // Builtin collisions can't happen here (registry.register throws on a duplicate, surfacing as
   // failed-to-import above, naming the extension). OTHER installed extensions are invisible to the
@@ -169,14 +169,14 @@ async function add(spec: string): Promise<void> {
   for (const cm of contributed) {
     const other = manifest.extensions.find((e) => e.pkg !== pkg && e.commands.some((oc) => oc.name === cm.name));
     if (other) {
-      fail(pkg, `contributes "${cm.name}", already provided by installed extension ${other.pkg}@${other.version} — two extensions cannot claim one command; \`cotal ext remove ${other.pkg}\` first if you want this one`);
+      fail(pkg, `contributes "${cm.name}", already provided by installed extension ${other.pkg}@${other.version} - two extensions cannot claim one command; \`cotal ext remove ${other.pkg}\` first if you want this one`);
     }
   }
   const version = pkgMeta.version ?? "0.0.0";
   const entry: InstalledExtension = { pkg, version, spec: resolved, commands: contributed.map(cacheCommand) };
   saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg), entry] });
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
-  console.log(c.green(`✓ added ${pkg}@${version}`) + c.dim(` — commands: ${contributed.map((cm) => cm.name).join(", ")}`));
+  console.log(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - commands: ${contributed.map((cm) => cm.name).join(", ")}`));
 
   function fail(p: string, why: string): never {
     npm(["remove", "--no-audit", "--no-fund", p], dir); // roll the prefix back
@@ -204,7 +204,7 @@ function packageNameFromSpec(resolved: string, isPath: boolean): string {
   }
   const m = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/.exec(resolved);
   if (m) return m[1];
-  console.error(c.red(`✗ unsupported extension spec "${resolved}" — use a local path or a registry name[@version]`));
+  console.error(c.red(`✗ unsupported extension spec "${resolved}" - use a local path or a registry name[@version]`));
   process.exit(1);
 }
 
@@ -212,7 +212,7 @@ async function remove(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
   if (!entry) {
-    console.error(c.red(`✗ no installed extension "${pkg}" — see \`cotal ext list\``));
+    console.error(c.red(`✗ no installed extension "${pkg}" - see \`cotal ext list\``));
     process.exit(1);
   }
   const r = npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
@@ -222,13 +222,13 @@ async function remove(pkg: string): Promise<void> {
   }
   saveExtensionsManifest({ extensions: manifest.extensions.filter((e) => e.pkg !== pkg) });
   provenance.wrote(`extensions manifest (−${pkg})`, extensionsManifestPath());
-  console.log(c.green(`✓ removed ${pkg}`) + c.dim(` — commands gone: ${entry.commands.map((cm) => cm.name).join(", ")}`));
+  console.log(c.green(`✓ removed ${pkg}`) + c.dim(` - commands gone: ${entry.commands.map((cm) => cm.name).join(", ")}`));
 }
 
 function list(): void {
   const { extensions } = loadExtensionsManifest();
   if (!extensions.length) {
-    console.log(c.dim("(no extensions installed — add one with `cotal ext add <npm-package>`)"));
+    console.log(c.dim("(no extensions installed - add one with `cotal ext add <npm-package>`)"));
     return;
   }
   for (const e of extensions) {

@@ -66,7 +66,7 @@ export function Confirm({
       ) : (
         <Box marginTop={1} flexDirection="column">
           <Text>
-            Delete space <Text bold>{target.space}</Text> —{" "}
+            Delete space <Text bold>{target.space}</Text> -{" "}
             <Text color="red">irreversible</Text> (all history + presence gone).
           </Text>
           <Box marginTop={1}>

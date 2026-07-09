@@ -43,7 +43,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { Manager } from "../src/manager.js";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle } from "@cotal-ai/core";
+import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle } from "@cotal-ai/core";
 // Import the real connectors so they self-register (and expose their objects for the buildLaunch matrix).
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { opencodeConnector } from "@cotal-ai/connector-opencode";
@@ -96,7 +96,7 @@ const fakeEp = (extra: Record<string, unknown> = {}, roster?: () => Array<{ card
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
-  getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" }))),
+  getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" }))),
   ...extra,
 });
 (mgr as unknown as { ep: unknown }).ep = fakeEp();
@@ -135,7 +135,7 @@ registry.register(recNoResumeCon);
   check("missing harness binary is rejected", reply.ok === false, reply);
   check(
     "reject error names the missing binary, no PATH contents",
-    reply.error === "claude harness needs claude on PATH — not found",
+    reply.error === "claude harness needs claude on PATH - not found",
     reply.error,
   );
   check("reject happens before any side effect (no agent recorded)", agentCount() === 0);

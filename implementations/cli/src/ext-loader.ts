@@ -42,7 +42,7 @@ function stubFor(ext: InstalledExtension, cached: CachedCommand): Command {
     // Marker consumed by runCli: dispatch must swap the stub for the live command before parsing.
     extension: ext.pkg,
     async run(): Promise<void> {
-      throw new Error(`extension stub for ${ext.pkg}:${cached.name} was run directly — dispatcher bug`);
+      throw new Error(`extension stub for ${ext.pkg}:${cached.name} was run directly - dispatcher bug`);
     },
   } as Command & { extension: string };
 }
@@ -79,8 +79,8 @@ export function overlayExtensions(reg: Registry): Command[] {
         console.error(
           c.red(
             holder === ""
-              ? `! command "${cached.name}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} — the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
-              : `! command "${cached.name}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} — ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
+              ? `! command "${cached.name}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
+              : `! command "${cached.name}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
           ),
         );
         continue;
@@ -99,14 +99,14 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   const pkg = (stub as Command & { extension?: string }).extension;
   if (!pkg) return stub; // not a stub — already live
   const ext = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
-  if (!ext) throw new Error(`extension ${pkg} vanished from the manifest — \`cotal ext add\` it again`);
+  if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
   const onDisk = installedExtensionVersion(pkg);
   if (!onDisk) {
-    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} — \`cotal ext add ${ext.spec}\` again`);
+    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
   }
   if (onDisk !== ext.version) {
     throw new Error(
-      `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) — re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
     );
   }
   const dir = extensionPackageDir(pkg);
@@ -121,11 +121,11 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   try {
     await import(pathToFileURL(join(dir, entry)).href); // self-registers into OUR registry (core is linked)
   } catch (e) {
-    throw new Error(`extension ${pkg}@${ext.version} failed to import: ${(e as Error).message} — reinstall it: \`cotal ext add ${ext.spec}\``);
+    throw new Error(`extension ${pkg}@${ext.version} failed to import: ${(e as Error).message} - reinstall it: \`cotal ext add ${ext.spec}\``);
   }
   const live = registry.all<Command>("command").find((cm) => cm.name === stub.name);
   if (!live) {
-    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" — its cache is stale; re-add it: \`cotal ext add ${ext.spec}\``);
+    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" - its cache is stale; re-add it: \`cotal ext add ${ext.spec}\``);
   }
   return live;
 }

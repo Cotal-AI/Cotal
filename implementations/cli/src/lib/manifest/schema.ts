@@ -23,6 +23,8 @@ const AgentEntryObject = z
     agent: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     variant: z.string().min(1).optional(),
+    /** Opaque connector-specific launch options, merged per key over the persona's `launchOptions:`. */
+    launchOptions: z.record(z.string(), z.unknown()).optional(),
     role: z.string().min(1).optional(),
     description: z.string().optional(),
     instructions: z.string().optional(),
@@ -32,7 +34,7 @@ const AgentEntryObject = z
   })
   .refine((v) => v.persona !== undefined || v.model !== undefined || v.variant !== undefined || v.instructions !== undefined, {
     message:
-      "inline agent (no `persona:`) needs at least `model`, `variant`, or `instructions` — otherwise reference a persona file",
+      "inline agent (no `persona:`) needs at least `model`, `variant`, or `instructions` - otherwise reference a persona file",
   });
 
 /** An `agents:` value is a string (bare persona path) OR the object above. A plain `z.union`
@@ -63,7 +65,13 @@ const Defaults = z.strictObject({
 const Broker = z.strictObject({
   servers: z.string().min(1).optional(),
   host: z.string().min(1).optional(),
-  auth: z.boolean().optional(),
+  /** Auth mode. Unset/`true`/`"static"` = per-agent JWT creds (the default, named "static" so the
+   *  third state has a name to contrast with); `false` = open dev mesh; `"user"` = per-USER auth
+   *  (login + bearer through the space's auth service; pair with `idp`). */
+  auth: z.union([z.boolean(), z.literal("static"), z.literal("user")]).optional(),
+  /** With `auth: "user"`: the IdP auth base URL to pin on first enable (Better Auth:
+   *  `<origin>/api/auth`). Meaningless — and rejected — for other auth modes. */
+  idp: z.string().min(1).optional(),
 });
 
 /** The whole manifest. `apiVersion`/`kind` are literals so a foreign YAML doc is rejected up front;

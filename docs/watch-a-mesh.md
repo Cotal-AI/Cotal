@@ -53,8 +53,8 @@ presence changes and messages, ready for `grep`.
 
 ## `cotal web`: the browser dashboard
 
-The dashboard ships as the `cotal-web` extension. `cotal setup` installs it automatically; if
-that step was skipped, run `cotal ext add cotal-web` and the `web` command appears in the CLI.
+The dashboard ships as the `@cotal-ai/web` extension. `cotal setup` installs it automatically; if
+that step was skipped, run `cotal ext add @cotal-ai/web` and the `web` command appears in the CLI.
 
 ![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 
@@ -74,7 +74,10 @@ so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback addres
 read-only viewer mode. In auth mode it self-mints its own **admin** read cred (the scope that lets
 it tap DMs and anycast), then *drops the space signing seed* so a dashboard compromise can't mint
 identities; it keeps only one narrow cred for its single write path. In open mode it connects bare.
-Pass `--creds` to use a cred you minted yourself instead.
+Pass `--creds` to use a cred you minted yourself instead. On a per-user-auth mesh there is nothing
+to mint: the dashboard rides the read-only admin view over your login, and the channel-delete
+write path asks for its own channel-purger view per click (both need ledger scope `admin`;
+[identity & auth](identity-and-auth.md)).
 
 The dashboard is read-only except that one write path: **deleting a channel and its content**
 (a filtered history purge plus the channel-registry key), which is POST-gated and confirm-guarded

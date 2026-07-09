@@ -4,6 +4,8 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
+  credsClaims,
+  idFromCreds,
   isReachable,
   mintCreds,
   newIdentity,
@@ -12,6 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
+import { executeEviction } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -24,17 +27,44 @@ function deliveryCredsPath(): string {
 
 /** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED file (`--creds` or the
  *  default `.cotal/delivery.creds`, written by the CLI's `ensureDelivery` setup helper) and NEVER touches
- *  the signer: this runtime does not load `.cotal/auth`. A standalone dev run with no creds file can opt
- *  into `--dev-mint`, which loads the local signer and mints a scoped `delivery` cred once — LOUDLY
- *  flagged as dev-only, never the production contract. Never an allow-all cred either way. */
-async function loadDeliveryCreds(v: Values): Promise<string> {
+ *  the signer: this runtime does not load `.cotal/auth`. Returned as `{ initial, source }`: the SOURCE
+ *  is the D5 slice-5 class-2 reload seam — the endpoint re-invokes it at 75% of each JWT's lifetime, so
+ *  the daemon renews from the renewal-owner-re-signed file without a restart or a signal. Adoption is
+ *  IDEMPOTENT on an unchanged file while its cred is still ahead of the renewal point (explicit reload
+ *  may race the backstop); past it, an unchanged file is a MISSED remint, surfaced loudly with the
+ *  exact repair — never a silent ride to expiry. A standalone dev run
+ *  with no creds file can opt into `--dev-mint`, which loads the local signer and self-remints a scoped
+ *  `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production contract. */
+async function loadDeliveryCreds(v: Values): Promise<{ initial: string; source: () => Promise<string> }> {
   const path = v.creds ?? deliveryCredsPath();
-  if (existsSync(path)) return readFileSync(path, "utf8");
+  if (existsSync(path)) {
+    const initial = readFileSync(path, "utf8");
+    let last: string | undefined; // set by the FIRST source call (the endpoint's initial fetch)
+    return {
+      initial,
+      source: async () => {
+        const content = readFileSync(path, "utf8");
+        if (last !== undefined && content === last) {
+          // Unchanged file: adoption is IDEMPOTENT while the cred is still ahead of its renewal
+          // point (the explicit reload may race the 75% backstop that just adopted the same
+          // re-sign — both succeeding is correct). Past the renewal point an unchanged file is a
+          // MISSED remint: fail loud with the exact repair, never a silent ride to expiry.
+          const { iat, exp } = credsClaims(content);
+          if (typeof exp === "number" && typeof iat === "number" && Date.now() / 1000 < iat + 0.75 * (exp - iat)) return content;
+          throw new Error(`${path} still holds the previous cred — the renewal owner has not re-signed it (the manager re-signs + reloads every half-TTL); run \`cotal doctor auth --fix\`, or restart the mesh's manager, before this JWT expires`);
+        }
+        last = content;
+        return content;
+      },
+    };
+  }
   if (v["dev-mint"] !== undefined) {
     const auth = loadSpaceAuth(authDir(findCotalRoot()));
     if (!auth) throw new Error("delivery --dev-mint: no .cotal/auth here to mint from");
     console.error("⚠ delivery: --dev-mint — minting a scoped delivery cred from the LOCAL SIGNER (DEV ONLY; production mounts a pre-minted delivery.creds and the daemon never sees the signer)");
-    return mintCreds(auth, newIdentity(), "delivery");
+    const identity = newIdentity(); // stable across self-remints — the endpoint pins it
+    const initial = await mintCreds(auth, identity, "delivery");
+    return { initial, source: () => mintCreds(auth, identity, "delivery") };
   }
   throw new Error(
     `delivery: no scoped creds at ${path}. Launch via \`cotal setup\`/\`cotal go\` (the setup helper mints + writes it), or pass --creds <file>; for a standalone dev run use --dev-mint.`,
@@ -67,8 +97,9 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
-  if (!(await isReachable(server, { creds }))) {
+  if (!(await isReachable(server, { creds: latestCreds }))) {
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
     process.exit(1);
   }
@@ -76,12 +107,15 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    // The RELOAD seam (D5 slice 5 class 2): the endpoint re-invokes the source at 75% of each JWT's
+    // lifetime and swaps the connection onto the re-signed file — bounded delivery creds renew with
+    // no daemon restart. The explicit card.id pins the daemon's nkey across renewals.
+    creds: async () => (latestCreds = await creds.source()),
     channels: [],
     consume: false, // it pulls the Plane-3 consumers itself; no agent live-tail
     watchPresence: true, // read the roster for @mention resolution …
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
-    card: { name: "delivery", role: "delivery", kind: "endpoint" },
+    card: { id: idFromCreds(creds.initial), name: "delivery", role: "delivery", kind: "endpoint" },
   });
   ep.on("error", (e: Error) => console.error(`! delivery endpoint: ${e.message}`));
   await ep.start();
@@ -99,9 +133,21 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
     return;
   }
 
+  // Broker-sourced graph membership handle — declared BEFORE Plane-3 so the delivery-admin reload
+  // hook below can close over it (it starts further down; the closure reads it live).
+  let membership: MembershipFeedHandle | undefined;
+
   // Host Plane-3 (fan-out writer + trusted reader) AND serve the ctl.delivery runtime durable ops. The
-  // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry.
-  await ep.startPlane3((owner) => ep.aclForOwner(owner));
+  // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
+  // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
+  // rw connection via this hook.
+  await ep.startPlane3((owner) => ep.aclForOwner(owner), {
+    reloadMembershipCreds: async () =>
+      membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
+    // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
+    // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
+    evictPrincipal: (principal) => executeEviction(server, principal),
+  });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
   // not merely that the single-flight slot was claimed.
@@ -112,7 +158,6 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
   // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
   // logs and the graph degrades to traffic-only; Plane-3 delivery is never affected.
-  let membership: MembershipFeedHandle | undefined;
   try {
     membership = await startMembership({ space, server });
   } catch (e) {
@@ -154,7 +199,7 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   let lastReachable = Date.now();
   const brokerWatch = setInterval(() => {
     if (stopping) return;
-    void isReachable(server, { creds })
+    void isReachable(server, { creds: latestCreds })
       .then((ok) => {
         if (ok) { lastReachable = Date.now(); return; }
         if (Date.now() - lastReachable > BROKER_GONE_MS) {

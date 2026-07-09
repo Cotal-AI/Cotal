@@ -27,6 +27,7 @@ import {
   newIdentity,
   setupSpaceStreams,
   chatSubject,
+  DEV_OWNER,
   spacePrefix,
   membershipBucket,
   membersBucket,
@@ -143,7 +144,7 @@ try {
   check("rw: read the membership feed KV is allowed", (await tryKvGet(rwCreds, rw.id, membershipBucket(space), membershipKey(owner))) === "allowed");
   check("rw: WRITE the membership feed KV is allowed", (await kvWriteAllowed(rwCreds, rw.id, membershipBucket(space), membershipKey(owner))) === "allowed");
   check("rw: WRITE the members KV is DENIED (read-only on the durable arm)", (await kvWriteAllowed(rwCreds, rw.id, membersBucket(space), `general/${owner}`)) === "denied");
-  check("rw: post to a chat channel is DENIED", (await publishArrives(adminListen, rwCreds, rw.id, chatSubject(space, rw.id, "general"))) === "denied");
+  check("rw: post to a chat channel is DENIED", (await publishArrives(adminListen, rwCreds, rw.id, chatSubject(space, DEV_OWNER, rw.id, "general"))) === "denied");
   check("rw: native subscribe chat.> is DENIED", (await trySubscribe(rwCreds, rw.id, `${spacePrefix(space)}.chat.>`)) === "denied");
   check("rw: write presence KV is DENIED", (await kvWriteAllowed(rwCreds, rw.id, presenceBucket(space), rw.id)) === "denied");
   check("rw: write ACL KV is DENIED", (await kvWriteAllowed(rwCreds, rw.id, aclBucket(space), owner)) === "denied");

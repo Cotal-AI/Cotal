@@ -192,7 +192,7 @@ export class AttachEndpoint {
     try {
       session = handle.attach();
     } catch {
-      ws.close(1011, `attach unsupported for the ${handle.kind} runtime — watch its surface directly`);
+      ws.close(1011, `attach unsupported for the ${handle.kind} runtime - watch its surface directly`);
       return;
     }
 

@@ -15,7 +15,7 @@ export function detachKey(): { byte: number; label: string; overridden: boolean 
   const m = /^(?:ctrl-|\^)([a-z@[\\\]^_])$/i.exec(spec.trim());
   if (!m) {
     throw new Error(
-      `invalid COTAL_DETACH_KEY "${spec}" — expected ctrl-<char> or ^<char> for a control key ` +
+      `invalid COTAL_DETACH_KEY "${spec}" - expected ctrl-<char> or ^<char> for a control key ` +
         `(a-z, or one of @ [ \\ ] ^ _), e.g. ctrl-b`,
     );
   }

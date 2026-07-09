@@ -63,15 +63,16 @@ export function renderTopology(p: PreparedManifest): string {
  *  "will create" — broker + channels + agents — followed by the full access view. Mutates nothing. */
 export function renderUpPlan(p: PreparedManifest, server: string): string {
   const m = p.manifest;
+  const auth = m.broker?.auth === false ? "open" : m.broker?.auth === "user" ? `user auth${m.broker?.idp ? ` (idp ${m.broker.idp})` : ""}` : "static auth";
   const head = [
-    c.bold("Plan — cotal up -f (fresh mesh)"),
+    c.bold("Plan - cotal up -f (fresh mesh)"),
     c.bold("Will create:"),
-    `  ${c.green("+")} broker + space ${c.cyan(`"${m.space}"`)} at ${server}`,
+    `  ${c.green("+")} broker + space ${c.cyan(`"${m.space}"`)} at ${server} ${c.dim(`(${auth})`)}`,
     `  ${c.green("+")} ${m.channels.length} channel(s): ${m.channels.map((ch) => c.cyan("#" + ch.name)).join(", ")}`,
     `  ${c.green("+")} ${p.agents.length} agent(s): ${p.agents.map((a) => a.name).join(", ")}`,
     "",
   ].join("\n");
-  return `${head}${renderTopology(p)}\n\n${c.dim("Dry run — nothing was changed. Re-run without --dry-run to apply.")}`;
+  return `${head}${renderTopology(p)}\n\n${c.dim("Dry run - nothing was changed. Re-run without --dry-run to apply.")}`;
 }
 
 /** The loud "persona grants outside manifest channels" section — unmanaged credential scopes that
@@ -85,7 +86,7 @@ export function renderInherited(p: PreparedManifest): string {
     // Capabilities first — they are NOT channel-scoped (spawn/tool power), so they're easiest to miss
     // and most security-significant (security review, round-8).
     if (i.capabilities.length)
-      rows.push(`  ${c.yellow("‼")} ${c.bold(a.name)} capabilities: ${i.capabilities.join(", ")}  ${c.dim(`(persona ${a.persona} — not channel-scoped)`)}`);
+      rows.push(`  ${c.yellow("‼")} ${c.bold(a.name)} capabilities: ${i.capabilities.join(", ")}  ${c.dim(`(persona ${a.persona} - not channel-scoped)`)}`);
     if (hasAcl) {
       const parts = [
         i.subscribe.length ? `subscribe ${i.subscribe.join(",")}` : "",
@@ -116,26 +117,26 @@ export function renderSpawnPlan(
   unmanaged: UnmanagedReport,
   ctx: { server: string; runId: string; dryRun: boolean },
 ): string {
-  const out: string[] = [c.bold(`Plan — cotal spawn -f (deploy onto running mesh ${ctx.server})`)];
+  const out: string[] = [c.bold(`Plan - cotal spawn -f (deploy onto running mesh ${ctx.server})`)];
 
   out.push("", c.bold("Channels:"));
   for (const ch of channels.create) out.push(`  ${c.green("+")} create ${c.cyan("#" + ch.name)} ${c.dim("(seed + own)")}`);
   for (const { channel, live } of channels.existsUnmanaged) {
-    out.push(`  ${c.yellow("~")} ${c.cyan("#" + channel.name)} ${c.yellow("exists — unmanaged")} ${c.dim("(card left untouched)")}`);
+    out.push(`  ${c.yellow("~")} ${c.cyan("#" + channel.name)} ${c.yellow("exists - unmanaged")} ${c.dim("(card left untouched)")}`);
     if ((channel.description ?? "") !== (live.description ?? ""))
       out.push(`      ${c.dim(`desired: ${channel.description ?? "(none)"}  ·  live: ${live.description ?? "(none)"}`)}`);
     if ((channel.instructions ?? "") !== (live.instructions ?? ""))
-      out.push(`      ${c.dim(`desired instructions differ from live — not applied (use a future --patch flag)`)}`);
+      out.push(`      ${c.dim(`desired instructions differ from live - not applied (use a future --patch flag)`)}`);
   }
   for (const ch of channels.owned) out.push(`  ${c.dim("=")} ${c.cyan("#" + ch.name)} ${c.dim("(already owned by this run)")}`);
   if (!channels.create.length && !channels.existsUnmanaged.length && !channels.owned.length) out.push(`  ${c.dim("(none)")}`);
 
   out.push("", c.bold("Agents:"));
-  for (const e of agents.willCreate) out.push(`  ${c.green("+")} ${c.bold(e.agent.name)} ${c.dim(`${e.agent.agentType} — will launch`)}`);
-  for (const e of agents.alreadyOwned) out.push(`  ${c.dim("=")} ${c.bold(e.agent.name)} ${c.dim(`(already running as ${e.prior?.name} — no-op)`)}`);
+  for (const e of agents.willCreate) out.push(`  ${c.green("+")} ${c.bold(e.agent.name)} ${c.dim(`${e.agent.agentType} - will launch`)}`);
+  for (const e of agents.alreadyOwned) out.push(`  ${c.dim("=")} ${c.bold(e.agent.name)} ${c.dim(`(already running as ${e.prior?.name} - no-op)`)}`);
   for (const e of agents.stale)
     out.push(
-      `  ${c.yellow("!")} ${c.bold(e.agent.name)} ${c.yellow("stale — restart required")} ` +
+      `  ${c.yellow("!")} ${c.bold(e.agent.name)} ${c.yellow("stale - restart required")} ` +
         c.dim(`(${e.prior?.name}: hash ${e.prior?.hash.slice(0, 8)} → ${e.hash.slice(0, 8)}${e.running ? "" : ", not running"})`),
     );
   if (!agents.entries.length) out.push(`  ${c.dim("(none)")}`);
@@ -144,7 +145,7 @@ export function renderSpawnPlan(
   if (sec) out.push("", sec);
   const inherited = renderInherited(p);
   if (inherited) out.push("", inherited);
-  if (ctx.dryRun) out.push("", c.dim(`Dry run — nothing was changed. Run ${ctx.runId} not written. Re-run without --dry-run to apply.`));
+  if (ctx.dryRun) out.push("", c.dim(`Dry run - nothing was changed. Run ${ctx.runId} not written. Re-run without --dry-run to apply.`));
   return out.join("\n");
 }
 
@@ -160,7 +161,7 @@ export function renderUnmanaged(u: UnmanagedReport): string {
   }
   const caveat = u.feedAvailable
     ? c.dim(`  detected via presence + membership feed (asOf ${new Date(u.asOf as number).toISOString()}); live-only core subscriptions are a lower bound`)
-    : c.dim("  membership feed unavailable — detection is PRESENCE-ONLY (a lower bound; channel membership/live subscriptions not observable)");
+    : c.dim("  membership feed unavailable - detection is PRESENCE-ONLY (a lower bound; channel membership/live subscriptions not observable)");
   // Show the block when there are conflicts, or when the feed was unavailable (so an empty result is
   // never mistaken for "provably isolated").
   if (!rows.length && u.feedAvailable) {
@@ -168,7 +169,7 @@ export function renderUnmanaged(u: UnmanagedReport): string {
       ? c.dim(`note: ${u.presentUnowned.length} unmanaged peer(s) present on the mesh; none on a declared channel (${caveat.trim()})`)
       : "";
   }
-  const head = c.red(c.bold("⚠ SECURITY — unmanaged actors with access to declared channels"));
+  const head = c.red(c.bold("⚠ SECURITY - unmanaged actors with access to declared channels"));
   const tail = u.presentUnowned.length ? [c.dim(`  (${u.presentUnowned.length} unmanaged peer(s) present on the mesh in total)`)] : [];
   return [head, ...rows, caveat, ...tail].join("\n");
 }

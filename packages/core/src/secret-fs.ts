@@ -7,7 +7,7 @@
  * world-readable (e.g. a `.cotal/auth` under a project on a permissive path). The fix is to harden
  * the NTFS ACL explicitly with the built-in `icacls` (no new dependency). See {@link hardenPrivate}.
  */
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -73,7 +73,7 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
   } catch (e) {
     throw new Error(
       `failed to harden ${kind} "${path}" to private via icacls: ${(e as Error).message.trim()}. ` +
-        `Cotal will not leave a secret with a permissive ACL — ensure the path is on an NTFS volume and %SystemRoot%\\System32\\icacls.exe is available.`,
+        `Cotal will not leave a secret with a permissive ACL - ensure the path is on an NTFS volume and %SystemRoot%\\System32\\icacls.exe is available.`,
     );
   }
 }
@@ -94,6 +94,29 @@ export function writeSecretFile(path: string, data: string | Buffer): void {
       unlinkSync(path); // best-effort cleanup; the hardening error below is what the caller sees
     } catch {
       /* ignore — surface the original hardening failure, not a secondary unlink error */
+    }
+    throw e;
+  }
+}
+
+/**
+ * Like {@link writeSecretFile} but ATOMIC: write a private temp sibling (same 0o600 + win32-ACL
+ * hardening), then rename it over the target. `renameSync` is an atomic replace on POSIX and via
+ * `MoveFileEx(REPLACE_EXISTING)` on Windows, so a concurrent reader never sees a torn/partial file and
+ * a crash mid-write leaves the previous file intact. Use this for a read-modify-write of a shared secret
+ * file (e.g. the IdP session cache). NB: this closes torn-file/partial-write hazards; a lost update
+ * under two truly-concurrent writers to the same file is a rarer residual that would need file locking.
+ */
+export function writeSecretFileAtomic(path: string, data: string | Buffer): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeSecretFile(tmp, data); // 0o600 at create + win32 ACL harden on the TEMP; the ACL rides the rename
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp); // best-effort cleanup of the temp on any failure
+    } catch {
+      /* ignore — surface the original write/rename error */
     }
     throw e;
   }

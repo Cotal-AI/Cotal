@@ -12,7 +12,8 @@
 import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
 import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
-import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn resolves
+import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
+import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
 import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
 import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)
 import "@cotal-ai/cmux"; // opt into the cmux integration — registers the `cmux` runtime + TerminalLayout providers

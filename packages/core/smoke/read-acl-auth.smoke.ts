@@ -37,6 +37,7 @@ import {
   chatSubject,
   chatDurable,
   chatHistDurable,
+  DEV_OWNER,
 } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
@@ -62,8 +63,8 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDi
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const CHAT = chatStream(space);
-const allowedFilter = chatSubject(space, "*", "allowed"); // cotal.<space>.chat.*.allowed
-const forbiddenFilter = chatSubject(space, "*", "secret"); // never in allowSubscribe
+const allowedFilter = chatSubject(space, "*", "*", "allowed"); // cotal.<space>.chat.*.*.allowed
+const forbiddenFilter = chatSubject(space, "*", "*", "secret"); // never in allowSubscribe
 
 /** Send a JetStream API request and classify the outcome. For a JS API subject there is always a
  *  responder WHEN the publish is permitted, so: "ok"/"jserror" ⇒ the publish passed the ACL and the
@@ -92,8 +93,8 @@ try {
 
   // Manager seeds a couple of messages on #allowed (so the positive read has something to find).
   const mgr = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(mgrCreds)) });
-  await mgr.publish(chatSubject(space, "MGR", "allowed"), enc("hi"));
-  await mgr.publish(chatSubject(space, "MGR", "secret"), enc("classified"));
+  await mgr.publish(chatSubject(space, DEV_OWNER, "MGR", "allowed"), enc("hi"));
+  await mgr.publish(chatSubject(space, DEV_OWNER, "MGR", "secret"), enc("classified"));
   await mgr.flush();
 
   // A scoped agent: read ACL = ["allowed"] only. The stub provisioner skips durable pre-create —
@@ -101,7 +102,7 @@ try {
   const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const id = newIdentity();
   const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed"] });
-  const chatHistD = chatHistDurable(id.id);
+  const chatHistD = chatHistDurable(DEV_OWNER, id.id);
   const ag = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(enc(agentCreds)),
@@ -144,9 +145,9 @@ try {
   // F — an agent holds NO CHAT consumer grant (v0.3: the live read is a core-sub, not a durable).
   // Probe it by trying to create a CHAT-stream consumer (using the removed chat_<id> name + a forbidden
   // filter) — blocked, so an agent can never stand up its own CHAT reader to self-widen its read.
-  const f = await jsApi(ag, `$JS.API.CONSUMER.CREATE.${CHAT}.${chatDurable(id.id)}`, {
+  const f = await jsApi(ag, `$JS.API.CONSUMER.CREATE.${CHAT}.${chatDurable(DEV_OWNER, id.id)}`, {
     stream_name: CHAT,
-    config: { durable_name: chatDurable(id.id), filter_subjects: [forbiddenFilter], ack_policy: "explicit" },
+    config: { durable_name: chatDurable(DEV_OWNER, id.id), filter_subjects: [forbiddenFilter], ack_policy: "explicit" },
     action: "create",
   });
   check("F: an agent cannot create a CHAT-stream consumer (no grant — probed via the removed chat_<id> name)", f.kind === "blocked", f);

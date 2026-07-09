@@ -21,7 +21,7 @@ export function modelsComplete(argv: string[]): CompletionResult {
 export async function models(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof modelsFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
-  const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.creds, CONTROL_PRIVILEGED);
+  const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.auth, CONTROL_PRIVILEGED);
   failIfNotOk(reply);
   const rows = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];
   for (const row of rows) renderCatalog(row);

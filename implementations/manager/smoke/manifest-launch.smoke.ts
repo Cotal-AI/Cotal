@@ -2,8 +2,10 @@
  * Mesh-manifest launch smoke — proves the `supervise --launch` path: `startAgent({ resolved })`
  * mints creds from the RESOLVED policy (no persona file read for authority), the launch-spec loader
  * rejects untrusted/unsafe input, and `materializePersona` writes a transient, non-authoritative
- * persona (no ACL frontmatter, with a generated header). No broker, no real harness — real crypto
- * (createSpaceAuth + the mint path), a fake runtime + no-op ep stub, decode the minted creds JWT.
+ * persona (no ACL frontmatter, with a generated header). Boots a throwaway auth broker (the spawn
+ * path opens a real ephemeral provisioner connection — withProvisioner — so a live trusted broker
+ * with the space streams is part of startAgent's contract now), a fake runtime, decode the minted
+ * creds JWT.
  * Run with: pnpm smoke:manifest-launch
  */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
@@ -11,7 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts, launchSpecForRun } from "../src/launch.js";
-import { createSpaceAuth, registry, type Connector, type DurableProvisioner, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { createSpaceAuth, mintCreds, newIdentity, principalKey, setupSpaceStreams, registry, DEV_OWNER, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -46,6 +49,7 @@ const resolved: MeshLaunchAgent = {
   role: "researcher",
   model: "opus",
   variant: "high",
+  launchOptions: { temperature: "0.2" },
   description: "Quick web researcher.",
   body: "Research the web; report in 3 bullets.",
   capabilities: ["spawn"],
@@ -67,15 +71,11 @@ const personaPath = materializePersona(root, runId, resolved);
 }
 
 // --- startAgent({ resolved }): creds minted from the resolved policy, no file authority ----------
-const mgr = new Manager({ space: "demo", servers: undefined, runtime: "pty", workspaceRoot: root });
-(mgr as unknown as { auth: unknown }).auth = await createSpaceAuth("demo");
-const fakeProvisioner: DurableProvisioner = {
-  provisionDmInbox: async () => {},
-  provisionDlvInbox: async () => {},
-  commitAcl: async () => {},
-  provisionTaskQueue: async () => {},
-};
-(mgr as unknown as { withProvisioner: <T>(fn: (prov: DurableProvisioner) => Promise<T>) => Promise<T> }).withProvisioner = async (fn) => fn(fakeProvisioner);
+const auth = await createSpaceAuth("demo");
+const broker = await bootBroker(auth);
+await setupSpaceStreams({ servers: broker.servers, space: "demo", creds: await mintCreds(auth, newIdentity(), "provisioner") });
+const mgr = new Manager({ space: "demo", servers: broker.servers, runtime: "pty", workspaceRoot: root });
+(mgr as unknown as { auth: unknown }).auth = auth;
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
 (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
@@ -88,9 +88,10 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent joined.
   on: () => {},
   off: () => {},
-  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: a.id, name: a.name }, status: "idle" })),
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" })),
 };
 let seenVariant: string | undefined;
+let seenLaunchOptions: Record<string, unknown> | undefined;
 const recCon: Connector = {
   kind: "connector",
   name: "smoke-launch",
@@ -98,6 +99,7 @@ const recCon: Connector = {
   supportsModelVariant: true,
   buildLaunch: (opts) => {
     seenVariant = opts.variant;
+    seenLaunchOptions = opts.launchOptions;
     return { command: "true", args: [], env: {} };
   },
 };
@@ -108,10 +110,13 @@ registry.register(recCon);
   // fail "no persona scout"; the resolved path must succeed from the launch object alone.
   const startOpts = launchAgentToStartOpts(resolved, personaPath);
   check("launchAgentToStartOpts carries variant", startOpts.variant === "high", startOpts.variant);
+  const OWNER = "u_" + "a".repeat(26);
+  check("launchAgentToStartOpts forwards the apply-time owner", launchAgentToStartOpts(resolved, personaPath, OWNER).owner === OWNER);
   const reply = await mgr.startAgent(startOpts);
-  check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, reply);
+  check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, JSON.stringify(reply));
   check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
   check("variant is forwarded to the connector", seenVariant === "high", seenVariant);
+  check("launchOptions forwarded to the connector (via resolved)", JSON.stringify(seenLaunchOptions) === JSON.stringify({ temperature: "0.2" }), seenLaunchOptions);
 
   const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);
@@ -152,6 +157,21 @@ function writeSpec(name: string, body: unknown): string {
   throws("unknown capability rejected (not just unsafe token)", () => loadLaunchSpec(writeSpec("p3.json", agent1({ capabilities: ["teleport"] }))));
   // Belt-and-suspenders (review-fact): allowPublish-only wildcard is rejected too (same validateLaunchPolicy loop).
   throws("wildcard allowPublish rejected", () => loadLaunchSpec(writeSpec("p4.json", agent1({ allowPublish: ["team.>"] }))));
+  // Envelope-rule vocabulary: a delegable `role:<r>` capability is a KNOWN manifest capability
+  // (strict shape), while `admin` stays deliberately manifest-inadmissible — a hand-editable file
+  // must not mint an authority-root agent.
+  const roleCap = loadLaunchSpec(writeSpec("c1.json", agent1({ capabilities: ["spawn", "role:worker"] })));
+  check("role:<r> capability accepted", roleCap.agents[0].capabilities?.includes("role:worker") === true, roleCap.agents[0].capabilities);
+  throws("unsafe role capability rejected", () => loadLaunchSpec(writeSpec("c2.json", agent1({ capabilities: ["role:a b"] }))));
+  throws("nested role capability rejected", () => loadLaunchSpec(writeSpec("c3.json", agent1({ capabilities: ["role:a:b"] }))));
+  throws("unknown namespaced capability rejected", () => loadLaunchSpec(writeSpec("c4.json", agent1({ capabilities: ["teleport:x"] }))));
+  throws("admin capability rejected at the manifest boundary", () => loadLaunchSpec(writeSpec("c5.json", agent1({ capabilities: ["admin"] }))));
+  // USER-AUTH: the apply-time owner (`up -f --user-auth`) survives the strict schema — and only as
+  // a real derived token (an arbitrary string can't become ownership attribution).
+  const OWNER = "u_" + "b".repeat(26);
+  const owned = loadLaunchSpec(writeSpec("o1.json", { ...(specOf() as object), owner: OWNER }));
+  check("apply-time owner loads through the strict schema", owned.owner === OWNER, owned.owner);
+  throws("malformed owner rejected (not a derived token)", () => loadLaunchSpec(writeSpec("o2.json", { ...(specOf() as object), owner: "u_HACK" })));
 }
 
 // --- launchSpecForRun + the `launch` control op: spawn -f onto a RUNNING manager ----------------
@@ -161,6 +181,7 @@ function writeSpec(name: string, body: unknown): string {
     apiVersion: "cotal-launch/v1",
     space: "demo",
     runId: runId2,
+    owner: "u_" + "c".repeat(26),
     agents: [{
       name: "scout", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
       body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
@@ -172,12 +193,15 @@ function writeSpec(name: string, body: unknown): string {
 
   // The op takes a runId, NOT a path — the manager derives + validates the spec location itself.
   check("launchSpecForRun derives + loads the spec by runId", launchSpecForRun(root, runId2).agents[0].name === "scout");
+  check("launchSpecForRun preserves the apply-time owner", launchSpecForRun(root, runId2).owner === spec2.owner, launchSpecForRun(root, runId2).owner);
   throws("launchSpecForRun rejects an unsafe runId token", () => launchSpecForRun(root, "../evil"));
   throws("launchSpecForRun rejects a missing run", () => launchSpecForRun(root, "nosuchrun"));
 
   type LaunchReply = { ok: boolean; data?: Record<string, unknown>; error?: string };
+  // Admin-tier launch (the static operator deploy path); the user-mode owner-equality policy is
+  // pinned separately in smoke:own-agent-control (pure authorizeLaunch).
   const op = (a: Record<string, unknown>) =>
-    (mgr as unknown as { opLaunch(a: Record<string, unknown>, c: string): Promise<LaunchReply> }).opLaunch(a, "smoke-caller");
+    (mgr as unknown as { opLaunch(a: Record<string, unknown>, c: string, admin: boolean): Promise<LaunchReply> }).opLaunch(a, "smoke-caller", true);
   const reply = await op({ runId: runId2, name: "scout" });
   check("opLaunch boots the resolved agent", reply.ok === true, reply.error);
   // `scout` is already on the (fake) mesh from the startAgent test above, so it collision-numbers.
@@ -214,5 +238,6 @@ function writeSpec(name: string, body: unknown): string {
   throws("materialize refuses a symlinked .cotal/run/<runId> dir", () => materializePersona(root3, "rid", { ...resolved, name: "y" }));
 }
 
+await broker.stop();
 console.log(`\nMANIFEST-LAUNCH SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -5,11 +5,14 @@ import {
   isReachable,
   mintCreds,
   newIdentity,
+  resolveAuthProvider,
   type FlagValues,
   type ParsedArgs,
+  type UserAuthStatus,
 } from "@cotal-ai/core";
 import {
   authDir,
+  CLI_USER_ACTOR,
   findCotalRoot,
   getCurrent,
   isWorkspaceTargetError,
@@ -20,6 +23,7 @@ import {
   resolveMeshTarget,
   serverFlag,
   spaceFlag,
+  userAuthStateDir,
 } from "@cotal-ai/workspace";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, webUp, WEB_URL } from "../lib/status.js";
@@ -59,11 +63,13 @@ async function printMachine(): Promise<void> {
 
 function printProject(root: string): void {
   const auth = loadSpaceAuth(authDir(root));
+  const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
   section("This Folder");
   row("root", root);
-  row("auth", auth ? c.green(`space ${auth.space}`) : c.dim("none (open/local only)"));
+  row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
   row("nats", formatProc(proc(root, "nats.pid")));
+  if (userDisk) row("auth-service", formatProc(proc(root, `auth-service.${encodeURIComponent(auth.space)}.pid`)));
   row("delivery", formatProc(proc(root, "delivery.pid")));
   const mgr = proc(root, "manager.pid");
   row("manager", `${formatProc(mgr)}${mgr.live ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build") : ""}`);
@@ -75,7 +81,7 @@ async function printRegistry(): Promise<void> {
   const current = getCurrent();
   section("Recorded Meshes");
   if (!meshes.length) {
-    console.log(c.dim("  none — start one with `cotal up --detach`"));
+    console.log(c.dim("  none - start one with `cotal up --detach`"));
     return;
   }
   const pad = Math.max(...meshes.map((m) => m.space.length));
@@ -112,9 +118,47 @@ async function printTarget(
 
   row("space", target.space);
   row("server", target.server);
-  row("mode", target.auth ? "auth" : "open");
+  row("mode", target.mode);
+  if (target.userAuth) row("idp", target.userAuth.idp.url);
   row("source", target.source);
   row("root", target.root);
+
+  if (target.mode === "user") {
+    // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
+    // introspection — the login cache + the locally-readable ledger — plus, only when this
+    // machine holds a signed-in AND granted login, a real user-mode connect for the snapshot.
+    const live = await isReachable(target.server);
+    row("connection", live ? c.green("reachable") : c.red("unreachable"));
+    const stateDir = userAuthStateDir(target.root, target.space);
+    let st: UserAuthStatus | undefined;
+    try {
+      st = await resolveAuthProvider().userStatus({ dir: stateDir, space: target.space, actor: CLI_USER_ACTOR });
+    } catch (e) {
+      row("login", c.dim((e as Error).message));
+    }
+    if (st && !st.login) row("login", c.yellow(`not signed in - ${cmd} login --idp ${st.idpUrl}`));
+    if (st?.login) {
+      row("login", c.green(st.login.sub) + c.dim(` · session until ${new Date(st.login.expiresAt * 1000).toISOString()}`));
+      if (st.grant === "not-granted")
+        row("actor", c.yellow(`"${CLI_USER_ACTOR}" not granted - ${cmd} actor grant ${CLI_USER_ACTOR} --sub ${st.login.sub}`));
+      else if (st.grant)
+        row(
+          "actor",
+          c.green(`"${CLI_USER_ACTOR}" granted${st.grant.label ? ` (${st.grant.label})` : ""}`) +
+            c.dim(
+              ` - read [${st.grant.allowSubscribe.join(", ")}], post [${st.grant.allowPublish.join(", ")}]${st.grant.scope.length ? `, scope [${st.grant.scope.join(", ")}]` : ""}`,
+            ),
+        );
+      else row("actor", c.dim("grant not checkable on this machine (no local ledger)"));
+    }
+    const granted = Boolean(st?.login && st.grant && st.grant !== "not-granted");
+    if (live && granted) {
+      await userLiveSnapshot(target, stateDir).catch((e) => row("live snapshot", c.dim(`unavailable (${(e as Error).message})`)));
+    } else {
+      row("live snapshot", c.dim(live ? "needs a signed-in, granted login (see above)" : "broker unreachable"));
+    }
+    return;
+  }
 
   const preflight = await preflightTarget(target);
   if (!preflight.ok) {
@@ -141,6 +185,33 @@ async function liveSnapshot(target: ReturnType<typeof resolveMeshTarget>): Promi
     watchChannels: watchBrokerState,
     card: { id: id.id, name: "status", kind: "endpoint" },
   });
+  await renderSnapshot(ep, watchBrokerState);
+}
+
+/** The user-auth live snapshot: the same read-only roster/channels view, connected as THIS
+ *  machine's signed-in, ledger-granted login (bearer + sentinel — the flip forbids a status mint). */
+async function userLiveSnapshot(target: ReturnType<typeof resolveMeshTarget>, stateDir: string): Promise<void> {
+  const { bearer, sentinelCreds } = await resolveAuthProvider().userCredentials({
+    dir: stateDir,
+    space: target.space,
+    actor: CLI_USER_ACTOR,
+  });
+  const ep = new CotalEndpoint({
+    space: target.space,
+    servers: target.server,
+    bearer,
+    sentinelCreds,
+    channels: [],
+    consume: false,
+    registerPresence: false,
+    watchPresence: true,
+    watchChannels: true,
+    card: { name: "status", kind: "endpoint" }, // card.id derives from the bearer principal
+  });
+  await renderSnapshot(ep, true);
+}
+
+async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Promise<void> {
   ep.on("error", () => {});
   await ep.start();
   try {
@@ -155,7 +226,7 @@ async function liveSnapshot(target: ReturnType<typeof resolveMeshTarget>): Promi
     );
     for (const p of roster.slice(0, 8)) {
       const label = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
-      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` — ${p.activity}`) : ""}`);
+      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : ""}`);
     }
     if (roster.length > 8) console.log(c.dim(`    +${roster.length - 8} more`));
     row("channels", channels.length ? channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none");

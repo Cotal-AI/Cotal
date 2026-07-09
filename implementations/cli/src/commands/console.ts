@@ -3,10 +3,9 @@ import { userInfo } from "node:os";
 import { createElement } from "react";
 import { render } from "ink";
 import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
-import { connectOrExit } from "../lib/connect.js";
-import { c } from "../ui.js";
+import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { runLog } from "../render.js";
-import { Root, makeObserver } from "../console/root.js";
+import { Root, makeObserver, type ObserverAuth } from "../console/root.js";
 
 /**
  * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
@@ -20,13 +19,20 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // Auth mode self-mints an admin god-view cred (the console shows DMs/anycast, which the narrower
   // `observer` profile denies → NATS Authorization Violation); an authed server hosts exactly one
   // space, so we enter it directly. Open mode connects bare; with no --space, the TTY shows the
-  // space overview. An explicit --creds wins.
-  const { server, space: resolvedSpace, creds, auth } = await connectOrExit(values, "admin");
-  // Auth pins its one space; open mode keeps --space (undefined → the overview picker).
-  const space = auth ? resolvedSpace : values.space;
+  // space overview. An explicit --creds wins. USER MODE rides an exchange-gated "admin" VIEW
+  // bearer (ledger scope "admin") with a bearer source, same standing shape as `cotal web`.
+  const conn = await connectOrExit(values, "admin");
+  const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
+  const { server, space: resolvedSpace, creds, auth } = conn;
+  // Auth/user mode pins its one space; open mode keeps --space (undefined → the overview picker).
+  const space = auth || user ? resolvedSpace : values.space;
+  const observerAuth: ObserverAuth = user
+    ? { user: { source: user.source, sentinelCreds: user.sentinelCreds, owner: user.owner, actor: user.actor } }
+    : { creds };
 
   // Operator identity for sent messages (still off the roster). Open mode or an explicit --creds can
-  // write; the self-minted observer cred (auth default) is read-only, so the palette/`D` are inert.
+  // write; the self-minted observer cred (auth default) and the user-mode admin view are read-only,
+  // so the palette/`D` are inert there.
   const operator = (() => {
     try {
       return userInfo().username || "operator";
@@ -34,13 +40,13 @@ export async function console_(args: ParsedArgs): Promise<void> {
       return "operator";
     }
   })();
-  const canWrite = !creds || !!values.creds;
+  const canWrite = user ? false : !creds || !!values.creds;
 
   // No TTY (piped/headless) or --plain → the passive line stream; Ink needs a real terminal, and a
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
   if (values.plain || process.stdout.isTTY !== true) {
     const s = space ?? resolvedSpace;
-    await runLog(makeObserver(s, server, creds, operator), s, creds ? chatWildcard(s) : undefined);
+    await runLog(makeObserver(s, server, observerAuth, operator), s, creds || user ? chatWildcard(s) : undefined);
     return;
   }
 
@@ -72,7 +78,7 @@ export async function console_(args: ParsedArgs): Promise<void> {
     process.exit(0);
   });
 
-  const { waitUntilExit } = render(createElement(Root, { server, creds, space, canWrite, name: operator }), {
+  const { waitUntilExit } = render(createElement(Root, { server, auth: observerAuth, space, canWrite, name: operator }), {
     exitOnCtrlC: true,
     maxFps: 30,
     incrementalRendering: true,

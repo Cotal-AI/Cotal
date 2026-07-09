@@ -9,6 +9,7 @@
  * (one authority per channel), concrete-only (wildcards rejected), and surfaced loudly.
  */
 import { isConcreteChannel, type AgentDef } from "@cotal-ai/core";
+import { mergeLaunchOptions } from "@cotal-ai/workspace";
 import type { AgentPolicy, ResolvedAgent } from "./model.js";
 import type { ManifestIssue } from "./errors.js";
 
@@ -38,6 +39,8 @@ export interface PreparedAgent {
   /** Effective values (manifest override ?? persona default). */
   model?: string;
   variant?: string;
+  /** Effective opaque connector launch options (manifest merged per key over persona). */
+  launchOptions?: Record<string, unknown>;
   role?: string;
   description?: string;
   /** Effective persona body (manifest `instructions` REPLACES the file body; sole body for inline). */
@@ -67,6 +70,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
   // Behavior: persona default, manifest override wins. Inline `instructions` REPLACE the body.
   const model = agent.model ?? persona?.model;
   const variant = agent.variant ?? persona?.variant;
+  const launchOptions = mergeLaunchOptions(persona?.launchOptions, agent.launchOptions);
   const role = agent.role ?? persona?.role;
   const description = agent.description ?? persona?.description;
   const body = agent.instructions ?? persona?.persona;
@@ -97,7 +101,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
     for (const [field, list] of [["subscribe", persona.subscribe], ["allowSubscribe", personaAllowSub], ["allowPublish", persona.allowPublish]] as const)
       for (const ch of list ?? [])
         if (!isConcreteChannel(ch))
-          issues.push({ message: `persona ${field} "${ch}" is a wildcard — not supported in v1 (declare concrete channels)`, path: at });
+          issues.push({ message: `persona ${field} "${ch}" is a wildcard - not supported in v1 (declare concrete channels)`, path: at });
 
     // Persona grants apply ONLY to channels the manifest does not declare (manifest owns its own).
     const undeclared = (list: string[] | undefined) => (list ?? []).filter((c) => isConcreteChannel(c) && !declared.has(c));
@@ -124,7 +128,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       agent: agent.name,
       loud: capabilities.length > 0,
       message: capabilities.length
-        ? `declared with capabilities [${capabilities.join(", ")}] but NO channel access (DM/control-only — a powerful non-channel grant)`
+        ? `declared with capabilities [${capabilities.join(", ")}] but NO channel access (DM/control-only - a powerful non-channel grant)`
         : `declared but has no channel access from the manifest (DM/control-only unless a persona under \`include\` grants scopes)`,
     });
 
@@ -135,6 +139,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       persona: agent.persona,
       model,
       variant,
+      launchOptions,
       role,
       description,
       body,

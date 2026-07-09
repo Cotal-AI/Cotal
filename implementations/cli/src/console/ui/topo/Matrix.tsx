@@ -58,7 +58,7 @@ export function Matrix({
   );
 
   if (!rows.length || !cols.length)
-    return <Text dimColor>(no traffic in the window — waiting for peer messages)</Text>;
+    return <Text dimColor>(no traffic in the window - waiting for peer messages)</Text>;
 
   // Viewports: rows under header + footer; columns follow the cursor.
   const labelW = Math.min(18, Math.max(10, ...rows.map((n) => n.name.length + 2)) + 1);
@@ -98,7 +98,7 @@ export function Matrix({
   ) : (
     <Box flexDirection="column">
       <Text dimColor wrap="truncate-end">{"".padEnd(width, "─")}</Text>
-      <Text dimColor>(no traffic on this pair — h/j/k/l to move, Enter opens the latest message)</Text>
+      <Text dimColor>(no traffic on this pair - h/j/k/l to move, Enter opens the latest message)</Text>
     </Box>
   );
 

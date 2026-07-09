@@ -36,7 +36,7 @@ function idOf(snap: MeshSnapshot, name: string): string | undefined {
 
 /** One-line note for the transient status bar when a name matched several peers. */
 function ambiguityNote(e: AmbiguousPeerError): string {
-  return `"${e.target}" is ambiguous — dm by id: ${e.candidates.map((c) => `${c.name} ${c.id}`).join(", ")}`;
+  return `"${e.target}" is ambiguous - dm by id: ${e.candidates.map((c) => `${c.name} ${c.id}`).join(", ")}`;
 }
 
 export const COMMANDS: ConsoleCommand[] = [
@@ -140,6 +140,6 @@ export function runCommand(line: string, ctx: CommandCtx, canWrite: boolean): vo
   const rest = trimmed.slice(trimmed.indexOf(name) + name.length).trim();
   const cmd = COMMANDS.find((c) => c.name === name);
   if (!cmd) return ctx.notify(`unknown command: ${name}`);
-  if (cmd.write && !canWrite) return ctx.notify("read-only — pass --creds to send");
+  if (cmd.write && !canWrite) return ctx.notify("read-only - pass --creds to send");
   void cmd.run(ctx, rest);
 }

@@ -107,7 +107,7 @@ export function SpacePicker({
         ) : error ? (
           <Text color="red">{"! " + error}</Text>
         ) : list.length === 0 ? (
-          <Text dimColor>no spaces found — run `cotal up` then `cotal demo`</Text>
+          <Text dimColor>no spaces found - run `cotal up` then `cotal demo`</Text>
         ) : (
           visible.map((s, i) => <Row key={s.space} s={s} selected={start + i === selClamped} />)
         )}

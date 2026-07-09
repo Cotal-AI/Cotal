@@ -25,6 +25,8 @@ export function hashAgent(a: PreparedAgent): string {
     agent: a.agentType,
     model: a.model ?? null,
     variant: a.variant ?? null,
+    // Sort keys so an identical option set hashes identically (map insertion order must not drift).
+    launchOptions: a.launchOptions ? Object.fromEntries(Object.entries(a.launchOptions).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) : null,
     role: a.role ?? null,
     body: a.body ?? null,
     capabilities: [...a.capabilities].sort(),
@@ -43,6 +45,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
     role: a.role,
     model: a.model,
     variant: a.variant,
+    launchOptions: a.launchOptions,
     description: a.description,
     body: a.body,
     capabilities: a.capabilities.length ? a.capabilities : undefined,
@@ -54,12 +57,14 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
   };
 }
 
-/** Build the launch spec the manager boots from. */
-export function buildLaunchSpec(prepared: PreparedManifest, runId: string): MeshLaunchSpec {
+/** Build the launch spec the manager boots from. `owner` (user-auth meshes) is the logged-in
+ *  operator every launched agent runs under — resolved by the caller at apply time. */
+export function buildLaunchSpec(prepared: PreparedManifest, runId: string, owner?: string): MeshLaunchSpec {
   return {
     apiVersion: "cotal-launch/v1",
     space: prepared.manifest.space,
     runId,
+    ...(owner ? { owner } : {}),
     agents: prepared.agents.map(toLaunchAgent),
   };
 }

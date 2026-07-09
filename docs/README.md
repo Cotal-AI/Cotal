@@ -32,7 +32,8 @@ Task dispatch:
 | Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
 | Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | `cotal console` / `cotal web` |
-| Mint credentials | [Identity & auth](identity-and-auth.md) | `cotal mint <name> --profile agent` |
+| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal mint <name> --profile agent` |
+| Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
 | Check a normative rule | [Spec](../SPEC.md) | — |
 

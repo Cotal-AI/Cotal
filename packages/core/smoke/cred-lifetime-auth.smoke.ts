@@ -17,10 +17,15 @@ import {
   credentialLifetime,
   chatSubject,
   isReachable,
+  probeConnect,
+  mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   mintCreds,
   newIdentity,
   serverConfig,
+  DEV_OWNER,
+  ROTATION_RENEWED_TTL_SEC,
+  STANDING_RENEWABLE_TTL_SEC,
 } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
@@ -87,20 +92,36 @@ try {
   const sup = newIdentity();
   const supCreds = await mintCreds(auth, sup, "supervisor");
   const supClaims = await parseCreds(enc(supCreds));
-  check("standing supervisor is classified for renewal but has no default exp yet", credentialLifetime("supervisor").class === "standing-renewable" && supClaims.uc.exp === undefined, supClaims.uc);
+  check("standing supervisor is bounded now that self-remint renewal exists (slice 5 class 1)", credentialLifetime("supervisor").class === "standing-renewable" && Boolean(supClaims.uc.exp && supClaims.uc.exp - now <= STANDING_RENEWABLE_TTL_SEC + 5 && supClaims.uc.exp - now > STANDING_RENEWABLE_TTL_SEC - 60), supClaims.uc);
   check("agent is mixed until managed/unmanaged paths split", credentialLifetime("agent").class === "mixed" && credentialLifetime("agent").renewalOwner === undefined, credentialLifetime("agent"));
+  const dlv = await parseCreds(enc(await mintCreds(auth, newIdentity(), "delivery")));
+  check("delivery is bounded now that the manager-remint reload seam exists (slice 5 class 2)", credentialLifetime("delivery").defaultTtlSeconds === STANDING_RENEWABLE_TTL_SEC && typeof dlv.uc.exp === "number", dlv.uc.exp);
+  const mrw = await parseCreds(enc(await mintCreds(auth, newIdentity(), "membership-rw")));
+  check("membership-rw is bounded now that the manager-remint reload seam exists (slice 5 class 2)", credentialLifetime("membership-rw").defaultTtlSeconds === STANDING_RENEWABLE_TTL_SEC && typeof mrw.uc.exp === "number", mrw.uc.exp);
 
   const obs = newIdentity();
   const obsCreds = await mintMembershipObserverCreds(auth, obs);
   const obsClaims = await parseCreds(enc(obsCreds));
-  check("membership-observer is classified as a standing host cred", credentialLifetime("membership-observer").class === "standing-renewable", credentialLifetime("membership-observer"));
-  check("membership-observer remains unexpired until renewal lands", obsClaims.uc.exp === undefined, obsClaims.uc);
+  check("membership-observer is rotation-renewed (bounded exp, no online renewal)", credentialLifetime("membership-observer").class === "rotation-renewed", credentialLifetime("membership-observer"));
+  check("membership-observer creds carry the rotation-renewed exp", Boolean(obsClaims.uc.exp && obsClaims.uc.exp - now <= ROTATION_RENEWED_TTL_SEC + 5 && obsClaims.uc.exp - now > ROTATION_RENEWED_TTL_SEC - 60), obsClaims.uc.exp);
+  const evi = newIdentity();
+  const eviCreds = await mintConnectionEvictorCreds(auth, evi);
+  const eviClaims = await parseCreds(enc(eviCreds));
+  check("connection-evictor is rotation-renewed (bounded exp, no online renewal)", credentialLifetime("connection-evictor").class === "rotation-renewed", credentialLifetime("connection-evictor"));
+  check("connection-evictor creds carry the rotation-renewed exp", Boolean(eviClaims.uc.exp && eviClaims.uc.exp - now <= ROTATION_RENEWED_TTL_SEC + 5 && eviClaims.uc.exp - now > ROTATION_RENEWED_TTL_SEC - 60), eviClaims.uc.exp);
   check("deployer is classified but not default-expired before near-expiry guards", credentialLifetime("deployer").defaultTtlSeconds === undefined, credentialLifetime("deployer"));
   check("teardown is classified but not default-expired before near-expiry guards", credentialLifetime("teardown").defaultTtlSeconds === undefined, credentialLifetime("teardown"));
 
   const expired = newIdentity();
   const expiredCreds = await mintCreds(auth, expired, "probe", { expiresAt: now - 1 });
   check("expired copied cred is broker-denied on connect", await tryConnect(expiredCreds, expired.id) === "rejected");
+  // D5 slice 6: the probe CLASSIFIES credential death — an expired cred on a LIVE broker is
+  // "stale-auth" (repair: doctor auth), never conflated with "wrong creds" or "mesh down".
+  // Give the probe a generous connect budget: the default 1s doctor timeout can be beaten by a slow
+  // CI/Windows TCP+auth round-trip, misclassifying a provably-expired cred as "unreachable". The
+  // classification (expired -> stale-auth) is what's under test here, not connect latency.
+  const staleProbe = await probeConnect(SERVERS, { creds: expiredCreds, timeoutMs: 8000 });
+  check("probeConnect classifies an expired cred as stale-auth (the structured diagnostic)", !staleProbe.ok && staleProbe.reason === "stale-auth", staleProbe);
 
   const fresh = newIdentity();
   const freshCreds = await mintCreds(auth, fresh, "probe", { expiresInSeconds: 60 });
@@ -117,7 +138,7 @@ try {
   await wait(1600);
   let liveAfterExp: "allowed" | "closed" = "allowed";
   try {
-    nc.publish(chatSubject(space, live.id, "general"), enc("after-exp"));
+    nc.publish(chatSubject(space, DEV_OWNER, live.id, "general"), enc("after-exp"));
     await nc.flush();
   } catch {
     liveAfterExp = "closed";

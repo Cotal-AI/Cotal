@@ -38,9 +38,10 @@ import {
   accountConnectSubject,
   accountDisconnectSubject,
   channelFromChatSubscription,
+  principalFromConnz,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
-import { idFromCreds } from "./identity.js";
+import { credsClaims, idFromCreds } from "./identity.js";
 import type { ChannelMembership } from "./types.js";
 
 export interface MembershipFeedOpts {
@@ -48,10 +49,16 @@ export interface MembershipFeedOpts {
   space: string;
   /** DATA account public key — the CONNZ request + CONNECT/DISCONNECT event subjects pin this account. */
   accountId: string;
-  /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader). */
+  /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader). Always a static string: it is
+   *  `rotation-renewed` ($SYS seed dies at `up`), so its only renewal is a system-account rotation +
+   *  broker restart — a new process, never a live reload. */
   observerCreds: string;
-  /** Scoped DATA-account read/write creds (conn B — members read + feed write). */
-  rwCreds: string;
+  /** Scoped DATA-account read/write creds (conn B — members read + feed write), or a SOURCE that
+   *  re-reads them (D5 slice 5 class 2: the manager re-signs the creds file for the SAME nkey; the
+   *  getter is re-evaluated per (re)connect attempt, so the broker's expiry-close renews the
+   *  connection from the refreshed file). A read that swaps the nkey fails loud — the feed's identity
+   *  (inbox scope + self-presence check) is pinned to the first read. */
+  rwCreds: string | (() => string);
   /** Safety reconcile interval (ms) — primary signal (no SUB/UNSUB event exists). Default 15000. */
   intervalMs?: number;
   /** Connect/disconnect-event → re-poll debounce (ms); coalesces connect storms. Default 400. */
@@ -69,6 +76,10 @@ export interface MembershipFeedOpts {
 export interface MembershipFeedHandle {
   /** Force an immediate reconcile (also used by tests). Never throws — errors are logged. */
   poll(): Promise<void>;
+  /** Explicitly adopt a re-signed rw creds file on conn B (D5 class-2 renewal): validated re-read
+   *  (pinned nkey) + forced reconnect, returning the adopted JWT window as proof. THROWS when the
+   *  re-read fails (missing/swapped file) — adoption must never be assumed. */
+  reloadRwCreds(): Promise<{ identity: string; iat?: number; exp?: number }>;
   stop(): Promise<void>;
 }
 
@@ -94,10 +105,21 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   });
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
-  const rwSelfId = idFromCreds(opts.rwCreds); // conn B's own nkey — the data-account self-presence check below
+  const readRw = typeof opts.rwCreds === "function" ? opts.rwCreds : () => opts.rwCreds as string;
+  const rwSelfId = idFromCreds(readRw()); // conn B's own nkey — the data-account self-presence check below
+  // Pin every re-read to the first read's nkey: a renewal (manager re-signs the file) keeps the
+  // identity; a swapped file would silently break the inbox scope + self-presence check, so it throws
+  // inside the authenticator instead (the connect attempt fails loud and retries).
+  const rwCredsPinned = () => {
+    const creds = readRw();
+    const id = idFromCreds(creds);
+    if (id !== rwSelfId) throw new Error(`membership rw creds re-read returned identity ${id}, expected ${rwSelfId} - a renewal may not swap the feed's nkey`);
+    return creds;
+  };
   const connB = await connect({
     servers: opts.servers,
-    authenticator: credsAuthenticator(enc(opts.rwCreds)),
+    // Re-wrapped per (re)connect attempt so each attempt signs with the freshest (pinned) file read.
+    authenticator: (nonce?: string) => credsAuthenticator(enc(rwCredsPinned()))(nonce),
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
@@ -158,7 +180,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
       if (replies.length === 0) {
-        if (page === 0) log(`CONNZ returned no replies (offset 0) — broker unreachable or cred denied; keeping last membership this tick`);
+        if (page === 0) log(`CONNZ returned no replies (offset 0) - broker unreachable or cred denied; keeping last membership this tick`);
         break;
       }
       gotReply = true;
@@ -180,7 +202,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       }
       if (serverMore.size === 0) { exhausted = true; break; }
       if (page === MAX_PAGES - 1)
-        log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) — UNDER-REPORTING; skipping this sweep`);
+        log(`CONNZ still paginating after ${MAX_PAGES} pages (servers ${[...serverMore].join(",")}) - UNDER-REPORTING; skipping this sweep`);
     }
     // SELF-PRESENCE completeness check (socrates): the data account ALWAYS holds at least conn B, so a
     // sweep that doesn't even include our own rw connection missed connections (a mid-reconnect blip, or
@@ -191,13 +213,13 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     // == expected server count` (expected set discovered via $SYS.REQ.SERVER.PING); deferred with the rest
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
     if (gotReply && exhausted && !seenSelf)
-      log(`CONNZ sweep omitted our own rw connection — treating as incomplete (keeping last membership)`);
+      log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until
     // multi-broker responder-accounting ships, surface that limit LOUDLY (once) rather than degrade quietly.
     if (serversSeen.size > 1 && !clusterWarned) {
       clusterWarned = true;
-      log(`multi-server cluster detected (${serversSeen.size} responders) — membership completeness uses the conn-B floor only; a silent peer server can under-report (multi-broker accounting deferred, see core-sub-fabric.md)`);
+      log(`multi-server cluster detected (${serversSeen.size} responders) - membership completeness uses the conn-B floor only; a silent peer server can under-report (multi-broker accounting deferred, see core-sub-fabric.md)`);
     }
     return { live, complete: gotReply && exhausted && seenSelf };
   }
@@ -284,6 +306,15 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
 
   return {
     poll,
+    async reloadRwCreds() {
+      // Explicit class-2 adoption for conn B (D5 slice 5): validate the re-read (the pinned getter
+      // throws on a swapped nkey or a missing file) and force a reconnect so the fresh cred is on
+      // the wire NOW — never waiting for the broker's expiry-close. The observer conn (A) is
+      // rotation-renewed and deliberately not reloadable.
+      const { exp, iat } = credsClaims(rwCredsPinned());
+      await connB.reconnect().catch(() => {}); // already-reconnecting is a no-op; its loop re-reads the getter
+      return { identity: rwSelfId, iat, exp };
+    },
     async stop() {
       stopped = true;
       clearInterval(timer);
@@ -300,28 +331,36 @@ interface ConnzConnection {
   authorized_user?: string;
   subscriptions_list?: string[];
   name?: string;
+  tags?: string[];
 }
 interface ConnzReply {
   server?: { id?: string };
   data?: { server_id?: string; total?: number; offset?: number; limit?: number; connections?: ConnzConnection[] };
 }
 
-/** Fold one CONNZ connection into the live map: keyed by `authorized_user` (the nkey = `card.id`),
- *  unioning its chat-subscription patterns (wildcards kept, e.g. `team.>` or a whole-chat `>`).
+/** Fold one CONNZ connection into the live map: keyed by the connection's PRINCIPAL dot-form
+ *  (`<owner>.<actor>`), recovered via {@link principalFromConnz} — a STATICALLY-minted user surfaces
+ *  its `principal:` tag, while a CALLOUT-minted (user-mode) connection surfaces the principal
+ *  NAME-form as `authorized_user` and NO tags (nats-server 2.10/2.14 behavior; the live-eviction
+ *  work proved a tags-only read misses every user-mode connection — they'd never appear in the
+ *  graph). Unions its chat-subscription patterns (wildcards kept, e.g. `team.>` or a whole-chat `>`).
+ *  A STATIC user's raw ephemeral nkey `authorized_user` is NOT a principal name-form, so it stays
+ *  unattributable — an un-principal connection is DROPPED (fail-closed), never keyed by its nkey,
+ *  which would fork one agent into two graph nodes.
  *
  *  Infra taps SELF-EXCLUDE — no shape heuristic needed (review-general, socrates): the web dashboard taps
  *  `cotal.<space>.>` (spaceWildcard) and `cotal console` taps `cotal.<space>.chat.>` (chatWildcard), both
  *  of which {@link channelFromChatSubscription} maps to `null` (the former isn't `.chat.`-prefixed; the
  *  latter has no channel token after `chat.`), so they contribute zero channels here; conn B / the
  *  delivery cred / the manager hold no chat sub at all. The ONLY subscription that yields the whole-chat
- *  `>` pattern is an AGENT's own `chat.*.>` (allowSubscribe `[">"]` — e.g. the default persona), which is
+ *  `>` pattern is an AGENT's own `chat.*.*.>` (allowSubscribe `[">"]` — e.g. the default persona), which is
  *  a legitimate broad reader the feed MUST surface (the source-of-truth goal), NOT drop. So no shape-based
  *  exclusion: a `>` pattern is recorded as-is and the dashboard renders it as a "reads-all" node (a badge,
  *  not a spoke to every hub) rather than expanding it. */
 function addConn(space: string, live: Map<string, Set<string>>, c: ConnzConnection): void {
   const subs = c.subscriptions_list ?? [];
-  const id = c.authorized_user;
-  if (!id) return; // no authenticated identity (open mode) — best-effort handled at the dashboard, not here
+  const id = principalFromConnz(c); // tag (static) OR authorized_user name-form (callout) — see doc above
+  if (!id) return; // no attributable principal (open mode / legacy / infra) — not a member here
   const patterns = subs
     .map((s) => channelFromChatSubscription(space, s))
     .filter((x): x is string => x !== null);

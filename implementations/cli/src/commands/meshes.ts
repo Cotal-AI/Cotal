@@ -10,7 +10,7 @@ export async function meshes(args: ParsedArgs): Promise<void> {
   await pruneStaleMeshes();
   const all = loadMeshes();
   if (all.length === 0) {
-    console.log(c.dim("no meshes running — start one with `cotal up`"));
+    console.log(c.dim("no meshes running - start one with `cotal up`"));
     return;
   }
   const current = getCurrent();
@@ -22,5 +22,5 @@ export async function meshes(args: ParsedArgs): Promise<void> {
   // A `current` that no longer matches any running mesh (its broker went down) shows no `*` — say
   // why, so a bare `cotal spawn` still reporting "multiple meshes" isn't a mystery.
   if (current && !all.some((m) => m.space === current))
-    console.log(c.dim(`\nnote: default "${current}" is not running — \`cotal use <name>\` to set a live one`));
+    console.log(c.dim(`\nnote: default "${current}" is not running - \`cotal use <name>\` to set a live one`));
 }

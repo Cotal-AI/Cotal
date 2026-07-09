@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -25,9 +25,10 @@ const LaunchAgentSchema = z.strictObject({
   role: z.string().regex(TOKEN, "role must be a route-safe token ([A-Za-z0-9_-])").optional(),
   model: z.string().optional(),
   variant: z.string().min(1).optional(),
+  launchOptions: z.record(z.string(), z.unknown()).optional(),
   description: z.string().optional(),
   body: z.string().optional(),
-  capabilities: z.array(z.string().regex(TOKEN, "capability must be a safe token ([A-Za-z0-9_-])")).optional(),
+  capabilities: z.array(z.string().regex(/^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$/, "capability must be a safe token, optionally role-namespaced (role:<r>)")).optional(),
   subscribe: z.array(z.string()),
   allowSubscribe: z.array(z.string()),
   allowPublish: z.array(z.string()),
@@ -35,10 +36,19 @@ const LaunchAgentSchema = z.strictObject({
   hash: z.string().regex(/^[A-Za-z0-9]+$/, "hash must be alphanumeric"),
 });
 
+// USER-AUTH meshes: the derived owner every launched agent runs under, stamped at apply time by
+// the logged-in operator (core `MeshLaunchSpec.owner`). Validated as a real derived token so a
+// hand-edited spec can't smuggle an arbitrary string into ownership attribution.
+const DerivedOwner = z.string().refine(
+  (o) => { try { assertDerivedOwnerToken(o); return true; } catch { return false; } },
+  "owner must be a derived owner token (u_ + 26 lowercase base32)",
+);
+
 const LaunchSpecSchema = z.strictObject({
   apiVersion: z.literal("cotal-launch/v1"),
   space: z.string().min(1),
   runId: RunId,
+  owner: DerivedOwner.optional(),
   agents: z.array(LaunchAgentSchema),
 });
 
@@ -84,9 +94,13 @@ export function launchSpecForRun(root: string, runId: string): MeshLaunchSpec {
   return spec;
 }
 
-// Capabilities that actually grant anything in v1 (provisionAgent only acts on `spawn`); an unknown
-// capability is inert downstream, so reject it at the boundary rather than carry a no-op grant.
-const KNOWN_CAPABILITIES = new Set(["spawn"]);
+// Capabilities that actually grant anything in v1: `spawn` (the privileged control tier), and — on
+// user-auth meshes — `role:<r>` delegation tokens the provision filter passes into the agent's
+// ledger scope (the envelope walk still attenuates them against the spawner chain). `admin` is
+// deliberately NOT accepted from a manifest: a hand-editable file must not be what mints an
+// authority-root agent. An unknown capability is inert downstream, so reject it at the boundary
+// rather than carry a no-op grant.
+const isKnownCapability = (c: string): boolean => c === "spawn" || /^role:[A-Za-z0-9_-]+$/.test(c);
 
 /** Re-enforce the v1 manifest's policy constraints at the manager boundary so a hand-edited/malicious
  *  launch spec can't smuggle in what the CLI schema would reject: concrete channels only (no wildcard
@@ -101,12 +115,12 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
       } catch (e) {
         throw new Error(`${where}: ${field}: ${(e as Error).message}`);
       }
-      if (!isConcreteChannel(ch)) throw new Error(`${where}: ${field} "${ch}" is a wildcard — not allowed in a v1 launch spec`);
+      if (!isConcreteChannel(ch)) throw new Error(`${where}: ${field} "${ch}" is a wildcard - not allowed in a v1 launch spec`);
     }
   const missing = a.subscribe.filter((c) => !a.allowSubscribe.includes(c));
   if (missing.length) throw new Error(`${where}: subscribe [${missing.join(", ")}] not within allowSubscribe`);
   for (const cap of a.capabilities ?? [])
-    if (!KNOWN_CAPABILITIES.has(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: ${[...KNOWN_CAPABILITIES].join(", ")})`);
+    if (!isKnownCapability(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: spawn, role:<r>)`);
 }
 
 /** Materialize one resolved agent's persona to a transient file the connector reads, and return its
@@ -117,7 +131,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   // run tree); plus a lexical direct-child check on the final path as belt-and-suspenders.
   const dir = ensureDirNoSymlink(root, ".cotal", "run", runId, "agents");
   const path = resolve(dir, `${a.name}.md`);
-  if (dirname(path) !== dir) throw new Error(`unsafe agent name "${a.name}" — persona path escapes ${dir}`);
+  if (dirname(path) !== dir) throw new Error(`unsafe agent name "${a.name}" - persona path escapes ${dir}`);
   const fm = ["---", `name: ${a.name}`];
   if (a.role) fm.push(`role: ${scalar(a.role)}`);
   if (a.model) fm.push(`model: ${scalar(a.model)}`);
@@ -125,7 +139,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   if (a.description) fm.push(`description: ${scalar(a.description)}`);
   fm.push("---", "");
   const src = a.personaPath ?? "the manifest";
-  const header = `<!-- Generated runtime artifact from a cotal mesh manifest (run ${runId}). Do NOT edit — regenerated on each launch and deleted by \`cotal down\`. Edit ${src} instead. This file is not a reusable persona and carries no access authority. -->`;
+  const header = `<!-- Generated runtime artifact from a cotal mesh manifest (run ${runId}). Do NOT edit - regenerated on each launch and deleted by \`cotal down\`. Edit ${src} instead. This file is not a reusable persona and carries no access authority. -->`;
   const body = a.body ? `${a.body.trim()}\n` : "";
   // `wx`: exclusive create — fails rather than following a symlink pre-planted at the path.
   writeFileSync(path, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
@@ -134,7 +148,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
 
 /** Build the manager spawn opts for a launch agent: identity/role/model/variant + the resolved object
  *  (which carries the ACL authority) + the materialized configPath. */
-export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string): {
+export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, owner?: string): {
   name: string;
   agent: string;
   role?: string;
@@ -142,8 +156,9 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string): 
   variant?: string;
   config: string;
   resolved: MeshLaunchAgent;
+  owner?: string;
 } {
-  return { name: a.name, agent: a.agent, role: a.role, model: a.model, variant: a.variant, config: configPath, resolved: a };
+  return { name: a.name, agent: a.agent, role: a.role, model: a.model, variant: a.variant, config: configPath, resolved: a, owner };
 }
 
 /** Quote a frontmatter scalar so the agent-file parser reads it back unchanged (it strips a matching

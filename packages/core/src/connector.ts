@@ -13,6 +13,12 @@ export interface LaunchOpts {
   /** Path to a minted creds file (auth mode). Passed to the session so it authenticates
    *  as `id`; absent when the mesh runs open. */
   creds?: string;
+  /** USER-MODE launch (a user-auth mesh): the agent's owner+actor principal, the PATH to its
+   *  sentinel-creds copy, and the argv it execs for a fresh bearer. The connector forwards these
+   *  verbatim (`COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` as JSON
+   *  argv) — like {@link creds}, host-local pointers, opaque to core. Mutually exclusive with
+   *  `creds`/`id` (the principal IS the identity; connectors throw on a conflicting combination). */
+  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
   servers?: string;
   /** The agent's resolved access policy — the SAME read/post set the manager mints the agent's
    *  creds from. The connector forwards it (`COTAL_SUBSCRIBE` / `COTAL_ALLOW_SUBSCRIBE` /
@@ -43,6 +49,11 @@ export interface LaunchOpts {
    *  `variant:`. A connector that supports variants renders it in its host form; unsupported
    *  connectors fail loud rather than silently ignoring it. */
   variant?: string;
+  /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
+   *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,
+   *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
+   *  `launchOptions:` mapping, or a manifest `launchOptions:` — merged per key. */
+  launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts. Connectors
    *  that support an auto-submitted first prompt (Claude Code) deliver it; others
    *  ignore it. Used to make a driving session greet the operator on launch. */

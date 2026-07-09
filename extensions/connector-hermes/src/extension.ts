@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The launcher (run via tsx, which loads both) owns the mesh endpoint and supervises the Hermes
  *  gateway as a child — see launch.ts. Resolve `.ts` when this module loads from source (dev) and
@@ -36,12 +36,17 @@ export const hermesConnector: Connector = {
     if (opts.resume)
       throw new Error("the Hermes connector does not support resuming an existing session (resume)");
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
+    // The Hermes launcher reads a FIXED set of env vars, so it has no generic launch-option surface —
+    // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
+    if (opts.launchOptions && Object.keys(opts.launchOptions).length)
+      throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
     // OS allow-list + the named model-provider key (Hermes is model-agnostic; any one unlocks a
     // provider), forwarded BY NAME — never `...process.env` — so the operator's unrelated secrets
     // don't reach the gateway child (P3).
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
       ...aclEnv(opts),
+      ...userAuthEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

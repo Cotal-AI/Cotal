@@ -16,8 +16,16 @@ export interface AgentSkill {
 
 /** A2A-inspired identity record for an endpoint or agent. */
 export interface AgentCard {
-  /** Unique, stable for the lifetime of this connection. */
+  /** Unique, stable for the lifetime of this connection. The owner+actor **principal dot-form**
+   *  `<owner>.<actor>` (= `principalKey().key`) under the owner+actor grammar — the wire identity every
+   *  `msg.from.id` carries and every sender guard compares against. Peers address each other by this. */
   id: string;
+  /** The human/account owner token this agent acts under (opaque, per-space; `"local"` in the no-login
+   *  dev default). One of the two halves of {@link id}; travels in presence so peers resolve name→principal. */
+  owner?: string;
+  /** The agent-instance actor token under {@link owner} (server-derived from the spawn ledger in user
+   *  mode; the connection id in the dev default). The other half of {@link id}. */
+  actor?: string;
   /** Human-readable display name. */
   name: string;
   /** 'agent' (participates in coordination) or a plain 'endpoint' (logger, dashboard…). */
@@ -142,7 +150,10 @@ export type MembershipState = "live-confirmed" | "durable-active";
 export interface MembershipRecord {
   /** Concrete channel (never a wildcard — wildcard ACLs grant live breadth, durable is per-channel). */
   channel: string;
-  /** Owner agent id (nkey). */
+  /** The subscribing **principal** in dot-form `<owner>.<actor>` (= `principalKey().key`) under the
+   *  owner+actor grammar. NB: the field NAME is legacy — it holds the full principal (both tokens), not
+   *  just the owner token and not an nkey. Membership is per-principal (a human's two agents are distinct
+   *  members). Renaming the serialized field to `principal` is a KV-record migration, deliberately deferred. */
   owner: string;
   state: MembershipState;
   /** CHAT stream seq captured at join — durable eligibility is `seq > joinCursor`. */

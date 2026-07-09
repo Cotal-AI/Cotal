@@ -71,16 +71,16 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     runDir = realDirNoSymlink(root, ".cotal", "run", ledger.runId);
     specPath = join(runParent ?? join(root, ".cotal", "run"), `${ledger.runId}.json`);
   } catch (e) {
-    console.error(c.red(`✗ refusing teardown — unsafe owned resource: ${(e as Error).message}`));
+    console.error(c.red(`✗ refusing teardown - unsafe owned resource: ${(e as Error).message}`));
     process.exit(1);
   }
 
   if (flags.dryRun) {
     console.log(c.bold("\nWould remove (dry run):"));
-    for (const a of credPaths) console.log(`  ${c.red("-")} agent ${a.name} ${c.dim(`(id ${a.id.slice(0, 8)}, creds ${a.path}) — stopped only if name+id match live`)}`);
+    for (const a of credPaths) console.log(`  ${c.red("-")} agent ${a.name} ${c.dim(`(id ${a.id.slice(0, 8)}, creds ${a.path}) - stopped only if name+id match live`)}`);
     for (const ch of ledger.created.channels) console.log(`  ${c.red("-")} channel ${c.cyan("#" + ch)} ${c.dim("(auth mesh: only if no members remain · open mesh: metadata cleanup, no membership audit)")}`);
     console.log(`  ${c.red("-")} run dir ${runDir ?? "(none)"} + ledger ${ledgerPath} ${c.dim("(only if every owned resource is removed/proven gone; else the ledger is kept)")}`);
-    console.log(c.dim("\nDry run — nothing was changed. The live membership check + actual disposition happen at apply."));
+    console.log(c.dim("\nDry run - nothing was changed. The live membership check + actual disposition happen at apply."));
     return;
   }
 
@@ -111,7 +111,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
           const l = liveById.get(a.id);
           if (!l) {
             const sameName = live.find((r) => r.name === a.name);
-            if (sameName) console.log(c.yellow(`  ~ ${a.name}: a different agent (id ${sameName.id.slice(0, 8)}) holds this name — NOT ours, left running`));
+            if (sameName) console.log(c.yellow(`  ~ ${a.name}: a different agent (id ${sameName.id.slice(0, 8)}) holds this name - NOT ours, left running`));
             else console.log(c.dim(`  • ${a.name}: not running`));
             continue;
           }
@@ -120,7 +120,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
             stoppedIds.add(a.id);
             console.log(c.green(`  ✓ stopped ${l.name}`));
           } else {
-            console.log(c.yellow(`  ! ${l.name}: stop failed — ${stop.error ?? "unknown"}`));
+            console.log(c.yellow(`  ! ${l.name}: stop failed - ${stop.error ?? "unknown"}`));
           }
         }
         // Channel removal: skip on ANY uncertainty (best-effort, racy — said so in output). The
@@ -162,10 +162,10 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
         await ep.stop();
       }
     } catch (e) {
-      console.log(c.yellow(`  ! ${ledger.server}: control plane unavailable (${(e as Error).message}) — nothing torn down remotely; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
+      console.log(c.yellow(`  ! ${ledger.server}: control plane unavailable (${(e as Error).message}) - nothing torn down remotely; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
     }
   } else {
-    console.log(c.yellow(`  ! ${ledger.server} unreachable — can't stop processes or remove channels; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
+    console.log(c.yellow(`  ! ${ledger.server} unreachable - can't stop processes or remove channels; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
   }
 
   // 5) Remote resolution: which owned REMOTE resources are NOT proven handled. An agent is unresolved
@@ -195,17 +195,17 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     const sub = credSubject(cp.path);
     if (sub === undefined) continue; // no cred file — proven absent
     if (sub === null) {
-      console.error(c.yellow(`  ! ${cp.name} creds: unreadable/unverifiable — left in place (resolve by hand if it's a stale cred)`));
+      console.error(c.yellow(`  ! ${cp.name} creds: unreadable/unverifiable - left in place (resolve by hand if it's a stale cred)`));
       continue;
     }
     if (sub !== cp.id) {
-      console.error(c.yellow(`  ~ ${cp.name} creds belong to a different agent (id ${sub.slice(0, 8)} ≠ ${cp.id.slice(0, 8)}) — ours is gone, left in place`));
+      console.error(c.yellow(`  ~ ${cp.name} creds belong to a different agent (id ${sub.slice(0, 8)} ≠ ${cp.id.slice(0, 8)}) - ours is gone, left in place`));
       continue;
     }
     try {
       if (unlinkFileNoFollow(cp.path)) console.log(c.dim(`  • removed creds for ${cp.name}`));
     } catch (e) {
-      console.error(c.yellow(`  ! ${cp.name} creds: ${(e as Error).message} — retained for retry`));
+      console.error(c.yellow(`  ! ${cp.name} creds: ${(e as Error).message} - retained for retry`));
       unresolvedCredIds.add(cp.id); // OUR id-verified cred, unlink failed (recoverable) → keep the record
     }
   }
@@ -217,9 +217,9 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   const retainIds = new Set([...unresolvedIds, ...unresolvedCredIds]);
   const complete = retainIds.size === 0 && unresolvedChannels.length === 0;
 
-  for (const s of skipped) console.log(c.yellow(`  ~ left ${c.cyan("#" + s.channel)}: ${s.why}`) + c.dim(" (best-effort membership check — racy)"));
+  for (const s of skipped) console.log(c.yellow(`  ~ left ${c.cyan("#" + s.channel)}: ${s.why}`) + c.dim(" (best-effort membership check - racy)"));
   if (openNoFeed.length)
-    console.log(c.dim(`  note: removed ${openNoFeed.length} channel(s) on an OPEN mesh with no membership feed — no ACL isolation to protect, no membership proof: ${openNoFeed.map((n) => "#" + n).join(", ")}`));
+    console.log(c.dim(`  note: removed ${openNoFeed.length} channel(s) on an OPEN mesh with no membership feed - no ACL isolation to protect, no membership proof: ${openNoFeed.map((n) => "#" + n).join(", ")}`));
 
   if (complete) {
     // Everything owned is removed/proven gone — safe to delete the run dir + launch spec + ledger.
@@ -234,7 +234,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     } catch (e) {
       console.error(c.yellow(`  ! ledger: ${(e as Error).message}`));
     }
-    console.log(c.green(`✓ torn down run ${ledger.runId}`) + (removed.length ? c.dim(` — removed ${removed.length} channel(s): ${removed.map((n) => "#" + n).join(", ")}`) : ""));
+    console.log(c.green(`✓ torn down run ${ledger.runId}`) + (removed.length ? c.dim(` - removed ${removed.length} channel(s): ${removed.map((n) => "#" + n).join(", ")}`) : ""));
   } else {
     // Partial: rewrite the ledger DOWN to the unresolved resources so a later `down -f --run` finishes.
     const remainAgents = ledger.created.agents.filter((a) => retainIds.has(a.id));
@@ -242,9 +242,9 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     writeLedger(root, remaining, { update: true });
     console.log(
       c.yellow(`! partial teardown of run ${ledger.runId}`) +
-        c.dim(` — ${remainAgents.length} agent(s) + ${unresolvedChannels.length} channel(s) still owned; ledger kept`),
+        c.dim(` - ${remainAgents.length} agent(s) + ${unresolvedChannels.length} channel(s) still owned; ledger kept`),
     );
-    if (unresolvedCredIds.size) console.log(c.dim(`  local credential cleanup incomplete for ${unresolvedCredIds.size} agent(s) — ledger kept for retry`));
+    if (unresolvedCredIds.size) console.log(c.dim(`  local credential cleanup incomplete for ${unresolvedCredIds.size} agent(s) - ledger kept for retry`));
     console.log(c.dim(`  finish later (broker up / members gone): cotal down -f ${ledger.manifestPath} --run ${ledger.runId}`));
     process.exitCode = 1; // not a full success
   }

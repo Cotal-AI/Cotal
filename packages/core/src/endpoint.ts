@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import {
   connect,
   credsAuthenticator,
+  tokenAuthenticator,
   nanos,
   AuthorizationError,
   PermissionViolationError,
@@ -13,7 +14,8 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
-import { idFromCreds } from "./identity.js";
+import { credsClaims, idFromCreds } from "./identity.js";
+import { inspectCredHealth } from "./provision.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -81,6 +83,7 @@ import {
   controlServiceSubject,
   CONTROL_SELF_SERVICE,
   CONTROL_DELIVERY,
+  CONTROL_DELIVERY_ADMIN,
   dmStream,
   dmDurable,
   dlvStream,
@@ -88,7 +91,7 @@ import {
   dlvSubject,
   dinboxSubject,
   inboxStream,
-  parseDinboxOwner,
+  parseDinboxPrincipal,
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
   leaseKey,
@@ -100,10 +103,15 @@ import {
   isConcreteChannel,
   normalizeMentions,
   parseSubject,
+  isPrincipalOwnerToken,
+  assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
+  principalKey,
+  parsePrincipalKey,
+  DEV_OWNER,
   spacePrefix,
   spaceWildcard,
   subjectMatches,
@@ -111,6 +119,7 @@ import {
   taskDurable,
   token,
   unicastSubject,
+  unicastRecvFilter,
 } from "./subjects.js";
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
@@ -129,9 +138,39 @@ export interface EndpointOptions {
   /** Username/password auth (both required together). */
   user?: string;
   pass?: string;
-  /** NATS user creds file *content* (JWT + nkey seed). When set, the endpoint
-   *  authenticates as that user and adopts the creds' identity as its card.id. */
-  creds?: string;
+  /** NATS user creds file *content* (JWT + nkey seed), or a SOURCE that mints/reads a fresh copy.
+   *  When set, the endpoint authenticates as that user and adopts the creds' identity as its card.id.
+   *
+   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam (D5 slice 5) for
+   *  bounded-lifetime standing creds: the endpoint fetches before the first connect, re-fetches at
+   *  75% of each JWT's lifetime (then swaps the connection onto the fresh cred with a controlled
+   *  reconnect) and on rebuilds, and every (re)connect attempt presents the freshest copy — the
+   *  broker's expiry-close is only the backstop for a missed swap.
+   *  The two source shapes are the renewal classes: a seed-holder self-remints (the manager's
+   *  supervisor), a seed-less daemon re-reads its manager-reminted creds file (delivery). A source
+   *  requires explicit `card.id` (the pinned identity); every fetched cred MUST carry that same nkey
+   *  or the endpoint fails loud — renewal may never silently swap identity. A fetch failure is
+   *  emitted as an "error" event and retried; the connection stays up until its current JWT expires,
+   *  so a dead reminter is loud without instantly dropping the mesh. */
+  creds?: string | (() => Promise<string>);
+  /** USER-MODE auth: a validated Cotal user bearer (the JWT from `cotal login` → the IdP bridge), or a
+   *  SOURCE that mints a fresh one. When set, the endpoint connects through the auth callout — presenting
+   *  {@link sentinelCreds} + the bearer, the broker mints its scoped data-account JWT.
+   *
+   *  A STRING is a one-shot bearer for connection-lifetime ≤ bearer-lifetime callers (the CLI): the
+   *  owner+actor PRINCIPAL is derived from it (`sub`, `act.actor`), and the connection dies at the
+   *  bearer-bound JWT expiry. A FUNCTION is a bearer source for long-lived endpoints (spawned agents):
+   *  the endpoint fetches before the first connect, re-fetches ahead of each expiry and on rebuilds, and
+   *  every (re)connect attempt presents the freshest token — so reconnects outlive any single bearer.
+   *  A source requires explicit `card.owner` + `card.actor` (there is no bearer to derive them from at
+   *  construction); every fetched bearer MUST carry that same principal or the endpoint fails loud.
+   *  A fetch failure is emitted as an "error" event and retried — the connection stays up until its
+   *  current JWT expires, so a dead auth service surfaces loudly without instantly dropping the mesh.
+   *  Mutually exclusive with `creds`/`token`/`user`/`pass`; requires `sentinelCreds`. */
+  bearer?: string | (() => Promise<string>);
+  /** The shared, deny-all auth-account sentinel creds presented alongside {@link bearer} so the connect
+   *  lands in the callout account (`createCalloutAuth().sentinelCreds`). Powerless on its own. */
+  sentinelCreds?: string;
   /** Require a TLS connection to the server. */
   tls?: boolean;
   /** Channels to subscribe to; the first is the default broadcast target. */
@@ -201,7 +240,20 @@ export class CotalEndpoint extends EventEmitter {
   private readonly token?: string;
   private readonly user?: string;
   private readonly pass?: string;
-  private readonly creds?: string;
+  /** The creds source, when standing renewal is on (bounded supervisor/daemon creds); undefined for
+   *  a static string. Mirrors {@link bearerSource} exactly — same fetch-ahead + pin + retry shape. */
+  private readonly credsSource?: () => Promise<string>;
+  /** The freshest creds — what every (re)connect attempt presents. Static callers set it once. */
+  private currentCreds?: string;
+  private credsTimer?: NodeJS.Timeout;
+  /** True in user mode (bearer string OR source) — gates the callout-shaped connect. */
+  private readonly userMode: boolean = false;
+  /** The bearer source, when auth refreshes (spawned agents); undefined for a one-shot string. */
+  private readonly bearerSource?: () => Promise<string>;
+  /** The freshest bearer — what every (re)connect attempt presents. */
+  private currentBearer?: string;
+  private bearerTimer?: NodeJS.Timeout;
+  private readonly sentinelCreds?: string;
   private readonly tls: boolean;
   private readonly heartbeatMs: number;
   private readonly ttlMs: number;
@@ -223,14 +275,23 @@ export class CotalEndpoint extends EventEmitter {
   private aclKv?: KV;
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
-  private membershipKv?: KV;
+  private membershipFeedKv?: KV;
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
+  private deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
-  private plane3?: { aclFor: (owner: string) => MaybePromise<string[] | undefined> };
+  private plane3?: {
+    aclFor: (owner: string) => MaybePromise<string[] | undefined>;
+    /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
+     *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). */
+    reloadMembershipCreds?: () => Promise<unknown>;
+    /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
+     *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
+    evictPrincipal?: (principal: string) => Promise<unknown>;
+  };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
@@ -305,6 +366,15 @@ export class CotalEndpoint extends EventEmitter {
   private backoffTimer?: ReturnType<typeof setTimeout>;
   private readonly retryMs = 3000;
 
+  /** The connection's authenticated nkey — dev: the creds' identity; user mode: the per-connection
+   *  ephemeral. Distinct from the {@link owner}+{@link actor} principal: it names the CONNECTION (the
+   *  broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
+   *  equality check. The principal (owner+actor) is what the WIRE grammar and every per-agent key use. */
+  private readonly connId: string;
+  /** This endpoint's owner token (principal half 1) — `"local"` in the dev default. */
+  private readonly owner: string;
+  /** This endpoint's actor token (principal half 2) — the connection id in the dev default. */
+  private readonly actor: string;
 
   constructor(opts: EndpointOptions) {
     super();
@@ -313,20 +383,71 @@ export class CotalEndpoint extends EventEmitter {
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through.
     assertValidName(opts.card.name);
-    // Identity precedence: an explicit card.id, else the creds' identity, else a random
-    // uuid. When both an id and creds are given they MUST name the same nkey — otherwise
-    // the subject sender token wouldn't match the authenticated user and every publish
-    // would be denied (a silent-failure class).
-    const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
-    if (opts.card.id && credId && opts.card.id !== credId)
-      throw new Error(`card.id ${opts.card.id} != creds identity ${credId} — they must be the same nkey`);
-    const id = opts.card.id ?? credId ?? randomUUID();
-    this.card = { ...opts.card, id };
+    // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
+    if (opts.bearer) {
+      if (opts.creds || opts.token || opts.user || opts.pass)
+        throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
+      if (!opts.sentinelCreds)
+        throw new Error("user-mode bearer requires sentinelCreds (the shared auth-account creds presented alongside it)");
+    }
+    if (opts.bearer) {
+      // USER MODE. The owner+actor PRINCIPAL comes from the bearer (server-authored: owner is callout-
+      // derived, actor is the spawn-ledger actor) — never from the card. The connection nkey is minted
+      // per-connect by NATS and is unknown to the client pre-connect, so the client cannot key its inbox
+      // on it; instead it picks its OWN random inbox NONCE (the connId), passes it as the connect `name`,
+      // and the callout scopes `_INBOX_<connId>.>` on that. `card.id`, if given, must match the bearer.
+      this.userMode = true;
+      if (typeof opts.bearer === "function") {
+        // Bearer SOURCE: no token exists yet, so the principal must be declared up front; every
+        // fetched bearer is checked against it (refreshBearer), keeping the card honest for life.
+        if (!opts.card.owner || !opts.card.actor)
+          throw new Error("a bearer source requires explicit card.owner + card.actor (no bearer to derive them from at construction)");
+        this.owner = opts.card.owner;
+        this.actor = opts.card.actor;
+        this.bearerSource = opts.bearer;
+      } else {
+        const claims = decodeBearerPrincipal(opts.bearer);
+        if (opts.card.owner && opts.card.owner !== claims.owner)
+          throw new Error(`card.owner ${opts.card.owner} != bearer owner ${claims.owner}`);
+        if (opts.card.actor && opts.card.actor !== claims.actor)
+          throw new Error(`card.actor ${opts.card.actor} != bearer actor ${claims.actor}`);
+        this.owner = claims.owner;
+        this.actor = claims.actor;
+        this.currentBearer = opts.bearer;
+      }
+      this.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
+      this.sentinelCreds = opts.sentinelCreds;
+    } else {
+      // DEV / STATIC. Connection identity precedence: an explicit card.id, else the creds' identity, else
+      // a random (dash-free, valid-actor-token) id. When both an id and creds are given they MUST name the
+      // same nkey — else the connection would authenticate as one user while its grants name another. The
+      // owner+actor PRINCIPAL defaults to owner = DEV_OWNER ("local"), actor = the connection id.
+      if (typeof opts.creds === "function") {
+        // Creds SOURCE (standing renewal): no cred exists yet, so the identity must be declared up
+        // front; every fetched cred is checked against it (refreshCreds), so a renewal can never
+        // silently swap the connection's nkey.
+        if (!opts.card.id)
+          throw new Error("a creds source requires an explicit card.id (no cred to derive the identity from at construction)");
+        this.credsSource = opts.creds;
+        this.connId = opts.card.id;
+      } else {
+        const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
+        if (opts.card.id && credId && opts.card.id !== credId)
+          throw new Error(`card.id ${opts.card.id} != creds identity ${credId} - they must be the same nkey`);
+        this.currentCreds = opts.creds;
+        this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
+      }
+      this.owner = opts.card.owner ?? DEV_OWNER;
+      this.actor = opts.card.actor ?? this.connId;
+    }
+    // `card.id` is the principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries;
+    // principalKey validates both tokens.
+    const principal = principalKey(this.owner, this.actor);
+    this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
     this.pass = opts.pass;
-    this.creds = opts.creds;
     this.tls = opts.tls ?? false;
     this.channels = opts.channels ?? ["general"];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
@@ -346,6 +467,13 @@ export class CotalEndpoint extends EventEmitter {
     return { id: this.card.id, name: this.card.name, role: this.card.role };
   }
 
+  /** True on any AUTHED broker (static creds OR user-mode bearer) — the gate every open-vs-auth
+   *  branch keys on: authed endpoints OPEN pre-created streams/KVs and BIND pre-provisioned
+   *  durables (creates are denied to agents); only the open dev broker lazy-creates. */
+  private get authed(): boolean {
+    return Boolean(this.currentCreds || this.credsSource) || this.userMode;
+  }
+
   async start(): Promise<void> {
     await this.connectAndBind();
     // nats.js auto-reconnects transient drops; when it exhausts its attempts and the
@@ -355,22 +483,142 @@ export class CotalEndpoint extends EventEmitter {
     this.superviseConnection();
   }
 
+  /** How far ahead of the current bearer's `exp` a refresh fires, and how soon a FAILED refresh
+   *  retries. The margin must clear a reconnect window (nats.js retries use the sync token getter,
+   *  so whatever `currentBearer` holds is what every attempt presents). */
+  private static readonly BEARER_REFRESH_MARGIN_MS = 60_000;
+  private static readonly BEARER_RETRY_MS = 15_000;
+
+  /** Fetch a fresh bearer from the source, pin its principal to ours, arm the next refresh. On a
+   *  fetch/principal failure: THROWS when `initial` (start() must fail loud before first connect);
+   *  otherwise emits "error" and retries — the live connection keeps working until its current JWT
+   *  expiry, so a dead auth service is loud without instantly dropping the mesh. */
+  private async refreshBearer(initial = false): Promise<void> {
+    try {
+      const bearer = await this.bearerSource!();
+      const claims = decodeBearerPrincipal(bearer);
+      if (claims.owner !== this.owner || claims.actor !== this.actor)
+        throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
+      this.currentBearer = bearer;
+      this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
+    } catch (e) {
+      if (initial) throw e;
+      this.emit("error", new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
+      this.armBearerRefresh(CotalEndpoint.BEARER_RETRY_MS);
+    }
+  }
+
+  private armBearerRefresh(delayMs: number): void {
+    if (this.stopped) return;
+    clearTimeout(this.bearerTimer);
+    this.bearerTimer = setTimeout(() => void this.refreshBearer(), Math.max(5_000, delayMs));
+    this.bearerTimer.unref?.();
+  }
+
+  /** How soon a FAILED creds refresh retries. Successful refreshes schedule by lifetime fraction
+   *  (75% of iat→exp), not a fixed margin — standing creds span hours to days, bearers minutes. */
+  private static readonly CREDS_RETRY_MS = 60_000;
+
+  /** Fetch fresh creds from the source, pin their identity to ours, cache them, and arm the next
+   *  refresh at 75% of the new JWT's lifetime. THROWS on fetch/pin failure — the callers decide the
+   *  failure posture (loud-and-retry for the timer, a structured error reply for an explicit
+   *  {@link reloadCreds}). */
+  private async fetchFreshCreds(): Promise<{ iat?: number; exp?: number }> {
+    const creds = await this.credsSource!();
+    const id = idFromCreds(creds);
+    if (id !== this.connId)
+      throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+    this.currentCreds = creds;
+    this.armCredsRefresh(credsRenewalDelayMs(creds));
+    const { iat, exp } = credsClaims(creds);
+    return { iat, exp };
+  }
+
+  /** Swap the live connection onto the freshest cached cred with a controlled `nc.reconnect()`
+   *  (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of waiting for the
+   *  broker to close the connection at `exp`, means the wire never carries a near-dead JWT and the
+   *  operator never sees a spurious "authentication expired" — the broker's expiry-close remains the
+   *  BACKSTOP if a swap is missed, not the mechanism. Already-closed/draining rejections are the
+   *  supervise loop's to own (its rebuild re-fetches); an already-disconnected client is a no-op
+   *  (its own reconnect loop presents the fresh cred). */
+  private async swapConnectionOntoFreshCreds(): Promise<void> {
+    if (this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
+  }
+
+  /** The 75%-of-lifetime renewal timer tick (and rebuild re-fetch) — the passive BACKSTOP behind the
+   *  explicit {@link reloadCreds}. Failure shape mirrors {@link refreshBearer}: THROWS when
+   *  `initial`, else emits "error" and retries. */
+  private async refreshCreds(initial = false): Promise<void> {
+    try {
+      await this.fetchFreshCreds();
+      if (!initial) await this.swapConnectionOntoFreshCreds();
+    } catch (e) {
+      if (initial) throw e;
+      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
+      this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
+    }
+  }
+
+  /** EXPLICIT credential reload — the auditable adoption step of D5 class-2 standing renewal (served
+   *  to the renewal owner via the delivery-admin rail). Re-invokes the source NOW, pins + adopts the
+   *  fresh cred on the live connection, and returns the adopted JWT's window so the caller can record
+   *  proof of adoption. THROWS (structured for the reply) when the source fails — e.g. the creds file
+   *  was not actually re-signed — so "file written" can never masquerade as "daemon adopted". */
+  async reloadCreds(): Promise<{ identity: string; iat?: number; exp?: number }> {
+    if (!this.credsSource)
+      throw new Error("reloadCreds: this endpoint has no creds source (a static cred cannot be renewed in place)");
+    const { iat, exp } = await this.fetchFreshCreds();
+    await this.swapConnectionOntoFreshCreds();
+    return { identity: this.connId, iat, exp };
+  }
+
+  private armCredsRefresh(delayMs: number): void {
+    if (this.stopped) return;
+    clearTimeout(this.credsTimer);
+    // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
+    // lifetimes are hours+ so the floor never engages there.
+    this.credsTimer = setTimeout(() => void this.refreshCreds(), Math.max(1_000, delayMs));
+    this.credsTimer.unref?.();
+  }
+
   /** Open the connection and bind everything that hangs off it: status watch, presence
    *  watch + heartbeat, channel registry, and the durable consumers. Re-runnable — a
    *  reconnect calls it again after {@link clearConnectionScoped}; every binding is
    *  idempotent (durables bind by name, JetStream dedups by msgID, KV opens are idempotent). */
   private async connectAndBind(): Promise<void> {
     this.clearConnectionScoped();
+    // Bearer-source endpoints fetch before the FIRST connect, and re-fetch on a rebuild whose
+    // cached token is already inside the refresh margin (a rebuild after a long outage would
+    // otherwise present a dead bearer for its first attempts).
+    if (this.bearerSource) {
+      const stale = !this.currentBearer ||
+        bearerExpiryMs(this.currentBearer) - Date.now() < CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
+      if (stale) await this.refreshBearer(!this.currentBearer);
+    }
+    // Creds-source endpoints likewise fetch before the FIRST connect, and re-fetch on a rebuild
+    // whose cached cred is expired or inside its renewal window.
+    if (this.credsSource) {
+      const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
+      if (stale) await this.refreshCreds(!this.currentCreds);
+    }
     this.nc = await connect({
       servers: this.servers,
-      name: `cotal:${this.card.name}`,
-      // Per-identity inbox namespace (the "Private Inbox" pattern). nats.js routes ALL
-      // generated inboxes — request replies, JetStream pull delivery, kv.watch ordered-
-      // consumer delivery — through this prefix. Paired with sub.allow=[_INBOX_<id>.>]
-      // (auth mode) it stops a peer from subscribing the wildcard inbox to sniff others'
-      // DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
-      inboxPrefix: `_INBOX_${this.card.id}`,
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.creds, tls: this.tls }),
+      // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
+      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
+      name: this.userMode ? this.connId : `cotal:${this.card.name}`,
+      // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
+      // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
+      // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
+      // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
+      // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
+      // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
+      // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
+      inboxPrefix: `_INBOX_${this.connId}`,
+      // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
+      // attempt, so internal reconnects present whatever refreshBearer last fetched.
+      // Creds likewise ride a GETTER when a source renews them, so internal reconnects (incl. the
+      // one the broker forces at JWT `exp`) present whatever refreshCreds last fetched.
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.credsSource ? () => this.currentCreds! : this.currentCreds, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     this.watchStatus();
     this.js = jetstream(this.nc);
@@ -379,7 +627,7 @@ export class CotalEndpoint extends EventEmitter {
       const kvm = new Kvm(this.nc);
       // The presence bucket is a JetStream stream. Open mode lazily creates it; auth mode
       // OPENs it (it's pre-created at `cotal up`; KV stream-create is denied to agents).
-      this.kv = this.creds
+      this.kv = this.authed
         ? await kvm.open(presenceBucket(this.space))
         : await kvm.create(presenceBucket(this.space), { ttl: this.ttlMs });
     }
@@ -399,7 +647,7 @@ export class CotalEndpoint extends EventEmitter {
     // pre-created at `cotal up`; open mode lazily creates it.
     const watchChannels = this.doWatch && this.doWatchChannels;
     if (watchChannels || this.doConsume) {
-      this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.creds });
+      this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.authed });
       if (watchChannels) await this.startChannelWatch();
     }
 
@@ -414,7 +662,7 @@ export class CotalEndpoint extends EventEmitter {
       this.jsm = await jetstreamManager(this.nc);
       // Open mode: lazily create the streams on the first endpoint. Auth mode: they are
       // pre-created at `cotal up` and STREAM.CREATE is denied to agents, so skip.
-      if (!this.creds) await this.ensureStreams();
+      if (!this.authed) await this.ensureStreams();
       await this.startConsumers();
     }
 
@@ -497,7 +745,7 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("connection", { connected: false }); // dropped — report it before the rebuild kicks in
       this.emit(
         "error",
-        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} — re-establishing`),
+        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} - re-establishing`),
       );
       void this.reestablishLoop();
     });
@@ -595,7 +843,7 @@ export class CotalEndpoint extends EventEmitter {
    *  running in the background so the endpoint never stays dead, and rethrows so the caller
    *  can report it. */
   async reconnect(): Promise<void> {
-    if (this.stopped) throw new Error("endpoint stopped — cannot reconnect");
+    if (this.stopped) throw new Error("endpoint stopped - cannot reconnect");
     this.kickBackoff();
     try {
       await this.rebuild();
@@ -613,6 +861,8 @@ export class CotalEndpoint extends EventEmitter {
     this.kickBackoff();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.bearerTimer) clearTimeout(this.bearerTimer);
+    if (this.credsTimer) clearTimeout(this.credsTimer);
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -647,7 +897,7 @@ export class CotalEndpoint extends EventEmitter {
     // itself be a wildcard subscription like `team.>`).
     const channel = opts?.channel ?? this.channels.find(isConcreteChannel) ?? "general";
     if (!isConcreteChannel(channel))
-      throw new Error(`cannot publish to wildcard channel "${channel}" — pick a concrete sub-channel`);
+      throw new Error(`cannot publish to wildcard channel "${channel}" - pick a concrete sub-channel`);
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
@@ -661,7 +911,7 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.space, this.card.id, channel), msg);
+    await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
     return msg;
   }
 
@@ -681,7 +931,14 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(unicastSubject(this.space, instanceId, this.card.id), msg);
+    // The recipient id is a principal dot-form `<owner>.<actor>` (owner+actor grammar); the 4-token DM
+    // subject forge-locks recipient AND sender, so both are split into their tokens here.
+    const recip = parsePrincipalKey(instanceId);
+    if (!recip) throw new Error(`unicast: "${instanceId}" is not a valid recipient principal <owner>.<actor>`);
+    await this.publishMsg(
+      unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor),
+      msg,
+    );
     return msg;
   }
 
@@ -701,7 +958,7 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(anycastSubject(this.space, service, this.card.id), msg);
+    await this.publishMsg(anycastSubject(this.space, service, this.owner, this.actor), msg);
     return msg;
   }
 
@@ -747,7 +1004,7 @@ export class CotalEndpoint extends EventEmitter {
     opts: { boundReply?: boolean } = {},
   ): import("@nats-io/transport-node").Subscription {
     if (!this.nc) throw new Error("endpoint not started");
-    const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*"), {
+    const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*", "*"), {
       queue: service,
     });
     this.subs.push(sub);
@@ -767,7 +1024,7 @@ export class CotalEndpoint extends EventEmitter {
           // the server policed who could publish; the payload `from` is advisory and must
           // match. Reject before the handler acts on a request claiming a forged sender.
           const parsed = parseSubject(m.subject);
-          if (!parsed || req.from?.id !== parsed.sender) {
+          if (!parsed || req.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
             this.emit(
               "error",
               new Error(
@@ -775,7 +1032,7 @@ export class CotalEndpoint extends EventEmitter {
                   `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
               ),
             );
-            reply = { ok: false, error: "sender mismatch — request rejected" };
+            reply = { ok: false, error: "sender mismatch - request rejected" };
           } else {
             reply = await handler(req);
           }
@@ -810,7 +1067,7 @@ export class CotalEndpoint extends EventEmitter {
     timeoutMs = 5000,
   ): Promise<ControlReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = controlServiceSubject(this.space, service, this.card.id);
+    const reqSubject = controlServiceSubject(this.space, service, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
     const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
@@ -824,13 +1081,28 @@ export class CotalEndpoint extends EventEmitter {
    *  caller can fail-closed vs. degrade to live-only when no daemon is present). */
   private async requestDelivery(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.card.id); // ctl.delivery.<id>
+    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.owner, this.actor); // ctl.delivery.<owner>.<actor>
     // Reply rides the sender's OWN subtree so the daemon's serveControl boundReply guard accepts it
     // (`${reqSubject}.reply.…`). The sender-bound guard is the COMPLETE confused-deputy closure. The
     // random suffix is genuine defense-in-depth (NOT cosmetic): `noMux` subscribes this SPECIFIC named
     // reply subject (not a standing `.reply.>` wildcard), so a predictable suffix would let a peer target
     // an in-flight reply subscription — randomUUID brings it to parity with the nuid-protected `_INBOX`
     // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
+    const body: ControlRequest = { op, args, from: this.ref() };
+    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    return m.json<ControlReply>();
+  }
+
+  /** Send a PRIVILEGED delivery-admin request to the server-side delivery daemon and await its reply
+   *  (the D5 rail-split: `reloadCreds` now, the eviction executor next). Same bounded-reply shape as
+   *  {@link requestDelivery}; the cred layer is the real gate — only the manager's supervisor profile
+   *  holds the request-publish grant, so an agent calling this gets a broker denial, not a handler
+   *  refusal. NoResponders (no daemon) surfaces as the thrown request error — callers decide whether
+   *  that degrades (renewal falls back to the daemon's 75% re-read backstop) or fails. */
+  async requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY_ADMIN, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
     const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
@@ -941,7 +1213,7 @@ export class CotalEndpoint extends EventEmitter {
       this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", channel));
+    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
       this.joinSeq.delete(channel);
@@ -990,7 +1262,7 @@ export class CotalEndpoint extends EventEmitter {
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
-    if (this.creds && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
+    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
       let generation = this.plane3Channels.get(channel);
       if (generation === undefined)
         generation = (await this.fetchMemberships())?.find((m) => m.channel === channel)?.generation;
@@ -1020,7 +1292,11 @@ export class CotalEndpoint extends EventEmitter {
       if (info.state.subjects) {
         for (const [subject, count] of Object.entries(info.state.subjects)) {
           const p = parseSubject(subject);
-          if (p?.kind === "chat") counts.set(p.rest, (counts.get(p.rest) ?? 0) + count);
+          // Same surfacing-boundary defense as the message guards: parseSubject splits only, so an
+          // old-shape alias (`chat.<nkey>.team.backend`) structurally parses with a raw-nkey owner and a
+          // misattributed channel. Reject a non-principal owner token here too, or retained pre-flip
+          // subjects would inflate this channel-count surface with phantom channels.
+          if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner)) counts.set(p.rest, (counts.get(p.rest) ?? 0) + count);
         }
       }
     } catch {
@@ -1085,12 +1361,14 @@ export class CotalEndpoint extends EventEmitter {
     return map;
   }
 
-  /** Lazily open the derived membership feed KV (admin/observer read; the delivery daemon writes it).
-   *  Read-only here — the dashboard consumes it; agents hold no grant and never call this. */
-  private async membershipRegistry(): Promise<KV> {
+  /** Lazily open the DERIVED membership FEED KV (`cotal_membership_<space>`; admin/observer read, the
+   *  delivery daemon writes it) — the display-only who-is-subscribed view. Distinct from the authoritative
+   *  {@link membersRegistry} (`cotal_members_<space>`, the Plane-3 durable-membership source of truth): the
+   *  two names look alike, so this one is explicitly "feed". Read-only here; agents hold no grant. */
+  private async membershipFeedRegistry(): Promise<KV> {
     if (!this.nc) throw new Error("endpoint not started");
-    this.membershipKv ??= await new Kvm(this.nc).open(membershipBucket(this.space));
-    return this.membershipKv;
+    this.membershipFeedKv ??= await new Kvm(this.nc).open(membershipBucket(this.space));
+    return this.membershipFeedKv;
   }
 
   /**
@@ -1101,7 +1379,7 @@ export class CotalEndpoint extends EventEmitter {
    * when the feed has never been written (no daemon → the dashboard degrades to traffic-only).
    */
   async readMembership(): Promise<MembershipSnapshot> {
-    const kv = await this.membershipRegistry();
+    const kv = await this.membershipFeedRegistry();
     const members: MembershipEntry[] = [];
     let asOf: number | undefined;
     for await (const key of await kv.keys()) {
@@ -1124,7 +1402,7 @@ export class CotalEndpoint extends EventEmitter {
    *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
    *  the dashboard keeps its last snapshot. */
   async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
-    const kv = await this.membershipRegistry();
+    const kv = await this.membershipFeedRegistry();
     const iter = await kv.watch();
     void (async () => {
       for await (const _ of iter) onChange();
@@ -1140,7 +1418,7 @@ export class CotalEndpoint extends EventEmitter {
     // history from any sender
     return this.streamHistory(
       chatStream(this.space),
-      chatSubject(this.space, "*", channel),
+      chatSubject(this.space, "*", "*", channel),
       opts?.limit ?? 100,
     );
   }
@@ -1149,10 +1427,10 @@ export class CotalEndpoint extends EventEmitter {
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
    *  skips for them — only an `admin`-profile cred can read it. */
   async dmHistory(opts?: { limit?: number }): Promise<CotalMessage[]> {
-    // every inst.<target>.<sender> DM
+    // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
     return this.streamHistory(
       dmStream(this.space),
-      unicastSubject(this.space, "*", "*"),
+      `${spacePrefix(this.space)}.inst.>`,
       opts?.limit ?? 100,
     );
   }
@@ -1219,7 +1497,7 @@ export class CotalEndpoint extends EventEmitter {
    *  else "endpoint not started" (genuine pre-start). */
   private notLiveMsg(): string {
     return this.reconnecting || this.reestablishing
-      ? "reconnecting — try again shortly"
+      ? "reconnecting - try again shortly"
       : "endpoint not started";
   }
 
@@ -1248,9 +1526,9 @@ export class CotalEndpoint extends EventEmitter {
    * creating a durable filtered to someone else's inbox. Idempotent (byte-identical config),
    * safe to call again on manager restart. The caller must be permissive on DM_<space>.
    */
-  async provisionDmInbox(targetId: string): Promise<void> {
+  async provisionDmInbox(owner: string, actor: string): Promise<void> {
     const jsm = await this.manager();
-    await jsm.consumers.add(dmStream(this.space), dmDurableConfig(this.space, targetId));
+    await jsm.consumers.add(dmStream(this.space), dmDurableConfig(this.space, owner, actor));
   }
 
   /**
@@ -1260,9 +1538,9 @@ export class CotalEndpoint extends EventEmitter {
    * the agent never does. The trusted reader transfers re-authorized copies onto `dlv.<id>`; the agent
    * acks them via native JetStream (SPEC §8). Idempotent. The caller must be permissive on DLV.
    */
-  async provisionDlvInbox(targetId: string): Promise<void> {
+  async provisionDlvInbox(owner: string, actor: string): Promise<void> {
     const jsm = await this.manager();
-    await jsm.consumers.add(dlvStream(this.space), dlvDurableConfig(this.space, targetId));
+    await jsm.consumers.add(dlvStream(this.space), dlvDurableConfig(this.space, owner, actor));
   }
 
   /**
@@ -1379,7 +1657,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.nc) throw new Error("endpoint not started");
     if (this.managerLeaseKv) return this.managerLeaseKv;
     const kvm = new Kvm(this.nc);
-    if (this.creds) {
+    if (this.authed) {
       this.managerLeaseKv = await kvm.open(managerBucket(this.space));
     } else {
       try {
@@ -1460,12 +1738,15 @@ export class CotalEndpoint extends EventEmitter {
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
-  /** Publish one fan-out entry into an owner's mixed inbox, idempotent via `Nats-Msg-Id`
-   *  (`<msgId>:<owner>:<generation>`) so a catch-up copy and a racing fan-out copy collapse. */
-  private async publishDinbox(owner: string, entry: Plane3Entry): Promise<void> {
+  /** Publish one fan-out entry into a member principal's mixed inbox, idempotent via `Nats-Msg-Id`
+   *  (`<msgId>:<principal>:<generation>`) so a catch-up copy and a racing fan-out copy collapse. The
+   *  `principal` is the member's owner+actor dot-form (dinbox is per-agent); split for the subject. */
+  private async publishDinbox(principal: string, entry: Plane3Entry): Promise<void> {
     if (!this.js) return;
-    await this.js.publish(dinboxSubject(this.space, owner), JSON.stringify(entry), {
-      msgID: `${entry.msg.id}:${owner}:${entry.generation}`,
+    const p = parsePrincipalKey(principal);
+    if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
+    await this.js.publish(dinboxSubject(this.space, p.owner, p.actor), JSON.stringify(entry), {
+      msgID: `${entry.msg.id}:${principal}:${entry.generation}`,
     });
   }
 
@@ -1557,14 +1838,19 @@ export class CotalEndpoint extends EventEmitter {
     owner: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<{ copied: number; evicted: boolean }> {
     if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return { copied: 0, evicted: false };
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     // Eviction = a message in `(joinCursor, …]` on THIS channel's subject aged out under discard=Old.
     // Judged PER-SUBJECT (reuse channelDropped: oldest-retained-for-subject vs the watermark, only at
     // the per-subject cap), NOT against the stream-global joinCursor+1 — other channels' traffic
     // inflates the global seq, so a naive "first delivered seq > joinCursor+1" false-positives on any
     // busy multi-channel space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
     const evicted = await this.channelDropped(subject, fromSeqExcl);
-    const name = `cu_${token(owner)}_${generation}`;
+    // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
+    // (`<owner>-<actor>`, `-` reserved as the sole separator), NOT `token(owner)` — `token()` maps the
+    // dot-form `.`→`_`, which is NOT collision-free (`_` is legal inside a token, so `a.b_c` and `a_b.c`
+    // would both underscore to `a_b_c`).
+    const cuP = parsePrincipalKey(owner);
+    const name = `cu_${cuP ? principalKey(cuP.owner, cuP.actor).name : token(owner)}_${generation}`;
     try { await this.jsm.consumers.delete(chatStream(this.space), name); } catch { /* none */ }
     await this.jsm.consumers.add(chatStream(this.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
@@ -1584,7 +1870,7 @@ export class CotalEndpoint extends EventEmitter {
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
-          if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === owner) continue;
+          if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === owner) continue;
           await this.publishDinbox(owner, { msg, channel, seq: m.seq, reason: "durable-channel", generation });
           copied++;
         }
@@ -1604,9 +1890,12 @@ export class CotalEndpoint extends EventEmitter {
    *  resume on a daemon restart. Both the JS loops AND the `ctl.delivery` subscription are (re)bound by
    *  {@link armPlane3} on EVERY (re)connect — a reconnect drains the old connection, so re-binding both
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
-  async startPlane3(aclFor: (owner: string) => MaybePromise<string[] | undefined>): Promise<void> {
+  async startPlane3(
+    aclFor: (owner: string) => MaybePromise<string[] | undefined>,
+    opts: { reloadMembershipCreds?: () => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown> } = {},
+  ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal };
     await this.armPlane3();
   }
 
@@ -1693,6 +1982,45 @@ export class CotalEndpoint extends EventEmitter {
       if (i >= 0) this.subs.splice(i, 1);
     }
     this.deliveryServeSub = this.serveControl(CONTROL_DELIVERY, (req) => this.handleDeliveryControl(req), { boundReply: true });
+    if (this.deliveryAdminServeSub) {
+      try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
+      const i = this.subs.indexOf(this.deliveryAdminServeSub);
+      if (i >= 0) this.subs.splice(i, 1);
+    }
+    this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), { boundReply: true });
+  }
+
+  /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
+   *  boundary — only the supervisor profile can publish here — and `serveControl`'s sender check +
+   *  bounded reply still apply on top. `reloadCreds` is the class-2 renewal ADOPTION step: re-read
+   *  the renewal-owner-re-signed creds file, pin, swap the live connection, reconnect the membership
+   *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
+   *  structured failure (e.g. the file was never re-signed), never a silent partial. */
+  private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
+    if (req.op === "reloadCreds") {
+      try {
+        const delivery = await this.reloadCreds();
+        const membership = this.plane3?.reloadMembershipCreds ? await this.plane3.reloadMembershipCreds() : undefined;
+        return { ok: true, data: { delivery, ...(membership !== undefined ? { membership } : {}) } };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "evictPrincipal") {
+      // The LIVE-EVICTION executor (D5 slice 6): force-drop a denied principal's connections.
+      // Composition-root hook because the $SYS observer/evictor creds live outside this endpoint's
+      // trust boundary; absent hook = a daemon build without the executor, refused loudly.
+      if (!this.plane3?.evictPrincipal)
+        return { ok: false, error: "evictPrincipal: no eviction executor wired on this daemon" };
+      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+      if (!principal) return { ok: false, error: "evictPrincipal: a principal (owner.actor dot-form) is required" };
+      try {
+        return { ok: true, data: await this.plane3.evictPrincipal(principal) };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
   /** Fan-out loop: bind the privileged `fanout` durable on CHAT and route each message (routing only —
@@ -1720,7 +2048,7 @@ export class CotalEndpoint extends EventEmitter {
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
-    if (!msg.from || msg.from.id !== parsed.sender) { m.ack(); return; } // authenticity
+    if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
     const seq = m.seq;
     if ((await this.deliveryClassFresh(channel)) === "durable") {
       for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
@@ -1760,8 +2088,9 @@ export class CotalEndpoint extends EventEmitter {
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
   private async readerHandle(m: JsMsg): Promise<void> {
-    const owner = parseDinboxOwner(m.subject);
-    if (!owner) { m.ack(); return; } // unparseable subject — not a real entry
+    const pr = parseDinboxPrincipal(m.subject);
+    if (!pr) { m.ack(); return; } // unparseable subject — not a real entry
+    const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
     const redeliveries = m.info?.deliveryCount ?? 1; // JsMsg delivery attempts (1 on first delivery)
@@ -1791,7 +2120,7 @@ export class CotalEndpoint extends EventEmitter {
       if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
     }
     try {
-      await this.js!.publish(dlvSubject(this.space, owner), JSON.stringify(entry.msg), {
+      await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor), JSON.stringify(entry.msg), {
         msgID: `${entry.msg.id}:${owner}:${entry.generation}`,
       });
     } catch {
@@ -1816,7 +2145,7 @@ export class CotalEndpoint extends EventEmitter {
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     let consumer;
-    try { consumer = await this.js.consumers.get(dlvStream(this.space), dlvDurable(this.card.id)); }
+    try { consumer = await this.js.consumers.get(dlvStream(this.space), dlvDurable(this.owner, this.actor)); }
     catch { return; } // no DLV durable — Plane-3 not active for us
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -1867,7 +2196,7 @@ export class CotalEndpoint extends EventEmitter {
         if (attempt === 0)
           this.emit(
             "error",
-            new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub — retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`),
+            new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`),
           );
         await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
       }
@@ -1955,7 +2284,7 @@ export class CotalEndpoint extends EventEmitter {
         // honestly degraded meanwhile, never silently "active".
       } catch (e) {
         if (attempt === 0 && !this.isNoResponders(e))
-          this.emit("error", new Error(`channel "${channel}": boot durable self-join not yet established — retrying until the delivery daemon is reachable (${(e as Error).message})`));
+          this.emit("error", new Error(`channel "${channel}": boot durable self-join not yet established - retrying until the delivery daemon is reachable (${(e as Error).message})`));
       }
     }
   }
@@ -1978,21 +2307,20 @@ export class CotalEndpoint extends EventEmitter {
   /** Bind this endpoint's durable consumers: DM inbox, chat, and (if a role) the task queue. */
   private async startConsumers(): Promise<void> {
     if (!this.jsm) throw new Error("endpoint not started");
-    const id = this.card.id;
 
-    // Unicast: this instance's private DM inbox. Open mode self-creates; auth mode BINDS a
-    // durable the provisioner pre-created (agents are denied CONSUMER.CREATE on DM_<space>,
-    // since the create-time filter_subject is the attack surface — see provisionDmInbox).
-    if (!this.creds) {
+    // Unicast: this instance's private DM inbox, keyed on this endpoint's owner+actor principal. Open
+    // mode self-creates; auth mode BINDS a durable the provisioner pre-created (agents are denied
+    // CONSUMER.CREATE on DM_<space>, since the create-time filter_subject is the attack surface).
+    if (!this.authed) {
       await this.jsm.consumers.add(
         dmStream(this.space),
-        dmDurableConfig(this.space, id, {
+        dmDurableConfig(this.space, this.owner, this.actor, {
           ackWaitMs: this.ackWaitMs,
           inactiveThresholdMs: this.inactiveThresholdMs,
         }),
       );
     }
-    await this.pump(dmStream(this.space), dmDurable(id));
+    await this.pump(dmStream(this.space), dmDurable(this.owner, this.actor));
 
     // Plane-3 (SPEC §8): bind + pump our per-member DELIVER durable (`dlv_<id>`) — the re-authorized
     // durable-backstop channel copies the trusted reader transfers to us. No-op when it isn't present
@@ -2014,13 +2342,13 @@ export class CotalEndpoint extends EventEmitter {
       const armed = this.firstConnect ? await this.armJoin(this.channels) : undefined;
       for (const ch of this.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", ch));
+      for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", ch));
       if (armed) await this.backfillArmed(armed);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
     // later leave can tombstone the §7 boundary; idempotent on relaunch. Open mode has no Plane-3.
-    if (this.firstConnect && this.creds && this.channels.length) await this.armBootDurableMemberships();
+    if (this.firstConnect && this.authed && this.channels.length) await this.armBootDurableMemberships();
     this.firstConnect = false;
 
     // Anycast: a shared work-queue consumer for our role — one instance grabs each task.
@@ -2028,7 +2356,7 @@ export class CotalEndpoint extends EventEmitter {
     // durable (agents are denied CONSUMER.CREATE on TASK_<space>, since the create-time
     // filter is the cross-role-drain attack surface — see provisionTaskQueue).
     if (this.card.role) {
-      if (!this.creds) {
+      if (!this.authed) {
         await this.jsm.consumers.add(
           taskStream(this.space),
           taskDurableConfig(this.space, this.card.role, { ackWaitMs: this.ackWaitMs }),
@@ -2059,7 +2387,7 @@ export class CotalEndpoint extends EventEmitter {
         // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
         // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
         const parsed = parseSubject(m.subject);
-        if (!parsed || !msg.from || msg.from.id !== parsed.sender) {
+        if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
           m.term();
           this.emit(
             "error",
@@ -2110,7 +2438,7 @@ export class CotalEndpoint extends EventEmitter {
   private subscribeChat(channel: string): void {
     if (!this.nc || this.chatSubs.has(channel)) return;
     this.chatSubDenied.delete(channel);
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     this.confirmingChatSubs.add(subject);
     const sub = this.nc.subscribe(subject, {
       callback: (err, m) => {
@@ -2152,7 +2480,7 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", e as Error);
           return;
         }
-        if (!msg.from || msg.from.id !== parsed.sender) return; // spoof/malformed — drop (at-most-once)
+        if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", msg, delivery, {
@@ -2166,7 +2494,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Close a channel's core subscription (manager-free leave). */
   private unsubscribeChat(channel: string): void {
-    this.confirmingChatSubs.delete(chatSubject(this.space, "*", channel));
+    this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     const sub = this.chatSubs.get(channel);
     if (sub) {
       try {
@@ -2291,7 +2619,7 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<JsMsg[]> {
     if (!this.jsm || !this.js) throw new Error("endpoint not started");
     const stream = chatStream(this.space);
-    const name = chatHistDurable(this.card.id);
+    const name = chatHistDurable(this.owner, this.actor);
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
@@ -2336,7 +2664,7 @@ export class CotalEndpoint extends EventEmitter {
    *  `start_time` (now − window); unset ⇒ the full retained window. New messages (`seq > upToSeq`)
    *  are skipped — the live tail owns them. Reads through the contained {@link collectHistory}. */
   private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number): Promise<number> {
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     const start = sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
     let msgs: JsMsg[];
     try {
@@ -2356,7 +2684,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Same authenticity guard as the tail; skip our own echoes in history.
       const parsed = parseSubject(sm.subject);
-      if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
+      if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
       this.emit("message", msg, noop, { historical: true, kind: "channel" } satisfies MessageMeta);
       n++;
@@ -2384,7 +2712,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!isConcreteChannel(channel)) return { messages: [], dropped: false };
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], dropped: false };
-    const subject = chatSubject(this.space, "*", channel);
+    const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {
       raw = await this.collectHistory(subject, { seq: sinceSeq + 1 });
@@ -2402,7 +2730,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Same authenticity guard as the tail/backfill; skip our own echoes.
       const parsed = parseSubject(sm.subject);
-      if (!parsed || msg.from?.id !== parsed.sender || msg.from.id === this.card.id) continue;
+      if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       collected.push(msg);
     }
     const dropped = await this.channelDropped(subject, sinceSeq);
@@ -2627,25 +2955,99 @@ function sameChannelModes(
   return ak.every((k) => a![k] === b?.[k]);
 }
 
-/** Auth subset of connect() options, shared by the endpoint and isReachable. */
+/** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a
+ *  sync GETTER — nats.js re-evaluates token authenticators per (re)connect attempt, which is how a
+ *  refreshing endpoint presents its freshest bearer without rebuilding the connection options. */
 interface AuthOpts {
   token?: string;
   user?: string;
   pass?: string;
-  creds?: string;
+  /** May be a sync GETTER (like `bearer`) — the authenticator then re-reads it per (re)connect
+   *  attempt, which is how a standing-renewal endpoint presents its freshest cred. */
+  creds?: string | (() => string);
+  bearer?: string | (() => string);
+  sentinelCreds?: string;
   tls?: boolean;
 }
 
 function authOpts(a: AuthOpts) {
   const tls = a.tls ? {} : undefined;
+  // USER MODE: present the shared auth-account sentinel creds AND the user bearer as `auth_token` (an
+  // authenticator ARRAY — nats.js merges them into one CONNECT). The connect lands in the callout
+  // account, which validates the bearer and re-binds the client into the data account with a scoped JWT.
+  if (a.bearer) {
+    if (a.creds || a.token || a.user || a.pass)
+      throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
+    if (!a.sentinelCreds)
+      throw new Error("user-mode bearer requires sentinelCreds");
+    return {
+      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      tls,
+    };
+  }
   // creds (JWT/nkey) are mutually exclusive with token/user/pass — reject rather than
   // silently pick one, so a misconfigured caller fails loud.
   if (a.creds) {
     if (a.token || a.user || a.pass)
       throw new Error("creds are mutually exclusive with token/user/pass auth");
-    return { authenticator: credsAuthenticator(new TextEncoder().encode(a.creds)), tls };
+    const creds = a.creds;
+    // A getter re-wraps per (re)connect attempt so each attempt signs with the freshest cred;
+    // nats.js invokes the authenticator function on every attempt, including internal reconnects.
+    const authenticator = typeof creds === "function"
+      ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
+      : credsAuthenticator(new TextEncoder().encode(creds));
+    return { authenticator, tls };
   }
   return { token: a.token, user: a.user, pass: a.pass, tls };
+}
+
+/** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
+ *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the
+ *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
+ *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
+ *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
+/** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style
+ *  renew-early convention: the remaining 25% is the loud-failure window, wide for day-scale standing
+ *  creds). Negative when already past it. A source-fed cred WITHOUT a numeric `exp` is fail-loud:
+ *  the renewal seam exists precisely for bounded creds, so an unbounded one signals a matrix/caller
+ *  mismatch, not a cred to keep silently forever. */
+function credsRenewalDelayMs(creds: string): number {
+  const claims = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
+  if (typeof claims.exp !== "number")
+    throw new Error("creds source returned a cred without a numeric exp - a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
+  const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
+  const expMs = claims.exp * 1000;
+  return iatMs + 0.75 * (expMs - iatMs) - Date.now();
+}
+
+/** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
+ *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
+function bearerExpiryMs(bearer: string): number {
+  const payload = bearer.split(".")[1];
+  if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
+  let claims: { exp?: unknown };
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("user-mode bearer payload is not valid base64url JSON");
+  }
+  if (typeof claims.exp !== "number") throw new Error("user-mode bearer is missing a numeric exp claim");
+  return claims.exp * 1000;
+}
+
+function decodeBearerPrincipal(bearer: string): { owner: string; actor: string } {
+  const payload = bearer.split(".")[1];
+  if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
+  let claims: { sub?: unknown; act?: { actor?: unknown } };
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("user-mode bearer payload is not valid base64url JSON");
+  }
+  const owner = claims.sub, actor = claims.act?.actor;
+  if (typeof owner !== "string" || typeof actor !== "string")
+    throw new Error("user-mode bearer is missing a string sub (owner) / act.actor claim");
+  return { owner, actor };
 }
 
 /** Turn a raw async-status error into one whose message says *why* — a permission
@@ -2653,7 +3055,7 @@ function authOpts(a: AuthOpts) {
 function describeStatusError(err: Error): Error {
   if (err instanceof PermissionViolationError) {
     return new Error(
-      `NATS permission denied: cannot ${err.operation} "${err.subject}" — check this ` +
+      `NATS permission denied: cannot ${err.operation} "${err.subject}" - check this ` +
         `endpoint's ACLs (a denied peer looks "absent" rather than blocked)`,
       { cause: err },
     );
@@ -2753,11 +3155,15 @@ export async function isReachable(
 }
 
 /** What a connect attempt told us about the server — the distinction {@link isReachable} flattens.
- *  `auth-required` means a server answered but rejected these creds (so it IS up); `unreachable`
- *  means nothing answered (refused / timeout / a stale registry entry). */
+ *  `auth-required` means a server answered but rejected these creds (so it IS up); `stale-auth`
+ *  means the server is up and the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded
+ *  lifetime (the broker's "authentication expired", or a cred that is locally provably expired) —
+ *  the D5 credential-death event, whose repair is `doctor auth`, never a registry prune;
+ *  `unreachable` means nothing answered (refused / timeout / a stale registry entry). */
 export type ProbeResult =
   | { ok: true }
   | { ok: false; reason: "auth-required" }
+  | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" };
 
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
@@ -2780,8 +3186,19 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    if (e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError)
+    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
+    if (e instanceof AuthorizationError) {
+      // The broker's denial is generic; local knowledge isn't. A presented cred that is PROVABLY
+      // expired by its own JWT is stale-auth (credential death), not "wrong mesh/creds" — the
+      // repair differs (doctor auth vs re-target), so the classification must too. Unreadable
+      // content stays a plain rejection (no false stale diagnosis from garbage).
+      if (typeof opts.creds === "string") {
+        try {
+          if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
+        } catch { /* not introspectable — keep the wire truth */ }
+      }
       return { ok: false, reason: "auth-required" };
+    }
     return { ok: false, reason: "unreachable" };
   }
 }

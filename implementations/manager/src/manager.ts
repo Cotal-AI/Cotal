@@ -1,9 +1,12 @@
+import { execFile } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
+  DEV_OWNER,
   MANAGER_LEASE_TTL_MS,
+  STANDING_RENEWABLE_TTL_SEC,
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
@@ -14,9 +17,13 @@ import {
   mintCreds,
   mkSecretDir,
   newIdentity,
+  parsePrincipalKey,
   parseShareSelection,
+  principalKey,
   provisionAgent,
+  provisionAgentDurables,
   registry,
+  resolveAuthProvider,
   saveAgentFile,
   writeSecretFile,
   subjectMatches,
@@ -24,7 +31,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { authDir, defaultAgentType, findCotalRoot, loadSpaceAuth, resolveOnPath } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -34,6 +41,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
@@ -57,6 +65,23 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+
+/** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
+ *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
+ *  principal fail-closes to an empty `ps` instead of an unbounded one. */
+const NO_OWNER_MATCHES = "-no-owner-";
+
+/** Run the agent's bearer argv once, pre-launch — the end-to-end auth preflight (state dir, daemon,
+ *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
+ *  verbatim as the spawn refusal. */
+function execBearerPreflight(argv: string[]): Promise<void> {
+  return new Promise((res, rej) => {
+    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
+      if (err) return rej(new Error(stderr.trim() || err.message));
+      res();
+    });
+  });
+}
 
 /** Reject `p` with `Error(msg)` if it hasn't settled within `ms`; clears the timer when `p` settles so it
  *  never keeps the loop alive. Used to bound the detached deprovision so its fail-loud log is guaranteed. */
@@ -100,6 +125,13 @@ export interface StartAgentOpts {
   model?: string;
   /** Model variant override (the `--variant` flag). Takes precedence over the agent file's `variant:`. */
   variant?: string;
+  /** Opaque connector launch options (the `--opt k=v` flags). Merged per key over the agent file's
+   *  `launchOptions:` (imperative wins); forwarded verbatim to the connector, which validates them. */
+  launchOptions?: Record<string, unknown>;
+  /** USER-MESH manifest launches only: the derived owner (`u_…`) from the launch spec (the
+   *  logged-in operator who applied it). Imperative spawns resolve the owner from the ctl
+   *  CALLER's principal instead — never from a payload field. */
+  owner?: string;
   /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
@@ -135,10 +167,15 @@ interface ManagedAgent {
   name: string;
   role?: string;
   agent: string;
-  /** Stable id (nkey public key) the manager assigned this agent at spawn. */
+  /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
+   *  the owner+actor principal dot-form (user mode). */
   id: string;
-  /** Private nkey seed, kept so a later step can mint matching creds for this id. */
-  seed: string;
+  /** Private nkey seed, kept so a later step can mint matching creds for this id. Static auth
+   *  only — a user-mode agent has no static identity (its credential is its bearer). */
+  seed?: string;
+  /** Set for a USER-MODE agent: its derived owner. Marks the slot for user-mode teardown (ledger
+   *  revoke + token/sentinel/health file removal) and the auth-health read in {@link list}. */
+  userOwner?: string;
   /** Authenticated id of the peer that requested this spawn (the control-plane `req.from.id`),
    *  or the manager's own id for roster/pre-spawn. Non-forgeable — set by `handle()`. The spawner
    *  ledger (P4b) keys own-children despawn + reap-on-parent-exit off this. */
@@ -180,9 +217,14 @@ export class Manager {
    *  field so a test can shorten it (the join/exit signals are event-driven; only the backstop is timed).
    *  Production leaves it at the constant. */
   private readinessTimeoutMs = READINESS_TIMEOUT_MS;
+  /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
+   *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
+  private userMode = false;
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
+  /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
+  private credRenewTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -213,16 +255,40 @@ export class Manager {
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns.
     this.auth = loadSpaceAuth(authDir(this.workspaceRoot));
-    let creds: string | undefined;
+    // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
+    // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
+    // take the static self-mint branch. A marker/registry disagreement is a refused start with the
+    // repair, not a guess.
+    this.userMode = existsSync(userAuthStateDir(this.workspaceRoot, this.space));
+    const recorded = loadMeshes().find((m) => m.space === this.space);
+    if (recorded && (recorded.mode === "user") !== this.userMode)
+      throw new Error(
+        `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) - \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
+      );
+    if (this.userMode && !recorded)
+      throw new Error(
+        `space "${this.space}" has user-auth state on disk but no mesh registry entry - a user-mode manager needs the authoritative record (\`cotal up\` writes it before the control plane); \`cotal up --user-auth\` this space, or remove the stale ${userAuthStateDir(this.workspaceRoot, this.space)}`,
+      );
+    if (this.userMode && !this.auth)
+      throw new Error(
+        `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} - the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
+      );
+    let creds: (() => Promise<string>) | undefined;
     let id: string | undefined;
     if (this.auth) {
       const identity = newIdentity();
+      const auth = this.auth;
       id = identity.id;
       // The long-lived SUPERVISOR cred (closure (ii), residual 2): serve the three control tiers, hold the
       // singleton lease (open-only), publish + watch presence — and nothing else. Provisioning runs on an
       // EPHEMERAL provisioner connection per spawn (withProvisioner); destructive purge mints a PURGER per
       // call. So the always-on daemon holds no DM/DLV read, no consumer-create, no stream-admin tamper.
-      creds = await mintCreds(this.auth, identity, "supervisor");
+      //
+      // STANDING RENEWAL (D5 slice 5, class 1): the manager holds the DATA signing seed, so it is its
+      // own renewal owner — the cred rides the endpoint's SOURCE seam and self-remints (same identity,
+      // pinned by the endpoint) ahead of each bounded supervisor JWT's expiry. A copied supervisor
+      // cred is broker-dead within the matrix TTL.
+      creds = () => mintCreds(auth, identity, "supervisor");
     }
     this.ep = new CotalEndpoint({
       space: this.space,
@@ -259,7 +325,7 @@ export class Manager {
       await this.attach.stop();
       throw new Error(
         held
-          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) — stop it first; one manager per space`
+          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first; one manager per space`
           : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
       );
     }
@@ -278,11 +344,50 @@ export class Manager {
     this.ep.serveControl(CONTROL_PRIVILEGED, (req) => this.handle(req, CONTROL_PRIVILEGED), { boundReply: true });
     this.ep.serveControl(CONTROL_SELF_SERVICE, (req) => this.handle(req, CONTROL_SELF_SERVICE), { boundReply: true });
     this.ep.serveControl(CONTROL_ADMIN, (req) => this.handle(req, CONTROL_ADMIN), { boundReply: true });
+    // D5 slice 5 class 2: the manager is the CLASS-2 RENEWAL OWNER — the one control-plane process
+    // that is resident in EVERY mesh mode (foreground `up`, `up --detach`, same-root refresh) and
+    // holds the signer. Ordered initial pass NOW (ensureControlPlane starts delivery BEFORE the
+    // manager, so the daemon's launch-time creds write always precedes this — no write race), then
+    // every half-TTL: re-sign the daemon creds files for their EXISTING nkeys, request the explicit
+    // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
+    if (this.auth) {
+      await this.renewDaemonCreds();
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer.unref?.();
+    }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
     // manager records each agent's read ACL at spawn (`commitAcl`, in provisionAgent) so the daemon can
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
+  }
+
+  /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
+   *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
+   *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
+   *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
+   *  (no responder) is recorded honestly: the daemon's 75% source re-read remains the adoption backstop.
+   *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
+  private async renewDaemonCreds(): Promise<void> {
+    try {
+      const results = await remintDaemonCreds(this.workspaceRoot);
+      const resigned = results.filter((r) => r.ok);
+      let adoption: RenewalRecord["adoption"];
+      if (resigned.length) {
+        try {
+          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", {});
+          adoption = reply.ok ? { ok: true, detail: reply.data } : { ok: false, error: reply.error };
+        } catch (e) {
+          adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
+        }
+      }
+      for (const r of results.filter((x) => !x.ok && !x.skipped))
+        console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
+      if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
+      writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+    } catch (e) {
+      console.error(`! credential renewal pass failed: ${(e as Error).message}`);
+    }
   }
 
   /** Tear down every managed agent's footprint — the shared teardown for EVERY manager-exit path (#159
@@ -312,6 +417,7 @@ export class Manager {
 
   async stop(): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
+    if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     await this.teardownManagedAgents(); // reap agents BEFORE releasing the lease/endpoints (#159 B2)
     await this.ep.releaseManagerLease(this.leaseRevision);
     await this.ep.stop();
@@ -327,7 +433,7 @@ export class Manager {
     try {
       this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
     } catch (e) {
-      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) — shutting down to avoid two managers serving it`);
+      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) - shutting down to avoid two managers serving it`);
       if (this.leaseTimer) clearInterval(this.leaseTimer);
       // Tear down our managed agents' footprints too (#159 B2) — this exit path leaks them otherwise. Do
       // NOT release the lease key (it may belong to the replacement holder). Best-effort, like ep/attach.
@@ -365,13 +471,16 @@ export class Manager {
         // Spawn is a privileged-tier op; reaching it via admin is fine (admin ⊇ privileged powers).
         return this.opStart(args, caller);
       case "launch":
-        // SECURITY: manifest launch is operator-only (admin tier). It is higher-power than `start`
-        // — it boots an operator-authored, coordinated policy set from a run spec and underpins the
-        // ownership ledger — so a merely spawn-capable agent (which CAN publish to the privileged
-        // subject) must not reach it. Gate at the handler like `purge`; the subject alone isn't a
-        // boundary because `spawn` grants privileged-subject publish and dispatch is by op here.
-        if (!admin) return { ok: false, error: "launch is admin-only; not allowed on the privileged subject" };
-        return this.opLaunch(args, caller);
+        // SECURITY: on a STATIC mesh, manifest launch is operator-only (admin tier). It is
+        // higher-power than `start` — it boots an operator-authored, coordinated policy set from a
+        // run spec and underpins the ownership ledger — so a merely spawn-capable agent (which CAN
+        // publish to the privileged subject) must not reach it. Gate at the handler like `purge`;
+        // the subject alone isn't a boundary because `spawn` grants privileged-subject publish and
+        // dispatch is by op here. On a USER mesh, a spawn-scoped operator deploys THEIR OWN team on
+        // the privileged tier: opLaunch enforces owner-equality (the spec's apply-time stamped
+        // owner === the subject-pinned caller's owner) BEFORE any side effect.
+        if (!admin && !this.userMode) return { ok: false, error: "launch is admin-only; not allowed on the privileged subject" };
+        return this.opLaunch(args, caller, admin);
       case "stop": {
         if (!name) return { ok: false, error: "self-stop not allowed on privileged subject; send it on the self-service subject" };
         return this.opStop(args, caller, admin);
@@ -386,11 +495,16 @@ export class Manager {
       case "attach":
         return this.opAttach(args, caller, admin);
       case "ps":
-        return { ok: true, data: this.list() };
+        // USER mesh, privileged tier: `ps` lists only the CALLER's own owner-domain (the admin tier
+        // OR a fresh ledger `admin` scope sees all) — cross-owner agent metadata (principals,
+        // personas, auth health) is operator-grade. Fail-closed: an unparseable caller sees nothing.
+        // Static meshes are unchanged.
+        return { ok: true, data: this.list(await this.psOwnerFilter(caller, admin)) };
       case "models":
         return this.opModels(args);
       case "status": {
-        const a = this.list().find((x) => x.name === name);
+        // Same owner-domain bound as `ps`: a cross-owner target reads as absent, never as metadata.
+        const a = this.list(await this.psOwnerFilter(caller, admin)).find((x) => x.name === name);
         return a ? { ok: true, data: a } : { ok: false, error: `no agent "${name}"` };
       }
       default:
@@ -400,13 +514,29 @@ export class Manager {
 
   /** Collapsed despawn/attach authorization (P4b). The caller already reached the privileged or
    *  admin tier (cred-gated). On the admin tier any named target is allowed (operator). On the
-   *  privileged tier a named target is allowed ONLY if it's the caller's OWN child
-   *  (`spawner == caller`) — so a spawn-capable peer can tear down what it spawned, never a peer's.
-   *  Returns an error string when denied, `undefined` when allowed. */
-  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): string | undefined {
-    if (admin) return undefined;
-    if (target.spawner === caller) return undefined;
-    return `not authorized: ${target.name} was not spawned by ${caller} (admin tier required)`;
+   *  privileged tier a named target is allowed if it's the caller's OWN child (`spawner ==
+   *  caller`) — and, on a user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the
+   *  caller's ledger row holds `admin`, read fresh. The policy is the pure
+   *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
+   *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
+   *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
+  private authorizeNamed(target: ManagedAgent, caller: string, admin: boolean): Promise<string | undefined> {
+    return authorizeNamedControl({
+      target: { name: target.name, spawner: target.spawner, userOwner: target.userOwner },
+      caller,
+      admin,
+      userMode: this.userMode,
+      scopeOf: (owner, actor) =>
+        resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner, actor }),
+    });
+  }
+
+  /** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
+   *  entries already store it in `id`; static mints store the raw nkey there (the durable/teardown
+   *  key), so the wire form derives under DEV_OWNER. Every comparison against an AUTHENTICATED wire
+   *  id (presence card.id, control from.id) must go through this, never raw `a.id`. */
+  private managedPrincipal(a: { id: string; userOwner?: string }): string {
+    return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
   }
 
   /** Self-despawn (P2b): stop the managed agent whose id == the authenticated caller. The
@@ -415,7 +545,7 @@ export class Manager {
    *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
    *  no match and get a loud error, not a silent no-op. */
   private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply {
-    const target = [...this.agents.values()].find((a) => a.id === callerId);
+    const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
     this.stopHandle(target, graceful);
@@ -449,6 +579,111 @@ export class Manager {
     }
   }
 
+  /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
+   *  OWNER (ctl caller's principal, or the manifest's stamped owner — never a payload field),
+   *  pre-create the principal-keyed durables + ACL row on the ephemeral provisioner, author the
+   *  ledger grant (the upsert ROTATES the per-agent secret on every start — a non-running agent
+   *  never holds a standing mint secret), materialize the 0600 secret/sentinel files, and
+   *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
+   *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
+   *  rolled back. */
+  private async provisionUserAgent(
+    name: string,
+    opts: {
+      spawner?: string;
+      specOwner?: string;
+      subscribe?: string[];
+      allowSubscribe: string[];
+      allowPublish?: string[];
+      role?: string;
+      capabilities?: string[];
+      label: string;
+    },
+  ): Promise<{ owner: string; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+    const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
+    const owner = opts.specOwner ?? (spawnerPr && spawnerPr.owner.startsWith("u_") ? spawnerPr.owner : undefined);
+    if (!owner)
+      return {
+        error: `user-auth space "${this.space}": no owner for this spawn - call it from a user-mode session (\`cotal login\` then \`cotal spawn\`), or apply a manifest as a logged-in operator`,
+      };
+    let provider;
+    try {
+      provider = resolveAuthProvider();
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+    const dir = userAuthStateDir(this.workspaceRoot, this.space);
+    // The agent's capability scope rides its ledger row (act.scope in every bearer) — same
+    // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
+    // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
+    // attenuates every one of these against the spawner chain.
+    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+    const credsDir = join(authDir(this.workspaceRoot), "creds");
+    const tokenPath = join(credsDir, `${name}.actor-token`);
+    const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
+    const healthPath = join(credsDir, `${name}.auth-health.json`);
+    try {
+      // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
+      // the spawner's own grant), so a refused delegation exits here having touched nothing beyond
+      // the ledger: no durables, no broker footprint, nothing for a corrected respawn to race.
+      const grant = await provider.grantAgent({
+        dir,
+        space: this.space,
+        owner,
+        actor: name,
+        scope,
+        allowSubscribe: opts.allowSubscribe,
+        allowPublish: opts.allowPublish ?? [],
+        role: opts.role,
+        parent: spawnerPr ? opts.spawner : undefined,
+        label: opts.label,
+      });
+      // Durables + ACL row, principal-keyed — the same onboarding as static agents minus the mint
+      // (a user agent's credential is its bearer, minted by the callout per connect).
+      await this.withProvisioner((prov) =>
+        provisionAgentDurables(prov, { owner, actor: name }, {
+          subscribe: opts.subscribe,
+          allowSubscribe: opts.allowSubscribe,
+          role: opts.role,
+        }),
+      );
+      mkSecretDir(credsDir);
+      writeSecretFile(tokenPath, grant.actorToken);
+      writeSecretFile(sentinelPath, grant.sentinelCreds);
+      rmSync(healthPath, { force: true }); // a fresh start opens a fresh health window
+      const bearerCmd = [
+        // The manager's own invocation prefix (node + loader flags + the cotal entry) — the agent
+        // process execs this argv for every bearer, so it must resolve from ANY cwd. Correct
+        // whenever the manager runs under a real `cotal` entry (supervise/up); a test constructing
+        // Manager directly never reaches this branch (user meshes boot through the CLI).
+        process.execPath,
+        ...process.execArgv,
+        process.argv[1],
+        provider.agentBearerCommand,
+        "--dir", dir,
+        "--space", this.space,
+        "--owner", owner,
+        "--actor", name,
+        "--token-file", tokenPath,
+        "--health-file", healthPath,
+      ];
+      await execBearerPreflight(bearerCmd);
+      return { owner, launch: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd } };
+    } catch (e) {
+      // Roll back everything this attempt materialized — a refused spawn must leave no standing
+      // secret, no ledger row, no durable footprint — and AWAIT the broker teardown: the caller
+      // may respawn the moment it reads the refusal, and a detached teardown would race (and
+      // delete) that fresh spawn's just-provisioned durables.
+      await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+      rmSync(tokenPath, { force: true });
+      rmSync(sentinelPath, { force: true });
+      rmSync(healthPath, { force: true });
+      await this.deprovision({ id: principalKey(owner, name).key, name, userOwner: owner }).catch((err) =>
+        console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
+    }
+  }
+
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
    *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
    *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
@@ -466,10 +701,10 @@ export class Manager {
       console.error(`deprovision ${a.name} (${a.id}): ${(e as Error).message}`));
   }
 
-  /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its id-keyed durables
-   *  (`dm_<id>`, `dlv_<id>`), its read-ACL row, and its creds file — everything the spawn's
+  /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
+   *  (`dm_local-<id>`, `dlv_local-<id>`), its read-ACL row, and its creds file — everything the spawn's
    *  `provisionAgent` + creds-write left behind. Mints an EPHEMERAL, TARGET-PINNED `deprovisioner` cred
-   *  (mirrors the ephemeral `provisioner`/`purger`): it can delete only THIS agent's id-keyed footprint,
+   *  (mirrors the ephemeral `provisioner`/`purger`): it can delete only THIS agent's local-principal footprint,
    *  never a peer's and never the role-shared `svc_<role>` (which its siblings still bind). Open mesh →
    *  no-op (nothing was minted). Idempotent at the broker (missing consumer / ACL row = no-op) and on
    *  disk (`force` tolerates an absent creds file, e.g. a ledgered deploy that wrote none).
@@ -478,12 +713,30 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; userOwner?: string }): Promise<void> {
     if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
     // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
     rmSync(join(authDir(this.workspaceRoot), "creds", `${a.name}.creds`), { force: true });
+    if (a.userOwner) {
+      // USER MODE: this teardown IS revocation, not just footprint reduction — the ledger row is
+      // the agent's standing mint authority, so delete it (next exchange refused, next connect
+      // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
+      // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
+      const credsDir = join(authDir(this.workspaceRoot), "creds");
+      for (const f of [`${a.name}.actor-token`, `${a.name}.sentinel.creds`, `${a.name}.auth-health.json`])
+        rmSync(join(credsDir, f), { force: true });
+      try {
+        await resolveAuthProvider().revokeAgent({
+          dir: userAuthStateDir(this.workspaceRoot, this.space),
+          owner: a.userOwner,
+          actor: a.name,
+        });
+      } catch (e) {
+        console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
+      }
+    }
     const creds = await mintCreds(this.auth, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
@@ -560,6 +813,10 @@ export class Manager {
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
     if (args.variant !== undefined && !String(args.variant).trim())
       return Promise.resolve({ ok: false, error: "variant: must not be empty" });
+    // Opaque launch options, when present, must be a mapping — a raw control message could send a
+    // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
+    if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
+      return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
     // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
     // not something to coerce (no fallbacks).
     const strList = (v: unknown, flag: string): string[] | undefined => {
@@ -585,6 +842,7 @@ export class Manager {
         identity: args.identity ? String(args.identity) : undefined,
         model: args.model ? String(args.model) : undefined,
         variant: args.variant ? String(args.variant) : undefined,
+        launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
@@ -611,7 +869,7 @@ export class Manager {
           agent: connector.name,
           supported: true,
           models: [],
-          error: `${connector.name} harness needs ${missing.join(", ")} on PATH — not found`,
+          error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found`,
         };
       try {
         const catalog = await connector.listModels({ refresh });
@@ -635,6 +893,30 @@ export class Manager {
     return { ok: true, data: await Promise.all(registry.all<Connector>("connector").map(one)) };
   }
 
+  /** The owner-domain bound on `ps`/`status` metadata: on a USER mesh, a privileged-tier caller
+   *  sees only agents under its OWN subject-pinned owner. Two ways to see ALL owners: the admin
+   *  TIER (operator), or a fresh ledger `admin` SCOPE on the caller's row — the SAME authority that
+   *  lets `stop`/`attach` reach cross-owner agents ({@link authorizeNamedControl}). Without this the
+   *  two surfaces disagree: an admin operator could cross-owner stop an agent it could not list.
+   *  Read fresh so a revoked admin loses visibility on its next call; a read failure and an
+   *  unparseable caller both fall closed (own-owner / matches-nothing). Static meshes are unbounded. */
+  private async psOwnerFilter(caller: string, admin: boolean): Promise<string | undefined> {
+    if (!this.userMode || admin) return undefined;
+    const key = parsePrincipalKey(caller);
+    if (!key) return NO_OWNER_MATCHES;
+    try {
+      const scope = await resolveAuthProvider().actorScope({
+        dir: userAuthStateDir(this.workspaceRoot, this.space),
+        owner: key.owner,
+        actor: key.actor,
+      });
+      if (scope?.includes("admin")) return undefined;
+    } catch {
+      /* unreadable ledger authorizes nothing extra: fall through to the own-owner bound */
+    }
+    return key.owner;
+  }
+
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
    *  manager. The request carries a `{ runId, name }`, NEVER a path: the manager derives + validates
    *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
@@ -642,8 +924,9 @@ export class Manager {
    *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
    *  `supervise --launch`. The reply is enriched for the ownership ledger: the SPAWNED
    *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
-   *  `runId`, and resolved `hash`. */
-  private async opLaunch(args: Record<string, unknown>, caller: string): Promise<ControlReply> {
+   *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
+   *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
+  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const runId = String(args.runId ?? "").trim();
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
@@ -655,13 +938,24 @@ export class Manager {
     }
     const la = spec.agents.find((a) => a.name === name);
     if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
+    // USER mesh: a manifest launch runs under the spec's apply-time owner, never the ctl caller —
+    // fail loud on a spec without one rather than guess (core `MeshLaunchSpec.owner`).
+    if (this.userMode && !spec.owner)
+      return { ok: false, error: `user-auth space "${this.space}": launch spec for run ${runId} carries no owner - re-apply the manifest as a logged-in operator` };
+    if (this.userMode) {
+      // Privileged-tier user-mode launch: owner-equality (spec owner === caller owner), decided by
+      // the pure policy BEFORE materializePersona or any other side effect, so a denied
+      // cross-owner launch writes nothing. Admin tier passes through it unchanged.
+      const denied = authorizeLaunch({ specOwner: spec.owner, caller, admin, runId });
+      if (denied) return { ok: false, error: denied };
+    }
     let configPath: string;
     try {
       configPath = materializePersona(this.workspaceRoot, runId, la);
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath), caller);
+    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner), caller);
     if (reply.ok)
       // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
       // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
@@ -710,7 +1004,7 @@ export class Manager {
     } else {
       configPath = agentFilePath(this.workspaceRoot, ref);
       if (!existsSync(configPath))
-        return { ok: false, error: `no persona "${ref}" — ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
+        return { ok: false, error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
     }
 
     // Connector + harness preflight before reserving a slot or minting — a missing connector or a
@@ -724,7 +1018,7 @@ export class Manager {
     }
     const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length)
-      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH — not found` };
+      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
@@ -744,6 +1038,7 @@ export class Manager {
     let capabilities: string[] | undefined;
     let model = opts.model;
     let variant = opts.variant;
+    let launchOptions = opts.launchOptions;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -758,6 +1053,7 @@ export class Manager {
       capabilities = r.capabilities;
       model = opts.model ?? r.model;
       variant = opts.variant ?? r.variant;
+      launchOptions = mergeLaunchOptions(r.launchOptions, opts.launchOptions);
     } else {
       let def: AgentDef;
       try {
@@ -780,6 +1076,7 @@ export class Manager {
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
       variant = opts.variant ?? def.variant;
+      launchOptions = mergeLaunchOptions(def.launchOptions, opts.launchOptions);
     }
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
@@ -806,7 +1103,12 @@ export class Manager {
     // Set once the agent's creds + durables are minted; cleared the moment a live slot takes ownership
     // (`agents.set`, after which freeSlot deprovisions on exit). If it survives to `finally`, the spawn
     // threw AFTER minting (buildLaunch / runtime.spawn) — tear the orphan down so no footprint leaks (#159 B).
-    let provisioned: { id: string; name: string } | undefined;
+    // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
+    // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
+    // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
+    // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
+    // static durable teardown (the freelance found this window leaking the managed grant + files).
+    let provisioned: { id: string; name: string; userOwner?: string } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -815,7 +1117,27 @@ export class Manager {
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
       let credsPath: string | undefined;
-      if (this.auth) {
+      let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
+      let userOwner: string | undefined;
+      if (this.userMode) {
+        const prep = await this.provisionUserAgent(name, {
+          spawner,
+          specOwner: opts.owner,
+          subscribe,
+          allowSubscribe,
+          allowPublish,
+          role,
+          capabilities,
+          label: ref,
+        });
+        if ("error" in prep) {
+          this.reserved.delete(name);
+          return { ok: false, error: prep.error };
+        }
+        userLaunch = prep.launch;
+        userOwner = prep.owner;
+        provisioned = { id: principalKey(prep.owner, name).key, name, userOwner: prep.owner };
+      } else if (this.auth) {
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
         // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
@@ -850,12 +1172,16 @@ export class Manager {
         space: this.space,
         name,
         role,
-        id: identity.id,
+        // User mode: the principal IS the identity (the endpoint derives card.id from owner+actor);
+        // no nkey id, no static creds.
+        id: userLaunch ? undefined : identity.id,
         creds: credsPath,
+        userAuth: userLaunch,
         servers: this.servers,
         configPath,
         model,
         variant,
+        launchOptions,
         // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
@@ -881,8 +1207,8 @@ export class Manager {
         name,
         role,
         agent,
-        id: identity.id,
-        seed: identity.seed,
+        id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
+        ...(userLaunch ? { userOwner } : { seed: identity.seed }),
         spawner: spawner ?? this.ep.ref().id,
         startedAt: Date.now(),
         handle,
@@ -902,7 +1228,10 @@ export class Manager {
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
       if (!readiness.ok) return { ok: false, error: readiness.detail }; // uncertain — non-success, but kept
-      return { ok: true, data: { name, role, agent, id: identity.id, mode: handle.kind } };
+      // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
+      // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
+      // would never match and down -f would treat the agent as foreign).
+      return { ok: true, data: { name, role, agent, id: managed.id, mode: handle.kind } };
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
@@ -940,7 +1269,11 @@ export class Manager {
       /* tmux/cmux stream no exit — presence-or-backstop only */
     }
     const s = session;
-    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === a.id && p.status !== "offline");
+    // Presence cards carry the wire PRINCIPAL dot-form (`<owner>.<actor>`), never a raw nkey — match
+    // through managedPrincipal or a static launch can never be seen joining (every static spawn would
+    // resolve "uncertain"; caught by the lifecycle e2e).
+    const wanted = this.managedPrincipal(a);
+    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline");
 
     return await new Promise((resolve) => {
       let done = false;
@@ -966,7 +1299,7 @@ export class Manager {
         void (async () => {
           const tail = this.tail(await s.backlog());
           this.onAgentExit(a);
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` — last output: ${tail}` : ""}` });
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
         })();
       };
       timer = setTimeout(
@@ -974,7 +1307,7 @@ export class Manager {
           finish({
             ok: false,
             uncertain: true,
-            detail: `${a.name} (${a.id}): launch status uncertain — no process exit and no mesh presence within ${Math.round(this.readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`, or stop it to clean up.`,
+            detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(this.readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`, or stop it to clean up.`,
           }),
         this.readinessTimeoutMs,
       );
@@ -1030,11 +1363,11 @@ export class Manager {
     return this.cooling.length;
   }
 
-  private opStop(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+  private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    const denied = this.authorizeNamed(a, caller, admin);
+    const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
     const graceful = args.graceful !== false;
     this.stopHandle(a, graceful);
@@ -1117,7 +1450,7 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
       if (!admin && def.owner !== caller) {
-        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file — no agent owner)";
+        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file - no agent owner)";
         return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
       }
       // PATCH content: overwrite model only when provided, so a persona-only redefine can't wipe an existing model.
@@ -1136,13 +1469,13 @@ export class Manager {
     return { ok: true, data: { name, path } };
   }
 
-  private opAttach(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+  private async opAttach(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    // attach grants terminal read+write — same own/admin scoping as despawn: own child on the
-    // privileged tier, any agent on admin.
-    const denied = this.authorizeNamed(a, caller, admin);
+    // attach grants terminal read+write — same scoping as despawn: own child (and, on a user
+    // mesh, the caller's owner-domain) on the privileged tier, any agent on admin.
+    const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
     // Only pty streams over the WS attach endpoint. tmux/cmux are watched natively, and
     // each handle's attach() throws with the right per-runtime guidance (tmux attach … /
@@ -1158,20 +1491,33 @@ export class Manager {
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */
-  private list() {
+  /** `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
+   *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
+  private list(ownerFilter?: string) {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
-    return [...this.agents.values()].map((a) => ({
-      name: a.name,
-      // The spawned agent's nkey — lets an operator tool (e.g. `cotal down -f`) match a ledger entry
-      // by name AND id before stopping, so it never stops a same-named foreign agent.
-      id: a.id,
-      role: a.role,
-      agent: a.agent,
-      space: this.space,
-      mode: a.handle.kind,
-      status: a.handle.status(),
-      uptimeMs: Date.now() - a.startedAt,
-      mesh: roster.get(a.name)?.status ?? "absent",
-    }));
+    return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
+      // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
+      // bearer command writes each attempt's outcome to the health file, and `ps` renders it
+      // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
+      // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
+      const health = a.userOwner
+        ? agentAuthState(join(authDir(this.workspaceRoot), "creds", `${a.name}.auth-health.json`))
+        : undefined;
+      return {
+        name: a.name,
+        // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
+        // `cotal down -f`) match a ledger entry by name AND id before stopping, so it never stops a
+        // same-named foreign agent.
+        id: a.id,
+        role: a.role,
+        agent: a.agent,
+        space: this.space,
+        mode: a.handle.kind,
+        status: a.handle.status(),
+        uptimeMs: Date.now() - a.startedAt,
+        mesh: roster.get(a.name)?.status ?? "absent",
+        ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
+      };
+    });
   }
 }

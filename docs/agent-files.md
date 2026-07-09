@@ -45,7 +45,8 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `muted` | string[] | Per-channel attention *default*: dropped on receive, `@mentions` included. |
 | `model` | string | Model override handed to the agent CLI (Claude: `opus` / full id; OpenCode: `provider/model`). |
 | `variant` | string | Connector-defined model variant (e.g. an OpenCode variant, see `cotal models`). |
-| `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` is the only one today: it grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. |
+| `launchOptions` | map | Opaque per-connector launch options forwarded **raw** to the harness (Claude flags, OpenCode agent config; Hermes has no option surface and fails loud). A CLI `--opt key=value` overrides a key set here. See [run a mesh](run-a-mesh.md#spawning-agents). |
+| `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. On a per-user-auth mesh, `role:<r>` additionally lets the agent delegate role `r` when spawning ([identity & auth](identity-and-auth.md)); `admin` is never a persona capability. |
 | `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
 | *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. |
 

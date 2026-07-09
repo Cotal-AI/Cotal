@@ -199,7 +199,7 @@ export function Feed({
         {below > 0 ? <Text color="yellow">{"  ↓" + below + " more · G to follow"}</Text> : null}
       </Text>
       {visible.length === 0 ? (
-        <Text dimColor>(no messages yet — waiting for peer traffic)</Text>
+        <Text dimColor>(no messages yet - waiting for peer traffic)</Text>
       ) : (
         visible.map((r, i) =>
           r.kind === "head" ? (

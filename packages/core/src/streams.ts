@@ -8,7 +8,8 @@ import {
   type ConsumerConfig,
   type JetStreamManager,
 } from "@nats-io/jetstream";
-import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
+import { randomUUID } from "node:crypto";
+import { connect, credsAuthenticator, tokenAuthenticator, nanos } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   spacePrefix,
@@ -18,10 +19,10 @@ import {
   isConcreteChannel,
   dmStream,
   dmDurable,
-  unicastSubject,
+  unicastRecvFilter,
   taskStream,
   taskDurable,
-  anycastSubject,
+  anycastServeFilter,
   presenceBucket,
   channelBucket,
   membersBucket,
@@ -35,6 +36,9 @@ import {
   dlvDurable,
   fanoutDurable,
   readerDurable,
+  DEV_OWNER,
+  principalKey,
+  deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
@@ -88,16 +92,41 @@ export interface ClearSpaceHistoryResult {
   dm?: number;
 }
 
+/** Auth material for a STANDALONE helper connection: a static/raw creds file, OR the user-mode
+ *  pair (a view bearer + the deny-all sentinel creds) — exactly what the endpoint's user mode
+ *  presents. Never both. Empty = open mode. */
+export interface StandaloneAuth {
+  creds?: string;
+  bearer?: string;
+  sentinelCreds?: string;
+}
+
 /** Connection options for a privileged STANDALONE helper (`setupSpaceStreams`, `clearSpaceHistory`,
- *  `clearChannel`): authenticate with `creds` and PIN the reply inbox to the cred's own id. A scoped cred
- *  (provisioner/purger/operator) subscribes only `_INBOX_<id>.>`, so without this its JS-API replies land
- *  on the default `_INBOX.<nuid>` — a subject the cred's sub rejects (Permissions Violation), hanging
- *  every `jetstreamManager`/`streams.*` request. Open mode (no creds) connects bare with the default inbox. */
-function authConnectOpts(creds?: string): Record<string, unknown> {
-  return creds
+ *  `clearChannel`, the channel-registry helpers): pin the reply inbox to the connection's own
+ *  identity. A scoped cred (provisioner/purger/operator) subscribes only `_INBOX_<id>.>`, so without
+ *  this its JS-API replies land on the default `_INBOX.<nuid>` — a subject the cred's sub rejects
+ *  (Permissions Violation), hanging every `jetstreamManager`/`streams.*` request.
+ *
+ *  USER MODE (`bearer` + `sentinelCreds`) mirrors the endpoint's callout-shaped connect: the
+ *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and a
+ *  client-chosen inbox NONCE goes out as the connect `name` — the callout scopes `_INBOX_<nonce>.>`
+ *  from it (the client cannot know its nkey pre-connect). Open mode (no auth) connects bare. */
+export function standaloneConnectOpts(auth: StandaloneAuth = {}): Record<string, unknown> {
+  if (auth.bearer !== undefined) {
+    if (!auth.sentinelCreds)
+      throw new Error("user-mode standalone connect requires sentinelCreds alongside the bearer");
+    if (auth.creds) throw new Error("standalone connect takes creds OR bearer+sentinelCreds, never both");
+    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    return {
+      name: nonce,
+      inboxPrefix: `_INBOX_${nonce}`,
+      authenticator: [credsAuthenticator(new TextEncoder().encode(auth.sentinelCreds)), tokenAuthenticator(auth.bearer)],
+    };
+  }
+  return auth.creds
     ? {
-        authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
-        inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+        authenticator: credsAuthenticator(new TextEncoder().encode(auth.creds)),
+        inboxPrefix: `_INBOX_${idFromCreds(auth.creds)}`,
       }
     : {};
 }
@@ -182,12 +211,13 @@ export async function createSpaceStreams(
  */
 export function dmDurableConfig(
   space: string,
-  id: string,
+  owner: string,
+  actor: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dmDurable(id),
-    filter_subject: unicastSubject(space, id, "*"),
+    durable_name: dmDurable(owner, actor),
+    filter_subject: unicastRecvFilter(space, owner, actor), // inst.<owner>.<actor>.> — every DM to me
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -210,7 +240,7 @@ export function taskDurableConfig(
 ): Partial<ConsumerConfig> {
   return {
     durable_name: taskDurable(role),
-    filter_subject: anycastSubject(space, role, "*"),
+    filter_subject: anycastServeFilter(space, role), // svc.<role>.> — every anycast to the role
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
   };
@@ -245,11 +275,12 @@ export function inboxReaderConfig(
 export function dlvDurableConfig(
   space: string,
   owner: string,
+  actor: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dlvDurable(owner),
-    filter_subject: dlvSubject(space, owner),
+    durable_name: dlvDurable(owner, actor),
+    filter_subject: dlvSubject(space, owner, actor),
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -282,7 +313,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds }) });
   try {
     await createSpaceStreams(await jetstreamManager(nc), opts.space);
     // The presence + channels KV buckets are streams too — pre-create them so agents (denied
@@ -323,9 +354,12 @@ export async function clearSpaceHistory(opts: {
   servers: string;
   space: string;
   creds?: string;
+  /** User mode: a `purger`-view bearer + the space's sentinel creds (instead of a creds file). */
+  bearer?: string;
+  sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -348,14 +382,17 @@ export async function clearChannel(opts: {
   space: string;
   channel: string;
   creds?: string;
+  /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
+  bearer?: string;
+  sentinelCreds?: string;
 }): Promise<{ channel: string; purged: number }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...authConnectOpts(opts.creds) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
-      filter: chatSubject(opts.space, "*", opts.channel),
+      filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
@@ -369,13 +406,14 @@ export async function clearChannel(opts: {
   }
 }
 
-/** Delete a departed agent's id-keyed provisioning footprint (#159 Part B) — the teardown counterpart
- *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS agent: its two
- *  bind-only durables (`dm_<id>`, `dlv_<id>`) and its read-ACL row. Idempotent — a missing consumer /
- *  absent ACL row is a no-op (the agent may have exited before a durable was created, or a re-run).
+/** Delete a departed dev/static agent's provisioning footprint (#159 Part B) — the teardown counterpart
+ *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS agent actor under the
+ *  reserved local owner: its two bind-only durables (`dm_local-<actor>`, `dlv_local-<actor>`) and its
+ *  read-ACL row. Idempotent — a missing consumer / absent ACL row is a no-op (the agent may have exited
+ *  before a durable was created, or a re-run).
  *
  *  Does NOT touch the role-SHARED `svc_<role>` TASK durable (deleting it would break the role's other
- *  agents — it lives until space teardown), nor the ephemeral `chathist_<id>` history consumers (they
+ *  agents — it lives until space teardown), nor the ephemeral `chathist_local-<actor>` history consumers (they
  *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
  *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
  *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
@@ -387,7 +425,7 @@ export async function deprovisionAgent(opts: {
 }): Promise<void> {
   const nc = await connect({
     servers: opts.servers,
-    ...authConnectOpts(opts.creds),
+    ...standaloneConnectOpts({ creds: opts.creds }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's
     // fail-loud `.catch` is load-bearing: no reconnect loop (a wedged broker rejects promptly instead of
     // looping silently) and a bounded initial connect. Without this a broker-down deprovision would sit
@@ -396,10 +434,14 @@ export async function deprovisionAgent(opts: {
     timeout: 5_000,
   });
   try {
+    // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
+    // local owner — the SAME resolution the deprovisioner cred's permission pin used, so the delete
+    // names and the grant can't diverge.
+    const t = deprovisionTargetPrincipal(opts.targetId);
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(opts.targetId));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(opts.targetId));
-    await deleteAcl(await openAclRegistry(nc, opts.space), opts.targetId);
+    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor));
+    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor));
+    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key);
   } finally {
     await nc.drain();
   }

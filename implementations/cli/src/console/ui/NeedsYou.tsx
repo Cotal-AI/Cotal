@@ -60,7 +60,7 @@ export function NeedsYou({
         {below > 0 ? <Text color="yellow">{"  ↓" + below + " more"}</Text> : null}
       </Text>
       {visible.length === 0 ? (
-        <Text dimColor>nothing waiting — all clear ✓</Text>
+        <Text dimColor>nothing waiting - all clear ✓</Text>
       ) : (
         visible.map((p, i) => {
           const selected = isFocused && start + i === selClamped;

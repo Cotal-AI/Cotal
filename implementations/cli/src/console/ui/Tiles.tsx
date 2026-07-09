@@ -24,7 +24,7 @@ export function Tiles({
         ))}
         <Text dimColor>{"      oldest unattended "}</Text>
         <Text color={oldestWaitingTs ? "yellow" : "gray"}>
-          {oldestWaitingTs ? ago(oldestWaitingTs) : "—"}
+          {oldestWaitingTs ? ago(oldestWaitingTs) : "-"}
         </Text>
       </Text>
     </Box>

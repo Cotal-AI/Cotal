@@ -37,8 +37,11 @@ export async function startMembership(opts: { space: string; server: string }): 
     servers: opts.server,
     space: opts.space,
     accountId,
+    // Observer is rotation-renewed ($SYS): a static read — its renewal is a system rotation + restart.
     observerCreds: readFileSync(obsPath, "utf8"),
-    rwCreds: readFileSync(rwPath, "utf8"),
+    // rw is class-2 standing-renewable: re-read per (re)connect attempt, so the manager's re-signed
+    // file renews the feed's data connection across the broker's expiry-close (D5 slice 5).
+    rwCreds: () => readFileSync(rwPath, "utf8"),
     intervalMs,
   });
   console.log(`✓ membership feed up (broker-sourced channel membership) — space ${opts.space}`);

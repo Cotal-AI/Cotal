@@ -31,7 +31,7 @@ export class AmbiguousPeerError extends Error {
     readonly candidates: PeerCandidate[],
   ) {
     super(
-      `"${target}" is ambiguous — ${candidates.length} peers share that name: ` +
+      `"${target}" is ambiguous - ${candidates.length} peers share that name: ` +
         candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join("; ") +
         `. Re-send to the exact instance id.`,
     );

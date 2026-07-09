@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -68,7 +68,7 @@ try {
   try { postJoin = await agent.durableJoinChannel("ops"); } catch (e) { console.log(`    (post-reconnect join threw: ${(e as Error).message})`); }
   check("durableJoin works after reconnect (responder + aclKv + membersKv re-bound)", postJoin?.durable === true);
 
-  const members = await daemon.ownerMemberships(aId.id);
+  const members = await daemon.ownerMemberships(principalKey(DEV_OWNER, aId.id).key);
   check("listMemberships works after reconnect (membersKv reopened)", members.some((m) => m.channel === "review") && members.some((m) => m.channel === "ops"));
 
   let leftOk = false;

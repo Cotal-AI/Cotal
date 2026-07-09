@@ -60,9 +60,8 @@ One-line definitions of the terms used across these docs and the spec. The base 
   `replay` is on, bounded to the reader's ACL and optionally to `replayWindow`.
   [SPEC §7](../SPEC.md#7-channels)
 
-- **Instance (id)**: a connected participant; its **id** is a stable per-connection identifier
-  (in the auth binding, an Ed25519 nkey public key) used identically as sender, presence key, and
-  durable name. [SPEC §2](../SPEC.md#2-identity)
+- **Instance (id)**: a connected participant; its **id** is its principal (below), used
+  identically as sender, presence key, and durable name. [SPEC §2](../SPEC.md#2-identity)
 
 - **Join link**: a `cotal://` / `cotals://` URL encoding broker host, space, optional credential,
   and optional channels, the onboarding half of the contract.
@@ -87,6 +86,12 @@ One-line definitions of the terms used across these docs and the spec. The base 
 
 - **Observer**: a read-only profile that reads chat, history, presence, and the channel
   registry, but cannot publish and cannot see DMs. [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)
+
+- **Principal (`owner.actor`)**: an instance's wire identity, two routing tokens: the
+  **owner** (the account the agent acts on behalf of; a derived `u_…` token under per-user
+  auth, the literal `local` in open mode) and the **actor** (the agent's handle under that
+  owner). The connection's nkey is only the transport credential.
+  [SPEC §2](../SPEC.md#2-identity), [identity & auth](identity-and-auth.md)
 
 - **Presence**, the per-space directory keyed by instance id: each peer's card, status,
   activity, attention, and heartbeat timestamp. [SPEC §6](../SPEC.md#6-presence-and-discovery)

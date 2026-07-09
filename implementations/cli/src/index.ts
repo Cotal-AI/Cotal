@@ -21,6 +21,7 @@ import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
+import { doctor, doctorFlags } from "./commands/doctor.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -35,7 +36,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "setup",
     group: "Setup",
-    summary: "guided setup (configure-only: installs + seeds, launches nothing) — --yes non-interactive, --full to redo",
+    summary: "guided setup (configure-only: installs + seeds, launches nothing) - --yes non-interactive, --full to redo",
     flags: setupFlags,
     run: setup,
   },
@@ -43,7 +44,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "ext",
     group: "Setup",
-    summary: "operator-installed CLI extensions — add an npm package's commands to this CLI",
+    summary: "operator-installed CLI extensions - add an npm package's commands to this CLI",
     usage: "ext <add <npm-package> | remove <name> | list>",
     positionals: "<add <npm-package> | remove <name> | list>",
     run: ext,
@@ -52,7 +53,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "completion",
     group: "Setup",
-    summary: "shell completion — print a stub or install it persistently",
+    summary: "shell completion - print a stub or install it persistently",
     usage: "completion <bash|zsh|fish|powershell | install [shell]>",
     positionals: "<bash|zsh|fish|powershell | install [shell]>",
     run: completion,
@@ -72,7 +73,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "up",
     group: "Mesh",
-    summary: "start a local mesh (nats-server + JetStream, JWT auth by default) — or `-f <cotal.yaml>` for a whole manifest",
+    summary: "start a local mesh (nats-server + JetStream, JWT auth by default) - or `-f <cotal.yaml>` for a whole manifest",
     flags: [
       { name: "server", type: "string", value: "<url>", description: "listen URL override" },
       { name: "host", type: "string", value: "<host>", description: "bind host override" },
@@ -80,6 +81,8 @@ const baseCommands: Command[] = [
       { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
       { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
       { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
+      { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
+      { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
       { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
       { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
@@ -91,7 +94,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "down",
     group: "Mesh",
-    summary: "stop a background mesh — or `-f <cotal.yaml>` / `--run <id>` to tear down a `spawn -f` deploy",
+    summary: "stop a background mesh - or `-f <cotal.yaml>` / `--run <id>` to tear down a `spawn -f` deploy",
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
       { name: "run", type: "string", value: "<id>", description: "tear down one `spawn -f` run by id" },
@@ -116,6 +119,15 @@ const baseCommands: Command[] = [
   },
   {
     kind: "command",
+    name: "doctor",
+    group: "Mesh",
+    summary: "credential-health diagnosis + repair - `doctor auth [--fix]` renders every managed cred (healthy/near-expiry/expired) and ends in `healthy` or the exact next command",
+    positionals: "auth",
+    flags: doctorFlags,
+    run: doctor,
+  },
+  {
+    kind: "command",
     name: "use",
     group: "Mesh",
     summary: "set the default mesh for a bare `cotal spawn` when several are running",
@@ -127,7 +139,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "join",
     group: "Mesh",
-    summary: "join a space (interactive) — --space <s> --name <n> [--role <r>]",
+    summary: "join a space (interactive) - --space <s> --name <n> [--role <r>]",
     flags: [
       ...targetFlags,
       { name: "name", type: "string", value: "<n>", description: "your presence name" },
@@ -170,7 +182,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "send",
     group: "Messaging",
-    summary: "send one message, then exit — dm a peer, msg a channel, or ask a role",
+    summary: "send one message, then exit - dm a peer, msg a channel, or ask a role",
     usage: 'send <dm <agent> | msg <channel> | ask <role>> "<text>"  [--space <s>] [--server <url>] [--creds <path>]',
     positionals: '<dm <agent> | msg <channel> | ask <role>> "<text>"',
     flags: [...targetFlags],
@@ -205,7 +217,7 @@ const baseCommands: Command[] = [
     flags: [
       ...targetFlags,
       { name: "dms", type: "boolean", description: "also clear DM history" },
-      { name: "force", type: "boolean", description: "required — clear without prompting" },
+      { name: "force", type: "boolean", description: "required - clear without prompting" },
     ],
     run: history,
   },
@@ -213,7 +225,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "feedback",
     group: "Messaging",
-    summary: 'send feedback to the Cotal developers — feedback "<summary>" [--type <t>] [--email <e>]',
+    summary: 'send feedback to the Cotal developers - feedback "<summary>" [--type <t>] [--email <e>]',
     positionals: '"<summary>"',
     flags: [
       { name: "type", type: "string", value: "<t>", description: "bug | idea | friction | praise | other" },
@@ -233,7 +245,7 @@ const baseCommands: Command[] = [
     name: "spawn",
     group: "Agents",
     summary:
-      "launch an agent from a persona — spawn [<persona>] (defaults to COTAL_DEFAULT_PERSONA or `default`); --config accepts a persona name or path; foreground here, or --detach via the manager",
+      "launch an agent from a persona - spawn [<persona>] (defaults to COTAL_DEFAULT_PERSONA or `default`); --config accepts a persona name or path; foreground here, or --detach via the manager",
     positionals: "[<persona>]",
     flags: spawnFlags,
     run: spawn,
@@ -261,7 +273,7 @@ const baseCommands: Command[] = [
     run: async () => {
       console.error(
         c.red(
-          "✗ `cotal start` was merged into `cotal spawn --detach` — one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
+          "✗ `cotal start` was merged into `cotal spawn --detach` - one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
         ),
       );
       process.exit(1);
@@ -271,7 +283,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "stop",
     group: "Agents",
-    summary: "ask the manager to stop an agent — --name <n>",
+    summary: "ask the manager to stop an agent - --name <n>",
     flags: stopFlags,
     run: stop,
     complete: managedAgentComplete,
@@ -288,7 +300,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "attach",
     group: "Agents",
-    summary: "stream + drive an agent's terminal (pty runtime) — --name <n>",
+    summary: "stream + drive an agent's terminal (pty runtime) - --name <n>",
     flags: attachFlags,
     run: attach,
     complete: managedAgentComplete,
@@ -309,7 +321,7 @@ const baseCommands: Command[] = [
       { name: "from", type: "string", value: "<f>", description: "new: seed the prompt from a file" },
       { name: "verbose", type: "boolean", short: "v", description: "list: include role/model/description" },
       { name: "running", type: "boolean", description: "list: mark personas live on the mesh" },
-      { name: "force", type: "boolean", description: "rm: required — delete without prompting" },
+      { name: "force", type: "boolean", description: "rm: required - delete without prompting" },
     ],
     run: personas,
     complete: personasComplete,
@@ -319,11 +331,11 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "console",
     group: "Observe",
-    summary: "live protocol view for a space — lazygit-style TUI, or a line stream on --plain",
+    summary: "live protocol view for a space - lazygit-style TUI, or a line stream on --plain",
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
     run: console_,
   },
-  // `web` (dashboard) moved out to the `cotal-web` extension package (stage 4) — installed via
+  // `web` (dashboard) moved out to the `@cotal-ai/web` extension package (stage 4) — installed via
   // `cotal ext add`, it self-registers here and appears in this same surface.
 ];
 

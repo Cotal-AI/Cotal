@@ -18,7 +18,7 @@ and teardown behavior are in the guide: [Define a team](define-a-team.md).
 | `apiVersion` | yes | Must be `cotal/v1`. |
 | `kind` | yes | Must be `Mesh`. |
 | `space` | yes | The space name (one per file; `spaces:` is not supported in v1). A space's auth is bound to one root; to run a non-default space in a checkout that already ran `cotal up` (which sets up `main`), use a fresh directory. |
-| `broker` | no | `servers` (comma-separated broker URLs: this sets the address/port; default `nats://127.0.0.1:4222`; **no embedded creds**), `host` (bind interface only, no scheme; does *not* set the port), `auth` (bool: JWT auth, default `true`; `false` is an open dev mesh). The port comes from `servers`/`--server`, never `host`/`--host`. |
+| `broker` | no | `servers` (comma-separated broker URLs: this sets the address/port; default `nats://127.0.0.1:4222`; **no embedded creds**), `host` (bind interface only, no scheme; does *not* set the port), `auth` (the auth mode: unset/`true`/`"static"` = per-agent JWT creds, the default; `false` = an open dev mesh; `"user"` = per-user auth, where people `cotal login` and every connect is authorized against the actor ledger; pair with `idp`), `idp` (with `auth: "user"`: the IdP auth base URL to pin on first enable). The port comes from `servers`/`--server`, never `host`/`--host`. |
 | `runtime` | no | How the manager runs each agent: `pty` (default) · `tmux` · `cmux`. |
 | `agent` | no | Default harness (`claude` / `opencode` / `hermes`) for agents that don't set their own. There is **no silent default**; an agent needs this or its own `agent:`. |
 | `personaPermissions` | no | `reject` (default): the manifest is the whole truth. `include`: a persona's own channel grants are inherited for channels the manifest doesn't declare. |
@@ -46,12 +46,13 @@ agents:
 ```
 
 Per-agent keys: `persona`, `agent` (harness override), `model`, `variant`, `role`,
-`description`, `instructions`, `capabilities` (e.g. `[spawn]`,
-[what it grants](identity-and-auth.md)), `personaPermissions` (override the top-level
-policy). Model strings and variants pass to the harness as-is: for Claude use the short
-form (`opus`, `sonnet`) or the full id; for OpenCode use `provider/model` plus an optional
-variant (`cotal models --agent opencode` lists both). Persona file format:
-[agent files](agent-files.md).
+`description`, `instructions`, `capabilities` (`spawn`,
+[what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
+agent may delegate that role when spawning; `admin` is never accepted from a manifest),
+`personaPermissions` (override the top-level policy). Model strings and variants pass to
+the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
+OpenCode use `provider/model` plus an optional variant (`cotal models --agent opencode`
+lists both). Persona file format: [agent files](agent-files.md).
 
 ## `channels:` (the three access verbs)
 

@@ -109,7 +109,8 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 
 | Variable | Purpose |
 |---|---|
-| `COTAL_ID` | Stable agent id (nkey public key) chosen by the launcher |
+| `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
+| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS` |
 | `COTAL_CONTROL_SOCKET` / `COTAL_CONTROL_TOKEN` | The session's local control endpoint (path + token) the MCP server listens on and the lifecycle hooks connect to; token is env-only, never argv or logs |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |

@@ -17,7 +17,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { resolveSpace } from "../lib/status.js";
-import { reachableOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
+import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
@@ -28,7 +28,7 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
   const msg = (e as Error)?.message ?? String(e);
   if (/consumer not found|no responders|not provisioned/i.test(msg)) {
     console.error(
-      c.red(`${space} isn't provisioned for a console session yet — run `) +
+      c.red(`${space} isn't provisioned for a console session yet - run `) +
         c.bold("cotal up") +
         c.red(` first, or join with --creds/--token.`),
     );
@@ -36,7 +36,7 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
   }
   if (/authoriz|permission|not authorized/i.test(msg)) {
     console.error(
-      c.red(`not authorized to join ${space}'s channels — pass --creds/--token, or ask the mesh operator for a join link.`),
+      c.red(`not authorized to join ${space}'s channels - pass --creds/--token, or ask the mesh operator for a join link.`),
     );
     return true;
   }
@@ -66,6 +66,7 @@ export async function join(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    refuseStaticCredsForKnownUserAuthOrExit(space, server, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
@@ -82,6 +83,16 @@ export async function join(args: ParsedArgs): Promise<void> {
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
     space = target.space;
     server = target.server;
+    // USER-auth mesh: interactive join self-provisions a STATIC agent identity, which is the wrong
+    // identity plane for a user space — refuse with the user path rather than half-joining (U10).
+    if (target.mode === "user") {
+      console.error(
+        c.red(
+          `✗ interactive join is not yet supported on user-auth space "${space}" - sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`) and use \`cotal send\`, or run agents properly: \`cotal spawn <persona>\` (they get their own managed identity under you)`,
+        ),
+      );
+      process.exit(1);
+    }
     await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
     if (target.auth) {
       const identity = newIdentity();
@@ -182,7 +193,7 @@ export async function join(args: ParsedArgs): Promise<void> {
       print(c.dim(`← ${who(ev.presence.card)} went offline`));
     else
       print(
-        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(" — " + ev.presence.activity) : ""}`,
+        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(" - " + ev.presence.activity) : ""}`,
       );
   });
 
@@ -208,7 +219,7 @@ export async function join(args: ParsedArgs): Promise<void> {
 
   if (!interactive || !rl) {
     console.log(
-      c.dim(`${name} (${values.role ?? "no role"}) holding presence in ${space} — headless`),
+      c.dim(`${name} (${values.role ?? "no role"}) holding presence in ${space} - headless`),
     );
     await new Promise<void>(() => {}); // park; event handlers do the work
     return;
@@ -254,7 +265,7 @@ export async function join(args: ParsedArgs): Promise<void> {
               who(p.card) +
               " " +
               statusBadge(p.status) +
-              (p.activity ? c.dim(" — " + p.activity) : "") +
+              (p.activity ? c.dim(" - " + p.activity) : "") +
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
@@ -280,7 +291,7 @@ export async function join(args: ParsedArgs): Promise<void> {
             }
           } catch (e) {
             if (!(e instanceof AmbiguousPeerError)) throw e;
-            print(c.red(`"${target}" is ambiguous — DM by instance id:`));
+            print(c.red(`"${target}" is ambiguous - DM by instance id:`));
             for (const cand of e.candidates) print(c.dim(`  ${cand.name} (${cand.status})  ${cand.id}`));
           }
         }

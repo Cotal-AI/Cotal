@@ -1,4 +1,5 @@
 import { CotalEndpoint } from "@cotal-ai/core";
+import { endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit } from "./connect.js";
 
@@ -7,7 +8,8 @@ import { connectOrExit } from "./connect.js";
  * (`dm`/`msg`/`ask`, and `personas list --running`). Resolution + creds + reachability all go through
  * the shared `connectOrExit` (so these work from any directory, and an explicit `--creds` is a raw
  * off-registry connection). Opens a transient endpoint that never joins the roster, does the one
- * thing, stops.
+ * thing, stops. USER-mode meshes ride the same call: `connectOrExit` hands back bearer + sentinel
+ * and {@link endpointAuth} spreads whichever material arrived.
  */
 
 export interface ConnectValues {
@@ -16,15 +18,12 @@ export interface ConnectValues {
   creds?: string;
 }
 
-/** Resolve where to connect + with what credentials (`--creds` → raw off-registry; else the running
- *  mesh's minted least-privilege OPERATOR creds — self-scoped publish + presence/channel read, no broad
- *  manager). Fail-loud — an unresolved registry or an unreachable/auth-mismatched broker exits with one
- *  sentence, never degrades. */
-export async function resolveConnect(
-  values: ConnectValues,
-): Promise<{ server: string; space: string; creds?: string }> {
-  const { server, space, creds } = await connectOrExit(values, "operator");
-  return { server, space, creds };
+/** Resolve where to connect + with what credentials (`--creds` → raw off-registry; user-auth mesh →
+ *  login/bearer material; else the running mesh's minted least-privilege OPERATOR creds — self-scoped
+ *  publish + presence/channel read, no broad manager). Fail-loud — an unresolved registry or an
+ *  unreachable/auth-mismatched broker exits with one sentence, never degrades. */
+export async function resolveConnect(values: ConnectValues): Promise<Connection> {
+  return connectOrExit(values, "operator");
 }
 
 /** Open a transient endpoint: it watches presence (so name→id resolution and the live roster work)
@@ -33,11 +32,11 @@ export async function openTransient(
   values: ConnectValues,
   name: string,
 ): Promise<{ ep: CotalEndpoint; space: string }> {
-  const { server, space, creds } = await resolveConnect(values);
+  const conn = await resolveConnect(values);
   const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    creds,
+    space: conn.space,
+    servers: conn.server,
+    ...endpointAuth(conn),
     channels: [],
     consume: false,
     registerPresence: false,
@@ -46,5 +45,5 @@ export async function openTransient(
   });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
-  return { ep, space };
+  return { ep, space: conn.space };
 }

@@ -163,7 +163,11 @@ try {
 
   // A directed DM auto-drives an unattended prompt_async. If that turn errors, the pending inbox id
   // is deduped and would not emit another `incoming`; the connector must schedule a delayed retry.
-  await pub.unicast("otto", "retry dm");
+  // Address the peer by its principal (card.id = `<owner>.<actor>`), resolved from the roster the way
+  // a real client does — the owner+actor flip made `unicast` reject a bare, non-principal recipient.
+  const ottoId = pub.getRoster().find((p) => p.card.name === "Otto")?.card.id;
+  if (!ottoId) throw new Error("turn-wedge: Otto not in roster for the directed-DM step");
+  await pub.unicast(ottoId, "retry dm");
   await waitForPrompts(2);
   check("a directed DM auto-drives prompt_async", prompts.length === 2 && promptText(prompts[1]).includes("retry dm"), prompts);
   await fire(hooks, { type: "session.error", properties: { sessionID: SID } });

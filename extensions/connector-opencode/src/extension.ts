@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, transcriptChannel } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -138,6 +138,7 @@ export const opencodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
       ...aclEnv(opts),
+      ...userAuthEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -198,7 +199,18 @@ export const opencodeConnector: Connector = {
       env.COTAL_VARIANT = variant;
       cotalAgent.variant = variant;
     }
-    if (model || variant) {
+    // Opaque connector options → config for the cotal agent (the session the plugin drives), RAW
+    // passthrough: each option is merged into the agent config as-is and validated by opencode's own
+    // config schema. No deny-list — the spawn capability is the trust boundary (see
+    // connectorLaunchOptions), not the config keys. `mode`/`model`/`variant` are still set by the
+    // connector; an option of the same name simply overrides that default (last write wins), same as
+    // any other config field.
+    let hasLaunchOptions = false;
+    for (const [k, v] of connectorLaunchOptions("opencode", opts.launchOptions)) {
+      cotalAgent[k] = v;
+      hasLaunchOptions = true;
+    }
+    if (model || variant || hasLaunchOptions) {
       config.agent = { cotal: cotalAgent };
       config.default_agent = "cotal";
     }

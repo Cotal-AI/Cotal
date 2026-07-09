@@ -1,4 +1,4 @@
-# cotal-web
+# @cotal-ai/web
 
 ## 0.10.0
 

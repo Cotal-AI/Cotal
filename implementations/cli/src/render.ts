@@ -48,7 +48,7 @@ function presenceLine(ev: PresenceEvent): string {
       : ev.type === "offline"
         ? c.dim("offline")
         : c.dim("update ");
-  const activity = ev.presence.activity ? c.dim(" — " + ev.presence.activity) : "";
+  const activity = ev.presence.activity ? c.dim(" - " + ev.presence.activity) : "";
   return `${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${activity}`;
 }
 
@@ -63,7 +63,7 @@ export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: stri
   view.on("presence", (ev) => console.log(presenceLine(ev as PresenceEvent)));
   view.on("entry", (e) => console.log(feedLine(e as FeedEntry)));
   await view.start();
-  console.log(c.dim(`watching space ${c.bold(space)} — Ctrl-C to stop\n`));
+  console.log(c.dim(`watching space ${c.bold(space)} - Ctrl-C to stop\n`));
   const shutdown = async () => {
     await view.stop();
     process.exit(0);

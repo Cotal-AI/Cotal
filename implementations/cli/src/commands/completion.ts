@@ -92,7 +92,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
 
 const SCRIPTS: Record<string, string> = {
   bash: lines(
-    "# cotal bash completion — forwards each <TAB> to `cotal __complete` (dynamic).",
+    "# cotal bash completion - forwards each <TAB> to `cotal __complete` (dynamic).",
     "_cotal_complete() {",
     '  local cur out line',
     '  cur="${COMP_WORDS[COMP_CWORD]}"',
@@ -113,7 +113,7 @@ const SCRIPTS: Record<string, string> = {
   ),
   zsh: lines(
     "#compdef cotal",
-    "# cotal zsh completion — forwards each <TAB> to `cotal __complete` (dynamic).",
+    "# cotal zsh completion - forwards each <TAB> to `cotal __complete` (dynamic).",
     "_cotal() {",
     "  local -a args; args=(\"${(@)words[2,CURRENT]}\")",
     '  local out line val desc',
@@ -129,7 +129,7 @@ const SCRIPTS: Record<string, string> = {
     "compdef _cotal cotal",
   ),
   fish: lines(
-    "# cotal fish completion — forwards each <TAB> to `cotal __complete` (dynamic).",
+    "# cotal fish completion - forwards each <TAB> to `cotal __complete` (dynamic).",
     "function __cotal_complete",
     "    set -l tokens (commandline -opc) (commandline -ct)",
     "    cotal __complete $tokens[2..-1] 2>/dev/null | string match -rv '^:'",
@@ -137,7 +137,7 @@ const SCRIPTS: Record<string, string> = {
     "complete -c cotal -f -a '(__cotal_complete)'",
   ),
   powershell: lines(
-    "# cotal PowerShell completion — forwards each <TAB> to `cotal __complete` (dynamic).",
+    "# cotal PowerShell completion - forwards each <TAB> to `cotal __complete` (dynamic).",
     "Register-ArgumentCompleter -Native -CommandName cotal -ScriptBlock {",
     "    param($wordToComplete, $commandAst, $cursorPosition)",
     '    $elements = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { "$_" })',
@@ -177,7 +177,7 @@ export async function completion(args: ParsedArgs): Promise<void> {
 function install(shell?: string): void {
   const sh = shell ?? basename(process.env.SHELL ?? "");
   if (!SCRIPTS[sh]) {
-    console.error(c.red(`can't install for "${sh || "unknown shell"}" — pass one of: bash, zsh, fish`));
+    console.error(c.red(`can't install for "${sh || "unknown shell"}" - pass one of: bash, zsh, fish`));
     process.exit(1);
   }
   if (sh === "fish") {

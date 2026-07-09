@@ -33,6 +33,7 @@ import {
   spacePrefix,
   controlServiceSubject,
   CONTROL_DELIVERY,
+  DEV_OWNER,
   deliveryBucket,
   membersBucket,
   aclBucket,
@@ -187,13 +188,13 @@ try {
   });
 
   check("delivery: subscribe own _INBOX is allowed", (await trySubscribe(dCreds, d.id, `_INBOX_${d.id}.reply`)) === "allowed");
-  check("delivery: subscribe ctl.delivery.* (serves it) is allowed", (await trySubscribe(dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, "*"))) === "allowed");
+  check("delivery: subscribe ctl.delivery.* (serves it) is allowed", (await trySubscribe(dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, "*", "*"))) === "allowed");
   check("delivery: native subscribe dinbox.> (mixed pre-auth store) is DENIED", (await trySubscribe(dCreds, d.id, `${spacePrefix(space)}.dinbox.>`)) === "denied");
   check("delivery: native subscribe chat.> is DENIED", (await trySubscribe(dCreds, d.id, `${spacePrefix(space)}.chat.>`)) === "denied");
-  check("delivery: post to a chat channel (spoof a peer) is DENIED", (await publishArrives(adminListen, dCreds, d.id, chatSubject(space, d.id, "general"))) === "denied");
+  check("delivery: post to a chat channel (spoof a peer) is DENIED", (await publishArrives(adminListen, dCreds, d.id, chatSubject(space, DEV_OWNER, d.id, "general"))) === "denied");
 
-  check("delivery: write dinbox.<owner> (fan-out target) is allowed", (await publishArrives(adminListen, dCreds, d.id, dinboxSubject(space, owner))) === "allowed");
-  check("delivery: write dlv.<owner> (post-auth handoff) is allowed", (await publishArrives(adminListen, dCreds, d.id, dlvSubject(space, owner))) === "allowed");
+  check("delivery: write dinbox.<owner> (fan-out target) is allowed", (await publishArrives(adminListen, dCreds, d.id, dinboxSubject(space, DEV_OWNER, owner))) === "allowed");
+  check("delivery: write dlv.<owner> (post-auth handoff) is allowed", (await publishArrives(adminListen, dCreds, d.id, dlvSubject(space, DEV_OWNER, owner))) === "allowed");
   check("delivery: write its own lease key is allowed", (await kvWriteAllowed(dCreds, d.id, deliveryBucket(space), leaseKey(0))) === "allowed");
   check("delivery: write a NON-lease delivery key is DENIED", (await kvWriteAllowed(dCreds, d.id, deliveryBucket(space), "other")) === "denied");
   check("delivery: write members KV (membership authority) is allowed", (await kvWriteAllowed(dCreds, d.id, membersBucket(space), `review/${owner}`)) === "allowed");
@@ -201,8 +202,8 @@ try {
   check("delivery: write presence KV is DENIED (it's off the roster)", (await kvWriteAllowed(dCreds, d.id, presenceBucket(space), d.id)) === "denied");
   // ctl.delivery: the daemon publishes REPLIES only (m.respond → ctl.delivery.<id>.reply.<n>), never the
   // request subjects themselves — the scoped `.reply.>` pub grant (tighter than a blanket ctl.delivery.>).
-  check("delivery: publish a ctl.delivery REPLY subject is allowed", (await publishArrives(adminListen, dCreds, d.id, `${controlServiceSubject(space, CONTROL_DELIVERY, owner)}.reply.1`)) === "allowed");
-  check("delivery: publish a ctl.delivery REQUEST subject is DENIED (replies only)", (await publishArrives(adminListen, dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, owner))) === "denied");
+  check("delivery: publish a ctl.delivery REPLY subject is allowed", (await publishArrives(adminListen, dCreds, d.id, `${controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, owner)}.reply.1`)) === "allowed");
+  check("delivery: publish a ctl.delivery REQUEST subject is DENIED (replies only)", (await publishArrives(adminListen, dCreds, d.id, controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, owner))) === "denied");
 
   // ---- an ordinary agent cred ----
   const { provisionAgent } = await import("../src/index.js");

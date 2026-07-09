@@ -46,6 +46,8 @@ export interface ResolvedAgent {
   model?: string;
   /** Manifest override of the persona's connector-defined model variant. */
   variant?: string;
+  /** Opaque connector launch options, merged per key over the persona's `launchOptions:`. */
+  launchOptions?: Record<string, unknown>;
   role?: string;
   /** Manifest card blurb (override / inline). */
   description?: string;
@@ -62,7 +64,7 @@ export interface ResolvedAgent {
 /** The fully resolved, validated manifest — channel-centric on disk, per-agent here. */
 export interface ResolvedManifest {
   space: string;
-  broker?: { servers?: string; host?: string; auth?: boolean };
+  broker?: { servers?: string; host?: string; auth?: boolean | "static" | "user"; idp?: string };
   runtime?: "pty" | "tmux" | "cmux";
   personaPermissions: PersonaPermissions;
   defaults?: ChannelDefaults;

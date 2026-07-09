@@ -21,13 +21,15 @@ import {
   newIdentity,
   readChannelRegistry,
   seedChannelRegistry,
+  CONTROL_ADMIN,
+  CONTROL_PRIVILEGED,
   type ControlReply,
   type MembershipSnapshot,
   type Presence,
 } from "@cotal-ai/core";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { connectOrExit } from "../lib/connect.js";
+import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, channelsSeed, genRunId, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -61,7 +63,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     failManifest(e);
   }
   if (flags.runtime && !RUNTIMES.includes(flags.runtime)) {
-    console.error(c.red(`✗ unknown --runtime "${flags.runtime}" — expected ${RUNTIMES.join(", ")}`));
+    console.error(c.red(`✗ unknown --runtime "${flags.runtime}" - expected ${RUNTIMES.join(", ")}`));
     process.exit(1);
   }
   const eff = applyOverrides(prepared, flags);
@@ -78,10 +80,18 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
 
   // spawn -f deploys onto a RUNNING mesh — the broker MUST be reachable (opposite of up -f). Resolve
   // the mesh + mint a scoped `deployer` cred from the local registry/auth (same-checkout): the one
-  // connectProbe endpoint below reads live state (roster/registry/membership/lease) AND admin-control
+  // connectProbe endpoint below reads live state (roster/registry/membership/lease) AND control-
   // calls the manager's `launch`/`ps` — no `$JS.>`, no STREAM.DELETE, no DM read, no self-post. The
   // channel SEED rides a separate `channel-writer` cred (below), so the deploy cred writes no KV.
+  //
+  // USER MODE: the same read/probe surface rides a "deployer" VIEW bearer — exchange-gated on
+  // ledger scope "spawn" (deploying YOUR OWN team is spawn-grade, the own-agent owner-domain
+  // model) — with the control calls on the PRIVILEGED tier, where the manager enforces that the
+  // launch spec's stamped owner equals the caller's owner. The channel seed alone stays
+  // operator-grade (a "channel-writer" view, scope "admin", below).
   const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "deployer");
+  const user = connection.bearer ? await userViewAuthOrExit(connection, "deployer") : undefined;
+  const tier = user ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
 
   const root = cotalRoot();
   // Same-checkout invariant (security/UX): the launch spec, the ledger, and the manager `spawn -f`
@@ -90,11 +100,11 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   // resolved mesh is registered to this root; a raw off-registry target (no recorded root) isn't
   // supported for a manifest deploy.
   if (!connection.root) {
-    console.error(c.red(`✗ spawn -f needs a mesh registered to this checkout — a raw off-registry target (--server/--space) isn't supported for a manifest deploy`));
+    console.error(c.red(`✗ spawn -f needs a mesh registered to this checkout - a raw off-registry target (--server/--space) isn't supported for a manifest deploy`));
     process.exit(1);
   }
   if (resolve(connection.root) !== resolve(root)) {
-    console.error(c.red(`✗ mesh "${space}" belongs to a different checkout (${connection.root}) — \`spawn -f\` / \`down -f\` are same-checkout; run them from ${connection.root}`));
+    console.error(c.red(`✗ mesh "${space}" belongs to a different checkout (${connection.root}) - \`spawn -f\` / \`down -f\` are same-checkout; run them from ${connection.root}`));
     process.exit(1);
   }
   const manifestHash = hashManifestSource(readFileSync(abs, "utf8"));
@@ -109,7 +119,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     process.exit(1);
   }
   if (priors.length > 1) {
-    console.error(c.red(`✗ ${priors.length} runs already deployed this manifest (${priors.map((p) => p.ledger.runId).join(", ")}) — tear one down first: \`cotal down -f ${file} --run <id>\``));
+    console.error(c.red(`✗ ${priors.length} runs already deployed this manifest (${priors.map((p) => p.ledger.runId).join(", ")}) - tear one down first: \`cotal down -f ${file} --run <id>\``));
     process.exit(1);
   }
   const prior = priors[0]?.ledger;
@@ -118,8 +128,17 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   const ownedIds = new Set((prior?.created.agents ?? []).map((a) => a.id));
   const ownedNames = new Set((prior?.created.agents ?? []).map((a) => a.name));
 
-  const liveRegistry = await readChannelRegistry({ servers: connection.server, space, creds: connection.creds });
-  const ep = await connectProbe({ space, server: connection.server, creds: connection.creds });
+  const liveRegistry = await readChannelRegistry({
+    servers: connection.server,
+    space,
+    ...(user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds } : { creds: connection.creds }),
+  });
+  const ep = await connectProbe({
+    space,
+    server: connection.server,
+    creds: connection.creds,
+    user: user ? { source: user.source, sentinelCreds: user.sentinelCreds, owner: user.owner, actor: user.actor } : undefined,
+  });
   try {
     const roster: Presence[] = await settleRoster(ep);
     const membership: MembershipSnapshot | null = await ep.readMembership().catch((e: Error) => {
@@ -149,7 +168,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     const allow = new Set(flags.allowStale ?? []);
     const unwaived = agentPlan.stale.filter((e) => !allow.has(e.agent.name));
     if (unwaived.length) {
-      console.error(c.red(`✗ ${unwaived.length} declared agent(s) are stale (policy changed) — restart required:`));
+      console.error(c.red(`✗ ${unwaived.length} declared agent(s) are stale (policy changed) - restart required:`));
       for (const e of unwaived) console.error(c.red(`    ${e.agent.name}: ${e.prior?.name} hash ${e.prior?.hash.slice(0, 8)} → ${e.hash.slice(0, 8)}`));
       console.error(c.dim(`  Waive (they keep running the OLD policy until restarted): --allow-stale ${unwaived.map((e) => e.agent.name).join(",")}`));
       process.exit(1);
@@ -159,12 +178,15 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
 
     // 1) Seed ONLY brand-new channel keys — no defaults, no pre-existing/unmanaged card mutation. The
     //    write rides a SEPARATE, narrow `channel-writer` cred (the `deployer` cred writes no KV); open/raw
-    //    meshes have no signing seed → fall back to the connection creds.
+    //    meshes have no signing seed → fall back to the connection creds. USER MODE: the seed is
+    //    space-level infrastructure — a one-shot "channel-writer" VIEW (ledger scope "admin"); a
+    //    channel-declaring manifest under a spawn-only caller refuses HERE, naming the exact
+    //    re-grant, before any write (deploying without channel declarations needs only "spawn").
     if (channelPlan.create.length) {
-      const seedCreds = connection.auth
-        ? await mintCreds(connection.auth, newIdentity(), "channel-writer")
-        : connection.creds;
-      await seedChannelRegistry({ servers: connection.server, space, creds: seedCreds, file: channelsSeed(channelPlan.create) });
+      const seedAuth = user
+        ? await userViewAuthOrExit(connection, "channel-writer").then((p) => ({ bearer: p.bearer, sentinelCreds: p.sentinelCreds }))
+        : { creds: connection.auth ? await mintCreds(connection.auth, newIdentity(), "channel-writer") : connection.creds };
+      await seedChannelRegistry({ servers: connection.server, space, ...seedAuth, file: channelsSeed(channelPlan.create) });
     }
 
     // 2-4) Boot the will-create agents through the workspace-local manager's admin `launch` op,
@@ -174,8 +196,10 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     const agents: LedgerAgent[] = [...(prior?.created.agents ?? [])];
     const launchedNow: string[] = [];
     if (agentPlan.willCreate.length) {
-      // The manager reads the run spec by runId on each `launch`.
-      writeLaunchSpec(root, buildLaunchSpec(eff, runId), { update: Boolean(prior) });
+      // The manager reads the run spec by runId on each `launch`. USER MODE stamps the deploy's
+      // owner (the login's derived owner, read from the deployer-view bearer) into the spec — the
+      // manager launches the agents under it AND enforces it equals the launch caller's owner.
+      writeLaunchSpec(root, buildLaunchSpec(eff, runId, user?.owner), { update: Boolean(prior) });
       // Ensure a manager is SERVING this space, then validate it's ours — the lease is the authoritative
       // owner record. A held lease alone is not proof a manager is alive (a crashed holder's key lingers
       // until the bucket TTL, MANAGER_LEASE_TTL_MS), so read it (fast) and, when one exists, PROBE control to tell
@@ -185,12 +209,12 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       if (!held) {
         // Nobody owns the space — stand up a manager (it acquires the lease on boot).
         startManagerDetached({ space, server: connection.server, runtime });
-      } else if (!(await waitManagerReady(ep, MANAGER_PROBE_MS))) {
+      } else if (!(await waitManagerReady(ep, MANAGER_PROBE_MS, tier))) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
         console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${held.pid}); waiting up to ${Math.ceil(MANAGER_LEASE_TTL_MS / 1000)}s for it to expire…`));
         if (!(await waitLeaseGone(ep, MANAGER_LEASE_TTL_MS + 5_000))) {
-          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${held.pid}) after its TTL — stop it or check .cotal/manager.log`));
+          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${held.pid}) after its TTL - stop it or check .cotal/manager.log`));
           process.exit(1);
         }
         startManagerDetached({ space, server: connection.server, runtime });
@@ -199,25 +223,25 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
       // `held` snapshot, which can turn over during the probe / a concurrent start — TOCTOU). Fail LOUD if
       // a foreign-checkout or wrong-runtime manager won the space before we launch into it.
-      if (!(await waitManagerReady(ep))) {
-        console.error(c.red("✗ manager did not become ready for control — see .cotal/manager.log"));
+      if (!(await waitManagerReady(ep, undefined, tier))) {
+        console.error(c.red("✗ manager did not become ready for control - see .cotal/manager.log"));
         process.exit(1);
       }
       const live = await ep.readManagerLease();
       if (!live) {
-        console.error(c.red(`✗ "${space}" has no manager lease after the manager became ready — re-run \`cotal spawn -f\``));
+        console.error(c.red(`✗ "${space}" has no manager lease after the manager became ready - re-run \`cotal spawn -f\``));
         process.exit(1);
       }
       if (resolve(live.root) !== resolve(root)) {
-        console.error(c.red(`✗ a manager from a different checkout serves "${space}" (root ${live.root}) — stop it, or run spawn -f from there`));
+        console.error(c.red(`✗ a manager from a different checkout serves "${space}" (root ${live.root}) - stop it, or run spawn -f from there`));
         process.exit(1);
       }
       if (live.runtime !== runtime) {
-        console.error(c.red(`✗ a ${live.runtime} manager already serves "${space}" but runtime ${runtime} was requested — stop it, or match it with --runtime ${live.runtime}`));
+        console.error(c.red(`✗ a ${live.runtime} manager already serves "${space}" but runtime ${runtime} was requested - stop it, or match it with --runtime ${live.runtime}`));
         process.exit(1);
       }
       for (const e of agentPlan.willCreate) {
-        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name);
+        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, tier);
         if (!reply.ok) {
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
           continue;

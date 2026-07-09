@@ -38,7 +38,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   let runtime = defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
     if (!RUNTIME_OVERRIDES.includes(v.runtime as RuntimeMode)) {
-      console.error(c.red(`unknown runtime "${v.runtime}" — expected ${RUNTIME_OVERRIDES.join(", ")}`));
+      console.error(c.red(`unknown runtime "${v.runtime}" - expected ${RUNTIME_OVERRIDES.join(", ")}`));
       process.exit(1);
     }
     runtime = v.runtime as RuntimeMode;
@@ -123,7 +123,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
         continue;
       }
-      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath));
+      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner));
       if (!reply.ok) {
         console.error(c.red(`✗ ${la.name}: ${reply.error}`));
         continue;
@@ -147,7 +147,7 @@ const managerCommands: Command[] = [
     name: "supervise",
     group: "Manager",
     summary:
-      "run a manager — [--runtime <pty|tmux|cmux>] (default pty; tmux/cmux are explicit-only, each teammate in its own window/tab) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
+      "run a manager - [--runtime <pty|tmux|cmux>] (default pty; tmux/cmux are explicit-only, each teammate in its own window/tab) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },

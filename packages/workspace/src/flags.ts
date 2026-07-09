@@ -30,6 +30,7 @@ export const launchFlags = [
   { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
   { name: "model", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },
   { name: "variant", type: "string", value: "<v>", description: "model variant override (connector-defined; wins over the agent file's variant:)" },
+  { name: "opt", type: "string", multiple: true, value: "<k=v>", description: "connector-specific launch option (repeatable); wins per-key over the agent file's launchOptions:" },
   { name: "cwd", type: "string", value: "<dir>", description: "working directory to root the agent at" },
   { name: "prompt", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
   { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (claude only; detached: pair with --cwd)" },
@@ -40,3 +41,33 @@ export const launchFlags = [
   { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override" },
   { name: "allow-publish", type: "string", value: "<a,b>", description: "post ACL override" },
 ] as const satisfies readonly FlagSpec[];
+
+/** Parse repeated `--opt key=value` pairs into the opaque launch-options map. The key is the text
+ *  before the first `=`; the value is the remainder (may itself contain `=`). Fails loud on a
+ *  missing `=`, an empty key, or a duplicate key — never silent last-wins. Values are strings (the
+ *  CLI has no types); the consuming connector coerces. Returns undefined when there are none. */
+export function parseLaunchOptions(pairs: string[] | undefined): Record<string, string> | undefined {
+  if (!pairs?.length) return undefined;
+  const out: Record<string, string> = {};
+  for (const raw of pairs) {
+    const eq = raw.indexOf("=");
+    if (eq === -1) throw new Error(`--opt must be key=value (got "${raw}")`);
+    const key = raw.slice(0, eq).trim();
+    if (!key) throw new Error(`--opt has an empty key (got "${raw}")`);
+    if (key in out) throw new Error(`--opt "${key}" given more than once`);
+    out[key] = raw.slice(eq + 1);
+  }
+  return out;
+}
+
+/** Merge two opaque launch-option maps per key — `override` (e.g. a `--opt` flag) wins over `base`
+ *  (e.g. the persona file's `launchOptions:`), mirroring how `--model`/`--variant` beat the file.
+ *  Returns undefined when the result is empty, so an absent bag never becomes an empty object. */
+export function mergeLaunchOptions(
+  base: Record<string, unknown> | undefined,
+  override: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!base && !override) return undefined;
+  const merged = { ...base, ...override };
+  return Object.keys(merged).length ? merged : undefined;
+}
