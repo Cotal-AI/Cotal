@@ -68,6 +68,10 @@ try {
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"] })),
     log: () => {},
   });
+  // Barrier: flush so the callout's SUBSCRIBE is registered server-side BEFORE the deny-connect fires.
+  // Without it, a slow (Windows/CI) sub registration loses the race: the server's auth request reaches
+  // no responder and the connect hangs to the timeout instead of getting the prompt signed deny.
+  await calloutNc.flush();
 
   // A user-mode connect that the callout will deny. With the bug the deny can't encode → this hangs to the
   // connect timeout; with the fix the server rejects promptly carrying the (folded) reason.
