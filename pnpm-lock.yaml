@@ -115,6 +115,8 @@ importers:
 
   examples/04-gateway-council-review/target: {}
 
+  examples/05-code-review-bench-local: {}
+
   extensions/cmux:
     dependencies:
       '@cotal-ai/core':

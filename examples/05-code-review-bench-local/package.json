@@ -1,0 +1,21 @@
+{
+  "name": "@cotal-ai/example-05-code-review-bench-local",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "tsx src/bench.ts setup",
+    "preflight": "tsx src/bench.ts preflight",
+    "run:one": "tsx src/bench.ts run --limit 1",
+    "run:three": "tsx src/bench.ts run --limit 3",
+    "run:pilot": "tsx src/bench.ts run --one-per-source --limit 5",
+    "run:all": "tsx src/bench.ts run",
+    "judge:local": "tsx src/bench.ts judge-local",
+    "attribute": "tsx src/attribute.ts",
+    "variants": "tsx src/variants.ts",
+    "debate": "tsx src/debate.ts",
+    "triage": "tsx src/triage.ts",
+    "mesh": "tsx src/mesh.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

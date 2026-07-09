@@ -1,0 +1,30 @@
+apiVersion: cotal/v1
+kind: Mesh
+space: __SPACE__
+runtime: pty
+agent: opencode
+personaPermissions: reject
+
+agents:
+  bug-hunter:
+    persona: ./bug-hunter.md
+    agent: opencode
+    model: openai/gpt-5.5
+    role: debater
+  breaker:
+    persona: ./breaker.md
+    agent: opencode
+    model: openai/gpt-5.5
+    role: debater
+  keeper:
+    persona: ./keeper.md
+    agent: opencode
+    model: openai/gpt-5.5
+    role: debater
+
+channels:
+  review.debate:
+    description: Debate room for disputed findings; reviewers vote keep or drop.
+    subscribe: [bug-hunter, breaker, keeper]
+    allowSubscribe: [bug-hunter, breaker, keeper]
+    allowPublish: [bug-hunter, breaker, keeper]
