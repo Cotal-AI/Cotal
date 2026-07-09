@@ -140,6 +140,47 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   writeFileSync(manifestPath, good);
 }
 
+// -- C4: legacy web package name recovers through the canonical @cotal-ai/web package -----------
+{
+  const good = JSON.parse(readFileSync(manifestPath, "utf8"));
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      {
+        extensions: [
+          ...good.extensions,
+          {
+            pkg: "cotal-web",
+            version: "0.10.0",
+            spec: "/tmp/no-longer-portable/implementations/web",
+            commands: [{ name: "web", summary: "legacy dashboard" }],
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  const stale = cotal(["web"]);
+  ok(
+    "missing legacy cotal-web prescribes the canonical package, not the stale local path",
+    stale.status === 1 && /extension cotal-web/.test(stale.stderr) && /cotal ext add @cotal-ai\/web/.test(stale.stderr) && !/no-longer-portable/.test(stale.stderr),
+    stale.stderr.slice(0, 300),
+  );
+
+  const webExt = fixture("@cotal-ai/web", GOOD.replace('name: "hello-ext"', 'name: "web"'));
+  const added = cotal(["ext", "add", webExt]);
+  ok("adding @cotal-ai/web replaces legacy cotal-web", added.status === 0, added.stderr.slice(-400));
+  const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+  ok(
+    "manifest keeps @cotal-ai/web and drops cotal-web",
+    updated.extensions.some((e: { pkg?: string; spec?: string }) => e.pkg === "@cotal-ai/web" && e.spec === "@cotal-ai/web") &&
+      !updated.extensions.some((e: { pkg?: string }) => e.pkg === "cotal-web"),
+    updated.extensions,
+  );
+  ok("canonical remove also clears the web extension", cotal(["ext", "remove", "@cotal-ai/web"]).status === 0);
+}
+
 // -- D: version skew -------------------------------------------------------------------------------
 {
   const meta = JSON.parse(readFileSync(installedPkg, "utf8"));

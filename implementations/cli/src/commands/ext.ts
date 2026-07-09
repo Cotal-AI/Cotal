@@ -16,6 +16,17 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 
+const WEB_EXTENSION_PKG = "@cotal-ai/web";
+const LEGACY_WEB_EXTENSION_PKGS = new Set(["cotal-web"]);
+
+function manifestSpec(pkg: string, resolved: string): string {
+  return pkg === WEB_EXTENSION_PKG ? WEB_EXTENSION_PKG : resolved;
+}
+
+function isLegacyWebReplacement(pkg: string, other: InstalledExtension): boolean {
+  return pkg === WEB_EXTENSION_PKG && LEGACY_WEB_EXTENSION_PKGS.has(other.pkg);
+}
+
 /**
  * `cotal ext` — operator-installed CLI extensions. `add` installs an npm package into the
  * cotal-owned prefix (never the user's project), imports it ONCE so it self-registers into the
@@ -166,15 +177,20 @@ async function add(spec: string): Promise<void> {
   // registry during this add (they aren't imported), so their CACHED names are checked explicitly —
   // a duplicate fails the add under the same contract, naming both sides.
   const manifest = loadExtensionsManifest();
+  const replaced = new Set<string>();
   for (const cm of contributed) {
     const other = manifest.extensions.find((e) => e.pkg !== pkg && e.commands.some((oc) => oc.name === cm.name));
     if (other) {
+      if (isLegacyWebReplacement(pkg, other)) {
+        replaced.add(other.pkg);
+        continue;
+      }
       fail(pkg, `contributes "${cm.name}", already provided by installed extension ${other.pkg}@${other.version} - two extensions cannot claim one command; \`cotal ext remove ${other.pkg}\` first if you want this one`);
     }
   }
   const version = pkgMeta.version ?? "0.0.0";
-  const entry: InstalledExtension = { pkg, version, spec: resolved, commands: contributed.map(cacheCommand) };
-  saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg), entry] });
+  const entry: InstalledExtension = { pkg, version, spec: manifestSpec(pkg, resolved), commands: contributed.map(cacheCommand) };
+  saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg && !replaced.has(e.pkg)), entry] });
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
   console.log(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - commands: ${contributed.map((cm) => cm.name).join(", ")}`));
 
@@ -210,19 +226,19 @@ function packageNameFromSpec(resolved: string, isPath: boolean): string {
 
 async function remove(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
-  const entry = manifest.extensions.find((e) => e.pkg === pkg);
+  const entry = manifest.extensions.find((e) => e.pkg === pkg) ?? (pkg === WEB_EXTENSION_PKG ? manifest.extensions.find((e) => LEGACY_WEB_EXTENSION_PKGS.has(e.pkg)) : undefined);
   if (!entry) {
     console.error(c.red(`✗ no installed extension "${pkg}" - see \`cotal ext list\``));
     process.exit(1);
   }
-  const r = npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
+  const r = npm(["remove", "--no-audit", "--no-fund", entry.pkg], extensionsDir());
   if (r.status !== 0) {
     console.error(c.red(`✗ npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`));
     process.exit(1);
   }
-  saveExtensionsManifest({ extensions: manifest.extensions.filter((e) => e.pkg !== pkg) });
-  provenance.wrote(`extensions manifest (−${pkg})`, extensionsManifestPath());
-  console.log(c.green(`✓ removed ${pkg}`) + c.dim(` - commands gone: ${entry.commands.map((cm) => cm.name).join(", ")}`));
+  saveExtensionsManifest({ extensions: manifest.extensions.filter((e) => e.pkg !== entry.pkg) });
+  provenance.wrote(`extensions manifest (−${entry.pkg})`, extensionsManifestPath());
+  console.log(c.green(`✓ removed ${entry.pkg}`) + c.dim(` - commands gone: ${entry.commands.map((cm) => cm.name).join(", ")}`));
 }
 
 function list(): void {
