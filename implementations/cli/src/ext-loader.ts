@@ -11,6 +11,21 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
 
+const WEB_EXTENSION_PKG = "@cotal-ai/web";
+const LEGACY_WEB_EXTENSION_PKGS = new Set(["cotal-web"]);
+
+function reAddSpec(ext: InstalledExtension): string {
+  return ext.pkg === WEB_EXTENSION_PKG || LEGACY_WEB_EXTENSION_PKGS.has(ext.pkg) ? WEB_EXTENSION_PKG : ext.spec;
+}
+
+function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
+  const message = e instanceof Error ? e.message : String(e);
+  const compatibility = /does not provide an export named/.test(message) && /@cotal-ai\/(core|workspace)/.test(message)
+    ? " (the extension is not compatible with this cotal binary's linked @cotal-ai/* packages; update the binary and extension together)"
+    : "";
+  return new Error(`extension ${pkg}@${ext.version} failed to import: ${message}${compatibility} - reinstall it: \`cotal ext add ${reAddSpec(ext)}\``);
+}
+
 /**
  * The installed-extensions loader — opt-in for the PUBLISHED binary only (`runCli(…, { extensions:
  * true })`); library composition roots keep the explicit-import model.
@@ -102,11 +117,11 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
   const onDisk = installedExtensionVersion(pkg);
   if (!onDisk) {
-    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
+    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${reAddSpec(ext)}\` again`);
   }
   if (onDisk !== ext.version) {
     throw new Error(
-      `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${reAddSpec(ext)}\``,
     );
   }
   const dir = extensionPackageDir(pkg);
@@ -121,11 +136,11 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   try {
     await import(pathToFileURL(join(dir, entry)).href); // self-registers into OUR registry (core is linked)
   } catch (e) {
-    throw new Error(`extension ${pkg}@${ext.version} failed to import: ${(e as Error).message} - reinstall it: \`cotal ext add ${ext.spec}\``);
+    throw importFailure(pkg, ext, e);
   }
   const live = registry.all<Command>("command").find((cm) => cm.name === stub.name);
   if (!live) {
-    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" - its cache is stale; re-add it: \`cotal ext add ${ext.spec}\``);
+    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" - its cache is stale; re-add it: \`cotal ext add ${reAddSpec(ext)}\``);
   }
   return live;
 }
