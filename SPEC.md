@@ -887,7 +887,7 @@ sufficient *authority* identity on this surface. Two further identity components
   know the serving epoch — so **no subject-level fence for ingress exists or can exist**. An
   un-revoked superseded serve credential remains a member of the class queue group and can
   consume (and externally effect, and never validly answer) one call in N. Takeover therefore
-  carries a **normative barrier, in order**: advance the epoch by CAS → freeze issuance for
+  carries a **normative barrier, in order**: freeze issuance for
   the lifecycle in the credential ledger (below) → revoke EVERY active credential-ledger
   row under the lifecycle prefix — every root (the superseded `currentCredentialId` and any
   earlier unexpired root: each root mint, initial or rotation, writes its own ledger row)
@@ -899,7 +899,14 @@ sufficient *authority* identity on this surface. Two further identity components
   credential's principal
   cluster-wide and verify the re-scan found none (the delivery endpoint's `evictPrincipal`:
   system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on partial
-  scans; Appendix B) → only then activate the successor's serve subscription. Where
+  scans; Appendix B) → **only THEN advance the process epoch by CAS (N→N+1), reopen the gate
+  at the new generation, and activate the successor's serve subscription**. The epoch CAS is
+  LAST, not first: a superseded process is revoked and evicted before the successor's epoch
+  exists, so it cannot publish a reply or event in a window between the CAS and the eviction —
+  the egress epoch is honest attribution precisely because no live predecessor egress survives
+  the barrier. (A reply the predecessor emitted for an in-flight call before eviction reaches
+  a caller only within that caller's own deadline and from a not-yet-evicted process; the
+  barrier's job is that no such process remains once the successor answers.) Where
   revocation or verified eviction is unavailable (e.g. static credential material
   pre-rotation, Appendix B), takeover MUST fail loud rather than proceed.
 
@@ -926,7 +933,13 @@ no order: each sturdy handle has an auth-bucket gate `srcgate.<issuerKeyId>.<id>
 rows, revision-pinned-CASes the source gate of EVERY handle in the presented chain (plus the
 lifecycle gate below), releasing only if all are still `open` at their observed revisions. An
 in-flight redemption under a handle being revoked therefore either finishes before the freeze
-(its rows are in the enumeration) or loses a CAS and never releases.
+(its rows are in the enumeration) or loses a CAS and never releases. **Handle revocation
+carries the SAME cluster-wide eviction as a lifecycle barrier** (§13.9 `evictPrincipal`):
+after freezing the source gate and enumerating `bysrc.`, revocation revokes every descendant
+credential AND verifies revocation enforced on every server, then evicts and re-scans the live
+connections of every revoked credential's principal, fail-closed — an already-connected
+descendant credential is never silently left with live grants. The handle status write is
+acked only after that eviction is verified complete.
 
 An unledgered mint MUST NOT occur (the ledger write precedes credential
 release, fail-closed), and the rule carries a mechanical audit invariant in the style of the
@@ -1351,7 +1364,14 @@ raw submissions.
    BEFORE acceptance) and then decides each request exactly once by publishing a
    **decision fact** to the caller-scoped subject
    `epf.<endpoint>.dec.<cOwner>.<cActor>.<cUid>.<id>` with create-only CAS (expected last
-   sequence on the subject = 0), so distinct callers can never squat each other's ids.
+   sequence on the subject = 0), so distinct callers can never squat each other's ids. **For
+   an action command the canonicalizer additionally binds the goal before accepting**: it
+   create-only-CASes a **goal-bind fact** `epf.<endpoint>.goal.<cOwner>.<cActor>.<cUid>.<goalId>.bind`
+   carrying the accepted fingerprint, and rejects (`conflict`) any later submission whose
+   `goalId` matches but whose fingerprint differs — so two distinct `id`s naming one `goalId`
+   cannot both be accepted-and-effected (the decision CAS keys on `id`, which alone would let
+   both through; the goal-bind CAS keys on `goalId`, which stops the second BEFORE acceptance
+   and effect, not at the terminal-result stage where the effect has already happened).
    The decision is `accepted` or `rejected` (with the catalog error) — **rejection is as
    durable, caller-readable, and idempotent as acceptance**, so a permanently invalid
    submission is distinguishable from a lost one. First decision wins atomically; a later
@@ -1395,7 +1415,9 @@ raw submissions.
    durable (§13.9). No acceptance is ever executed twice, because the fact names its route),
    readinessDeadlineMs?: <the acceptance-relative readiness bound, present iff the command
    declares bounded readiness, §13.6 — persisted HERE because it is goal state, not the
-   request's decision deadline>, sourceSeq, ts }`. The
+   request's decision deadline>,
+   workExpiry?: <absolute expiry of a pool-routed item, present iff `route` is a pool, §13.8 —
+   survives reconciliation re-enqueue unchanged>, sourceSeq, ts }`. The
    canonicalizer preflights the **serialized decision fact** — not merely the inline args —
    against `max_payload`: a submission whose acceptance fact would not fit is rejected
    `resource-exhausted`, and the rejection fact always fits by construction — every field
@@ -1565,8 +1587,12 @@ stop-plus-publish is NOT assumed at the 2.12 floor). A firing timer carries
 `(timerId, generation)`; the endpoint validates the generation against current status before
 acting — stale fires **no-op**. Because status and timer are two resources with no atomic
 bridge, a **durable reconciler** on the owning endpoint repairs the pair after crash or
-leadership change: every `waiting` status without a current-generation schedule is re-armed;
-orphaned schedules no-op. Cancellation of a timer is cleanup, never the correctness boundary.
+leadership change WITHOUT any status↔schedule read the no-read timer plane cannot serve: the
+reconciler **re-emits a `.schedule` request at the current generation for every `waiting`
+status it owns**, and a same-`(timerId, generation)` arm is **idempotent at the timer writer**
+(it re-derives the same `.armed` message; a duplicate is a no-op replacement), so
+over-emission is harmless and a missing schedule is repaired without the reconciler ever
+having to observe whether one exists. Stale-generation fires still no-op at the handler. Cancellation of a timer is cleanup, never the correctness boundary.
 Timer retention MUST exceed the maximum deadline plus a recovery margin. Resume: a `resume`
 command presenting the checkpoint token; resume authorization is **one-use** (journaled by
 create-only CAS on the checkpoint token; duplicate resume is `conflict`) and holder-bound
@@ -1922,12 +1948,16 @@ client code). The discovery protocol itself is versioned additively under `proto
 - **Retention floors.** Submissions ≥ recovery/redelivery lag (§13.12; native dedupe is not
   relied upon, §13.4); facts/tombstones ≥ idempotency horizon;
   results ≥ result retention; receipts ≥ receipt retention; timers ≥ max deadline + recovery
-  margin. **Pool coupling:** EPW MUST set a max age — unbounded item residence is
-  non-conformant — and a pool item's decision and `wrk` terminal facts are retained ≥ that
-  max age + recovery margin, so a live (or crash-recovering) item can never outlive the
+  margin. **Pool coupling:** every accepted pool item carries an **absolute work expiry**
+  (`workExpiry`, set at acceptance in the AcceptanceFact, NOT a per-message age a
+  reconciliation re-publish would reset — a re-enqueue re-publishes with the SAME `workExpiry`,
+  and the item is dead once it passes, leased or not). The EPW stream's max age is ≥ the
+  maximum `workExpiry` + recovery margin, and a pool item's decision and `wrk` terminal facts
+  are retained ≥ that same bound, so a live (or crash-recovering) item can never outlive the
   facts that identify it as accepted or settled: a decision that expired under a still-live
   item would let a reused id collide with the old enqueue, and an expired `wrk` under a
-  lost owner ack would make settled work unrecognizable on redelivery.
+  lost owner ack would make settled work unrecognizable on redelivery. A reused `id` becomes
+  new work only after the old item's `workExpiry` AND its facts' retention have both passed.
   An endpoint MUST refuse to start against a store below its declared floors.
 - **Backpressure and budgets.** Bounded consumer pending (default 1024), bounded
   virtual-endpoint pools and session windows, flow control on watches; overload is
@@ -2081,11 +2111,11 @@ tokens.
 | Reply publish | the endpoint's serve credential | `ep.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*` | direct — attribution-pinned; addressing by nonce |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct — explicitly untrusted input |
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only — and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
-| Canonical decisions + quarantine | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>` and `epf.<endpoint>.quar.>` (create-only CAS per subject) | mediated |
+| Canonical decisions + quarantine + goal-bind | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>`, `epf.<endpoint>.quar.>`, and `epf.<endpoint>.goal.*.*.*.*.bind` (the per-goal first-wins bind, §13.4 — create-only CAS per subject; the `.bind` leaf is disjoint from the commit principal's `goal….result`/status writes, so no writer overlap) | mediated |
 | Canonicalizer CAS-winner + terminal read | the endpoint's canonicalizer principal | `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.dec.>` + `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.quar.>` (last-by-subject, subject-confined; observes the winning fact on redelivery, §13.4) + `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.wrk.>` (READ-ONLY: the reconciliation predicate's terminal probe, §13.6 — `wrk` writes stay with the commit principal, row below) | mediated |
 | Decision / goal-result / receipt read (caller) | capability holder (with every journal capability) | **bind-only** on the provisioner-pre-created pull durable `decD = dec_<cUid>-<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.<cO>.<cA>.<cUid>.>`): `$JS.API.CONSUMER.INFO.EPF_<space>.<decD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<decD>`, `$JS.ACK.EPF_<space>.<decD>.>`; **plus, for every action capability, the caller-scoped goal-result durable** `goalD = goal_<cUid>-<e>` (exact filter `cotal.<space>.epf.<endpoint>.goal.<cO>.<cA>.<cUid>.>`, same bind-only INFO/MSG.NEXT/ACK shape) so the caller can watch its own terminal `goal….result` fact — the action contract's caller-visible outcome (§13.6), which has no reply rail; plus last-by-subject lookups `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.goal.<cO>.<cA>.<cUid>.>` and `….receipt.<cO>.<cA>.<cUid>.>` on its own caller-scoped subtrees (§13.2) | direct read — caller-scoped subtrees, literal names pinned to the caller UID |
-| Accepted-fact consume (effects) | every instance's serve credential, on the endpoint's ONE shared durable | **bind-only** on the provisioner-pre-created pull durable `effD = eff_<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.>`, `AckExplicit`): `$JS.API.CONSUMER.INFO.EPF_<space>.<effD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>` — instances **pull-compete on the shared durable** so each accepted decision is delivered to exactly one live instance (at-least-once): a per-instance consumer over the class-wide decision subtree would be broadcast, and every instance would duplicate the external effect. Effects consume canonical facts, never raw submissions (§13.4); a rejected/quarantined decision is ack-skipped, and so is any acceptance whose `route` is a pool (§13.4 — the pool's worker path executes it; effects MUST NOT) | direct read — endpoint-scoped, work-shared |
-| Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.>`, `epf.<endpoint>.receipt.>` (caller-scoped subjects, §13.2), `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back via `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.<goal\|receipt\|wrk\|cp>.>` (last-by-subject, one grant per family) | mediated |
+| Accepted-fact consume (effects) | every instance's serve credential, on the endpoint's ONE shared durable | **bind-only** on the provisioner-pre-created pull durable `effD = eff_<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.>`, `AckExplicit`): `$JS.API.CONSUMER.INFO.EPF_<space>.<effD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>` — instances **pull-compete on the shared durable** so each accepted decision is delivered to exactly one live instance (at-least-once): a per-instance consumer over the class-wide decision subtree would be broadcast, and every instance would duplicate the external effect. Effects consume canonical facts, never raw submissions (§13.4); a rejected/quarantined decision is ack-skipped, and so is any acceptance whose `route` is a pool (§13.4 — the pool's worker path executes it; effects MUST NOT). **Ack barrier:** an effecting instance MUST ack a `dec` message ONLY after its effect is durably recorded — the terminal `goal….result` fact (or, for an idempotent-by-`id` ephemeral effect, its cached result) exists — never before; an ack-before-effect would let a crash drop journal work the at-least-once contract promised. A crash before the ack redelivers the decision to another competing instance, which observes the existing terminal fact (idempotent) or effects it | direct read — endpoint-scoped, work-shared |
+| Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.*.*.*.*.result` (the goal terminal result; the `.bind` leaf under `goal.>` is the canonicalizer's, row above), `epf.<endpoint>.receipt.>` (caller-scoped subjects, §13.2), `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back via `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.<goal\|receipt\|wrk\|cp>.>` (last-by-subject, one grant per family) | mediated |
 | Event/progress read (caller) | capability holder (per read capability) | live subscribe on the granted `epe` subtrees (fully-qualified `cotal.<space>.epe.…` subjects in `sub.allow`, mirrored in Appendix B), incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>`; filtered replay **bind-only** on the provisioner-pre-created pull durables `eveD-n = eve_<cUid>-<e>-<n>` (one per granted subtree, exact full-tail filter): `$JS.API.CONSUMER.INFO.EPE_<space>.<eveD-n>`, `$JS.API.CONSUMER.MSG.NEXT.EPE_<space>.<eveD-n>`, `$JS.ACK.EPE_<space>.<eveD-n>.>` | direct read — mint-time containment, filter = the granted subtree |
 | Record read/watch | capability holder / serve credential (per read capability: attribute reads, scatter registry freeze, goal status watch) | per granted key subtree (§13.7 grammars): `$JS.API.DIRECT.GET.KV_cotal_records_<space>.$KV.cotal_records_<space>.<granted subtree>` (last-by-subject read) + watch **bind-only** on the provisioner-pre-created pull durables `recD-n = rec_<uid>-<n>` (one per granted subtree, exact `$KV.…` filter): `$JS.API.CONSUMER.INFO.KV_cotal_records_<space>.<recD-n>`, `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_<space>.<recD-n>`, `$JS.ACK.KV_cotal_records_<space>.<recD-n>.>` (pull-based level-triggered watch; fell-behind ⇒ re-read, §13.4) | direct read — subtree pinned per capability |
 | Claim / action / checkpoint commits | the owning endpoint's commit path | its own record keys (`goal`/`cp`/`lease` grammars, §13.7, per the writer table) + the enumerated commit fact families of the Result row above — never `dec.>`/`quar.>` | mediated (validates fencing, lease clock, lifecycle, epoch) |
@@ -2300,7 +2330,7 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | `EPW_<space>` stream | `cotal.<space>.epw.>` (work pools; one item per subject, §13.2) | WorkQueue; provisioner-pre-created non-overlapping exact-filter per-pool consumers (§13.9); `allow_direct=true` (the subject-confined reconciliation probe — an acked item leaves the WorkQueue, an in-flight one remains readable, which is exactly the §13.6 predicate) |
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`) | per-key CAS; split `.spec`/`.status` keys; `allow_direct=true` (KV) |
-| `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY — no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states; retention ≥ max credential/session TTL + recovery margin |
+| `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY — no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states. **No bucket-wide age retention:** `gate.`, `srcgate.`, and `session.` authority keys persist until their lifecycle/handle/session is explicitly terminal (an age-evicted `open` gate would silently reopen minting, or drop a `frozen`/`retired` fence); only `cred.`/`bysrc.` rows carry a per-key TTL bounded by the credential TTL (NATS per-key message TTL, ≥ 2.12), never a bucket MaxAge |
 | `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path); stream management held by no profile (§13.9) |
 
 Claim pools are pull consumers on `EPW` with `AckExplicit`, held **only by the pool's owning
