@@ -645,12 +645,23 @@ replay a stored CHAT message whose `from.id` is another sender onto `inst.<victi
 where the recipient derives the DM sender from the subject and surfaces it as a genuine DM from
 a principal who never sent it. The v0.4 control surface closes this class by construction
 (§13.9 "Mediated reads": untrusted callers hold no raw JetStream read; reads flow through a
-trusted mediator onto the caller's own reply rail). Applying the same mediation to the v0.3
-messaging read path (chat history, DM inbox, anycast, KV watch) is the fix here too, but it is
-a change to the **already-shipped** binding with its own migration, so it is tracked as a
-distinct security remediation, NOT folded into the control-surface revision. Until then, this
-binding's read containment holds only against a *conforming* client on the v0.3 rails; the
-broker does not enforce it. See [docs/security.md](docs/security.md).
+trusted mediator onto the caller's own reply rail). **This same mediation is IN SCOPE for
+v0.4 on the messaging read path** (chat history, DM inbox, anycast, the durable backstop, KV
+watches): v0.4 is already a hard cut (§13.11), so folding the read-path change into it costs
+no additional migration — the alternative, fixing it later, would be a *second* breaking wire
+change. The normative direction is the §13.9 rule applied here: **no untrusted agent holds a
+raw consumer `CREATE`/`MSG.NEXT` or `DIRECT.GET` on `CHAT`/`DM`/`TASK`/`DLV` or the KV
+buckets**; those reads flow through the trusted reader/mediator (the §8 durable-backstop
+component, generalized) onto the agent's own confined rail. The EXACT extent — which of the
+five read paths require mediation versus which are provably safe — turns on a NATS
+delivery-mechanics question (whether a redelivered message retains its original captured
+subject, is re-captured by a destination stream, and how the receiver's subject-derived kind
+check, §12, then classifies it) that MUST be settled by a real-broker adversarial probe, not
+asserted here; that probe and the resulting exact grants land with the P1 implementation
+(where "does this contain the deputy" is a passing/failing smoke, not a paragraph). Until the
+v0.4 messaging-read mediation lands, this binding's read containment holds only against a
+*conforming* client on the v0.3 rails; the broker does not enforce it.
+See [docs/security.md](docs/security.md).
 
 ---
 
