@@ -904,7 +904,10 @@ row `{ credentialId, lifecycleUid (the holder's), source: root | handle.<issuerK
 session.<sessionId>, state: active | revoked (monotonic), exp }`, keyed
 `cred.<lifecycleUid>.<credentialId>` so both barriers enumerate a lifecycle's full descendant
 family by key prefix. An unledgered mint MUST NOT occur (the ledger write precedes credential
-release, fail-closed). Revoking a sturdy handle (§13.6) additionally revokes every active
+release, fail-closed), and the rule carries a mechanical audit invariant in the style of the
+§13.9 matrix grep test: every credential the auth authority has ever released MUST resolve
+to a `cred.<lifecycleUid>.<credentialId>` row — an issuance path that cannot show its ledger
+row is non-conformant, auditable by diffing issued-credential ids against the ledger. Revoking a sturdy handle (§13.6) additionally revokes every active
 ledger row whose `source` names it. The ledger is written only by the trusted auth path
 (§13.9 matrix; NATS binding: the auth KV, §13.12).
 
@@ -1883,7 +1886,7 @@ tokens.
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct — explicitly untrusted input |
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>` filtered `epj.<endpoint>.>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.<filter>`, `.INFO`, `.MSG.NEXT`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only) | mediated |
 | Canonical decisions + quarantine | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>` and `epf.<endpoint>.quar.>` (create-only CAS per subject) | mediated |
-| Canonicalizer CAS-winner read | the endpoint's canonicalizer principal | `$JS.API.DIRECT.GET.EPF_<space>.epf.<endpoint>.dec.>` + `….quar.>` (last-by-subject, subject-confined; observes the winning fact on redelivery, §13.4) | mediated |
+| Canonicalizer CAS-winner + terminal read | the endpoint's canonicalizer principal | `$JS.API.DIRECT.GET.EPF_<space>.epf.<endpoint>.dec.>` + `….quar.>` (last-by-subject, subject-confined; observes the winning fact on redelivery, §13.4) + `….wrk.>` (READ-ONLY: the reconciliation predicate's terminal probe, §13.6 — `wrk` writes stay with the commit principal, row below) | mediated |
 | Decision read (caller) | capability holder (with every journal capability) | `$JS.API.CONSUMER.CREATE.EPF_<space>.dec_<cUid>-*.epf.<endpoint>.dec.<cO>.<cA>.<cUid>.>` (extended single-filter create, §8 item 4), `$JS.API.CONSUMER.INFO.EPF_<space>.dec_<cUid>-*`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.dec_<cUid>-*`, `$JS.API.CONSUMER.DELETE.EPF_<space>.dec_<cUid>-*`, `$JS.ACK.EPF_<space>.dec_<cUid>-*.>` | direct read — caller-scoped subtree, name prefix pinned to the caller UID |
 | Accepted-fact consume (effects) | the owning endpoint's serve credential | `$JS.API.CONSUMER.CREATE.EPF_<space>.<effD>.epf.<endpoint>.dec.>` (single-filter), `.INFO`/`.MSG.NEXT` on `EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>` — effects consume canonical facts, never raw submissions (§13.4) | direct read — endpoint-scoped |
 | Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.>`, `epf.<endpoint>.receipt.>`, `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back via `$JS.API.DIRECT.GET.EPF_<space>.epf.<endpoint>.{goal,receipt,wrk,cp}.>` (last-by-subject) | mediated |
