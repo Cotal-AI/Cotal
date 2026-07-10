@@ -2081,13 +2081,36 @@ capabilities). Two reasons, both
 load-bearing. A NATS wildcard replaces a
 WHOLE dot-separated token and never matches inside one, so an embedded `*` in a name token
 (e.g. `dec_<uid>-*`) is a literal character, not a glob — every name token in a grant is
-fully literal. And holder-issued creates are forbidden outright because **a consumer
-create's `deliver_subject` is body-set and NOT confined by the creator's publish
-permissions** (the server's push delivery acts with stream authority — known upstream
-nats-server behavior): a holder allowed ANY consumer create, however filter-pinned, could
-configure a push consumer that re-publishes stored bytes onto arbitrary account subjects —
-a confused deputy no filter tail prevents. Pull durables minted by trusted provisioning
-are therefore the only reader shape on control-surface streams. **Subject convention:**
+fully literal.
+
+**Mediated reads (normative).** No untrusted capability holder is granted **any** raw
+JetStream read of a control-surface stream — not a consumer create, not a bind-only pull,
+not a `DIRECT.GET`. Every JetStream read is request/reply where the server delivers stored
+bytes to a **caller-chosen destination the broker does not confine to the caller's
+`pub.allow`**: a push consumer's `deliver_subject`, a pull `MSG.NEXT` request's reply
+subject, and a `DIRECT.GET` request's reply subject are all set in the request body, and the
+server's internal client publishes there regardless of the requester's publish permissions
+(confirmed on nats-server 2.14.2 for all three forms). A holder with only `MSG.NEXT` or
+`DIRECT.GET` on its own filtered reader can therefore route stored bytes onto a victim's DM,
+reply, or record subject — a confused deputy no filter tail, literal name, or pull-vs-push
+choice prevents, because the destination is the vulnerable field, not the filter. Untrusted
+callers instead read exactly as the §8 durable backstop already does — through a **trusted
+read path**, never a self-bound consumer: a caller receives its decisions, goal results,
+event catch-up, and record reads over its OWN confined rails — a live core subscription to a
+subject inside its `sub.allow` (bytes land only on the caller's own subscription), or a
+mediator that owns the reader consumer, re-authorizes each read against the caller's current
+grants, and returns bytes over the caller's own attribution-pinned reply rail
+(`ep.reply.…<caller triple>.<nonce>`: the mediator holds the publish grant, the caller the
+read grant, and the nonce confines addressing — §13.2). The mediator IS a trusted
+single-purpose principal (the delivery/read daemon, §8/Appendix B) that delivers only to the
+re-authorized caller and never proxies to an arbitrary subject; raw consumer/`DIRECT.GET`
+authority stays with trusted single-purpose infra principals (canonicalizer, commit
+principal, record writer, timer writer, the read mediator, the auth path) that deliver to
+themselves. **The exact read-command wire shape (batching, cursors, flow control) is
+deferred to the implementation (P1), where it is proven against a real broker with an
+adversarial confused-deputy smoke** — this contract fixes the boundary (untrusted callers
+never hold raw reads; reads are mediated onto confined caller rails), not the framing bytes.
+**Subject convention:**
 application subjects in rows are written relative and are prefixed `cotal.<space>.` on the
 wire; **JetStream API tails — extended-create filter tails and `DIRECT.GET` subject
 tails — are always spelled in FULL** (`cotal.<space>.…`/`$KV.…`/`$O.…`), because the API
@@ -2113,14 +2136,13 @@ tokens.
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only — and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
 | Canonical decisions + quarantine + goal-bind | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>`, `epf.<endpoint>.quar.>`, and `epf.<endpoint>.goal.*.*.*.*.bind` (the per-goal first-wins bind, §13.4 — create-only CAS per subject; the `.bind` leaf is disjoint from the commit principal's `goal….result`/status writes, so no writer overlap) | mediated |
 | Canonicalizer CAS-winner + terminal read | the endpoint's canonicalizer principal | `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.dec.>` + `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.quar.>` (last-by-subject, subject-confined; observes the winning fact on redelivery, §13.4) + `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.wrk.>` (READ-ONLY: the reconciliation predicate's terminal probe, §13.6 — `wrk` writes stay with the commit principal, row below) | mediated |
-| Decision / goal-result / receipt read (caller) | capability holder (with every journal capability) | **bind-only** on the provisioner-pre-created pull durable `decD = dec_<cUid>-<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.<cO>.<cA>.<cUid>.>`): `$JS.API.CONSUMER.INFO.EPF_<space>.<decD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<decD>`, `$JS.ACK.EPF_<space>.<decD>.>`; **plus, for every action capability, the caller-scoped goal-result durable** `goalD = goal_<cUid>-<e>` (exact filter `cotal.<space>.epf.<endpoint>.goal.<cO>.<cA>.<cUid>.>`, same bind-only INFO/MSG.NEXT/ACK shape) so the caller can watch its own terminal `goal….result` fact — the action contract's caller-visible outcome (§13.6), which has no reply rail; plus last-by-subject lookups `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.goal.<cO>.<cA>.<cUid>.>` and `….receipt.<cO>.<cA>.<cUid>.>` on its own caller-scoped subtrees (§13.2) | direct read — caller-scoped subtrees, literal names pinned to the caller UID |
+| Caller durable reads (decisions, goal results, receipts, event catch-up, record reads/watches) | the **read mediator** owns the reader consumers; the **caller** holds only its own reply rail | **Mediated (normative above).** The caller holds NO consumer/`DIRECT.GET` grant on EPF/EPE/EPC/records. It issues a read command and receives its own caller-scoped facts (`dec`/`goal…result`/`receipt` under its triple, §13.2), event catch-up, and record snapshots over its attribution-pinned reply rail `ep.reply.…<cO>.<cA>.<cUid>.<nonce>`; the mediator re-authorizes each read against the caller's current grants before delivering. Live progress is the caller's own core subscription to granted `epe` subtrees within `sub.allow` (bytes land only on its own sub). Reader consumers (`decD`/`goalD`/`eveD`/`recD`) are owned and bound by the mediator, never the caller | mediated read — confined to the caller's own rails |
 | Accepted-fact consume (effects) | every instance's serve credential, on the endpoint's ONE shared durable | **bind-only** on the provisioner-pre-created pull durable `effD = eff_<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.>`, `AckExplicit`): `$JS.API.CONSUMER.INFO.EPF_<space>.<effD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>` — instances **pull-compete on the shared durable** so each accepted decision is delivered to exactly one live instance (at-least-once): a per-instance consumer over the class-wide decision subtree would be broadcast, and every instance would duplicate the external effect. Effects consume canonical facts, never raw submissions (§13.4); a rejected/quarantined decision is ack-skipped, and so is any acceptance whose `route` is a pool (§13.4 — the pool's worker path executes it; effects MUST NOT). **Ack barrier:** an effecting instance MUST ack a `dec` message ONLY after its effect is durably recorded — the terminal `goal….result` fact (or, for an idempotent-by-`id` ephemeral effect, its cached result) exists — never before; an ack-before-effect would let a crash drop journal work the at-least-once contract promised. A crash before the ack redelivers the decision to another competing instance, which observes the existing terminal fact (idempotent) or effects it | direct read — endpoint-scoped, work-shared |
 | Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.*.*.*.*.result` (the goal terminal result; the `.bind` leaf under `goal.>` is the canonicalizer's, row above), `epf.<endpoint>.receipt.>` (caller-scoped subjects, §13.2), `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back via `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.<goal\|receipt\|wrk\|cp>.>` (last-by-subject, one grant per family) | mediated |
-| Event/progress read (caller) | capability holder (per read capability) | live subscribe on the granted `epe` subtrees (fully-qualified `cotal.<space>.epe.…` subjects in `sub.allow`, mirrored in Appendix B), incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>`; filtered replay **bind-only** on the provisioner-pre-created pull durables `eveD-n = eve_<cUid>-<e>-<n>` (one per granted subtree, exact full-tail filter): `$JS.API.CONSUMER.INFO.EPE_<space>.<eveD-n>`, `$JS.API.CONSUMER.MSG.NEXT.EPE_<space>.<eveD-n>`, `$JS.ACK.EPE_<space>.<eveD-n>.>` | direct read — mint-time containment, filter = the granted subtree |
-| Record read/watch | capability holder / serve credential (per read capability: attribute reads, scatter registry freeze, goal status watch) | per granted key subtree (§13.7 grammars): `$JS.API.DIRECT.GET.KV_cotal_records_<space>.$KV.cotal_records_<space>.<granted subtree>` (last-by-subject read) + watch **bind-only** on the provisioner-pre-created pull durables `recD-n = rec_<uid>-<n>` (one per granted subtree, exact `$KV.…` filter): `$JS.API.CONSUMER.INFO.KV_cotal_records_<space>.<recD-n>`, `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_<space>.<recD-n>`, `$JS.ACK.KV_cotal_records_<space>.<recD-n>.>` (pull-based level-triggered watch; fell-behind ⇒ re-read, §13.4) | direct read — subtree pinned per capability |
+| Live event progress (caller) | capability holder (per read capability) | a caller-owned **core subscription** to the granted `epe` subtrees (fully-qualified `cotal.<space>.epe.…` in `sub.allow`, Appendix B), incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>` — safe because a core sub delivers only to the caller's own subscription, never a caller-chosen subject; durable catch-up/replay is the mediated read above, not a self-bound consumer | direct read — own subscription only |
 | Claim / action / checkpoint commits | the owning endpoint's commit path | its own record keys (`goal`/`cp`/`lease` grammars, §13.7, per the writer table) + the enumerated commit fact families of the Result row above — never `dec.>`/`quar.>` | mediated (validates fencing, lease clock, lifecycle, epoch) |
 | Contract-artifact publication | the contract publisher principal | publish `epc.<digest-hex>` (`epc.*`), create-only per subject (`Nats-Expected-Last-Subject-Sequence: 0` — a digest subject is written at most once); read-back via the reader row below | mediated — immutable once published |
-| Contract-artifact read | **every** profile that may receive a digest reference (agents, endpoints, operators) | `$JS.API.DIRECT.GET.EPC_<space>.cotal.<space>.epc.>` — the subject-scoped last-by-subject Direct Get on the exact digest subject; one message IS the artifact (§13.7), so no consumer exists to confine; verify-on-read (§13.7) is the tamper boundary, not the ACL | direct read |
+| Contract-artifact read | trusted infra directly (`DIRECT.GET.EPC_<space>.cotal.<space>.epc.>`); untrusted callers via the read mediator | contract artifacts are content-addressed and public (verify-on-read is the tamper boundary, §13.7), so exposure is not the risk — the confused-deputy INJECTION is, so an untrusted caller's artifact fetch is mediated onto its own reply rail exactly like any other read; trusted infra fetches directly | mediated for callers / direct for infra |
 | Record write ingress (`epr`) | the owning instance | publish `epr.<endpoint>.<instanceId>.<epoch>.<kind>.<qualifier...>` — the instance's ONLY path to `svc`/`goal`/`cp` status writes; the epoch token is pinned by the serve credential, so the record writer reads the writing epoch from the broker-authenticated subject, never from payload | direct — epoch-pinned ingress to the mediated writer |
 | Record writer consume + `spec`/`status` writes | the kind's separately scoped spec/status writer principal (writer table) — **one principal and one consumer PER KIND**, never a single writer draining every kind | consume: `$JS.API.CONSUMER.CREATE.EPR_<space>.<recwD-k>.cotal.<space>.epr.*.*.*.<kind>.>` (full-tail single filter on the `<kind>` token of §13.2's `epr` grammar; `recwD-k = recw_<space>-<kind>`) + `$JS.API.CONSUMER.INFO.EPR_<space>.<recwD-k>` + `$JS.API.CONSUMER.MSG.NEXT.EPR_<space>.<recwD-k>` + `$JS.ACK.EPR_<space>.<recwD-k>.>`; write: `$KV.cotal_records_<space>.<that kind's §13.7 key grammar>.{spec,status}` — the kind token in the ingress subject is what keeps the writer separation the writer table declares | mediated per kind below — no row left open |
 | Reader/pool/effects consumer provisioning (one-shot, at capability mint / endpoint setup) | the provisioner | exact full-tail extended creates for every pre-created durable this matrix names: `$JS.API.CONSUMER.CREATE.EPW_<space>.<poolD>.cotal.<space>.epw.<e>.<pool>.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<effD>.cotal.<space>.epf.<e>.dec.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<decD>.cotal.<space>.epf.<e>.dec.<cO>.<cA>.<cUid>.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<goalD>.cotal.<space>.epf.<e>.goal.<cO>.<cA>.<cUid>.>` (per action capability), `$JS.API.CONSUMER.CREATE.EPE_<space>.<eveD-n>.<granted full-tail subtree>`, `$JS.API.CONSUMER.CREATE.KV_cotal_records_<space>.<recD-n>.$KV.cotal_records_<space>.<granted subtree>` — every create PULL, every filter a full literal tail; plus matching `CONSUMER.DELETE` for deprovisioning (lifecycle-keyed names, §13.1) | mediated — trusted provisioning only |
@@ -2552,11 +2574,11 @@ There is **no allow-all credential**. The privileged host duties are split into 
 single-function profiles, each granting only the verbs its function needs and none other:
 
 - `provisioner`: pre-creates the per-instance lifecycle-scoped durables (`dm_…-<uid>`,
-  `svc_…`, the per-member `dlv_…-<uid>` handoff) AND every control-surface pre-created
-  consumer of the §13.9 matrix — `poolD`, `effD`, and the per-capability reader durables
-  `decD`/`goalD`/`eveD-n`/`recD-n` (all PULL, all exact full-tail filters, per the one-shot
-  provisioning row) — and mints scoped credentials; ephemeral
-  onboarding authority.
+  `svc_…`, the per-member `dlv_…-<uid>` handoff) AND the trusted control-surface consumers of
+  the §13.9 matrix — `poolD`, `effD`, and the read mediator's reader durables
+  (`decD`/`goalD`/`eveD-n`/`recD-n`, owned by the mediator, never by callers — §13.9
+  "Mediated reads") — all PULL with exact full-tail filters; and mints scoped credentials;
+  ephemeral onboarding authority.
 - `deprovisioner`: target-pinned teardown of ONE retired lifecycle's footprint, minted per
   teardown with the target's `(principal, lifecycleUid)` in every exact-name grant — it can
   delete only lifecycle-keyed names, so it structurally cannot reach a same-name successor
