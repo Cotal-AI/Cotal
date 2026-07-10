@@ -19,16 +19,9 @@ export async function down(args: ParsedArgs): Promise<void> {
   // The auth service's pid file is SPACE-scoped (auth-service.<space>.pid) — resolve the space
   // first, so `down` can only ever stop THIS folder's space's daemon, never another space's.
   const space = resolveSpace(process.cwd());
-  const targets: Array<[string, string]> = [
-    ["manager.pid", "manager"],
-    ["delivery.pid", "delivery daemon"],
-    [`auth-service.${encodeURIComponent(space)}.pid`, "user-auth service"],
-    ["web.pid", "web dashboard"],
-    ["nats.pid", "nats-server"],
-  ];
+  const targets = pidfileTargets(space);
   let any = false;
-  // Sequential, in declared order (manager → delivery → web → nats): the manager's graceful shutdown
-  // releases its lease OVER nats, so nats must outlive it. Each stop awaits the real exit.
+  // Sequential, in declared (stop) order — see pidfileTargets. Each stop awaits the real exit.
   for (const [file, label] of targets) {
     const pidPath = cotalPath(file);
     if (!existsSync(pidPath)) continue;
@@ -50,8 +43,22 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
 }
 
+/** Every pidfile a background mesh records under `.cotal/`, in stop order (manager → delivery →
+ *  auth service → web → nats: the manager's graceful shutdown releases its lease OVER nats, so nats
+ *  must outlive it). Shared with `cotal clean`, which refuses local-state deletion while any of
+ *  these is still alive. */
+export function pidfileTargets(space: string): Array<[file: string, label: string]> {
+  return [
+    ["manager.pid", "manager"],
+    ["delivery.pid", "delivery daemon"],
+    [`auth-service.${encodeURIComponent(space)}.pid`, "user-auth service"],
+    ["web.pid", "web dashboard"],
+    ["nats.pid", "nats-server"],
+  ];
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const isAlive = (pid: number): boolean => {
+export const isAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
 

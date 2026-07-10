@@ -16,6 +16,7 @@ import { completion, completionComplete, complete } from "./commands/completion.
 import { mint } from "./commands/mint.js";
 import { channels } from "./commands/channels.js";
 import { history } from "./commands/history.js";
+import { clean, cleanComplete } from "./commands/clean.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
@@ -101,6 +102,24 @@ const baseCommands: Command[] = [
       { name: "dry-run", type: "boolean", description: "print the plan, mutate nothing" },
     ],
     run: down,
+  },
+  {
+    kind: "command",
+    name: "clean",
+    group: "Mesh",
+    summary:
+      "configurable cleanup - `history` purges the live backlog; `store`/`all` wipe the stopped mesh's local state",
+    usage:
+      "clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>]",
+    positionals: "<history|store|all>",
+    flags: [
+      ...targetFlags,
+      { name: "dms", type: "boolean", description: "history: also clear DM history" },
+      { name: "store-dir", type: "string", value: "<dir>", description: "store/all: JetStream store directory (default .cotal/nats)" },
+      { name: "force", type: "boolean", description: "required - destructive, no prompting" },
+    ],
+    run: clean,
+    complete: cleanComplete,
   },
   {
     kind: "command",
@@ -211,7 +230,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "history",
     group: "Messaging",
-    summary: "clear retained message history",
+    summary: "clear retained message history (alias of `clean history`)",
     usage: "history clear --force [--dms] [--space <s>]",
     positionals: "<clear>",
     flags: [

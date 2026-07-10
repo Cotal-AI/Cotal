@@ -84,6 +84,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
+  // The unified cleanup verb: `history clear`'s grammar + the local-state targets' --store-dir.
+  clean: { flags: [...TARGET, "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server
   // moved to implementations/delivery as `feedback-intake`.
   feedback: {

@@ -32,6 +32,7 @@ ships this way; see [`web`](#web)).
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
 | Set up & lifecycle | [`down`](#down) | Stop a background mesh, or tear down a manifest / `spawn -f` deploy |
+| Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
 | Set up & lifecycle | [`meshes`](#meshes-use-status) | List the running meshes on this machine |
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#meshes-use-status) | Read-only diagnostics for setup, processes, and the selected mesh |
@@ -130,7 +131,34 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--dry-run` | off | Print the plan, mutate nothing |
 
 Bare `cotal down` stops a background mesh started with `cotal up --detach`. The `-f` / `--run` forms
-tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh.
+tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh. `down` never
+deletes on-disk state; that is [`clean`](#clean).
+
+## clean
+
+```bash
+cotal clean <history|store|all> --force
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | `history`: target mesh |
+| `--dms` | off | `history`: also clear DM history |
+| `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
+| `--force` | — | Required: destructive, no prompting |
+
+One configurable cleanup verb; every target requires `--force`.
+
+- `history` purges the retained message backlog on the **running** broker (channels, plus DMs
+  with `--dms`). The same operation as [`history clear`](#history), which stays as an alias.
+- `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
+  consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
+  minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
+- `all` is `store` plus the space identity (`.cotal/auth`) and the local creds derived from it;
+  the next `cotal up` mints a fresh identity.
+
+`history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
+alive (run `cotal down` first). Personas (`.cotal/agents`) are never touched.
 
 ## meshes, use, status
 
@@ -319,9 +347,9 @@ cotal history clear --force [--dms] [--space <s>]
 | `--dms` | off | Also clear DM history |
 | `--force` | — | Required: clear without prompting |
 
-Purges retained channel history; `--dms` extends it to direct-message history. On a user-auth
-mesh the purge rides a short-lived purger view over your login, which needs ledger scope `admin`
-([Identity & auth](identity-and-auth.md)).
+Purges retained channel history; `--dms` extends it to direct-message history. An alias of
+[`clean history`](#clean). On a user-auth mesh the purge rides a short-lived purger view over
+your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 
 ## console
 
