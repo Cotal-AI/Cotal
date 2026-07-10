@@ -918,6 +918,16 @@ family by key prefix. Each mint additionally writes one reverse-index key
 sturdy handle revokes every credential minted under it or under any of its descendant
 handles** — a credential redeemed through a child handle carries the parent in its
 `sourceChain`/`bysrc` keys, so parent revocation reaches it without walking handle records.
+**Source gates.** The same fence applies per issuing handle, because a handle's revocation
+state lives in the records bucket while credential indexes live here, and two buckets share
+no order: each sturdy handle has an auth-bucket gate `srcgate.<issuerKeyId>.<id>`
+(`{ state: open | frozen }`, CAS). Handle revocation CASes the source gate to `frozen`
+**before** it enumerates `bysrc.` — and a redemption, after writing its `cred.`/`bysrc.`
+rows, revision-pinned-CASes the source gate of EVERY handle in the presented chain (plus the
+lifecycle gate below), releasing only if all are still `open` at their observed revisions. An
+in-flight redemption under a handle being revoked therefore either finishes before the freeze
+(its rows are in the enumeration) or loses a CAS and never releases.
+
 An unledgered mint MUST NOT occur (the ledger write precedes credential
 release, fail-closed), and the rule carries a mechanical audit invariant in the style of the
 §13.9 matrix grep test: every credential the auth authority has ever released MUST resolve
@@ -932,17 +942,24 @@ preserves the UID (§13.1) and must mint the successor process's root credential
 takeover barrier freezes at generation `G`, completes revoke + verified eviction of the
 family, and only then CASes the gate to `open` at generation `G+1` — the reopen is the
 barrier's own final step, so no credential of generation `G` is ever live when generation
-`G+1` mints. A gate reopen by anyone but the completing barrier is non-conformant. The mint protocol is **write rows → re-read gate → release**: the
-auth path reads the gate (recording `state` and `generation`), writes the `cred.`/`bysrc.`
-rows, re-reads the gate, and releases the credential only if it is still `open` **at the
-same generation** — on `frozen`/`retired`, or on any generation advance, it aborts and marks
+`G+1` mints. A gate reopen by anyone but the completing barrier is non-conformant.
+
+**A read is never a fence — only a CAS write is.** JetStream `DIRECT.GET` may be served by a
+follower or mirror and gives NO read-your-writes guarantee (a mint that *reads* the gate can
+observe a stale `open` after a barrier froze it on the leader), so the auth bucket sets
+`allow_direct=false` (§13.12) and every fence here is a leader-served, revision-pinned CAS
+write. The mint protocol is **observe gate → write rows → CAS the gate → release**: the auth
+path reads the gate (recording `state`, `generation`, and KV `revision`), writes the
+`cred.`/`bysrc.` rows, then performs a **revision-pinned CAS update of `gate.<lifecycleUid>`
+itself at the observed revision** — a leader write that fails if the gate changed at all —
+and releases the credential only on CAS success with the gate still `open` at the same
+generation. On CAS failure, `frozen`/`retired`, or any generation advance it aborts and marks
 its own row revoked, never releasing. A barrier CASes the gate to `frozen` FIRST and only then
-enumerates the family. The race is closed by total order, not timing: the gate and the rows
-share one KV bucket — one stream, one sequence (§13.12) — so a row written before the
-freeze is visible to the barrier's enumeration, and a row written after it forces the
-mint's re-read to observe `frozen` and abort; no interleaving releases a credential the
-enumeration misses. The ledger is written only by the trusted auth path
-(§13.9 matrix; NATS binding: the auth KV, §13.12).
+enumerates the family. The race is closed by **serialization on one key**, not by timing or
+read freshness: freeze and mint-finalize are both CAS writes to the SAME gate key, so one
+loses; a mint that wins wrote its rows before its winning CAS, so the barrier's later
+enumeration sees them; a mint that loses never released. The ledger is written only by the
+trusted auth path (§13.9 matrix; NATS binding: the auth KV, §13.12).
 
 Binding rule (normative): **durable** authority and state — sturdy handles, accepted goals,
 checkpoint tokens and resumes, durable consumers and delivery state, ledger rows — bind
@@ -1677,12 +1694,18 @@ credential is simultaneously a credential-ledger row under its holder's lifecycl
 which is the index the §13.1 barriers enumerate — and a barrier that revokes a
 session-sourced credential MUST resolve its `session.<sessionId>` row, transition it
 terminal, and revoke BOTH per-session credentials, so either side's takeover or retirement
-tears down the whole pair, not its own half. Redemption's writes are ordered and
-crash-recoverable: session row first (the create-CAS IS the one-use), then both credential
-rows (gate-checked, §13.1), then release — a crash mid-sequence leaves either a session row
-whose `exp` the auth path's expiry sweep collects (revoking whatever credential subset
-exists) or unreleased credentials that the gate-abort rule already revoked; no interleaving
-releases a live pair the ledger cannot see. The auth path revokes BOTH per-session
+tears down the whole pair, not its own half. Redemption's writes are ordered by a **finalize CAS**, so no half-issued session is ever
+usable: the create-CAS writes the session row in state `issuing` (this create IS the
+one-use), then both per-session credential rows are written gate-checked (§13.1), then the
+redemption **CAS-finalizes the session row `issuing → active`** — fresh-checking BOTH the
+holder and serving process epochs and both lifecycle gates at that CAS — and releases the two
+credentials only on finalize success. A credential is authority ONLY once its session row is
+`active`; an `issuing` row confers nothing. Close/expiry/either barrier CAS the row to a
+terminal state (`closed`/`expired`/`superseded`/`retired`) and revoke both credential ids by
+name — the ids are known from the row, whether or not both credentials were released — so a
+crash mid-issue leaves an `issuing` row that the expiry sweep collects (revoking both ids and
+tombstoning), never a live half-pair, and a redemption racing a close loses its finalize CAS
+and releases nothing. The auth path revokes BOTH per-session
 credentials with eviction (bounded
 propagation) on any of: an **authenticated close input** on the trusted auth path itself —
 a defined operation of the SAME exchange/callout surface that redemption already uses
@@ -1823,7 +1846,7 @@ key grammars, pinned here (each key then splits `.spec`/`.status` per §13.4):
 | `cp` | `cp.<endpoint>.<token>` |
 | `lease` | `lease.<endpoint>.<pool>.<cOwner>.<cActor>.<cUid>.<id>` (the item's acceptance identity, §13.2) |
 | `lifecycle` | `lifecycle.<owner>.<actor>.<lifecycleUid>` (the §13.1 mapping detail) |
-| `lifecycle` head | `lifecycle.<owner>.<actor>` (the alias's CAS head: the single authoritative pointer to the current active `lifecycleUid`, or none — mint CASes it from none/retired-predecessor to the new UID, so two concurrent mints for one alias CANNOT both activate: per-key CAS on separate UID-suffixed keys could never serialize them; terminal retirement CASes it back after the §13.1 barrier) |
+| `lifecycle` head | `lifecycle.<owner>.<actor>` — the alias's **authoritative current mapping**, and the ONLY key `mappingRevision` (§13.3) counts: a **single unsplit key** (NOT `.spec`/`.status`-split — the mapping is one atomic record, and a handler's "fresh current mapping" read is one leader-consistent read of this key), CAS-updated. Activation CASes it from none/retired-predecessor to the new UID's mapping; two concurrent mints for one alias cannot both win the CAS; terminal retirement CASes it to `retired` after the §13.1 barrier. The per-UID `lifecycle.<owner>.<actor>.<lifecycleUid>` detail below is optional append-only audit, never the authority |
 
 Third-party kinds
 register under reverse-DNS kind names.
@@ -2080,12 +2103,12 @@ tokens.
 | Session `.out` publish | the serving instance (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct |
 | Session `.out` subscribe | the session's caller (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct read |
 | Session ledger (one-use redemption, credential ids, revocation state, authenticated close) | the trusted auth path (§9/§10) | `$KV.cotal_auth_<space>.session.<sessionId>` — create-only CAS per `sessionId`, monotonic state (§13.6) | mediated |
-| Credential ledger (issuance gate, descendant enumeration, lineage index, revocation) | the trusted auth path (§9/§10) | writes: `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` + `….gate.<lifecycleUid>` (the issuance gate, §13.1) + `….bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` (the per-ancestor lineage index) + `….session.<sessionId>`; reads: `$JS.API.DIRECT.GET.KV_cotal_auth_<space>.$KV.cotal_auth_<space>.>` (last-by-subject: gate checks, session lookups, per-row state) and **point-in-time prefix enumeration** via a per-run consumer created and deleted by the barrier itself — `$JS.API.CONSUMER.CREATE.KV_cotal_auth_<space>.*.$KV.cotal_auth_<space>.>` (name-token wildcard: one fresh consumer per barrier run / expiry sweep, `DeliverPolicy: LastPerSubject`, filter pinned to the enumerated prefix), `$JS.API.CONSUMER.INFO/MSG.NEXT/DELETE.KV_cotal_auth_<space>.*`, `$JS.ACK.KV_cotal_auth_<space>.*.>` — a single standing durable would NOT serve the barrier: its ack cursor advances, so a second run cannot re-scan the rows it already consumed, and a barrier needs the CURRENT state of every row under a prefix. (The `deliver_subject` hazard of §13.9 does not arise: this profile is the trusted auth path itself, which already holds the authority any push target could reach.) The barrier's family enumeration and the expiry sweep are executable reads, not prose. No other profile holds ANY grant on `cotal_auth_<space>` | mediated |
+| Credential ledger (issuance gate, descendant enumeration, lineage index, revocation) | the trusted auth path (§9/§10) | writes: `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` + `….gate.<lifecycleUid>` (the issuance gate, revision-pinned CAS is the mint fence, §13.1) + `….srcgate.<issuerKeyId>.<id>` (per-handle source gate, §13.1) + `….bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` (the per-ancestor lineage index) + `….session.<sessionId>` (create-CAS `issuing`, finalize-CAS `active`, §13.6); reads: leader-consistent KV get (`allow_direct=false`, so a get is served by the stream leader, §13.1) on `$KV.cotal_auth_<space>.>` for gate/session/row state — never a follower-served `DIRECT.GET`, which is why the mint and session fences are revision-pinned CAS *writes* rather than reads and **point-in-time prefix enumeration** via a fresh consumer the barrier creates and deletes per run — `$JS.API.CONSUMER.CREATE.KV_cotal_auth_<space>.*.$KV.cotal_auth_<space>.>` (name-token wildcard: one throwaway PULL consumer per barrier run / expiry sweep, `DeliverPolicy: LastPerSubject`, `AckPolicy: none`, filter pinned to the enumerated prefix `cred.<uid>.>` or `bysrc.<issuerKeyId>.<id>.>`), `$JS.API.CONSUMER.INFO/MSG.NEXT/DELETE.KV_cotal_auth_<space>.*` — `LastPerSubject` replays the CURRENT last value of every key under the prefix (a fresh snapshot, bounded by the captured stream sequence at create), which is exactly the barrier's need and precisely what a standing acking durable canNOT give: its cursor advances, so a later run or a post-crash auth process can never re-scan rows it already acked. The consumer is created and deleted per run, never reused. (The `deliver_subject` hazard of §13.9 does not arise: this profile is the trusted auth path itself, which already holds any authority a push target could reach.) The barrier's family enumeration and the expiry sweep are executable reads, not prose. No other profile holds ANY grant on `cotal_auth_<space>` | mediated |
 | Work-pool enqueue | the endpoint's canonicalizer (from accepted decisions only) | `epw.<endpoint>.>` publish, create-per-subject (`Nats-Expected-Last-Subject-Sequence: 0`; the acceptance identity is the subject, §13.2) | mediated |
 | Work-pool reconciliation probe | the endpoint's canonicalizer | `$JS.API.DIRECT.GET.EPW_<space>.cotal.<space>.epw.<endpoint>.>` (last-by-subject on the exact item subject — never the body-selected `STREAM.MSG.GET` form) + the CAS-winner read row above (`dec` + `wrk` last-by-subject) — together they decide the §13.6 predicate: accepted, no terminal, no live entry ⇒ re-enqueue | mediated |
 | Work-pool consume + ack | the pool's owning endpoint ONLY (workers hold NO pool grant, §13.5) | **bind-only** on the provisioner-pre-created exact-filter `poolD` (grammar above): `$JS.API.CONSUMER.INFO.EPW_<space>.<poolD>`, `$JS.API.CONSUMER.MSG.NEXT.EPW_<space>.<poolD>`, `$JS.ACK.EPW_<space>.<poolD>.>` (ack only after committed terminal state) — NO consumer create, NO stream-wide read | mediated |
 | Lease issue / fencing advance | the pool's owning endpoint (`lease` command) | its `lease` record keys (§13.7 grammar), via the record-writer seam | mediated |
-| Lifecycle mapping / teardown | minting manager's commit path; lifecycle-pinned deprovisioner | the alias CAS head `$KV.cotal_records_<space>.lifecycle.<owner>.<actor>.{spec,status}` (activation/retirement serialize here, §13.7) AND the per-UID detail keys `$KV.cotal_records_<space>.lifecycle.<owner>.<actor>.<lifecycleUid>.{spec,status}`; teardown: exact lifecycle-keyed names only | mediated / broker-pinned delete |
+| Lifecycle mapping / teardown | minting manager's commit path; lifecycle-pinned deprovisioner | the **unsplit** alias CAS head `$KV.cotal_records_<space>.lifecycle.<owner>.<actor>` (one atomic key, NOT `.spec`/`.status`-split — the authoritative current mapping and the only `mappingRevision` source, activation/retirement serialize here by CAS, §13.7); leader-consistent current-mapping read `$JS.API.DIRECT.GET` is NOT used for authority reads of this key (the records bucket may follower-serve — a fresh mapping read is a plain leader `$JS.API.STREAM.MSG.GET`-free KV get against the stream leader); optional append-only per-UID audit `$KV.cotal_records_<space>.lifecycle.<owner>.<actor>.<lifecycleUid>`; teardown: exact lifecycle-keyed names only | mediated / broker-pinned delete |
 
 Deletes beyond these rows: only the lifecycle-keyed deprovisioner (exact names, §13.1) and
 stream retention.
@@ -2277,7 +2300,7 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | `EPW_<space>` stream | `cotal.<space>.epw.>` (work pools; one item per subject, §13.2) | WorkQueue; provisioner-pre-created non-overlapping exact-filter per-pool consumers (§13.9); `allow_direct=true` (the subject-confined reconciliation probe — an acked item leaves the WorkQueue, an in-flight one remains readable, which is exactly the §13.6 predicate) |
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`) | per-key CAS; split `.spec`/`.status` keys; `allow_direct=true` (KV) |
-| `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY — no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); create-only CAS + monotonic states; **one bucket = one stream = one total order**, which the §13.1 issuance-gate race closure depends on; retention ≥ max credential/session TTL + recovery margin |
+| `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY — no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states; retention ≥ max credential/session TTL + recovery margin |
 | `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path); stream management held by no profile (§13.9) |
 
 Claim pools are pull consumers on `EPW` with `AckExplicit`, held **only by the pool's owning
