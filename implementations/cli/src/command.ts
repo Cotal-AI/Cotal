@@ -1,5 +1,5 @@
 import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
-import { c } from "./ui.js";
+import { c, staleStoreHint } from "./ui.js";
 import { isExtensionStub, materializeExtensionCommand, overlayExtensions, setCommandSurface } from "./ext-loader.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -122,6 +122,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // COTAL_DEBUG for diagnosis.
     const msg = e instanceof Error ? e.message : String(e);
     console.error(c.red(`✗ ${msg}`));
+    // Known failure signatures get a one-line operator hint (e.g. a stale-store durable
+    // collision names the `cotal clean` reset) - the error itself stays verbatim.
+    const hint = staleStoreHint(msg);
+    if (hint) console.error(c.dim(`  ↳ ${hint}`));
     if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
     process.exit(1);
   }

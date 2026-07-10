@@ -59,7 +59,12 @@ export function pidfileTargets(space: string): Array<[file: string, label: strin
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export const isAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; } catch (e) {
+    // EPERM = the process EXISTS but we may not signal it (e.g. launched from a differently
+    // elevated context). For safety that counts as alive; only ESRCH-style "no such process"
+    // reads as dead.
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
 };
 
 /** Stop one recorded process and AWAIT its actual exit — SIGTERM starts a graceful shutdown (a

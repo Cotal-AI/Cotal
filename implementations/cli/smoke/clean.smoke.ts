@@ -3,9 +3,11 @@
  * Run: pnpm smoke:clean
  *
  * Covers: the live-process guard (a running recorded pid refuses cleanup; a STALE or corrupt
- * pidfile does not), the `store` removal set (JetStream store only), the `all` removal set
- * (store + auth + every derived local cred + crash residue: stale pidfiles, run/), that
- * personas/logs survive, the `--store-dir` override, and the already-clean no-op.
+ * pidfile does not; an EPERM-unsignalable pid DOES), the `store` removal set (JetStream store
+ * only), the `all` removal set (store + auth + every derived local cred + crash residue: stale
+ * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the already-clean
+ * no-op, and that `clean all` drops only registry entries rooted at THIS project (a named open
+ * mesh must never delete the default space's entry).
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -13,7 +15,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
+// Sandbox the machine-home BEFORE importing anything registry-touching (`clean all` mutates
+// ~/.cotal/meshes) - homeCotalDir() reads COTAL_HOME per call, so the real one is never touched.
+const home = mkdtempSync(join(tmpdir(), "cotal-clean-home-"));
+process.env.COTAL_HOME = home;
+
+const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
+const { getCurrent, loadMeshes, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -99,6 +107,40 @@ try {
   check("already clean: removes nothing, throws nothing", removeLocalState(empty, { includeAuth: true }).length === 0);
   check("already clean: no live process reported", liveMeshProcess(empty) === undefined);
   rmSync(empty, { recursive: true, force: true });
+
+  // --- an unsignalable pid (EPERM) still counts as ALIVE --------------------------------------
+  // POSIX pid 1 always exists; as non-root the probe raises EPERM, which must read as "alive"
+  // (deleting state under a process we merely can't signal breaks the core guarantee).
+  if (process.platform !== "win32") {
+    const epermRoot = meshRoot();
+    writeFileSync(join(epermRoot, ".cotal", "nats.pid"), "1");
+    check("a pid we cannot signal (EPERM) still blocks cleanup", /pid 1$/.test(liveMeshProcess(epermRoot) ?? ""), liveMeshProcess(epermRoot));
+    rmSync(epermRoot, { recursive: true, force: true });
+  }
+
+  // --- `clean all` drops ONLY registry entries rooted at THIS project -------------------------
+  // A named OPEN mesh has no .cotal/auth, so a space-name lookup would resolve to the default
+  // space ("main") and delete an unrelated mesh's registry entry - the drop must key on root.
+  const openRoot = mkdtempSync(join(tmpdir(), "cotal-open-"));
+  mkdirSync(join(openRoot, ".cotal", "nats"), { recursive: true });
+  writeFileSync(join(openRoot, ".cotal", "nats", "s.dat"), "x");
+  const otherRoot = mkdtempSync(join(tmpdir(), "cotal-other-"));
+  const entry = (space: string, root: string) =>
+    ({ space, server: "nats://127.0.0.1:1", root, mode: "open" as const, ts: "2026-07-09T00:00:00.000Z" });
+  recordMesh(entry("named-open", openRoot));
+  recordMesh(entry("main", otherRoot));
+  setCurrent("named-open");
+  const cwd = process.cwd();
+  process.chdir(openRoot);
+  try {
+    await clean({ positionals: ["all"], values: { force: true }, raw: [] });
+  } finally {
+    process.chdir(cwd); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
+  }
+  check("all: drops THIS root's registry entry, not the default space's", loadMeshes().map((m) => m.space).join(",") === "main", loadMeshes());
+  check("all: releases the `current` pointer it held", getCurrent() !== "named-open", getCurrent());
+  rmSync(openRoot, { recursive: true, force: true });
+  rmSync(otherRoot, { recursive: true, force: true });
 
   console.log(`\nCLEAN SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

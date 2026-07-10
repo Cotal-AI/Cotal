@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { clearSpaceHistory, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
-import { clearCurrent, getCurrent, removeMesh, resolveSpace } from "@cotal-ai/workspace";
+import { clearCurrent, getCurrent, loadMeshes, removeMesh, resolveSpace } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -35,9 +35,6 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (target === "history") return purgeHistory(values);
 
   const root = cotalRoot();
-  // Resolve the space BEFORE deleting anything: `all` removes `.cotal/auth`, which is what the
-  // space name is resolved from.
-  const space = resolveSpace(root);
   const running = liveMeshProcess(root);
   if (running) {
     console.error(c.red(`✗ the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``));
@@ -47,8 +44,19 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (target === "all") {
     // Full reset also drops the mesh from the machine registry (and the `current` pointer). A
     // normal `down` already did this; after a crash it is exactly the ghost entry to clear.
-    removeMesh(space);
-    if (getCurrent() === space) clearCurrent();
+    // Keyed by ROOT, not by resolveSpace(): an OPEN mesh has no auth material, so its name would
+    // resolve to the default space and delete an unrelated mesh's entry. Every registry entry
+    // rooted at THIS project is invalid once its local state is gone - drop exactly those.
+    // Canonicalized (realpath) so a symlinked root (e.g. macOS /var -> /private/var) still matches.
+    const canonical = (p: string): string => {
+      try { return realpathSync.native(p); } catch { return resolve(p); }
+    };
+    const rootKey = canonical(root);
+    for (const m of loadMeshes()) {
+      if (canonical(m.root) !== rootKey) continue;
+      removeMesh(m.space);
+      if (getCurrent() === m.space) clearCurrent();
+    }
   }
   if (removed.length === 0) {
     console.log(c.dim("nothing to clean - no local state found"));

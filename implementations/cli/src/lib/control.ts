@@ -8,7 +8,7 @@ import {
   type Profile,
 } from "@cotal-ai/core";
 import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { c, staleStoreHint } from "../ui.js";
 import { connectOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
@@ -95,7 +95,12 @@ export async function askManager(
 
 export function failIfNotOk(reply: ControlReply): void {
   if (!reply.ok) {
-    console.error(c.red(`✗ ${reply.error ?? "error"}`));
+    const msg = reply.error ?? "error";
+    console.error(c.red(`✗ ${msg}`));
+    // A manager-side stale-store durable collision (e.g. `spawn --detach` into a store minted by
+    // an older Cotal generation) names its reset - the reply error stays verbatim.
+    const hint = staleStoreHint(msg);
+    if (hint) console.error(c.dim(`  ↳ ${hint}`));
     process.exit(1);
   }
 }

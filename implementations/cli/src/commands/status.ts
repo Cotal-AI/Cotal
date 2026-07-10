@@ -43,7 +43,7 @@ export async function status(args: ParsedArgs): Promise<void> {
 
   console.log(c.bold("cotal status"));
   await printMachine();
-  printProject(root);
+  printProject(root, cmd);
   await printRegistry();
   await printTarget(cwd, values, cmd);
 }
@@ -61,19 +61,24 @@ async function printMachine(): Promise<void> {
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }
 
-function printProject(root: string): void {
+function printProject(root: string, cmd: string): void {
   const auth = loadSpaceAuth(authDir(root));
   const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
   section("This Folder");
   row("root", root);
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
-  row("nats", formatProc(proc(root, "nats.pid")));
+  const nats = proc(root, "nats.pid");
+  row("nats", formatProc(nats));
   if (userDisk) row("auth-service", formatProc(proc(root, `auth-service.${encodeURIComponent(auth.space)}.pid`)));
   row("delivery", formatProc(proc(root, "delivery.pid")));
   const mgr = proc(root, "manager.pid");
   row("manager", `${formatProc(mgr)}${mgr.live ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build") : ""}`);
   row("web", formatProc(proc(root, "web.pid")));
+  // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
+  // an older Cotal generation) is otherwise invisible until a spawn fails on it.
+  if (!nats.live && existsSync(join(root, ".cotal", "nats")))
+    row("stored state", c.dim(`JetStream store persists across down/up - if stale, reset: ${cmd} clean store --force (\`clean all\` also resets identity)`));
 }
 
 async function printRegistry(): Promise<void> {

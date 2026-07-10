@@ -17,3 +17,13 @@ export function statusBadge(status: PresenceStatus): string {
       return c.dim("⨯ offline");
   }
 }
+
+/** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
+ *  consumers minted by an older, incompatible Cotal generation survive every down/up cycle, and
+ *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
+ *  line by the error surfaces - the error itself stays the broker's own sentence. */
+export function staleStoreHint(msg: string): string | undefined {
+  return /consumer already exists|stream already exists/i.test(msg)
+    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down && cotal clean store --force && cotal up"
+    : undefined;
+}
