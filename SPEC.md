@@ -142,7 +142,7 @@ The **sender** of every delivery is a principal (§2), carried as **two adjacent
 | Multicast | `cotal.<space>.chat.<owner>.<actor>.<channel...>` | 3–4 | §4 multicast |
 | Unicast | `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` | 5–6 | §4 unicast |
 | Anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` | 4–5 | §4 anycast |
-| Endpoint rails | `cotal.<space>.ep.<one\|all\|inst\|reply>.…`, `cotal.<space>.ep<e\|f\|j\|t\|w\|s>.…` | see §13.2 | §13 control surface |
+| Endpoint rails | `cotal.<space>.ep.<one\|all\|inst\|reply>.…`, `cotal.<space>.ep<c\|e\|f\|j\|r\|t\|w\|s>.…` | see §13.2 | §13 control surface |
 | Trace | `cotal.<space>.trace.<instance>` | n/a | reserved |
 
 Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1,
@@ -869,7 +869,10 @@ sufficient *authority* identity on this surface. Two further identity components
   managed agents; the provisioner for endpoint daemons and operator credentials) mints it
   **before the entity is reachable** and persists a CAS-fenced mapping
   `{ principal, lifecycleUid, owner, managerInstance, currentCredentialId, processEpoch,
-  state: active | retired, revision }` (`currentCredentialId` is a public key
+  state: active | retired, revision }` under the alias's **CAS head key** (§13.7:
+  `lifecycle.<owner>.<actor>` points to the single current UID; the UID-suffixed detail key
+  holds the mapping) — activation is the head CAS, so two concurrent mints for one alias
+  serialize there and exactly one activates (`currentCredentialId` is a public key
   identifier/fingerprint plus authority epoch — never secret material). A supervised restart
   of the same entity **preserves**
   the UID (revoking/rotating the connection credential and advancing the process epoch); a
@@ -879,16 +882,21 @@ sufficient *authority* identity on this surface. Two further identity components
 - **Process epoch** (`incarnation`, an unsigned integer): the fenced ownership epoch of the
   process currently animating an identity, advanced by CAS on every takeover or restart. At
   most one live epoch owns an identity; a superseded process MUST stop serving and its commits
-  are rejected (§13.8). **The epoch fences egress only**: reply, event, timer, and session
-  publish grants pin it (§13.9), but request subjects deliberately omit it — a caller cannot
+  are rejected (§13.8). **The epoch fences egress only**: reply, event, timer, session, and
+  record-write-ingress publish grants pin it (§13.9), but request subjects deliberately omit it — a caller cannot
   know the serving epoch — so **no subject-level fence for ingress exists or can exist**. An
   un-revoked superseded serve credential remains a member of the class queue group and can
   consume (and externally effect, and never validly answer) one call in N. Takeover therefore
   carries a **normative barrier, in order**: advance the epoch by CAS → freeze issuance for
-  the lifecycle in the credential ledger (below) → revoke the superseded
-  `currentCredentialId` AND every live ledgered descendant credential of the lifecycle
-  (handle-redemption-minted and per-session credentials, §13.6) via the deployment's auth
-  authority → evict the live connections of every revoked credential's principal
+  the lifecycle in the credential ledger (below) → revoke EVERY active credential-ledger
+  row under the lifecycle prefix — every root (the superseded `currentCredentialId` and any
+  earlier unexpired root: each root mint, initial or rotation, writes its own ledger row)
+  and every ledgered descendant (handle-redemption-minted and per-session credentials,
+  §13.6) — via the deployment's auth
+  authority, verifying the updated revocation state is enforced on EVERY server of the
+  cluster before proceeding (fail-closed on partial acknowledgment: an unrevoked-anywhere
+  credential can reconnect there) → evict the live connections of every revoked
+  credential's principal
   cluster-wide and verify the re-scan found none (the delivery endpoint's `evictPrincipal`:
   system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on partial
   scans; Appendix B) → only then activate the successor's serve subscription. Where
@@ -900,15 +908,33 @@ complete as the set of credentials it covers — and the lifecycle's `currentCre
 not that set. Every credential the trusted auth path mints **derived from** a lifecycle — the
 short-lived credential of a handle redemption, the two per-session credentials of a session
 redemption (§13.6) — is recorded at mint time in a durable, auth-owned **credential ledger**
-row `{ credentialId, lifecycleUid (the holder's), source: root | handle.<issuerKeyId>.<id> |
-session.<sessionId>, state: active | revoked (monotonic), exp }`, keyed
+row `{ credentialId, lifecycleUid (the holder's), sourceChain: [root |
+handle.<issuerKeyId>.<id>… | session.<sessionId>] — the FULL verified lineage: for a
+handle redemption, EVERY handle in the presented `parentDigest` chain (§13.6), never only
+the leaf — state: active | revoked (monotonic), exp }`, keyed
 `cred.<lifecycleUid>.<credentialId>` so both barriers enumerate a lifecycle's full descendant
-family by key prefix. An unledgered mint MUST NOT occur (the ledger write precedes credential
+family by key prefix. Each mint additionally writes one reverse-index key
+`bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` per chain member, so **revoking a
+sturdy handle revokes every credential minted under it or under any of its descendant
+handles** — a credential redeemed through a child handle carries the parent in its
+`sourceChain`/`bysrc` keys, so parent revocation reaches it without walking handle records.
+An unledgered mint MUST NOT occur (the ledger write precedes credential
 release, fail-closed), and the rule carries a mechanical audit invariant in the style of the
 §13.9 matrix grep test: every credential the auth authority has ever released MUST resolve
 to a `cred.<lifecycleUid>.<credentialId>` row — an issuance path that cannot show its ledger
-row is non-conformant, auditable by diffing issued-credential ids against the ledger. Revoking a sturdy handle (§13.6) additionally revokes every active
-ledger row whose `source` names it. The ledger is written only by the trusted auth path
+row is non-conformant, auditable by diffing issued-credential ids against the ledger.
+
+**Issuance gate (normative).** "Freeze issuance" is a durable transition, not an assertion:
+each lifecycle has a gate key `gate.<lifecycleUid>` in the same auth KV, `state: open |
+frozen` (monotonic, CAS). The mint protocol is **write rows → re-read gate → release**: the
+auth path writes the `cred.`/`bysrc.` rows first, re-reads the gate, and releases the
+credential only if the gate is still `open` — on `frozen` it aborts and marks its own row
+revoked, never releasing. A barrier CASes the gate to `frozen` FIRST and only then
+enumerates the family. The race is closed by total order, not timing: the gate and the rows
+share one KV bucket — one stream, one sequence (§13.12) — so a row written before the
+freeze is visible to the barrier's enumeration, and a row written after it forces the
+mint's re-read to observe `frozen` and abort; no interleaving releases a credential the
+enumeration misses. The ledger is written only by the trusted auth path
 (§13.9 matrix; NATS binding: the auth KV, §13.12).
 
 Binding rule (normative): **durable** authority and state — sturdy handles, accepted goals,
@@ -944,9 +970,10 @@ files) fall back to a handler-side **delete-if-current** check carrying the reti
 expected ownership revision. In both regimes the alias stays reserved until retirement and
 cleanup have durably completed, so a stale detached teardown can never destroy a same-name
 successor. **Terminal retirement is additionally a credential barrier, in order**: durably
-retire the UID → freeze issuance for the lifecycle in the credential ledger → revoke the
-lifecycle's `currentCredentialId` AND every live ledgered descendant credential (credential
-ledger, above) → cluster-verified eviction of every revoked credential's live connections
+retire the UID → freeze issuance for the lifecycle in the credential ledger → revoke every
+active credential-ledger row under the lifecycle prefix (all roots and all descendants,
+credential ledger above), verifying revocation enforcement on every server as in the
+takeover barrier → cluster-verified eviction of every revoked credential's live connections
 (`evictPrincipal`, as in the takeover barrier above) → record the
 per-stream retirement frontiers → only then free the alias. Chat/DM/presence subjects stay
 alias-keyed, so without the revoke-and-verified-evict step a still-connected stale process
@@ -968,8 +995,9 @@ the owner that registered that domain claim. In a wire subject the name is one t
 replaced by `_` (`com_acme_deploy`); because `_` cannot appear in a label the mapping is
 bijective. Name authority is the credential, never the registry (§13.9). Endpoint-name
 tokens may contain `-` inside labels; they are never used to derive principal dash-form
-names — control-surface durable and consumer names derive from the instance triple and
-digests, not from endpoint names, so the §2 dash-form separator stays unambiguous.
+names — control-surface consumer names are the §13.9 pinned grammars, each carrying a
+stated collision-freedom argument, and none is ever parsed back into its components, so
+the §2 dash-form separator stays unambiguous.
 
 **Command tokens.** A command name is one token `[a-z0-9-]{1,32}`. The command is a validated
 subject token so the broker enforces per-command authority (§13.9). `describe` and `cancel`
@@ -1113,8 +1141,10 @@ and a late reply is unreadable rather than misdelivered.
 | Canonical facts | `cotal.<space>.epf.<endpoint>.<topic...>` |
 | Submissions | `cotal.<space>.epj.<endpoint>.<command>[.<authz>[.<target tokens per mode>]].<owner>.<actor>.<uid>` |
 | Timers | `cotal.<space>.ept.<endpoint>.<instanceId>.<epoch>.<timerId>.<schedule\|armed\|fire>` |
+| Record writes | `cotal.<space>.epr.<endpoint>.<instanceId>.<epoch>.<kind>.<qualifier...>` (mediated record-writer ingress — the instance's epoch-pinned rail for `svc`/`goal`/`cp` status writes; consumed ONLY by the record writer, which reads the writing epoch from the broker-authenticated subject, never from payload, §13.9) |
+| Contract artifacts | `cotal.<space>.epc.<digest-hex>` (one immutable artifact per subject; `<digest-hex>` is the artifact's SHA-256 hex, 64 chars — the `sha256:` prefix is not a subject token; §13.7) |
 | Work pools | `cotal.<space>.epw.<endpoint>.<pool>.<cOwner>.<cActor>.<cUid>.<id>` (one item per subject; the trailing four tokens are the item's **acceptance identity** — the accepted submission's caller triple + request id, §13.6) |
-| Sessions | `cotal.<space>.eps.<endpoint>.<sessionId>.<epoch>.<in|out>` |
+| Sessions | `cotal.<space>.eps.<endpoint>.<sessionId>.<epoch>.<in\|out>` |
 
 Events carry the publishing instance's **epoch as a subject token**, pinned by the serve
 grant, so a superseded process cannot emit progress indistinguishable from the current
@@ -1144,7 +1174,9 @@ mint-time read containment), `cp.<token>.<t>` (checkpoint transitions). Reserved
 disjoint from the caller-id `dec` namespace by construction), `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result` (terminal
 results), `wrk.<pool>.<cOwner>.<cActor>.<cUid>.<id>` (per-work-item terminal results,
 keyed by the item's acceptance identity, §13.5/§13.6), `cp.<token>` (one-use checkpoint
-resume, journaled by create-only CAS, §13.6), `receipt.<requestId>`. Submissions are publishable directly by capability holders
+resume, journaled by create-only CAS, §13.6), `receipt.<cOwner>.<cActor>.<cUid>.<id>`
+(caller-scoped — request ids are caller-chosen, so an endpoint-wide `receipt.<id>` would
+let two callers collide and read each other's receipts). Submissions are publishable directly by capability holders
 and are **explicitly untrusted** (§13.4); canonical fact subjects are publishable only by
 their mediated writer (§13.9). `<id>`, `<goalId>`, `<timerId>`, `<token>`, `<sessionId>` are
 single tokens `[A-Za-z0-9_-]{1,64}`.
@@ -1208,7 +1240,9 @@ fingerprint conflict, duplicate resume), `contract-mismatch`, `contract-invalid`
 outside the profile / over budget at registration), `failed-precondition`,
 `deadline-exceeded`, `cancelled`, `expired` (lease, handle, lifecycle UID, epoch, token),
 `unavailable` (no responder), `unimplemented`, `resource-exhausted`, `internal`. Extensions
-add codes only under reverse-DNS.
+add codes only under reverse-DNS. A `code` — catalog or extension — is one token of at
+most **64 bytes**, so every fact shape that embeds one (`RejectionFact`, `QuarantineFact`)
+stays bounded by construction and the §13.12 fact fixture is a true worst case.
 
 ### 13.4 Delivery contracts
 
@@ -1259,13 +1293,23 @@ raw submissions.
    fingerprint VALUE is that object's `sha256:<hex>` content digest per §13.7 (strict
    RFC 8785 over I-JSON — the SAME canonicalization every contract artifact uses; one
    canonicalizer, never a second): absent optional fields are OMITTED from the object, never
-   written `null`, so two implementations digest identical bytes. Same id +
+   written `null`, so two implementations digest identical bytes — which also makes the
+   fingerprint **computable for EVERY parseable submission**, however incomplete: a
+   parseable envelope missing `class` or digests fingerprints the subset it carries and is
+   rejected with that fingerprint; only unparseable bytes or an invalid `id` lack one and go
+   to quarantine. Same id +
    same fingerprint is the same request (idempotent, first-wins); same id + different
    fingerprint — including the same args retargeted at a different lifecycle — is a loud
    `conflict`, never accepted or effected.
 3. The **canonicalizer** — the narrowly scoped mediated writer for this endpoint's facts
    (§13.9) — consumes the submission plane through a **normative durable `AckExplicit`
-   consumer** and acks a submission ONLY after a durable decision fact exists: a crash before
+   consumer** and acks a submission ONLY after a durable decision fact exists — and, for a
+   pool-admitted acceptance, ONLY after the §13.6 EPW enqueue create has additionally
+   succeeded (or lost its CAS to an already-present entry): a crash anywhere between
+   acceptance and enqueue therefore redelivers the submission, and the reconciliation
+   predicate resolves the redelivered copy — recovery never has to DISCOVER orphaned
+   acceptances, because an acceptance without its enqueue is by construction an unacked
+   submission that comes back. A crash before
    the fact redelivers the submission; a crash after it observes the CAS winner on
    redelivery. It validates each submission (schema, body/subject agreement incl. the target
    block, authorization per §13.6, and — for work-pool commands — pool admission/capacity
@@ -1306,7 +1350,10 @@ raw submissions.
    canonical EndpointRequest, args INLINE — bounded by the broker's max_payload; a submission
    too large is refused loudly with resource-exhausted, never spilled into storage>, caller:
    {id, lifecycleUid}, target?: {owner, actor, lifecycleUid, mappingRevision},
-   contractDigests: {input, output}, authzDecision: {revision, epoch}, sourceSeq, ts }`. The
+   contractDigests: {input, output}, authzDecision: {revision, epoch},
+   readinessDeadlineMs?: <the acceptance-relative readiness bound, present iff the command
+   declares bounded readiness, §13.6 — persisted HERE because it is goal state, not the
+   request's decision deadline>, sourceSeq, ts }`. The
    canonicalizer preflights the **serialized decision fact** — not merely the inline args —
    against `max_payload`: a submission whose acceptance fact would not fit is rejected
    `resource-exhausted`, and the rejection fact always fits by construction — every field
@@ -1450,11 +1497,13 @@ action command's submissions are `class: journal` (§13.3).
    backstop, D29; every legacy spawn-timeout consumer converges on this single bound. When
    the deadline passes without the signal, the owner records the goal's terminal **result
    fact** (`goal….result`, §13.2) with the outcome
-   `uncertain` — the caller's bounded, immutable outcome, never rewritten (there is no call
-   and no reply rail here: an action is a journal submission, and the result fact IS the
-   caller-visible outcome, item 5) — while its goal **status record**
-   remains non-terminal and MAY later reconcile to the real outcome (ready/exited), observable
-   via watch. The result fact is immutable; reconciliation is status-record-only.
+   `uncertain` — and the goal IS terminal: `uncertain` is a terminal outcome like
+   `succeeded`/`failed`, immutable, first-terminal-fact-wins as for any goal (there is no
+   call and no reply rail here: an action is a journal submission, and the result fact IS
+   the caller-visible outcome, item 5). The underlying ENTITY's later convergence
+   (ready/exited) is observable on that entity's own status record (`svc….status`, the
+   lifecycle mapping) — a caller that needs the eventual answer watches the entity, never
+   the goal; the goal is not rewritten and its status does not linger non-terminal.
 7. Goals bind the target's `(principal, lifecycleUid)` (§13.1): a goal accepted against a
    lifecycle is not redeemable, cancellable, or effectful against a same-name successor. A
    restarted instance (same `instanceId`/UID, advanced epoch) recovers its goals from journal
@@ -1510,11 +1559,14 @@ schema-invalid, never ignored), and every legal entry HAS a compile target:
 - a **no-target** entry compiles to the untargeted or `self` form per the command's
   contract; an `authz` field on it is schema-invalid.
 - an **owner-domain** entry (`targetOwner` alone) compiles to the mode its `authz` field
-  names — `owner` (the default), `child`, or `ledger`, each pinning the signed
-  `targetOwner` in that mode's own subject form (§13.2) — **never collapsing `child` or
-  `ledger` to `owner`**: the modes are distinct validator-primary rails and rewriting one
-  into another widens authority (`any` is issuable only within an operator-scoped anchor,
-  §13.10).
+  names — `owner` (the default), `child`, or `ledger`, and NOTHING else: each pins the
+  signed `targetOwner` in that mode's own subject form (§13.2), **never collapsing `child`
+  or `ledger` to `owner`** (the modes are distinct validator-primary rails and rewriting
+  one into another widens authority), and **`authz: "any"` is schema-invalid in a handle
+  grant entry** (`contract-invalid`): the `any` rail is operator-ceiling authority, minted
+  only as a standing capability under an operator-scoped anchor (§13.10), never conferred
+  or attenuated through a handle — a compiler therefore has no `any` case, and no
+  implementation choice exists between rejecting, literalizing, or widening it.
 - an **actor-pinned** entry (the full triple) compiles to the `handle`-mode form pinning the
   full signed triple `<targetOwner>.<targetActor>.<targetLifecycleUid>` (§13.2); an `authz`
   field on it is schema-invalid (the triple IS the mode).
@@ -1537,9 +1589,12 @@ NOT be carried by a handle.
   `handle`-mode subjects carrying the verified triple (§13.2), so a target lifecycle that
   rotates after mint is caught by the endpoint's currency check; no handler-side widening
   exists. The minted credential is **ledgered before release** in the credential ledger
-  (§13.1), keyed under the redeeming holder's lifecycle with the issuing handle as its
-  `source`, so takeover/retirement barriers revoke it with the family and revoking the
-  sturdy handle cascades to it.
+  (§13.1), keyed under the redeeming holder's lifecycle with the FULL presented handle
+  chain as its `sourceChain` (plus the per-ancestor `bysrc.` index keys), so
+  takeover/retirement barriers revoke it with the family and revoking ANY handle in its
+  lineage — parent or leaf — cascades to it. Chain verification itself checks the
+  revocation status of EVERY sturdy link in the chain, not only the presented leaf,
+  failing closed on any revoked ancestor.
 - **Holder-bound:** `holder` names the one `(principal, lifecycleUid)` that may present or
   redeem it; bearer transfer exists only as an explicit issuer-signed re-issue. `space` binds
   it to one space. A recycled alias cannot present its predecessor's handles (UID mismatch).
@@ -1571,7 +1626,9 @@ no new verb and no new transport: the `in` subject is a cast-only rail (caller p
 endpoint subscribes) and the `out` subject is a watch rail (endpoint publishes, caller
 subscribes). A session is established by an ordinary command whose answer is a **session
 grant**: a one-use,
-holder-bound handle (live: bound to caller lifecycle + serving instance epoch) naming a fresh
+holder-bound handle (live: bound to the caller's lifecycle AND current process epoch —
+live authority dies on restart, §13.1, so redemption fresh-checks the holder epoch and an
+unredeemed grant does not survive the caller's restart — plus the serving instance epoch) naming a fresh
 unguessable `sessionId` and the epoch-pinned session subjects
 `eps.<endpoint>.<sessionId>.<epoch>.in` (caller → endpoint) and `….out` (endpoint → caller).
 Session subjects are **core-only** — never stream-captured; the bounded flow window lives in
@@ -1588,10 +1645,22 @@ credential ids, state, exp}`, create-only CAS per `sessionId` (this CAS IS the o
 redemption), state monotonic
 (`active → closed | expired | superseded | retired`, all terminal) — and each per-session
 credential is simultaneously a credential-ledger row under its holder's lifecycle (§13.1),
-which is the index the §13.1 barriers enumerate. The auth path revokes BOTH per-session
+which is the index the §13.1 barriers enumerate — and a barrier that revokes a
+session-sourced credential MUST resolve its `session.<sessionId>` row, transition it
+terminal, and revoke BOTH per-session credentials, so either side's takeover or retirement
+tears down the whole pair, not its own half. Redemption's writes are ordered and
+crash-recoverable: session row first (the create-CAS IS the one-use), then both credential
+rows (gate-checked, §13.1), then release — a crash mid-sequence leaves either a session row
+whose `exp` the auth path's expiry sweep collects (revoking whatever credential subset
+exists) or unreleased credentials that the gate-abort rule already revoked; no interleaving
+releases a live pair the ledger cannot see. The auth path revokes BOTH per-session
 credentials with eviction (bounded
 propagation) on any of: an **authenticated close input** on the trusted auth path itself —
-available to either party and the operator, naming the `sessionId`; the in-band close frame
+a defined operation of the SAME exchange/callout surface that redemption already uses
+(§9/§10, off-broker, so no broker grant row applies): the caller authenticates as one of
+the session's two parties (its lifecycle or per-session credential) or as the operator and
+names the `sessionId`; the auth path verifies party membership against the ledger row
+before transitioning it. The in-band close frame
 is an advisory peer signal, never the revocation authority, because EPS subjects are
 core-only and captured by nothing — expiry per the handle rules (`exp` is enforced by the
 auth path's own timer, not by the endpoint), or the serving
@@ -1672,9 +1741,17 @@ schema means the side's payload is absent or `null`.
 definition or attachment) is identified by the SHA-256 digest of its RFC 8785 canonical JSON
 (strict RFC 8785 over I-JSON; the reference implementation pins `json-canonicalize`'s strict
 path and gates on the RFC's published test vectors, including number-serialization and
-surrogate edges). Artifacts live in the per-space contract Object Store keyed by digest;
-readers MUST verify fetched bytes against the digest and fail loud on mismatch. Publication
-is mediated (§13.9): artifacts are immutable once published.
+surrogate edges). Artifacts live in the per-space **contract stream**: one artifact per
+digest-keyed subject `cotal.<space>.epc.<digest-hex>` (§13.2), published as a single
+message — possible because a document is bounded at 256 KiB (below) and the operator floor
+asserts `max_payload` covers it (§13.12); a closure is fetched artifact-by-artifact through
+its digest references, never as one blob. Reads are the subject-scoped last-by-subject
+Direct Get on the exact digest subject — no consumer, no replay machinery, and nothing
+body-selected (§13.9). Readers MUST verify fetched bytes against the digest and fail loud
+on mismatch. Publication is mediated and create-only (§13.9): artifacts are immutable once
+published. (This replaces the earlier Object Store binding: chunked objects cannot be read
+subject-confined — chunk replay needs a consumer whose delivery target is body-selected,
+§13.9 — and single-message digest subjects need none of it.)
 
 **Record kinds and key grammar.** Every record kind is registered: core kinds are defined
 by this section (writer table, §13.9), and each kind's registry entry pins its **key
@@ -1692,7 +1769,8 @@ key grammars, pinned here (each key then splits `.spec`/`.status` per §13.4):
 | `goal` | `goal.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` |
 | `cp` | `cp.<endpoint>.<token>` |
 | `lease` | `lease.<endpoint>.<pool>.<cOwner>.<cActor>.<cUid>.<id>` (the item's acceptance identity, §13.2) |
-| `lifecycle` | `lifecycle.<owner>.<actor>.<lifecycleUid>` (the §13.1 mapping) |
+| `lifecycle` | `lifecycle.<owner>.<actor>.<lifecycleUid>` (the §13.1 mapping detail) |
+| `lifecycle` head | `lifecycle.<owner>.<actor>` (the alias's CAS head: the single authoritative pointer to the current active `lifecycleUid`, or none — mint CASes it from none/retired-predecessor to the new UID, so two concurrent mints for one alias CANNOT both activate: per-key CAS on separate UID-suffixed keys could never serialize them; terminal retirement CASes it back after the §13.1 barrier) |
 
 Third-party kinds
 register under reverse-DNS kind names.
@@ -1768,7 +1846,13 @@ client code). The discovery protocol itself is versioned additively under `proto
 - **Retention floors.** Submissions ≥ recovery/redelivery lag (§13.12; native dedupe is not
   relied upon, §13.4); facts/tombstones ≥ idempotency horizon;
   results ≥ result retention; receipts ≥ receipt retention; timers ≥ max deadline + recovery
-  margin; an endpoint MUST refuse to start against a store below its declared floors.
+  margin. **Pool coupling:** EPW MUST set a max age — unbounded item residence is
+  non-conformant — and a pool item's decision and `wrk` terminal facts are retained ≥ that
+  max age + recovery margin, so a live (or crash-recovering) item can never outlive the
+  facts that identify it as accepted or settled: a decision that expired under a still-live
+  item would let a reused id collide with the old enqueue, and an expired `wrk` under a
+  lost owner ack would make settled work unrecognizable on redelivery.
+  An endpoint MUST refuse to start against a store below its declared floors.
 - **Backpressure and budgets.** Bounded consumer pending (default 1024), bounded
   virtual-endpoint pools and session windows, flow control on watches; overload is
   `resource-exhausted`. Schema compile/validate budgets (reference: 100 ms / 10 ms) and
@@ -1799,8 +1883,8 @@ actor and UID currency; `child`/`ledger` are validator-primary within their dist
 rails. The **named dynamic relations** — static-mesh
 own-child, fresh-ledger escalation, target-mapping currency, authorization epochs after
 acceptance — are trusted-validator-primary by design, fail-closed, and operate only within
-the broker ceiling. Handlers only narrow. **The process epoch fences only the four planes
-whose subjects carry it** (reply, `epe`, `ept`, `eps`). Ingress subjects and durable record
+the broker ceiling. Handlers only narrow. **The process epoch fences only the five planes
+whose subjects carry it** (reply, `epe`, `ept`, `eps`, `epr`). Request-ingress subjects and durable record
 keys cannot carry it — the caller cannot know it, and a restart-stable key must not change —
 so those two classes are fenced by the mechanism each admits: records by mediation (writer
 table below), ingress by credential revocation with verified eviction (§13.1), never by
@@ -1840,7 +1924,8 @@ name the serving epoch, so no request subject carries it and **ingress cannot be
 epoch-fenced by subject**; the fence for a superseded subscriber is the §13.1 takeover
 barrier (revoke + cluster-verified eviction), not a grant shape. On the **publish side** the
 credential binds the epoch everywhere it is real: the epoch-pinned reply prefix, the
-epoch-pinned `epe` event plane, and its `ept` timer subjects. Session subjects are
+epoch-pinned `epe` event plane, its `ept` timer schedule requests, and its `epr`
+record-write ingress. Session subjects are
 deliberately absent from the standing serve grant: both sides of a session hold only
 redemption-minted per-session credentials (§13.6) — no standing EPS grant exists on either
 side. The credential also carries the record keys the writer table assigns it and, where
@@ -1863,17 +1948,46 @@ credential and every audit probe is generated from these rows.
 
 **Consumer-name grammar (normative).** Every consumer a row names has a pinned name grammar
 (dash-form, §2; `<e>` is the endpoint-name token, `<uid>` the holder's lifecycleUid or
-instanceId): `canonD = canon_<e>` (the canonicalizer durable), `poolD = pool_<e>-<pool>`
+instanceId): `canonD = canon_<e>` (the canonicalizer durable), `poolD = pool_<e>_<pool>`
 (the pool durable, **pre-created by the provisioner** with exact filter
 `cotal.<space>.epw.<e>.<pool>.>` — the §8 item-3 pattern: the bare create form is
 body-filter-selectable and is granted to NO ONE on control-surface streams), `timerD =
-timerw_<space>` (the timer writer durable), `effD = eff_<e>-<instanceId>` (the effects
-consumer). Reader-created consumers are namespaced by holder —
-`dec_<uid>-…`, `eve_<uid>-…`, `rec_<uid>-…`, `obj_<uid>-…` — with the grant pinning the
-`<family>_<uid>-` name prefix and the **extended single-filter create subject** (§8 item 4)
-pinning the read scope; a grep test the matrix MUST pass: no `CONSUMER.CREATE` grant below
-lacks either a literal filter tail or a pre-created bind-only pairing, and no
-`STREAM.MSG.GET` (body-selected) grant exists at all — subject-scoped reads use the
+timerw_<space>` (the timer writer durable), `effD = eff_<e>` (the endpoint's ONE shared
+effects durable — below). Every composite name is **collision-free by construction**, and
+each derivation states why: `pool_<e>_<pool>` parses uniquely from its LAST `_` because a
+pool token contains no `_` (`[a-z0-9-]`) while `<e>` may (a dash separator would be
+ambiguous — both tokens admit `-`); `dec_<uid>-<e>` parses from its FIRST `-` because
+`<uid>` is `[a-z0-9]` and contains none; `eve_<uid>-<e>-<n>` and
+`rec_<uid>-<n>` end in a numeric index, and a numeric-last suffix on distinct `(e, n)`
+pairs cannot collide. A derivation that cannot state its collision-freedom argument is
+non-conformant. Reader consumers use **mint-time-enumerated LITERAL names**, and every one
+is **pre-created by the provisioner at capability mint as a PULL durable with its exact
+filter; the holder receives BIND-ONLY grants** (INFO/MSG.NEXT/ACK — never CREATE or
+DELETE): `decD = dec_<uid>-<e>` (one per journal capability),
+`eveD = eve_<uid>-<e>-<n>` and `recD = rec_<uid>-<n>` (one per granted subtree, `<n>` the
+subtree's index in the minted capability — deterministic at mint time). Two reasons, both
+load-bearing. A NATS wildcard replaces a
+WHOLE dot-separated token and never matches inside one, so an embedded `*` in a name token
+(e.g. `dec_<uid>-*`) is a literal character, not a glob — every name token in a grant is
+fully literal. And holder-issued creates are forbidden outright because **a consumer
+create's `deliver_subject` is body-set and NOT confined by the creator's publish
+permissions** (the server's push delivery acts with stream authority — known upstream
+nats-server behavior): a holder allowed ANY consumer create, however filter-pinned, could
+configure a push consumer that re-publishes stored bytes onto arbitrary account subjects —
+a confused deputy no filter tail prevents. Pull durables minted by trusted provisioning
+are therefore the only reader shape on control-surface streams. **Subject convention:**
+application subjects in rows are written relative and are prefixed `cotal.<space>.` on the
+wire; **JetStream API tails — extended-create filter tails and `DIRECT.GET` subject
+tails — are always spelled in FULL** (`cotal.<space>.…`/`$KV.…`/`$O.…`), because the API
+subject embeds the stored subject verbatim and a relative tail matches nothing (the
+streams capture `cotal.<space>.ep*.>`, §13.12).
+The grep tests the matrix MUST pass: the only `CONSUMER.CREATE` grants below belong to
+trusted provisioning/infra profiles and each carries a full literal filter tail; every
+consumer-name token in a grant is a LITERAL (no embedded `*`); every filter or Direct-Get
+tail is fully qualified; and no
+`STREAM.MSG.GET` (body-selected) grant exists on any control-surface resource (the
+pre-v0.4 messaging-surface CHKV/DLVKV reads in Appendix B are outside this matrix) —
+subject-scoped reads use the
 last-by-subject `DIRECT.GET.<stream>.<subject>` form, which the broker confines by subject
 tokens.
 
@@ -1884,30 +1998,32 @@ tokens.
 | Serve subscribe | the endpoint's serve credential | per registered command: `"ep.one.<endpoint>.<command>.> <endpoint>"` (queue-qualified ONLY), `ep.all.<endpoint>.<command>.>` plain, `ep.inst.<endpoint>.<instanceId>.<command>.>` exact — never a cross-command `>` | direct — name/instance/command-pinned; epoch deliberately absent (§13.1 barrier is the fence) |
 | Reply publish | the endpoint's serve credential | `ep.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*` | direct — attribution-pinned; addressing by nonce |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct — explicitly untrusted input |
-| Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>` filtered `epj.<endpoint>.>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.<filter>`, `.INFO`, `.MSG.NEXT`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only) | mediated |
+| Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only — and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
 | Canonical decisions + quarantine | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>` and `epf.<endpoint>.quar.>` (create-only CAS per subject) | mediated |
-| Canonicalizer CAS-winner + terminal read | the endpoint's canonicalizer principal | `$JS.API.DIRECT.GET.EPF_<space>.epf.<endpoint>.dec.>` + `….quar.>` (last-by-subject, subject-confined; observes the winning fact on redelivery, §13.4) + `….wrk.>` (READ-ONLY: the reconciliation predicate's terminal probe, §13.6 — `wrk` writes stay with the commit principal, row below) | mediated |
-| Decision read (caller) | capability holder (with every journal capability) | `$JS.API.CONSUMER.CREATE.EPF_<space>.dec_<cUid>-*.epf.<endpoint>.dec.<cO>.<cA>.<cUid>.>` (extended single-filter create, §8 item 4), `$JS.API.CONSUMER.INFO.EPF_<space>.dec_<cUid>-*`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.dec_<cUid>-*`, `$JS.API.CONSUMER.DELETE.EPF_<space>.dec_<cUid>-*`, `$JS.ACK.EPF_<space>.dec_<cUid>-*.>` | direct read — caller-scoped subtree, name prefix pinned to the caller UID |
-| Accepted-fact consume (effects) | the owning endpoint's serve credential | `$JS.API.CONSUMER.CREATE.EPF_<space>.<effD>.epf.<endpoint>.dec.>` (single-filter), `.INFO`/`.MSG.NEXT` on `EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>` — effects consume canonical facts, never raw submissions (§13.4) | direct read — endpoint-scoped |
-| Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.>`, `epf.<endpoint>.receipt.>`, `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back via `$JS.API.DIRECT.GET.EPF_<space>.epf.<endpoint>.{goal,receipt,wrk,cp}.>` (last-by-subject) | mediated |
-| Event/progress read (caller) | capability holder (per read capability) | live subscribe on the granted `epe` subtrees, incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>`; filtered replay via `$JS.API.CONSUMER.CREATE.EPE_<space>.eve_<cUid>-*.<granted subtree>` (extended single-filter create) + `.INFO`/`.MSG.NEXT`/`.DELETE` on `EPE_<space>.eve_<cUid>-*` + `$JS.ACK.EPE_<space>.eve_<cUid>-*.>` | direct read — mint-time containment, filter = the granted subtree |
-| Record read/watch | capability holder / serve credential (per read capability: attribute reads, scatter registry freeze, goal status watch) | per granted key subtree (§13.7 grammars): `$JS.API.DIRECT.GET.KV_cotal_records_<space>.$KV.cotal_records_<space>.<granted subtree>` (last-by-subject read) + watch via `$JS.API.CONSUMER.CREATE.KV_cotal_records_<space>.rec_<uid>-*.$KV.cotal_records_<space>.<granted subtree>` (extended single-filter create) + `.INFO`/`.MSG.NEXT`/`.DELETE` on `KV_cotal_records_<space>.rec_<uid>-*` | direct read — subtree pinned per capability |
+| Canonicalizer CAS-winner + terminal read | the endpoint's canonicalizer principal | `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.dec.>` + `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.quar.>` (last-by-subject, subject-confined; observes the winning fact on redelivery, §13.4) + `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.wrk.>` (READ-ONLY: the reconciliation predicate's terminal probe, §13.6 — `wrk` writes stay with the commit principal, row below) | mediated |
+| Decision/receipt read (caller) | capability holder (with every journal capability) | **bind-only** on the provisioner-pre-created pull durable `decD = dec_<cUid>-<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.<cO>.<cA>.<cUid>.>`): `$JS.API.CONSUMER.INFO.EPF_<space>.<decD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<decD>`, `$JS.ACK.EPF_<space>.<decD>.>`; plus receipt lookups `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.receipt.<cO>.<cA>.<cUid>.>` (last-by-subject on its own caller-scoped receipt subtree, §13.2) | direct read — caller-scoped subtree, literal name pinned to the caller UID |
+| Accepted-fact consume (effects) | every instance's serve credential, on the endpoint's ONE shared durable | **bind-only** on the provisioner-pre-created pull durable `effD = eff_<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.>`, `AckExplicit`): `$JS.API.CONSUMER.INFO.EPF_<space>.<effD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>` — instances **pull-compete on the shared durable** so each accepted decision is delivered to exactly one live instance (at-least-once): a per-instance consumer over the class-wide decision subtree would be broadcast, and every instance would duplicate the external effect. Effects consume canonical facts, never raw submissions (§13.4); a rejected/quarantined decision is ack-skipped | direct read — endpoint-scoped, work-shared |
+| Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.>`, `epf.<endpoint>.receipt.>` (caller-scoped subjects, §13.2), `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back via `$JS.API.DIRECT.GET.EPF_<space>.cotal.<space>.epf.<endpoint>.<goal\|receipt\|wrk\|cp>.>` (last-by-subject, one grant per family) | mediated |
+| Event/progress read (caller) | capability holder (per read capability) | live subscribe on the granted `epe` subtrees (fully-qualified `cotal.<space>.epe.…` subjects in `sub.allow`, mirrored in Appendix B), incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>`; filtered replay **bind-only** on the provisioner-pre-created pull durables `eveD-n = eve_<cUid>-<e>-<n>` (one per granted subtree, exact full-tail filter): `$JS.API.CONSUMER.INFO.EPE_<space>.<eveD-n>`, `$JS.API.CONSUMER.MSG.NEXT.EPE_<space>.<eveD-n>`, `$JS.ACK.EPE_<space>.<eveD-n>.>` | direct read — mint-time containment, filter = the granted subtree |
+| Record read/watch | capability holder / serve credential (per read capability: attribute reads, scatter registry freeze, goal status watch) | per granted key subtree (§13.7 grammars): `$JS.API.DIRECT.GET.KV_cotal_records_<space>.$KV.cotal_records_<space>.<granted subtree>` (last-by-subject read) + watch **bind-only** on the provisioner-pre-created pull durables `recD-n = rec_<uid>-<n>` (one per granted subtree, exact `$KV.…` filter): `$JS.API.CONSUMER.INFO.KV_cotal_records_<space>.<recD-n>`, `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_<space>.<recD-n>`, `$JS.ACK.KV_cotal_records_<space>.<recD-n>.>` (pull-based level-triggered watch; fell-behind ⇒ re-read, §13.4) | direct read — subtree pinned per capability |
 | Claim / action / checkpoint commits | the owning endpoint's commit path | its own record keys (`goal`/`cp`/`lease` grammars, §13.7, per the writer table) + the enumerated commit fact families of the Result row above — never `dec.>`/`quar.>` | mediated (validates fencing, lease clock, lifecycle, epoch) |
-| Contract-artifact publication | the contract publisher principal | publish `$O.cotal_contracts_<space>.C.>` + `.M.>`; read-back via the SAME reader row shape as everyone else (last-by-subject meta Direct Get + pinned single-filter chunk consumer, below) — never the body-selected `STREAM.MSG.GET`/bare `DIRECT.GET` forms | mediated — immutable once published |
-| Contract-artifact read | **every** profile that may receive a digest reference (agents, endpoints, operators) | meta lookup: `$JS.API.DIRECT.GET.OBJ_cotal_contracts_<space>.$O.cotal_contracts_<space>.M.>` (last-by-subject, name→meta); chunk replay: `$JS.API.CONSUMER.CREATE.OBJ_cotal_contracts_<space>.obj_<uid>-*.$O.cotal_contracts_<space>.C.>` (extended single-filter create — a plain core subscribe sees only FUTURE publishes and reads nothing persisted) + `.INFO`/`.MSG.NEXT`/`.DELETE` on `OBJ_cotal_contracts_<space>.obj_<uid>-*` + `$JS.ACK.OBJ_cotal_contracts_<space>.obj_<uid>-*.>`; write side denied; verify-on-read (§13.7) is the tamper boundary, not the ACL | direct read |
-| Record `spec`/`status` writes | the kind's separately scoped spec/status writer principal (writer table) | `$KV.cotal_records_<space>.<key per the §13.7 kind grammars>.{spec,status}` | mediated per kind below — no row left open |
+| Contract-artifact publication | the contract publisher principal | publish `epc.<digest-hex>` (`epc.*`), create-only per subject (`Nats-Expected-Last-Subject-Sequence: 0` — a digest subject is written at most once); read-back via the reader row below | mediated — immutable once published |
+| Contract-artifact read | **every** profile that may receive a digest reference (agents, endpoints, operators) | `$JS.API.DIRECT.GET.EPC_<space>.cotal.<space>.epc.>` — the subject-scoped last-by-subject Direct Get on the exact digest subject; one message IS the artifact (§13.7), so no consumer exists to confine; verify-on-read (§13.7) is the tamper boundary, not the ACL | direct read |
+| Record write ingress (`epr`) | the owning instance | publish `epr.<endpoint>.<instanceId>.<epoch>.<kind>.<qualifier...>` — the instance's ONLY path to `svc`/`goal`/`cp` status writes; the epoch token is pinned by the serve credential, so the record writer reads the writing epoch from the broker-authenticated subject, never from payload | direct — epoch-pinned ingress to the mediated writer |
+| Record writer consume + `spec`/`status` writes | the kind's separately scoped spec/status writer principal (writer table) | consume: `$JS.API.CONSUMER.CREATE.EPR_<space>.<recwD>.cotal.<space>.epr.>` (full-tail single filter; `recwD = recw_<space>`) + `$JS.API.CONSUMER.INFO.EPR_<space>.<recwD>` + `$JS.API.CONSUMER.MSG.NEXT.EPR_<space>.<recwD>` + `$JS.ACK.EPR_<space>.<recwD>.>`; write: `$KV.cotal_records_<space>.<key per the §13.7 kind grammars>.{spec,status}` | mediated per kind below — no row left open |
+| Reader/pool/effects consumer provisioning (one-shot, at capability mint / endpoint setup) | the provisioner | exact full-tail extended creates for every pre-created durable this matrix names: `$JS.API.CONSUMER.CREATE.EPW_<space>.<poolD>.cotal.<space>.epw.<e>.<pool>.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<effD>.cotal.<space>.epf.<e>.dec.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<decD>.cotal.<space>.epf.<e>.dec.<cO>.<cA>.<cUid>.>`, `$JS.API.CONSUMER.CREATE.EPE_<space>.<eveD-n>.<granted full-tail subtree>`, `$JS.API.CONSUMER.CREATE.KV_cotal_records_<space>.<recD-n>.$KV.cotal_records_<space>.<granted subtree>` — every create PULL, every filter a full literal tail; plus matching `CONSUMER.DELETE` for deprovisioning (lifecycle-keyed names, §13.1) | mediated — trusted provisioning only |
 | Events | the owning instance | `epe.<endpoint>.<instanceId>.<epoch>.>` | direct — subject-confined, epoch-pinned |
 | Timer schedule request | the owning instance | publish `ept.<endpoint>.<instanceId>.<epoch>.*.schedule` (never `.armed`/`.fire`); a request carrying any scheduling header is rejected by the timer writer (§13.2) | direct — epoch-pinned; captured by the schedules-DISABLED request stream |
-| Timer request consume + arm | the space's timer writer principal (singleton infra, like the delivery daemon) | consume: `$JS.API.CONSUMER.CREATE.EPT_REQ_<space>.<timerD>.cotal.<space>.ept.>` (single-filter) + `.INFO`/`.MSG.NEXT` on `EPT_REQ_<space>.<timerD>` + `$JS.ACK.EPT_REQ_<space>.<timerD>.>`; arm: publish `ept.*.*.*.*.armed`, deriving `Nats-Schedule-Target` = the sibling `.fire` from the authenticated request subject tokens ONLY, stripping/rejecting every client scheduling header (§13.2, §13.12) | mediated |
+| Timer request consume + arm | the space's timer writer principal (singleton infra, like the delivery daemon) | consume: `$JS.API.CONSUMER.CREATE.EPT_REQ_<space>.<timerD>.cotal.<space>.ept.*.*.*.*.schedule` (full-tail single filter) + `$JS.API.CONSUMER.INFO.EPT_REQ_<space>.<timerD>` + `$JS.API.CONSUMER.MSG.NEXT.EPT_REQ_<space>.<timerD>` + `$JS.ACK.EPT_REQ_<space>.<timerD>.>`; arm: publish `ept.*.*.*.*.armed`, deriving `Nats-Schedule-Target` = the sibling `.fire` from the authenticated request subject tokens ONLY, stripping/rejecting every client scheduling header, and **fresh-checking the authoritative timer generation/deadline before arming** — a redelivered or delayed stale-generation request is discarded, never armed, so it cannot overwrite the current schedule and silently lose the live deadline (§13.2, §13.6, §13.12) | mediated |
 | Timer fire consume | the owning instance | its own `ept.<endpoint>.<instanceId>.<epoch>.*.fire` (fired messages validated against its authoritative schedule state AND the broker-authored scheduler-origin header = its exact sibling `.armed`, §13.12); no client credential holds `.armed` or `.fire` publish | direct read |
 | Session `.in` publish | the session's caller (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.in` exact | direct |
 | Session `.in` subscribe | the serving instance (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.in` exact | direct read |
 | Session `.out` publish | the serving instance (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct |
 | Session `.out` subscribe | the session's caller (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct read |
 | Session ledger (one-use redemption, credential ids, revocation state, authenticated close) | the trusted auth path (§9/§10) | `$KV.cotal_auth_<space>.session.<sessionId>` — create-only CAS per `sessionId`, monotonic state (§13.6) | mediated |
-| Credential ledger (issuance freeze, descendant enumeration, revocation) | the trusted auth path (§9/§10) | `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` (§13.1) — no other profile holds ANY grant on `cotal_auth_<space>` | mediated |
+| Credential ledger (issuance gate, descendant enumeration, lineage index, revocation) | the trusted auth path (§9/§10) | writes: `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` + `….gate.<lifecycleUid>` (the issuance gate, §13.1) + `….bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` (the per-ancestor lineage index) + `….session.<sessionId>`; reads: `$JS.API.DIRECT.GET.KV_cotal_auth_<space>.$KV.cotal_auth_<space>.>` (last-by-subject: gate checks, session lookups, per-row state) and prefix enumeration via its own full-tail pull durable `$JS.API.CONSUMER.CREATE.KV_cotal_auth_<space>.<authD>.$KV.cotal_auth_<space>.>` (`authD = authr_<space>`) + `$JS.API.CONSUMER.INFO.KV_cotal_auth_<space>.<authD>` + `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_<space>.<authD>` + `$JS.ACK.KV_cotal_auth_<space>.<authD>.>` — the barrier's family enumeration and the expiry sweep are executable reads, not prose. No other profile holds ANY grant on `cotal_auth_<space>` | mediated |
 | Work-pool enqueue | the endpoint's canonicalizer (from accepted decisions only) | `epw.<endpoint>.>` publish, create-per-subject (`Nats-Expected-Last-Subject-Sequence: 0`; the acceptance identity is the subject, §13.2) | mediated |
-| Work-pool reconciliation probe | the endpoint's canonicalizer | `$JS.API.DIRECT.GET.EPW_<space>.epw.<endpoint>.>` (last-by-subject on the exact item subject — never the body-selected `STREAM.MSG.GET` form) + the CAS-winner read row above (`dec` + `wrk` last-by-subject) — together they decide the §13.6 predicate: accepted, no terminal, no live entry ⇒ re-enqueue | mediated |
+| Work-pool reconciliation probe | the endpoint's canonicalizer | `$JS.API.DIRECT.GET.EPW_<space>.cotal.<space>.epw.<endpoint>.>` (last-by-subject on the exact item subject — never the body-selected `STREAM.MSG.GET` form) + the CAS-winner read row above (`dec` + `wrk` last-by-subject) — together they decide the §13.6 predicate: accepted, no terminal, no live entry ⇒ re-enqueue | mediated |
 | Work-pool consume + ack | the pool's owning endpoint ONLY (workers hold NO pool grant, §13.5) | **bind-only** on the provisioner-pre-created exact-filter `poolD` (grammar above): `$JS.API.CONSUMER.INFO.EPW_<space>.<poolD>`, `$JS.API.CONSUMER.MSG.NEXT.EPW_<space>.<poolD>`, `$JS.ACK.EPW_<space>.<poolD>.>` (ack only after committed terminal state) — NO consumer create, NO stream-wide read | mediated |
 | Lease issue / fencing advance | the pool's owning endpoint (`lease` command) | its `lease` record keys (§13.7 grammar), via the record-writer seam | mediated |
 | Lifecycle mapping / teardown | minting manager's commit path; lifecycle-pinned deprovisioner | `lifecycle.<owner>.<actor>.<lifecycleUid>` record keys (§13.7); exact lifecycle-keyed names | mediated / broker-pinned delete |
@@ -1923,12 +2039,12 @@ the broker guarantees writer/key containment only, and the row **explicitly down
 CAS/schema/header/byte correctness to a conforming-client guarantee; readers of direct-row
 state fail loud on invalid content. No profile — agent, observer, admin, host — holds generic
 `$JS.API.>`/`$KV.>`/`$O.>` authority over control-surface state — for the contract store that
-means the REAL subjects and APIs: **write** on `$O.cotal_contracts_<space>.C.>`/`.M.>` belongs
-to the contract publisher alone; **read** (the last-by-subject meta Direct Get + the pinned
-single-filter chunk-consumer create of the reader row above — never the body-selected bare
-Direct Get or a bare consumer create) is granted per the reader row, with verify-on-read as
-the tamper
-boundary; and the **stream-management surface** of `OBJ_cotal_contracts_<space>`
+means the REAL subjects and APIs: **write** on `cotal.<space>.epc.>` belongs
+to the contract publisher alone (create-only per digest subject); **read** is the
+subject-scoped last-by-subject Direct Get of the reader row above — never a body-selected
+form and never a consumer, because there is nothing to replay: one message per digest
+subject IS the store — with verify-on-read as the tamper
+boundary; and the **stream-management surface** of `EPC_<space>`
 (`$JS.API.STREAM.{UPDATE,DELETE,PURGE,MSG.DELETE}.…`) is held by NO profile, publisher
 included — stream lifecycle belongs to space setup under operator provisioning authority
 only, which is what "immutable once published" rests on (a `$OBJ.>` deny matches no NATS
@@ -1941,14 +2057,18 @@ adds a resource or changes ownership.
 are mediated by separately scoped spec/status writer principals; an endpoint holds no raw
 overwrite grant on its own record keys).** `svc` — spec: the provisioner/registration path,
 **mediated** (CAS + schema enforced at registration); status: the owning instance's commit
-path, **mediated** with **epoch currency enforced at the writer**: the writer validates the
-writing epoch against a FRESH read of the authoritative lifecycle mapping's `processEpoch`
-and rejects a non-current epoch (`expired`) — monotonicity against the stored status epoch
+path, **mediated** with **epoch currency enforced at the writer**: the writing epoch is
+read from the broker-authenticated `epr` ingress subject (§13.2 — the instance's serve
+credential pins the epoch token there, so a stale process CANNOT claim the successor's
+epoch: the value is attested by the grant, never by payload), and the writer validates it
+against a FRESH read of the authoritative lifecycle mapping's `processEpoch`,
+rejecting a non-current epoch (`expired`) — monotonicity against the stored status epoch
 alone is NOT sufficient, because between the takeover CAS (mapping N→N+1) and the completed
 revoke/evict barrier the superseded N would still equal the stored status epoch and pass a
 below-stored check — and additionally rejects a below-stored epoch (`conflict`). The record
 key is restart-stable and
-cannot carry the epoch (§13.1), so this mediation is the record's only stale-writer fence.
+cannot carry the epoch (§13.1), so this epoch-pinned-ingress-plus-fresh-equality mediation
+is the record's only stale-writer fence.
 `signer` — spec+status: the space operator's registry tooling as the scoped writer
 principal, **mediated**. `handle` — keys are **issuer-namespaced**,
 `handle.<issuerKeyId>.<id>`, so two issuers can never collide or cross-revoke; spec: the
@@ -1977,7 +2097,7 @@ code? }, resultDigest?, ts, signer: { keyId }, sig }` — canonical JSON, Ed2551
 Lifecycle and epoch are recorded as **evidence**, never redemption authority. A command
 carrying `ai.cotal.priced` MUST verify an independently verifiable payment proof in the
 `auth` slot before effect (never a bare "settled" assertion) and emit a receipt fact
-(`epf….receipt.<requestId>`). Receipt retention: default 90 d, ≥ the idempotency horizon.
+(`epf….receipt.<cOwner>.<cActor>.<cUid>.<id>`, the caller-scoped subject of §13.2). Receipt retention: default 90 d, ≥ the idempotency horizon.
 Verification: signature against the anchor registry + digest recomputation; forged or
 request-mismatched receipts fail loud. Receipts MAY be emitted for unpriced commands.
 
@@ -2019,7 +2139,7 @@ dispatches on the type, never duck-types the claims.
 | --- | --- | --- |
 | Capability handle | id, space, issuer, holder (principal+UID), structured grants, iat, exp (nbf, parentDigest, epoch as applicable) | reusable within TTL, holder-bound; revocable if sturdy |
 | Checkpoint resume | checkpoint token, goal id, holder (principal+UID), iat, exp, nonce | **one-use** (journaled by create-only CAS); duplicate = `conflict` |
-| Session grant | sessionId, subjects, holder (principal+UID), serving instance+epoch, window, iat, exp, nonce | **one-use** redemption, then live; dies with the epoch |
+| Session grant | sessionId, subjects, holder (principal+UID+processEpoch), serving instance+epoch, window, iat, exp, nonce | **one-use** redemption (holder epoch fresh-checked), then live; dies with either side's epoch |
 | Guard obligation | goal/request id, attenuations, iat, exp | bound to its goal/request; reusable within it |
 | Payment proof | per the priced contract's declared policy | default one-use per request id |
 | Trait attachment | endpoint, command, contractDigest, traitUrn, value, signer, ts | revision-bound evidence; replaced only by an authorized contract revision |
@@ -2038,7 +2158,12 @@ handlers, credential grants, minting paths. No compatibility adapter, dual servi
 translation window exists. A credential minted before the cut can publish only into dead v0
 subjects: nothing subscribes them, no post-cut handler is reachable from them, no trusted
 reply can be elicited (a pre-cut grant matches no endpoint-surface subject by construction —
-verified adversarially with captured pre-cut credentials from every old profile). The wire
+verified adversarially with captured pre-cut credentials from every old profile). The one
+structural exception is the pre-cut `admin` profile, whose space-wide `P.>` subscribe
+predates and therefore MATCHES the new rails: **admin credentials MUST be re-minted at the
+cutover** to the post-cut admin shape (Appendix B: messaging-plane subjects only, no
+`ep*`/`eps`/`epc` subscribe), and the pre-cut admin credential is revoked with the cut —
+the hard-cut guarantee is not honest without it. The wire
 `protocolVersion` (§6, §11) targets `0.4` at the completion of this revision's migration, per
 the §11 convention that the advertised version is the migration's normative target, and a
 v0.4-conformant participant MUST advertise it (the optional-field era ends at the marker
@@ -2069,8 +2194,11 @@ maximum-capability CONNECT line. The two floors are checked at the tier that can
   is 65536 — a derived number, not an assertion. The 16 KiB policy gate remains a distinct
   mint-time cap on credential authority, refused loudly at minting. The same assertion pass
   checks `max_payload ≥` the largest serialized **bounded decision fact** fixture (the
-  maximum `RejectionFact`/`QuarantineFact` under the token and detail bounds, §13.4), so
-  "the rejection fact always fits by construction" is a measured floor, not an assumption.
+  maximum `RejectionFact`/`QuarantineFact` under the token and detail bounds, §13.4) AND
+  `max_payload ≥` the 256 KiB contract-artifact document bound plus envelope margin
+  (§13.7 — a contract artifact is one message on its digest subject), so
+  "the rejection fact always fits by construction" and "an artifact is a single message"
+  are measured floors, not assumptions.
 
 No sweeper fallback exists. Only 2.12 schedule semantics are assumed (same-subject
 replacement; NOT the 2.14 stop-plus-publish path).
@@ -2083,12 +2211,13 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | `EPF_<space>` stream | `cotal.<space>.epf.>` (canonical facts) | Limits; acceptance via create-only CAS (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the last-by-subject fact reads of the §13.9 matrix); retention ≥ horizons |
 | `EPE_<space>` stream | `cotal.<space>.epe.>` (events, progress) | Limits; space policy |
 | `EPT_REQ_<space>` stream | `cotal.<space>.ept.*.*.*.*.schedule` (instance schedule REQUESTS, §13.2) | Limits; message schedules **DISABLED** — client-set scheduling headers are inert bytes here; retention ≥ writer recovery lag |
+| `EPR_<space>` stream | `cotal.<space>.epr.>` (record-write ingress, §13.2) | Limits; epoch-pinned publish grants (§13.9); consumed only by the record writer; retention ≥ writer recovery lag |
 | `EPT_<space>` stream | `cotal.<space>.ept.*.*.*.*.armed` + `….fire` (authoritative schedules + fires, §13.2) | `AllowMsgSchedules`; only the timer writer publishes `.armed` (§13.9); each schedule targets its sibling `.fire` subject (ADR-51 forbids target = publish subject); retention ≥ max deadline + margin |
 | `EPW_<space>` stream | `cotal.<space>.epw.>` (work pools; one item per subject, §13.2) | WorkQueue; provisioner-pre-created non-overlapping exact-filter per-pool consumers (§13.9); `allow_direct=true` (the subject-confined reconciliation probe — an acked item leaves the WorkQueue, an in-flight one remains readable, which is exactly the §13.6 predicate) |
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`) | per-key CAS; split `.spec`/`.status` keys; `allow_direct=true` (KV) |
-| `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY — no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); create-only CAS + monotonic states; retention ≥ max credential/session TTL + recovery margin |
-| `cotal_contracts_<space>` Object Store | content-addressed contract artifacts | digest-keyed; verify-on-read; mediated publication; `allow_direct=true` (the last-by-subject meta lookup of the §13.9 reader row) |
+| `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY — no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); create-only CAS + monotonic states; **one bucket = one stream = one total order**, which the §13.1 issuance-gate race closure depends on; retention ≥ max credential/session TTL + recovery margin |
+| `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path); stream management held by no profile (§13.9) |
 
 Claim pools are pull consumers on `EPW` with `AckExplicit`, held **only by the pool's owning
 endpoint** (§13.5): `ack_wait` is the broker's redelivery-to-owner timer and nothing more —
@@ -2191,6 +2320,10 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 
 - `inbox`
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity — the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
+- `P.epe.…` — the exact fully-qualified event subtrees of every minted read capability
+  (§13.9 event-read row), incl. the caller's own per-goal subtree
+  `P.epe.*.*.*.goal.<owner>.<actor>.<uid>.>`; the live tail of watch, granted per
+  capability, none by default
 - `P.chat.*.*.<ch>` for every `allowSubscribe` channel, the **live read boundary**: native core-sub join/leave is a `sub.allow`-bounded subscribe to this subject (wildcard sender owner+actor), so an agent whose ACL permits a channel joins it alone with no manager. Wildcards preserved (e.g. `P.chat.*.*.team.>` for `allowSubscribe: team.>`); a `team.>` grant matches strictly deeper channels, not the bare `team`; a `>` grant is read-all chat in the space on credential compromise
 
 `pub.allow`:
@@ -2204,16 +2337,17 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
   manager endpoint's lifecycle commands with authz-mode `owner`; `child`/`ledger` forms and
   wider target patterns only per explicitly minted capability. The caller triple
   `<owner>.<actor>.<uid>` is pinned in every granted form
-- contract-artifact read per the §13.9 reader row: the last-by-subject meta lookup
-  `$JS.API.DIRECT.GET.OBJ_cotal_contracts_<space>.$O.cotal_contracts_<space>.M.>` plus the
-  pinned single-filter chunk-consumer set
-  `$JS.API.CONSUMER.CREATE.OBJ_cotal_contracts_<space>.obj_<uid>-*.$O.cotal_contracts_<space>.C.>`,
-  `$JS.API.CONSUMER.{INFO,MSG.NEXT,DELETE}.OBJ_cotal_contracts_<space>.obj_<uid>-*`, and
-  `$JS.ACK.OBJ_cotal_contracts_<space>.obj_<uid>-*.>` (verify-on-read is the tamper
-  boundary, §13.7)
-- decision/event/record read grants per minted capability: the §13.9 matrix reader rows
-  (`dec_<uid>-*`, `eve_<uid>-*`, `rec_<uid>-*` — extended single-filter creates pinned to
-  the caller-scoped subtrees)
+- contract-artifact read per the §13.9 reader row:
+  `$JS.API.DIRECT.GET.EPC_<space>.cotal.<space>.epc.>` — the subject-scoped
+  last-by-subject Direct Get on the exact digest subject; one message is the artifact, no
+  consumer exists (verify-on-read is the tamper boundary, §13.7)
+- decision/event/record read grants per minted capability: **bind-only** on the
+  provisioner-pre-created PULL durables of the §13.9 matrix reader rows
+  (`dec_<uid>-<e>`, `eve_<uid>-<e>-<n>`, `rec_<uid>-<n>` — mint-time literal names, never
+  an embedded `*`, which NATS treats as a literal character inside a token):
+  `CONSUMER.INFO`/`CONSUMER.MSG.NEXT`/`$JS.ACK` per durable, and NO consumer create — a
+  holder-issued create's `deliver_subject` is body-set and unconfined by the creator's
+  publish permissions (§13.9), so dynamic reader creates exist for no one
 - `$JS.API.INFO`
 - `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>`: CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/TASK (agents bind those by name and never inspect them, so INFO there would only leak inbox/task metadata)
 - `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body, the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
@@ -2281,7 +2415,12 @@ CHAT history, presence, and channel registry:
 
 ### Admin
 
-Admin has observer grants, with `sub.allow = [P.>, inbox]`, plus DM history read grants:
+Admin has observer grants, with `sub.allow = [P.chat.>, P.inst.>, P.svc.>, inbox]` — the
+god-view is the **messaging plane only**, enumerated: it deliberately excludes `P.ep.>`,
+`P.epe.>`, `P.epf.>`, `P.epj.>`, `P.ept.>`, `P.epr.>`, `P.epw.>`, `P.eps.>`, and `P.epc.>`
+(a space-wide `P.>` would plain-subscribe every `ep.one` request rail — collecting reply
+nonces the queue-qualified-only rule exists to protect — and every core-only session
+frame; §13.2, §13.11). Plus DM history read grants:
 
 - `$JS.API.STREAM.INFO.<DM>`
 - `$JS.API.CONSUMER.CREATE.<DM>`
@@ -2299,7 +2438,10 @@ There is **no allow-all credential**. The privileged host duties are split into 
 single-function profiles, each granting only the verbs its function needs and none other:
 
 - `provisioner`: pre-creates the per-instance lifecycle-scoped durables (`dm_…-<uid>`,
-  `svc_…`, the per-member `dlv_…-<uid>` handoff) and mints scoped credentials; ephemeral
+  `svc_…`, the per-member `dlv_…-<uid>` handoff) AND every control-surface pre-created
+  consumer of the §13.9 matrix — `poolD`, `effD`, and the per-capability reader durables
+  `decD`/`eveD-n`/`recD-n` (all PULL, all exact full-tail filters, per the one-shot
+  provisioning row) — and mints scoped credentials; ephemeral
   onboarding authority.
 - `deprovisioner`: target-pinned teardown of ONE retired lifecycle's footprint, minted per
   teardown with the target's `(principal, lifecycleUid)` in every exact-name grant — it can
@@ -2365,7 +2507,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-07-10 | **v0.4 binding revision: endpoint control surface (§13).** One standardized typed surface for every endpoint (manager, delivery, wrapped third-party servers): class/instance/scatter rails with per-command broker enforcement and an authorization-mode gradient, lifecycle identity (recyclable alias + never-reused lifecycle UID + fenced process epoch, §13.1, §2/§6/§8 extensions), versioned envelope with structured errors and signed slots, three delivery contracts (ephemeral, split-key records, untrusted submissions → mediated canonical facts), verbs call/cast/watch/claim/scatter (claim owner-mediated: workers hold no pool grant), composites (action, checkpoint, guard, capability handle with redemption-pinned `handle`-mode targets, session, virtual endpoints), content-addressed cluster contracts + governed traits + describe, the ownership matrix (incl. exact reader/consumer/ack rows and pinned consumer-name grammars), takeover/retirement revoke-and-evict barriers over the full ledgered credential family (credential ledger, §13.1), mediated timer arming (request/armed/fire split), poison quarantine facts, receipts and trust anchors. **Hard cut:** deletes the v0 `ctl` rail, `ControlRequest`/`ControlReply`, the `self`/`manager`/`admin`/`delivery-admin` tiers, and the reserved `control.<instance>` subject. `protocolVersion` targets `0.4` at migration completion; `1.0` stays reserved as a later stability declaration. |
+| 2026-07-10 | **v0.4 binding revision: endpoint control surface (§13).** One standardized typed surface for every endpoint (manager, delivery, wrapped third-party servers): class/instance/scatter rails with per-command broker enforcement and an authorization-mode gradient, lifecycle identity (recyclable alias + never-reused lifecycle UID + fenced process epoch, §13.1, §2/§6/§8 extensions), versioned envelope with structured errors and signed slots, three delivery contracts (ephemeral, split-key records, untrusted submissions → mediated canonical facts), verbs call/cast/watch/claim/scatter (claim owner-mediated: workers hold no pool grant), composites (action, checkpoint, guard, capability handle with redemption-pinned `handle`-mode targets, session, virtual endpoints), content-addressed cluster contracts + governed traits + describe, the ownership matrix (incl. exact reader/consumer/ack rows and pinned consumer-name grammars), takeover/retirement revoke-and-evict barriers over the full ledgered credential family (credential ledger, §13.1), mediated timer arming (request/armed/fire split with a scheduler-origin fire check), poison quarantine facts, an epoch-pinned record-write ingress plane (`epr`), a single-message digest-subject contract store (`epc`, replacing the Object Store binding), pre-created pull-only reader consumers (no dynamic reader creates: a create's delivery target is body-set and unconfined), an alias CAS head for lifecycle activation, and receipts and trust anchors. **Hard cut:** deletes the v0 `ctl` rail, `ControlRequest`/`ControlReply`, the `self`/`manager`/`admin`/`delivery-admin` tiers, and the reserved `control.<instance>` subject. `protocolVersion` targets `0.4` at migration completion; `1.0` stays reserved as a later stability declaration. |
 | 2026-07-07 | Documentation revision, no wire change: layered authority statement (schema authoritative for shapes, prose for semantics), document-snapshot policy and this change log (§11), reciprocal links to the informative docs. |
 | 2026-07-03 | **v0.3 binding revision: owner+actor identity.** The wire identity becomes the two-token principal `(owner, actor)`: subjects carry the sender as `<owner>.<actor>`, and grants, durables, presence, and `from.id` re-key onto the pair (§2, §3, §6, §8, §9). The connection nkey remains only the transport credential (the per-connection reply inbox). Adds the per-user-auth authorization grammar and the owner-token format (§2, §9). Supersedes the single-id grammar. |
 | 2026-06-21 | **v0.3 binding revision: channel live delivery.** Channel live delivery moves from the mediated per-instance live-tail durable to native `sub.allow`-bounded core subscriptions, with an explicit per-channel `live`/`durable` delivery class and the per-member durable backstop (§4, §7, §8); membership moves to a privileged-written registry (§7). Supersedes the v0.2 single-durable live-tail. |
