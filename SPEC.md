@@ -633,6 +633,25 @@ query leaks chat subject *metadata* (channel names, sender ids, and per-subject 
 channels outside `allowSubscribe` (channel names are already public via the registry). Hiding
 that metadata is deferred strict-containment work. See [docs/security.md](docs/security.md).
 
+**Known limitation — consumer-delivery confused deputy on the v0.3 read grants (deferred).**
+A JetStream consumer delivers stored bytes to a **caller-chosen destination the broker does
+NOT confine to the requester's `pub.allow`**: a push consumer's `deliver_subject`, and a pull
+`MSG.NEXT`/`DIRECT.GET` request's reply subject, are set in the request body and the server's
+internal client publishes there regardless of the requester's publish permissions (confirmed
+on nats-server 2.14.2). The v0.3 read grants above — CHAT-history `CONSUMER.CREATE`, the
+bind-only DM/DLV/TASK `MSG.NEXT`, and the KV watch creates (Appendix B) — therefore let an
+agent redirect content it may legitimately READ onto a subject it may NOT publish to: e.g.
+replay a stored CHAT message whose `from.id` is another sender onto `inst.<victim>.<thatSender>`,
+where the recipient derives the DM sender from the subject and surfaces it as a genuine DM from
+a principal who never sent it. The v0.4 control surface closes this class by construction
+(§13.9 "Mediated reads": untrusted callers hold no raw JetStream read; reads flow through a
+trusted mediator onto the caller's own reply rail). Applying the same mediation to the v0.3
+messaging read path (chat history, DM inbox, anycast, KV watch) is the fix here too, but it is
+a change to the **already-shipped** binding with its own migration, so it is tracked as a
+distinct security remediation, NOT folded into the control-surface revision. Until then, this
+binding's read containment holds only against a *conforming* client on the v0.3 rails; the
+broker does not enforce it. See [docs/security.md](docs/security.md).
+
 ---
 
 ## 10. Connection and onboarding
@@ -2473,17 +2492,18 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
   manager endpoint's lifecycle commands with authz-mode `owner`; `child`/`ledger` forms and
   wider target patterns only per explicitly minted capability. The caller triple
   `<owner>.<actor>.<uid>` is pinned in every granted form
-- contract-artifact read per the §13.9 reader row:
-  `$JS.API.DIRECT.GET.EPC_<space>.cotal.<space>.epc.>` — the subject-scoped
-  last-by-subject Direct Get on the exact digest subject; one message is the artifact, no
-  consumer exists (verify-on-read is the tamper boundary, §13.7)
-- decision/goal-result/event/record read grants per minted capability: **bind-only** on the
-  provisioner-pre-created PULL durables of the §13.9 matrix reader rows
-  (`dec_<uid>-<e>`, `goal_<uid>-<e>`, `eve_<uid>-<e>-<n>`, `rec_<uid>-<n>` — mint-time literal names, never
-  an embedded `*`, which NATS treats as a literal character inside a token):
-  `CONSUMER.INFO`/`CONSUMER.MSG.NEXT`/`$JS.ACK` per durable, and NO consumer create — a
-  holder-issued create's `deliver_subject` is body-set and unconfined by the creator's
-  publish permissions (§13.9), so dynamic reader creates exist for no one
+- control-surface durable reads (contract artifacts, decisions, goal results, receipts,
+  event catch-up, record reads): **NO raw JetStream read grant of any kind** — no
+  `DIRECT.GET`, no consumer `CREATE`, no bind-only `MSG.NEXT`/`ACK` — on `EPC`/`EPF`/`EPE`/the
+  records KV. Per §13.9 "Mediated reads", every JetStream read delivers stored bytes to a
+  caller-chosen destination the broker does not confine (push `deliver_subject`, pull
+  `MSG.NEXT` reply, `DIRECT.GET` reply are the same vector), so an untrusted caller holds none
+  of them. The caller reads through the trusted read mediator via a read command (an endpoint
+  request form, above) and receives its own caller-scoped facts over its reply rail
+  `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (already in `sub.allow`); the mediator owns the
+  reader consumers and re-authorizes each read. Live event progress is the caller's own core
+  subscription to granted `P.epe.…` subtrees within `allowSubscribe` (bytes land only on its
+  own subscription, never a caller-chosen subject)
 - `$JS.API.INFO`
 - `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>`: CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/TASK (agents bind those by name and never inspect them, so INFO there would only leak inbox/task metadata)
 - `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body, the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
