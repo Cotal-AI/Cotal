@@ -2155,12 +2155,19 @@ streams capture `cotal.<space>.ep*.>`, §13.12).
 The grep tests the matrix MUST pass: the only `CONSUMER.CREATE` grants below belong to
 trusted provisioning/infra profiles and each carries a full literal filter tail; every
 consumer-name token in a grant is a LITERAL (no embedded `*`); every filter or Direct-Get
-tail is fully qualified; and no
-`STREAM.MSG.GET` (body-selected) grant exists on any control-surface resource (the
-pre-v0.4 messaging-surface CHKV/DLVKV reads in Appendix B are outside this matrix) —
-subject-scoped reads use the
+tail is fully qualified; **no UNTRUSTED profile (agent/observer/admin) holds any
+`CONSUMER.CREATE`/`MSG.NEXT`/`DIRECT.GET`/`STREAM.MSG.GET` on a control-surface resource** (an
+audit MUST run this over Appendix B too, not only this matrix — the profile tables are
+generated from these rows, so a generated grant that contradicts the matrix fails the build);
+and the ONLY `STREAM.MSG.GET` (body-selected) grants that exist at all are the leader-served
+reads of two named TRUSTED profiles — the auth path on `KV_cotal_auth_<space>` and the
+lifecycle mapping-reader on the `lifecycle` head (§13.9), each granted to no other profile —
+because `allow_direct=false` on those buckets makes a leader-consistent get exactly a
+`STREAM.MSG.GET`, and read-your-writes there is a correctness requirement, not a hazard for a
+trusted single-purpose principal. Every OTHER subject-scoped read uses the
 last-by-subject `DIRECT.GET.<stream>.<subject>` form, which the broker confines by subject
-tokens.
+tokens. (The pre-v0.4 messaging-surface CHKV/DLVKV reads in Appendix B are the v0.3 binding,
+outside this matrix; their confused-deputy exposure is the §9 in-scope-for-v0.4 remediation.)
 
 | Transition | Writer profile | Exact namespace (per space/endpoint) | Class |
 | --- | --- | --- | --- |
