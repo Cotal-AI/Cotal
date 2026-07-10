@@ -24,3 +24,6 @@ export * from "./runtime.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";
+export * from "./canonical.js";
+export * from "./schema-profile.js";
+export * from "./broker-floor.js";

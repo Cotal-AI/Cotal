@@ -393,6 +393,12 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      json-canonicalize:
+        specifier: ^2.0.0
+        version: 2.0.0
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -1638,6 +1644,9 @@ packages:
   js-yaml@4.3.0:
     resolution: {integrity: sha512-1td788aAnnZ5qs7V2QIRl1owjtYpbKt749Y3xauqQgwIIGF/xXWz1wMTEBx5O3LK3lXLVuqXPdPxj2BoFHaW9Q==}
     hasBin: true
+
+  json-canonicalize@2.0.0:
+    resolution: {integrity: sha512-yyrnK/mEm6Na3ChbJUWueXdapueW0p380RUyTW87XGb1ww8l8hU0pRrGC3vSWHe9CxrbPHX2fGUOZpNiHR0IIg==}
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
@@ -3260,6 +3269,8 @@ snapshots:
   js-yaml@4.3.0:
     dependencies:
       argparse: 2.0.1
+
+  json-canonicalize@2.0.0: {}
 
   json-schema-traverse@1.0.0: {}
 
