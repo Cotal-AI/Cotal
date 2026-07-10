@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type ParsedArgs } from "@cotal-ai/core";
 import { clearCurrent, getCurrent, removeMesh } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -21,12 +21,21 @@ export async function down(args: ParsedArgs): Promise<void> {
   const space = resolveSpace(process.cwd());
   const targets = pidfileTargets(space);
   let any = false;
+  let allStopped = true;
   // Sequential, in declared (stop) order — see pidfileTargets. Each stop awaits the real exit.
   for (const [file, label] of targets) {
     const pidPath = cotalPath(file);
     if (!existsSync(pidPath)) continue;
     any = true;
-    await stop(pidPath, label);
+    if (!(await stop(pidPath, label))) allStopped = false;
+  }
+  // A process we could not stop (EPERM, or a SIGKILL survivor) is still RUNNING: presenting the
+  // mesh as cleanly down — sweeping artifacts and the registry entry — would let a later `clean`
+  // delete the store underneath it. Keep everything and fail loud instead.
+  if (!allStopped) {
+    console.error(c.red("✗ not cleanly stopped - keeping the pidfiles, artifacts, and registry entry"));
+    process.exitCode = 1;
+    return;
   }
   // Non-pid control-plane artifacts: the delivery daemon's scoped creds + the manager's delivery-aware
   // marker. Drop them with the processes so a stale creds file / marker never lingers.
@@ -83,20 +92,30 @@ export function pidfileState(path: string): PidfileState {
 /** Stop one recorded process and AWAIT its actual exit — SIGTERM starts a graceful shutdown (a
  *  manager reaps its agents and releases its JetStream lease over NATS, which isn't instant), so
  *  returning before the process is really gone would let callers (and `up`-style smokes) race a
- *  still-dying manager. Poll the pid, escalate to SIGKILL if it overstays, then confirm it's gone. */
-async function stop(pidPath: string, label: string): Promise<void> {
-  const pid = Number(readFileSync(pidPath, "utf8").trim());
-  // Drop the pidfile up front so a concurrent `down` can't double-signal a reused pid.
-  rmSync(pidPath, { force: true });
-  // Only a real pid (> 0): a corrupt/empty pidfile parses to 0, and POSIX kill(0, SIGTERM)
-  // would signal this process's own process group.
-  if (!Number.isInteger(pid) || pid <= 0) return;
+ *  still-dying manager. Poll the pid, escalate to SIGKILL if it overstays, then confirm it's gone.
+ *  Returns whether the process is confirmed absent. The pidfile is removed only once that is
+ *  established: erasing the record of a process we could NOT stop (EPERM — alive but
+ *  unsignalable) would let a later `cotal clean` delete the store underneath a live broker. */
+async function stop(pidPath: string, label: string): Promise<boolean> {
+  const s = pidfileState(pidPath);
+  if (!s.live) {
+    // Dead or unusable record (stale pid, empty/corrupt file) — nothing to stop, drop it.
+    rmSync(pidPath, { force: true });
+    if (s.pid) console.log(c.dim(`${label} (pid ${s.pid}) was not running.`));
+    return true;
+  }
+  const pid = s.pid!;
   try {
     process.kill(pid, "SIGTERM");
-  } catch {
-    console.log(c.dim(`${label} (pid ${pid}) was not running.`));
-    return;
+  } catch (e) {
+    // The probe said alive, the signal was refused: EPERM (differently elevated context) or
+    // similar. The process is still running — keep its pidfile and fail loud.
+    console.error(c.red(`✗ cannot stop ${label} (pid ${pid}): ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`));
+    return false;
   }
+  // Signal accepted — this `down` owns the stop. Drop the pidfile now so a concurrent `down`
+  // can't double-signal a reused pid.
+  rmSync(pidPath, { force: true });
   const graceDeadline = Date.now() + 15_000;
   while (isAlive(pid) && Date.now() < graceDeadline) await sleep(100);
   if (isAlive(pid)) {
@@ -104,9 +123,12 @@ async function stop(pidPath: string, label: string): Promise<void> {
     const hardDeadline = Date.now() + 3_000;
     while (isAlive(pid) && Date.now() < hardDeadline) await sleep(100);
   }
-  console.log(
-    isAlive(pid)
-      ? c.red(`✗ ${label} (pid ${pid}) did not exit`)
-      : c.green(`✓ stopped ${label} (pid ${pid})`),
-  );
+  if (isAlive(pid)) {
+    // A SIGKILL survivor is still running — restore the record it must keep.
+    writeFileSync(pidPath, String(pid));
+    console.log(c.red(`✗ ${label} (pid ${pid}) did not exit`));
+    return false;
+  }
+  console.log(c.green(`✓ stopped ${label} (pid ${pid})`));
+  return true;
 }

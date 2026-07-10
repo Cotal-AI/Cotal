@@ -21,8 +21,8 @@ const home = mkdtempSync(join(tmpdir(), "cotal-clean-home-"));
 process.env.COTAL_HOME = home;
 
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
-const { pidfileState } = await import("../src/commands/down.js");
-const { getCurrent, loadMeshes, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { down, pidfileState } = await import("../src/commands/down.js");
+const { getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -155,6 +155,32 @@ try {
   check("all: releases the `current` pointer it held", getCurrent() !== "named-open", getCurrent());
   rmSync(openRoot, { recursive: true, force: true });
   rmSync(otherRoot, { recursive: true, force: true });
+
+  // --- `down` must NOT erase the record of a process it cannot stop (EPERM) -------------------
+  // The e2e chain the cleanup guard protects: an unsignalable live broker + `cotal down` +
+  // `cotal clean store` must end in a REFUSAL - if `down` swallowed the EPERM and dropped the
+  // pidfile ("was not running"), the later clean would delete the store under the live process.
+  if (process.platform !== "win32") {
+    const downRoot = meshRoot();
+    writeFileSync(join(downRoot, ".cotal", "nats.pid"), "1"); // pid 1: alive, unsignalable as non-root
+    recordMesh(entry("eperm-mesh", downRoot));
+    process.exitCode = 0;
+    const cwd2 = process.cwd();
+    process.chdir(downRoot);
+    try {
+      await down({ positionals: [], values: {}, raw: [] });
+    } finally {
+      process.chdir(cwd2); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
+    }
+    check("down: a failed stop sets a failing exit code", process.exitCode === 1);
+    process.exitCode = 0; // reset - the smoke's own verdict decides the final exit
+    check("down: keeps the unsignalable process's pidfile", existsSync(join(downRoot, ".cotal", "nats.pid")));
+    check("down: keeps the registry entry", loadMeshes().some((m) => m.space === "eperm-mesh"));
+    check("down: keeps control-plane artifacts", existsSync(join(downRoot, ".cotal", "delivery.creds")));
+    check("down: subsequent cleanup still refuses", /nats-server, pid 1$/.test(liveMeshProcess(downRoot) ?? ""), liveMeshProcess(downRoot));
+    removeMesh("eperm-mesh");
+    rmSync(downRoot, { recursive: true, force: true });
+  }
 
   console.log(`\nCLEAN SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
