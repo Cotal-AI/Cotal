@@ -1,6 +1,6 @@
-import { readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 
 /**
@@ -109,6 +109,26 @@ export function recordMesh(m: MeshEntry): void {
 /** Drop a mesh from the registry (on `cotal down` / a stale-entry prune). Absent ⇒ no-op. */
 export function removeMesh(space: string): void {
   rmSync(meshFile(space), { force: true });
+}
+
+/** Drop every registry entry recorded for THIS project root (realpath-canonical, so symlinked
+ *  roots like macOS /var match), releasing the `current` pointer per removed entry. The root is
+ *  the only sound key for a local teardown (`cotal down` / `cotal clean all`): an OPEN mesh has
+ *  no auth material, so resolving its space NAME falls back to the default space and would
+ *  delete an unrelated mesh's entry. Returns the removed space names. */
+export function removeMeshesByRoot(root: string): string[] {
+  const canonical = (p: string): string => {
+    try { return realpathSync.native(p); } catch { return resolve(p); }
+  };
+  const rootKey = canonical(root);
+  const removed: string[] = [];
+  for (const m of loadMeshes()) {
+    if (canonical(m.root) !== rootKey) continue;
+    removeMesh(m.space);
+    if (getCurrent() === m.space) clearCurrent();
+    removed.push(m.space);
+  }
+  return removed;
 }
 
 /** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —

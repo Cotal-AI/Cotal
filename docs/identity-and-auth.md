@@ -134,7 +134,7 @@ agents; it is never part of a default grant and never accepted from a manifest.
 **Elevated operator surfaces ride the same login** through a short-lived *view*: the
 exchange stamps a server-authored view claim into the bearer, and the callout mints that
 connection as the matching non-agent profile instead of `agent`. `cotal web` and
-`cotal console` ask for the read-only admin view, `history clear` for the purger,
+`cotal console` ask for the read-only admin view, `clean history` for the purger,
 `channels set/default` for the channel-writer (all gated on ledger scope `admin`);
 `up -f` deploys over the deployer view, gated on `spawn`, because deploying your own team
 is spawn-grade (the manager still refuses a manifest claiming another owner). Views exist
