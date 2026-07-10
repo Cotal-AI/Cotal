@@ -26,13 +26,14 @@ import {
   userAuthStateDir,
 } from "@cotal-ai/workspace";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { pidfileState, type PidfileState } from "./down.js";
 import { machineStatus, webUp, WEB_URL } from "../lib/status.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { c, statusBadge } from "../ui.js";
 
 export const statusFlags = [spaceFlag, serverFlag] as const;
 
-type Proc = { pid?: number; live: boolean; note?: string };
+type Proc = PidfileState;
 
 /** `cotal status` — detailed, read-only diagnostics for the local machine + selected mesh. */
 export async function status(args: ParsedArgs): Promise<void> {
@@ -76,9 +77,10 @@ function printProject(root: string, cmd: string): void {
   row("manager", `${formatProc(mgr)}${mgr.live ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build") : ""}`);
   row("web", formatProc(proc(root, "web.pid")));
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
-  // an older Cotal generation) is otherwise invisible until a spawn fails on it.
+  // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
+  // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
   if (!nats.live && existsSync(join(root, ".cotal", "nats")))
-    row("stored state", c.dim(`JetStream store persists across down/up - if stale, reset: ${cmd} clean store --force (\`clean all\` also resets identity)`));
+    row("stored state", c.dim(`JetStream store persists across down/up - if stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`));
 }
 
 async function printRegistry(): Promise<void> {
@@ -262,17 +264,11 @@ function personaSummary(root: string): string {
   return parts.join(" · ");
 }
 
+// One probe for the whole CLI (down/clean/status): pid > 0 only, EPERM = alive — so status can
+// never call a live-but-unsignalable broker "stale" (and then contradict `clean`'s refusal), nor
+// render a corrupt pidfile as `running (pid 0)`.
 function proc(root: string, file: string): Proc {
-  const path = join(root, ".cotal", file);
-  if (!existsSync(path)) return { live: false, note: "no pidfile" };
-  const pid = Number(readFileSync(path, "utf8").trim());
-  if (!Number.isFinite(pid)) return { live: false, note: "bad pidfile" };
-  try {
-    process.kill(pid, 0);
-    return { pid, live: true };
-  } catch {
-    return { pid, live: false, note: "stale pidfile" };
-  }
+  return pidfileState(join(root, ".cotal", file));
 }
 
 function formatProc(p: Proc): string {

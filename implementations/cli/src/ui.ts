@@ -23,7 +23,10 @@ export function statusBadge(status: PresenceStatus): string {
  *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
  *  line by the error surfaces - the error itself stays the broker's own sentence. */
 export function staleStoreHint(msg: string): string | undefined {
+  // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
+  // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
+  // not recorded - so both variable parts are called out instead of implied.
   return /consumer already exists|stream already exists/i.test(msg)
-    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down && cotal clean store --force && cotal up"
+    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags"
     : undefined;
 }

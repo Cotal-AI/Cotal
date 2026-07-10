@@ -21,6 +21,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-clean-home-"));
 process.env.COTAL_HOME = home;
 
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
+const { pidfileState } = await import("../src/commands/down.js");
 const { getCurrent, loadMeshes, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 let pass = 0;
@@ -108,15 +109,28 @@ try {
   check("already clean: no live process reported", liveMeshProcess(empty) === undefined);
   rmSync(empty, { recursive: true, force: true });
 
-  // --- an unsignalable pid (EPERM) still counts as ALIVE --------------------------------------
-  // POSIX pid 1 always exists; as non-root the probe raises EPERM, which must read as "alive"
-  // (deleting state under a process we merely can't signal breaks the core guarantee).
+  // --- the ONE shared pidfile probe (down/clean/status all ride pidfileState) -----------------
+  // Empty/corrupt parses to 0 or NaN -> "bad pidfile", never `running (pid 0)` (POSIX kill(0, 0)
+  // probes our own process group); EPERM -> ALIVE (POSIX pid 1 always exists; as non-root the
+  // probe raises EPERM, and deleting state under a process we merely can't signal breaks the
+  // core guarantee - while `status` must not call it stale and contradict `clean`'s refusal).
+  const probeDir = mkdtempSync(join(tmpdir(), "cotal-probe-"));
+  check("probe: missing pidfile", pidfileState(join(probeDir, "nope.pid")).note === "no pidfile");
+  writeFileSync(join(probeDir, "empty.pid"), "");
+  check("probe: empty pidfile is 'bad pidfile', not pid 0", pidfileState(join(probeDir, "empty.pid")).note === "bad pidfile");
+  writeFileSync(join(probeDir, "junk.pid"), "abc");
+  check("probe: garbage pidfile is 'bad pidfile'", pidfileState(join(probeDir, "junk.pid")).note === "bad pidfile");
+  writeFileSync(join(probeDir, "self.pid"), String(process.pid));
+  check("probe: a live pid reads alive", pidfileState(join(probeDir, "self.pid")).live === true);
   if (process.platform !== "win32") {
+    writeFileSync(join(probeDir, "init.pid"), "1");
+    check("probe: an unsignalable pid (EPERM) reads ALIVE", pidfileState(join(probeDir, "init.pid")).live === true);
     const epermRoot = meshRoot();
     writeFileSync(join(epermRoot, ".cotal", "nats.pid"), "1");
     check("a pid we cannot signal (EPERM) still blocks cleanup", /pid 1$/.test(liveMeshProcess(epermRoot) ?? ""), liveMeshProcess(epermRoot));
     rmSync(epermRoot, { recursive: true, force: true });
   }
+  rmSync(probeDir, { recursive: true, force: true });
 
   // --- `clean all` drops ONLY registry entries rooted at THIS project -------------------------
   // A named OPEN mesh has no .cotal/auth, so a space-name lookup would resolve to the default

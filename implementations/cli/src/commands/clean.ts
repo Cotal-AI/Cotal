@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { clearSpaceHistory, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import { clearCurrent, getCurrent, loadMeshes, removeMesh, resolveSpace } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { isAlive, pidfileTargets } from "./down.js";
+import { pidfileState, pidfileTargets } from "./down.js";
 
 const TARGETS = ["history", "store", "all"] as const;
 type Target = (typeof TARGETS)[number];
@@ -87,15 +87,12 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
 
 /** The recorded mesh process still alive under this root, as a "label (pid N)" string - or
  *  undefined when everything is stopped. A stale pidfile (recorded pid no longer alive) does not
- *  block: a crashed broker must not wedge its own cleanup. Only a real pid (> 0) counts - a
- *  corrupt/empty pidfile parses to 0, and POSIX `kill(0, 0)` probes the caller's own process
- *  group, which would report a phantom "live" mesh forever. */
+ *  block: a crashed broker must not wedge its own cleanup. Liveness rides the shared hardened
+ *  probe (`pidfileState`): pid > 0 only, EPERM counts as alive. */
 export function liveMeshProcess(root: string): string | undefined {
   for (const [file, label] of pidfileTargets(resolveSpace(root))) {
-    const pidPath = join(root, ".cotal", file);
-    if (!existsSync(pidPath)) continue;
-    const pid = Number(readFileSync(pidPath, "utf8").trim());
-    if (Number.isInteger(pid) && pid > 0 && isAlive(pid)) return `${label}, pid ${pid}`;
+    const s = pidfileState(join(root, ".cotal", file));
+    if (s.live) return `${label}, pid ${s.pid}`;
   }
   return undefined;
 }

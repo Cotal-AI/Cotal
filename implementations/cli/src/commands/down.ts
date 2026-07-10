@@ -67,6 +67,19 @@ export const isAlive = (pid: number): boolean => {
   }
 };
 
+export type PidfileState = { pid?: number; live: boolean; note?: string };
+
+/** Read one pidfile and probe liveness with ONE hardened semantics, shared by `down`, `clean`,
+ *  and `status` so they can never drift: only a positive integer pid counts (an empty/corrupt
+ *  pidfile parses to 0, and POSIX `kill(0, 0)` probes our own process group), and EPERM reads as
+ *  ALIVE (the process exists, we merely can't signal it). */
+export function pidfileState(path: string): PidfileState {
+  if (!existsSync(path)) return { live: false, note: "no pidfile" };
+  const pid = Number(readFileSync(path, "utf8").trim());
+  if (!Number.isInteger(pid) || pid <= 0) return { live: false, note: "bad pidfile" };
+  return isAlive(pid) ? { pid, live: true } : { pid, live: false, note: "stale pidfile" };
+}
+
 /** Stop one recorded process and AWAIT its actual exit — SIGTERM starts a graceful shutdown (a
  *  manager reaps its agents and releases its JetStream lease over NATS, which isn't instant), so
  *  returning before the process is really gone would let callers (and `up`-style smokes) race a
