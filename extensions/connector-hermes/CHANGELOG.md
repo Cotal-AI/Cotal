@@ -1,5 +1,12 @@
 # @cotal-ai/connector-hermes
 
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [5b2863a]
+  - @cotal-ai/connector-core@0.11.1
+
 ## 0.11.0
 
 ### Minor Changes
