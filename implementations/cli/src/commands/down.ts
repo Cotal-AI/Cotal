@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type ParsedArgs } from "@cotal-ai/core";
-import { clearCurrent, getCurrent, removeMesh } from "@cotal-ai/workspace";
+import { removeMeshesByRoot } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { cotalPath } from "../lib/paths.js";
+import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 
@@ -43,9 +43,10 @@ export async function down(args: ParsedArgs): Promise<void> {
   // Transient `cotal up -f` launch artifacts (launch specs + materialized runtime personas). `up -f`
   // owns the whole mesh, so tearing it down clears all run dirs — they're never authoritative source.
   rmSync(cotalPath("run"), { recursive: true, force: true });
-  // Drop this folder's mesh from the registry (and the `current` pointer if it was the default).
-  removeMesh(space);
-  if (getCurrent() === space) clearCurrent();
+  // Drop this folder's meshes from the registry (and the `current` pointer per removed entry),
+  // keyed by ROOT - a named OPEN mesh has no auth material, so a space-name key would resolve to
+  // the default space and delete an unrelated mesh's entry (see removeMeshesByRoot).
+  removeMeshesByRoot(cotalRoot());
   if (!any) {
     console.error(c.red("Nothing running here (no .cotal/*.pid). Was it started with `cotal up` / `cotal setup`?"));
     process.exit(1);

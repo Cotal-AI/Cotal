@@ -182,6 +182,33 @@ try {
     rmSync(downRoot, { recursive: true, force: true });
   }
 
+  // --- successful `down` drops registry entries by ROOT, not by resolved space ----------------
+  // Same class as the `clean all` fix: a named OPEN mesh (no .cotal/auth) resolves to the
+  // default space, so a space-name key would delete the unrelated "main" entry and leave the
+  // stopped mesh recorded (and `current`) as a ghost.
+  const openRoot2 = mkdtempSync(join(tmpdir(), "cotal-open2-"));
+  mkdirSync(join(openRoot2, ".cotal", "nats"), { recursive: true });
+  writeFileSync(join(openRoot2, ".cotal", "nats", "s.dat"), "x");
+  writeFileSync(join(openRoot2, ".cotal", "delivery.creds"), "x");
+  const broker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  writeFileSync(join(openRoot2, ".cotal", "nats.pid"), String(broker.pid));
+  recordMesh(entry("named-open-2", openRoot2)); // "main" (unrelated root) is still recorded from above
+  setCurrent("named-open-2");
+  process.exitCode = 0;
+  const cwd3 = process.cwd();
+  process.chdir(openRoot2);
+  try {
+    await down({ positionals: [], values: {}, raw: [] });
+  } finally {
+    process.chdir(cwd3); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
+  }
+  check("down: a clean stop keeps a zero exit code", (process.exitCode ?? 0) === 0, process.exitCode);
+  check("down: drops THIS root's registry entry on success", !loadMeshes().some((m) => m.space === "named-open-2"), loadMeshes());
+  check("down: leaves the unrelated default-space entry alone", loadMeshes().some((m) => m.space === "main"));
+  check("down: releases the `current` pointer", getCurrent() !== "named-open-2", getCurrent());
+  check("down: sweeps control-plane artifacts on success", !existsSync(join(openRoot2, ".cotal", "delivery.creds")));
+  rmSync(openRoot2, { recursive: true, force: true });
+
   console.log(`\nCLEAN SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
   console.error("  ✗ FAIL:", (e as Error).message);
