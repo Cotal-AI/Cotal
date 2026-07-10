@@ -1205,7 +1205,7 @@ envelope is versioned and typed; `ControlRequest`/`ControlReply` are deleted.
 | `from` | `EndpointRef` | MUST | as §5; `from.id` MUST equal the subject sender principal, and the sender UID token MUST match the caller's minted lifecycle UID (broker-enforced by the grant) |
 | `deadlineMs` | number | MUST for call/scatter and journal submissions | caller deadline budget; bounded, never unbounded. On a journal-class submission it is the **decision deadline**: the bound within which the caller expects its durable decision fact (§13.4) |
 | `correlation` | object | MAY | `{ traceparent?, tracestate?, baggage? }` per W3C Trace Context; propagated to downstream calls, events, facts, receipts |
-| `auth` | string | MAY | opaque signed authorization-context slot (capability handle, obligations, payment proof) |
+| `auth` | string | MAY | opaque signed authorization-context slot (capability handle, obligations, payment proof). Opaque to the transport, never to identity: its **`authDigest`** (§13.4 fingerprint) is `sha256:<hex>` over the UTF-8 bytes of this string **exactly as carried** — the slot is already a canonical signed artifact, so it is digested as bytes, never re-canonicalized — and is absent from the fingerprint iff `auth` is absent |
 
 `EndpointReply`:
 
@@ -1224,7 +1224,8 @@ The answering instance, its epoch, and the addressee are read from the **reply s
 Every other plane is typed too: a journaled **submission** is an `EndpointRequest` (same
 envelope, published to `epj`); an **event** (incl. per-goal progress) is
 `{ v: 1, topic, ts, data, correlation? }`; an **acceptance fact** is the `AcceptanceFact` of
-§13.4; a **terminal result fact** carries the goal's terminal state, outcome digest, and
+§13.4; a **terminal result fact** carries the goal's terminal state (one of the five
+terminal values of §13.6), outcome digest, and
 result payload (or its digest-pinned reference). All are runtime-validated at their
 consuming boundary.
 
@@ -1473,9 +1474,13 @@ action command's submissions are `class: journal` (§13.3).
    checkpoint re-validates and deterministically transitions to `cancelling`/`failed`
    (`permission-denied`) on narrowing. Handle expiry/revocation mid-goal follows the same
    declared policy.
-2. States: `accepted → running ⇄ waiting → succeeded | failed | cancelled | expired`, with
+2. States: `accepted → running ⇄ waiting → succeeded | failed | cancelled | expired |
+   uncertain`, with
    `cancelling` between a cancel and its terminal state. This is the **single status
-   vocabulary** for every long-running surface.
+   vocabulary** for every long-running surface. All five of `succeeded`, `failed`,
+   `cancelled`, `expired`, and `uncertain` (item 6) are **terminal**, and first-terminal-fact-wins
+   applies uniformly: `uncertain` is not an absence of an outcome, it is the outcome
+   "this action's success signal did not arrive within its readiness deadline".
 3. Progress rides per-goal events (`epe…goal.<caller triple>.<goalId>.progress`), read-scoped
    to the caller at mint time. The goal's current state is a status-only record projection;
    the journal owns the facts.
@@ -1724,8 +1729,8 @@ validator (the reference implementation pins `ajv`), under this normative resour
 schema is a **closed resource bundle** — either fully self-contained (local `$defs`/`#/…`
 refs) or referencing other contract-store artifacts **by digest** only. `$id`/`$anchor`/
 `$dynamicRef` resolve deterministically within the bundle; ambient HTTP/file/URI resolution
-MUST NOT occur. Contract identity is the digest of the **complete resolved closure**, not the
-root document alone. Registration-time bounds (loud `contract-invalid`, distinct from
+MUST NOT occur. Contract identity is the **closure digest** (above): the digest of the
+manifest naming the complete resolved closure, not of the root document alone. Registration-time bounds (loud `contract-invalid`, distinct from
 invocation-time `bad-request`): document ≤ 256 KiB, closure ≤ 1 MiB, nesting ≤ 32, ref chain
 ≤ 32, bounded pattern complexity, compile/validation time budgets, and a bounded compiled-schema cache (reference: 256-entry LRU) (§13.8). Runtime
 validation at the serving boundary is mandatory: args before any effect, replies against the
@@ -1741,7 +1746,31 @@ schema means the side's payload is absent or `null`.
 definition or attachment) is identified by the SHA-256 digest of its RFC 8785 canonical JSON
 (strict RFC 8785 over I-JSON; the reference implementation pins `json-canonicalize`'s strict
 path and gates on the RFC's published test vectors, including number-serialization and
-surrogate edges). Artifacts live in the per-space **contract stream**: one artifact per
+surrogate edges). **Two digests, never conflated.** An **artifact digest** identifies ONE
+document's bytes and is the value that keys its subject and every by-digest reference. A
+**closure digest** identifies a whole resolved bundle — a cluster document or a schema
+closure — and is the artifact digest of that bundle's **manifest**: the artifact
+`{ v: 1, root: <artifact digest>, members: [<artifact digest>, …] }`, `members` being every
+artifact transitively reachable through by-digest references from `root`, sorted
+lexicographically and deduplicated. The manifest is itself an ordinary artifact on its own
+digest subject, so a closure digest is an artifact digest — nothing dispatches on which kind
+a digest is. Contract identity (§13.7 `contractDigest`, `clusterDigests[]`, and the
+`op.inputDigest`/`outputDigest` a caller pins) is always a CLOSURE digest; a `$ref`-by-digest
+inside a schema is always an ARTIFACT digest.
+
+**Every `*Digest` field in this section is one scalar shape** — `sha256:<hex>`, lowercase
+hex — and each names exactly one input, so no field's digest is implementation-defined:
+`inputDigest`/`outputDigest`, `contractDigest`, `clusterDigests[]` = the CLOSURE digest of
+the named bundle (above); a schema's by-digest `$ref` = an ARTIFACT digest;
+`argsDigest`/`outcomeDigest`/`resultDigest` = over the strict RFC 8785 canonical JSON of
+that value (absent iff the value is absent); `authDigest` = over the raw UTF-8 bytes of the
+`auth` slot as carried (§13.3); `submissionDigest` = over the raw stored submission bytes
+(§13.4). Integer fields on the wire (`sourceSeq`, `revision`, `epoch`, `ts`,
+`deadlineMs`, `readinessDeadlineMs`) are non-negative integers ≤ 2^53 − 1 — the I-JSON
+interoperable range, so at most 16 decimal digits — which is what makes the §13.12
+maximum-fact fixture a computable worst case rather than an estimate.
+
+Artifacts live in the per-space **contract stream**: one artifact per
 digest-keyed subject `cotal.<space>.epc.<digest-hex>` (§13.2), published as a single
 message — possible because a document is bounded at 256 KiB (below) and the operator floor
 asserts `max_payload` covers it (§13.12); a closure is fetched artifact-by-artifact through
