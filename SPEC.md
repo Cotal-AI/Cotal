@@ -633,34 +633,24 @@ query leaks chat subject *metadata* (channel names, sender ids, and per-subject 
 channels outside `allowSubscribe` (channel names are already public via the registry). Hiding
 that metadata is deferred strict-containment work. See [docs/security.md](docs/security.md).
 
-**Known limitation — consumer-delivery confused deputy on the v0.3 read grants (deferred).**
-A JetStream consumer delivers stored bytes to a **caller-chosen destination the broker does
-NOT confine to the requester's `pub.allow`**: a push consumer's `deliver_subject`, and a pull
-`MSG.NEXT`/`DIRECT.GET` request's reply subject, are set in the request body and the server's
-internal client publishes there regardless of the requester's publish permissions (confirmed
-on nats-server 2.14.2). The v0.3 read grants above — CHAT-history `CONSUMER.CREATE`, the
-bind-only DM/DLV/TASK `MSG.NEXT`, and the KV watch creates (Appendix B) — therefore let an
-agent redirect content it may legitimately READ onto a subject it may NOT publish to: e.g.
-replay a stored CHAT message whose `from.id` is another sender onto `inst.<victim>.<thatSender>`,
-where the recipient derives the DM sender from the subject and surfaces it as a genuine DM from
-a principal who never sent it. The v0.4 control surface closes this class by construction
-(§13.9 "Mediated reads": untrusted callers hold no raw JetStream read; reads flow through a
-trusted mediator onto the caller's own reply rail). **This same mediation is IN SCOPE for
-v0.4 on the messaging read path** (chat history, DM inbox, anycast, the durable backstop, KV
-watches): v0.4 is already a hard cut (§13.11), so folding the read-path change into it costs
-no additional migration — the alternative, fixing it later, would be a *second* breaking wire
-change. The normative direction is the §13.9 rule applied here: **no untrusted agent holds a
-raw consumer `CREATE`/`MSG.NEXT` or `DIRECT.GET` on `CHAT`/`DM`/`TASK`/`DLV` or the KV
-buckets**; those reads flow through the trusted reader/mediator (the §8 durable-backstop
-component, generalized) onto the agent's own confined rail. The EXACT extent — which of the
-five read paths require mediation versus which are provably safe — turns on a NATS
-delivery-mechanics question (whether a redelivered message retains its original captured
-subject, is re-captured by a destination stream, and how the receiver's subject-derived kind
-check, §12, then classifies it) that MUST be settled by a real-broker adversarial probe, not
-asserted here; that probe and the resulting exact grants land with the P1 implementation
-(where "does this contain the deputy" is a passing/failing smoke, not a paragraph). Until the
-v0.4 messaging-read mediation lands, this binding's read containment holds only against a
-*conforming* client on the v0.3 rails; the broker does not enforce it.
+**Consumer-delivery confused deputy on the read grants.** A JetStream consumer delivers stored
+bytes to a **caller-chosen destination the broker does NOT confine to the requester's
+`pub.allow`**: a push consumer's `deliver_subject`, and a pull `MSG.NEXT`/`DIRECT.GET`
+request's reply subject, are set in the request body and the server's internal client publishes
+there regardless of the requester's publish permissions. The v0.3 read grants above —
+CHAT-history `CONSUMER.CREATE`, the bind-only DM/DLV/TASK `MSG.NEXT`, and the KV watch creates
+(Appendix B) — therefore let an agent redirect content it may legitimately READ onto a subject
+it may NOT publish to: e.g. replay a stored CHAT message whose `from.id` is another sender onto
+`inst.<victim>.<thatSender>`, where the recipient derives the DM sender from the subject and
+surfaces it as a genuine DM from a principal who never sent it. The §13.9 "Mediated reads" rule
+applies here: **no untrusted agent holds a raw consumer `CREATE`/`MSG.NEXT` or `DIRECT.GET` on
+`CHAT`/`DM`/`TASK`/`DLV` or the KV buckets**; those reads are served by the trusted
+reader/mediator (§8) onto the agent's own confined rail. Which of these read paths require
+mediation and which are provably safe depends on whether a redelivered message retains its
+original captured subject and how the receiver's subject-derived kind check (§12) then
+classifies it; the reference implementation determines this by test and pins the exact grants.
+On the v0.3 rails without this mediation, read containment holds only against a *conforming*
+client; the broker does not enforce it.
 See [docs/security.md](docs/security.md).
 
 ---
@@ -1106,8 +1096,7 @@ per mode, zero to three pinned target tokens between the command and the caller:
 token alone determines the serving owner and instance-addressed subjects carry **no owner
 tokens**: `(endpoint, instanceId)` is the complete routable instance address. Two parties
 wanting the "same" name use their own reverse-DNS names; an owner-qualified shared-name form,
-if ever wanted, would be a later additive subject form, not a change to these. This is a
-deliberate decision (E7b, approved by the space of this plan's owner) trading an
+if ever wanted, would be a later additive subject form, not a change to these. This trades an
 already-forbidden expressiveness for structurally smaller subjects and credentials.
 
 The target's **lifecycle UID is body-carried, not a subject token** (`target.lifecycleUid`,
@@ -2125,8 +2114,8 @@ not a `DIRECT.GET`. Every JetStream read is request/reply where the server deliv
 bytes to a **caller-chosen destination the broker does not confine to the caller's
 `pub.allow`**: a push consumer's `deliver_subject`, a pull `MSG.NEXT` request's reply
 subject, and a `DIRECT.GET` request's reply subject are all set in the request body, and the
-server's internal client publishes there regardless of the requester's publish permissions
-(confirmed on nats-server 2.14.2 for all three forms). A holder with only `MSG.NEXT` or
+server's internal client publishes there regardless of the requester's publish permissions.
+A holder with only `MSG.NEXT` or
 `DIRECT.GET` on its own filtered reader can therefore route stored bytes onto a victim's DM,
 reply, or record subject — a confused deputy no filter tail, literal name, or pull-vs-push
 choice prevents, because the destination is the vulnerable field, not the filter. Untrusted
@@ -2142,10 +2131,9 @@ single-purpose principal (the delivery/read daemon, §8/Appendix B) that deliver
 re-authorized caller and never proxies to an arbitrary subject; raw consumer/`DIRECT.GET`
 authority stays with trusted single-purpose infra principals (canonicalizer, commit
 principal, record writer, timer writer, the read mediator, the auth path) that deliver to
-themselves. **The exact read-command wire shape (batching, cursors, flow control) is
-deferred to the implementation (P1), where it is proven against a real broker with an
-adversarial confused-deputy smoke** — this contract fixes the boundary (untrusted callers
-never hold raw reads; reads are mediated onto confined caller rails), not the framing bytes.
+themselves. This contract fixes the boundary — untrusted callers never hold raw reads; reads
+are mediated onto confined caller rails — and leaves the read-command wire shape (batching,
+cursors, flow control) to the reference implementation.
 **Subject convention:**
 application subjects in rows are written relative and are prefixed `cotal.<space>.` on the
 wire; **JetStream API tails — extended-create filter tails and `DIRECT.GET` subject
