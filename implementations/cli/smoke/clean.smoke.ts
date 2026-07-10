@@ -2,10 +2,10 @@
  * `cotal clean` local-state targets (`store`/`all`) — hermetic, no broker needed.
  * Run: pnpm smoke:clean
  *
- * Covers: the live-process guard (a running recorded pid refuses cleanup; a STALE pidfile does
- * not), the `store` removal set (JetStream store only), the `all` removal set (store + auth +
- * every derived local cred), that personas/logs survive, the `--store-dir` override, and the
- * already-clean no-op.
+ * Covers: the live-process guard (a running recorded pid refuses cleanup; a STALE or corrupt
+ * pidfile does not), the `store` removal set (JetStream store only), the `all` removal set
+ * (store + auth + every derived local cred + crash residue: stale pidfiles, run/), that
+ * personas/logs survive, the `--store-dir` override, and the already-clean no-op.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -22,7 +22,19 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-/** A project root whose `.cotal/` looks like a stopped mesh's leftovers. */
+/** Every identity-derived file `clean all` must sweep (mirrors removeLocalState's list). */
+const DERIVED = [
+  "delivery.creds",
+  "manager.delivery-aware",
+  "membership-observer.creds",
+  "membership-rw.creds",
+  "connection-evictor.creds",
+  "membership.json",
+  "renewal.json",
+];
+
+/** A project root whose `.cotal/` looks like a CRASHED mesh's leftovers: store, identity, every
+ *  derived cred, a stale (dead-pid) pidfile, and transient launch artifacts. */
 function meshRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "cotal-clean-"));
   const dot = join(root, ".cotal");
@@ -32,8 +44,9 @@ function meshRoot(): string {
   writeFileSync(join(dot, "auth", "auth.json"), JSON.stringify({ space: "demo" }));
   mkdirSync(join(dot, "agents"), { recursive: true });
   writeFileSync(join(dot, "agents", "default.md"), "# default\n");
-  for (const f of ["delivery.creds", "membership-rw.creds", "membership.json", "renewal.json", "nats.log"])
-    writeFileSync(join(dot, f), "x");
+  mkdirSync(join(dot, "run"), { recursive: true });
+  writeFileSync(join(dot, "run", "launch.json"), "{}");
+  for (const f of [...DERIVED, "nats.log"]) writeFileSync(join(dot, f), "x");
   return root;
 }
 
@@ -47,6 +60,10 @@ try {
   child.kill("SIGKILL");
   await new Promise((r) => child.once("exit", r));
   check("a STALE pidfile (dead pid) does not block", liveMeshProcess(guarded) === undefined);
+  // A corrupt/empty pidfile parses to 0 - POSIX kill(0, 0) probes our own process group, which
+  // must NOT read as a phantom live mesh (it would wedge cleanup forever).
+  writeFileSync(join(guarded, ".cotal", "nats.pid"), "");
+  check("a corrupt/empty pidfile does not block", liveMeshProcess(guarded) === undefined);
   rmSync(guarded, { recursive: true, force: true });
 
   // --- `store` removes exactly the JetStream store -------------------------------------------
@@ -57,15 +74,17 @@ try {
   check("store: personas survive", existsSync(join(storeRoot, ".cotal", "agents", "default.md")));
   rmSync(storeRoot, { recursive: true, force: true });
 
-  // --- `all` removes store + identity + derived creds ----------------------------------------
+  // --- `all` removes store + identity + derived creds + crash residue ------------------------
   const allRoot = meshRoot();
+  writeFileSync(join(allRoot, ".cotal", "nats.pid"), "999999"); // stale pidfile from a crash
   const removedAll = removeLocalState(allRoot, { includeAuth: true });
   check("all: removes store + auth", !existsSync(join(allRoot, ".cotal", "nats")) && !existsSync(join(allRoot, ".cotal", "auth")));
-  for (const f of ["delivery.creds", "membership-rw.creds", "membership.json", "renewal.json"])
-    check(`all: removes derived ${f}`, !existsSync(join(allRoot, ".cotal", f)));
+  for (const f of DERIVED) check(`all: removes derived ${f}`, !existsSync(join(allRoot, ".cotal", f)));
+  check("all: sweeps stale pidfiles", !existsSync(join(allRoot, ".cotal", "nats.pid")));
+  check("all: sweeps run/ launch artifacts", !existsSync(join(allRoot, ".cotal", "run")));
   check("all: personas survive", existsSync(join(allRoot, ".cotal", "agents", "default.md")));
   check("all: logs are left alone", existsSync(join(allRoot, ".cotal", "nats.log")));
-  check("all: reports what it removed", removedAll.length >= 6, removedAll);
+  check("all: reports what it removed", removedAll.length >= 9, removedAll);
 
   // --- `--store-dir` override + already-clean no-op ------------------------------------------
   const customRoot = meshRoot();

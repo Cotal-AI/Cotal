@@ -70,7 +70,9 @@ async function stop(pidPath: string, label: string): Promise<void> {
   const pid = Number(readFileSync(pidPath, "utf8").trim());
   // Drop the pidfile up front so a concurrent `down` can't double-signal a reused pid.
   rmSync(pidPath, { force: true });
-  if (!Number.isFinite(pid)) return;
+  // Only a real pid (> 0): a corrupt/empty pidfile parses to 0, and POSIX kill(0, SIGTERM)
+  // would signal this process's own process group.
+  if (!Number.isInteger(pid) || pid <= 0) return;
   try {
     process.kill(pid, "SIGTERM");
   } catch {

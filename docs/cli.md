@@ -154,11 +154,14 @@ One configurable cleanup verb; every target requires `--force`.
 - `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
   consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
   minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
-- `all` is `store` plus the space identity (`.cotal/auth`) and the local creds derived from it;
-  the next `cotal up` mints a fresh identity.
+- `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
+  it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
+  registry entry; the next `cotal up` mints a fresh identity.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
-alive (run `cotal down` first). Personas (`.cotal/agents`) are never touched.
+alive (run `cotal down` first). Personas (`.cotal/agents`) and logs are never touched. A custom
+store location is not recorded anywhere, so `--store-dir` must repeat whatever the mesh was
+launched with.
 
 ## meshes, use, status
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { clearSpaceHistory, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
-import { resolveSpace } from "@cotal-ai/workspace";
+import { clearCurrent, getCurrent, removeMesh, resolveSpace } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -35,12 +35,21 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (target === "history") return purgeHistory(values);
 
   const root = cotalRoot();
+  // Resolve the space BEFORE deleting anything: `all` removes `.cotal/auth`, which is what the
+  // space name is resolved from.
+  const space = resolveSpace(root);
   const running = liveMeshProcess(root);
   if (running) {
     console.error(c.red(`✗ the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``));
     process.exit(1);
   }
   const removed = removeLocalState(root, { includeAuth: target === "all", storeDir: values["store-dir"] });
+  if (target === "all") {
+    // Full reset also drops the mesh from the machine registry (and the `current` pointer). A
+    // normal `down` already did this; after a crash it is exactly the ghost entry to clear.
+    removeMesh(space);
+    if (getCurrent() === space) clearCurrent();
+  }
   if (removed.length === 0) {
     console.log(c.dim("nothing to clean - no local state found"));
     return;
@@ -70,21 +79,24 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
 
 /** The recorded mesh process still alive under this root, as a "label (pid N)" string - or
  *  undefined when everything is stopped. A stale pidfile (recorded pid no longer alive) does not
- *  block: a crashed broker must not wedge its own cleanup. */
+ *  block: a crashed broker must not wedge its own cleanup. Only a real pid (> 0) counts - a
+ *  corrupt/empty pidfile parses to 0, and POSIX `kill(0, 0)` probes the caller's own process
+ *  group, which would report a phantom "live" mesh forever. */
 export function liveMeshProcess(root: string): string | undefined {
   for (const [file, label] of pidfileTargets(resolveSpace(root))) {
     const pidPath = join(root, ".cotal", file);
     if (!existsSync(pidPath)) continue;
     const pid = Number(readFileSync(pidPath, "utf8").trim());
-    if (Number.isFinite(pid) && isAlive(pid)) return `${label}, pid ${pid}`;
+    if (Number.isInteger(pid) && pid > 0 && isAlive(pid)) return `${label}, pid ${pid}`;
   }
   return undefined;
 }
 
 /** Delete the stopped mesh's local state and return what was removed (paths relative to the root).
- *  `store`: the JetStream store directory. `all` adds the space identity (`.cotal/auth`) and the
- *  locally persisted creds derived from it - all invalid once the identity regenerates, and re-minted
- *  by the next fresh `cotal up`. Callers guard liveness first (`liveMeshProcess`). */
+ *  `store`: the JetStream store directory. `all` adds the space identity (`.cotal/auth`), the
+ *  locally persisted creds/markers tied to it - all invalid once the identity regenerates, and
+ *  re-minted by the next fresh `cotal up` - plus crash residue a normal `down` would have swept
+ *  (stale pidfiles, `run/`). Callers guard liveness first (`liveMeshProcess`). */
 export function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string }): string[] {
   const removed: string[] = [];
   const rm = (path: string, label: string) => {
@@ -92,13 +104,16 @@ export function removeLocalState(root: string, opts: { includeAuth: boolean; sto
     rmSync(path, { recursive: true, force: true });
     removed.push(label);
   };
+  // The space must be read before `.cotal/auth` goes - it names the auth service's pidfile.
+  const space = resolveSpace(root);
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : join(root, ".cotal", "nats");
   rm(storeDir, opts.storeDir ? storeDir : ".cotal/nats (JetStream store)");
   if (opts.includeAuth) {
     rm(join(root, ".cotal", "auth"), ".cotal/auth (space identity + creds)");
-    // Creds/records signed by (or derived from) the deleted identity: stale the moment it is gone.
-    // The fresh-`up` path re-mints every one of these; sweeping them keeps `doctor auth` honest in
-    // between and guarantees no old-operator material survives the reset.
+    // Creds/records signed by (or tied to) the deleted identity: stale the moment it is gone.
+    // The fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds`
+    // in up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no
+    // old-operator material survives the reset.
     for (const f of [
       "delivery.creds",
       "manager.delivery-aware",
@@ -108,6 +123,10 @@ export function removeLocalState(root: string, opts: { includeAuth: boolean; sto
       "membership.json",
       "renewal.json",
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);
+    // Crash residue: after a clean `down` none of this exists; after a crash the dead pidfiles and
+    // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
+    for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
+    rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
   }
   return removed;
 }
