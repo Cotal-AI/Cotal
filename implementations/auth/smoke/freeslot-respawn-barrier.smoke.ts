@@ -16,9 +16,11 @@
  * broker footprint no matter when the predecessor's teardown lands. Current code FAILS the three
  * BARRIER asserts; the v0.4 lifecycle-keyed resources + `(principal, lifecycleUid)`-pinned
  * deprovisioner turn them green without touching the smoke — the footprint checks enumerate by
- * principal PREFIX, not by today's exact resource names, for exactly that reason. The local half
- * is asserted GREEN as a witness: the synchronous prefix protects it, and the respawn re-mints
- * row + secrets before the gated broker phase is ever released.
+ * principal PREFIX and attribute each lifecycle's set from the pre/post-respawn snapshots (a bare
+ * exists-under-prefix check would false-green a teardown that deleted the REPLACEMENT's rows and
+ * left the predecessor's, once both coexist under the fix). The local half is asserted GREEN as a
+ * witness: the synchronous prefix protects it, and the respawn re-mints row + secrets before the
+ * gated broker phase is ever released.
  *
  * DETERMINISM: the predecessor's `deprovisionBroker` (ONLY the async broker phase — the
  * synchronous prefix runs untouched at despawn time) is held on a gate until the replacement is
@@ -438,11 +440,42 @@ try {
   // ---------- D. THE BARRIER CONTRACT (red on current code) ----------
   // A replacement spawned after the despawn reply keeps its broker footprint no matter when the
   // predecessor's teardown lands. Today the name-keyed broker deletes take all of it.
+  //
+  // The barrier asserts LIFECYCLE-ATTRIBUTED sets, not bare existence under the prefix: once the
+  // fix keys resources by lifecycle, predecessor and replacement legitimately coexist under the
+  // same principal prefix pre-release, and a bare `length > 0` would false-green a teardown that
+  // wrongly deleted the REPLACEMENT's rows and left the predecessor's. The replacement's set is
+  // derived from the pre/post-respawn snapshots: the names its respawn minted that the
+  // predecessor did not already hold — and when the two lifecycles collide on one shared name
+  // (the defect under test, current code), that shared name IS the replacement's footprint.
+  const replSet = (pre: string[], mid: string[]): string[] => {
+    const fresh = mid.filter((n) => !pre.includes(n));
+    return fresh.length > 0 ? fresh : mid;
+  };
+  // The retire direction (leak detection) only applies where the respawn minted DISTINCT names:
+  // with a shared name there is nothing separately retirable, and a design that keeps one
+  // alias-keyed row under delete-if-current semantics must not be failed for it.
+  const retired = (pre: string[], mid: string[], post: string[]): boolean => {
+    const fresh = mid.filter((n) => !pre.includes(n));
+    return fresh.length === 0 || pre.every((n) => !post.includes(n));
+  };
   console.log("D) barrier contract: the replacement's broker footprint survives the predecessor's teardown");
   const fp3 = await footprint();
-  check("BARRIER: a dm_ durable for the principal survives", fp3.dm.length > 0, fp3);
-  check("BARRIER: a dlv_ durable for the principal survives", fp3.dlv.length > 0, fp3);
-  check("BARRIER: a read-ACL row for the principal survives", fp3.acl.length > 0, fp3);
+  const survives = (pre: string[], mid: string[], post: string[]): boolean => {
+    const repl = replSet(pre, mid);
+    return repl.length > 0 && repl.every((n) => post.includes(n));
+  };
+  check("BARRIER: the replacement's dm_ durables survive", survives(fp1.dm, fp2.dm, fp3.dm),
+    { pre: fp1.dm, mid: fp2.dm, post: fp3.dm });
+  check("BARRIER: the replacement's dlv_ durables survive", survives(fp1.dlv, fp2.dlv, fp3.dlv),
+    { pre: fp1.dlv, mid: fp2.dlv, post: fp3.dlv });
+  check("BARRIER: the replacement's read-ACL rows survive", survives(fp1.acl, fp2.acl, fp3.acl),
+    { pre: fp1.acl, mid: fp2.acl, post: fp3.acl });
+  check("witness: the predecessor's own broker rows retired (no lifecycle leak)",
+    retired(fp1.dm, fp2.dm, fp3.dm) && retired(fp1.dlv, fp2.dlv, fp3.dlv) && retired(fp1.acl, fp2.acl, fp3.acl),
+    { fp1, fp3 });
+  check("witness: still exactly one broker teardown after release (single deleter throughout)",
+    brokerCalls.length === 1 && brokerCalls[0].gated, brokerCalls);
   // Witnesses (green today AND under the fix): the LOCAL half is protected by the synchronous
   // prefix — the broker phase never touches the ledger or the secret files, so the replacement's
   // mint authority stays intact and its child stays connected. The damage above is therefore
