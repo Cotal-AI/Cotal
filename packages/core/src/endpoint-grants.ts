@@ -11,7 +11,8 @@
  */
 import { spacePrefix } from "./subjects.js";
 import {
-  endpointToken, assertCommandToken, assertLifecycleToken, type EpCaller, type EpTarget,
+  endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
+  type EpCaller, type EpTarget,
   epCallerReplyFilter, epResponderReplyPattern, epClassQueueGroup,
 } from "./endpoint-subjects.js";
 
@@ -20,7 +21,9 @@ import {
  *  that instance. A TARGETED capability carries its authorization mode with the target tokens
  *  LITERAL as minted (§13.2): `owner`/`child` pin the caller's own owner; `any`/`ledger` may pin
  *  `"*"` (mintable only under operator/admin policy — enforced by the minting authority, not
- *  here); `handle` pins the full redemption triple and is never a standing capability. */
+ *  here); `handle` pins the full redemption triple and is never a standing capability (the
+ *  standing rollup {@link epCallerGrantRows} refuses it; only the §13.6 redemption path builds
+ *  handle rows, through {@link epRequestGrantRows} directly). */
 export interface EpCapability {
   endpoint: string;
   command: string;
@@ -31,19 +34,26 @@ export interface EpCapability {
   journal?: boolean;
 }
 
-/** Grant-row token block for a capability's authz/target segment. Unlike the request builder,
- *  `any`/`ledger` accept a `"*"` target owner here (a grant row, not a concrete subject). */
-function targetGrantTokens(target: EpTarget): string[] {
+/** Grant-row token block for a capability's authz/target segment, enforcing the §13.2 minting
+ *  rules per mode: `owner`/`child` standing mints pin `<tOwner>` to the caller's own owner
+ *  (never a wildcard, never a foreign owner); `any`/`ledger` accept a literal `"*"` (mintable
+ *  only under operator/admin policy — enforced by the minting authority, not here) or a
+ *  validated owner token; `handle` validates the full redemption triple. Every concrete token
+ *  routes through the same validator the subject builders use, so a grant row can never carry
+ *  a smuggled `.`/`*`/`>` that widens the minted permission beyond the grammar. */
+function targetGrantTokens(target: EpTarget, caller: EpCaller): string[] {
   if (target.mode === "self") return ["self"];
   if (target.mode === "handle")
-    return ["handle", target.tOwner, target.tActor, assertLifecycleToken(target.tUid, "target lifecycleUid")];
-  if (target.tOwner === "*" && target.mode !== "any" && target.mode !== "ledger")
-    throw new Error(`a "${target.mode}"-mode grant is never minted with a wildcard target owner (SPEC 13.2)`);
-  return [target.mode, target.tOwner];
+    return ["handle", assertBoundedOwner(target.tOwner, "target owner"), assertBoundedOwner(target.tActor, "target actor"), assertLifecycleToken(target.tUid, "target lifecycleUid")];
+  if (target.mode === "any" || target.mode === "ledger")
+    return [target.mode, target.tOwner === "*" ? "*" : assertBoundedOwner(target.tOwner, "target owner")];
+  if (target.tOwner !== caller.owner)
+    throw new Error(`an "${target.mode}"-mode grant pins the target owner to the caller's own owner (SPEC 13.2); got "${target.tOwner}" for caller owner "${caller.owner}"`);
+  return [target.mode, assertBoundedOwner(target.tOwner, "target owner")];
 }
 
 function callerBlock(caller: EpCaller): string {
-  return `${caller.owner}.${caller.actor}.${assertLifecycleToken(caller.uid, "caller lifecycleUid")}`;
+  return `${assertBoundedOwner(caller.owner, "caller owner")}.${assertBoundedOwner(caller.actor, "caller actor")}.${assertLifecycleToken(caller.uid, "caller lifecycleUid")}`;
 }
 
 /** Request-publish rows for one capability (§13.9 "Request publish"): per route,
@@ -52,7 +62,7 @@ function callerBlock(caller: EpCaller): string {
 export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpCaller): string[] {
   const e = endpointToken(cap.endpoint);
   const cmd = assertCommandToken(cap.command);
-  const mid = cap.target ? `.${targetGrantTokens(cap.target).join(".")}` : "";
+  const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
   const tail = `${mid}.${callerBlock(caller)}.*`;
   const rows = (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.ep.${r}.${e}.${cmd}${tail}`);
   if (cap.instanceId)
@@ -63,7 +73,7 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
 /** Journal-submission append row (§13.9 "Journal submission append"): the same authz/target
  *  block as the request forms, caller-pinned, no nonce. Explicitly untrusted input (§13.4). */
 export function epJournalGrantRow(space: string, cap: EpCapability, caller: EpCaller): string {
-  const mid = cap.target ? `.${targetGrantTokens(cap.target).join(".")}` : "";
+  const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
   return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerBlock(caller)}`;
 }
 
@@ -80,7 +90,10 @@ export function epGoalProgressGrantRow(space: string, endpoint: string, caller: 
 }
 
 /** All caller-side rows for a capability set: request-publish (+ optional journal) into
- *  `pub.allow`, the reply rail into `sub.allow`. Deliberately NOT included: `epe` event
+ *  `pub.allow`, the reply rail into `sub.allow`. This is the STANDING rollup (`permissionsFor`
+ *  mints long-lived credentials from it), so a `handle`-mode capability is refused here:
+ *  handle rows are redemption-minted only (§13.2/§13.6), built by the redemption path through
+ *  {@link epRequestGrantRows} directly. Deliberately NOT included: `epe` event
  *  subtrees beyond the per-goal row — read grants are minted per read capability by the
  *  granting authority (Appendix B), not implied by an invoke capability. */
 export function epCallerGrantRows(
@@ -90,6 +103,8 @@ export function epCallerGrantRows(
 ): { pub: string[]; sub: string[] } {
   const pub: string[] = [];
   for (const cap of caps) {
+    if (cap.target?.mode === "handle")
+      throw new Error(`a "handle"-mode capability on "${cap.endpoint}.${cap.command}" is redemption-minted only (SPEC 13.2), never a standing capability`);
     pub.push(...epRequestGrantRows(space, cap, caller));
     if (cap.journal) pub.push(epJournalGrantRow(space, cap, caller));
   }

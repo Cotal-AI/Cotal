@@ -95,6 +95,8 @@ c("self + spurious target token → null", parseEpSubject(`cotal.demo.ep.one.man
 c("handle with 2 target tokens → null", parseEpSubject(`cotal.demo.ep.one.manager.spawn.handle.u_t.svc.u_abc.worker.${UID}.${NONCE}`) === null);
 c("reply with extra token → null", parseEpSubject(`${reply}.x`) === null);
 c("reply with non-numeric epoch → null", parseEpSubject(`cotal.demo.ep.reply.manager.${IID}.x3.u_abc.worker.${UID}.${NONCE}`) === null);
+c("reply with a beyond-2^53 epoch → null (parse mirrors the build-side safe-integer bound)",
+  parseEpSubject(`cotal.demo.ep.reply.manager.${IID}.9007199254740993.u_abc.worker.${UID}.${NONCE}`) === null);
 c("unknown route token → null", parseEpSubject(`cotal.demo.ep.two.manager.spawn.u_abc.worker.${UID}.${NONCE}`) === null);
 
 // ── retired v0 planes do not parse here ──

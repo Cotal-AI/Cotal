@@ -38,14 +38,25 @@ c("reply-rail read row: own rail, exact arity",
   epCallerReplyGrantRow("demo", caller) === `cotal.demo.ep.reply.*.*.*.u_abc.cli.${UID}.*`);
 c("per-goal progress row: caller identity in-subject",
   epGoalProgressGrantRow("demo", "manager", caller) === `cotal.demo.epe.manager.*.*.goal.u_abc.cli.${UID}.>`);
-c("handle capability pins the full redemption triple",
-  epRequestGrantRows("demo", { endpoint: "manager", command: "attach", target: { mode: "handle", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) } }, caller)[0]
+const handleCap: EpCapability = { endpoint: "manager", command: "attach", target: { mode: "handle", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) } };
+c("handle row builds through epRequestGrantRows (the redemption path) with the full triple pinned",
+  epRequestGrantRows("demo", handleCap, caller)[0]
   === `cotal.demo.ep.one.manager.attach.handle.u_t.svc.${"h".repeat(26)}.u_abc.cli.${UID}.*`);
 c("any mode accepts a wildcard target owner (operator/admin mint policy)",
   epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "any", tOwner: "*" } }, caller)[0]
   === `cotal.demo.ep.one.manager.stop.any.*.u_abc.cli.${UID}.*`);
 throws("owner mode never mints a wildcard target owner",
   () => epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "owner", tOwner: "*" } }, caller));
+throws("owner mode never mints a foreign target owner (pinned to the caller's own owner)",
+  () => epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "owner", tOwner: "u_victim" } }, caller));
+throws("child mode has the same caller-owner ceiling",
+  () => epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "child", tOwner: "u_victim" } }, caller));
+throws("grant rows reject grammar-breaking target owners (a smuggled '>' must not widen the row)",
+  () => epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "ledger", tOwner: "u_evil.>" } }, caller));
+throws("caller owner/actor tokens are grammar-validated in grant rows too",
+  () => epRequestGrantRows("demo", spawnCap, { owner: "u_abc", actor: "c.li", uid: UID }));
+throws("standing caller bundle refuses a handle-mode capability (redemption-minted only)",
+  () => epCallerGrantRows("demo", [handleCap], caller));
 const bundle = epCallerGrantRows("demo", [spawnCap], caller);
 c("caller bundle: request + journal pub, reply-rail sub",
   bundle.pub.length === 2 && bundle.sub.length === 1 && bundle.sub[0] === epCallerReplyGrantRow("demo", caller));
@@ -89,6 +100,17 @@ try {
   threw = (e as Error).message.includes("lifecycleUid");
 }
 c("mint without a lifecycleUid fails loud", threw);
+let threwHandle = false;
+try {
+  await mintCreds(auth, newIdentity(), "agent", {
+    principal: { owner: "u_abc", actor: "cli" },
+    endpointCapabilities: [handleCap],
+    lifecycleUid: UID,
+  });
+} catch (e) {
+  threwHandle = (e as Error).message.includes("redemption-minted");
+}
+c("mint refuses a standing handle capability end-to-end", threwHandle);
 
 console.log(`\nENDPOINT GRANTS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 if (fail > 0) process.exit(1);

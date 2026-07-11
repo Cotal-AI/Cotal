@@ -9,8 +9,11 @@
  * grant, so a reader recovers tokens, it does not re-prove their grammar. What the parser DOES
  * enforce is SHAPE: prefix, plane, exact arity, and the §13.2 explicit-discrimination rule (the
  * token after `<command>` is either one of the six reserved authorization-mode tokens or the
- * caller's owner token — disjoint sets by construction, never arity counting). A subject matching
- * no defined shape returns `null` and MUST NOT be handled.
+ * caller's owner token). §2's owner grammar (`local` or `u_`+base32) keeps those sets disjoint
+ * for every spec-conformant mint; this module's owner validator is deliberately wider (it admits
+ * legacy principal tokens), so the dispatch additionally rests on each mode's pinned arity — a
+ * colliding token parses to `null`, never to a confused identity. A subject matching no defined
+ * shape returns `null` and MUST NOT be handled.
  */
 import { ROOT, spacePrefix, assertValidOwnerToken } from "./subjects.js";
 
@@ -88,7 +91,10 @@ function assertEpoch(epoch: number): string {
   return String(epoch);
 }
 
-function assertBoundedOwner(v: string, what: string): string {
+/** The shared owner/actor token validator for this grammar (§13.2 token bounds): the base
+ *  owner-token grammar plus the 64-character rail bound. Grant builders MUST route through the
+ *  same validator as subject builders, so the two can never diverge on what they admit. */
+export function assertBoundedOwner(v: string, what: string): string {
   assertValidOwnerToken(v);
   if (v.length > 64) throw new Error(`${what} "${v}" exceeds 64 characters`);
   return v;
@@ -110,9 +116,10 @@ export interface EpCaller {
   uid: string;
 }
 
-/** The six reserved authorization-mode tokens. Disjoint from owner tokens by construction
- *  (an owner is `local` or `u_`+base32, never a bare mode word) — the property the parser's
- *  explicit discrimination rests on. */
+/** The six reserved authorization-mode tokens. Disjoint from every spec-conformant owner token
+ *  (`local` or `u_`+base32 per §2, never a bare mode word); the implementation's owner validator
+ *  also admits legacy principal tokens, so the parser's discrimination rests on membership in
+ *  this set PLUS each mode's pinned arity, not on the owner grammar alone. */
 export const EP_AUTHZ_MODES = ["self", "owner", "any", "child", "ledger", "handle"] as const;
 export type EpAuthzMode = (typeof EP_AUTHZ_MODES)[number];
 const AUTHZ_SET = new Set<string>(EP_AUTHZ_MODES);
@@ -343,7 +350,11 @@ function parseTail(parts: string[], i: number, withNonce: boolean): { target: Ep
 }
 
 function parseEpoch(tok: string): number | null {
-  return EPOCH.test(tok) ? Number(tok) : null;
+  if (!EPOCH.test(tok)) return null;
+  const n = Number(tok);
+  // Mirror assertEpoch's build-side bound: past 2^53 distinct tokens would Number()-collapse
+  // into one value, and epoch is the fence on every plane that carries it.
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 /**
