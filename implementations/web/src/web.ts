@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -13,7 +13,15 @@ import {
   clearChannel,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { c, connectOrExit, userViewAuth, userViewAuthOrExit, type UserViewAuth } from "@cotal-ai/workspace";
+import {
+  c,
+  connectOrExit,
+  localProcessPath,
+  userViewAuth,
+  userViewAuthOrExit,
+  type LocalProcess,
+  type UserViewAuth,
+} from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +31,57 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  `*.localhost`; plain http://127.0.0.1:7799 always does.) */
 export const WEB_PORT = 7799;
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
+export const webProcess: LocalProcess = {
+  kind: "local-process",
+  name: "web",
+  label: "web dashboard",
+  order: 40,
+  pidFile: "web.pid",
+};
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it. */
+function claimPid(path: string): void {
+  let created = false;
+  try {
+    const fd = openSync(path, "wx", 0o600);
+    created = true;
+    try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
+  } catch (e) {
+    if (created) rmSync(path, { force: true });
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const raw = readFileSync(path, "utf8").trim();
+    if (raw.startsWith("removing:")) {
+      const owner = Number(raw.slice("removing:".length));
+      throw new Error(
+        pidAlive(owner)
+          ? `web extension removal is in progress (pid ${owner})`
+          : `web dashboard has a stale extension-removal reservation at ${path} - remove it and retry`,
+      );
+    }
+    const prior = Number(raw);
+    if (pidAlive(prior))
+      throw new Error(`web dashboard is already running for this mesh (pid ${prior})`);
+    throw new Error(`web dashboard has a stale pidfile at ${path} - clean it with \`cotal down web\`, then retry`);
+  }
+}
+
+function releasePid(path: string): void {
+  try {
+    if (readFileSync(path, "utf8").trim() === String(process.pid)) rmSync(path, { force: true });
+  } catch {
+    // Already removed by `down` or another cleanup path.
+  }
+}
 
 const PAGE: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
@@ -55,6 +114,11 @@ export async function web(args: ParsedArgs): Promise<void> {
     return { conn, user: conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined };
   })();
   const { server, space } = conn;
+  const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space }) : undefined;
+  if (pidPath) {
+    claimPid(pidPath);
+    process.once("exit", () => releasePid(pidPath));
+  }
   const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
   const port = values.port ? Number(values.port) : WEB_PORT;
 
@@ -218,12 +282,16 @@ export async function web(args: ParsedArgs): Promise<void> {
   console.log(`  ${c.cyan(url)}  ${c.dim("(Ctrl-C to stop)")}`);
   if (!values["no-open"]) openBrowser(url);
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     clearInterval(ping);
     membershipWatch?.stop();
     for (const res of clients) res.end();
     httpServer.close();
     await ep.stop();
+    if (pidPath) releasePid(pidPath);
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

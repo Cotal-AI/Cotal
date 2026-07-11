@@ -38,6 +38,7 @@ import { classifyAgents, classifyChannels, detectUnmanagedActors } from "../lib/
 import { connectProbe, launchAgent, settleRoster, waitLeaseGone, waitManagerReady } from "../lib/manifest/live.js";
 import { renderInherited, renderSpawnPlan, renderSpawnSummary, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
+import { preflightRuntime } from "../ext-loader.js";
 
 export interface SpawnManifestFlags {
   dryRun: boolean;
@@ -47,8 +48,6 @@ export interface SpawnManifestFlags {
   /** Narrow, named waiver of the stale-agent gate (apply-only; never suppresses security warnings). */
   allowStale?: string[];
 }
-
-const RUNTIMES = ["pty", "tmux", "cmux"];
 
 /** Short control-plane probe to tell a LIVE lease-holder from a stale lease a crashed manager left
  *  behind (its key lingers until the bucket TTL). Kept well under {@link MANAGER_LEASE_TTL_MS}. */
@@ -61,10 +60,6 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     prepared = loadManifest(abs);
   } catch (e) {
     failManifest(e);
-  }
-  if (flags.runtime && !RUNTIMES.includes(flags.runtime)) {
-    console.error(c.red(`✗ unknown --runtime "${flags.runtime}" - expected ${RUNTIMES.join(", ")}`));
-    process.exit(1);
   }
   const eff = applyOverrides(prepared, flags);
   const m = eff.manifest;
@@ -174,6 +169,20 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       process.exit(1);
     }
 
+    // A live manager already proves its runtime. If no manager answers, preflight the provider and
+    // backend before seeding channels or writing launch state, so a missing app cannot strand an
+    // unledgered partial deploy.
+    const held = agentPlan.willCreate.length ? await ep.readManagerLease() : undefined;
+    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS, tier));
+    if (heldReady && held) {
+      if (resolve(held.root) !== resolve(root))
+        throw new Error(`a manager from a different checkout serves "${space}" (root ${held.root}) - stop it, or run spawn -f from there`);
+      if (held.runtime !== runtime)
+        throw new Error(`a ${held.runtime} manager already serves "${space}" but runtime ${runtime} was requested - stop it, or match it with --runtime ${held.runtime}`);
+    } else if (agentPlan.willCreate.length) {
+      await preflightRuntime(runtime);
+    }
+
     console.log(renderSpawnPlan(eff, channelPlan, agentPlan, unmanaged, { server: connection.server, runId, dryRun: false }), "\n");
 
     // 1) Seed ONLY brand-new channel keys — no defaults, no pre-existing/unmanaged card mutation. The
@@ -205,16 +214,19 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // until the bucket TTL, MANAGER_LEASE_TTL_MS), so read it (fast) and, when one exists, PROBE control to tell
       // a LIVE holder from a stale key. Never trust `.cotal/manager.pid` (blind to a manager started
       // another way — two managers queue-split every control op).
-      const held = await ep.readManagerLease();
-      if (!held) {
+      const launchHeld = await ep.readManagerLease();
+      const launchReady = launchHeld
+        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS, tier))
+        : false;
+      if (!launchHeld) {
         // Nobody owns the space — stand up a manager (it acquires the lease on boot).
         startManagerDetached({ space, server: connection.server, runtime });
-      } else if (!(await waitManagerReady(ep, MANAGER_PROBE_MS, tier))) {
+      } else if (!launchReady) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
-        console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${held.pid}); waiting up to ${Math.ceil(MANAGER_LEASE_TTL_MS / 1000)}s for it to expire…`));
+        console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${launchHeld.pid}); waiting up to ${Math.ceil(MANAGER_LEASE_TTL_MS / 1000)}s for it to expire…`));
         if (!(await waitLeaseGone(ep, MANAGER_LEASE_TTL_MS + 5_000))) {
-          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${held.pid}) after its TTL - stop it or check .cotal/manager.log`));
+          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check .cotal/manager.log`));
           process.exit(1);
         }
         startManagerDetached({ space, server: connection.server, runtime });

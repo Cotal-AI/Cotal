@@ -57,6 +57,7 @@ import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
+import { preflightRuntime } from "../ext-loader.js";
 
 export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as { server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string; channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean };
@@ -301,10 +302,6 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   } catch (e) {
     failManifest(e);
   }
-  if (opts.runtime && !["pty", "tmux", "cmux"].includes(opts.runtime)) {
-    console.error(c.red(`✗ unknown --runtime "${opts.runtime}" - expected pty, tmux, or cmux`));
-    process.exit(1);
-  }
   // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
   // exact correction in one sentence (a no-fallback identity decision, never a bare enum error).
   const declared = prepared.manifest.broker?.auth;
@@ -335,6 +332,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.log(renderUpPlan(eff, server));
     return;
   }
+
+  // Preflight an extension runtime before starting the broker. The detached manager re-execs this
+  // CLI and resolves the same installed package when `supervise --runtime <name>` starts.
+  await preflightRuntime(runtime);
 
   // up -f never adopts a running broker. Reachable at the bind address ⇒ redirect to spawn -f.
   if (await isReachable(server)) {

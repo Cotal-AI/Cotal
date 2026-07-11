@@ -35,7 +35,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: false,
   },
-  down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: false },
+  down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: true },
   meshes: { flags: [], positionals: false },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean"], positionals: true },

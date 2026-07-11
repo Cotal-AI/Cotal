@@ -22,8 +22,9 @@ runs it through `tsx` with no build step. Bare `cotal` prints help. Every comman
 
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
-`cotal ext add <npm-package>` adds a package's commands to this same surface (the `web` dashboard
-ships this way; see [`web`](#web)).
+`cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
+runtimes, and local process lifecycle descriptors. The `web` dashboard and optional manager
+runtimes ship this way.
 
 ## Commands
 
@@ -31,7 +32,7 @@ ships this way; see [`web`](#web)).
 |---|---|---|
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
-| Set up & lifecycle | [`down`](#down) | Stop a background mesh, or tear down a manifest / `spawn -f` deploy |
+| Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
 | Set up & lifecycle | [`meshes`](#meshes-use-status) | List the running meshes on this machine |
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#meshes-use-status) | Read-only diagnostics for setup, processes, and the selected mesh |
@@ -85,7 +86,7 @@ maintainers, [setup internals](setup-internals.md).
 
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>]
-cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
+cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
 
 | Flag | Default | Meaning |
@@ -101,7 +102,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
-| `--runtime <pty\|tmux\|cmux>` | manifest's | With `-f`: override the manifest's runtime |
+| `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime (`pty` built in; others installed extensions) |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
@@ -120,6 +121,7 @@ without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
 ```bash
 cotal down
+cotal down manager [delivery auth web nats ...]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 ```
 
@@ -127,10 +129,14 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | — | Tear down this manifest's deploy |
 | `--run <id>` | — | Tear down one `spawn -f` run by id |
-| `--dry-run` | off | Print the plan, mutate nothing |
+| `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
 
-Bare `cotal down` stops a background mesh started with `cotal up --detach`. The `-f` / `--run` forms
-tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh.
+Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
+only those self-registered local processes; for example, `cotal down manager` leaves delivery and
+the broker running, and `cotal down web` is available when the web extension is installed. The
+`-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
+and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
+registered daemon is still live; include those components or use bare `cotal down`.
 
 ## meshes, use, status
 
@@ -176,7 +182,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--file <cotal.yaml>`, `-f` | — | Deploy a manifest onto the running mesh |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
-| `--runtime <pty\|tmux\|cmux>` | manifest's | With `-f`: override the manifest's runtime |
+| `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
@@ -251,14 +257,14 @@ Personas are the local agent files under `.cotal/agents/` that `cotal spawn` lau
 ## supervise
 
 ```bash
-cotal supervise [--runtime <pty|tmux|cmux>] [--space <s>] [--server <url>] [--spawn <names>]
+cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | this folder's auth space | Space to supervise |
 | `--server <url>` | the local mesh | Broker URL |
-| `--runtime <pty\|tmux\|cmux>` | `pty` | Agent runtime (`tmux`/`cmux` are explicit-only) |
+| `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
 | `--roster <file>` | — | Declarative roster to boot at startup |
 | `--launch <spec>` | — | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
@@ -266,8 +272,9 @@ cotal supervise [--runtime <pty|tmux|cmux>] [--space <s>] [--server <url>] [--sp
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
-directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; `tmux`/`cmux`
-require their extensions and are never selected implicitly. See [Deploy](deploy.md).
+directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
+optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, or `@cotal-ai/cmux`) and
+select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 
 ## send
 
@@ -483,10 +490,16 @@ cotal ext remove <name>
 cotal ext list
 ```
 
-Operator-installed CLI extensions: `add` installs an npm package into a cotal-owned prefix and makes
-its commands appear in help, completion, and dispatch; `remove` and `list` manage them. The
-`cotal-web` dashboard is the canonical example. Installed packages and their location are described
-in [config](config.md).
+Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
+every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
+providers are lazy-loaded by commands such as `supervise`; local process providers participate in
+`status` and selective `down`. `remove` and `list` manage them. The `cotal-web` dashboard is the
+canonical command/process example. Installed packages and their location are described in
+[config](config.md).
+
+Removing an extension that owns a running local process is refused with the mesh root and its
+`cotal down <component>` command; stop it first so uninstalling the package never strands a process
+whose lifecycle provider is gone.
 
 ## completion
 

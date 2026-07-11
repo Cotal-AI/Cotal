@@ -110,7 +110,12 @@ try {
     ok("static asset /app.js serves", appJs.status === 200);
     const meta = (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`)).json()) as { space?: string };
     ok("live /api/meta answers with the mesh's space", typeof meta.space === "string" && meta.space.length > 0, meta);
-    webChild.kill("SIGTERM");
+    const removeLive = cotal(["ext", "remove", "cotal-web"]);
+    ok("ext remove refuses to orphan a running web process", removeLive.status === 1 && /cotal down web/.test(removeLive.stderr), removeLive.stderr.slice(-400));
+    const webDown = cotal(["down", "web"]);
+    if (webChild.exitCode === null)
+      await Promise.race([new Promise<void>((resolve) => webChild!.once("exit", () => resolve())), sleep(2_000)]);
+    ok("down web stops the extension-owned process only", webDown.status === 0 && webChild.exitCode !== null, webDown.stdout + webDown.stderr);
     const down = cotal(["down"]);
     ok("down stops the auth mesh", down.status === 0, down.stderr.slice(-200));
   }

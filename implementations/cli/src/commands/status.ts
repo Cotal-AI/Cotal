@@ -19,14 +19,19 @@ import {
   loadExtensionsManifest,
   loadMeshes,
   loadSpaceAuth,
+  localProcessPath,
+  localProcessVisible,
   preflightTarget,
   resolveMeshTarget,
   serverFlag,
   spaceFlag,
   userAuthStateDir,
+  type LocalProcess,
+  type LocalProcessContext,
 } from "@cotal-ai/workspace";
+import { localProcessSurface } from "../ext-loader.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { machineStatus, webUp, WEB_URL } from "../lib/status.js";
+import { machineStatus, resolveSpace, webUp, WEB_URL } from "../lib/status.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { c, statusBadge } from "../ui.js";
 
@@ -64,16 +69,18 @@ async function printMachine(): Promise<void> {
 function printProject(root: string): void {
   const auth = loadSpaceAuth(authDir(root));
   const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
+  const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   section("This Folder");
   row("root", root);
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
-  row("nats", formatProc(proc(root, "nats.pid")));
-  if (userDisk) row("auth-service", formatProc(proc(root, `auth-service.${encodeURIComponent(auth.space)}.pid`)));
-  row("delivery", formatProc(proc(root, "delivery.pid")));
-  const mgr = proc(root, "manager.pid");
-  row("manager", `${formatProc(mgr)}${mgr.live ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build") : ""}`);
-  row("web", formatProc(proc(root, "web.pid")));
+  for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
+    const state = proc(localProcessPath(component.pidFile, context));
+    const detail = component.name === "manager" && state.live
+      ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build")
+      : "";
+    row(component.name, `${formatProc(state)}${detail}`);
+  }
 }
 
 async function printRegistry(): Promise<void> {
@@ -257,11 +264,12 @@ function personaSummary(root: string): string {
   return parts.join(" · ");
 }
 
-function proc(root: string, file: string): Proc {
-  const path = join(root, ".cotal", file);
+function proc(path: string): Proc {
   if (!existsSync(path)) return { live: false, note: "no pidfile" };
-  const pid = Number(readFileSync(path, "utf8").trim());
-  if (!Number.isFinite(pid)) return { live: false, note: "bad pidfile" };
+  const raw = readFileSync(path, "utf8").trim();
+  if (raw.startsWith("removing:")) return { live: false, note: "extension removal in progress" };
+  const pid = Number(raw);
+  if (!Number.isInteger(pid) || pid <= 0) return { live: false, note: "bad pidfile" };
   try {
     process.kill(pid, 0);
     return { pid, live: true };

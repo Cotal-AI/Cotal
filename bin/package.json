@@ -33,8 +33,6 @@
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
     "@cotal-ai/cli": "workspace:*",
-    "@cotal-ai/cmux": "workspace:*",
-    "@cotal-ai/tmux": "workspace:*",
     "@cotal-ai/connector-claude-code": "workspace:*",
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",

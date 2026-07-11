@@ -186,7 +186,7 @@ export class AttachEndpoint {
       ws.close();
       return;
     }
-    // Only streamable backends (pty/host) can be attached over the wire; tmux/cmux are watched
+    // Only streamable backends (pty/host) can be attached over the wire; external runtimes are watched
     // natively and their attach() throws. Close cleanly instead of letting it crash the upgrade.
     let session: AttachSession;
     try {

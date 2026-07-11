@@ -21,11 +21,16 @@ import.
 
 ## Usage
 
+```bash
+cotal ext add @cotal-ai/tmux
+cotal supervise --runtime tmux
+```
+
+Library composition roots can instead import it explicitly:
+
 ```ts
 import "@cotal-ai/tmux"; // self-registers; no other setup needed
 ```
-
-Then select via the manager: `cotal supervise --runtime tmux`.
 
 ## Differences from `@cotal-ai/cmux`
 

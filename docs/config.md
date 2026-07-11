@@ -164,7 +164,7 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 | Path | What it is |
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
-| `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` display/completion cache |
+| `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache |
 
 For how `cotal setup` populates the machine state and the plugin, see
 [setup internals](setup-internals.md).

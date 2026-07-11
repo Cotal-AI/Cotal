@@ -22,8 +22,8 @@ function spaceFor(v: Values): string {
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
- *  `pty` ships with the manager; `tmux` and `cmux` need their integration imported by
- *  the composition root (the `cotal` binary does). Stays alive until SIGINT/SIGTERM.
+ *  `pty` ships with the manager; every other runtime needs a registered provider. The published
+ *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
  *
  *  The operator CLIENTS of this daemon — detached launch (`cotal spawn --detach`), `stop`, `ps`,
  *  `attach` — live in `@cotal-ai/cli` since stage 2a of the CLI rework: they are thin control-plane
@@ -31,16 +31,10 @@ function spaceFor(v: Values): string {
 // `--runtime` forces the manager runtime; honored only on the `supervise` path (default
 // pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
 // the cmux-tab manager.
-const RUNTIME_OVERRIDES: readonly RuntimeMode[] = ["pty", "tmux", "cmux"];
-
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promise<void> {
   const v = args.values as Values;
   let runtime = defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
-    if (!RUNTIME_OVERRIDES.includes(v.runtime as RuntimeMode)) {
-      console.error(c.red(`unknown runtime "${v.runtime}" - expected ${RUNTIME_OVERRIDES.join(", ")}`));
-      process.exit(1);
-    }
     runtime = v.runtime as RuntimeMode;
   }
   const space = spaceFor(v);
@@ -147,16 +141,20 @@ const managerCommands: Command[] = [
     name: "supervise",
     group: "Manager",
     summary:
-      "run a manager - [--runtime <pty|tmux|cmux>] (default pty; tmux/cmux are explicit-only, each teammate in its own window/tab) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
+      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
-      { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "agent runtime (default pty; tmux/cmux are explicit-only)" },
+      { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
       { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
     ],
+    requiredExtensions: (args) => {
+      const runtime = args.values.runtime;
+      return typeof runtime === "string" && runtime !== "pty" ? [{ kind: "runtime", name: runtime }] : [];
+    },
     run: (args) => runManager(args, "auto"),
   },
 ];

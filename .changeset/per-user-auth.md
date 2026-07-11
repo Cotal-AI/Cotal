@@ -10,10 +10,20 @@
 "@cotal-ai/connector-claude-code": minor
 "@cotal-ai/connector-opencode": minor
 "@cotal-ai/connector-hermes": minor
+"@cotal-ai/orca": minor
+"@cotal-ai/cmux": minor
+"@cotal-ai/tmux": minor
 "cotal-ai": minor
 ---
 
 feat: per-user authentication (owner+actor identity, IdP login, credential death)
+
+## BREAKING: tmux and cmux become installed extensions
+
+The published `cotal-ai` binary no longer bundles `@cotal-ai/tmux` or `@cotal-ai/cmux`.
+Before using an existing `runtime: tmux` / `runtime: cmux` manifest or `--runtime` command after
+upgrading, install the runtime once with `cotal ext add @cotal-ai/tmux` or
+`cotal ext add @cotal-ai/cmux`. Runtime selection fails loudly with this remedy when it is missing.
 
 Add per-user auth as a first-class mesh mode. A mesh brought up with `cotal up --user-auth --idp <url>`
 authenticates humans against an identity provider and issues short-lived, ledger-scoped bearers through an
@@ -38,3 +48,10 @@ auth callout, in place of long-lived static credential files.
   owner-domain scoped.
 - **Connectors.** Add the `cotal_docs` tool (version-exact Cotal docs the agent reads natively) and an
   opaque `launchOptions` raw passthrough for the Claude Code, OpenCode, and Hermes adapters.
+- **Orca runtime.** Add an explicit `orca` runtime that launches each managed agent in an Orca terminal
+  attached to the worktree enclosing that agent's launch directory.
+- **Dynamic extensions and shutdown.** `cotal ext add` now installs command, runtime, and local-process
+  providers. Optional runtimes lazy-load by name, and `cotal down <component...>` selectively stops
+  registered parts while bare `cotal down` retains whole-stack teardown. The published binary no
+  longer bundles tmux/cmux runtimes; existing users select them after `cotal ext add @cotal-ai/tmux`
+  or `cotal ext add @cotal-ai/cmux` (Orca uses `@cotal-ai/orca`).

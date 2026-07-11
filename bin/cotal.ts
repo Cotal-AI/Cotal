@@ -16,8 +16,6 @@ import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessi
 import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
 import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
 import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)
-import "@cotal-ai/cmux"; // opt into the cmux integration — registers the `cmux` runtime + TerminalLayout providers
-import "@cotal-ai/tmux"; // opt into the tmux integration — registers the `tmux` runtime + TerminalLayout providers
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { registry } from "@cotal-ai/core";
 
@@ -37,7 +35,8 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
 registry.register({ ...claudeConnector, name: "cotal" });
 
 // Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
-// the ONE composition root that loads operator-installed extensions (`cotal ext add …`) —
-// library roots keep the explicit-import model.
+// the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
+// runtimes, and local process components all self-register from those packages. Library roots keep
+// the explicit-import model.
 const argv = process.argv.slice(2);
 await runCli(registry, argv, { extensions: true });

@@ -1,8 +1,8 @@
 import type { Extension } from "./registry.js";
 import type { LaunchSpec } from "./connector.js";
 
-/** Which backend a manager spawns through. Open-ended: `pty` ships with the
- *  manager; `tmux` and `cmux` are extensions contributed by a {@link RuntimeProvider}. */
+/** Which backend a manager spawns through. Open-ended: `pty` ships with the manager; every other
+ *  name is contributed by a {@link RuntimeProvider}. */
 export type RuntimeKind = string;
 
 /** A live attach onto a running agent's terminal — the stream `cotal attach`
@@ -44,8 +44,8 @@ export interface AgentHandle {
   attach(): AttachSession;
 }
 
-/** A pluggable agent backend — `pty` (default) owns a real pseudo-terminal; `tmux`
- *  drives a multiplexer pane; `cmux` (an integration) opens a tab. */
+/** A pluggable agent backend — `pty` (default) owns a real pseudo-terminal; extension runtimes
+ *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
@@ -66,4 +66,3 @@ export interface RuntimeProvider extends Extension {
    *  when the backend uses one (tmux); others may ignore it. */
   create(opts: { session: string }): Runtime;
 }
-

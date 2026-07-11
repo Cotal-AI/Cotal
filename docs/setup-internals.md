@@ -95,10 +95,15 @@ fail-loud on collision.
 
 The **web dashboard** is *not* part of `cotal up`. It ships as the `cotal-web` extension.
 `cotal setup` installs it automatically by reusing the same path as `cotal ext add cotal-web`
-(best-effort; failed install leaves the manual retry command). Start it with `cotal web`
-(re-execs the CLI detached; `.cotal/web.pid` / `.cotal/web.log`), addressed as
+(best-effort; failed install leaves the manual retry command). Start it in the foreground with
+`cotal web`; it records `.cotal/web.pid`, self-registers that process with `down`, and is addressed as
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
 Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status card.
+
+All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
+the full set and stops it in dependency order; `cotal down manager` (or another component name)
+selects only that descriptor. Installed extensions cache their contributed registry keys, so the
+base CLI does not hardcode optional package pidfiles.
 
 All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 ([`lib/self-exec.ts`](../implementations/cli/src/lib/self-exec.ts)) = `[node, ...loaderFlags,
