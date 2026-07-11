@@ -68,6 +68,7 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
+import { epCallerGrantRows, type EpCapability } from "./endpoint-grants.js";
 import { credsClaims, type Identity } from "./identity.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
@@ -340,6 +341,15 @@ export interface MintOpts {
    *  publish to the privileged control subject (start/purge/definePersona/named stop).
    *  Default-deny when absent — nats-server rejects the publish, no handler involved. */
   capabilities?: string[];
+  /** v0.4 endpoint request capabilities (SPEC §13.9 caller rows): each mints its exact
+   *  request-publish rows (+ optional journal-append row) and, when any is present, the
+   *  caller's own reply-rail read row. Requires {@link MintOpts.lifecycleUid} — the rows pin
+   *  the full caller triple. Default-deny when absent. */
+  endpointCapabilities?: EpCapability[];
+  /** The caller's lifecycle UID (SPEC §13.1), minted by the managing authority BEFORE the
+   *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
+   *  forge-locks it as the third caller token. */
+  lifecycleUid?: string;
   /** Delivery-daemon shard seam (`delivery` profile only). N=1 is the only operating mode; these do
    *  not change permissions in this build (the daemon owns the whole space at N=1). Present so the
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
@@ -744,6 +754,17 @@ export function permissionsFor(
     // broker-enforced half of the tier split; the manager's per-op checks stay on top of it.
     pubAllow.push(controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor));
   }
+  // v0.4 endpoint rails (SPEC §13.9 caller rows) — default-deny: only minted capabilities produce
+  // rows, each pinning the full caller triple (§13.1 lifecycle UID included; the nonce is the only
+  // wildcard token) plus the caller's own exact-arity reply-rail read.
+  const epSub: string[] = [];
+  if (opts.endpointCapabilities?.length) {
+    if (!opts.lifecycleUid)
+      throw new Error("permissionsFor: endpointCapabilities require a lifecycleUid - the caller triple pins it at mint time (SPEC 13.1/13.2)");
+    const rows = epCallerGrantRows(space, opts.endpointCapabilities, { owner: pr.owner, actor: pr.actor, uid: opts.lifecycleUid });
+    pubAllow.push(...rows.pub);
+    epSub.push(...rows.sub);
+  }
   // Explicit create-deny (defense-in-depth over default-deny) on the two streams whose
   // create-time filter_subject is the attack surface — DM (private content) and TASK
   // (cross-role work-stealing). Covers the bare ephemeral form (no trailing token), the
@@ -781,7 +802,7 @@ export function permissionsFor(
     controlReplies.push(`${controlServiceSubject(space, CONTROL_PRIVILEGED, pr.owner, pr.actor)}.reply.>`);
   if (opts.capabilities?.includes("admin"))
     controlReplies.push(`${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat] } };
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat, ...epSub] } };
 }
 
 /** The long-lived SUPERVISOR permission set (closure (ii), residual 2) — the always-on manager daemon
