@@ -84,12 +84,19 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
   ([examples](examples.md)). An example only configures and orchestrates; new message
   kinds or subjects go into core, generalized, never into an example.
 
-The published binary also loads **operator-installed CLI extensions**: `cotal ext add
+The published binary also loads **operator-installed extensions**: `cotal ext add
 <npm-package>` installs into a cotal-owned prefix, imports once so the package
-self-registers, then caches its command metadata for `--help`/completion; running a
-command imports lazily and parses live. Version skew or a stranded link fails loudly
-with instructions to re-add, rather than leaving a silently missing command. The repo's
-own `@cotal-ai/web` dashboard is installed through this same mechanism.
+self-registers, then caches every contributed `kind:name`. Command metadata is cached for
+`--help`/completion; running a command or requesting a provider imports its owner lazily and
+uses the live object. Version skew or a stranded link fails loudly with instructions to re-add.
+The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca runtimes use this mechanism; the
+published binary does not hardcode those packages.
+
+Machine-local processes use the same registry. The base CLI contributes broker/control-plane
+`local-process` descriptors, while an installed package contributes its own (for example `web`).
+That keeps `cotal down <component>` and `cotal status` extensible without teaching the base CLI
+package-specific pidfiles. A provider process claims its declared pidfile with exclusive create;
+extension removal reserves that same path so startup cannot cross uninstall.
 
 ## Connectors: four surfaces, one runtime
 
@@ -130,8 +137,8 @@ and configures them.
   `ps`.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
   docker for agent TUIs): **`pty`** ships built-in (the manager owns a pseudo-terminal;
-  watch or type via `cotal attach`); **`tmux`** and **`cmux`** are extensions that put
-  each teammate in its own window/tab (explicit opt-ins that throw when the extension
+  watch or type via `cotal attach`); **`tmux`**, **`cmux`**, and **`orca`** are extensions
+  that put each teammate in its own native terminal surface (explicit opt-ins that throw when the extension
   isn't loaded, never a silent fallback); **byo** is the floor (a human's own terminal,
   tracked via presence); **host** (Agent SDK, true mid-turn interrupt) is the documented
   upgrade path ([roadmap](roadmap.md)).

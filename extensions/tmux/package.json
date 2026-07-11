@@ -22,7 +22,10 @@
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "@cotal-ai/core": "*"
+  },
+  "devDependencies": {
     "@cotal-ai/core": "workspace:*"
   },
   "files": [

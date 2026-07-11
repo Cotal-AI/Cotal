@@ -11,6 +11,7 @@
       "@cotal-ai/manager",
       "@cotal-ai/delivery",
       "@cotal-ai/cmux",
+      "@cotal-ai/orca",
       "@cotal-ai/tmux",
       "@cotal-ai/connector-core",
       "@cotal-ai/connector-claude-code",

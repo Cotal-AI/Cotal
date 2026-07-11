@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   CotalEndpoint,
@@ -19,15 +19,20 @@ import {
   loadExtensionsManifest,
   loadMeshes,
   loadSpaceAuth,
+  localProcessPath,
+  localProcessVisible,
   preflightTarget,
   resolveMeshTarget,
   serverFlag,
   spaceFlag,
   userAuthStateDir,
+  type LocalProcess,
+  type LocalProcessContext,
 } from "@cotal-ai/workspace";
+import { localProcessSurface } from "../ext-loader.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { machineStatus, resolveSpace, webUp, WEB_URL } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
-import { machineStatus, webUp, WEB_URL } from "../lib/status.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { c, statusBadge } from "../ui.js";
 
@@ -65,21 +70,24 @@ async function printMachine(): Promise<void> {
 function printProject(root: string, cmd: string): void {
   const auth = loadSpaceAuth(authDir(root));
   const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
+  const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   section("This Folder");
   row("root", root);
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
-  const nats = proc(root, "nats.pid");
-  row("nats", formatProc(nats));
-  if (userDisk) row("auth-service", formatProc(proc(root, `auth-service.${encodeURIComponent(auth.space)}.pid`)));
-  row("delivery", formatProc(proc(root, "delivery.pid")));
-  const mgr = proc(root, "manager.pid");
-  row("manager", `${formatProc(mgr)}${mgr.live ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build") : ""}`);
-  row("web", formatProc(proc(root, "web.pid")));
+  let nats: Proc | undefined;
+  for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
+    const state = proc(localProcessPath(component.pidFile, context));
+    if (component.name === "nats") nats = state;
+    const detail = component.name === "manager" && state.live
+      ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build")
+      : "";
+    row(component.name, `${formatProc(state)}${detail}`);
+  }
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
-  if (!nats.live && existsSync(join(root, ".cotal", "nats")))
+  if (!nats?.live && existsSync(join(root, ".cotal", "nats")))
     row("stored state", c.dim(`JetStream store persists across down/up - if stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`));
 }
 
@@ -264,11 +272,8 @@ function personaSummary(root: string): string {
   return parts.join(" · ");
 }
 
-// One probe for the whole CLI (down/clean/status): pid > 0 only, EPERM = alive — so status can
-// never call a live-but-unsignalable broker "stale" (and then contradict `clean`'s refusal), nor
-// render a corrupt pidfile as `running (pid 0)`.
-function proc(root: string, file: string): Proc {
-  return pidfileState(join(root, ".cotal", file));
+function proc(path: string): Proc {
+  return pidfileState(path);
 }
 
 function formatProc(p: Proc): string {

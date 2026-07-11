@@ -56,6 +56,7 @@ import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
+import { extensionNames } from "../ext-loader.js";
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
  *  is a persona from the mesh this spawn would target. Resolved OFFLINE (registry + `current`, no
@@ -82,7 +83,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
     return { items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
   if (flag && ["cwd", "file", "creds"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag?.name === "runtime")
-    return { items: ["pty", "tmux", "cmux"].map((value) => ({ value })), directive: "nofiles" };
+    return { items: ["pty", ...extensionNames("runtime")].filter((value, i, all) => all.indexOf(value) === i).map((value) => ({ value })), directive: "nofiles" };
 
   const positionals = positionalsForCompletion(argv, spawnFlags);
   // Only the first word after `spawn` is the persona positional; once it's typed, defer to the shell.
@@ -191,7 +192,7 @@ export const spawnFlags = [
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "deploy a manifest onto the running mesh" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
-  { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
+  { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
 ] as const satisfies readonly FlagSpec[];
 
 /** Comma-list flag → string[] (shared by both spawn modes). */

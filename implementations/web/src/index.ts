@@ -1,6 +1,6 @@
 import { registry, type Command } from "@cotal-ai/core";
 import { targetFlags } from "@cotal-ai/workspace";
-import { web } from "./web.js";
+import { web, webProcess } from "./web.js";
 
 /**
  * `@cotal-ai/web` — the browser observability dashboard as an operator-installed CLI extension:
@@ -20,4 +20,4 @@ const webCommand: Command = {
   ],
   run: web,
 };
-registry.register(webCommand);
+registry.register(webCommand, webProcess);

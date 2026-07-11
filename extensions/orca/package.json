@@ -1,12 +1,12 @@
 {
-  "name": "@cotal-ai/cmux",
-  "description": "Cotal cmux integration: a cmux Runtime and TerminalLayout provider for spawning agents into cmux tabs.",
+  "name": "@cotal-ai/orca",
+  "description": "Cotal Orca integration: an Orca Runtime provider for spawning agents into the right Orca worktree.",
   "version": "0.11.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Cotal-AI/Cotal.git",
-    "directory": "extensions/cmux"
+    "directory": "extensions/orca"
   },
   "type": "module",
   "main": "./dist/index.js",

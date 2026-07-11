@@ -77,7 +77,10 @@
     "smoke:env-isolate": "tsx implementations/manager/smoke/env-isolate.smoke.ts",
     "smoke:tmux": "tsx extensions/tmux/smoke.ts",
     "smoke:cmux": "tsx extensions/cmux/smoke.ts",
-    "smoke:runtime": "pnpm smoke:tmux && pnpm smoke:env-isolate && pnpm smoke:attach",
+    "smoke:orca": "tsx extensions/orca/smoke.ts",
+    "smoke:orca:live": "tsx extensions/orca/smoke.ts -- --live",
+    "smoke:orca-e2e:live": "pnpm --filter cotal-ai... build && pnpm --filter @cotal-ai/orca build && tsx bin/smoke/orca-extension-live.smoke.ts",
+    "smoke:runtime": "pnpm smoke:tmux && pnpm smoke:orca && pnpm smoke:env-isolate && pnpm smoke:attach",
     "smoke:start-model": "tsx implementations/manager/smoke/start-model-preflight.smoke.ts",
     "smoke:persona-acl": "tsx implementations/manager/smoke/persona-identity-acl.smoke.ts",
     "smoke:transcript-grant": "tsx implementations/manager/smoke/transcript-grant-acl.smoke.ts",
@@ -147,6 +150,7 @@
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/manager": "workspace:*",
+    "@cotal-ai/orca": "workspace:*",
     "@cotal-ai/tmux": "workspace:*"
   },
   "devDependencies": {

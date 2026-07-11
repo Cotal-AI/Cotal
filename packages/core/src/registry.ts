@@ -11,6 +11,12 @@ export interface Extension {
   readonly name: string;
 }
 
+/** A registry key used by commands that need an operator-installed provider before they run. */
+export interface ExtensionRef {
+  readonly kind: string;
+  readonly name: string;
+}
+
 export class Registry {
   #byKey = new Map<string, Extension>();
 
@@ -30,9 +36,12 @@ export class Registry {
     return ext as T;
   }
 
-  /** Every registered extension of a kind (e.g. all commands, for CLI dispatch). */
-  all<T extends Extension>(kind: T["kind"]): T[] {
-    return [...this.#byKey.values()].filter((e) => e.kind === kind) as T[];
+  /** Every registered extension, optionally narrowed to one kind. */
+  all(): Extension[];
+  all<T extends Extension>(kind: T["kind"]): T[];
+  all<T extends Extension>(kind?: T["kind"]): T[] {
+    const values = [...this.#byKey.values()];
+    return (kind === undefined ? values : values.filter((e) => e.kind === kind)) as T[];
   }
 }
 

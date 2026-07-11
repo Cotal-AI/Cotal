@@ -344,6 +344,8 @@ export class CotalEndpoint extends EventEmitter {
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
   private readonly roster = new Map<string, Presence>();
+  /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
+  private presenceSnapshot = Promise.resolve();
   private status: PresenceStatus = "idle";
   private activity?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
@@ -1115,6 +1117,20 @@ export class CotalEndpoint extends EventEmitter {
     return [...this.roster.values()].sort((a, b) =>
       a.card.name.localeCompare(b.card.name),
     );
+  }
+
+  /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
+   * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded. */
+  async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.presenceSnapshot,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async setActivity(activity: string): Promise<void> {
@@ -2793,9 +2809,20 @@ export class CotalEndpoint extends EventEmitter {
 
   private async startPresenceWatch(): Promise<void> {
     if (!this.kv) return;
+    let hydrated!: () => void;
+    this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
     void (async () => {
-      for await (const e of iter) this.handleKvEntry(e);
+      let ready = false;
+      for await (const e of iter) {
+        this.handleKvEntry(e);
+        // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
+        if (!ready && e.isUpdate) {
+          ready = true;
+          hydrated();
+        }
+      }
+      hydrated();
     })().catch((e) => this.emit("error", e as Error));
   }
 

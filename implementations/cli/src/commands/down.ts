@@ -1,62 +1,211 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { type ParsedArgs } from "@cotal-ai/core";
-import { removeMeshesByRoot } from "@cotal-ai/workspace";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
+import {
+  localProcessPath,
+  removeMeshesByRoot,
+  type LocalProcess,
+  type LocalProcessContext,
+} from "@cotal-ai/workspace";
+import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
-import { cotalPath, cotalRoot } from "../lib/paths.js";
+import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 
-/** Stop the background processes started by `cotal up --detach`: the manager, the
- *  delivery daemon, the web dashboard, and the mesh. With `-f <cotal.yaml>` (or `--run <id>`) it does
- *  an ownership-scoped teardown of a `spawn -f` deploy instead — removing ONLY what that run created
- *  (its agents + the channels it added), from the ledger, never the whole shared mesh. */
+/** Complete selective component names without importing installed packages. */
+export function downComplete(argv: string[]): CompletionResult {
+  if (argv.some((word) => word === "-f" || word === "--file" || word === "--run"))
+    return { items: [], directive: "nofiles" };
+  if ((argv[argv.length - 1] ?? "").startsWith("-")) return { items: [], directive: "nofiles" };
+  const used = new Set(argv.slice(0, -1).filter((word) => !word.startsWith("-")));
+  return {
+    items: extensionNames("local-process").filter((name) => !used.has(name)).map((value) => ({ value })),
+    directive: "nofiles",
+  };
+}
+
+/** Stop the whole local stack by default, or only named self-registered process components. The
+ *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
 export async function down(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean };
+  const requested = [...new Set(args.positionals)];
+  if ((values.file || values.run) && requested.length) {
+    throw new Error("component names cannot be combined with --file or --run");
+  }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
-  // The auth service's pid file is SPACE-scoped (auth-service.<space>.pid) — resolve the space
-  // first, so `down` can only ever stop THIS folder's space's daemon, never another space's.
-  const space = resolveSpace(process.cwd());
-  const targets = pidfileTargets(space);
+  const all = localProcessSurface();
+  const known = all.map((component) => component.name).sort();
+  const unknown = requested.filter((name) => !known.includes(name));
+  if (unknown.length)
+    throw new Error(`unknown component${unknown.length > 1 ? "s" : ""} ${unknown.map((name) => JSON.stringify(name)).join(", ")} - known: ${known.join(", ")}`);
+  const selected = (requested.length ? requested.map((name) => all.find((part) => part.name === name)!) : all)
+    .sort((a, b) => Number(Boolean(a.stopLast)) - Number(Boolean(b.stopLast)) || (a.order ?? 50) - (b.order ?? 50));
+  const context: LocalProcessContext = { root: cotalRoot(), space: resolveSpace(process.cwd()) };
+
+  if (selected.some((component) => component.stopLast)) {
+    const selectedNames = new Set(selected.map((component) => component.name));
+    const dependants = all.filter((component) => !selectedNames.has(component.name) && processAlive(component, context));
+    if (dependants.length) {
+      throw new Error(
+        `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running - name them too, or run bare \`cotal down\``,
+      );
+    }
+  }
+
+  if (values["dry-run"]) {
+    const recorded = selected.filter((component) => processRecorded(component, context));
+    for (const component of recorded) console.log(c.dim(`would stop ${component.label}`));
+    if (!recorded.length) {
+      const target = requested.length ? requested.join(", ") : "the local stack";
+      console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
+      process.exit(1);
+    }
+    console.log(c.dim("Dry run - nothing was changed. Re-run without --dry-run to stop these components."));
+    return;
+  }
+
   let any = false;
   let allStopped = true;
-  // Sequential, in declared (stop) order — see pidfileTargets. Each stop awaits the real exit.
-  for (const [file, label] of targets) {
-    const pidPath = cotalPath(file);
-    if (!existsSync(pidPath)) continue;
-    any = true;
-    if (!(await stop(pidPath, label))) allStopped = false;
+  for (const component of selected) {
+    any = processRecorded(component, context) || any;
+    if (component.stopLast && !allStopped) {
+      console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
+      continue;
+    }
+    try {
+      await stop(component, context);
+    } catch (e) {
+      allStopped = false;
+      console.error(c.red(`✗ ${(e as Error).message}`));
+    }
   }
-  // A process we could not stop (EPERM, or a SIGKILL survivor) is still RUNNING: presenting the
-  // mesh as cleanly down — sweeping artifacts and the registry entry — would let a later `clean`
-  // delete the store underneath it. Keep everything and fail loud instead.
   if (!allStopped) {
-    console.error(c.red("✗ not cleanly stopped - keeping the pidfiles, artifacts, and registry entry"));
+    console.error(c.red("✗ not cleanly stopped - keeping artifacts and the registry entry"));
     process.exitCode = 1;
     return;
   }
-  // Non-pid control-plane artifacts: the delivery daemon's scoped creds + the manager's delivery-aware
-  // marker. Drop them with the processes so a stale creds file / marker never lingers.
-  for (const f of ["delivery.creds", "manager.delivery-aware"]) rmSync(cotalPath(f), { force: true });
-  // Transient `cotal up -f` launch artifacts (launch specs + materialized runtime personas). `up -f`
-  // owns the whole mesh, so tearing it down clears all run dirs — they're never authoritative source.
-  rmSync(cotalPath("run"), { recursive: true, force: true });
-  // Drop this folder's meshes from the registry (and the `current` pointer per removed entry),
-  // keyed by ROOT - a named OPEN mesh has no auth material, so a space-name key would resolve to
-  // the default space and delete an unrelated mesh's entry (see removeMeshesByRoot).
-  removeMeshesByRoot(cotalRoot());
+
+  for (const component of selected) {
+    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, context), { force: true });
+  }
+
+  // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
+  // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
+  if (selected.some((component) => component.clearsMesh)) {
+    rmSync(join(context.root, ".cotal", "run"), { recursive: true, force: true });
+    removeMeshesByRoot(context.root);
+  }
   if (!any) {
-    console.error(c.red("Nothing running here (no .cotal/*.pid). Was it started with `cotal up` / `cotal setup`?"));
+    const target = requested.length ? requested.join(", ") : "the local stack";
+    console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
     process.exit(1);
   }
 }
 
-/** Every pidfile a background mesh records under `.cotal/`, in stop order (manager → delivery →
- *  auth service → web → nats: the manager's graceful shutdown releases its lease OVER nats, so nats
- *  must outlive it). Shared with `cotal clean`, which refuses local-state deletion while any of
- *  these is still alive. */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const parsePid = (raw: string): number | undefined => {
+  const pid = Number(raw.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+};
+export const isAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
+function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
+  return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
+}
+
+function processAlive(component: LocalProcess, context: LocalProcessContext): boolean {
+  const pidPath = localProcessPath(component.pidFile, context);
+  if (!existsSync(pidPath)) return false;
+  const pid = parsePid(readFileSync(pidPath, "utf8"));
+  return pid !== undefined && isAlive(pid);
+}
+
+/** Stop one recorded process and await its actual exit before the next dependency is stopped. */
+async function stop(component: LocalProcess, context: LocalProcessContext): Promise<boolean> {
+  const pidPath = localProcessPath(component.pidFile, context);
+  const found = processRecorded(component, context);
+  if (!existsSync(pidPath)) return found;
+
+  const rawPid = readFileSync(pidPath, "utf8").trim();
+  if (rawPid.startsWith("removing:")) {
+    const owner = parsePid(rawPid.slice("removing:".length));
+    throw new Error(
+      owner && isAlive(owner)
+        ? `${component.name} extension removal is in progress (pid ${owner})`
+        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
+    );
+  }
+  const pid = parsePid(rawPid);
+  const marker = `${pidPath}.stopping`;
+  let markerFd: number | undefined;
+  for (;;) {
+    try {
+      markerFd = openSync(marker, "wx", 0o600);
+      writeFileSync(markerFd, String(process.pid));
+      break;
+    } catch (e) {
+      if (markerFd !== undefined) {
+        closeSync(markerFd);
+        rmSync(marker, { force: true });
+        markerFd = undefined;
+      }
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      let owner: number | undefined;
+      try {
+        owner = parsePid(readFileSync(marker, "utf8"));
+      } catch (readErr) {
+        if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw readErr;
+      }
+      if (owner && isAlive(owner))
+        throw new Error(`${component.name} is already being stopped by another \`cotal down\` (pid ${owner})`);
+      // A dead owner cannot finish cleanup. Reclaim its marker and retry the exclusive create.
+      rmSync(marker, { force: true });
+    }
+  }
+  closeSync(markerFd);
+
+  let stopped = false;
+  try {
+    if (pid === undefined) {
+      console.log(c.dim(`${component.label} had an invalid pidfile.`));
+      stopped = true;
+      return true;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      if (isAlive(pid)) throw new Error(`could not signal ${component.label} (pid ${pid})`);
+      console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
+      stopped = true;
+      return true;
+    }
+    const graceDeadline = Date.now() + 15_000;
+    while (isAlive(pid) && Date.now() < graceDeadline) await sleep(100);
+    if (isAlive(pid)) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
+      const hardDeadline = Date.now() + 3_000;
+      while (isAlive(pid) && Date.now() < hardDeadline) await sleep(100);
+    }
+    if (isAlive(pid)) throw new Error(`${component.label} (pid ${pid}) did not exit; its pidfile was preserved`);
+    stopped = true;
+    console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
+    return true;
+  } finally {
+    if (stopped || pid === undefined || !isAlive(pid)) {
+      rmSync(pidPath, { force: true });
+    }
+    rmSync(marker, { force: true });
+  }
+}
+
+/** Compatibility inventory for `clean`; lifecycle commands use the registered descriptors above. */
 export function pidfileTargets(space: string): Array<[file: string, label: string]> {
   return [
     ["manager.pid", "manager"],
@@ -67,69 +216,14 @@ export function pidfileTargets(space: string): Array<[file: string, label: strin
   ];
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-export const isAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch (e) {
-    // EPERM = the process EXISTS but we may not signal it (e.g. launched from a differently
-    // elevated context). For safety that counts as alive; only ESRCH-style "no such process"
-    // reads as dead.
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
-
 export type PidfileState = { pid?: number; live: boolean; note?: string };
 
-/** Read one pidfile and probe liveness with ONE hardened semantics, shared by `down`, `clean`,
- *  and `status` so they can never drift: only a positive integer pid counts (an empty/corrupt
- *  pidfile parses to 0, and POSIX `kill(0, 0)` probes our own process group), and EPERM reads as
- *  ALIVE (the process exists, we merely can't signal it). */
+/** Shared hardened pid probe: positive integers only, and EPERM means the process exists. */
 export function pidfileState(path: string): PidfileState {
   if (!existsSync(path)) return { live: false, note: "no pidfile" };
-  const pid = Number(readFileSync(path, "utf8").trim());
-  if (!Number.isInteger(pid) || pid <= 0) return { live: false, note: "bad pidfile" };
+  const raw = readFileSync(path, "utf8").trim();
+  if (raw.startsWith("removing:")) return { live: false, note: "extension removal in progress" };
+  const pid = parsePid(raw);
+  if (!pid) return { live: false, note: "bad pidfile" };
   return isAlive(pid) ? { pid, live: true } : { pid, live: false, note: "stale pidfile" };
-}
-
-/** Stop one recorded process and AWAIT its actual exit — SIGTERM starts a graceful shutdown (a
- *  manager reaps its agents and releases its JetStream lease over NATS, which isn't instant), so
- *  returning before the process is really gone would let callers (and `up`-style smokes) race a
- *  still-dying manager. Poll the pid, escalate to SIGKILL if it overstays, then confirm it's gone.
- *  Returns whether the process is confirmed absent. The pidfile is removed only once that is
- *  established: erasing the record of a process we could NOT stop (EPERM — alive but
- *  unsignalable) would let a later `cotal clean` delete the store underneath a live broker. */
-async function stop(pidPath: string, label: string): Promise<boolean> {
-  const s = pidfileState(pidPath);
-  if (!s.live) {
-    // Dead or unusable record (stale pid, empty/corrupt file) — nothing to stop, drop it.
-    rmSync(pidPath, { force: true });
-    if (s.pid) console.log(c.dim(`${label} (pid ${s.pid}) was not running.`));
-    return true;
-  }
-  const pid = s.pid!;
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (e) {
-    // The probe said alive, the signal was refused: EPERM (differently elevated context) or
-    // similar. The process is still running — keep its pidfile and fail loud.
-    console.error(c.red(`✗ cannot stop ${label} (pid ${pid}): ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`));
-    return false;
-  }
-  // Signal accepted — this `down` owns the stop. Drop the pidfile now so a concurrent `down`
-  // can't double-signal a reused pid.
-  rmSync(pidPath, { force: true });
-  const graceDeadline = Date.now() + 15_000;
-  while (isAlive(pid) && Date.now() < graceDeadline) await sleep(100);
-  if (isAlive(pid)) {
-    try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
-    const hardDeadline = Date.now() + 3_000;
-    while (isAlive(pid) && Date.now() < hardDeadline) await sleep(100);
-  }
-  if (isAlive(pid)) {
-    // A SIGKILL survivor is still running — restore the record it must keep.
-    writeFileSync(pidPath, String(pid));
-    console.log(c.red(`✗ ${label} (pid ${pid}) did not exit`));
-    return false;
-  }
-  console.log(c.green(`✓ stopped ${label} (pid ${pid})`));
-  return true;
 }

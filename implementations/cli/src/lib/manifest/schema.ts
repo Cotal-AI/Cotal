@@ -81,7 +81,8 @@ export const MeshManifestSchema = z.strictObject({
   kind: z.literal("Mesh"),
   space: z.string().min(1),
   broker: Broker.optional(),
-  runtime: z.enum(["pty", "tmux", "cmux"]).optional(),
+  /** `pty` is built in; any other name is resolved through an installed runtime provider. */
+  runtime: z.string().min(1).optional(),
   /** Default connector for agents that don't set their own `agent:`. */
   agent: z.string().min(1).optional(),
   personaPermissions: PersonaPermissions.optional(),

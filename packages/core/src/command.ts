@@ -1,5 +1,5 @@
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import type { Extension } from "./registry.js";
+import type { Extension, ExtensionRef } from "./registry.js";
 
 /** One shell-completion candidate. `value` is inserted on the command line; `description`
  *  is a one-line hint shown by shells that support it (zsh, fish) and ignored by bash. */
@@ -81,6 +81,9 @@ export interface Command extends Extension {
   /** Skip parsing: `run` sees only {@link ParsedArgs.raw}/`positionals` verbatim. For the
    *  completion dispatcher, whose argv is another command's half-typed line. */
   readonly rawArgs?: boolean;
+  /** Providers this invocation needs before {@link run}. The published CLI resolves missing refs
+   *  from operator-installed packages; library composition roots still require explicit imports. */
+  requiredExtensions?(args: ParsedArgs): readonly ExtensionRef[];
   run(args: ParsedArgs): Promise<void>;
   /** Optional shell-completion provider, owned by the command exactly as `run` is. Given the
    *  args typed so far (everything after the command name; the last element is the word being

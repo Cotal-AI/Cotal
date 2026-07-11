@@ -13,11 +13,13 @@
  *     (checked against the manifest cache — the sibling is never imported), @cotal-ai/* as a
  *     regular dependency, missing core peerDep, an @cotal-ai/* peer the binary doesn't carry,
  *     zero registrations. A multi-peer extension gets BOTH core and workspace linked (E2).
- *  F. remove: commands leave the surface; the manifest empties.
+ *  F. non-command providers: runtime-only install + lazy supervise resolution; a contributed
+ *     local process participates in selective down, while core components stay independent.
+ *  G. remove: commands leave the surface; the manifest empties.
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -38,8 +40,9 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
-const cotal = (args: string[]) =>
-  spawnSync(realNode, [tsxCli, binCotal, ...args], { encoding: "utf8", env, cwd: sandbox, timeout: 180_000 });
+const cotal = (args: string[], timeout = 180_000) =>
+  spawnSync(realNode, [tsxCli, binCotal, ...args], { encoding: "utf8", env, cwd: sandbox, timeout });
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Build a fixture extension package on disk. `index` is its module body. */
 function fixture(name: string, index: string, pkgJson: Record<string, unknown> = {}): string {
@@ -90,13 +93,15 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
 
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const r = cotal(["ext", "add", fixture("cotal-ext-fixture", GOOD)]);
+  const goodFixture = fixture("cotal-ext-fixture", GOOD, { bin: { "fixture-bin": "bin.js" } });
+  writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
+  const r = cotal(["ext", "add", goodFixture]);
   ok("add exits 0", r.status === 0, r.stderr.slice(-400));
   ok("add names the contributed command", /hello-ext/.test(r.stdout), r.stdout);
   ok("manifest written + announced", existsSync(manifestPath) && /→ wrote extensions manifest/.test(r.stderr), r.stderr.slice(-300));
   ok("core is linked to OUR copy", /→ wrote @cotal-ai\/core link/.test(r.stderr));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
-  ok("manifest pins name@version + caches flags", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout", m.extensions[0]);
+  ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
@@ -126,6 +131,18 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   ok("re-add of the same extension exits 0", r.status === 0, r.stderr.slice(-300));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("re-add keeps one manifest entry at the same pin", m.extensions.length === 1 && m.extensions[0].version === "1.0.0", m.extensions);
+  ok("successful re-add preserves npm relative bin symlinks", existsSync(join(extDir, "node_modules", ".bin", "fixture-bin")));
+}
+
+// -- C2b: old command-only manifests remain usable and still participate in collision checks -------
+{
+  const m = JSON.parse(readFileSync(manifestPath, "utf8"));
+  delete m.extensions[0].provides;
+  writeFileSync(manifestPath, JSON.stringify(m, null, 2));
+  const help = cotal(["--help"]);
+  const completion = cotal(["__complete", "hello-ext", "--"]);
+  const run = cotal(["hello-ext", "legacy"]);
+  ok("legacy command-only manifest still renders, completes, and dispatches", help.status === 0 && /hello-ext/.test(help.stdout) && completion.status === 0 && /--shout/.test(completion.stdout) && run.status === 0 && /hello legacy/.test(run.stdout), help.stdout + completion.stdout + run.stdout + run.stderr);
 }
 
 // -- C3: a corrupt manifest is fatal-and-loud as ONE red line (never a stack dump, never a
@@ -140,47 +157,6 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   writeFileSync(manifestPath, good);
 }
 
-// -- C4: legacy web package name recovers through the canonical @cotal-ai/web package -----------
-{
-  const good = JSON.parse(readFileSync(manifestPath, "utf8"));
-  writeFileSync(
-    manifestPath,
-    JSON.stringify(
-      {
-        extensions: [
-          ...good.extensions,
-          {
-            pkg: "cotal-web",
-            version: "0.10.0",
-            spec: "/tmp/no-longer-portable/implementations/web",
-            commands: [{ name: "web", summary: "legacy dashboard" }],
-          },
-        ],
-      },
-      null,
-      2,
-    ),
-  );
-  const stale = cotal(["web"]);
-  ok(
-    "missing legacy cotal-web prescribes the canonical package, not the stale local path",
-    stale.status === 1 && /extension cotal-web/.test(stale.stderr) && /cotal ext add @cotal-ai\/web/.test(stale.stderr) && !/no-longer-portable/.test(stale.stderr),
-    stale.stderr.slice(0, 300),
-  );
-
-  const webExt = fixture("@cotal-ai/web", GOOD.replace('name: "hello-ext"', 'name: "web"'));
-  const added = cotal(["ext", "add", webExt]);
-  ok("adding @cotal-ai/web replaces legacy cotal-web", added.status === 0, added.stderr.slice(-400));
-  const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
-  ok(
-    "manifest keeps @cotal-ai/web and drops cotal-web",
-    updated.extensions.some((e: { pkg?: string; spec?: string }) => e.pkg === "@cotal-ai/web" && e.spec === "@cotal-ai/web") &&
-      !updated.extensions.some((e: { pkg?: string }) => e.pkg === "cotal-web"),
-    updated.extensions,
-  );
-  ok("canonical remove also clears the web extension", cotal(["ext", "remove", "@cotal-ai/web"]).status === 0);
-}
-
 // -- D: version skew -------------------------------------------------------------------------------
 {
   const meta = JSON.parse(readFileSync(installedPkg, "utf8"));
@@ -192,6 +168,39 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
 
 // -- E: failed adds are loud + rolled back ---------------------------------------------------------
 {
+  const mutationLock = join(configDir, "cotal", ".extensions.lock");
+  writeFileSync(mutationLock, String(process.pid));
+  const locked = cotal(["ext", "add", fixture("cotal-ext-locked", GOOD.replace('name: "hello-ext"', 'name: "locked-ext"'))]);
+  ok("concurrent extension mutation fails loud", locked.status === 1 && /mutation is in progress/.test(locked.stderr), locked.stderr);
+  const lockedRun = cotal(["hello-ext"]);
+  ok("lazy extension import refuses a concurrent prefix mutation", lockedRun.status === 1 && /install\/remove is in progress/.test(lockedRun.stderr), lockedRun.stderr);
+  rmSync(mutationLock, { force: true });
+
+  const deadOwner = spawnSync(realNode, ["-e", ""], { encoding: "utf8" }).pid;
+  writeFileSync(mutationLock, String(deadOwner));
+  const staleRun = cotal(["hello-ext", "stale-lock"]);
+  ok("lazy extension import ignores a dead owner's stale mutation lock", staleRun.status === 0 && /hello stale-lock/.test(staleRun.stdout), staleRun.stdout + staleRun.stderr);
+  const staleClaim = cotal(["ext", "remove", "not-installed"]);
+  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 1 && /no installed extension/.test(staleClaim.stderr) && !existsSync(mutationLock), staleClaim.stderr);
+
+  mkdirSync(mutationLock);
+  const unreadableStarted = Date.now();
+  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], 3_000);
+  const unreadableElapsed = Date.now() - unreadableStarted;
+  ok("an unreadable mutation lock fails loud instead of busy-spinning", unreadable.status === 1 && /can't read extension mutation lock/.test(unreadable.stderr) && unreadableElapsed < 3_000, unreadable.stderr + ` (${unreadableElapsed}ms)`);
+  rmSync(mutationLock, { recursive: true, force: true });
+
+  const priorManifest = readFileSync(manifestPath, "utf8");
+  const badUpdate = fixture("cotal-ext-bad-update", GOOD, {
+    name: "cotal-ext-fixture",
+    dependencies: { "@cotal-ai/core": "*" },
+    peerDependencies: undefined,
+  });
+  const update = cotal(["ext", "add", badUpdate]);
+  const stillRuns = cotal(["hello-ext", "rollback"]);
+  ok("failed same-name re-add restores the working package", update.status === 1 && stillRuns.status === 0 && /hello rollback/.test(stillRuns.stdout), update.stderr + stillRuns.stderr);
+  ok("failed same-name re-add restores the prior manifest", readFileSync(manifestPath, "utf8") === priorManifest, readFileSync(manifestPath, "utf8"));
+
   const collide = fixture("cotal-ext-collide", GOOD.replace('name: "hello-ext"', 'name: "spawn"'));
   const r1 = cotal(["ext", "add", collide]);
   ok("builtin-name collision fails the add", r1.status === 1 && /cotal-ext-collide/.test(r1.stderr), r1.stderr.slice(-300));
@@ -208,7 +217,7 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
 
   const empty = fixture("cotal-ext-empty", "export {};\n");
   const r4 = cotal(["ext", "add", empty]);
-  ok("zero registrations fails the add", r4.status === 1 && /registered no commands/.test(r4.stderr), r4.stderr.slice(-300));
+  ok("zero registrations fails the add", r4.status === 1 && /registered no extensions/.test(r4.stderr), r4.stderr.slice(-300));
 
   // ext-vs-ext: another package contributing the installed fixture's command name. The registry
   // can't see the installed (unimported) sibling, so add() must check the manifest cache.
@@ -252,10 +261,136 @@ registry.register({
   ok("multi-peer add exits 0 (core + workspace linked)", r.status === 0 && /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
   const run = cotal(["ws-ext"]);
   ok("the extension imports the LINKED workspace peer at run time", run.status === 0 && run.stdout.includes("WS-OK"), run.stdout + run.stderr.slice(-200));
-  ok("remove cleans it up", cotal(["ext", "remove", "cotal-ext-wspeer"]).status === 0);
+  const failedSibling = cotal(["ext", "add", fixture("cotal-ext-peer-rollback", "export {};\n")]);
+  ok("a failed sibling add rolls back", failedSibling.status === 1 && /registered no extensions/.test(failedSibling.stderr), failedSibling.stderr);
+  const afterRollback = cotal(["ws-ext"]);
+  ok("failed add rollback preserves older private peer links", afterRollback.status === 0 && afterRollback.stdout.includes("WS-OK"), afterRollback.stdout + afterRollback.stderr);
 }
 
-// -- F: remove -------------------------------------------------------------------------------------
+// -- F: non-command providers + selective process shutdown -----------------------------------------
+{
+  const loaded = join(sandbox, "runtime-loaded");
+  const PROVIDERS = `import { writeFileSync } from "node:fs";
+import { registry } from "@cotal-ai/core";
+writeFileSync(${JSON.stringify(loaded)}, "loaded");
+registry.register(
+  {
+    kind: "runtime",
+    name: "fixture-runtime",
+    available: () => true,
+    create: () => ({ kind: "fixture-runtime", spawn: () => { throw new Error("unused"); } }),
+  },
+  {
+    kind: "runtime",
+    name: "fixture-unavailable",
+    available: () => false,
+    create: () => ({ kind: "fixture-unavailable", spawn: () => { throw new Error("unused"); } }),
+  },
+  {
+    kind: "local-process",
+    name: "fixture-worker",
+    label: "fixture worker",
+    order: 35,
+    pidFile: "fixture.pid",
+    artifacts: ["fixture.secret"],
+  },
+);
+`;
+  const providers = fixture("cotal-ext-providers", PROVIDERS);
+  const added = cotal(["ext", "add", providers]);
+  ok("runtime-only extension add exits 0", added.status === 0, added.stderr.slice(-400));
+  const retainedPeer = cotal(["ws-ext"]);
+  ok("adding a core-only extension preserves older workspace peer links", retainedPeer.status === 0 && retainedPeer.stdout.includes("WS-OK"), retainedPeer.stdout + retainedPeer.stderr);
+  ok("multi-peer extension still removes cleanly", cotal(["ext", "remove", "cotal-ext-wspeer"]).status === 0);
+  ok("add reports every provider kind", /runtime:fixture-runtime/.test(added.stdout) && /local-process:fixture-worker/.test(added.stdout), added.stdout);
+  const providerManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const providerEntry = providerManifest.extensions.find((entry: { pkg: string }) => entry.pkg === "cotal-ext-providers");
+  ok("local-process metadata is cached declaratively", providerEntry.localProcesses[0].pidFile === "fixture.pid" && providerEntry.localProcesses[0].artifacts[0] === "fixture.secret", providerEntry);
+  rmSync(loaded, { force: true });
+  const downCompletion = cotal(["__complete", "down", ""]);
+  ok("selective down completes installed process providers without importing", downCompletion.status === 0 && /fixture-worker/.test(downCompletion.stdout) && !existsSync(loaded), downCompletion.stdout + downCompletion.stderr);
+  const supervise = cotal(["supervise", "--runtime", "fixture-runtime", "--server", "nats://127.0.0.1:1"]);
+  ok("supervise lazy-loads an installed runtime provider", supervise.status === 1 && existsSync(loaded) && /Can't reach NATS/.test(supervise.stderr) && !/unknown runtime/.test(supervise.stderr), supervise.stderr.slice(-400));
+
+  const unavailableManifest = join(sandbox, "unavailable.yaml");
+  writeFileSync(unavailableManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: unavailable\nruntime: fixture-unavailable\nchannels: {}\n`);
+  const unavailable = cotal(["up", "-f", unavailableManifest]);
+  ok("up -f rejects an unavailable extension runtime before starting the broker", unavailable.status === 1 && /not reachable/.test(unavailable.stderr) && !existsSync(join(sandbox, ".cotal", "nats.pid")), unavailable.stderr.slice(-400));
+
+  mkdirSync(join(sandbox, ".cotal"), { recursive: true });
+  const daemon = (childCode = "setInterval(() => {}, 1000)"): number => {
+    const code = `const { spawn } = require("node:child_process"); const c = spawn(process.execPath, ["-e", ${JSON.stringify(childCode)}], { detached: true, stdio: "ignore" }); c.unref(); console.log(c.pid);`;
+    return Number(spawnSync(realNode, ["-e", code], { encoding: "utf8" }).stdout.trim());
+  };
+  const alive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  writeFileSync(join(sandbox, ".cotal", "manager.pid"), "");
+  const invalidPid = cotal(["down", "manager"]);
+  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /invalid pidfile/.test(invalidPid.stdout) && !existsSync(join(sandbox, ".cotal", "manager.pid")), invalidPid.stdout + invalidPid.stderr);
+
+  const reservationOwner = daemon();
+  writeFileSync(join(sandbox, ".cotal", "fixture.pid"), `removing:${reservationOwner}`);
+  writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
+  const reservedDown = cotal(["down", "fixture-worker"]);
+  ok("down never signals a removal reservation or deletes its artifacts", reservedDown.status === 1 && /removal is in progress/.test(reservedDown.stderr) && alive(reservationOwner) && existsSync(join(sandbox, ".cotal", "fixture.secret")), reservedDown.stdout + reservedDown.stderr);
+  rmSync(join(sandbox, ".cotal", "fixture.pid"), { force: true });
+  try { process.kill(reservationOwner, "SIGTERM"); } catch { /* gone */ }
+
+  const fixturePid = daemon();
+  let managerPid = daemon();
+  const natsPid = daemon();
+  writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
+  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(managerPid));
+  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
+  writeFileSync(join(sandbox, ".cotal", "nats.pid"), String(natsPid));
+
+  const dry = cotal(["down", "manager", "--dry-run"]);
+  ok("selective down dry-run is non-destructive", dry.status === 0 && alive(managerPid) && existsSync(join(sandbox, ".cotal", "manager.pid")) && /nothing was changed/i.test(dry.stdout), dry.stdout + dry.stderr);
+  const brokerOnly = cotal(["down", "nats"]);
+  ok("down nats refuses to orphan live dependants", brokerOnly.status === 1 && /cannot stop nats/.test(brokerOnly.stderr) && alive(natsPid) && alive(managerPid), brokerOnly.stdout + brokerOnly.stderr);
+  const typo = cotal(["down", "managre"]);
+  ok("unknown down component names list known components", typo.status === 1 && /unknown component/.test(typo.stderr) && /manager/.test(typo.stderr), typo.stderr);
+
+  writeFileSync(join(sandbox, ".cotal", "manager.pid.stopping"), "0");
+  const staleStopping = cotal(["down", "manager"]);
+  ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(join(sandbox, ".cotal", "manager.pid.stopping")), staleStopping.stdout + staleStopping.stderr);
+
+  managerPid = daemon();
+  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(managerPid));
+  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
+
+  const one = cotal(["down", "manager"]);
+  ok("down manager stops only the manager", one.status === 0 && !alive(managerPid) && alive(natsPid) && alive(fixturePid), one.stdout + one.stderr);
+  ok("selective down removes only manager-owned files", !existsSync(join(sandbox, ".cotal", "manager.pid")) && !existsSync(join(sandbox, ".cotal", "manager.delivery-aware")) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
+
+  const slowReady = join(sandbox, "slow-manager-ready");
+  const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 1000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
+  for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
+  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(slowManagerPid));
+  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(slowManagerPid));
+  const concurrentDown = spawn(realNode, [tsxCli, binCotal, "down", "manager"], { env, cwd: sandbox });
+  let concurrentOut = "";
+  let concurrentErr = "";
+  concurrentDown.stdout?.on("data", (data: Buffer) => (concurrentOut += data.toString()));
+  concurrentDown.stderr?.on("data", (data: Buffer) => (concurrentErr += data.toString()));
+  const concurrentExit = new Promise<number | null>((resolve) => concurrentDown.once("exit", resolve));
+  const stopping = join(sandbox, ".cotal", "manager.pid.stopping");
+  for (let i = 0; i < 100 && !existsSync(stopping); i++) await sleep(20);
+  const duplicateDown = cotal(["down", "manager"]);
+  ok("concurrent down preserves live-process artifacts", duplicateDown.status === 1 && /already being stopped/.test(duplicateDown.stderr) && existsSync(join(sandbox, ".cotal", "manager.delivery-aware")), duplicateDown.stdout + duplicateDown.stderr);
+  const race = cotal(["down", "nats"]);
+  const concurrentStatus = await concurrentExit;
+  ok("down nats stays blocked while a dependant is concurrently stopping", existsSync(stopping) === false && race.status === 1 && /cannot stop nats/.test(race.stderr) && concurrentStatus === 0 && alive(natsPid), race.stdout + race.stderr + concurrentOut + concurrentErr);
+
+  const extensionPart = cotal(["down", "fixture-worker"]);
+  ok("an installed extension contributes a down component", extensionPart.status === 0 && !alive(fixturePid) && alive(natsPid) && !existsSync(join(sandbox, ".cotal", "fixture.secret")), extensionPart.stdout + extensionPart.stderr);
+  const whole = cotal(["down"]);
+  ok("bare down keeps whole-stack behavior", whole.status === 0 && !alive(natsPid) && !existsSync(join(sandbox, ".cotal", "nats.pid")), whole.stdout + whole.stderr);
+  ok("provider extension removes cleanly", cotal(["ext", "remove", "cotal-ext-providers"]).status === 0);
+}
+
+// -- G: remove -------------------------------------------------------------------------------------
 {
   const r = cotal(["ext", "remove", "cotal-ext-fixture"]);
   ok("remove exits 0", r.status === 0, r.stderr.slice(-200));

@@ -30,6 +30,8 @@ space: experiment-1
 agent: claude
 `;
 
+assert.equal(ok(`${HEAD}runtime: orca\nchannels: {}\n`).runtime, "orca");
+
 // --- happy path: inversion + allowSubscribe defaulting -----------------------------------------
 {
   const m = ok(`${HEAD}

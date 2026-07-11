@@ -9,7 +9,7 @@ operator-only maintenance verbs. Every command's full flag set is in the
 
 ## The stack
 
-`cotal up` brings up the whole local stack and `cotal down` stops it:
+`cotal up` brings up the whole local stack and bare `cotal down` stops it:
 
 - **Broker**: a local `nats-server` (logs to `.cotal/nats.log`).
 - **Delivery daemon**: the durable backstop, auth mode only
@@ -35,6 +35,10 @@ held by another project; an explicit `--server` fails loud on collision.
 
 `cotal status` prints the detailed setup, process, registry, and live mesh status;
 `cotal setup` (after the first run) prints the compact card.
+
+Stop one part without tearing down the mesh by naming its registered component: `cotal down
+manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
+join the same surface; `cotal down` with no names retains whole-stack behavior.
 
 ## Spawning agents
 
@@ -74,10 +78,12 @@ How a spawn resolves:
 Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it with
 `COTAL_DETACH_KEY=ctrl-<char>` when it clashes with a keybinding inside the agent's TUI.
 
-**Runtimes.** The manager spawns into a **pty** it owns by default. `cotal supervise
---runtime tmux` / `--runtime cmux` put each teammate in its own tmux window / cmux tab
-instead. Explicit only: they throw if the matching extension isn't loaded, never silently
-fall back ([architecture](architecture.md)).
+**Runtimes.** The manager spawns into a **pty** it owns by default. Optional runtimes are installed
+through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
+`--runtime orca` (similarly `@cotal-ai/tmux` and `@cotal-ai/cmux`). They put teammates in native
+terminal surfaces rather than manager-owned PTYs. Runtime names are open-ended and resolved from
+the registry; a missing provider or app throws, never silently falls back
+([architecture](architecture.md)).
 
 ## From any directory: the mesh registry
 
