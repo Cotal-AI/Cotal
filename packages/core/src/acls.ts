@@ -58,6 +58,7 @@ export async function readAcl(
  */
 export async function commitAcl(kv: KV, owner: string, allowSubscribe: string[]): Promise<AclRecord> {
   const key = aclKey(owner);
+  let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     const cur = await readAcl(kv, owner);
     const next: AclRecord = {
@@ -70,18 +71,38 @@ export async function commitAcl(kv: KV, owner: string, allowSubscribe: string[])
       try {
         await kv.create(key, data);
         return next;
-      } catch {
-        continue; // lost the create race — re-read and try as an update
+      } catch (e) {
+        lastErr = e;
+        // Either we lost a create race, or the row is PRESENT but garbled — readAcl reports both
+        // as `undefined` (DEFER), and a garbled row would make this create conflict on every
+        // attempt (the owner stays wedged until purge). CAS-overwrite at the raw revision: the
+        // atomic full-value put restores the "present record is always complete" invariant.
+        try {
+          const raw = await kv.get(key);
+          if (raw) {
+            await kv.update(key, data, raw.revision);
+            return next;
+          }
+        } catch (e2) {
+          lastErr = e2;
+        }
+        continue; // raced a concurrent writer — re-read and retry
       }
     }
     try {
       await kv.update(key, data, cur.revision);
       return next;
-    } catch {
-      continue; // revision moved under us — re-read and retry
+    } catch (e) {
+      lastErr = e; // revision moved under us — re-read and retry
+      continue;
     }
   }
-  throw new Error(`acl CAS exhausted retries for ${owner}`);
+  // Carry the last underlying KV failure: without it the operator sees only this wrapper and the
+  // actual cause (timeout, permission, sequence conflict) is permanently lost.
+  throw new Error(
+    `acl CAS exhausted retries for ${owner}${lastErr ? ` - last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` : ""}`,
+    lastErr instanceof Error ? { cause: lastErr } : undefined,
+  );
 }
 
 /** Permanently remove an owner's ACL row (GC / footprint deletion — revocation deletes the footprint
