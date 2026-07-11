@@ -69,7 +69,29 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
 
   let any = false;
-  for (const component of selected) any = (await stop(component, context)) || any;
+  let allStopped = true;
+  for (const component of selected) {
+    any = processRecorded(component, context) || any;
+    if (component.stopLast && !allStopped) {
+      console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
+      continue;
+    }
+    try {
+      await stop(component, context);
+    } catch (e) {
+      allStopped = false;
+      console.error(c.red(`✗ ${(e as Error).message}`));
+    }
+  }
+  if (!allStopped) {
+    console.error(c.red("✗ not cleanly stopped - keeping artifacts and the registry entry"));
+    process.exitCode = 1;
+    return;
+  }
+
+  for (const component of selected) {
+    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, context), { force: true });
+  }
 
   // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
   // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
@@ -107,12 +129,8 @@ function processAlive(component: LocalProcess, context: LocalProcessContext): bo
 /** Stop one recorded process and await its actual exit before the next dependency is stopped. */
 async function stop(component: LocalProcess, context: LocalProcessContext): Promise<boolean> {
   const pidPath = localProcessPath(component.pidFile, context);
-  const artifacts = (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context));
   const found = processRecorded(component, context);
-  if (!existsSync(pidPath)) {
-    for (const artifact of artifacts) rmSync(artifact, { force: true });
-    return found;
-  }
+  if (!existsSync(pidPath)) return found;
 
   const rawPid = readFileSync(pidPath, "utf8").trim();
   if (rawPid.startsWith("removing:")) {
@@ -182,7 +200,6 @@ async function stop(component: LocalProcess, context: LocalProcessContext): Prom
   } finally {
     if (stopped || pid === undefined || !isAlive(pid)) {
       rmSync(pidPath, { force: true });
-      for (const artifact of artifacts) rmSync(artifact, { force: true });
     }
     rmSync(marker, { force: true });
   }

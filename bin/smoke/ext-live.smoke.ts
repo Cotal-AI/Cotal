@@ -157,47 +157,6 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   writeFileSync(manifestPath, good);
 }
 
-// -- C4: legacy web package name recovers through the canonical @cotal-ai/web package -----------
-{
-  const good = JSON.parse(readFileSync(manifestPath, "utf8"));
-  writeFileSync(
-    manifestPath,
-    JSON.stringify(
-      {
-        extensions: [
-          ...good.extensions,
-          {
-            pkg: "cotal-web",
-            version: "0.10.0",
-            spec: "/tmp/no-longer-portable/implementations/web",
-            commands: [{ name: "web", summary: "legacy dashboard" }],
-          },
-        ],
-      },
-      null,
-      2,
-    ),
-  );
-  const stale = cotal(["web"]);
-  ok(
-    "missing legacy cotal-web prescribes the canonical package, not the stale local path",
-    stale.status === 1 && /extension cotal-web/.test(stale.stderr) && /cotal ext add @cotal-ai\/web/.test(stale.stderr) && !/no-longer-portable/.test(stale.stderr),
-    stale.stderr.slice(0, 300),
-  );
-
-  const webExt = fixture("@cotal-ai/web", GOOD.replace('name: "hello-ext"', 'name: "web"'));
-  const added = cotal(["ext", "add", webExt]);
-  ok("adding @cotal-ai/web replaces legacy cotal-web", added.status === 0, added.stderr.slice(-400));
-  const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
-  ok(
-    "manifest keeps @cotal-ai/web and drops cotal-web",
-    updated.extensions.some((e: { pkg?: string; spec?: string }) => e.pkg === "@cotal-ai/web" && e.spec === "@cotal-ai/web") &&
-      !updated.extensions.some((e: { pkg?: string }) => e.pkg === "cotal-web"),
-    updated.extensions,
-  );
-  ok("canonical remove also clears the web extension", cotal(["ext", "remove", "@cotal-ai/web"]).status === 0);
-}
-
 // -- D: version skew -------------------------------------------------------------------------------
 {
   const meta = JSON.parse(readFileSync(installedPkg, "utf8"));
@@ -302,7 +261,10 @@ registry.register({
   ok("multi-peer add exits 0 (core + workspace linked)", r.status === 0 && /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
   const run = cotal(["ws-ext"]);
   ok("the extension imports the LINKED workspace peer at run time", run.status === 0 && run.stdout.includes("WS-OK"), run.stdout + run.stderr.slice(-200));
-  ok("remove cleans it up", cotal(["ext", "remove", "cotal-ext-wspeer"]).status === 0);
+  const failedSibling = cotal(["ext", "add", fixture("cotal-ext-peer-rollback", "export {};\n")]);
+  ok("a failed sibling add rolls back", failedSibling.status === 1 && /registered no extensions/.test(failedSibling.stderr), failedSibling.stderr);
+  const afterRollback = cotal(["ws-ext"]);
+  ok("failed add rollback preserves older private peer links", afterRollback.status === 0 && afterRollback.stdout.includes("WS-OK"), afterRollback.stdout + afterRollback.stderr);
 }
 
 // -- F: non-command providers + selective process shutdown -----------------------------------------
@@ -337,6 +299,9 @@ registry.register(
   const providers = fixture("cotal-ext-providers", PROVIDERS);
   const added = cotal(["ext", "add", providers]);
   ok("runtime-only extension add exits 0", added.status === 0, added.stderr.slice(-400));
+  const retainedPeer = cotal(["ws-ext"]);
+  ok("adding a core-only extension preserves older workspace peer links", retainedPeer.status === 0 && retainedPeer.stdout.includes("WS-OK"), retainedPeer.stdout + retainedPeer.stderr);
+  ok("multi-peer extension still removes cleanly", cotal(["ext", "remove", "cotal-ext-wspeer"]).status === 0);
   ok("add reports every provider kind", /runtime:fixture-runtime/.test(added.stdout) && /local-process:fixture-worker/.test(added.stdout), added.stdout);
   const providerManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const providerEntry = providerManifest.extensions.find((entry: { pkg: string }) => entry.pkg === "cotal-ext-providers");

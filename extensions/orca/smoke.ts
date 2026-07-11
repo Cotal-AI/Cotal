@@ -95,6 +95,7 @@ if (process.platform !== "win32") {
     const stableTerminal = { handle: "term_created", ptyId: "pty_stable" };
     ok("terminal liveness matches stable ptyId", orca.terminalAlive(stableTerminal));
     ok("terminal liveness reuses the list snapshot", orca.terminalAlive(stableTerminal) && readFileSync(countFile, "utf8") === "1");
+    ok("terminal resolution follows a rotated handle by stable ptyId", orca.currentTerminal(stableTerminal)?.handle === "term_rotated");
 
     writeFileSync(
       stub,

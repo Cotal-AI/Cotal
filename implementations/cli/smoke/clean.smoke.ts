@@ -20,6 +20,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-clean-home-"));
 process.env.COTAL_HOME = home;
 
+await import("../src/index.js"); // register the base local-process lifecycle descriptors
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
@@ -180,6 +181,26 @@ try {
     check("down: subsequent cleanup still refuses", /nats-server, pid 1$/.test(liveMeshProcess(downRoot) ?? ""), liveMeshProcess(downRoot));
     removeMesh("eperm-mesh");
     rmSync(downRoot, { recursive: true, force: true });
+
+    const blockedRoot = meshRoot();
+    const blockedBroker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+    writeFileSync(join(blockedRoot, ".cotal", "manager.pid"), "1");
+    writeFileSync(join(blockedRoot, ".cotal", "nats.pid"), String(blockedBroker.pid));
+    recordMesh(entry("blocked-down", blockedRoot));
+    process.exitCode = 0;
+    process.chdir(blockedRoot);
+    try {
+      await down({ positionals: [], values: {}, raw: [] });
+    } finally {
+      process.chdir(cwd2);
+    }
+    check("down: a failed dependent prevents the broker stop", blockedBroker.exitCode === null);
+    check("down: a failed dependent preserves the mesh registry", loadMeshes().some((m) => m.space === "blocked-down"));
+    blockedBroker.kill("SIGKILL");
+    await new Promise((resolve) => blockedBroker.once("exit", resolve));
+    process.exitCode = 0;
+    removeMesh("blocked-down");
+    rmSync(blockedRoot, { recursive: true, force: true });
   }
 
   // --- successful `down` drops registry entries by ROOT, not by resolved space ----------------

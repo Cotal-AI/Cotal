@@ -218,23 +218,31 @@ export function showTerminal(handle: string): OrcaEnvelope<TerminalResult> {
   return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"]);
 }
 
+/** Resolve the current handle for a terminal. Orca handles are runtime-scoped, while ptyId stays
+ * stable across handle rotation. */
+export function currentTerminal(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): OrcaTerminal | undefined {
+  if (!terminalCache || Date.now() - terminalCache.at >= PROBE_CACHE_MS) {
+    const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"]).terminals ?? [];
+    terminalCache = { at: Date.now(), terminals: listed };
+  }
+  const listed = terminal.ptyId
+    ? terminalCache.terminals.find((candidate) => candidate.ptyId === terminal.ptyId)
+    : terminalCache.terminals.find((candidate) => candidate.handle === terminal.handle);
+  if (listed) return { ...terminal, ...listed };
+
+  const shown = showTerminal(terminal.handle);
+  if (shown.ok === false) {
+    const code = shown.error?.code ?? "";
+    if (/not_found|stale|closed/i.test(code)) return undefined;
+    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
+  }
+  return shown.result?.terminal ?? terminal;
+}
+
 export function terminalAlive(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): boolean {
   try {
-    if (!terminalCache || Date.now() - terminalCache.at >= PROBE_CACHE_MS) {
-      const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"]).terminals ?? [];
-      terminalCache = { at: Date.now(), terminals: listed };
-    }
-    const listed = terminal.ptyId
-      ? terminalCache.terminals.find((candidate) => candidate.ptyId === terminal.ptyId)
-      : terminalCache.terminals.find((candidate) => candidate.handle === terminal.handle);
-    if (listed) return listed.connected !== false;
-
-    const shown = showTerminal(terminal.handle);
-    if (shown.ok === false) {
-      const code = shown.error?.code ?? "";
-      return !/not_found|stale|closed/i.test(code);
-    }
-    return shown.result?.terminal?.connected !== false;
+    const current = currentTerminal(terminal);
+    return current ? current.connected !== false : false;
   } catch {
     // Status drives teardown. An unreachable CLI is not positive evidence that the agent exited.
     return true;
@@ -250,17 +258,28 @@ export function sendTerminal(handle: string, opts: { text?: string; enter?: bool
   requireOk<Record<string, unknown>>(args);
 }
 
-export function closeTerminal(handle: string): void {
+export function closeTerminal(handle: string): boolean {
   try {
     const r = request<Record<string, unknown>>(["terminal", "close", "--terminal", handle, "--json"]);
     if (r.ok === false) {
       const code = r.error?.code ?? "";
-      if (/not_found|stale|closed/i.test(code)) return;
+      if (/not_found|stale|closed/i.test(code)) return false;
       throw new Error(`orca terminal close failed for ${handle}: ${r.error?.message ?? code}`);
     }
+    return true;
   } finally {
     terminalCache = undefined;
   }
+}
+
+/** Close by stable identity. If the handle rotates between resolution and close, refresh by ptyId
+ * and retry once instead of treating a stale handle as a successful stop. */
+export function closeManagedTerminal(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): void {
+  const current = currentTerminal(terminal);
+  if (!current) return;
+  if (closeTerminal(current.handle) || !current.ptyId) return;
+  const rotated = currentTerminal(current);
+  if (rotated && rotated.handle !== current.handle) closeTerminal(rotated.handle);
 }
 
 export function terminals(): OrcaTerminal[] {

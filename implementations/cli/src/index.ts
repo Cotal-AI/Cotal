@@ -23,6 +23,7 @@ import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
+import { endpoints } from "./commands/endpoints.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -348,6 +349,14 @@ const baseCommands: Command[] = [
     complete: personasComplete,
   },
   // ---- Observe ------------------------------------------------------------------------------
+  {
+    kind: "command",
+    name: "endpoints",
+    group: "Observe",
+    summary: "list every endpoint in the live presence roster, including the manager",
+    flags: [...targetFlags],
+    run: endpoints,
+  },
   {
     kind: "command",
     name: "console",

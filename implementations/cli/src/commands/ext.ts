@@ -95,6 +95,36 @@ async function importExtension(pkg: string): Promise<void> {
   await import(pathToFileURL(join(dir, entry)).href);
 }
 
+/** Rebuild each installed package's private links after npm mutates the shared prefix. Keeping the
+ * links inside the owning package prevents a later sibling add/remove from pruning its peers. */
+function linkExtensionPeers(packages: string[], operationPkg: string): void {
+  for (const owner of packages) {
+    let meta: { peerDependencies?: Record<string, string> };
+    try {
+      meta = JSON.parse(readFileSync(join(extensionPackageDir(owner), "package.json"), "utf8"));
+    } catch (e) {
+      throw new Error(`${operationPkg} cannot preserve installed extension ${owner}'s shared peers: ${(e as Error).message}`);
+    }
+    for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
+      let src: string;
+      try {
+        src = ourPackageDir(peer);
+      } catch {
+        throw new Error(`${operationPkg}: ${owner} peer-depends on ${peer}, which this cotal binary does not carry - the peer can't be linked`);
+      }
+      const dest = join(extensionPackageDir(owner), "node_modules", ...peer.split("/"));
+      try {
+        rmSync(dest, { recursive: true, force: true });
+        mkdirSync(dirname(dest), { recursive: true });
+        symlinkSync(src, dest, "junction");
+      } catch (e) {
+        throw new Error(`${operationPkg} could not link ${peer} for ${owner}: ${(e as Error).message}`);
+      }
+      provenance.wrote(`${peer} link (${owner} → this CLI's copy)`, dest);
+    }
+  }
+}
+
 /** Serialize prefix mutations. A dead owner's lock is reclaimed; a live owner fails loud. */
 function claimExtensionMutation(): () => void {
   const lock = extensionMutationLockPath();
@@ -176,6 +206,7 @@ async function add(spec: string): Promise<void> {
       rmSync(rollbackRoot!, { recursive: true, force: true });
     } else {
       npm(["remove", "--no-audit", "--no-fund", pkg], dir);
+      linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
     }
   };
   const interrupted = (): void => {
@@ -240,26 +271,12 @@ async function add(spec: string): Promise<void> {
   if (!pkgMeta.peerDependencies?.["@cotal-ai/core"]) {
     fail(pkg, `does not declare @cotal-ai/core as a peerDependency - a cotal CLI extension must (its extension objects register into core's registry)`);
   }
-  // Link every shared @cotal-ai/* peer to the RUNNING binary's copy, so the extension's imports
-  // land on our singletons — core's registry above all. npm ignored the peers at install
-  // (--legacy-peer-deps), so this link is the ONLY resolution they get: core is mandatory, and any
-  // other @cotal-ai/* peer must be one the binary carries, else the add fails loud.
-  for (const peer of Object.keys(pkgMeta.peerDependencies ?? {}).filter((d) => d.startsWith("@cotal-ai/"))) {
-    let src: string;
-    try {
-      src = ourPackageDir(peer);
-    } catch {
-      fail(pkg, `peer-depends on ${peer}, which this cotal binary does not carry - the peer can't be linked, so the extension could never resolve it`);
-    }
-    const dest = join(dir, "node_modules", ...peer.split("/"));
-    try {
-      rmSync(dest, { recursive: true, force: true });
-      mkdirSync(dirname(dest), { recursive: true });
-      symlinkSync(src, dest, "junction");
-    } catch (e) {
-      fail(pkg, `could not link peer ${peer}: ${(e as Error).message}`);
-    }
-    provenance.wrote(`${peer} link (extension → this CLI's copy)`, dest);
+  // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
+  // the candidate's. All extensions resolve the exact same host package instances.
+  try {
+    linkExtensionPeers([...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
+  } catch (e) {
+    fail(pkg, (e as Error).message);
   }
 
   // Import once; every registration must LAND IN OUR REGISTRY. Runtime-only and other provider
@@ -375,7 +392,9 @@ async function removeUnlocked(pkg: string): Promise<void> {
     }
     const r = npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
     if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
-    saveExtensionsManifest({ extensions: manifest.extensions.filter((e) => e.pkg !== pkg) });
+    const remaining = manifest.extensions.filter((e) => e.pkg !== pkg);
+    linkExtensionPeers(remaining.map((entry) => entry.pkg), pkg);
+    saveExtensionsManifest({ extensions: remaining });
     provenance.wrote(`extensions manifest (−${pkg})`, extensionsManifestPath());
     console.log(c.green(`✓ removed ${pkg}`) + c.dim(` - removed: ${extensionProvides(entry).map((ref) => `${ref.kind}:${ref.name}`).join(", ")}`));
   } finally {

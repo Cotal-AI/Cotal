@@ -44,6 +44,7 @@ runtimes ship this way.
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
+| Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
@@ -238,6 +239,16 @@ cotal models [--agent <connector>] [--refresh]
 Asks the running manager for each connector's model catalog (model ids plus their variants)
 for connectors that expose one (OpenCode today; a connector without a catalog says so). Pick a
 result with `cotal spawn --model <provider/model> --variant <v>`.
+
+## endpoints
+
+```bash
+cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
+```
+
+Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
+endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
+it is not limited to child processes owned by the manager.
 
 ## ps, stop, attach
 
@@ -525,7 +536,7 @@ cotal ext list
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
 providers are lazy-loaded by commands such as `supervise`; local process providers participate in
-`status` and selective `down`. `remove` and `list` manage them. The `cotal-web` dashboard is the
+`status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical command/process example. Installed packages and their location are described in
 [config](config.md).
 

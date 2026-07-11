@@ -26,6 +26,7 @@ import { join, resolve } from "node:path";
 
 interface OrcaTerminal {
   handle: string;
+  ptyId?: string;
   title?: string;
   worktreePath?: string;
   connected?: boolean;
@@ -159,7 +160,7 @@ channels:
 let managerPid: number | undefined;
 let brokerPid: number | undefined;
 let terminalHandle: string | undefined;
-let baselineHandles = new Set<string>();
+let terminalPtyId: string | undefined;
 try {
   const status = orca(["status"]);
   const statusEnvelope = status.status === 0
@@ -168,8 +169,6 @@ try {
   ok("Orca CLI and local runtime are reachable", statusEnvelope?.ok === true && statusEnvelope.result?.runtime?.reachable === true, status.stderr || status.stdout);
   ok("Claude Code is available for the real connector launch", commandExists("claude"));
   ok("nats-server is available", commandExists("nats-server"));
-  baselineHandles = new Set(orcaTerminals().map((terminal) => terminal.handle));
-
   // The published composition root must not know Orca before the operator installs it.
   const before = cli(["up", "-f", manifest]);
   ok("runtime: orca fails before its extension is installed", before.status === 1 && /no installed extension provides runtime "orca"/.test(before.stderr), before.stdout + before.stderr);
@@ -188,26 +187,40 @@ try {
 
   const managerLog = join(root, ".cotal", "manager.log");
   let log = "";
-  let terminal: OrcaTerminal | undefined;
   for (let i = 0; i < 90; i++) {
     log = readIfPresent(managerLog);
-    terminal = orcaTerminals().find((candidate) => !baselineHandles.has(candidate.handle) && candidate.worktreePath === REPO);
-    if (terminal && new RegExp(`launched ${AGENT}\\b`).test(log)) break;
+    if (new RegExp(`launched ${AGENT}\\b`).test(log)) break;
     await sleep(500);
   }
-  terminalHandle = terminal?.handle;
   ok("manager lazy-loads the extension and reports runtime orca", /manager up.*· orca/.test(log), log.slice(-2_000));
   ok("real Claude connector joins the mesh from the Orca terminal", new RegExp(`launched ${AGENT}\\b`).test(log), log.slice(-2_000));
-  ok("Orca owns a new live terminal in this worktree", !!terminalHandle && terminal?.connected !== false && terminal?.worktreePath === REPO, terminal ?? orcaTerminals());
 
   const ps = cli(["ps", "--space", SPACE, "--server", SERVER]);
   ok("cotal ps observes the managed agent on claude · orca", ps.status === 0 && ps.stdout.includes(AGENT) && /claude · orca/.test(ps.stdout) && !/starting/.test(ps.stdout), ps.stdout + ps.stderr);
+
+  // External runtimes reject attach with native-surface guidance. That manager-owned response is
+  // the authoritative terminal identity; never infer ownership from a worktree-wide handle delta.
+  const attach = cli(["attach", "--name", AGENT, "--space", SPACE, "--server", SERVER]);
+  terminalHandle = /watch this agent in Orca terminal (\S+)/.exec(attach.stderr)?.[1];
+  const terminal = orcaTerminals().find((candidate) => candidate.handle === terminalHandle);
+  terminalPtyId = terminal?.ptyId;
+  ok("manager identifies the exact live Orca terminal", attach.status === 1 && !!terminalHandle && terminal?.connected !== false && terminal?.worktreePath === REPO, attach.stderr + JSON.stringify(terminal));
+
+  const endpoints = cli(["endpoints", "--space", SPACE, "--server", SERVER]);
+  ok(
+    "cotal endpoints observes the agent and manager presence endpoints",
+    endpoints.status === 0 && endpoints.stdout.includes(AGENT) && /manager\/manager/.test(endpoints.stdout) && /supervisor \(orca\)/.test(endpoints.stdout),
+    endpoints.stdout + endpoints.stderr,
+  );
 
   const down = cli(["down"], 90_000);
   ok("cotal down completes the real user journey", down.status === 0, down.stdout + down.stderr);
   for (let i = 0; i < 40 && ((managerPid && alive(managerPid)) || (brokerPid && alive(brokerPid)) || (await portOpen())); i++) await sleep(250);
   ok("down stops the exact manager and broker", !!managerPid && !!brokerPid && !alive(managerPid) && !alive(brokerPid) && !(await portOpen()), { managerPid, brokerPid });
-  ok("down closes the agent's Orca terminal", !!terminalHandle && !orcaTerminals().some((candidate) => candidate.handle === terminalHandle));
+  ok(
+    "down closes the agent's Orca terminal",
+    !!terminalHandle && !orcaTerminals().some((candidate) => terminalPtyId ? candidate.ptyId === terminalPtyId : candidate.handle === terminalHandle),
+  );
 
   const remove = cli(["ext", "remove", "@cotal-ai/orca"]);
   ok("Orca extension removes after its runtime is no longer in use", remove.status === 0, remove.stdout + remove.stderr);
@@ -218,7 +231,7 @@ try {
   cli(["down"], 30_000);
   try {
     for (const terminal of orcaTerminals().filter((candidate) =>
-      candidate.handle === terminalHandle || (!baselineHandles.has(candidate.handle) && candidate.worktreePath === REPO),
+      candidate.handle === terminalHandle || (terminalPtyId !== undefined && candidate.ptyId === terminalPtyId) || candidate.title === `cotal-${AGENT}`,
     )) {
       orca(["terminal", "close", "--terminal", terminal.handle]);
     }

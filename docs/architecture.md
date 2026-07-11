@@ -89,7 +89,7 @@ The published binary also loads **operator-installed extensions**: `cotal ext ad
 self-registers, then caches every contributed `kind:name`. Command metadata is cached for
 `--help`/completion; running a command or requesting a provider imports its owner lazily and
 uses the live object. Version skew or a stranded link fails loudly with instructions to re-add.
-The repo's `cotal-web` dashboard and optional tmux/cmux/Orca runtimes use this mechanism; the
+The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca runtimes use this mechanism; the
 published binary does not hardcode those packages.
 
 Machine-local processes use the same registry. The base CLI contributes broker/control-plane

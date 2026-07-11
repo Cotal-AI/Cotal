@@ -67,11 +67,11 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
   }
 }
 
-function scheduleConfirm(handle: string): void {
+function scheduleConfirm(handle: () => string): void {
   for (let i = 1; i <= MAX_CONFIRMS; i++) {
     setTimeout(() => {
       try {
-        orca.sendTerminal(handle, { enter: true });
+        orca.sendTerminal(handle(), { enter: true });
       } catch {
         /* terminal may already be gone */
       }
@@ -123,7 +123,11 @@ export class OrcaRuntime implements Runtime {
         throw err;
       }
     }
-    if (spec.confirm) scheduleConfirm(terminal.handle);
+    const current = (): orca.OrcaTerminal => {
+      terminal = orca.currentTerminal(terminal) ?? terminal;
+      return terminal;
+    };
+    if (spec.confirm) scheduleConfirm(() => current().handle);
 
     return {
       name,
@@ -132,20 +136,20 @@ export class OrcaRuntime implements Runtime {
       stop: (opts) => {
         if (opts?.graceful === false) {
           try {
-            orca.closeTerminal(terminal.handle);
+            orca.closeManagedTerminal(terminal);
           } finally {
             cleanupLauncher(launcher);
           }
           return;
         }
         try {
-          orca.sendTerminal(terminal.handle, { text: "/exit", enter: true });
+          orca.sendTerminal(current().handle, { text: "/exit", enter: true });
         } catch {
           /* still ensure it closes below */
         }
         setTimeout(() => {
           try {
-            orca.closeTerminal(terminal.handle);
+            orca.closeManagedTerminal(terminal);
           } catch (err) {
             console.error(`orca runtime: failed to close terminal for "${name}":`, err);
           } finally {
@@ -155,7 +159,7 @@ export class OrcaRuntime implements Runtime {
       },
       interrupt: () => {
         try {
-          orca.sendTerminal(terminal.handle, { interrupt: true });
+          orca.sendTerminal(current().handle, { interrupt: true });
         } catch (err) {
           if (err instanceof orca.OrcaCliError && /not_found|stale|closed|not_writable/i.test(err.code)) return;
           throw err;
@@ -163,7 +167,7 @@ export class OrcaRuntime implements Runtime {
       },
       attach: () => {
         throw new Error(
-          `orca runtime: watch this agent in Orca terminal ${terminal.handle}` +
+          `orca runtime: watch this agent in Orca terminal ${current().handle}` +
             `${worktree.displayName ? ` (${worktree.displayName})` : ""}; ` +
             `run \`orca terminal switch --terminal ${terminal.handle}\` to focus it`,
         );

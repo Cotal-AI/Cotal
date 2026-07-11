@@ -48,6 +48,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   send: { flags: [...TARGET], positionals: true },
+  endpoints: { flags: [...TARGET], positionals: false },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
   // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
