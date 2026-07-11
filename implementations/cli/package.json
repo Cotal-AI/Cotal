@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cli",
   "description": "Cotal mesh CLI: up, join, watch, console, spawn, mint, channels, history, ext.",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

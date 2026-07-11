@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.11.1
+
+### Patch Changes
+
+- 93fd521: Add the installable Orca runtime, registry-driven extension providers and local-process lifecycle,
+  selective shutdown, and `cotal endpoints` for the complete live presence roster.
+
 ## 0.11.0
 
 ### Minor Changes
