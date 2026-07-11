@@ -1,36 +1,32 @@
 /**
  * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate; EXPECTED RED until the
- * lifecycle-keyed deprovision lands) — proves by EXECUTION the despawn/respawn race that has so
- * far only been established by code-read:
+ * lifecycle-keyed deprovision lands) — proves by EXECUTION the despawn/respawn race that had
+ * previously only been established by code-read:
  *
- *   `freeSlot` frees the agent's name synchronously, then fires `deprovision` DETACHED. Every
- *   delete inside that teardown is keyed by (owner, actor-name): the managed ledger row
- *   (`revokeAgent`), the dm_/dlv_ durables and the read-ACL row (`deprovisionAgent`, targetId =
- *   `principalKey(owner, name)`). A same-name respawn that provisions while the teardown is still
- *   in flight therefore hands the REPLACEMENT's freshly minted footprint to the stale teardown:
- *   its ledger row dies (next exchange refused, next connect denied), its durables and ACL row
- *   are deleted, and the manager keeps listing it as live.
+ *   `freeSlot` frees the agent's name synchronously, then fires `deprovision` DETACHED. The
+ *   teardown's LOCAL half (creds/secret shred + ledger revoke) completes in the detached call's
+ *   synchronous prefix — on the same event-loop tick as `freeSlot` — so no same-name respawn can
+ *   ever observe it mid-flight. Its BROKER half (`deprovisionBroker`: the dm_/dlv_ durables and
+ *   the read-ACL row, all keyed by (owner, actor-name)) runs after the first await, across a cred
+ *   mint plus a fresh broker connection plus JS-API deletes. A same-name respawn that provisions
+ *   inside that window hands the REPLACEMENT's freshly minted broker footprint to the stale
+ *   teardown: its durables and ACL row are deleted while the manager keeps listing it as live.
  *
  * The BARRIER CONTRACT this smoke asserts: a replacement spawned after a despawn reply keeps its
- * entire footprint no matter when the predecessor's teardown executes. Current code FAILS these
- * asserts; the v0.4 lifecycle-keyed resources + `(principal, lifecycleUid)`-pinned deprovisioner
- * turn them green without touching the smoke.
+ * broker footprint no matter when the predecessor's teardown lands. Current code FAILS the three
+ * BARRIER asserts; the v0.4 lifecycle-keyed resources + `(principal, lifecycleUid)`-pinned
+ * deprovisioner turn them green without touching the smoke — the footprint checks enumerate by
+ * principal PREFIX, not by today's exact resource names, for exactly that reason. The local half
+ * is asserted GREEN as a witness: the synchronous prefix protects it, and the respawn re-mints
+ * row + secrets before the gated broker phase is ever released.
  *
- * DETERMINISM: the predecessor's `deprovision` is held on a gate (instance-level wrap of the
- * private method) until the replacement is provisioned AND its child has connected on its own
- * credentials (a connect marker; presence can't serve, see below), then released. That
- * derandomizes a real window (the teardown spans a cred mint + a fresh broker connection +
- * JS-API deletes, and via the exit-reap path `freeSlot` fires at ARBITRARY times relative to an
+ * DETERMINISM: the predecessor's `deprovisionBroker` (ONLY the async broker phase — the
+ * synchronous prefix runs untouched at despawn time) is held on a gate until the replacement is
+ * provisioned AND its child has connected on its own credentials (a connect marker; readiness
+ * alone cannot serve — the respawn's "started" verdict can ride the SIGKILLed predecessor's
+ * lingering presence entry, same principal, no clean leave), then released. That derandomizes a
+ * real window (via the exit-reap path `freeSlot` fires at ARBITRARY times relative to an
  * in-flight respawn); it does not create a new path.
- *
- * Two further name-keying consequences surfaced while building this probe:
- *   - Stale-presence readiness: a respawn's "started" verdict can ride the SIGKILLed
- *     predecessor's lingering presence entry (same principal, no clean leave), before the
- *     replacement child has read its secret files. Readiness cannot tell the two lifecycles
- *     apart, so the smoke uses its own connect marker.
- *   - Boot-race kill: when the teardown's name-keyed secret-file shred lands mid-boot (real via
- *     the exit-reap path), the replacement child dies at startup (ENOENT on its sentinel), the
- *     exit reap then deprovisions the corpse, and the manager reports nothing amiss.
  *
  * Run: pnpm smoke:freeslot-barrier:live   (pnpm build first — Manager + the agent child load
  * dist; needs nats-server + node on PATH)
@@ -96,10 +92,12 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  principalKey, registry, dmStream, dlvStream, dmDurable, dlvDurable, openAclRegistry, readAcl,
+  principalKey, registry, dmStream, dlvStream, openAclRegistry,
 } = await import("@cotal-ai/core");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
+const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
+const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
@@ -290,19 +288,42 @@ try {
   const OWNER = await cotalAuthProvider.ownerForLogin({ dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
 
-  // Broker-footprint inspectors on the provisioner cred (same shape as lifecycle-e2e).
+  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding
+  // today's exact resource names, so the same asserts stay compilable and flip green under the
+  // lifecycle-keyed rename (dm_<principal> becomes dm_<principal>-<lifecycleUid> etc.) without
+  // editing the smoke. Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
+  // production profile, so the inspector rides a HARNESS-ONLY god cred signed with the account
+  // key the smoke already owns — observability of the harness, never a surface of the code under test.
+  const principal = principalKey(OWNER, AGENT);
+  const inspCreds = await (async () => {
+    const inspId = newIdentity();
+    const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+    const userJwt = await encodeUser("fsb-inspector", fromPublic(inspId.id), fromPublic(auth.account.pub),
+      { pub: { allow: [">"] }, sub: { allow: [">"] } }, { signer });
+    return fmtCreds(userJwt, fromSeed(new TextEncoder().encode(inspId.seed)));
+  })();
   const inspect = async <T,>(fn: (jsm: Awaited<ReturnType<typeof jetstreamManager>>, nc: import("@nats-io/transport-node").NatsConnection) => Promise<T>): Promise<T> => {
-    const nc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(provCreds)), inboxPrefix: `_INBOX_${provId.id}`, maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: SERVER, authenticator: credsAuthenticator(inspCreds), maxReconnectAttempts: 0 });
     try { return await fn(await jetstreamManager(nc), nc); } finally { await nc.drain().catch(() => {}); }
   };
-  const consumerExists = (stream: string, name: string) =>
-    inspect(async (jsm) => { try { await jsm.consumers.info(stream, name); return true; } catch { return false; } });
-  const aclPresent = () => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, SPACE), principalKey(OWNER, AGENT).key)) !== undefined);
+  const consumersFor = (stream: string, prefix: string) =>
+    inspect(async (jsm) => {
+      const names: string[] = [];
+      for await (const ci of jsm.consumers.list(stream)) if (ci.name.startsWith(prefix)) names.push(ci.name);
+      return names;
+    });
+  const aclRowsFor = (prefix: string) =>
+    inspect(async (_j, nc) => {
+      const kv = await openAclRegistry(nc, SPACE);
+      const keys: string[] = [];
+      for await (const k of await kv.keys()) if (k.startsWith(prefix)) keys.push(k);
+      return keys;
+    });
   const footprint = async () => ({
     row: existsSync(managedRowPath(OWNER)),
-    dm: await consumerExists(dmStream(SPACE), dmDurable(OWNER, AGENT)),
-    dlv: await consumerExists(dlvStream(SPACE), dlvDurable(OWNER, AGENT)),
-    acl: await aclPresent(),
+    dm: await consumersFor(dmStream(SPACE), `dm_${principal.name}`),
+    dlv: await consumersFor(dlvStream(SPACE), `dlv_${principal.name}`),
+    acl: await aclRowsFor(principal.key),
   });
 
   // ---------- B. first spawn: the predecessor, with its full footprint ----------
@@ -312,39 +333,50 @@ try {
   const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
   check("predecessor spawn ok", r1.ok === true, r1);
   const fp1 = await footprint();
-  check("predecessor footprint exists (row + dm + dlv + acl)", fp1.row && fp1.dm && fp1.dlv && fp1.acl, fp1);
+  check("predecessor footprint exists (row + dm + dlv + acl)",
+    fp1.row && fp1.dm.length > 0 && fp1.dlv.length > 0 && fp1.acl.length > 0, fp1);
   const hash1 = rowHash(OWNER);
 
-  // ---------- C. the barrier probe: despawn (teardown gated) then same-name respawn ----------
-  console.log("C) despawn with the detached teardown held, respawn the same name, release");
-  // Hold the predecessor's detached deprovision on a gate. Instance-level wrap of the private
-  // method (runtime-visible; the repo's smokes already reach into manager privates): the FIRST
-  // deprovision for this agent name parks until released, everything else passes through.
-  type DeprovArg = { id: string; name: string; userOwner?: string };
-  type Deprov = (a: DeprovArg) => Promise<void>;
+  // ---------- C. the barrier probe: despawn (broker phase gated) then same-name respawn ----------
+  console.log("C) despawn with ONLY the teardown's broker phase held, respawn the same name, release");
+  // Hold the predecessor's broker teardown on a gate — deprovisionBroker ONLY, so the teardown's
+  // synchronous prefix (creds/secret shred + ledger revoke) runs untouched at despawn time exactly
+  // as in production. Instance-level wrap of the private method (runtime-visible; the repo's
+  // smokes already reach into manager privates): the FIRST broker teardown for this agent name
+  // parks until released, everything else passes through.
+  type DeprovArg = { id: string; name: string };
+  type DeprovBroker = (a: DeprovArg) => Promise<void>;
   type Handle = import("@cotal-ai/core").AgentHandle;
-  const mAny = manager as unknown as { deprovision: Deprov; ep: { ref: () => { id: string } }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
-  const origDeprov: Deprov = mAny.deprovision.bind(manager);
+  const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; ep: { ref: () => { id: string } }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
+  const origBroker: DeprovBroker = mAny.deprovisionBroker.bind(manager);
   let releaseGate!: () => void;
   const gate = new Promise<void>((r) => { releaseGate = r; });
   let gatedRun: Promise<void> | undefined;
-  // Every deprovision invocation, in order, so the deleter is ATTRIBUTABLE: the barrier asserts
+  // Every broker-phase invocation, in order, so the deleter is ATTRIBUTABLE: the barrier asserts
   // below are only meaningful if the predecessor's gated teardown is the sole deleter in play.
-  const deprovCalls: Array<{ name: string; gated: boolean }> = [];
-  mAny.deprovision = (a: DeprovArg): Promise<void> => {
+  const brokerCalls: Array<{ name: string; gated: boolean }> = [];
+  mAny.deprovisionBroker = (a: DeprovArg): Promise<void> => {
     if (a.name === AGENT && !gatedRun) {
-      deprovCalls.push({ name: a.name, gated: true });
-      gatedRun = (async () => { await gate; await origDeprov(a); })();
+      brokerCalls.push({ name: a.name, gated: true });
+      gatedRun = (async () => { await gate; await origBroker(a); })();
       return gatedRun;
     }
-    deprovCalls.push({ name: a.name, gated: false });
-    return origDeprov(a);
+    brokerCalls.push({ name: a.name, gated: false });
+    return origBroker(a);
   };
 
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
   check("the name is freed immediately (slot reusable before the teardown ran)", !manager.list().some((a: { name: string }) => a.name === AGENT), manager.list().map((a: { name: string }) => a.name));
-  check("the detached teardown fired and is in flight (held on the gate)", gatedRun !== undefined);
+  // The broker phase engages a few microtasks after freeSlot (the teardown's synchronous prefix +
+  // the ledger-revoke await sit before it) — poll briefly for the gate to be taken.
+  for (let i = 0; i < 100 && !gatedRun; i++) await wait(20);
+  check("the detached teardown reached its broker phase and is held on the gate", gatedRun !== undefined);
+  // The teardown's LOCAL half already ran in its synchronous prefix, exactly as in production: the
+  // predecessor's ledger row is gone BEFORE the respawn below re-mints it. Asserting it keeps the
+  // probe honest — the gate must not have deferred anything the real code does synchronously.
+  check("predecessor row already revoked by the synchronous prefix (gate held nothing local)",
+    !existsSync(managedRowPath(OWNER)));
 
   // Clear the predecessor's connect marker: the reappearing marker is the REPLACEMENT child's own
   // connect witness. Readiness alone cannot serve here: the respawn's "started" verdict can ride
@@ -372,14 +404,15 @@ try {
   });
   const fp2 = await footprint();
   const hash2 = rowHash(OWNER);
-  check("replacement footprint exists after respawn (row + dm + dlv + acl)", fp2.row && fp2.dm && fp2.dlv && fp2.acl, fp2);
+  check("replacement footprint exists after respawn (row + dm + dlv + acl)",
+    fp2.row && fp2.dm.length > 0 && fp2.dlv.length > 0 && fp2.acl.length > 0, fp2);
   check("replacement holds a ROTATED ledger secret (its own mint authority, not the predecessor's)", typeof hash2 === "string" && hash2 !== hash1, { hash1, hash2 });
   const replacementToken = readFileSync(join(credsDir, `${AGENT}.actor-token`), "utf8").trim();
 
   // Pin the interleaving fully: release only after the replacement child has read its secret
   // files and CONNECTED (its own marker, not the predecessor's). This is the benign-looking
   // ordering: despawn replied, respawn replied, replacement live on the mesh, and only THEN does
-  // the predecessor's detached teardown execute.
+  // the predecessor's broker teardown land.
   const connected = await (async (ms = 15000) => {
     const end = Date.now() + ms;
     while (Date.now() < end) { if (existsSync(join(root, "child-connected"))) return true; await wait(100); }
@@ -387,42 +420,41 @@ try {
   })();
   check("replacement child connected on its own credentials (its connect marker reappeared)", connected);
 
-  // Attribution preconditions: at this point the ONLY deprovision in play must be the gated
-  // predecessor teardown, and the replacement must still be a live managed slot. If either fails,
-  // a second deleter (e.g. a runtime exit-reap hitting the replacement) is confounding the probe.
-  check("pre-release: exactly one deprovision fired (the gated predecessor teardown)",
-    deprovCalls.length === 1 && deprovCalls[0].gated, deprovCalls);
+  // Attribution preconditions: at this point the ONLY broker teardown in play must be the gated
+  // predecessor one, and the replacement must still be a live managed slot. If either fails, a
+  // second deleter (e.g. a runtime exit-reap hitting the replacement) is confounding the probe.
+  check("pre-release: exactly one broker teardown fired (the gated predecessor one)",
+    brokerCalls.length === 1 && brokerCalls[0].gated, brokerCalls);
   check("pre-release: the replacement is still a live managed slot",
     manager.list().some((a: { name: string }) => a.name === AGENT),
     { listed: manager.list().map((a: { name: string }) => a.name), handleStatus: mAny.agents.get(AGENT)?.handle.status() });
 
-  // Release the predecessor's teardown and let it fully settle.
+  // Release the predecessor's broker teardown and let it fully settle.
   releasedAtMs = Date.now();
   releaseGate();
   await gatedRun!.catch(() => {});
-  mAny.deprovision = origDeprov;
+  mAny.deprovisionBroker = origBroker;
 
   // ---------- D. THE BARRIER CONTRACT (red on current code) ----------
-  // A replacement spawned after the despawn reply keeps its entire footprint no matter when the
-  // predecessor's teardown executes. Today the name-keyed teardown deletes all of it.
-  console.log("D) barrier contract: the replacement's footprint survives the predecessor's teardown");
+  // A replacement spawned after the despawn reply keeps its broker footprint no matter when the
+  // predecessor's teardown lands. Today the name-keyed broker deletes take all of it.
+  console.log("D) barrier contract: the replacement's broker footprint survives the predecessor's teardown");
   const fp3 = await footprint();
-  check("BARRIER: replacement ledger row survives", fp3.row, fp3);
-  check("BARRIER: replacement row still carries the replacement's tokenHash", rowHash(OWNER) === hash2, { want: hash2, got: rowHash(OWNER) });
-  check("BARRIER: replacement dm_ durable survives", fp3.dm, fp3);
-  check("BARRIER: replacement dlv_ durable survives", fp3.dlv, fp3);
-  check("BARRIER: replacement read-ACL row survives", fp3.acl, fp3);
+  check("BARRIER: a dm_ durable for the principal survives", fp3.dm.length > 0, fp3);
+  check("BARRIER: a dlv_ durable for the principal survives", fp3.dlv.length > 0, fp3);
+  check("BARRIER: a read-ACL row for the principal survives", fp3.acl.length > 0, fp3);
+  // Witnesses (green today AND under the fix): the LOCAL half is protected by the synchronous
+  // prefix — the broker phase never touches the ledger or the secret files, so the replacement's
+  // mint authority stays intact and its child stays connected. The damage above is therefore
+  // SILENT split-brain: the manager lists a live, authenticated agent that can no longer be
+  // delivered to (durables gone) and whose reads are no longer authorized (ACL row gone).
+  check("witness: replacement ledger row survives (the broker phase owns no local state)", fp3.row, fp3);
+  check("witness: replacement row still carries the replacement's tokenHash", rowHash(OWNER) === hash2, { want: hash2, got: rowHash(OWNER) });
   const ex = await agentExchange(AGENT, replacementToken, OWNER);
-  check("BARRIER: replacement actor token still mints a bearer (exchange 200)", ex.status === 200 && typeof ex.body.token === "string", { status: ex.status, error: ex.body.error });
-  // Severity witness (true today AND under the fix): the manager still lists the replacement as a
-  // live managed agent, so any footprint damage above is silent split-brain, not a reported death.
-  // Severity witness (expected to hold today AND under the fix, since the replacement is already
-  // connected when the teardown runs): the manager still lists the replacement as live while (on
-  // current code) its mint authority and broker footprint are gone. The damage is SILENT
-  // split-brain: nothing reported, the agent just can't renew, re-connect, or be delivered to.
-  check("the manager still lists the replacement (so on current code the damage is silent)",
-    manager.list().some((a: { name: string }) => a.name === AGENT),
-    { listed: manager.list().map((a: { name: string }) => a.name), deprovCalls, child: childDiag() });
+  check("witness: replacement actor token still mints a bearer (exchange 200)", ex.status === 200 && typeof ex.body.token === "string", { status: ex.status, error: ex.body.error });
+  check("witness: the manager still lists the replacement, child alive (the damage is silent)",
+    manager.list().some((a: { name: string }) => a.name === AGENT) && newHandle?.status() === "running",
+    { listed: manager.list().map((a: { name: string }) => a.name), brokerCalls, child: childDiag() });
 
   console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌ (expected until the lifecycle-keyed deprovision lands)"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

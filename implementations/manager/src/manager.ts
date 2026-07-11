@@ -737,7 +737,16 @@ export class Manager {
         console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
       }
     }
-    const creds = await mintCreds(this.auth, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
+    await this.deprovisionBroker(a);
+  }
+
+  /** The teardown's ASYNC BROKER PHASE: mint the ephemeral target-pinned deprovisioner cred and
+   *  delete the agent's broker footprint (dm_/dlv_ durables + read-ACL row). Split from
+   *  {@link deprovision} because everything before it (creds/secret shred + ledger revoke) completes
+   *  in the synchronous prefix of the detached call — this is the only part of the teardown that can
+   *  still be in flight once the freed name is reused. */
+  private async deprovisionBroker(a: { id: string; name: string }): Promise<void> {
+    const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
