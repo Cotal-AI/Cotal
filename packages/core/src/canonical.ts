@@ -79,6 +79,16 @@ export function contractDigest(value: unknown): string {
   return DIGEST_PREFIX + createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 }
 
+/** `sha256:<hex>` over RAW bytes (a string digests as its UTF-8 encoding), NEVER re-canonicalized:
+ *  the digest form for artifacts carried as opaque bytes — the §13.3 `auth` slot (`authDigest`,
+ *  digested exactly as carried) and the §13.4 raw stored submission bytes (`submissionDigest`). */
+export function rawDigest(data: Uint8Array | string): string {
+  const h = createHash("sha256");
+  if (typeof data === "string") h.update(data, "utf8");
+  else h.update(data);
+  return DIGEST_PREFIX + h.digest("hex");
+}
+
 /** Verify fetched artifact BYTES against their advertised digest (verify-on-read, SPEC §13.7):
  *  content addressing, not store ACLs, is the tamper boundary. The bytes must parse as JSON and
  *  re-canonicalize to the digest; anything else throws. Returns the parsed artifact. */

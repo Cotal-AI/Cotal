@@ -1,7 +1,10 @@
 /** D27 execution-profile proofs for schema-profile.ts: full 2020-12 features validate, the
  *  closure is closed (no ambient resolution), and every bound refuses loudly at registration
  *  time with contract-invalid — distinct from invocation-time arg rejection (SPEC §13.7). */
-import { compileContractSchema, ContractInvalidError, SCHEMA_PROFILE } from "../src/schema-profile.js";
+import {
+  compileContractSchema, compileContract, createCompiledContractCache, ContractInvalidError,
+  SCHEMA_PROFILE, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, VOID_SCHEMA_DIGEST,
+} from "../src/schema-profile.js";
 import { contractDigest } from "../src/canonical.js";
 
 let pass = 0;
@@ -75,5 +78,43 @@ refuses("oversized document refused", () =>
 // 5) An uncompilable schema is contract-invalid, not a crash.
 refuses("broken schema is contract-invalid", () =>
   compileContractSchema({ root: { type: "object", properties: { a: { $ref: "#/$defs/missing" } } } }), "does not compile");
+
+// 6) Bounded pattern complexity (both regex surfaces).
+refuses("pattern bomb refused", () =>
+  compileContractSchema({ root: { type: "string", pattern: "(a|b)".repeat(SCHEMA_PROFILE.maxPatternChars) } }), "complexity bound");
+refuses("patternProperties key bomb refused", () =>
+  compileContractSchema({ root: { type: "object", patternProperties: { ["x".repeat(SCHEMA_PROFILE.maxPatternChars + 1)]: { type: "string" } } } }), "complexity bound");
+
+// 7) A member that does not hash to its digest key refuses (also the cache-soundness gate).
+refuses("forged member content refused", () =>
+  compileContractSchema({
+    root: { $ref: `cotal:${memberDigest}` },
+    members: { [memberDigest]: { type: "number" } },
+  }), "does not hash");
+
+// 8) Closure identity is the §13.7 manifest digest (root digest + reachable members, sorted).
+ok("self-contained closure digest is the manifest digest",
+  compileContract({ root: member }).closureDigest === contractDigest({ v: 1, root: memberDigest, members: [] }));
+const memberedRoot = { type: "object", properties: { name: { $ref: `cotal:${memberDigest}` } } };
+ok("membered closure digest lists the reachable member",
+  compileContract({ root: memberedRoot, members: { [memberDigest]: member } }).closureDigest
+  === contractDigest({ v: 1, root: contractDigest(memberedRoot), members: [memberDigest] }));
+
+// 9) The void schema's digests are the fixed values every payload-free side pins.
+ok("void artifact digest is contractDigest({type:'null'})", VOID_SCHEMA_ARTIFACT_DIGEST === contractDigest({ type: "null" }));
+ok("void closure digest is its manifest digest", VOID_SCHEMA_DIGEST === contractDigest({ v: 1, root: VOID_SCHEMA_ARTIFACT_DIGEST, members: [] }));
+ok("the void schema validates null only", (() => {
+  const v = compileContractSchema({ root: VOID_SCHEMA });
+  return v(null) === true && v({}) === false && v("x") === false;
+})());
+
+// 10) The compiled LRU: hit reuses, capacity evicts, eviction recompiles.
+const cache = createCompiledContractCache(2);
+const a = cache.compile({ root: member });
+ok("cache hit returns the same compiled validator", cache.compile({ root: member }).validate === a.validate && cache.size() === 1);
+cache.compile({ root: { type: "integer" } });
+cache.compile({ root: { type: "boolean" } });
+ok("capacity bounds the cache", cache.size() === 2);
+ok("an evicted closure recompiles to a fresh validator", cache.compile({ root: member }).validate !== a.validate);
 
 console.log(`schema-profile.smoke: ${pass} checks passed`);

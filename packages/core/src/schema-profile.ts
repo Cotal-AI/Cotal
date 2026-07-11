@@ -9,7 +9,7 @@
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
-import { canonicalJson, isContractDigest } from "./canonical.js";
+import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 
 /** Registration-time bounds (SPEC §13.7/§13.8). Fixed by the profile, not caller-tunable. */
 export const SCHEMA_PROFILE = {
@@ -23,7 +23,23 @@ export const SCHEMA_PROFILE = {
   maxRefChain: 32,
   /** Compile budget per closure, ms. */
   compileBudgetMs: 100,
+  /** Bounded pattern complexity: max characters of any `pattern` / `patternProperties` regex. */
+  maxPatternChars: 256,
+  /** Per-value validation budget at the serving boundary, ms (post-hoc, fail-loud). */
+  validateBudgetMs: 50,
+  /** Compiled-schema cache entries (the SPEC's reference 256-entry LRU). */
+  compiledCacheEntries: 256,
 } as const;
+
+/** The canonical void schema (§13.7): the one artifact a side with no payload declares, so both
+ *  `op` digests exist for every command. Validation against it means the payload is absent or
+ *  `null`. */
+export const VOID_SCHEMA = { type: "null" } as const;
+/** Artifact digest of the void schema document — one fixed value by construction. */
+export const VOID_SCHEMA_ARTIFACT_DIGEST = contractDigest(VOID_SCHEMA);
+/** The void schema's CLOSURE digest (the §13.7 manifest of a self-contained document) — the
+ *  value `op.inputDigest`/`op.outputDigest` carry for a payload-free side. */
+export const VOID_SCHEMA_DIGEST = contractDigest({ v: 1, root: VOID_SCHEMA_ARTIFACT_DIGEST, members: [] });
 
 /** The digest-pinned contract-store reference scheme: `cotal:sha256:<hex>[#/json/pointer]`. */
 const STORE_REF = /^cotal:(sha256:[0-9a-f]{64})(#.*)?$/;
@@ -51,17 +67,26 @@ function structuralDepth(v: unknown, depth = 0): number {
   return max;
 }
 
-/** Collect every `$ref` string in a schema document (structural walk; `$ref` in 2020-12 is
- *  always a string-valued keyword wherever it appears). */
-function collectRefs(v: unknown, out: string[] = []): string[] {
+/** Collect every `$ref` string in a schema document and bound its regex patterns (structural
+ *  walk; `$ref` in 2020-12 is always a string-valued keyword wherever it appears; `pattern`
+ *  values and `patternProperties` keys are the profile's bounded-pattern-complexity surface). */
+function collectRefs(v: unknown, label: string, out: string[] = []): string[] {
   if (v === null || typeof v !== "object") return out;
   if (Array.isArray(v)) {
-    for (const c of v) collectRefs(c, out);
+    for (const c of v) collectRefs(c, label, out);
     return out;
   }
   for (const [k, c] of Object.entries(v as Record<string, unknown>)) {
     if ((k === "$ref" || k === "$dynamicRef") && typeof c === "string") out.push(c);
-    collectRefs(c, out);
+    if (k === "pattern" && typeof c === "string" && c.length > SCHEMA_PROFILE.maxPatternChars)
+      throw new ContractInvalidError(`${label}: a pattern of ${c.length} characters exceeds the profile complexity bound (${SCHEMA_PROFILE.maxPatternChars})`);
+    if (k === "patternProperties" && c !== null && typeof c === "object" && !Array.isArray(c)) {
+      for (const p of Object.keys(c as Record<string, unknown>)) {
+        if (p.length > SCHEMA_PROFILE.maxPatternChars)
+          throw new ContractInvalidError(`${label}: a patternProperties key of ${p.length} characters exceeds the profile complexity bound (${SCHEMA_PROFILE.maxPatternChars})`);
+      }
+    }
+    collectRefs(c, label, out);
   }
   return out;
 }
@@ -84,7 +109,7 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
   if (structuralDepth(doc) > SCHEMA_PROFILE.maxDepth)
     throw new ContractInvalidError(`${label}: nesting exceeds profile depth ${SCHEMA_PROFILE.maxDepth}`);
   const storeRefs: string[] = [];
-  for (const ref of collectRefs(doc)) {
+  for (const ref of collectRefs(doc, label)) {
     if (ref.startsWith("#")) continue; // local pointer/anchor — resolved within the document
     const m = STORE_REF.exec(ref);
     if (!m) throw new ContractInvalidError(`${label}: external $ref ${JSON.stringify(ref)} — only local '#…' or digest-pinned 'cotal:sha256:<hex>' references are permitted (no ambient resolution)`);
@@ -93,17 +118,25 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
   return storeRefs;
 }
 
-/** Validate the whole closure against the profile and compile it with a real 2020-12
- *  validator. No network, no filesystem: `loadSchema` is never installed, and every
- *  `cotal:` reference must be present in `bundle.members`. */
-export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
-  const started = Date.now();
+/** A registered contract schema: the compiled validator plus the bundle's CLOSURE digest —
+ *  the artifact digest of the §13.7 manifest `{ v: 1, root, members[] }` (members = every
+ *  artifact transitively REACHABLE from the root, sorted and deduplicated). The closure digest
+ *  is the contract identity `op.inputDigest`/`op.outputDigest` pin. */
+export interface CompiledContract {
+  validate: ValidateFunction;
+  closureDigest: string;
+}
+
+/** Enforce the profile on the whole closure WITHOUT compiling: bounds every document, walks the
+ *  digest-reference graph breadth-first (chain depth + total size), VERIFIES every reachable
+ *  member against its digest key (fail-loud `contract-invalid`, so a mis-assembled bundle can
+ *  neither register nor poison the compiled cache), and returns the closure identity — the
+ *  §13.7 manifest digest. */
+function assertClosureProfile(bundle: SchemaBundle): string {
   const members = bundle.members ?? {};
   for (const d of Object.keys(members)) {
     if (!isContractDigest(d)) throw new ContractInvalidError(`bundle member key ${JSON.stringify(d)} is not a sha256 digest`);
   }
-
-  // Walk the closure breadth-first, bounding chain depth and total size.
   let closureBytes = Buffer.byteLength(canonicalJson(bundle.root), "utf8");
   const seen = new Set<string>();
   let frontier = assertDocumentProfile(bundle.root, "root schema");
@@ -117,6 +150,8 @@ export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
       const member = members[digest];
       if (member === undefined)
         throw new ContractInvalidError(`unresolved digest reference ${digest}: not present in the bundle (schemas are closed; nothing is fetched)`);
+      if (contractDigest(member) !== digest)
+        throw new ContractInvalidError(`bundle member under ${digest} does not hash to its key (content is ${contractDigest(member)})`);
       closureBytes += Buffer.byteLength(canonicalJson(member), "utf8");
       if (closureBytes > SCHEMA_PROFILE.maxClosureBytes)
         throw new ContractInvalidError(`closure is ${closureBytes} bytes (profile max ${SCHEMA_PROFILE.maxClosureBytes})`);
@@ -124,7 +159,11 @@ export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
     }
     frontier = next;
   }
+  return contractDigest({ v: 1, root: contractDigest(bundle.root), members: [...seen].sort() });
+}
 
+function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
+  const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
   const ajv = new Ajv2020({
@@ -133,7 +172,7 @@ export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
     validateFormats: false,
     loadSchema: undefined,
   });
-  for (const [digest, member] of Object.entries(members)) ajv.addSchema(member as object, `cotal:${digest}`);
+  for (const [digest, member] of Object.entries(bundle.members ?? {})) ajv.addSchema(member as object, `cotal:${digest}`);
   let validate: ValidateFunction;
   try {
     validate = ajv.compile(bundle.root as object);
@@ -144,4 +183,46 @@ export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
   if (elapsed > SCHEMA_PROFILE.compileBudgetMs)
     throw new ContractInvalidError(`compile took ${elapsed}ms (profile budget ${SCHEMA_PROFILE.compileBudgetMs}ms)`);
   return validate;
+}
+
+/** Validate the whole closure against the profile and compile it with a real 2020-12
+ *  validator. No network, no filesystem: `loadSchema` is never installed, and every
+ *  `cotal:` reference must be present in `bundle.members`. */
+export function compileContract(bundle: SchemaBundle): CompiledContract {
+  const closureDigest = assertClosureProfile(bundle);
+  return { validate: compileWithinBudget(bundle), closureDigest };
+}
+
+/** {@link compileContract} without the closure identity, kept for validation-only callers. */
+export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
+  return compileContract(bundle).validate;
+}
+
+/** A bounded compiled-schema LRU (SPEC §13.7's reference 256-entry cache), keyed by CLOSURE
+ *  digest. The profile walk (incl. member digest verification) runs on EVERY call — only the
+ *  ajv compilation is skipped on a hit. Sound across callers: two bundles with one closure
+ *  digest are byte-identical closures, so a hit can never serve another caller's
+ *  mis-assembled bundle. */
+export function createCompiledContractCache(capacity: number = SCHEMA_PROFILE.compiledCacheEntries): {
+  compile: (bundle: SchemaBundle) => CompiledContract;
+  size: () => number;
+} {
+  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error(`cache capacity ${capacity} is not a positive integer`);
+  const lru = new Map<string, CompiledContract>();
+  return {
+    compile(bundle: SchemaBundle): CompiledContract {
+      const closureDigest = assertClosureProfile(bundle);
+      const hit = lru.get(closureDigest);
+      if (hit) {
+        lru.delete(closureDigest); // refresh recency
+        lru.set(closureDigest, hit);
+        return hit;
+      }
+      const compiled: CompiledContract = { validate: compileWithinBudget(bundle), closureDigest };
+      lru.set(closureDigest, compiled);
+      if (lru.size > capacity) lru.delete(lru.keys().next().value as string);
+      return compiled;
+    },
+    size: () => lru.size,
+  };
 }

@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./subjects.js";
 export * from "./endpoint-subjects.js";
 export * from "./endpoint-grants.js";
+export * from "./endpoint-envelope.js";
 export * from "./resolve.js";
 export * from "./link.js";
 export * from "./identity.js";
