@@ -248,6 +248,9 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
       better-auth:
         specifier: ^1.6.23
         version: 1.6.23(react@19.2.7)

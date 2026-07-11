@@ -128,6 +128,7 @@
     "smoke:callout-shape": "tsx implementations/auth/smoke/callout-shape.smoke.ts",
     "smoke:user-auth-launch:live": "tsx implementations/auth/smoke/user-auth-launch.smoke.ts",
     "smoke:user-spawn:live": "tsx implementations/auth/smoke/user-spawn.smoke.ts",
+    "smoke:freeslot-barrier:live": "tsx implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts",
     "smoke:ctl-trust:live": "tsx implementations/auth/smoke/ctl-trust.smoke.ts",
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
