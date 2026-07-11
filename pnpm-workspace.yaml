@@ -6,7 +6,5 @@ packages:
   - "examples/*/*"
   - "bin"
 allowBuilds:
-  '@google/genai': false
   esbuild: true
   msgpackr-extract: false
-  protobufjs: false

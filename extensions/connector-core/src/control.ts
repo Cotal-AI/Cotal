@@ -61,17 +61,14 @@ function tokenMatches(presented: unknown, digest: Buffer): boolean {
   return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
 }
 
-/** Sender label with the bare peer NAME quoted as its own token — the name is what
- *  `cotal_dm` addresses, so a fused `name/role` display form must never look like one
- *  (models were observed DM'ing the literal "me/human"). The role rides in parens. */
 function who(i: InboxItem): string {
-  return i.fromRole ? `"${i.fromName}" (${i.fromRole})` : `"${i.fromName}"`;
+  return i.fromRole ? `${i.fromName}/${i.fromRole}` : i.fromName;
 }
 
 function fmtItem(i: InboxItem): string {
   const h = i.historical ? " (history)" : ""; // backfilled on join — pre-dates you, not live
   if (i.kind === "dm") return `• DM from ${who(i)}${h}: ${i.text}`;
-  if (i.kind === "anycast") return `• @${i.service} from ${who(i)}${h}: ${i.text}`;
+  if (i.kind === "anycast") return `• @${i.service} (from ${who(i)})${h}: ${i.text}`;
   return `• #${i.channel} ${who(i)}${h}: ${i.text}`;
 }
 
@@ -79,11 +76,8 @@ function fmtItem(i: InboxItem): string {
 export function formatInjection(items: InboxItem[]): string | undefined {
   if (!items.length) return undefined;
   const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
-  const caveat = items.some((i) => i.historical)
-    ? `\n(Items marked "(history)" pre-date you and are likely already settled — catch-up context, not live requests; act on one only if it is clearly still waiting on you.)`
-    : "";
   const tail = `(Reply with cotal_send / cotal_dm, or cotal_roster to see who's here.)`;
-  return `${head}\n${items.map(fmtItem).join("\n")}${caveat}\n${tail}`;
+  return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
 }
 
 /** Start the authenticated control server. One newline-delimited JSON {@link ControlFrame} → one
