@@ -365,7 +365,7 @@ registry.register(
   ok("selective down removes only manager-owned files", !existsSync(join(sandbox, ".cotal", "manager.pid")) && !existsSync(join(sandbox, ".cotal", "manager.delivery-aware")) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
 
   const slowReady = join(sandbox, "slow-manager-ready");
-  const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 1000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
+  const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 5000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
   for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
   writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(slowManagerPid));
   writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(slowManagerPid));
