@@ -1,7 +1,7 @@
 /**
- * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate; EXPECTED RED until the
- * lifecycle-keyed deprovision lands) — proves by EXECUTION the despawn/respawn race that had
- * previously only been established by code-read:
+ * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate; EXPECTED RED until the P2 alias
+ * reservation + lifecycle-keyed cleanup land) — proves by EXECUTION the despawn/respawn race that
+ * had previously only been established by code-read:
  *
  *   `freeSlot` frees the agent's name synchronously, then fires `deprovision` DETACHED. The
  *   teardown's LOCAL half (creds/secret shred + ledger revoke) completes in the detached call's
@@ -12,23 +12,31 @@
  *   inside that window hands the REPLACEMENT's freshly minted broker footprint to the stale
  *   teardown: its durables and ACL row are deleted while the manager keeps listing it as live.
  *
- * The BARRIER CONTRACT this smoke asserts: a replacement spawned after a despawn reply keeps its
- * broker footprint no matter when the predecessor's teardown lands. Current code FAILS the three
- * BARRIER asserts; the v0.4 lifecycle-keyed resources + `(principal, lifecycleUid)`-pinned
- * deprovisioner turn them green without touching the smoke — the footprint checks enumerate by
- * principal PREFIX and attribute each lifecycle's set from the pre/post-respawn snapshots (a bare
- * exists-under-prefix check would false-green a teardown that deleted the REPLACEMENT's rows and
- * left the predecessor's, once both coexist under the fix). The local half is asserted GREEN as a
- * witness: the synchronous prefix protects it, and the respawn re-mints row + secrets before the
- * gated broker phase is ever released.
+ * The BARRIER CONTRACT is the spec/plan acceptance timeline for terminal despawn (retire before
+ * alias release; cleanup pinned to the retired lifecycle; detached cleanup = idempotent
+ * reconciliation that can never resolve through the current alias occupant):
  *
- * DETERMINISM: the predecessor's `deprovisionBroker` (ONLY the async broker phase — the
- * synchronous prefix runs untouched at despawn time) is held on a gate until the replacement is
- * provisioned AND its child has connected on its own credentials (a connect marker; readiness
- * alone cannot serve — the respawn's "started" verdict can ride the SIGKILLed predecessor's
- * lingering presence entry, same principal, no clean leave), then released. That derandomizes a
- * real window (via the exit-reap path `freeSlot` fires at ARBITRARY times relative to an
- * in-flight respawn); it does not create a new path.
+ *   1. RESERVATION — while the predecessor's cleanup is pending, a same-name spawn must not
+ *      yield a new live agent under the exact alias. Today the alias frees instantly (RED).
+ *   2. LIFECYCLE KEYING — after retirement, the same-alias replacement's broker resources must
+ *      be DISTINCT names from the predecessor's. Today the names collide exactly (RED).
+ *   3. REPLAY SAFETY — re-delivering the predecessor's captured broker cleanup (the
+ *      at-least-once world: crash recovery, redelivery, reconciliation retry) must leave the
+ *      live replacement's footprint untouched. Today it silently destroys it (RED).
+ *
+ * All three flip green under the full P2 slice (alias reservation + lifecycle-keyed resources +
+ * `(principal, lifecycleUid)`-pinned cleanup). The CONTRACT asserts need no edits for that; only
+ * a mechanical rename is expected if P2 restructures the private `deprovisionBroker` seam this
+ * harness wraps. The teardown's LOCAL half (creds/secret shred + ledger revoke) is asserted GREEN
+ * throughout: its synchronous prefix protects it, and the replay is broker-only.
+ *
+ * The footprint checks ENUMERATE by principal prefix (via a harness-only inspector cred — no
+ * production profile grants CONSUMER.LIST) and attribute predecessor/successor sets by TIMELINE:
+ * the successor snapshot is taken only after the predecessor's retirement completed, so the
+ * exists-under-prefix ambiguity (a wrong-target delete or no-op cleanup false-greening) cannot
+ * arise. The replacement's connectedness is witnessed by its own connect-marker file; readiness
+ * alone can ride the SIGKILLed predecessor's lingering presence entry (same principal, no clean
+ * leave).
  *
  * Run: pnpm smoke:freeslot-barrier:live   (pnpm build first — Manager + the agent child load
  * dist; needs nats-server + node on PATH)
@@ -339,13 +347,15 @@ try {
     fp1.row && fp1.dm.length > 0 && fp1.dlv.length > 0 && fp1.acl.length > 0, fp1);
   const hash1 = rowHash(OWNER);
 
-  // ---------- C. the barrier probe: despawn (broker phase gated) then same-name respawn ----------
-  console.log("C) despawn with ONLY the teardown's broker phase held, respawn the same name, release");
+  // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
+  console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
   // Hold the predecessor's broker teardown on a gate — deprovisionBroker ONLY, so the teardown's
   // synchronous prefix (creds/secret shred + ledger revoke) runs untouched at despawn time exactly
   // as in production. Instance-level wrap of the private method (runtime-visible; the repo's
   // smokes already reach into manager privates): the FIRST broker teardown for this agent name
-  // parks until released, everything else passes through.
+  // parks until released; everything else passes through and is recorded so every deleter in play
+  // stays attributable. The gated call's ARG is captured — section E replays it, modeling the
+  // at-least-once redelivery of a retired lifecycle's cleanup that the fix must make harmless.
   type DeprovArg = { id: string; name: string };
   type DeprovBroker = (a: DeprovArg) => Promise<void>;
   type Handle = import("@cotal-ai/core").AgentHandle;
@@ -354,45 +364,81 @@ try {
   let releaseGate!: () => void;
   const gate = new Promise<void>((r) => { releaseGate = r; });
   let gatedRun: Promise<void> | undefined;
-  // Every broker-phase invocation, in order, so the deleter is ATTRIBUTABLE: the barrier asserts
-  // below are only meaningful if the predecessor's gated teardown is the sole deleter in play.
-  const brokerCalls: Array<{ name: string; gated: boolean }> = [];
+  let predArg: DeprovArg | undefined;
+  const brokerCalls: Array<{ name: string; gated: boolean; done: Promise<void> }> = [];
   mAny.deprovisionBroker = (a: DeprovArg): Promise<void> => {
     if (a.name === AGENT && !gatedRun) {
-      brokerCalls.push({ name: a.name, gated: true });
+      predArg = a;
       gatedRun = (async () => { await gate; await origBroker(a); })();
+      brokerCalls.push({ name: a.name, gated: true, done: gatedRun });
       return gatedRun;
     }
-    brokerCalls.push({ name: a.name, gated: false });
-    return origBroker(a);
+    const done = origBroker(a);
+    brokerCalls.push({ name: a.name, gated: false, done });
+    return done;
   };
+  const listNames = (): string[] => manager!.list().map((a: { name: string }) => a.name);
 
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
-  check("the name is freed immediately (slot reusable before the teardown ran)", !manager.list().some((a: { name: string }) => a.name === AGENT), manager.list().map((a: { name: string }) => a.name));
   // The broker phase engages a few microtasks after freeSlot (the teardown's synchronous prefix +
   // the ledger-revoke await sit before it) — poll briefly for the gate to be taken.
   for (let i = 0; i < 100 && !gatedRun; i++) await wait(20);
-  check("the detached teardown reached its broker phase and is held on the gate", gatedRun !== undefined);
+  check("the detached teardown reached its broker cleanup and is held on the gate",
+    gatedRun !== undefined && predArg !== undefined);
   // The teardown's LOCAL half already ran in its synchronous prefix, exactly as in production: the
-  // predecessor's ledger row is gone BEFORE the respawn below re-mints it. Asserting it keeps the
-  // probe honest — the gate must not have deferred anything the real code does synchronously.
+  // predecessor's ledger row is gone at this point. Asserting it keeps the probe honest — the gate
+  // must not have deferred anything the real code does synchronously.
   check("predecessor row already revoked by the synchronous prefix (gate held nothing local)",
     !existsSync(managedRowPath(OWNER)));
 
-  // Clear the predecessor's connect marker: the reappearing marker is the REPLACEMENT child's own
-  // connect witness. Readiness alone cannot serve here: the respawn's "started" verdict can ride
-  // the SIGKILLed predecessor's lingering presence entry (same principal, no clean leave), before
-  // the replacement child has even read its secret files.
+  // BARRIER 1 — while the predecessor's cleanup is pending, the alias must stay RESERVED: a
+  // same-name spawn must not yield a NEW live agent under the exact alias (refusing loudly or
+  // auto-numbering both satisfy it). Today the name frees the instant the slot empties, so this
+  // spawn succeeds as the exact alias — the enabling condition of the whole race.
   rmSync(join(root, "child-connected"), { force: true });
-  const r2: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
-  check("same-name respawn ok while the predecessor teardown is in flight", r2.ok === true, r2);
-  // Diagnostics on the REPLACEMENT child so a post-release death is explainable: terminal output +
-  // exit timing relative to the gate release.
+  const namesBeforeProbe = listNames();
+  const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const probeDelta = listNames().filter((n) => !namesBeforeProbe.includes(n));
+  check("BARRIER: the alias is not reassignable while the predecessor's cleanup is pending",
+    !probeDelta.includes(AGENT), { probeReply: probe, probeDelta });
+  // Clear whatever the probe created (today: a live exact-alias agent; under the fix: possibly an
+  // auto-numbered sibling) and let its own cleanup fully settle so it cannot confound section E.
+  for (const n of probeDelta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
+  await Promise.allSettled(brokerCalls.filter((c) => !c.gated).map((c) => c.done.catch(() => {})));
+
+  // Release: let the predecessor's retirement complete, as the fix does before freeing the alias.
+  releaseGate();
+  await gatedRun!.catch(() => {});
+  // Witness (leak direction): the predecessor's broker footprint must be fully retired before the
+  // alias is handed to a replacement — true today (the name-keyed deletes take everything) and
+  // required under the fix (retire-before-free).
+  const fpRetired = await footprint();
+  check("witness: the predecessor's broker footprint is fully retired before the alias frees",
+    fpRetired.dm.length === 0 && fpRetired.dlv.length === 0 && fpRetired.acl.length === 0, fpRetired);
+
+  // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
+  console.log("D) same-alias respawn after the predecessor retired");
+  rmSync(join(root, "child-connected"), { force: true });
+  // Retry loop: today the alias is free immediately; under the fix the reservation may release a
+  // beat after the awaited teardown settles. Never accept an auto-numbered stand-in — the
+  // contract is about THE alias — so any stray sibling is stopped and the spawn retried.
+  let r2: ControlReply | undefined;
+  for (let i = 0; i < 20; i++) {
+    const before = listNames();
+    r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+    const delta = listNames().filter((n) => !before.includes(n));
+    if (r2.ok === true && delta.includes(AGENT)) break;
+    for (const n of delta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
+    await wait(250);
+  }
+  check("same-alias respawn ok after the predecessor retired", r2?.ok === true && listNames().includes(AGENT), r2);
+  // Diagnostics on the REPLACEMENT child so a post-replay death is explainable: terminal output +
+  // exit timing relative to the replay.
   const newHandle = mAny.agents.get(AGENT)?.handle;
   const childOut: Buffer[] = [];
   let childExitedAtMs = 0;
-  let releasedAtMs = 0;
+  let replayAtMs = 0;
   try {
     const sess = newHandle!.attach();
     sess.onData((c) => childOut.push(c));
@@ -401,95 +447,78 @@ try {
   const childDiag = () => ({
     pid: newHandle?.pid,
     status: newHandle?.status(),
-    exitedMsAfterRelease: childExitedAtMs ? childExitedAtMs - releasedAtMs : "alive",
+    exitedMsAfterReplay: childExitedAtMs ? childExitedAtMs - replayAtMs : "alive",
     output: Buffer.concat(childOut).toString("utf8").slice(-500),
   });
-  const fp2 = await footprint();
-  const hash2 = rowHash(OWNER);
-  check("replacement footprint exists after respawn (row + dm + dlv + acl)",
-    fp2.row && fp2.dm.length > 0 && fp2.dlv.length > 0 && fp2.acl.length > 0, fp2);
-  check("replacement holds a ROTATED ledger secret (its own mint authority, not the predecessor's)", typeof hash2 === "string" && hash2 !== hash1, { hash1, hash2 });
-  const replacementToken = readFileSync(join(credsDir, `${AGENT}.actor-token`), "utf8").trim();
-
-  // Pin the interleaving fully: release only after the replacement child has read its secret
-  // files and CONNECTED (its own marker, not the predecessor's). This is the benign-looking
-  // ordering: despawn replied, respawn replied, replacement live on the mesh, and only THEN does
-  // the predecessor's broker teardown land.
+  // Wait for the replacement child to read its secret files and CONNECT (its own marker; readiness
+  // alone can ride the SIGKILLed predecessor's lingering presence entry — same principal, no clean
+  // leave — before the child has even read its files).
   const connected = await (async (ms = 15000) => {
     const end = Date.now() + ms;
     while (Date.now() < end) { if (existsSync(join(root, "child-connected"))) return true; await wait(100); }
     return existsSync(join(root, "child-connected"));
   })();
   check("replacement child connected on its own credentials (its connect marker reappeared)", connected);
+  // The predecessor is retired, so everything now under the principal prefix IS the successor's
+  // set — attribution by timeline, no set arithmetic against a coexisting predecessor needed.
+  const fpS = await footprint();
+  const hash2 = rowHash(OWNER);
+  check("replacement footprint exists after respawn (row + dm + dlv + acl)",
+    fpS.row && fpS.dm.length > 0 && fpS.dlv.length > 0 && fpS.acl.length > 0, fpS);
+  check("replacement holds a ROTATED ledger secret (its own mint authority, not the predecessor's)", typeof hash2 === "string" && hash2 !== hash1, { hash1, hash2 });
+  const replacementToken = readFileSync(join(credsDir, `${AGENT}.actor-token`), "utf8").trim();
+  // BARRIER 2 — lifecycle keying: the replacement's broker resources must be DISTINCT names from
+  // the predecessor's, or any stale/replayed cleanup for the retired lifecycle can resolve to the
+  // replacement's rows. Today the names collide exactly.
+  const distinct = (pre: string[], succ: string[]): boolean => succ.length > 0 && succ.every((n) => !pre.includes(n));
+  check("BARRIER: the replacement's broker resources are lifecycle-distinct from the predecessor's",
+    distinct(fp1.dm, fpS.dm) && distinct(fp1.dlv, fpS.dlv) && distinct(fp1.acl, fpS.acl),
+    { predecessor: { dm: fp1.dm, dlv: fp1.dlv, acl: fp1.acl }, successor: { dm: fpS.dm, dlv: fpS.dlv, acl: fpS.acl } });
+  const callsBeforeReplay = brokerCalls.length;
 
-  // Attribution preconditions: at this point the ONLY broker teardown in play must be the gated
-  // predecessor one, and the replacement must still be a live managed slot. If either fails, a
-  // second deleter (e.g. a runtime exit-reap hitting the replacement) is confounding the probe.
-  check("pre-release: exactly one broker teardown fired (the gated predecessor one)",
-    brokerCalls.length === 1 && brokerCalls[0].gated, brokerCalls);
-  check("pre-release: the replacement is still a live managed slot",
-    manager.list().some((a: { name: string }) => a.name === AGENT),
-    { listed: manager.list().map((a: { name: string }) => a.name), handleStatus: mAny.agents.get(AGENT)?.handle.status() });
-
-  // Release the predecessor's broker teardown and let it fully settle.
-  releasedAtMs = Date.now();
-  releaseGate();
-  await gatedRun!.catch(() => {});
+  // ---------- E. THE REPLAY (red on current code) ----------
+  // Deliver the predecessor's captured broker cleanup AGAIN, now that the replacement is live —
+  // the at-least-once world the fix must survive: detached cleanup is idempotent reconciliation
+  // against the RETIRED lifecycle and can never resolve through the current alias occupant.
+  // Today the cleanup is keyed by (owner, actor-name) alone, so the replay lands on the
+  // replacement's freshly minted footprint and silently destroys it.
+  console.log("E) replay the retired predecessor's broker cleanup against the live replacement");
+  replayAtMs = Date.now();
+  await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });
   mAny.deprovisionBroker = origBroker;
 
-  // ---------- D. THE BARRIER CONTRACT (red on current code) ----------
-  // A replacement spawned after the despawn reply keeps its broker footprint no matter when the
-  // predecessor's teardown lands. Today the name-keyed broker deletes take all of it.
-  //
-  // The barrier asserts LIFECYCLE-ATTRIBUTED sets, not bare existence under the prefix: once the
-  // fix keys resources by lifecycle, predecessor and replacement legitimately coexist under the
-  // same principal prefix pre-release, and a bare `length > 0` would false-green a teardown that
-  // wrongly deleted the REPLACEMENT's rows and left the predecessor's. The replacement's set is
-  // derived from the pre/post-respawn snapshots: the names its respawn minted that the
-  // predecessor did not already hold — and when the two lifecycles collide on one shared name
-  // (the defect under test, current code), that shared name IS the replacement's footprint.
-  const replSet = (pre: string[], mid: string[]): string[] => {
-    const fresh = mid.filter((n) => !pre.includes(n));
-    return fresh.length > 0 ? fresh : mid;
-  };
-  // The retire direction (leak detection) only applies where the respawn minted DISTINCT names:
-  // with a shared name there is nothing separately retirable, and a design that keeps one
-  // alias-keyed row under delete-if-current semantics must not be failed for it.
-  const retired = (pre: string[], mid: string[], post: string[]): boolean => {
-    const fresh = mid.filter((n) => !pre.includes(n));
-    return fresh.length === 0 || pre.every((n) => !post.includes(n));
-  };
-  console.log("D) barrier contract: the replacement's broker footprint survives the predecessor's teardown");
-  const fp3 = await footprint();
-  const survives = (pre: string[], mid: string[], post: string[]): boolean => {
-    const repl = replSet(pre, mid);
-    return repl.length > 0 && repl.every((n) => post.includes(n));
-  };
-  check("BARRIER: the replacement's dm_ durables survive", survives(fp1.dm, fp2.dm, fp3.dm),
-    { pre: fp1.dm, mid: fp2.dm, post: fp3.dm });
-  check("BARRIER: the replacement's dlv_ durables survive", survives(fp1.dlv, fp2.dlv, fp3.dlv),
-    { pre: fp1.dlv, mid: fp2.dlv, post: fp3.dlv });
-  check("BARRIER: the replacement's read-ACL rows survive", survives(fp1.acl, fp2.acl, fp3.acl),
-    { pre: fp1.acl, mid: fp2.acl, post: fp3.acl });
-  check("witness: the predecessor's own broker rows retired (no lifecycle leak)",
-    retired(fp1.dm, fp2.dm, fp3.dm) && retired(fp1.dlv, fp2.dlv, fp3.dlv) && retired(fp1.acl, fp2.acl, fp3.acl),
-    { fp1, fp3 });
-  check("witness: still exactly one broker teardown after release (single deleter throughout)",
-    brokerCalls.length === 1 && brokerCalls[0].gated, brokerCalls);
-  // Witnesses (green today AND under the fix): the LOCAL half is protected by the synchronous
-  // prefix — the broker phase never touches the ledger or the secret files, so the replacement's
-  // mint authority stays intact and its child stays connected. The damage above is therefore
-  // SILENT split-brain: the manager lists a live, authenticated agent that can no longer be
-  // delivered to (durables gone) and whose reads are no longer authorized (ACL row gone).
-  check("witness: replacement ledger row survives (the broker phase owns no local state)", fp3.row, fp3);
+  const fpPost = await footprint();
+  const survives = (succ: string[], post: string[]): boolean => succ.length > 0 && succ.every((n) => post.includes(n));
+  check("BARRIER: the replacement's dm_ durables survive the replayed cleanup", survives(fpS.dm, fpPost.dm),
+    { successor: fpS.dm, post: fpPost.dm });
+  check("BARRIER: the replacement's dlv_ durables survive the replayed cleanup", survives(fpS.dlv, fpPost.dlv),
+    { successor: fpS.dlv, post: fpPost.dlv });
+  check("BARRIER: the replacement's read-ACL rows survive the replayed cleanup", survives(fpS.acl, fpPost.acl),
+    { successor: fpS.acl, post: fpPost.acl });
+  // No retired-lifecycle resource may REAPPEAR either (a resurrecting cleanup would be its own
+  // bug): any predecessor-only name present after the replay is a leak.
+  const noResurrect = (pre: string[], succ: string[], post: string[]): boolean =>
+    pre.every((n) => succ.includes(n) || !post.includes(n));
+  check("witness: no retired predecessor resource reappeared after the replay",
+    noResurrect(fp1.dm, fpS.dm, fpPost.dm) && noResurrect(fp1.dlv, fpS.dlv, fpPost.dlv) && noResurrect(fp1.acl, fpS.acl, fpPost.acl),
+    { fp1, fpPost });
+  check("witness: no manager-driven broker cleanup fired between respawn and replay (single deleter)",
+    brokerCalls.length === callsBeforeReplay,
+    brokerCalls.map(({ name, gated }) => ({ name, gated })));
+  // Witnesses (green today AND under the fix): the replay is broker-only — it never touches the
+  // ledger or the secret files, so the replacement's mint authority stays intact and its child
+  // stays connected. The damage above is therefore SILENT split-brain: the manager lists a live,
+  // authenticated agent that can no longer be delivered to (durables gone) and whose reads are no
+  // longer authorized (ACL row gone).
+  check("witness: replacement ledger row survives the replay (broker cleanup owns no local state)", fpPost.row, fpPost);
   check("witness: replacement row still carries the replacement's tokenHash", rowHash(OWNER) === hash2, { want: hash2, got: rowHash(OWNER) });
   const ex = await agentExchange(AGENT, replacementToken, OWNER);
   check("witness: replacement actor token still mints a bearer (exchange 200)", ex.status === 200 && typeof ex.body.token === "string", { status: ex.status, error: ex.body.error });
   check("witness: the manager still lists the replacement, child alive (the damage is silent)",
     manager.list().some((a: { name: string }) => a.name === AGENT) && newHandle?.status() === "running",
-    { listed: manager.list().map((a: { name: string }) => a.name), brokerCalls, child: childDiag() });
+    { listed: listNames(), child: childDiag() });
 
-  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌ (expected until the lifecycle-keyed deprovision lands)"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌ (expected until the P2 alias reservation + lifecycle-keyed cleanup land)"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
