@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/pi",
-  "version": "0.1.0",
+  "version": "0.11.1",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,15 +12,16 @@
     },
     "./extension": {
       "types": "./dist/extension.d.ts",
-      "import": "./dist/extension.js"
+      "import": "./dist/standalone.js"
     }
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=20"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && esbuild src/standalone.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/standalone.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui",
+    "test": "tsx pi.smoke.ts && tsx pi-sdk.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
@@ -33,7 +34,9 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
-    "@earendil-works/pi-coding-agent": "^0.79.0"
+    "@earendil-works/pi-ai": "0.79.10",
+    "@earendil-works/pi-coding-agent": "0.79.10",
+    "esbuild": "^0.28.0"
   },
   "files": [
     "dist"

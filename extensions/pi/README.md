@@ -1,27 +1,62 @@
 # @cotal-ai/pi
 
-The Cotal mesh as a **pi extension**. One file, three ways onto the mesh:
+Cotal as an extension for the operator's own [Pi coding agent](https://github.com/earendil-works/pi).
+The package does not bundle Pi.
 
-- **Interactive**: `pi --extension <path-to>/dist/extension.js` (plus `COTAL_*` env) — the
-  real pi TUI you're typing in becomes a mesh peer: peer messages land in the session as
-  user turns per the shared attention policy; the model replies with the `cotal_*` send tools
-  (`cotal_dm` / `cotal_send` / `cotal_anycast`), visible as tool calls in the TUI. Set
-  `COTAL_ALLOW_PUBLISH=general` (the post ACL is default-deny) or the peer declines to
-  reply on channels — DMs and anycasts always work.
-- **Spawned worker**: the package also registers a `Connector` (agent type `pi`), so
-  `cotal spawn --agent pi` launches the operator's installed `pi` with the extension
-  loaded — the real TUI in a managed pty, watchable via `cotal attach`.
-- **Agents built on pi's SDK**: pi's default resource loader discovers
-  `~/.pi/agent/extensions/`, so a copy there (plus `COTAL_*` env) puts default SDK
-  embedders on the mesh with no per-app work.
+## Requirements
 
-No pi runtime is bundled — the user's pi version, settings, auth, and other extensions all
-apply. With no `COTAL_*` config in the env the extension stays inert, so a globally-installed
-copy never touches normal pi sessions; `COTAL_*` config without a mesh identity
-(`COTAL_NAME` / `COTAL_AGENT_FILE` / `COTAL_LINK`) fails loud rather than silently not joining.
+- Cotal and this package: Node 20 or newer.
+- The Pi host: exactly `@earendil-works/pi-coding-agent@0.79.10` for this release.
+- `pi` on `PATH` for managed spawning.
 
-Delivery is ack-on-surface via the package's `InboxTurn`: messages are acked only when
-the turn that consumed them completes — a crash or kill redelivers. See
-[docs/agent-frameworks.md](../../docs/agent-frameworks.md) for the design and the run
-recipe (the `cotal` binary registers this connector, so `cotal spawn --agent pi` works
-out of the box).
+## Use
+
+The published `cotal-ai` binary registers the connector:
+
+```bash
+npm install -g cotal-ai @earendil-works/pi-coding-agent@0.79.10
+cotal up
+cotal spawn default --detach --agent pi
+```
+
+To make ordinary interactive Pi sessions mesh-capable, copy the standalone artifact once:
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
+```
+
+The copied file has no repository-local or sibling-file imports. It activates only when a real
+Cotal identity (`COTAL_NAME`, `COTAL_AGENT_FILE`, or `COTAL_LINK`) is present. Unrelated operator
+settings such as `COTAL_HOME` and `COTAL_DEFAULT_AGENT` leave it inert. Pi SDK embedders using its
+default resource loader discover the same file; embedders must bind extension lifecycle events as
+required by Pi's SDK if they expect proactive delivery into an idle session.
+
+## Delivery
+
+Inbound traffic is injected as a `cotal-inbox` custom message. Its opaque batch details must appear
+in Pi's `message_start` and in the exact provider `context`; only the following successful provider
+response marks that batch consumed. Acknowledgement waits for a terminal agent boundary and drains
+only an exact current inbox prefix.
+
+- Crash or quit before a terminal boundary: acknowledge nothing; durable traffic redelivers.
+- Provider-confirmed error or user abort: consume confirmed work so tools cannot repeat.
+- Work not confirmed by the provider: retain it and enter an observable `waiting` hold.
+- Overflow compaction with `willRetry`: retain the batch through Pi's automatic continuation.
+- Watchdog or headless abort: never timer-replay while the original provider call may still run;
+  managed restart is the safe recovery path.
+
+The custom delivery path bypasses Pi's operator `input` transformation chain, because peer traffic
+is attributed context rather than a human prompt. Provider hooks, tool hooks, and Pi's normal
+permission/sandbox extensions still run. Replies remain deliberate model actions through
+`cotal_dm`, `cotal_send`, or `cotal_anycast`; chat output alone is not sent to peers.
+
+Pi resume, model variants, MCP sharing, and raw launch options are not implemented and fail loudly.
+Persona files and `--model` are supported; an explicit spawn model wins over the persona file.
+
+## Credits
+
+The original Pi integration and inbox-turn design were contributed by
+[Lanzelot1](https://github.com/Lanzelot1). Persona and model forwarding were contributed by
+[TheReaperJay](https://github.com/TheReaperJay). Their authored commits remain in the integration
+history; this package keeps the resulting Pi-specific code and behavior.

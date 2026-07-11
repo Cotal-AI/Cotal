@@ -97,7 +97,19 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
         ? (args) => wrapped(sendCallLine(spec.name, config, (args ?? {}) as Record<string, unknown>))
         : undefined,
       async execute(_id, params) {
-        const args = readonlyInbox ? { peek: true } : ((params ?? {}) as Record<string, unknown>);
+        const args: Record<string, unknown> = readonlyInbox
+          ? { peek: true }
+          : { ...((params ?? {}) as Record<string, unknown>) };
+        if (spec.name === "cotal_send" && typeof args.channel === "string") {
+          const channel = args.channel.replace(/^#+/, "");
+          if (!isConcreteChannel(channel)) {
+            return {
+              content: [{ type: "text", text: `⚠ ${JSON.stringify(args.channel)} is not a concrete channel` }],
+              details: undefined,
+            };
+          }
+          args.channel = channel;
+        }
         const r = await spec.run(mesh, config, args);
         return { content: [{ type: "text", text: r.isError ? `⚠ ${r.text}` : r.text }], details: undefined };
       },

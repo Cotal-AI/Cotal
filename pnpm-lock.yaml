@@ -247,9 +247,15 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@earendil-works/pi-coding-agent':
-        specifier: ^0.79.0
+      '@earendil-works/pi-ai':
+        specifier: 0.79.10
         version: 0.79.10(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent':
+        specifier: 0.79.10
+        version: 0.79.10(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
 
   extensions/tmux:
     devDependencies:
@@ -2664,7 +2670,7 @@ snapshots:
       '@aws-sdk/types': 3.974.0
       '@smithy/core': 3.29.2
       '@smithy/fetch-http-handler': 5.6.4
-      '@smithy/node-http-handler': 4.7.3
+      '@smithy/node-http-handler': 4.9.4
       '@smithy/types': 4.16.0
       tslib: 2.8.1
 
