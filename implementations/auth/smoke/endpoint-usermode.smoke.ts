@@ -26,6 +26,14 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, ms = 5000): Promise<boolean> => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await wait(50); return cond(); };
+// Wait for the killed broker to actually exit so it releases its JetStream file handles before we rm
+// its store dir; on Windows the rm otherwise races the handle release and throws EBUSY on a `.blk`.
+const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
+  new Promise((resolve) => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
+    proc.once("exit", () => resolve());
+    setTimeout(resolve, timeoutMs);
+  });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
@@ -112,5 +120,6 @@ try {
   try { await ep?.stop(); } catch { /* */ }
   for (const nc of [witnessNc, calloutNc]) { try { await nc?.close(); } catch { /* */ } }
   srv.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  await awaitExit(srv);
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

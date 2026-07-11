@@ -49,7 +49,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   send: { flags: [...TARGET], positionals: true },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
-  // web moved out to the cotal-web extension package (stage 4)
+  // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   spawn: {
@@ -84,6 +84,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
+  // The unified cleanup verb: `history clear`'s grammar + the local-state targets' --store-dir.
+  clean: { flags: [...TARGET, "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server
   // moved to implementations/delivery as `feedback-intake`.
   feedback: {

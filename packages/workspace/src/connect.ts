@@ -20,7 +20,7 @@ import { renderWorkspaceError } from "./render.js";
 
 /**
  * The one way every command that touches a running mesh figures out WHICH mesh + with what creds,
- * and confirms it's actually up — shared by every command surface (@cotal-ai/cli, cotal-web)
+ * and confirms it's actually up — shared by every command surface (@cotal-ai/cli, @cotal-ai/web)
  * so `spawn`, `send`, `console`, `web`, … all behave identically from any
  * directory. The pure resolution/probe/classify/render steps live beside this file; these wrappers
  * own the OPERATOR I/O — they colour, print the command-copy line, and exit the process. That is

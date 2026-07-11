@@ -1,5 +1,5 @@
 /**
- * DOGFOOD LIVE e2e: the REAL `cotal-web` package installed through the REAL `cotal ext`
+ * DOGFOOD LIVE e2e: the REAL `@cotal-ai/web` package installed through the REAL `cotal ext`
  * mechanism and exercised against a REAL mesh — the full operator journey:
  *
  *  A. `web` left the core surface (unknown command; the built-in count shrank).
@@ -9,7 +9,7 @@
  *  C. `cotal up --detach` (JWT auth) then `cotal web`: the dashboard serves /, /app.js (packaged
  *     assets) and /api/meta over HTTP against the live mesh — the admin-mint + purger-pre-mint
  *     path, exactly as an operator runs it.
- *  D. `ext remove cotal-web`; `web` is unknown again.
+ *  D. `ext remove @cotal-ai/web`; `web` is unknown again.
  *
  * Needs dist built (the packages install per their `files: ["dist"]`), `nats-server` + npm on
  * PATH. Sandboxes COTAL_HOME/XDG_CONFIG_HOME + a temp root; kills only its own pids.
@@ -70,10 +70,10 @@ try {
     ok("`cotal web` is unknown before the extension is installed", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
   }
 
-  // -- B: install the REAL cotal-web package (multi-peer link) --------------------------------------
+  // -- B: install the REAL @cotal-ai/web package (multi-peer link) --------------------------------------
   {
     const r = cotal(["ext", "add", join(REPO, "implementations", "web")]);
-    ok("ext add cotal-web exits 0", r.status === 0, (r.stdout + r.stderr).slice(-500));
+    ok("ext add @cotal-ai/web exits 0", r.status === 0, (r.stdout + r.stderr).slice(-500));
     ok("core peer linked to this binary's copy", /→ wrote @cotal-ai\/core link/.test(r.stderr), r.stderr.slice(-400));
     ok("workspace peer linked to this binary's copy", /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
     ok("the add names the contributed `web` command", /web/.test(r.stdout), r.stdout);
@@ -122,7 +122,7 @@ try {
 
   // -- D: remove the extension; the surface shrinks back ---------------------------------------------
   {
-    ok("ext remove cotal-web exits 0", cotal(["ext", "remove", "cotal-web"]).status === 0);
+    ok("ext remove @cotal-ai/web exits 0", cotal(["ext", "remove", "@cotal-ai/web"]).status === 0);
     const r = cotal(["web"]);
     ok("`cotal web` is unknown again after remove", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
   }

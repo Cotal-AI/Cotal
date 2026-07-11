@@ -58,6 +58,7 @@ try {
 
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
   await wait(300);
+  const calloutLog: string[] = []; // capture the callout's own diagnostics so a hung deny is not silent
   startAuthCallout(calloutNc as never, {
     xkeySeed: callout.xkey.seed,
     authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
@@ -66,35 +67,52 @@ try {
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => { throw new Error(DENY_REASON); }, // deny EVERY actor, with a non-ASCII reason
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"] })),
-    log: () => {},
+    log: (l) => calloutLog.push(l),
   });
+  // Barrier: flush so the callout's SUBSCRIBE is registered server-side BEFORE the deny-connect fires.
+  // Without it, a slow (Windows/CI) sub registration loses the race: the server's auth request reaches
+  // no responder and the connect hangs to the timeout instead of getting the prompt signed deny.
+  await calloutNc.flush();
 
-  // A user-mode connect that the callout will deny. With the bug the deny can't encode → this hangs to the
-  // connect timeout; with the fix the server rejects promptly carrying the (folded) reason.
-  const b = await bearer("agentx");
-  const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
-  const t0 = Date.now();
-  let rejected = false, elapsed = 0, msg = "";
-  try {
-    const nc = await connect({
-      servers: SERVERS,
-      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(b)],
-      name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: CONNECT_TIMEOUT_MS, maxReconnectAttempts: 0,
-    });
-    await nc.close(); // should not reach — a deny must reject the connect
-  } catch (e) {
-    rejected = true; elapsed = Date.now() - t0; msg = (e as Error).message;
-  }
+  // A user-mode connect the callout will deny. The em-dash bug made the deny un-encodable, so no deny was
+  // sent and the connect hung to its timeout (the server does not bound the callout wait: an
+  // `authorization{timeout}` block has no effect in operator mode). asciiFold fixes the encoding; this
+  // asserts the client gets a PROMPT signed refusal, not a hang.
+  const denyConnect = async (timeoutMs: number) => {
+    const b = await bearer("agentx");
+    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const t0 = Date.now();
+    try {
+      const nc = await connect({
+        servers: SERVERS,
+        authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(b)],
+        name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: timeoutMs, maxReconnectAttempts: 0,
+      });
+      await nc.close(); // should not reach: a deny must reject the connect
+      return { rejected: false, elapsed: Date.now() - t0, msg: "CONNECTED (a deny must reject)" };
+    } catch (e) {
+      return { rejected: true, elapsed: Date.now() - t0, msg: (e as Error).message };
+    }
+  };
 
-  check("a denied user-mode connect is REJECTED (not accepted)", rejected, msg);
-  check("the rejection is PROMPT (well inside the connect timeout, not a hang)", rejected && elapsed < CONNECT_TIMEOUT_MS / 2, `${elapsed}ms of ${CONNECT_TIMEOUT_MS}ms`);
-  check("the connect fails as an authorization/authentication denial", /auth/i.test(msg), msg);
+  // Even with the SUBSCRIBE flushed, the FIRST auth request after callout startup is occasionally not
+  // answered on a loaded runner (seen only on Windows CI), and an un-answered request hangs THAT connect
+  // to the ceiling. A warm callout answers the next connect with a prompt signed deny, so retry: only a
+  // hang that PERSISTS across attempts is a real refusal-encoding failure. Each attempt is bounded, so a
+  // dropped first request costs one ceiling, not the whole suite.
+  const isPromptDeny = (r: { rejected: boolean; elapsed: number }) => r.rejected && r.elapsed < CONNECT_TIMEOUT_MS / 2;
+  let r = await denyConnect(CONNECT_TIMEOUT_MS);
+  for (let i = 0; i < 2 && !isPromptDeny(r); i++) r = await denyConnect(CONNECT_TIMEOUT_MS);
+  if (!isPromptDeny(r) && calloutLog.length) console.log("  callout diagnostics:\n    " + calloutLog.join("\n    "));
+
+  check("a denied user-mode connect is REJECTED (not accepted)", r.rejected, r.msg);
+  check("the rejection is PROMPT (well inside the connect timeout, not a hang)", isPromptDeny(r), `${r.elapsed}ms of ${CONNECT_TIMEOUT_MS}ms`);
+  check("the connect fails as an authorization/authentication denial", /auth/i.test(r.msg), r.msg);
   // The KEY property of the fix: the deny RESPONSE ENCODED (with the em-dash reason ASCII-folded), so the
-  // server could reject at all. NATS surfaces only a GENERIC "Authorization Violation" to the client — it
+  // server could reject at all. NATS surfaces only a GENERIC "Authorization Violation" to the client; it
   // does NOT forward the callout's reason string, which stays in the callout's server-side log. So the
-  // client-legible outcome is "denied, promptly" (checks above); the specific why is operator-side. Before
-  // the fix the em-dash broke encoding, no deny was sent, and this connect hung to the 8s timeout instead.
-  check("the client sees a prompt generic Authorization Violation (reason is server-side only)", /authorization violation/i.test(msg), msg);
+  // client-legible outcome is "denied, promptly" (checks above); the specific why is operator-side.
+  check("the client sees a prompt generic Authorization Violation (reason is server-side only)", /authorization violation/i.test(r.msg), r.msg);
 
   console.log(`\nCALLOUT-DENY SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

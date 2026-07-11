@@ -2,10 +2,8 @@ import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } 
 import { join } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
-  clearCurrent,
-  getCurrent,
   localProcessPath,
-  removeMesh,
+  removeMeshesByRoot,
   type LocalProcess,
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
@@ -39,7 +37,6 @@ export async function down(args: ParsedArgs): Promise<void> {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
-
   const all = localProcessSurface();
   const known = all.map((component) => component.name).sort();
   const unknown = requested.filter((name) => !known.includes(name));
@@ -78,8 +75,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
   if (selected.some((component) => component.clearsMesh)) {
     rmSync(join(context.root, ".cotal", "run"), { recursive: true, force: true });
-    removeMesh(context.space);
-    if (getCurrent() === context.space) clearCurrent();
+    removeMeshesByRoot(context.root);
   }
   if (!any) {
     const target = requested.length ? requested.join(", ") : "the local stack";
@@ -93,7 +89,7 @@ const parsePid = (raw: string): number | undefined => {
   const pid = Number(raw.trim());
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 };
-const isAlive = (pid: number): boolean => {
+export const isAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
 
@@ -190,4 +186,27 @@ async function stop(component: LocalProcess, context: LocalProcessContext): Prom
     }
     rmSync(marker, { force: true });
   }
+}
+
+/** Compatibility inventory for `clean`; lifecycle commands use the registered descriptors above. */
+export function pidfileTargets(space: string): Array<[file: string, label: string]> {
+  return [
+    ["manager.pid", "manager"],
+    ["delivery.pid", "delivery daemon"],
+    [`auth-service.${encodeURIComponent(space)}.pid`, "user-auth service"],
+    ["web.pid", "web dashboard"],
+    ["nats.pid", "nats-server"],
+  ];
+}
+
+export type PidfileState = { pid?: number; live: boolean; note?: string };
+
+/** Shared hardened pid probe: positive integers only, and EPERM means the process exists. */
+export function pidfileState(path: string): PidfileState {
+  if (!existsSync(path)) return { live: false, note: "no pidfile" };
+  const raw = readFileSync(path, "utf8").trim();
+  if (raw.startsWith("removing:")) return { live: false, note: "extension removal in progress" };
+  const pid = parsePid(raw);
+  if (!pid) return { live: false, note: "bad pidfile" };
+  return isAlive(pid) ? { pid, live: true } : { pid, live: false, note: "stale pidfile" };
 }

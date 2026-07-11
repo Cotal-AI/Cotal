@@ -22,6 +22,14 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
 
+function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
+  const message = e instanceof Error ? e.message : String(e);
+  const compatibility = /does not provide an export named/.test(message) && /@cotal-ai\/(core|workspace)/.test(message)
+    ? " (the extension is not compatible with this cotal binary's linked @cotal-ai/* packages; update the binary and extension together)"
+    : "";
+  return new Error(`extension ${pkg}@${ext.version} failed to import: ${message}${compatibility} - reinstall it: \`cotal ext add ${ext.spec}\``);
+}
+
 /**
  * The installed-extensions loader — opt-in for the PUBLISHED binary only (`runCli(…, { extensions:
  * true })`); library composition roots keep the explicit-import model.
@@ -212,6 +220,6 @@ async function importInstalledExtension(ext: InstalledExtension): Promise<void> 
   try {
     await import(pathToFileURL(join(dir, entry)).href); // self-registers into OUR registry (core is linked)
   } catch (e) {
-    throw new Error(`extension ${pkg}@${ext.version} failed to import: ${(e as Error).message} - reinstall it: \`cotal ext add ${ext.spec}\``);
+    throw importFailure(pkg, ext, e);
   }
 }

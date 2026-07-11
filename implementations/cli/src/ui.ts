@@ -1,7 +1,7 @@
 import type { PresenceStatus } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
-// The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with cotal-web.
+// The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
 // Re-exported so the CLI's many importers keep resolving them from here.
 export { c, color256 } from "@cotal-ai/workspace";
 
@@ -16,4 +16,17 @@ export function statusBadge(status: PresenceStatus): string {
     case "offline":
       return c.dim("⨯ offline");
   }
+}
+
+/** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
+ *  consumers minted by an older, incompatible Cotal generation survive every down/up cycle, and
+ *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
+ *  line by the error surfaces - the error itself stays the broker's own sentence. */
+export function staleStoreHint(msg: string): string | undefined {
+  // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
+  // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
+  // not recorded - so both variable parts are called out instead of implied.
+  return /consumer already exists|stream already exists/i.test(msg)
+    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags"
+    : undefined;
 }

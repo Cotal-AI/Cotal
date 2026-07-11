@@ -16,7 +16,7 @@ export interface MeshStatus {
   auth: boolean; // auth mode (trust material on disk) vs open
 }
 
-/** The dashboard's default port + branded URL. The `web` command moved out to the `cotal-web`
+/** The dashboard's default port + branded URL. The `web` command moved out to the `@cotal-ai/web`
  *  extension (stage 4); the CLI keeps these constants and the port probe so the setup ready-card
  *  can report the dashboard without importing it. */
 export const WEB_PORT = 7799;

@@ -53,8 +53,8 @@ presence changes and messages, ready for `grep`.
 
 ## `cotal web`: the browser dashboard
 
-The dashboard ships as the `cotal-web` extension. `cotal setup` installs it automatically; if
-that step was skipped, run `cotal ext add cotal-web` and the `web` command appears in the CLI.
+The dashboard ships as the `@cotal-ai/web` extension. `cotal setup` installs it automatically; if
+that step was skipped, run `cotal ext add @cotal-ai/web` and the `web` command appears in the CLI.
 
 ![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 

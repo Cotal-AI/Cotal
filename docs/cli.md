@@ -33,6 +33,7 @@ runtimes ship this way.
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
 | Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
+| Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
 | Set up & lifecycle | [`meshes`](#meshes-use-status) | List the running meshes on this machine |
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#meshes-use-status) | Read-only diagnostics for setup, processes, and the selected mesh |
@@ -47,7 +48,7 @@ runtimes ship this way.
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
-| Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `cotal-web` extension) |
+| Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
 | Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
 | Auth & meshes | [`login`](#login-logout) | Sign in to a per-user-auth mesh's IdP (once per machine) |
 | Auth & meshes | [`logout`](#login-logout) | Revoke the IdP session and clear the cached login |
@@ -137,6 +138,37 @@ the broker running, and `cotal down web` is available when the web extension is 
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
+
+`down` never deletes on-disk state; that is [`clean`](#clean).
+
+## clean
+
+```bash
+cotal clean <history|store|all> --force
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | `history`: target mesh |
+| `--dms` | off | `history`: also clear DM history |
+| `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
+| `--force` | — | Required: destructive, no prompting |
+
+One configurable cleanup verb; every target requires `--force`.
+
+- `history` purges the retained message backlog on the **running** broker (channels, plus DMs
+  with `--dms`). The same operation as [`history clear`](#history), which stays as an alias.
+- `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
+  consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
+  minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
+- `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
+  it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
+  registry entry; the next `cotal up` mints a fresh identity.
+
+`history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
+alive (run `cotal down` first). Personas (`.cotal/agents`) and logs are never touched. A custom
+store location is not recorded anywhere, so `--store-dir` must repeat whatever the mesh was
+launched with.
 
 ## meshes, use, status
 
@@ -326,9 +358,9 @@ cotal history clear --force [--dms] [--space <s>]
 | `--dms` | off | Also clear DM history |
 | `--force` | — | Required: clear without prompting |
 
-Purges retained channel history; `--dms` extends it to direct-message history. On a user-auth
-mesh the purge rides a short-lived purger view over your login, which needs ledger scope `admin`
-([Identity & auth](identity-and-auth.md)).
+Purges retained channel history; `--dms` extends it to direct-message history. An alias of
+[`clean history`](#clean). On a user-auth mesh the purge rides a short-lived purger view over
+your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 
 ## console
 
@@ -348,7 +380,7 @@ user-auth mesh it rides the read-only admin view over your login, which needs le
 ## web
 
 ```bash
-cotal ext add cotal-web   # install once
+cotal ext add @cotal-ai/web   # install once
 cotal web [--port <n>] [--no-open] [--space <s>]
 ```
 
@@ -359,8 +391,8 @@ cotal web [--port <n>] [--no-open] [--space <s>]
 | `--no-open` | off | Don't open the browser |
 
 The browser observability dashboard: presence, channels, and a live feed. It is **not** part of
-`cotal up`: it ships as the `cotal-web` extension (`cotal setup` installs it automatically; otherwise
-`cotal ext add cotal-web`). It self-registers `cotal web` into this surface and serves
+`cotal up`: it ships as the `@cotal-ai/web` extension (`cotal setup` installs it automatically; otherwise
+`cotal ext add @cotal-ai/web`). It self-registers `cotal web` into this surface and serves
 `http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need

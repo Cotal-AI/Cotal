@@ -788,7 +788,9 @@ async function authSetup(
  *  only, delivery is untouched). Runs only on a FRESH space (the `if (!auth)` branch); a normal down/up
  *  keeps `.cotal/auth` + these creds and reuses them. A space provisioned before this feature has no
  *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
- *  — a documented migration property, not a silent no-op. */
+ *  — a documented migration property, not a silent no-op.
+ *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
+ *  a cred added here must be added to that removal list too. */
 async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());

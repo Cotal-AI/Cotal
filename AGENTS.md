@@ -96,7 +96,7 @@ with no silent fallback.
   CLI plus a self-registering `orca` Runtime provider.
 - **`@cotal-ai/cli`** (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,
   `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
-- **`cotal-web`** (`implementations/web`): the browser dashboard as a `cotal ext`-installable
+- **`@cotal-ai/web`** (`implementations/web`): the browser dashboard as a `cotal ext`-installable
   extension package — it peer-depends on core + workspace (linked to the binary's copies at add
   time) and self-registers its command.
 - **`@cotal-ai/manager`** (`implementations/manager`): the agent supervisor: spawns and manages
