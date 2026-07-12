@@ -34,13 +34,14 @@
     "@cotal-ai/auth": "workspace:*",
     "@cotal-ai/cli": "workspace:*",
     "@cotal-ai/connector-claude-code": "workspace:*",
+    "@cotal-ai/connector-core": "workspace:*",
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/delivery": "workspace:*",
     "@cotal-ai/manager": "workspace:*",
-    "@cotal-ai/workspace": "workspace:*",
-    "@cotal-ai/connector-core": "workspace:*"
+    "@cotal-ai/pi": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*"
   },
   "files": [
     "dist",

@@ -103,6 +103,11 @@ That keeps `cotal down <component>` and `cotal status` extensible without teachi
 package-specific pidfiles. A provider process claims its declared pidfile with exclusive create;
 extension removal reserves that same path so startup cannot cross uninstall.
 
+Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
+loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the
+session's process and driving its run loop off the inbox — see
+[agent-frameworks](agent-frameworks.md).
+
 ## Connectors: four surfaces, one runtime
 
 Every coding-agent integration exposes the same four surfaces:
