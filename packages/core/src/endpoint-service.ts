@@ -654,9 +654,11 @@ export interface EpGateState {
    *  key collision-free within the space bucket). Binding the ENDPOINT here is the explicit
    *  identity check that does not rely on that entropy: a caller that passes a DIFFERENT endpoint's
    *  gate sharing the instance token (or any wrong gate) is refused, never confused, and the
-   *  credential family stays per-`(endpoint, instance)`. When D13/D14 wires the durable key it
-   *  should carry the endpoint too (`gate.<endpoint>.<lifecycleUid>`), so the key derivation matches
-   *  this check rather than leaning on entropy alone. */
+   *  credential family stays per-`(endpoint, instance)`. When D13/D14 wires the durable keys BOTH
+   *  families must carry the endpoint (`gate.<endpoint>.<lifecycleUid>` AND the credential-ledger
+   *  key, whose SPEC example `cred.<lifecycleUid>.<credentialId>` is likewise endpoint-blind), so the
+   *  key derivation matches this check rather than leaning on the instance-token entropy alone. Exact
+   *  endpoint-qualified shape is subject to the frozen-SPEC reconciliation (the recorded gate). */
   endpoint: string;
   lifecycleUid: string;
   state: "open" | "frozen" | "retired";
@@ -677,7 +679,9 @@ export interface EpGateSuccessor {
   nameAuthorityRevision: number;
 }
 
-/** One staged credential-ledger row (§13.1 `cred.<lifecycleUid>.<credentialId>`): written BEFORE
+/** One staged credential-ledger row (§13.1 `cred.<lifecycleUid>.<credentialId>` - the SPEC example
+ *  is endpoint-blind; D13/D14 must endpoint-qualify this key family too, see EpGateState.endpoint):
+ *  written BEFORE
  *  the winning CAS and carrying the NORMATIVE ledger fields (§13.1) so a later barrier's
  *  enumeration can find the credential, prove which surface/incarnation it covered, and EVICT its
  *  holder:
