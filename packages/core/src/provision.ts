@@ -555,18 +555,28 @@ export async function mintCreds(
     { ...perms, tags: principalTags(pr.owner, pr.actor) },
     { signer, ...validDates },
   );
-  // §13.1 mint fence for the serve credential: the JWT is BUILT, but released only when its
-  // ledger row is durably staged and its revision-pinned CAS wins the instance's single
-  // issuance gate (still `open` at the authorized epoch + registrationRevision). A takeover or
-  // re-registration that froze the gate first makes this lose and release nothing. A read is
-  // never a fence, so this is a CAS write, not the (removed) in-memory freshness mark.
+  // Build the credential string FULLY before the fence: nothing fallible may run AFTER a winning
+  // CAS, or a post-CAS throw would leave a committed ledger row with no released credential (an
+  // orphan authority record). fmtCreds only wraps the already-signed JWT with the seed, so it is
+  // done here and the fence is the mint's LAST step.
+  const creds = new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
+  // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
+  // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
+  // coordinates) is durably staged and its revision-pinned CAS wins the instance's single issuance
+  // gate (still `open` at the authorized epoch + registrationRevision + nameAuthorityRevision). A
+  // takeover, re-registration, or name transfer that froze the gate first makes this lose and
+  // release nothing. A read is never a fence, so this is a CAS write, not an in-memory mark.
   if (profile === "endpoint-serve") {
     if (!opts.serveIssuance)
       throw new Error("mintCreds: endpoint-serve requires opts.serveIssuance (the durable issuance-gate seam; the mint releases only on its revision-pinned CAS win, SPEC 13.1)");
-    await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, identity.id);
+    await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
+      credentialId: identity.id,
+      holderActor: pr.actor,
+      sourceChain: [pr.owner, pr.actor],
+      ...(validDates.exp !== undefined ? { exp: validDates.exp } : {}),
+    });
   }
-  const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
-  return new TextDecoder().decode(creds);
+  return creds;
 }
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
@@ -1088,9 +1098,19 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
 function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
   if (!opts.endpointServe)
     throw new Error("permissionsFor: endpoint-serve requires opts.endpointServe (the authorized serve artifact)");
+  // The fence is INSEPARABLE from serve-row emission: a serve credential's rows are only ever
+  // valid when released behind the §13.1 issuance CAS, so this builder refuses to emit them
+  // without the gate seam — closing the exported-permissionsFor bypass where a direct signer
+  // could obtain unfenced serve rows past the brand/space/owner check. `mintCreds` runs the CAS.
+  if (!opts.serveIssuance)
+    throw new Error("permissionsFor: endpoint-serve requires opts.serveIssuance (serve rows are emitted only behind the §13.1 issuance fence; mintCreds runs its CAS before release)");
   const snap = assertServeGrantMintable(opts.endpointServe, { space, holderOwner: pr.owner });
+  // Rail subscribe rows cover the EPHEMERAL commands only (journal commands ride epj, never the
+  // request rails) + the derived describe; the descriptor surface stays full. The class comes
+  // from the brand-verified artifact surface, not the caller.
+  const ephemeralCommands = snap.commands.filter((cmd) => opts.endpointServe!.surface[cmd].class === "ephemeral");
   const rows = epServeGrantRows(space, {
-    endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, commands: [...snap.commands],
+    endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, ephemeralCommands,
   });
   return {
     pub: { allow: rows.pub },

@@ -33,7 +33,9 @@ import {
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, RECORD_KINDS,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
   type EpCommandDef, type DescribeAnswer, type EpServeGrant, type CompiledContract,
+  type EpIssuanceBarrier,
 } from "../src/index.js";
+import type { KV } from "@nats-io/kv";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -109,6 +111,9 @@ const DOC_REL = {
   ],
 };
 const DOC_JOURNAL = { urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: [cmd("submitjob", { class: "journal" })] };
+// A MIXED endpoint: one ephemeral (rail-served) command + one journal command. Both belong to
+// the credential/descriptor surface; only "run" gets a rail def (SPEC 13.4/13.7).
+const DOC_MIXED = { urn: "ai.cotal.mixed", revision: 1, attributes: [], events: [], commands: [cmd("run"), cmd("submitjob", { class: "journal" })] };
 // §13.7 two-digest content addressing: the registered CLOSURE digest names a MANIFEST
 // `{v:1, root:<artifactDigest>, members:[]}`; the manifest's root names the cluster DOCUMENT.
 // The store (D8 provides the production epc reader) holds BOTH artifacts, each at its own digest.
@@ -126,12 +131,35 @@ const DC_AUX = register(DOC_AUX);
 const DC_INSPECT = register(DOC_INSPECT);
 const DC_REL = register(DOC_REL);
 const DC_JOURNAL = register(DOC_JOURNAL);
+const DC_MIXED = register(DOC_MIXED);
 const readClusterArtifact = (d: string) => store.get(d);
 
 const authority: ServiceNameAuthority = {
   isOperatorOwner: (o) => o === "u_op",
   domainOwnerOf: (name) => (name === "com.acme.builds" ? "u_acme" : undefined),
+  authorityRevision: () => 0,
 };
+
+// Per-instance §13.1 issuance-gate barriers so every registration serializes on a per-(endpoint,
+// instanceId) gate. This smoke exercises the registry/serve/describe SURFACE; the fence internals
+// (revision-pinned CAS, enumerate/revoke/evict, drift) are proven in endpoint-serve-auth.smoke.ts.
+// Here the barrier only needs to be a faithful freeze→(spec write)→reopen writer.
+const gateStates = new Map<string, { state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
+  const key = `${endpoint}/${instanceId}`;
+  if (!gateStates.has(key)) gateStates.set(key, { state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
+  const g = gateStates.get(key)!;
+  return {
+    observe: () => ({ ...g }),
+    freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return false; g.state = "frozen"; g.revision++; return true; },
+    enumerate: () => [],
+    revoke: () => {},
+    reopen: (succ) => { g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; },
+  };
+}
+/** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
+const reg = (kvArg: KV, args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority }) =>
+  registerServiceInstance(kvArg, { ...args, barrier: barrierFor(args.spec.endpoint, args.instanceId) });
 
 // ── name authority (broker-free) ──
 c("a core name under the operator owner admits",
@@ -203,22 +231,22 @@ try {
   const kv = await openRecordsBucket(nc, SPACE, { create: true });
   const asOp = { owner: "u_op" };
 
-  const regA = await registerServiceInstance(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
+  const regA = await reg(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
   c("registration writes the spec and returns its store revision", regA.registrationRevision >= 1);
-  const regA2 = await registerServiceInstance(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
+  const regA2 = await reg(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
   c("re-registration ADVANCES registrationRevision (scatter churn detection, SPEC 13.5)",
     regA2.registrationRevision > regA.registrationRevision);
   await rejects("a registration whose authenticated caller is not the descriptor owner refuses (impersonation)",
-    () => registerServiceInstance(kv, { spec, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
+    () => reg(kv, { spec, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
   await rejects("a registration under an unauthorized claimed owner refuses",
-    () => registerServiceInstance(kv, { spec: { ...spec, owner: "u_abc" }, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
+    () => reg(kv, { spec: { ...spec, owner: "u_abc" }, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
   // Ownership stability across authority drift: the SAME name re-minted to a new owner cannot
   // take over an instanceId registered under the old one.
   const acmeSpec: ServiceSpec = { endpoint: "com.acme.builds", owner: "u_acme", clusterDigests: [DC_MAIN], protocol: { v: 1 } };
-  await registerServiceInstance(kv, { spec: acmeSpec, instanceId: IID_A, registrant: { owner: "u_acme" }, authority });
+  await reg(kv, { spec: acmeSpec, instanceId: IID_A, registrant: { owner: "u_acme" }, authority });
   const driftedAuthority: ServiceNameAuthority = { ...authority, domainOwnerOf: () => "u_evil" };
   await rejects("a re-registration cannot change an instance's ownership (id reuse across identities)",
-    () => registerServiceInstance(kv, { spec: { ...acmeSpec, owner: "u_evil" }, instanceId: IID_A, registrant: { owner: "u_evil" }, authority: driftedAuthority }), "permission-denied");
+    () => reg(kv, { spec: { ...acmeSpec, owner: "u_evil" }, instanceId: IID_A, registrant: { owner: "u_evil" }, authority: driftedAuthority }), "permission-denied");
 
   // ---- the three-part status-write fence ----
   const mapping = { current: 2 };
@@ -242,7 +270,7 @@ try {
     () => writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_A, epoch: 3, readProcessEpoch, status: { epoch: 2, state: SERVICE_READY, observedSpecRevision: regA2.registrationRevision } }), "internal");
 
   // ---- the hardened freeze ----
-  const regB = await registerServiceInstance(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
+  const regB = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regB.registrationRevision } });
   const frozen = await freezeExpectedSet(kv, "manager");
   c("the frozen expected set carries (instanceId, registrationRevision, epoch) per live instance",
@@ -252,7 +280,7 @@ try {
   // A stale projection is NOT live under the current registration: re-register B (spec revision
   // advances) while its status still observes the old revision — freezing (new rev, old epoch)
   // would combine a registration with liveness it never had.
-  const regB2 = await registerServiceInstance(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
+  const regB2 = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
   c("a stale projection (status behind the CURRENT registration) leaves the frozen set",
     regB2.registrationRevision > regB.registrationRevision
     && (await freezeExpectedSet(kv, "manager")).every((f) => f.instanceId !== IID_B));
@@ -314,7 +342,7 @@ try {
   const orphanManifest = { v: 1, root: orphanRoot, members: [] as string[] };
   const orphanClosure = contractDigest(orphanManifest);
   store.set(orphanClosure, orphanManifest); // manifest present, root deliberately NOT stored
-  await registerServiceInstance(kv, { spec: { endpoint: "mgrorphan", owner: "u_op", clusterDigests: [orphanClosure], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  await reg(kv, { spec: { endpoint: "mgrorphan", owner: "u_op", clusterDigests: [orphanClosure], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
   await rejects("a manifest whose ROOT artifact is unreadable refuses (fail closed)",
     () => authorizeServeGrant(kv, { space: SPACE, endpoint: "mgrorphan", instanceId: IID_A, epoch: 1, holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact }), "failed-precondition");
   // An unreadable MANIFEST at the registered closure digest: fail closed.
@@ -366,7 +394,7 @@ try {
   throws("an EXTRA def outside the granted surface refuses at construction",
     () => serveEndpoint(null as never, SPACE, grantA, [...fullDefs(), def("phantom")], { public: true }));
   // A journal-class registered command refuses rail-serving (journal rides epj submissions).
-  await registerServiceInstance(kv, { spec: { endpoint: "mgrjob", owner: "u_op", clusterDigests: [DC_JOURNAL], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  await reg(kv, { spec: { endpoint: "mgrjob", owner: "u_op", clusterDigests: [DC_JOURNAL], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
   const grantJournal = await authorizeServeGrant(kv, {
     space: SPACE, endpoint: "mgrjob", instanceId: IID_A, epoch: 1,
     holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
@@ -524,7 +552,7 @@ try {
     r7d !== undefined && r7d.reply.error?.code === "expired");
   // no resolver seam = targeted modes REFUSED, never dispatched unchecked. manager2 registers a
   // NARROW single-command cluster (its whole surface is `inspect`), per the full-surface rule.
-  await registerServiceInstance(kv, { spec: { endpoint: "manager2", owner: "u_op", clusterDigests: [DC_INSPECT], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  await reg(kv, { spec: { endpoint: "manager2", owner: "u_op", clusterDigests: [DC_INSPECT], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
   const grant2 = await authorizeServeGrant(kv, {
     space: SPACE, endpoint: "manager2", instanceId: IID_A, epoch: 1,
     holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
@@ -559,7 +587,7 @@ try {
     def("adopt", { handler: () => { adoptRuns++; return { which: "c" }; } }),
     def("audit", { handler: () => ({ which: "l" }) }),
   ];
-  await registerServiceInstance(kv, { spec: { endpoint: "manager3", owner: "u_op", clusterDigests: [DC_REL], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  await reg(kv, { spec: { endpoint: "manager3", owner: "u_op", clusterDigests: [DC_REL], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
   const grant3 = await authorizeServeGrant(kv, {
     space: SPACE, endpoint: "manager3", instanceId: IID_A, epoch: 1,
     holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
@@ -713,6 +741,44 @@ try {
   c("a declared-public descriptor answers unscoped and SAYS it is public",
     pub?.public === true && pub.descriptor.clusters[0].commands.includes("status"), JSON.stringify(pub));
   await srvPub.stop();
+
+  // ---- finding 4: journal-only and MIXED endpoints construct and serve mandatory describe ----
+  // A journal command stays in the credential/descriptor surface but rides epj, so it takes no
+  // rail def; exact handler coverage applies to the EPHEMERAL subset only. The old contradiction
+  // (full-surface coverage vs journal-def rejection) made these endpoints unable to serve describe.
+  replies.length = 0;
+  const describeOn = async (endpoint: string) => {
+    const subj = epRequestSubject(SPACE, { route: { mode: "one" }, endpoint, command: "describe", caller, nonce: nonce() });
+    nc.publish(subj, new TextEncoder().encode(JSON.stringify({ v: 1, id: "req-d", op: { endpoint, command: "describe" }, class: "ephemeral", replyExpected: true, deadlineMs: 2000, args: undefined, from: { id: "u_abc.worker", name: "w" } })));
+    await nc.flush();
+    for (let i = 0; i < 40 && replies.length === 0; i++) await wait(50);
+    return replies.shift();
+  };
+  // journal-ONLY (mgrjob: submitjob is journal) — constructs with NO ephemeral defs, serves describe.
+  const srvJournal = serveEndpoint(nc, SPACE, grantJournal, [], { public: true });
+  await nc.flush();
+  const rj = await describeOn("mgrjob");
+  const ja = rj?.reply.data as DescribeAnswer | undefined;
+  c("a JOURNAL-ONLY endpoint constructs serveEndpoint (no ephemeral defs) and serves mandatory describe (SPEC 13.7)",
+    rj?.reply.ok === true && ja?.public === true && ja.descriptor.clusters.some((cl) => cl.commands.includes("submitjob")), JSON.stringify(rj?.reply));
+  await srvJournal.stop();
+  // MIXED (mgrmix: ephemeral "run" + journal "submitjob") — constructs with the ephemeral def
+  // ONLY; describe advertises BOTH; and the ephemeral rail actually serves.
+  await reg(kv, { spec: { endpoint: "mgrmix", owner: "u_op", clusterDigests: [DC_MIXED], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  const grantMixed = await authorizeServeGrant(kv, { space: SPACE, endpoint: "mgrmix", instanceId: IID_A, epoch: 1, holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact });
+  const srvMixed = serveEndpoint(nc, SPACE, grantMixed, [def("run")], { public: true });
+  await nc.flush();
+  const rm = await describeOn("mgrmix");
+  const ma = rm?.reply.data as DescribeAnswer | undefined;
+  c("a MIXED (ephemeral+journal) endpoint constructs with the ephemeral def only and serves describe advertising BOTH commands",
+    rm?.reply.ok === true && !!ma && ma.descriptor.clusters.some((cl) => cl.commands.includes("run") && cl.commands.includes("submitjob")), JSON.stringify(rm?.reply));
+  const runSubj = epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "mgrmix", command: "run", caller, nonce: nonce() });
+  nc.publish(runSubj, new TextEncoder().encode(JSON.stringify({ v: 1, id: "req-run", op: { endpoint: "mgrmix", command: "run", inputDigest: D_IN, outputDigest: D_OUT }, class: "ephemeral", replyExpected: true, deadlineMs: 2000, args: { name: "x" }, from: { id: "u_abc.worker", name: "w" } })));
+  await nc.flush();
+  for (let i = 0; i < 40 && replies.length === 0; i++) await wait(50);
+  const rr = replies.shift();
+  c("the MIXED endpoint's EPHEMERAL rail serves (journal siblings do not block construction or serving)", rr?.reply.ok === true, JSON.stringify(rr?.reply));
+  await srvMixed.stop();
 
   await replySub.drain();
   await nc.close();

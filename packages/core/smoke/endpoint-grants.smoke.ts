@@ -69,14 +69,18 @@ c("serve subscribe: queue-qualified class rail + plain scatter + exact instance,
 c("serve publish: reply attribution pin + events + timer schedule-only + record ingress, all epoch-pinned",
   epServePublishRows("demo", "manager", IID, 5).join("|")
   === `cotal.demo.ep.reply.manager.${IID}.5.*.*.*.*|cotal.demo.epe.manager.${IID}.5.>|cotal.demo.ept.manager.${IID}.5.*.schedule|cotal.demo.epr.manager.${IID}.5.>`);
-const serve = epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, commands: ["spawn"] });
-c("serve bundle: 3 sub rows per command incl. the DERIVED describe, plus the own timer-fire read; 4 pub rows",
+const serve = epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, ephemeralCommands: ["spawn"] });
+c("serve bundle: 3 sub rows per ephemeral command incl. the DERIVED describe, plus the own timer-fire read; 4 pub rows",
   serve.sub.length === 7 && serve.pub.length === 4);
 c("the timer-fire read row is the own instance's, epoch-pinned (§13.9 Timer fire consume)",
   serve.sub.includes(`cotal.demo.ept.manager.${IID}.5.*.fire`));
-throws("serve bundle refuses zero commands", () => epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, commands: [] }));
+// A journal-only endpoint has no ephemeral (rail-served) commands, but still serves mandatory
+// describe (§13.7): the bundle is describe rails + the own timer-fire read only.
+const journalOnly = epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, ephemeralCommands: [] });
+c("a journal-only serve bundle (no ephemeral commands) still grants the DERIVED describe rails + timer-fire",
+  journalOnly.sub.length === 4 && journalOnly.sub.some((r) => r.includes(".describe.")) && journalOnly.sub.includes(`cotal.demo.ept.manager.${IID}.5.*.fire`) && journalOnly.pub.length === 4);
 throws("serve bundle refuses an EXPLICIT describe (reserved, derived in this one seam)",
-  () => epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, commands: ["spawn", "describe"] }));
+  () => epServeGrantRows("demo", { endpoint: "manager", instanceId: IID, epoch: 5, ephemeralCommands: ["spawn", "describe"] }));
 c("no serve rail row crosses commands (no bare cross-command tail)",
   serve.sub.filter((r) => !r.endsWith(".fire")).every((r) => r.includes(".spawn.") || r.includes(".describe.")));
 

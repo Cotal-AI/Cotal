@@ -144,24 +144,25 @@ export function epServePublishRows(space: string, endpoint: string, instanceId: 
   ];
 }
 
-/** All serve-credential subject-space rows for an instance serving `commands`. The reserved
- *  `describe` is DERIVED here — every endpoint serves it (§13.7), so this ONE assembly seam
- *  emits its rails for every serve credential and an explicit `describe` in `commands` refuses
- *  (mirroring {@link import("./endpoint-serve.js").serveEndpoint}'s construction rule: there is
- *  no custom describe). The subscribe side also carries the instance's OWN epoch-pinned timer
- *  FIRE row (§13.9 "Timer fire consume": `ept.<e>.<i>.<epoch>.*.fire` — consume only; the
- *  publish side stays `.schedule`-only, no credential publishes `.armed`/`.fire`). The
- *  `$JS.API` bind rows (effects/pool durables) ride the §13.12 stream binding, not this
- *  builder. */
+/** All serve-credential subject-space rows for an instance. `ephemeralCommands` is the
+ *  RAIL-SERVED (ephemeral) subset only — journal commands stay in the credential's descriptor
+ *  surface but ride `epj` submissions, never the §13.2 request rails, so they take no rail
+ *  subscribe row here (their effects/pool durable binds ride the §13.12 stream binding). The
+ *  reserved `describe` is DERIVED here — every endpoint serves it (§13.7), so this ONE assembly
+ *  seam emits its rails for every serve credential (even a journal-only endpoint, whose
+ *  `ephemeralCommands` is empty) and an explicit `describe` refuses (mirroring
+ *  {@link import("./endpoint-serve.js").serveEndpoint}'s construction rule: there is no custom
+ *  describe). The subscribe side also carries the instance's OWN epoch-pinned timer FIRE row
+ *  (§13.9 "Timer fire consume": `ept.<e>.<i>.<epoch>.*.fire` — consume only; the publish side
+ *  stays `.schedule`-only, no credential publishes `.armed`/`.fire`). */
 export function epServeGrantRows(
   space: string,
-  serve: { endpoint: string; instanceId: string; epoch: number; commands: string[] },
+  serve: { endpoint: string; instanceId: string; epoch: number; ephemeralCommands: string[] },
 ): { pub: string[]; sub: string[] } {
-  if (serve.commands.length === 0) throw new Error(`serve grant for "${serve.endpoint}" needs at least one registered command`);
-  if (serve.commands.includes("describe"))
+  if (serve.ephemeralCommands.includes("describe"))
     throw new Error(`"describe" is not a mintable serve command: it is reserved and derived here for every serve credential (SPEC 13.7/13.9)`);
   const sub: string[] = [];
-  for (const cmd of [...serve.commands, "describe"]) sub.push(...epServeSubscribeRows(space, serve.endpoint, serve.instanceId, cmd));
+  for (const cmd of [...serve.ephemeralCommands, "describe"]) sub.push(...epServeSubscribeRows(space, serve.endpoint, serve.instanceId, cmd));
   const pub = epServePublishRows(space, serve.endpoint, serve.instanceId, serve.epoch); // validates the tuple's tokens + epoch
   sub.push(`${spacePrefix(space)}.ept.${endpointToken(serve.endpoint)}.${assertLifecycleToken(serve.instanceId, "instanceId")}.${serve.epoch}.*.fire`);
   return { pub, sub };

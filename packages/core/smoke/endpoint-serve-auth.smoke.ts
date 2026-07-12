@@ -40,7 +40,7 @@ import {
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
-  type EpIssuanceGate, type EpGateState, type EpServeLedgerRow,
+  type EpIssuanceGate, type EpIssuanceBarrier, type EpGateState, type EpServeLedgerRow,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -101,36 +101,61 @@ function memKv(): KV {
 }
 
 /** A faithful in-memory model of the §13.1 durable issuance gate (`gate.<lifecycleUid>`): ONE
- *  key binding `{state, generation, processEpoch, registrationRevision, revision}`, with a
- *  revision-pinned CAS. `commit` is the mint's serialization point; `freeze` is what a takeover
- *  or a re-registration barrier CASes FIRST — both advance `revision`, so exactly one of a
- *  parked mint's `commit` and a barrier's `freeze` wins. The staged ledger rows are the
- *  `cred.` rows a barrier would enumerate and revoke. */
-function makeGate(init: { generation: number; processEpoch: number; registrationRevision: number }) {
-  const gate = { state: "open" as "open" | "frozen" | "retired", ...init, revision: 1 };
-  const rows = new Map<string, { row: EpServeLedgerRow; state: "staged" | "revoked" }>();
+ *  key binding `{state, generation, processEpoch, registrationRevision, nameAuthorityRevision,
+ *  revision}` with BOTH halves of the seam sharing it. The mint's `commit` and every barrier's
+ *  `freeze` are revision-pinned CAS on the SAME key and each advances `revision`, so exactly one
+ *  of a parked mint's commit and a barrier's freeze wins. `stage` is create-safe (keyed by
+ *  credentialId, a retry overwrites). The ledger `rows` carry the normative §13.1 fields and
+ *  their `active`/`revoked` state, so a barrier can enumerate the family and evict by
+ *  holderPrincipal. */
+function makeGate(init: { generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision?: number }) {
+  const gate = {
+    state: "open" as "open" | "frozen" | "retired",
+    generation: init.generation,
+    processEpoch: init.processEpoch,
+    registrationRevision: init.registrationRevision,
+    nameAuthorityRevision: init.nameAuthorityRevision ?? 0,
+    revision: 1,
+  };
+  const rows = new Map<string, EpServeLedgerRow>(); // keyed by credentialId (create-safe); row.state is active|revoked
+  const observe = (): EpGateState | null => ({ ...gate });
+  const revoke = (row: EpServeLedgerRow) => { const e = rows.get(row.credentialId); if (e) e.state = "revoked"; };
   const seam: EpIssuanceGate = {
-    observe: (): EpGateState => ({ ...gate }),
-    stage: (row) => { rows.set(row.credentialId, { row, state: "staged" }); },
+    observe,
+    stage: (row) => { rows.set(row.credentialId, { ...row }); }, // create-safe: same credentialId overwrites
     commit: (expectedRevision) => {
       if (gate.state !== "open" || gate.revision !== expectedRevision) return false;
       gate.revision++; // a winning mint advances the gate revision, staying open at the same tuple
       return true;
     },
-    revoke: (row) => { const e = rows.get(row.credentialId); if (e) e.state = "revoked"; },
+    revoke,
+  };
+  const barrier: EpIssuanceBarrier = {
+    observe,
+    freeze: (expectedRevision) => {
+      if (gate.state !== "open" || gate.revision !== expectedRevision) return false; // revision-pinned CAS
+      gate.state = "frozen"; gate.revision++;
+      return true;
+    },
+    enumerate: () => [...rows.values()],
+    revoke,
+    reopen: (succ) => {
+      gate.state = "open";
+      gate.generation = succ.generation;
+      gate.processEpoch = succ.processEpoch;
+      gate.registrationRevision = succ.registrationRevision;
+      gate.nameAuthorityRevision = succ.nameAuthorityRevision;
+      gate.revision++;
+    },
   };
   return {
-    seam, rows,
-    /** A barrier (takeover or re-registration) CAS-freezes the gate BEFORE enumerating. */
-    freeze: () => { gate.state = "frozen"; gate.revision++; },
-    /** Reopen at successor authority coordinates (post-enumeration barrier step). */
-    reopen: (next: { processEpoch?: number; registrationRevision?: number }) => {
-      gate.state = "open"; gate.generation++; gate.revision++;
-      if (next.processEpoch !== undefined) gate.processEpoch = next.processEpoch;
-      if (next.registrationRevision !== undefined) gate.registrationRevision = next.registrationRevision;
-    },
-    staged: () => [...rows.values()].filter((e) => e.state === "staged").length,
-    revoked: () => [...rows.values()].filter((e) => e.state === "revoked").length,
+    seam, barrier, rows,
+    /** CAS-freeze the gate at its CURRENT revision (a barrier's first step), for tests that need a pre-frozen gate. */
+    freezeNow: () => barrier.freeze(gate.revision),
+    retire: () => { gate.state = "retired"; gate.revision++; },
+    coord: () => ({ ...gate }),
+    active: () => [...rows.values()].filter((r) => r.state === "active").length,
+    revoked: () => [...rows.values()].filter((r) => r.state === "revoked").length,
   };
 }
 
@@ -166,24 +191,29 @@ try {
   if (!up) throw new Error("auth broker did not come up");
 
   // ---- authorize the serve artifact against the REGISTERED service ----
-  const authority: ServiceNameAuthority = { isOperatorOwner: (o) => o === "u_op", domainOwnerOf: () => undefined };
+  const NAR = 0; // the name-authority binding revision the mock reports for "manager"
+  const authority: ServiceNameAuthority = { isOperatorOwner: (o) => o === "u_op", domainOwnerOf: () => undefined, authorityRevision: () => NAR };
   const kv = memKv();
   const svcSpec = { endpoint: "manager", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
-  const reg = await registerServiceInstance(kv, { spec: svcSpec, instanceId: IID, registrant: { owner: "u_op" }, authority });
+  // The provisioner-created gate (§13.1) the registration barrier writes behind: open, pre-registration.
+  const regGate = makeGate({ generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: NAR });
+  const reg = await registerServiceInstance(kv, { spec: svcSpec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: regGate.barrier });
+  c("registration ran the barrier: it froze+reopened the gate at the new registrationRevision",
+    regGate.coord().state === "open" && regGate.coord().registrationRevision === reg.registrationRevision && regGate.coord().generation === 1);
   const serveGrant = await authorizeServeGrant(kv, {
     space, endpoint: "manager", instanceId: IID, epoch: EPOCH,
     holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact,
   });
-  c("a registered instance's serve artifact authorizes for minting (verified full surface, bound space/owner)",
+  c("a registered instance's serve artifact authorizes for minting (verified full surface, bound space/owner, name-authority coordinate)",
     serveGrant.commands.length === 1 && serveGrant.commands[0] === "status" && serveGrant.space === space && serveGrant.owner === "u_op"
-    && serveGrant.registrationRevision === reg.registrationRevision);
+    && serveGrant.registrationRevision === reg.registrationRevision && serveGrant.nameAuthorityRevision === NAR);
   await rejects("a FOREIGN NAME cannot authorize a mintable serve artifact (holder is not the registered owner)",
     () => authorizeServeGrant(kv, { space, endpoint: "manager", instanceId: IID, epoch: EPOCH, holder: { owner: "u_evil" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact }), "permission-denied");
   await rejects("a FOREIGN INSTANCE cannot authorize (unregistered)",
     () => authorizeServeGrant(kv, { space, endpoint: "manager", instanceId: IID_B, epoch: EPOCH, holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact }), "failed-precondition");
 
-  // ---- the durable issuance gate is the mint fence (SPEC 13.1); the gate binds epoch + reg rev ----
-  const gate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+  // ---- the durable issuance gate is the mint fence (SPEC 13.1); it binds epoch + reg rev + name authority ----
+  const gate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });
   const mintServe = (over: Record<string, unknown> = {}) => mintCreds(auth, newIdentity(), "endpoint-serve", {
     principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam, ...over,
   } as Parameters<typeof mintCreds>[3]);
@@ -206,10 +236,16 @@ try {
   const serveCreds = await mintCreds(auth, serveId, "endpoint-serve", {
     principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam,
   });
-  c("the mint STAGED its credential-ledger row and WON the gate CAS (one committed row)",
-    gate.staged() === 1 && gate.revoked() === 0);
+  c("the mint STAGED its credential-ledger row and WON the gate CAS (one active row)",
+    gate.active() === 1 && gate.revoked() === 0);
+  c("the staged ledger row carries the NORMATIVE §13.1 fields (holderPrincipal/lifecycleUid/sourceChain/state/exp)",
+    (() => { const r = [...gate.rows.values()][0]; return r.holderPrincipal === "u_op.mgr" && r.lifecycleUid === IID
+      && Array.isArray(r.sourceChain) && r.sourceChain.length === 2 && r.state === "active" && typeof r.exp === "number"
+      && r.registrationRevision === reg.registrationRevision && r.nameAuthorityRevision === NAR; })());
   c("a SECOND mint from the same artifact wins its own fresh CAS (standing-renewable re-mint)",
-    (await mintServe()).includes("USER JWT") && gate.staged() === 2);
+    (await mintServe()).includes("USER JWT") && gate.active() === 2);
+  c("the issuance gate stage is create-safe (re-staging the same credentialId keeps ONE row)",
+    (() => { const before = gate.rows.size; const r = [...gate.rows.values()][0]; gate.seam.stage(r); return gate.rows.size === before; })());
 
   // ---- mint context binding (space + principal) ----
   await rejects("a FOREIGN PRINCIPAL cannot mint from the artifact (the minted principal IS the registered owner)",
@@ -220,62 +256,130 @@ try {
       () => mintCreds(foreign, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam }), "permission-denied");
   }
 
-  // ---- the durable fence: parked mint vs takeover, and vs re-registration (SPEC 13.1) ----
-  // A gate whose epoch/reg-rev has already advanced past the artifact's is `expired` at observe.
+  // ---- the durable fence: the three currency dimensions + missing/retired gates (SPEC 13.1) ----
+  // A gate whose epoch / reg-rev / name-authority-rev has already advanced past the artifact's is
+  // `expired` at observe; the mint never reaches the CAS.
   {
-    const drifted = makeGate({ generation: 2, processEpoch: EPOCH + 1, registrationRevision: reg.registrationRevision });
+    const drifted = makeGate({ generation: 2, processEpoch: EPOCH + 1, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });
     await rejects("EPOCH DRIFT: the gate is at a newer processEpoch than the artifact; mint refuses, releases nothing",
       () => mintServe({ serveIssuance: drifted.seam }), "expired");
-    c("…and the drifted mint staged NO surviving row (it never reached the CAS)", drifted.staged() === 0);
+    c("…and the drifted mint staged NO surviving row (it never reached the CAS)", drifted.active() === 0 && drifted.revoked() === 0);
   }
   {
-    const reReg = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision + 1 });
+    const reReg = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision + 1, nameAuthorityRevision: NAR });
     await rejects("RE-REGISTRATION DRIFT: the gate is at a newer registrationRevision; mint refuses (superseded surface)",
       () => mintServe({ serveIssuance: reReg.seam }), "expired");
   }
   {
-    const frozenGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
-    frozenGate.freeze(); // a takeover/re-registration barrier CAS-froze the gate FIRST
+    const nameDrift = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR + 1 });
+    await rejects("NAME-AUTHORITY DRIFT: the gate is at a newer nameAuthorityRevision; mint refuses (a name transfer superseded the owner)",
+      () => mintServe({ serveIssuance: nameDrift.seam }), "expired");
+  }
+  {
+    const missing: EpIssuanceGate = { observe: () => null, stage: () => { throw new Error("unreached"); }, commit: () => { throw new Error("unreached"); }, revoke: () => {} };
+    await rejects("a MISSING (null) gate refuses the mint (a serve cred never mints against a missing gate)",
+      () => mintServe({ serveIssuance: missing }), "expired");
+    const retired = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });
+    retired.retire();
+    await rejects("a RETIRED gate refuses the mint (minting is closed for the lifecycle)",
+      () => mintServe({ serveIssuance: retired.seam }), "expired");
+  }
+  {
+    const frozenGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });
+    c("a barrier's freeze is a revision-pinned CAS (the WRONG expected revision loses)", frozenGate.barrier.freeze(999) === false);
+    c("…and the barrier's freeze at the CURRENT revision wins", frozenGate.freezeNow() === true);
     await rejects("a FROZEN gate refuses the mint (a barrier won the single-key serialization)",
       () => mintServe({ serveIssuance: frozenGate.seam }), "expired");
   }
-  // Parked-mint-vs-takeover: the mint observes an OPEN gate, then a barrier freezes it before the
-  // mint's CAS. The CAS loses, the staged row is revoked, and NO credential is released.
+  // Parked-mint-vs-barrier: the mint observes an OPEN gate, then a barrier CAS-freezes it (the
+  // revision advances) before the mint's revision-pinned commit. The CAS loses, the staged row is
+  // revoked, and NO credential is released. This is the mint-loses side of the single-key race.
   {
-    const raceGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+    const raceGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });
     let barrierWon = false;
     const racing: EpIssuanceGate = {
       observe: raceGate.seam.observe,
-      stage: (row) => { raceGate.seam.stage(row); raceGate.freeze(); barrierWon = true; }, // barrier freezes between stage and commit
+      stage: (row) => { raceGate.seam.stage(row); barrierWon = raceGate.freezeNow(); }, // barrier freezes between stage and commit
       commit: raceGate.seam.commit,
       revoke: raceGate.seam.revoke,
     };
     let released = "";
     try { released = await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: racing }); } catch { /* expected */ }
-    c("parked-mint-vs-takeover: the barrier's freeze wins the CAS, the mint releases NOTHING and revokes its staged row",
-      barrierWon && released === "" && raceGate.staged() === 0 && raceGate.revoked() === 1);
+    c("parked-mint-vs-barrier: the barrier's freeze wins the CAS, the mint releases NOTHING and revokes its staged row",
+      barrierWon && released === "" && raceGate.active() === 0 && raceGate.revoked() === 1);
   }
-  // Parked-mint-vs-re-registration: same single-key serialization, the barrier advancing the
-  // registrationRevision. The mint's revision-pinned CAS loses; nothing is released.
+  // Mint-WINS-then-barrier-enumerates-and-evicts: the mint commits its row (active), THEN a
+  // barrier freezes, enumerates the family, revokes the released credential by holderPrincipal,
+  // and reopens at the successor coordinate. This is the eviction half the §13.1 ledger exists for.
   {
-    const raceGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
-    const racing: EpIssuanceGate = {
-      observe: raceGate.seam.observe,
-      stage: (row) => { raceGate.seam.stage(row); raceGate.freeze(); raceGate.reopen({ registrationRevision: reg.registrationRevision + 1 }); },
-      commit: raceGate.seam.commit,
-      revoke: raceGate.seam.revoke,
-    };
-    let released = "";
-    try { released = await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: racing }); } catch { /* expected */ }
-    c("parked-mint-vs-re-registration: the re-registration barrier wins, the mint releases NOTHING and revokes its row",
-      released === "" && raceGate.revoked() === 1);
-  }
-  // finalizeServeIssuance is only released on a genuine CAS win: prove the winning path directly.
-  {
-    const winGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
-    await finalizeServeIssuance(winGate.seam, serveGrant, newIdentity().id);
+    const g = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });
+    await finalizeServeIssuance(g.seam, serveGrant, { credentialId: newIdentity().id, holderActor: "mgr", sourceChain: ["u_op", "mgr"], exp: 111 });
     c("a mint that wins the CAS on an open, current gate commits its row (the positive fence path)",
-      winGate.staged() === 1 && winGate.revoked() === 0);
+      g.active() === 1 && g.revoked() === 0);
+    const before = g.coord();
+    if (!g.freezeNow()) throw new Error("barrier freeze should win");
+    const family = g.barrier.enumerate();
+    for (const row of family) if (row.state === "active") g.barrier.revoke(row);
+    g.barrier.reopen({ generation: before.generation + 1, processEpoch: before.processEpoch, registrationRevision: before.registrationRevision + 1, nameAuthorityRevision: before.nameAuthorityRevision });
+    c("mint-wins→barrier-enumerates→revokes: the released credential is EVICTED by holderPrincipal",
+      family.length === 1 && family[0].holderPrincipal === "u_op.mgr" && g.active() === 0 && g.revoked() === 1);
+    c("…and the barrier reopened the gate at the successor registrationRevision (a superseded re-mint would now lose)",
+      g.coord().state === "open" && g.coord().registrationRevision === before.registrationRevision + 1);
+  }
+  // The REAL re-registration writer participates in the SAME gate (distsys/security finding 1):
+  // register → mint (active) → re-register through registerServiceInstance (which freezes,
+  // evicts, reopens) → the released credential is revoked and the pre-re-registration artifact
+  // can no longer mint. No hand-driven barrier: the exported writer does it.
+  {
+    const kv2 = memKv();
+    const authority2: ServiceNameAuthority = { isOperatorOwner: (o) => o === "u_op", domainOwnerOf: () => undefined, authorityRevision: () => 0 };
+    const spec2 = { endpoint: "reg2", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const g = makeGate({ generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    const r1 = await registerServiceInstance(kv2, { spec: spec2, instanceId: IID, registrant: { owner: "u_op" }, authority: authority2, barrier: g.barrier });
+    const grant2 = await authorizeServeGrant(kv2, { space, endpoint: "reg2", instanceId: IID, epoch: EPOCH, holder: { owner: "u_op" }, authority: authority2, readProcessEpoch: () => EPOCH, readClusterArtifact });
+    await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: grant2, serveIssuance: g.seam });
+    c("a serve credential minted against the current registration is ACTIVE on the gate", g.active() === 1 && g.revoked() === 0);
+    const r2 = await registerServiceInstance(kv2, { spec: spec2, instanceId: IID, registrant: { owner: "u_op" }, authority: authority2, barrier: g.barrier });
+    c("re-registration through the REAL writer evicted the superseded credential and advanced the gate",
+      g.active() === 0 && g.revoked() === 1 && g.coord().registrationRevision === r2.registrationRevision && r2.registrationRevision > r1.registrationRevision);
+    await rejects("STALE-SURFACE probe closed: a mint from the pre-re-registration artifact now refuses (registrationRevision advanced)",
+      () => mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: grant2, serveIssuance: g.seam }), "expired");
+  }
+  // registerServiceInstance barrier BRANCHES: a registration never proceeds on a null/frozen/
+  // retired gate or a lost freeze, and an aborted registration restores the gate to OPEN at its
+  // ORIGINAL coordinate (so a mid-flight mint's revision pin still loses, never a stuck-frozen gate).
+  {
+    const kv3 = memKv();
+    const auth3: ServiceNameAuthority = { isOperatorOwner: (o) => o === "u_op", domainOwnerOf: () => undefined, authorityRevision: () => 0 };
+    const spec3 = { endpoint: "reg3", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const nullBarrier: EpIssuanceBarrier = { observe: () => null, freeze: () => { throw new Error("unreached"); }, enumerate: () => [], revoke: () => {}, reopen: () => { throw new Error("unreached"); } };
+    await rejects("registration against a MISSING gate refuses failed-precondition (the provisioner creates the gate)",
+      () => registerServiceInstance(kv3, { spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: nullBarrier }), "failed-precondition");
+    const gfrozen = makeGate({ generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    gfrozen.freezeNow();
+    await rejects("registration against a FROZEN gate refuses conflict (another barrier holds the key)",
+      () => registerServiceInstance(kv3, { spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gfrozen.barrier }), "conflict");
+    const gretired = makeGate({ generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    gretired.retire();
+    await rejects("registration against a RETIRED gate refuses failed-precondition (permanently closed, a re-read cannot help)",
+      () => registerServiceInstance(kv3, { spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gretired.barrier }), "failed-precondition");
+    const glost = makeGate({ generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    const lostBarrier: EpIssuanceBarrier = { ...glost.barrier, freeze: () => false };
+    await rejects("registration whose freeze LOSES the CAS refuses conflict (a concurrent barrier won the key)",
+      () => registerServiceInstance(kv3, { spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: lostBarrier }), "conflict");
+    // abort path: a re-registration that fails ownership stability AFTER the freeze must reopen.
+    const authAcme: ServiceNameAuthority = { isOperatorOwner: () => false, domainOwnerOf: () => "u_acme", authorityRevision: () => 0 };
+    const specAcme = { endpoint: "com.acme.reg", owner: "u_acme", clusterDigests: [DC], protocol: { v: 1 as const } };
+    const gabort = makeGate({ generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    await registerServiceInstance(kv3, { spec: specAcme, instanceId: IID, registrant: { owner: "u_acme" }, authority: authAcme, barrier: gabort.barrier });
+    const openCoord = gabort.coord();
+    const authEvil: ServiceNameAuthority = { isOperatorOwner: () => false, domainOwnerOf: () => "u_evil", authorityRevision: () => 0 };
+    await rejects("a re-registration changing ownership is rejected AFTER the freeze (ownership stability)",
+      () => registerServiceInstance(kv3, { spec: { ...specAcme, owner: "u_evil" }, instanceId: IID, registrant: { owner: "u_evil" }, authority: authEvil, barrier: gabort.barrier }), "permission-denied");
+    const afterAbort = gabort.coord();
+    c("the aborted registration restored the gate to OPEN at the ORIGINAL coordinate (freeze happened, reopen-on-abort ran, revision advanced)",
+      afterAbort.state === "open" && afterAbort.registrationRevision === openCoord.registrationRevision
+      && afterAbort.generation === openCoord.generation + 1 && afterAbort.revision > openCoord.revision);
   }
 
   const callerId = newIdentity();

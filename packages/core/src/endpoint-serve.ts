@@ -215,9 +215,10 @@ export interface EpServeHandle {
  * a foreign space, and binds every def to the artifact's digest-VERIFIED registered
  * declaration: the def must be a GRANTED command, its provenance-branded compiled contracts
  * must equal the registered schema digests, its class/targeted/modes come from the verified
- * declaration (a journal-class registered command never rail-serves), and every granted
- * command must have a def (a credential row nobody serves is a construction bug, not a
- * runtime mystery). The reserved `describe` (§13.7: every endpoint MUST serve it) is built
+ * declaration (a journal-class registered command never rail-serves, so it takes no def), and
+ * every granted EPHEMERAL command must have a def (a rail nobody serves is a construction bug);
+ * journal commands stay in the credential/descriptor surface but ride epj, so a journal-only or
+ * mixed endpoint still constructs and serves describe. The reserved `describe` (§13.7: every endpoint MUST serve it) is built
  * HERE over the artifact's DERIVED deep-frozen descriptor — a `describe` def refuses at
  * construction, so the authorization seam cannot be replaced, and no hand-authored or
  * later-mutated descriptor can reach the wire.
@@ -263,7 +264,7 @@ export function serveEndpoint(
     if (decl === undefined)
       throw new Error(`command "${def.command}" is not granted by the serve artifact; the serve table is exactly the granted registered surface (SPEC 13.9)`);
     if (decl.class !== "ephemeral")
-      throw new Error(`command "${def.command}" is registered class "${decl.class}": only ephemeral commands are rail-served; journal work rides epj submissions (SPEC 13.4/13.5)`);
+      throw new Error(`command "${def.command}" is registered class "${decl.class}": only ephemeral commands are rail-served, so a journal command takes NO rail def; journal work rides epj submissions (SPEC 13.4/13.5)`);
     // §13.7 digest-bound validators: the def carries provenance-BRANDED compiled contracts
     // (a structural {validate, closureDigest} pair refuses — an arbitrary validator cannot
     // wear a registered digest), and their closure digests must EQUAL the verified registered
@@ -283,9 +284,15 @@ export function serveEndpoint(
       handler: def.handler,
     });
   }
+  // Exact coverage applies to the EPHEMERAL (rail-served) subset only: every ephemeral command
+  // needs a def (a rail nobody serves is a construction bug), while journal commands stay in the
+  // credential/descriptor surface but ride epj submissions, never a rail def — so a journal-only
+  // or mixed endpoint constructs and serves its mandatory `describe` (SPEC 13.7), rather than
+  // being impossible because the full-surface rule and the journal-rejection rule contradict.
   for (const cmd of serve.commands) {
+    if (serve.surface[cmd].class !== "ephemeral") continue; // journal command: no rail def, by design
     if (!seen.has(cmd))
-      throw new Error(`granted command "${cmd}" has no def in this serve table; the credential subscribes a rail nobody would serve (SPEC 13.9)`);
+      throw new Error(`ephemeral command "${cmd}" has no def in this serve table; the credential subscribes a rail nobody would serve (SPEC 13.9)`);
   }
   defs.push({
     command: "describe",
