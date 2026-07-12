@@ -38,6 +38,10 @@ const ORCA_EXTENSION = join(REPO, "extensions", "orca");
 const TSX_IMPORT = import.meta.resolve("tsx");
 const runId = `${process.pid}-${Date.now().toString(36)}`;
 const SPACE = `orca-e2e-${runId}`;
+// The no-manifest `--runtime orca` checks run under their own space so the bare manager's
+// "supervisor (orca)" presence can never be confused with a stale entry from the `-f` manager
+// (which is also orca) in the shared JetStream store.
+const BARE_SPACE = `orca-e2e-bare-${runId}`;
 const AGENT = `orcae2e-${runId}`;
 
 const freePort = (): Promise<number> =>
@@ -159,6 +163,8 @@ channels:
 
 let managerPid: number | undefined;
 let brokerPid: number | undefined;
+let bareManagerPid: number | undefined;
+let bareBrokerPid: number | undefined;
 let terminalHandle: string | undefined;
 let terminalPtyId: string | undefined;
 try {
@@ -173,11 +179,26 @@ try {
   const before = cli(["up", "-f", manifest]);
   ok("runtime: orca fails before its extension is installed", before.status === 1 && /no installed extension provides runtime "orca"/.test(before.stderr), before.stdout + before.stderr);
   ok("failed runtime preflight starts no broker", !existsSync(join(root, ".cotal", "nats.pid")) && !(await portOpen()));
+  // The SAME fail-loud must hold on the no-manifest path: `up --runtime orca` (no -f) is where the
+  // flag was silently dropped and the detached manager fell back to pty. Preflight runs before the
+  // broker starts, so this needs no installed orca and mutates nothing.
+  const bareBefore = cli(["up", "--detach", "--open", "--runtime", "orca", "--space", BARE_SPACE, "--server", SERVER]);
+  ok("up --runtime orca (no -f) fails before its extension is installed", bareBefore.status === 1 && /no installed extension provides runtime "orca"/.test(bareBefore.stderr), bareBefore.stdout + bareBefore.stderr);
+  ok("failed no-manifest runtime preflight starts no broker", !existsSync(join(root, ".cotal", "nats.pid")) && !(await portOpen()));
+  // `cotal runtimes` lists orca as a known-but-not-yet-installed runtime, one `cotal ext add` away.
+  const runtimesBefore = cli(["runtimes"]);
+  ok("cotal runtimes shows orca as available before install", runtimesBefore.status === 0 && /orca\b.*available.*cotal ext add @cotal-ai\/orca/.test(runtimesBefore.stdout), runtimesBefore.stdout + runtimesBefore.stderr);
+  // A truly unknown runtime name is named as such — never a made-up `@cotal-ai/<typo>` package.
+  const bogus = cli(["up", "--detach", "--open", "--runtime", "notaruntime", "--space", BARE_SPACE, "--server", SERVER]);
+  ok("an unknown runtime fails with the known-list, not an invented package", bogus.status === 1 && /unknown runtime "notaruntime" \(known: pty, orca, tmux, cmux\)/.test(bogus.stderr) && !/@cotal-ai\/notaruntime/.test(bogus.stderr), bogus.stdout + bogus.stderr);
 
   const add = cli(["ext", "add", ORCA_EXTENSION]);
   ok("real Orca package installs through cotal ext", add.status === 0 && /runtime:orca/.test(add.stdout), add.stdout + add.stderr);
   const listed = cli(["ext", "list"]);
   ok("ext list records @cotal-ai/orca as a runtime provider", listed.status === 0 && /@cotal-ai\/orca/.test(listed.stdout) && /runtime:orca/.test(listed.stdout), listed.stdout + listed.stderr);
+  // Now `cotal runtimes` reports it installed and probes it reachable on this machine.
+  const runtimesAfter = cli(["runtimes"]);
+  ok("cotal runtimes shows orca installed + reachable after install", runtimesAfter.status === 0 && /orca\b.*installed.*reachable/.test(runtimesAfter.stdout), runtimesAfter.stdout + runtimesAfter.stderr);
 
   const up = cli(["up", "-f", manifest]);
   ok("manifest starts through the installed Orca runtime", up.status === 0 && new RegExp(`mesh "${SPACE}" up`).test(up.stdout) && /manager \(orca\)/.test(up.stdout), up.stdout + up.stderr);
@@ -222,6 +243,28 @@ try {
     !!terminalHandle && !orcaTerminals().some((candidate) => terminalPtyId ? candidate.ptyId === terminalPtyId : candidate.handle === terminalHandle),
   );
 
+  // The runtime selection also works WITHOUT a manifest: `up --detach --runtime orca` must boot the
+  // control-plane manager ON the installed orca runtime (the flag reaches the detached supervise),
+  // not silently pty. The live manager's own presence activity ("supervisor (orca)") is the
+  // authoritative signal, so query it rather than parse the appended manager.log.
+  const bareUp = cli(["up", "--detach", "--open", "--runtime", "orca", "--space", BARE_SPACE, "--server", SERVER]);
+  ok("up --detach --runtime orca (no -f) starts the mesh", bareUp.status === 0, bareUp.stdout + bareUp.stderr);
+  bareManagerPid = recordedPid("manager.pid");
+  bareBrokerPid = recordedPid("nats.pid");
+  let bareRuntime = false;
+  let bareEndpoints = { stdout: "", stderr: "" };
+  for (let i = 0; i < 30 && !bareRuntime; i++) {
+    const r = cli(["endpoints", "--space", BARE_SPACE, "--server", SERVER]);
+    bareEndpoints = { stdout: r.stdout, stderr: r.stderr };
+    bareRuntime = r.status === 0 && /supervisor \(orca\)/.test(r.stdout);
+    if (!bareRuntime) await sleep(1_000);
+  }
+  ok("the no-manifest manager runs on the orca runtime, not pty", bareRuntime, bareEndpoints);
+  const bareDown = cli(["down"], 90_000);
+  ok("down clears the no-manifest --runtime orca mesh", bareDown.status === 0, bareDown.stdout + bareDown.stderr);
+  for (let i = 0; i < 40 && ((bareManagerPid && alive(bareManagerPid)) || (bareBrokerPid && alive(bareBrokerPid)) || (await portOpen())); i++) await sleep(250);
+  ok("down stops the no-manifest manager and broker", !!bareManagerPid && !!bareBrokerPid && !alive(bareManagerPid) && !alive(bareBrokerPid) && !(await portOpen()), { bareManagerPid, bareBrokerPid });
+
   const remove = cli(["ext", "remove", "@cotal-ai/orca"]);
   ok("Orca extension removes after its runtime is no longer in use", remove.status === 0, remove.stdout + remove.stderr);
   ok("extension manifest returns to empty", /no extensions installed/.test(cli(["ext", "list"]).stdout));
@@ -241,8 +284,9 @@ try {
   killRecorded("manager.pid");
   killRecorded("nats.pid");
   await sleep(500);
-  if (managerPid && alive(managerPid)) { try { process.kill(managerPid, "SIGKILL"); } catch { /* gone */ } }
-  if (brokerPid && alive(brokerPid)) { try { process.kill(brokerPid, "SIGKILL"); } catch { /* gone */ } }
+  for (const pid of [managerPid, brokerPid, bareManagerPid, bareBrokerPid]) {
+    if (pid && alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+  }
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
   rmSync(config, { recursive: true, force: true });

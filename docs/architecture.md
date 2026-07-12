@@ -89,8 +89,13 @@ The published binary also loads **operator-installed extensions**: `cotal ext ad
 self-registers, then caches every contributed `kind:name`. Command metadata is cached for
 `--help`/completion; running a command or requesting a provider imports its owner lazily and
 uses the live object. Version skew or a stranded link fails loudly with instructions to re-add.
-The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca runtimes use this mechanism; the
-published binary does not hardcode those packages.
+The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca runtimes use this mechanism.
+Runtime resolution stays registry-driven and open-ended: a name with no registered/installed
+provider fails loud (never a fallback), and a third-party runtime installs under its own package
+name. The CLI does carry a small, non-authoritative map of the first-party runtime names
+(`orca`/`tmux`/`cmux`) to their `@cotal-ai/*` packages, used only to print an exact `cotal ext add`
+hint for a known-but-uninstalled runtime and to list them in `cotal runtimes`; it never resolves or
+registers a provider.
 
 Machine-local processes use the same registry. The base CLI contributes broker/control-plane
 `local-process` descriptors, while an installed package contributes its own (for example `web`).
