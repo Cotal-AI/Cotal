@@ -142,7 +142,19 @@ export function assertServiceNameAuthority(endpoint: string, owner: string, auth
  *  privileged owner's descriptor cannot be registered by anyone else, and a re-registration can
  *  never change an instance's ownership. `instanceId` MUST be provisioner-minted and never
  *  reused (§13.1); the allocator that enforces non-reuse is the lifecycle registry (D13) — this
- *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS. */
+ *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS.
+ *
+ *  ISSUANCE-GATE COUPLING (§13.1; enforced when D13/D14 wires the durable gate). The serve mint
+ *  fence ({@link finalizeServeIssuance}) treats `registrationRevision` as a fence ONLY because a
+ *  re-registration is a WRITER on the same instance issuance gate: to be linearizable against an
+ *  in-flight serve mint, a re-registration MUST freeze the gate, advance its `registrationRevision`,
+ *  and reopen it (the takeover-barrier protocol, §13.1), as/around this spec-key CAS. Wiring the
+ *  gate on TAKEOVER only (where the epoch obviously lives) but not here would leave a mint's
+ *  observed `registrationRevision` permanently equal to its snapshot, pass the currency check,
+ *  win a never-frozen CAS, and silently release a superseded-surface credential — with every D4
+ *  test still green, because the D4 fake models the correct both-writers barrier. This site is
+ *  the anchor: the re-registration gate-barrier seam lands with D13/D14; do not add a bare
+ *  spec-key advance that skips it. */
 export async function registerServiceInstance(
   kv: KV,
   args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority },
