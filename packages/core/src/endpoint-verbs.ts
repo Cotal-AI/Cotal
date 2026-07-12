@@ -599,7 +599,13 @@ export async function epScatter(
       const state = current.get(instanceId);
       if (state === undefined)
         throw new EpEnvelopeError("failed-precondition", `the reconcile returned no verdict for frozen instance ${instanceId}; an incomplete registration read cannot authorize completion, and an absent Map entry is NOT an implicit deregistration (SPEC 13.5)`);
-      if (!state.registered) continue; // explicit mid-scatter deregistration: not churn; a prior reply still counts
+      // RUNTIME-validate the discriminant at this untrusted boundary (TS alone cannot fence a
+      // caller-supplied/legacy hook): the verdict MUST be an explicit `{ registered: boolean }`. A bare
+      // number, `{}`, or `{ registered: 0 }` must FAIL LOUD, never fall through the falsy check below as
+      // an implicit deregistration and bypass the completeness fence the typed result exists to enforce.
+      if (typeof state !== "object" || state === null || typeof (state as { registered?: unknown }).registered !== "boolean")
+        throw new EpEnvelopeError("failed-precondition", `the reconcile verdict for instance ${instanceId} is not a typed { registered: boolean } state; an untyped/legacy value must never masquerade as a deregistration (SPEC 13.5)`);
+      if (state.registered === false) continue; // explicit mid-scatter deregistration: not churn; a prior reply still counts
       const now = state.registrationRevision;
       if (!Number.isSafeInteger(now) || now <= 0)
         throw new EpEnvelopeError("failed-precondition", `the reconcile reports instance ${instanceId} at a non-integer/non-positive registrationRevision ${now}; a NaN or garbled value is neither below nor above the frozen revision and would silently disable the monotonicity fence (§13.7), so it is refused, never a counted completion`);

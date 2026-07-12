@@ -223,6 +223,29 @@ try {
     c("explicit deregistration of a slot that never replied is `missing`, not thrown, complete false",
       res.missing.includes(A) && res.complete === false);
   }
+  // The registration-state discriminant is RUNTIME-validated: an untyped/legacy hook cannot fail OPEN as
+  // deregistration and bypass the completeness fence. A bare number, even WITH a valid reply, must throw
+  // (never authorize complete=true); a non-boolean `.registered` must throw too.
+  {
+    const sub = respond(nc, allFilter, () => [{ instanceId: A, epoch: EP, ok: true, data: { which: A } }]);
+    await rejects("a legacy bare-number reconcile verdict cannot masquerade as deregistration even WITH a valid reply (no false complete)",
+      () => epScatter(nc, SPACE, opFor(), { deadlineMs: 300, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => new Map([[A, 1]]) as unknown as Map<string, EpRegistrationState> }), "failed-precondition");
+    await sub.drain();
+  }
+  await rejects("a malformed reconcile verdict ({ registered: 0 }, non-boolean discriminant) fails loud, not open",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => new Map([[A, { registered: 0 }]]) as unknown as Map<string, EpRegistrationState> }), "failed-precondition");
+  await rejects("an empty-object reconcile verdict ({}) fails loud (no `.registered`), not open",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => new Map([[A, {}]]) as unknown as Map<string, EpRegistrationState> }), "failed-precondition");
+  await rejects("a null reconcile verdict fails loud as failed-precondition, never a raw TypeError",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => new Map([[A, null]]) as unknown as Map<string, EpRegistrationState> }), "failed-precondition");
+  {
+    // A garbled discriminant on a slot that actually re-registered must not mask the churn: with a valid
+    // reply present, `{ registered: undefined }` must FAIL LOUD, never silently count as deregistration.
+    const sub = respond(nc, allFilter, () => [{ instanceId: A, epoch: EP, ok: true, data: { which: A } }]);
+    await rejects("a garbled discriminant ({ registered: undefined }) on a replied slot fails loud, never silently counts (no masked churn)",
+      () => epScatter(nc, SPACE, opFor(), { deadlineMs: 300, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => new Map([[A, { registered: undefined }]]) as unknown as Map<string, EpRegistrationState> }), "failed-precondition");
+    await sub.drain();
+  }
 
   // late does NOT leak past its horizon: with no lateDrainMs, a reply arriving after the deadline but
   // DURING a slow reconcile is not classified `late` (the rail is closed at T, absolute).
