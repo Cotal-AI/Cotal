@@ -164,6 +164,32 @@ throws("a raw config binding a durable to another endpoint's pool refuses (misat
   () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: "cotal.epbind.epw.other.secret.>" } }]));
 throws("a mid-filter `>` in a pre-created durable's create row refuses (broadened matrix row)",
   () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: "cotal.epbind.epw.>.builds" } }]));
+// The brand is a TUPLE snapshot, not object identity alone: a branded config whose fields were
+// mutated after mint is not §13.9 authority.
+throws("a branded config with a post-mint MUTATED filter refuses (foreign-pool capture)",
+  () => {
+    const cfg = poolConsumerConfig(SPACE, "manager", "builds");
+    cfg.filter_subject = `cotal.${SPACE}.epw.other.secret.>`;
+    return provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: cfg }]);
+  });
+throws("a branded config with a post-mint MUTATED durable refuses (foreign-durable create/delete)",
+  () => {
+    const cfg = poolConsumerConfig(SPACE, "manager", "builds");
+    cfg.durable_name = "pool_other_secret";
+    return provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: cfg }]);
+  });
+throws("a branded reader config with a post-mint MUTATED durable refuses (victim-durable bind)",
+  () => {
+    const cfg = decisionReaderConfig(SPACE, "manager", { owner: "u_abc", actor: "worker", uid: UID });
+    cfg.durable_name = `dec_${"v".repeat(26)}-manager`;
+    return readerBindGrants(epfStreamName(SPACE), cfg);
+  });
+throws("a branded config with a post-mint deliver_subject refuses (family consumers are PULL-only)",
+  () => {
+    const cfg = poolConsumerConfig(SPACE, "manager", "builds");
+    cfg.deliver_subject = "attacker.sink";
+    return provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: cfg }]);
+  });
 
 // ── the resources + live behaviors (real broker) ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);

@@ -263,21 +263,32 @@ export function recordReaderDurable(uid: string, grantId: string, n: number): st
 // the matrix row's full-tail form, so the emitted grants and these configs cannot diverge.
 
 /** Family brand: every config a builder below mints is registered against the ONE §13.12
- *  stream its family lives on. The grant-row builders accept ONLY branded (config, stream)
- *  pairs — a raw hand-built config, or a family config paired with a foreign stream, refuses
- *  loudly. This is what makes "the rows and the configs come from one place" STRUCTURAL: an
- *  authority row can never be built around a filter the §13.9 matrix does not name. */
-const FAMILY_STREAM = new WeakMap<Partial<ConsumerConfig>, string>();
+ *  stream its family lives on, together with an IMMUTABLE snapshot of the tuple the family
+ *  minted (durable + filter). The grant-row builders accept ONLY branded (config, stream)
+ *  pairs whose current fields still equal that snapshot — a raw hand-built config, a family
+ *  config paired with a foreign stream, or a branded config whose durable/filter was mutated
+ *  after mint all refuse loudly. (The snapshot, not a freeze, carries the guarantee: the
+ *  config object itself is also handed to `jsm.consumers.add`, which must stay free to read
+ *  it as a plain object.) This is what makes "the rows and the configs come from one place"
+ *  STRUCTURAL: an authority row can never be built around a tuple the §13.9 matrix did not mint. */
+interface FamilyBond { stream: string; durable: string; filter: string }
+const FAMILY = new WeakMap<Partial<ConsumerConfig>, FamilyBond>();
 function family(stream: string, cfg: Partial<ConsumerConfig>): Partial<ConsumerConfig> {
-  FAMILY_STREAM.set(cfg, stream);
+  FAMILY.set(cfg, { stream, durable: cfg.durable_name!, filter: cfg.filter_subject! });
   return cfg;
 }
 function assertFamilyPair(stream: string, cfg: Partial<ConsumerConfig>, what: string): void {
-  const bound = FAMILY_STREAM.get(cfg);
-  if (bound === undefined)
+  const bond = FAMILY.get(cfg);
+  if (bond === undefined)
     throw new Error(`${what} requires a consumer config minted by a §13.9 family builder, not a raw config (durable ${JSON.stringify(cfg.durable_name ?? "")})`);
-  if (bound !== stream)
-    throw new Error(`${what}: durable ${JSON.stringify(cfg.durable_name ?? "")} belongs to stream ${JSON.stringify(bound)}, not ${JSON.stringify(stream)} (§13.9: no cross-family pairing)`);
+  if (bond.stream !== stream)
+    throw new Error(`${what}: durable ${JSON.stringify(cfg.durable_name ?? "")} belongs to stream ${JSON.stringify(bond.stream)}, not ${JSON.stringify(stream)} (§13.9: no cross-family pairing)`);
+  if (cfg.durable_name !== bond.durable || cfg.filter_subject !== bond.filter)
+    throw new Error(`${what}: the config's durable/filter diverged from the tuple its family builder minted (minted ${JSON.stringify(bond.durable)} on ${JSON.stringify(bond.filter)}, now ${JSON.stringify(cfg.durable_name ?? "")} on ${JSON.stringify(cfg.filter_subject ?? "")}) — a mutated config is not §13.9 authority`);
+  // §13.9 pre-created consumers are PULL-only: a create's delivery target is body-set and
+  // unconfined, so a post-mint deliver_subject would fan the stream out to an arbitrary subject.
+  if (cfg.deliver_subject !== undefined)
+    throw new Error(`${what}: the config carries a deliver_subject — §13.9 family consumers are PULL-only, a push delivery target is unconfined`);
 }
 
 /** The canonicalizer's durable on EPJ (`canon_<e>`): every raw submission to one endpoint.
