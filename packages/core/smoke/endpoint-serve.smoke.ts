@@ -2,12 +2,16 @@
  * v0.4 service-registry + serve/describe smoke (SPEC §13.2/§13.5/§13.7/§13.9) against a real
  * broker: registration CAS + registrationRevision semantics with authenticated-registrant
  * binding, the three-part status-write fence (spec coherence, fresh mapping equality, stored
- * conflict), the hardened scatter freeze, the mint-side serve-grant authorization (branded
- * tuples off the registered spec, current-epoch fence), queue-grouped class serving vs scatter
- * vs instance rails, digest-bound COMPILED contracts with the symmetric budgeted runtime
- * validation, registered target-mode admission plus the child/ledger fresh-authorization
- * seams, target currency, cast silence, awaited stop, and the spec-bound authorization-scoped
- * describe (void args, inline-document projection).
+ * conflict), the hardened scatter freeze, cluster-artifact digest verification (the §13.7
+ * "readers verify fetched bytes" MUST — a same-digest invented command is unrepresentable),
+ * the registry-authorized serve ARTIFACT (branded, deep-frozen, space/owner-bound, verified
+ * surface + derived descriptor) consumed by construction, provenance-branded compiled
+ * contracts (a forged validator/digest pair refuses), queue-grouped class serving vs scatter
+ * vs instance rails, digest-bound invoke with the symmetric budgeted runtime validation,
+ * registered targeted/untargeted admission (default-deny BOTH ways) plus the child/ledger
+ * fresh-authorization seams, post-seam target currency (a mapping rotated during the
+ * authority read fails), explicit-null canonical-void args, cast silence, awaited stop, and
+ * the authorization-scoped describe over the DERIVED descriptor.
  *
  * Run: pnpm smoke:ep-serve   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -23,12 +27,12 @@ import {
   registerServiceInstance, writeServiceStatus, freezeExpectedSet,
   authorizeServeGrant, assertServeGrantAuthorized,
   SERVICE_READY, SERVICE_EXITED,
-  serveEndpoint, assertDescriptorMatchesSpec,
-  compileContract,
+  serveEndpoint,
+  compileContract, contractDigest, VOID_SCHEMA,
+  parseClusterDocument, verifyClusterManifest, verifyClusterRoot,
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, RECORD_KINDS,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
-  type EpServeIdentity, type EpCommandDef, type DescribeAnswer, type DescribeDescriptor,
-  type CompiledContract,
+  type EpCommandDef, type DescribeAnswer, type EpServeGrant, type CompiledContract,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -50,14 +54,79 @@ const IID_A = "a".repeat(26);
 const IID_B = "b".repeat(26);
 const UID = "c".repeat(26);
 const T_UID = "d".repeat(26);
+const OTHER_UID = "e".repeat(26);
 const caller: EpCaller = { owner: "u_abc", actor: "worker", uid: UID };
 
 // Real §13.7 contracts: the closure digests ARE the pinned op digests.
 const argsContract = compileContract({ root: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false } });
 const outContract = compileContract({ root: { type: "object", properties: { which: { type: "string" } }, required: ["which"], additionalProperties: false } });
+const voidContract = compileContract({ root: VOID_SCHEMA });
+// A REAL compiled output contract that is legitimately slow on a large payload: 8 pattern
+// properties x 400k items decisively exceeds the fixed 10ms §13.8 budget (measured ~112ms),
+// so the over-budget path is proven WITHOUT forging a compiled contract (forgery refuses).
+const slowProps: Record<string, unknown> = {};
+for (let i = 0; i < 8; i++) slowProps[`f${i}`] = { type: "string", pattern: "^[a-z][a-z0-9-]{1,128}$" };
+const slowContract = compileContract({ root: { type: "array", items: { type: "object", required: Object.keys(slowProps), additionalProperties: false, properties: slowProps } } });
+const slowItem = Object.fromEntries(Object.keys(slowProps).map((k) => [k, "abcdefghij-0123456789-abcdefghij"]));
+const slowPayload = Array.from({ length: 400_000 }, () => slowItem);
 const D_IN = argsContract.closureDigest;
 const D_OUT = outContract.closureDigest;
+const D_VOID = voidContract.closureDigest;
+const D_SLOW = slowContract.closureDigest;
 const D_OTHER = `sha256:${"f".repeat(64)}`;
+
+// The provenance-branded compiled contracts each command's def must carry, matching its
+// registered declaration's digests exactly (ping is void-input, slow is slow-output).
+const contractFor = (command: string): { input: CompiledContract; output: CompiledContract } =>
+  command === "ping" ? { input: voidContract, output: outContract }
+    : command === "slow" ? { input: argsContract, output: slowContract }
+      : { input: argsContract, output: outContract };
+
+// §13.7 cluster documents: the content-addressed authority for every command's served shape.
+const cmd = (name: string, over: Record<string, unknown> = {}) => ({
+  name, class: "ephemeral", targeted: false, capability: "manager.call",
+  inputDigest: D_IN, outputDigest: D_OUT, ...over,
+});
+const DOC_MAIN = {
+  urn: "ai.cotal.manager", revision: 1, attributes: [], events: [],
+  commands: [
+    cmd("status"),
+    cmd("inspect", { targeted: true, modes: ["owner"] }),
+    cmd("badout"),
+    cmd("cyclic"),
+    cmd("poke"),
+    cmd("slow", { outputDigest: D_SLOW }),
+    cmd("ping", { inputDigest: D_VOID }),
+  ],
+};
+const DOC_AUX = { urn: "ai.cotal.aux", revision: 1, attributes: [], events: [], commands: [cmd("extra")] };
+const DOC_INSPECT = { urn: "ai.cotal.inspect", revision: 1, attributes: [], events: [], commands: [cmd("inspect", { targeted: true, modes: ["owner"] })] };
+const DOC_REL = {
+  urn: "ai.cotal.relations", revision: 1, attributes: [], events: [],
+  commands: [
+    cmd("adopt", { targeted: true, modes: ["child"] }),
+    cmd("audit", { targeted: true, modes: ["ledger"] }),
+  ],
+};
+const DOC_JOURNAL = { urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: [cmd("submitjob", { class: "journal" })] };
+// §13.7 two-digest content addressing: the registered CLOSURE digest names a MANIFEST
+// `{v:1, root:<artifactDigest>, members:[]}`; the manifest's root names the cluster DOCUMENT.
+// The store (D8 provides the production epc reader) holds BOTH artifacts, each at its own digest.
+const store = new Map<string, unknown>();
+const register = (doc: unknown): string => {
+  const rootDigest = contractDigest(doc);
+  const manifest = { v: 1, root: rootDigest, members: [] as string[] };
+  const closureDigest = contractDigest(manifest);
+  store.set(rootDigest, doc);
+  store.set(closureDigest, manifest);
+  return closureDigest;
+};
+const DC_MAIN = register(DOC_MAIN);
+const DC_AUX = register(DOC_AUX);
+const DC_INSPECT = register(DOC_INSPECT);
+const DC_REL = register(DOC_REL);
+const DC_JOURNAL = register(DOC_JOURNAL);
+const readClusterArtifact = (d: string) => store.get(d);
 
 const authority: ServiceNameAuthority = {
   isOperatorOwner: (o) => o === "u_op",
@@ -76,9 +145,9 @@ throws("a reverse-DNS name under a foreign owner refuses",
 throws("an UNREGISTERED reverse-DNS name fails closed (never first-come adoption)",
   () => assertServiceNameAuthority("com.evil.squat", "u_abc", authority), "permission-denied");
 
-// ── descriptor validators (broker-free) ──
+// ── record-value validators (broker-free) ──
 const spec: ServiceSpec = {
-  endpoint: "manager", owner: "u_op", clusterDigests: [D_IN], protocol: { v: 1 },
+  endpoint: "manager", owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 },
 };
 c("a service spec validates", parseServiceSpec(spec, { endpoint: "manager" }).owner === "u_op");
 throws("a spec whose endpoint disagrees with the record key refuses",
@@ -92,41 +161,28 @@ c("a service status validates",
 throws("a status with a malformed state token refuses",
   () => parseServiceStatus({ epoch: 3, state: "Ready!", observedSpecRevision: 1 }), "internal");
 
-// ── serve-table construction rules (broker-free; nc unused before subscribe) ──
-const goodDef = (over: Partial<EpCommandDef> = {}): EpCommandDef => ({
-  command: "status", class: "ephemeral", contract: { input: argsContract, output: outContract },
-  targetModes: ["owner"],
-  handler: () => ({ which: "x" }), ...over,
-});
-const goodDescriptor = (over: Partial<DescribeDescriptor> = {}): DescribeDescriptor => ({
-  endpoint: "manager", owner: "u_op", protocol: { v: 1 },
-  clusters: [{ digest: D_IN, commands: ["status"] }], ...over,
-});
-const idX: EpServeIdentity = { endpoint: "manager", instanceId: IID_A, epoch: 1 };
-const describeOf = (descriptor: DescribeDescriptor) =>
-  ({ descriptor, authz: { public: true } as const, spec: { endpoint: descriptor.endpoint, owner: descriptor.owner, clusterDigests: descriptor.clusters.map((cl) => cl.digest) } });
-throws("a journal-class command def refuses at construction (journal work rides epj)",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef({ class: "journal" })], describeOf(goodDescriptor())));
-throws("a def carrying raw digest strings instead of COMPILED contracts refuses at construction",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef({ contract: { inputDigest: D_IN, outputDigest: D_OUT } as never })], describeOf(goodDescriptor())));
-throws("a def without contracts refuses at construction",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef({ contract: undefined as never })], describeOf(goodDescriptor())));
-throws("a def registering an unknown target mode refuses at construction",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef({ targetModes: ["boss" as never] })], describeOf(goodDescriptor())));
-throws("a custom describe def refuses at construction (the authorization seam is not replaceable)",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef({ command: "describe" })], describeOf(goodDescriptor())));
-throws("a descriptor naming another endpoint refuses at construction",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef()], { ...describeOf(goodDescriptor({ endpoint: "other" })), spec }));
-throws("a descriptor advertising a command with no handler refuses at construction",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef()], describeOf(goodDescriptor({ clusters: [{ digest: D_IN, commands: ["status", "stop"] }] }))));
-throws("a descriptor that does not match the REGISTERED spec refuses at construction",
-  () => serveEndpoint(null as never, SPACE, idX, [goodDef()], { descriptor: goodDescriptor(), authz: { public: true }, spec: { ...spec, clusterDigests: [D_OTHER] } }));
-c("assertDescriptorMatchesSpec binds descriptor identity to the registered spec",
-  (assertDescriptorMatchesSpec(goodDescriptor(), spec), true));
-throws("a descriptor whose cluster digests differ from the registered spec refuses",
-  () => assertDescriptorMatchesSpec(goodDescriptor({ clusters: [{ digest: D_OTHER, commands: ["status"] }] }), spec));
-throws("a descriptor claiming another owner than the registered spec refuses",
-  () => assertDescriptorMatchesSpec(goodDescriptor({ owner: "u_abc" }), spec));
+// ── cluster artifacts (broker-free): two-digest content addressing + the document contract ──
+const MANIFEST_MAIN = store.get(DC_MAIN) as { root: string };
+c("a cluster MANIFEST verifies against its closure digest and names the root artifact",
+  verifyClusterManifest(DC_MAIN, MANIFEST_MAIN).root === contractDigest(DOC_MAIN));
+c("the root document verifies against the manifest root and parses its command surface",
+  verifyClusterRoot(MANIFEST_MAIN.root, DOC_MAIN).commands.some((m) => m.name === "inspect" && m.targeted && m.modes?.[0] === "owner"));
+throws("a raw ROOT document presented at the CLOSURE digest fails manifest verification (no digest conflation)",
+  () => verifyClusterManifest(DC_MAIN, DOC_MAIN));
+throws("a NON-EMPTY closure manifest refuses (multi-artifact bundles are the deferred D8 loader)",
+  () => verifyClusterManifest(contractDigest({ v: 1, root: contractDigest(DOC_MAIN), members: [contractDigest(DOC_AUX)] }), { v: 1, root: contractDigest(DOC_MAIN), members: [contractDigest(DOC_AUX)] }));
+throws("TAMPERED root bytes do not verify against the manifest root (a reader MUST verify fetched bytes)",
+  () => verifyClusterRoot(MANIFEST_MAIN.root, { ...DOC_MAIN, commands: [...DOC_MAIN.commands, cmd("stop")] }));
+throws("a targeted command without declared modes refuses to parse",
+  () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x", { targeted: true })] }));
+throws("an untargeted command declaring modes refuses to parse",
+  () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x", { modes: ["owner"] })] }));
+throws("an unknown authorization mode refuses to parse",
+  () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x", { targeted: true, modes: ["boss"] })] }));
+throws("a cluster document declaring describe refuses (reserved, never a cluster command)",
+  () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("describe")] }));
+throws("a duplicate command declaration refuses to parse",
+  () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x"), cmd("x")] }));
 
 // ── unreadable registry (stubbed KV: the read boundary itself fails) ──
 await rejects("an UNREADABLE registry is failed-precondition, never an empty success",
@@ -158,7 +214,7 @@ try {
     () => registerServiceInstance(kv, { spec: { ...spec, owner: "u_abc" }, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
   // Ownership stability across authority drift: the SAME name re-minted to a new owner cannot
   // take over an instanceId registered under the old one.
-  const acmeSpec: ServiceSpec = { endpoint: "com.acme.builds", owner: "u_acme", clusterDigests: [D_IN], protocol: { v: 1 } };
+  const acmeSpec: ServiceSpec = { endpoint: "com.acme.builds", owner: "u_acme", clusterDigests: [DC_MAIN], protocol: { v: 1 } };
   await registerServiceInstance(kv, { spec: acmeSpec, instanceId: IID_A, registrant: { owner: "u_acme" }, authority });
   const driftedAuthority: ServiceNameAuthority = { ...authority, domainOwnerOf: () => "u_evil" };
   await rejects("a re-registration cannot change an instance's ownership (id reuse across identities)",
@@ -212,37 +268,117 @@ try {
   await kv.purge(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]));
   await kv.purge(`svc.manager.${T_UID}.status`);
 
-  // ---- serve-grant authorization (the mint-side §13.9 fence) ----
-  const grant = await authorizeServeGrant(kv, {
-    endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["status"],
-    descriptor: goodDescriptor(), holder: asOp, authority, readProcessEpoch: () => 3,
+  // ---- serve-artifact authorization (the §13.9 fence over VERIFIED registered bytes) ----
+  // The surface is the FULL union of the registered clusters' verified commands (SPEC 13.9:
+  // the credential binds its whole registered surface; no caller subset).
+  const ALL_MAIN = ["badout", "cyclic", "extra", "inspect", "ping", "poke", "slow", "status"]; // sorted
+  const authorizeA = (over: Record<string, unknown> = {}) => authorizeServeGrant(kv, {
+    space: SPACE, endpoint: "manager", instanceId: IID_A, epoch: 3,
+    holder: asOp, authority, readProcessEpoch: () => 3, readClusterArtifact, ...over,
   });
-  c("a registered instance's serve tuple authorizes and the branded grant passes the mint check",
-    (assertServeGrantAuthorized(grant), grant.endpoint === "manager" && grant.epoch === 3));
-  await rejects("an UNREGISTERED instance cannot authorize a serve grant (foreign instance)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: "e".repeat(26), epoch: 3, commands: ["status"], descriptor: goodDescriptor(), holder: asOp, authority, readProcessEpoch: () => 3 }), "failed-precondition");
+  const grantA = await authorizeA();
+  c("a registered instance authorizes: the artifact binds space/owner and carries the FULL VERIFIED surface",
+    grantA.space === SPACE && grantA.owner === "u_op" && grantA.epoch === 3
+    && JSON.stringify([...grantA.commands]) === JSON.stringify(ALL_MAIN)
+    && grantA.surface.inspect?.targeted === true && grantA.surface.inspect.modes[0] === "owner"
+    && grantA.surface.status?.targeted === false && grantA.surface.submitjob === undefined
+    && (assertServeGrantAuthorized(grantA), true),
+    JSON.stringify([...grantA.commands]));
+  c("the DERIVED descriptor projects the FULL verified clusters with the cluster DOCUMENT inline",
+    grantA.descriptor.clusters.length === 2
+    && grantA.descriptor.clusters[0].digest === DC_MAIN
+    // the inline copy is the root cluster document (its urn + command declarations), NOT the
+    // manifest — and it verifies against the advertised closure digest via the single-member
+    // manifest reconstruction.
+    && (grantA.descriptor.clusters[0].document as { urn?: string })?.urn === "ai.cotal.manager"
+    && contractDigest({ v: 1, root: contractDigest(grantA.descriptor.clusters[0].document), members: [] }) === DC_MAIN
+    && grantA.descriptor.clusters[1].digest === DC_AUX
+    && JSON.stringify(grantA.descriptor.clusters[1].commands) === JSON.stringify(["extra"]),
+    JSON.stringify(grantA.descriptor.clusters[0].document));
+  // Two-stage store tampers. A manifest whose bytes are corrupted at the closure-digest key
+  // (a non-empty members list here) does not hash to that digest → manifest verification fails.
+  const savedMainManifest = store.get(DC_MAIN);
+  const rootMain = contractDigest(DOC_MAIN);
+  store.set(DC_MAIN, { v: 1, root: rootMain, members: [contractDigest(DOC_AUX)] });
+  await rejects("a corrupted manifest at the closure-digest key fails verification LOUD",
+    () => authorizeA(), "internal");
+  store.set(DC_MAIN, savedMainManifest);
+  // Tampered ROOT bytes (same root-digest key, invented 'stop'): second-stage verification fails.
+  store.set(rootMain, { ...DOC_MAIN, commands: [...DOC_MAIN.commands, cmd("stop")] });
+  await rejects("TAMPERED root bytes (same digest key, invented 'stop') fail verification LOUD, never authorize",
+    () => authorizeA(), "internal");
+  store.set(rootMain, DOC_MAIN);
+  // A registered instance whose manifest VERIFIES but whose root artifact is absent: fail closed.
+  const orphanDoc = { urn: "ai.cotal.orphan", revision: 1, attributes: [], events: [], commands: [cmd("ghost")] };
+  const orphanRoot = contractDigest(orphanDoc);
+  const orphanManifest = { v: 1, root: orphanRoot, members: [] as string[] };
+  const orphanClosure = contractDigest(orphanManifest);
+  store.set(orphanClosure, orphanManifest); // manifest present, root deliberately NOT stored
+  await registerServiceInstance(kv, { spec: { endpoint: "mgrorphan", owner: "u_op", clusterDigests: [orphanClosure], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  await rejects("a manifest whose ROOT artifact is unreadable refuses (fail closed)",
+    () => authorizeServeGrant(kv, { space: SPACE, endpoint: "mgrorphan", instanceId: IID_A, epoch: 1, holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact }), "failed-precondition");
+  // An unreadable MANIFEST at the registered closure digest: fail closed.
+  store.delete(DC_AUX);
+  await rejects("an UNREADABLE registered cluster manifest refuses (fail closed, never a weaker source)",
+    () => authorizeA(), "failed-precondition");
+  store.set(DC_AUX, { v: 1, root: contractDigest(DOC_AUX), members: [] });
+  await rejects("a FAILING contract-store seam is unavailable (fail closed)",
+    () => authorizeA({ readClusterArtifact: () => { throw new Error("store down"); } }), "unavailable");
+  await rejects("an UNREGISTERED instance cannot authorize (foreign instance)",
+    () => authorizeA({ instanceId: "f".repeat(26) }), "failed-precondition");
   await rejects("a holder that is not the registered owner cannot authorize (foreign name)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["status"], descriptor: goodDescriptor(), holder: { owner: "u_abc" }, authority, readProcessEpoch: () => 3 }), "permission-denied");
-  await rejects("name-authority DRIFT refuses fresh at mint (the old registration cannot keep minting)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["status"], descriptor: goodDescriptor(), holder: asOp, authority: { ...authority, isOperatorOwner: () => false }, readProcessEpoch: () => 3 }), "permission-denied");
-  await rejects("a command outside the registered contract surface refuses (foreign command)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["stop"], descriptor: goodDescriptor(), holder: asOp, authority, readProcessEpoch: () => 3 }), "permission-denied");
-  await rejects("an explicit describe in the minted commands refuses (derived, never minted)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["describe"], descriptor: goodDescriptor(), holder: asOp, authority, readProcessEpoch: () => 3 }), "failed-precondition");
+    () => authorizeA({ holder: { owner: "u_abc" } }), "permission-denied");
+  await rejects("name-authority DRIFT refuses fresh (the old registration cannot keep minting)",
+    () => authorizeA({ authority: { ...authority, isOperatorOwner: () => false } }), "permission-denied");
   await rejects("a serve grant for a NON-CURRENT epoch refuses expired (only the current incarnation mints)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_A, epoch: 2, commands: ["status"], descriptor: goodDescriptor(), holder: asOp, authority, readProcessEpoch: () => 3 }), "expired");
-  await rejects("a descriptor that does not match the registered spec refuses at authorization",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["status"], descriptor: goodDescriptor({ clusters: [{ digest: D_OTHER, commands: ["status"] }] }), holder: asOp, authority, readProcessEpoch: () => 3 }));
-  throws("a RAW unbranded serve tuple refuses at the mint check",
-    () => assertServeGrantAuthorized({ endpoint: "manager", instanceId: IID_A, epoch: 3, commands: ["status"] }), "permission-denied");
-  throws("a structural COPY of an authorized grant refuses (the brand is the object, snapshot-compared)",
-    () => assertServeGrantAuthorized({ ...grant, commands: [...grant.commands] }), "permission-denied");
-  throws("the authorized grant is frozen: post-authorization mutation throws instead of widening",
-    () => { (grant as { epoch: number }).epoch = 99; });
+    () => authorizeA({ epoch: 2 }), "expired");
+  throws("a RAW unbranded serve artifact refuses",
+    () => assertServeGrantAuthorized({ ...grantA } as EpServeGrant), "permission-denied");
+  throws("the authorized artifact is frozen: post-authorization mutation throws instead of widening",
+    () => { (grantA as { epoch: number }).epoch = 99; });
+  throws("the derived descriptor is DEEP-frozen: a cluster command list cannot be appended to",
+    () => { (grantA.descriptor.clusters[0].commands as string[]).push("stop"); });
+  throws("the verified surface is frozen: a declaration cannot be flipped post-authorization",
+    () => { (grantA.surface.status as { targeted: boolean }).targeted = true; });
+
+  // ---- serve-table construction: the artifact is the only door ----
+  const def = (command: string, over: Partial<EpCommandDef> = {}): EpCommandDef => ({
+    command, contract: contractFor(command),
+    handler: () => ({ which: "x" }), ...over,
+  });
+  const fullDefs = (): EpCommandDef[] => ALL_MAIN.map((command) => def(command));
+  throws("serve construction refuses a raw (unbranded) artifact",
+    () => serveEndpoint(null as never, SPACE, { ...grantA } as EpServeGrant, [def("status")], { public: true }), "permission-denied");
+  throws("serve construction refuses a foreign space (the artifact binds its space)",
+    () => serveEndpoint(null as never, "otherspace", grantA, [def("status")], { public: true }));
+  throws("a def for an UNGRANTED command refuses at construction",
+    () => serveEndpoint(null as never, SPACE, grantA, [def("stop")], { public: true }));
+  throws("a FORGED compiled contract (arbitrary validator wearing a registered digest) refuses at construction",
+    () => serveEndpoint(null as never, SPACE, grantA,
+      [def("status", { contract: { input: { validate: () => true, closureDigest: D_IN } as unknown as CompiledContract, output: outContract } })],
+      { public: true }));
+  throws("a compiled contract whose digest is not the REGISTERED declaration refuses at construction",
+    () => serveEndpoint(null as never, SPACE, grantA, [def("status", { contract: { input: outContract, output: outContract } })], { public: true }));
+  throws("a custom describe def refuses at construction (the authorization seam is not replaceable)",
+    () => serveEndpoint(null as never, SPACE, grantA, [def("describe")], { public: true }));
+  throws("a granted command with NO def refuses at construction (no rail nobody serves)",
+    () => serveEndpoint(null as never, SPACE, grantA, [def("status")], { public: true }));
+  throws("an EXTRA def outside the granted surface refuses at construction",
+    () => serveEndpoint(null as never, SPACE, grantA, [...fullDefs(), def("phantom")], { public: true }));
+  // A journal-class registered command refuses rail-serving (journal rides epj submissions).
+  await registerServiceInstance(kv, { spec: { endpoint: "mgrjob", owner: "u_op", clusterDigests: [DC_JOURNAL], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  const grantJournal = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: "mgrjob", instanceId: IID_A, epoch: 1,
+    holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
+  });
+  throws("a JOURNAL-class registered command refuses rail-serving at construction (journal rides epj)",
+    () => serveEndpoint(null as never, SPACE, grantJournal, [def("submitjob")], { public: true }));
 
   // ---- serve: two instances of one class ----
-  const idA: EpServeIdentity = { endpoint: "manager", instanceId: IID_A, epoch: 2 };
-  const idB: EpServeIdentity = { endpoint: "manager", instanceId: IID_B, epoch: 1 };
+  const grantB = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: "manager", instanceId: IID_B, epoch: 1,
+    holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
+  });
   let castRuns = 0;
   let gateArmed = false;
   let gate: (() => void) | undefined;
@@ -250,37 +386,25 @@ try {
     [`u_abc.svc`, { lifecycleUid: T_UID, mappingRevision: 7 }],
   ]);
   const resolveTarget = (t: { owner: string; actor: string }) => targets.get(`${t.owner}.${t.actor}`);
-  // A structurally-faked compiled contract whose output validator burns past the fixed §13.8
-  // budget: the digest is real, the validator deliberately slow — proves the budget bites on
-  // the OUTPUT side too (structured internal, never a published success).
-  const slowOut = {
-    closureDigest: D_OUT,
-    validate: ((v: unknown) => { const end = Date.now() + 30; while (Date.now() < end) { /* spin */ } return v !== undefined; }),
-  } as unknown as CompiledContract;
   const commandsFor = (which: string): EpCommandDef[] => [
-    goodDef({ handler: async () => {
+    def("status", { handler: async () => {
       if (!gateArmed) return { which };
       gateArmed = false;
       await new Promise<void>((r) => { gate = r; }); // park until the smoke releases the gate
       return { which };
     } }),
-    goodDef({ command: "badout", targetModes: [], handler: () => ({ wrong: true }) }),
-    goodDef({ command: "cyclic", handler: () => { const o: Record<string, unknown> = { which }; o.self = o; return o; } }),
-    goodDef({ command: "poke", handler: () => { castRuns++; throw new Error("cast handlers may fail; nobody hears it"); } }),
-    goodDef({ command: "slow", contract: { input: argsContract, output: slowOut }, handler: () => ({ which }) }),
+    def("inspect", { handler: () => ({ which }) }),
+    def("badout", { handler: () => ({ wrong: true }) }),
+    def("cyclic", { handler: () => { const o: Record<string, unknown> = { which }; o.self = o; return o; } }),
+    def("poke", { handler: () => { castRuns++; throw new Error("cast handlers may fail; nobody hears it"); } }),
+    def("slow", { contract: { input: argsContract, output: slowContract }, handler: () => slowPayload }),
+    def("ping", { contract: { input: voidContract, output: outContract }, handler: () => ({ which }) }),
+    def("extra", { handler: () => ({ which }) }),
   ];
-  const descriptor: DescribeDescriptor = {
-    endpoint: "manager", owner: "u_op", protocol: { v: 1 },
-    clusters: [
-      { digest: D_IN, commands: ["status", "poke"], document: { commands: ["status", "poke"], note: "inline copy" } },
-      { digest: D_OUT, commands: ["badout", "cyclic"], document: { commands: ["badout", "cyclic"] } },
-    ],
-  };
   let viewCalls = 0;
-  const scoped = { view: (who: EpCaller) => { viewCalls++; return who.owner === "u_abc" ? { commands: ["status", "badout", "cyclic"] } : undefined; } };
-  const liveSpec = { endpoint: "manager", owner: "u_op", clusterDigests: [D_IN, D_OUT] };
-  const srvA = serveEndpoint(nc, SPACE, idA, commandsFor("A"), { descriptor, authz: scoped, spec: liveSpec }, { resolveTarget });
-  const srvB = serveEndpoint(nc, SPACE, idB, commandsFor("B"), { descriptor, authz: scoped, spec: liveSpec }, { resolveTarget });
+  const scoped = { view: (who: EpCaller) => { viewCalls++; return who.owner === "u_abc" ? { commands: ["status", "badout", "cyclic", "extra"] } : undefined; } };
+  const srvA = serveEndpoint(nc, SPACE, grantA, commandsFor("A"), scoped, { resolveTarget });
+  const srvB = serveEndpoint(nc, SPACE, grantB, commandsFor("B"), scoped, { resolveTarget });
   await nc.flush();
 
   // The caller's reply rail: exactly its own filter (§13.9).
@@ -302,8 +426,8 @@ try {
     for (let i = 0; i < 40 && replies.length === 0; i++) await wait(50);
     return replies.shift();
   };
-  const oneSubj = (cmd: string, extra: Record<string, unknown> = {}) =>
-    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager", command: cmd, caller, nonce: nonce(), ...extra });
+  const oneSubj = (cmd2: string, extra: Record<string, unknown> = {}) =>
+    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager", command: cmd2, caller, nonce: nonce(), ...extra });
 
   // call on the one rail: queue-group anycast, exactly one instance answers
   const r1 = await send(oneSubj("status"), req());
@@ -314,7 +438,7 @@ try {
   const attr1 = parseEpSubject(r1!.subject);
   c("the reply subject attributes the responding instance + epoch (structural, never body)",
     attr1?.plane === "reply"
-    && ((attr1.instanceId === IID_A && attr1.epoch === 2 && (r1!.reply.data as { which: string }).which === "A")
+    && ((attr1.instanceId === IID_A && attr1.epoch === 3 && (r1!.reply.data as { which: string }).which === "A")
       || (attr1.instanceId === IID_B && attr1.epoch === 1 && (r1!.reply.data as { which: string }).which === "B")));
 
   // inst rail addresses ONE stable instance
@@ -339,16 +463,30 @@ try {
   const r3b = await send(oneSubj("status"), req({ args: { name: 42 } }));
   c("args violating the input schema are bad-request BEFORE any effect",
     r3b !== undefined && r3b.reply.error?.code === "bad-request");
+  const r3n = await send(oneSubj("status"), req({ args: null }));
+  c("explicit-null args on an OBJECT-input command are bad-request through the SCHEMA (not the parser)",
+    r3n !== undefined && r3n.reply.error?.code === "bad-request", JSON.stringify(r3n?.reply));
   const r3c = await send(oneSubj("badout"), req({ op: { endpoint: "manager", command: "badout", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("handler output violating the output schema is internal, never published as success",
     r3c !== undefined && r3c.reply.ok === false && r3c.reply.error?.code === "internal");
   const r3d = await send(oneSubj("cyclic"), req({ op: { endpoint: "manager", command: "cyclic", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a non-serializable reply is replaced by a structured internal error, never dropped",
     r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal");
-  const r3e = await send(oneSubj("slow"), req({ op: { endpoint: "manager", command: "slow", inputDigest: D_IN, outputDigest: D_OUT } }));
-  c("an over-budget OUTPUT validation is structured internal (the §13.8 budget is symmetric)",
+  const r3e = await send(oneSubj("slow"), req({ op: { endpoint: "manager", command: "slow", inputDigest: D_IN, outputDigest: D_SLOW } }));
+  c("an over-budget OUTPUT validation is structured internal (the §13.8 budget is symmetric, on a REAL compiled contract)",
     r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "internal" && /budget/.test(r3e.reply.error?.message ?? ""),
     JSON.stringify(r3e?.reply));
+
+  // §13.7 canonical void: absent OR explicit null args both validate on a void-input command
+  const pingOp = { endpoint: "manager", command: "ping", inputDigest: D_VOID, outputDigest: D_OUT };
+  const rv1 = await send(oneSubj("ping"), req({ op: pingOp, args: undefined }));
+  c("a void-input command accepts ABSENT args", rv1?.reply.ok === true, JSON.stringify(rv1?.reply));
+  const rv2 = await send(oneSubj("ping"), req({ op: pingOp, args: null }));
+  c("a void-input command accepts EXPLICIT NULL args (SPEC 13.7: absent or null)",
+    rv2?.reply.ok === true, JSON.stringify(rv2?.reply));
+  const rv3 = await send(oneSubj("ping"), req({ op: pingOp }));
+  c("a void-input command rejects an object payload (the void schema decides)",
+    rv3 !== undefined && rv3.reply.error?.code === "bad-request", JSON.stringify(rv3?.reply));
 
   // class discipline: a journal-declared call on a rail dies at the boundary (§13.4: a journal
   // submission is a cast observing its decision subtree, so journal+replyExpected:true is the
@@ -368,61 +506,69 @@ try {
   c("a malformed call body draws a structured boundary error",
     r6 !== undefined && r6.reply.ok === false && typeof r6.reply.error?.code === "string");
 
-  // target currency (§13.3/§13.9): fresh mapping immediately before effect
+  // target currency (§13.3/§13.9): fresh mapping immediately before effect, on the REGISTERED
+  // targeted command (inspect: targeted, modes [owner]).
   const tgt = { mode: "owner" as const, tOwner: "u_abc" };
-  const tReq = (t: Record<string, unknown>) => req({ target: t });
-  const r7a = await send(oneSubj("status", { target: tgt }), tReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID }));
-  c("a CURRENT target dispatches", r7a !== undefined && r7a.reply.ok === true);
-  const r7b = await send(oneSubj("status", { target: tgt }), tReq({ owner: "u_abc", actor: "svc", lifecycleUid: "e".repeat(26) }));
+  const iOp = { endpoint: "manager", command: "inspect", inputDigest: D_IN, outputDigest: D_OUT };
+  const iReq = (t: Record<string, unknown>) => req({ op: iOp, target: t });
+  const r7a = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID }));
+  c("a CURRENT target dispatches", r7a !== undefined && r7a.reply.ok === true, JSON.stringify(r7a?.reply));
+  const r7b = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "svc", lifecycleUid: OTHER_UID }));
   c("a superseded/foreign target lifecycleUid is expired (fresh mapping, not static agreement)",
     r7b !== undefined && r7b.reply.error?.code === "expired");
-  const r7c = await send(oneSubj("status", { target: tgt }), tReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID, mappingRevision: 3 }));
+  const r7c = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID, mappingRevision: 3 }));
   c("a pinned mappingRevision that is not the current one is expired (the pin is exact)",
     r7c !== undefined && r7c.reply.error?.code === "expired");
-  const r7d = await send(oneSubj("status", { target: tgt }), tReq({ owner: "u_abc", actor: "gone", lifecycleUid: T_UID }));
+  const r7d = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "gone", lifecycleUid: T_UID }));
   c("a target alias with NO current mapping is expired",
     r7d !== undefined && r7d.reply.error?.code === "expired");
-  // no resolver seam = targeted modes REFUSED, never dispatched unchecked
-  const srvNoRes = serveEndpoint(nc, SPACE, { endpoint: "manager2", instanceId: IID_A, epoch: 1 },
-    [goodDef({ handler: () => ({ which: "n" }) })],
-    { descriptor: { ...descriptor, endpoint: "manager2", clusters: [{ digest: D_IN, commands: ["status"] }] }, authz: { public: true }, spec: { endpoint: "manager2", owner: "u_op", clusterDigests: [D_IN] } });
+  // no resolver seam = targeted modes REFUSED, never dispatched unchecked. manager2 registers a
+  // NARROW single-command cluster (its whole surface is `inspect`), per the full-surface rule.
+  await registerServiceInstance(kv, { spec: { endpoint: "manager2", owner: "u_op", clusterDigests: [DC_INSPECT], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  const grant2 = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: "manager2", instanceId: IID_A, epoch: 1,
+    holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
+  });
+  const srvNoRes = serveEndpoint(nc, SPACE, grant2, [def("inspect")], { public: true });
   await nc.flush();
   const r7e = await send(
-    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager2", command: "status", caller, nonce: nonce(), target: tgt }),
-    req({ op: { endpoint: "manager2", command: "status", inputDigest: D_IN, outputDigest: D_OUT }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
+    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager2", command: "inspect", caller, nonce: nonce(), target: tgt }),
+    req({ op: { ...iOp, endpoint: "manager2" }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
   c("a targeted request with NO resolver seam is unavailable (fail closed, never unchecked dispatch)",
     r7e !== undefined && r7e.reply.error?.code === "unavailable");
   await srvNoRes.stop();
 
-  // §13.2 registered-mode admission: a command serves only the modes it registered
-  const r7f = await send(oneSubj("status", { target: { mode: "any", tOwner: "u_abc" } }),
-    tReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID }));
-  c("an UNREGISTERED authorization mode is permission-denied (status registers only owner)",
+  // §13.2/§13.7 registered admission: default-deny both ways
+  const r7f = await send(oneSubj("inspect", { target: { mode: "any", tOwner: "u_abc" } }),
+    iReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID }));
+  c("an UNREGISTERED authorization mode is permission-denied (inspect admits only owner)",
     r7f !== undefined && r7f.reply.error?.code === "permission-denied");
   const r7g = await send(oneSubj("badout", { target: tgt }),
     req({ op: { endpoint: "manager", command: "badout", inputDigest: D_IN, outputDigest: D_OUT }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
-  c("a command registering NO target modes refuses every targeted form (default-deny)",
+  c("a registered-UNTARGETED command refuses every targeted form (default-deny)",
     r7g !== undefined && r7g.reply.error?.code === "permission-denied");
 
   // §13.2 child/ledger: fresh per-mode authorization through the seams, fail closed without them
   const childCalls: { caller: EpCaller; target: { owner: string; actor: string; lifecycleUid: string } }[] = [];
   const ledgerCalls: { op: { endpoint: string; command: string } }[] = [];
+  let adoptRuns = 0;
   let childAnswer: boolean | Error = true;
   let ledgerAnswer = true;
+  let rotateDuringSeam = false;
   const m3Defs = (): EpCommandDef[] => [
-    goodDef({ command: "adopt", targetModes: ["child"], handler: () => ({ which: "c" }) }),
-    goodDef({ command: "audit", targetModes: ["ledger"], handler: () => ({ which: "l" }) }),
+    def("adopt", { handler: () => { adoptRuns++; return { which: "c" }; } }),
+    def("audit", { handler: () => ({ which: "l" }) }),
   ];
-  const m3Describe = {
-    descriptor: { endpoint: "manager3", owner: "u_op", protocol: { v: 1 } as const, clusters: [{ digest: D_IN, commands: ["adopt", "audit"] }] },
-    authz: { public: true } as const,
-    spec: { endpoint: "manager3", owner: "u_op", clusterDigests: [D_IN] },
-  };
-  const m3Subj = (cmd: string, mode: "child" | "ledger") =>
-    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager3", command: cmd, caller, nonce: nonce(), target: { mode, tOwner: "u_abc" } });
-  const m3Req = (cmd: string) =>
-    req({ op: { endpoint: "manager3", command: cmd, inputDigest: D_IN, outputDigest: D_OUT }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } });
-  const srvNoSeam = serveEndpoint(nc, SPACE, { endpoint: "manager3", instanceId: IID_A, epoch: 1 }, m3Defs(), m3Describe, { resolveTarget });
+  await registerServiceInstance(kv, { spec: { endpoint: "manager3", owner: "u_op", clusterDigests: [DC_REL], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  const grant3 = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: "manager3", instanceId: IID_A, epoch: 1,
+    holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
+  });
+  const m3Subj = (cmd3: string, mode: "child" | "ledger") =>
+    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager3", command: cmd3, caller, nonce: nonce(), target: { mode, tOwner: "u_abc" } });
+  const m3Req = (cmd3: string) =>
+    req({ op: { endpoint: "manager3", command: cmd3, inputDigest: D_IN, outputDigest: D_OUT }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } });
+  const srvNoSeam = serveEndpoint(nc, SPACE, grant3, m3Defs(), { public: true }, { resolveTarget });
   await nc.flush();
   const r11a = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a child-mode request with NO spawner seam is unavailable (fail closed, never the grant alone)",
@@ -431,12 +577,29 @@ try {
   c("a ledger-mode request with NO ledger seam is unavailable (fail closed)",
     r11b !== undefined && r11b.reply.error?.code === "unavailable");
   await srvNoSeam.stop();
-  const srvSeamed = serveEndpoint(nc, SPACE, { endpoint: "manager3", instanceId: IID_A, epoch: 1 }, m3Defs(), m3Describe, {
+  const srvSeamed = serveEndpoint(nc, SPACE, grant3, m3Defs(), { public: true }, {
     resolveTarget,
-    childAuthority: (a) => { childCalls.push(a); if (childAnswer instanceof Error) throw childAnswer; return childAnswer; },
+    childAuthority: async (a) => {
+      childCalls.push(a);
+      if (rotateDuringSeam) {
+        await wait(150); // the mapping rotates WHILE the spawner record is being read
+        targets.set("u_abc.svc", { lifecycleUid: OTHER_UID, mappingRevision: 8 });
+        return true;
+      }
+      if (childAnswer instanceof Error) throw childAnswer;
+      return childAnswer;
+    },
     ledgerAuthority: (a) => { ledgerCalls.push(a); return ledgerAnswer; },
   });
   await nc.flush();
+  // The finding-5 regression: a TARGETED-only command invoked UNTARGETED must refuse at
+  // admission — the handler never runs and the spawner seam is never consulted.
+  const r11u = await send(
+    epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager3", command: "adopt", caller, nonce: nonce() }),
+    req({ op: { endpoint: "manager3", command: "adopt", inputDigest: D_IN, outputDigest: D_OUT } }));
+  c("a registered-TARGETED command refuses the UNTARGETED form; handler and seam are never reached",
+    r11u !== undefined && r11u.reply.error?.code === "permission-denied" && adoptRuns === 0 && childCalls.length === 0,
+    JSON.stringify({ r: r11u?.reply, adoptRuns, childCalls: childCalls.length }));
   const r11c = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a spawner-confirmed child-mode request dispatches, the seam fed the SUBJECT-borne caller",
     r11c !== undefined && r11c.reply.ok === true
@@ -450,6 +613,17 @@ try {
   const r11e = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a FAILING spawner seam is unavailable (fail closed, never dispatched on doubt)",
     r11e !== undefined && r11e.reply.error?.code === "unavailable");
+  // The finding-6 regression: the mapping rotates DURING the child-authority await — the
+  // post-seam currency re-read must refuse `expired`, and the handler must never run.
+  childAnswer = true;
+  rotateDuringSeam = true;
+  const adoptBefore = adoptRuns;
+  const r11h = await send(m3Subj("adopt", "child"), m3Req("adopt"));
+  c("a mapping ROTATED during the authority read is expired at the post-seam re-check; no effect happens",
+    r11h !== undefined && r11h.reply.error?.code === "expired" && adoptRuns === adoptBefore,
+    JSON.stringify({ r: r11h?.reply, adoptRuns, adoptBefore }));
+  rotateDuringSeam = false;
+  targets.set("u_abc.svc", { lifecycleUid: T_UID, mappingRevision: 7 });
   const r11f = await send(m3Subj("audit", "ledger"), m3Req("audit"));
   c("a ledger-granted request dispatches, the seam fed the exact op",
     r11f !== undefined && r11f.reply.ok === true
@@ -469,18 +643,20 @@ try {
   c("a cast runs its handler and the responder never replies (even on handler failure)",
     castRuns === castBefore + 1 && replies.length === 0, `castRuns ${castRuns} replies ${replies.length}`);
 
-  // describe: authorization-scoped answers off the broker-authenticated caller
+  // describe: authorization-scoped answers off the broker-authenticated caller, over the
+  // artifact's DERIVED descriptor
   const dReq = req({ op: { endpoint: "manager", command: "describe" }, args: undefined });
   const r8 = await send(oneSubj("describe"), dReq);
   const answer = r8?.reply.data as DescribeAnswer | undefined;
-  c("describe answers scoped: exactly the authorized command intersection",
+  c("describe answers scoped: exactly the authorized command intersection per verified cluster",
     r8?.reply.ok === true && answer?.public === false
     && answer.descriptor.clusters.length === 2
-    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["status"])
-    && JSON.stringify(answer.descriptor.clusters[1].commands) === JSON.stringify(["badout", "cyclic"]));
+    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["status", "badout", "cyclic"])
+    && JSON.stringify(answer.descriptor.clusters[1].commands) === JSON.stringify(["extra"]),
+    JSON.stringify(answer));
   c("a PARTIAL cluster intersection omits the inline document (digest-only; no unauthorized leak)",
     answer !== undefined && answer.descriptor.clusters[0].document === undefined);
-  c("a FULL cluster intersection keeps its inline document",
+  c("a FULL cluster intersection keeps its inline (verified) document",
     answer !== undefined && answer.descriptor.clusters[1].document !== undefined);
   const r8b = await send(oneSubj("describe"), req({ op: { endpoint: "manager", command: "describe", inputDigest: D_IN, outputDigest: D_OUT }, args: undefined }));
   c("a digest carried on describe is contract-mismatch (nothing to honor)",
@@ -490,9 +666,19 @@ try {
   c("describe with non-void args is bad-request BEFORE the authorization-view lookup",
     r8c !== undefined && r8c.reply.error?.code === "bad-request" && viewCalls === viewsBefore,
     JSON.stringify({ r: r8c?.reply, viewsBefore, viewCalls }));
+  const r8n = await send(oneSubj("describe"), req({ op: { endpoint: "manager", command: "describe" }, args: null }));
+  c("describe accepts EXPLICIT NULL args (canonical void: absent or null, SPEC 13.7)",
+    r8n?.reply.ok === true, JSON.stringify(r8n?.reply));
   const r8d = await send(oneSubj("describe", { target: tgt }), req({ op: { endpoint: "manager", command: "describe" }, args: undefined, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
   c("a TARGETED describe is permission-denied (reserved untargeted, SPEC 13.7)",
     r8d !== undefined && r8d.reply.error?.code === "permission-denied");
+  // Finding-4 (mutable authz) regression: flip the caller-supplied authz to {public:true} AFTER
+  // construction — the snapshotted scoped policy must ignore it and never leak the full surface.
+  (scoped as { public?: boolean }).public = true;
+  const r8m = await send(oneSubj("describe"), dReq);
+  c("a post-construction authz mutation ({view}->{public:true}) does NOT change the snapshotted policy",
+    (r8m?.reply.data as DescribeAnswer | undefined)?.public === false, JSON.stringify(r8m?.reply));
+  delete (scoped as { public?: boolean }).public;
 
   // stop(): drains AND awaits in-flight handlers before reporting stopped
   gateArmed = true; // the next status handler parks until released
@@ -511,20 +697,21 @@ try {
   await wait(200);
   replies.length = 0; // the released handler still published its (valid) reply; clear it
 
-  // an answerless trusted view fails CLOSED; a public descriptor consults no view
-  const failDescriptor: DescribeDescriptor = { endpoint: "manager", owner: "u_op", protocol: { v: 1 }, clusters: [{ digest: D_IN, commands: ["status"] }] };
-  const srvClosed = serveEndpoint(nc, SPACE, idA, [goodDef()], { descriptor: failDescriptor, authz: { view: () => undefined }, spec });
+  // an answerless trusted view fails CLOSED; a public descriptor consults no view. Re-authorize
+  // the (still-current) manager IID_A/epoch 3 and serve its full surface for the describe probes.
+  const grantD = await authorizeA();
+  const srvClosed = serveEndpoint(nc, SPACE, grantD, fullDefs(), { view: () => undefined });
   await nc.flush();
   const r9 = await send(oneSubj("describe"), dReq);
   c("describe with no fresh trusted view is unavailable (fail closed, never a weaker source)",
     r9 !== undefined && r9.reply.ok === false && r9.reply.error?.code === "unavailable");
   await srvClosed.stop();
-  const srvPub = serveEndpoint(nc, SPACE, idA, [goodDef()], { descriptor: failDescriptor, authz: { public: true }, spec });
+  const srvPub = serveEndpoint(nc, SPACE, grantD, fullDefs(), { public: true });
   await nc.flush();
   const r10 = await send(oneSubj("describe"), dReq);
   const pub = r10?.reply.data as DescribeAnswer | undefined;
   c("a declared-public descriptor answers unscoped and SAYS it is public",
-    pub?.public === true && pub.descriptor.clusters[0].commands.includes("status"));
+    pub?.public === true && pub.descriptor.clusters[0].commands.includes("status"), JSON.stringify(pub));
   await srvPub.stop();
 
   await replySub.drain();

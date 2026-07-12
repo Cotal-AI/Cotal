@@ -153,10 +153,41 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
 /** A registered contract schema: the compiled validator plus the bundle's CLOSURE digest —
  *  the artifact digest of the §13.7 manifest `{ v: 1, root, members[] }` (members = every
  *  artifact transitively REACHABLE from the root, sorted and deduplicated). The closure digest
- *  is the contract identity `op.inputDigest`/`op.outputDigest` pin. */
+ *  is the contract identity `op.inputDigest`/`op.outputDigest` pin.
+ *
+ *  The interface is structural for CONSUMERS, but authority seams never accept structure: a
+ *  compiled contract is FROZEN and brand-registered by this compiler ({@link compileContract}),
+ *  and {@link assertCompiledContract} refuses any object the profile compiler did not produce —
+ *  so a hand-built `{validate, closureDigest}` pair (an arbitrary validator wearing a
+ *  registered digest) can never enter a serve table (§13.7: the digest and its enforcing
+ *  validator are one value). */
 export interface CompiledContract {
   validate: ValidateFunction;
   closureDigest: string;
+}
+
+/** Provenance brand: exactly the frozen objects this compiler returned. A WeakSet (not a
+ *  field) so the brand is unforgeable and unserializable; the freeze makes field swaps on a
+ *  branded object impossible, so brand membership proves BOTH fields came out of one compile. */
+const COMPILED = new WeakSet<CompiledContract>();
+
+function makeCompiled(validate: ValidateFunction, closureDigest: string): CompiledContract {
+  const compiled: CompiledContract = Object.freeze({ validate, closureDigest });
+  COMPILED.add(compiled);
+  return compiled;
+}
+
+/** True iff `c` is a frozen contract this profile compiler produced (never structural). */
+export function isCompiledContract(c: unknown): c is CompiledContract {
+  return typeof c === "object" && c !== null && COMPILED.has(c as CompiledContract);
+}
+
+/** Refuse anything that is not a compiler-produced contract: authority seams (the serve table,
+ *  the grant mint) call this so a fabricated validator/digest pair fails loud, never serves. */
+export function assertCompiledContract(c: unknown, what: string): CompiledContract {
+  if (!isCompiledContract(c))
+    throw new ContractInvalidError(`${what} is not a profile-compiled contract (schema-profile compileContract); a structural {validate, closureDigest} pair carries no compile provenance and is refused (SPEC 13.7)`);
+  return c;
 }
 
 /** Enforce the profile on the whole closure WITHOUT compiling: bounds every document, walks the
@@ -238,7 +269,7 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
  *  `cotal:` reference must be present in `bundle.members`. */
 export function compileContract(bundle: SchemaBundle): CompiledContract {
   const closureDigest = assertClosureProfile(bundle);
-  return { validate: compileWithinBudget(bundle), closureDigest };
+  return makeCompiled(compileWithinBudget(bundle), closureDigest);
 }
 
 /** {@link compileContract} without the closure identity, kept for validation-only callers. */
@@ -266,7 +297,7 @@ export function createCompiledContractCache(capacity: number = SCHEMA_PROFILE.co
         lru.set(closureDigest, hit);
         return hit;
       }
-      const compiled: CompiledContract = { validate: compileWithinBudget(bundle), closureDigest };
+      const compiled = makeCompiled(compileWithinBudget(bundle), closureDigest);
       lru.set(closureDigest, compiled);
       if (lru.size > capacity) lru.delete(lru.keys().next().value as string);
       return compiled;

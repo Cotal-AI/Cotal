@@ -69,7 +69,7 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, type EpCapability } from "./endpoint-grants.js";
-import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
+import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { credsClaims, type Identity } from "./identity.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
@@ -358,14 +358,22 @@ export interface MintOpts {
   lifecycleUid?: string;
   /** v0.4 SERVE identity (SPEC §13.9 serve rows), `endpoint-serve` profile ONLY: mints the
    *  instance's queue-qualified class subscribes (no plain class-rail subscribe exists on any
-   *  credential), the plain scatter and own `inst` rails per registered command plus the
-   *  derived `describe`, the own epoch-pinned timer-fire read, and the epoch-pinned egress
-   *  (reply/epe/ept-schedule/epr). MUST be the branded tuple `authorizeServeGrant` returned —
-   *  a raw literal, a structural copy, or a mutated tuple refuses at the mint. Every other
-   *  profile refuses it (a serve credential is per-instance, never an agent-baseline cred).
-   *  The `$JS.API` bind rows (effects/pool durables) ride the D14 credential assembly, not
-   *  this subject-space builder. */
+   *  credential), the plain scatter and own `inst` rails for the FULL registered command set
+   *  plus the derived `describe`, the own epoch-pinned timer-fire read, and the epoch-pinned
+   *  egress (reply/epe/ept-schedule/epr). MUST be the branded ARTIFACT `authorizeServeGrant`
+   *  returned — a raw literal, a structural copy, or a diverging value refuses at the mint, and
+   *  the mint context is bound to the artifact (same space; the minted principal IS the
+   *  registered owner). The freshness FENCE is the durable issuance gate ({@link serveIssuance}
+   *  / SPEC §13.1), not this artifact. Every other profile refuses it (a serve credential is
+   *  per-instance, never an agent-baseline cred). The `$JS.API` bind rows (effects/pool
+   *  durables) ride the D14 credential assembly, not this subject-space builder. */
   endpointServe?: EpServeGrant;
+  /** v0.4 SERVE mint fence (SPEC §13.1), `endpoint-serve` profile ONLY and REQUIRED there: the
+   *  durable, single-key issuance gate whose revision-pinned CAS `mintCreds` must WIN to release
+   *  the serve credential. Both the takeover and re-registration barriers freeze this same gate,
+   *  so a mint racing either loses the CAS and releases nothing. Production wires it to the
+   *  credential ledger's `gate.<lifecycleUid>`; a test provides a faithful CAS fake. */
+  serveIssuance?: EpIssuanceGate;
   /** Delivery-daemon shard seam (`delivery` profile only). N=1 is the only operating mode; these do
    *  not change permissions in this build (the daemon owns the whole space at N=1). Present so the
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
@@ -547,6 +555,16 @@ export async function mintCreds(
     { ...perms, tags: principalTags(pr.owner, pr.actor) },
     { signer, ...validDates },
   );
+  // §13.1 mint fence for the serve credential: the JWT is BUILT, but released only when its
+  // ledger row is durably staged and its revision-pinned CAS wins the instance's single
+  // issuance gate (still `open` at the authorized epoch + registrationRevision). A takeover or
+  // re-registration that froze the gate first makes this lose and release nothing. A read is
+  // never a fence, so this is a CAS write, not the (removed) in-memory freshness mark.
+  if (profile === "endpoint-serve") {
+    if (!opts.serveIssuance)
+      throw new Error("mintCreds: endpoint-serve requires opts.serveIssuance (the durable issuance-gate seam; the mint releases only on its revision-pinned CAS win, SPEC 13.1)");
+    await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, identity.id);
+  }
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
 }
@@ -1058,19 +1076,22 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
 
 /** ENDPOINT-SERVE (v0.4, SPEC §13.9 "Serve grants") — the per-instance serve credential:
  *  EXACTLY the instance's registered rails and nothing else. Subscribe: the queue-qualified
- *  class rail, the plain scatter rail, and the own-instance rail per registered command plus
- *  the derived `describe`, and the own epoch-pinned timer-fire subjects; publish: the
- *  epoch-pinned egress (reply / `epe` events / `ept` schedule requests / `epr` record-write
- *  ingress). No agent baseline of any kind — no chat/DM/anycast/presence/ctl, no `$JS.>`
- *  (the effects/pool bind rows are the D14 credential assembly). The tuple MUST be the
- *  branded grant `authorizeServeGrant` returned (registered instance, registered owner + fresh
- *  name authority, registered command set, current epoch) — a raw or mutated tuple refuses
- *  here, so serve authority is mintable only THROUGH the registry authorization. */
+ *  class rail, the plain scatter rail, and the own-instance rail for the FULL registered
+ *  command set plus the derived `describe`, and the own epoch-pinned timer-fire subjects;
+ *  publish: the epoch-pinned egress (reply / `epe` events / `ept` schedule requests / `epr`
+ *  record-write ingress). No agent baseline of any kind — no chat/DM/anycast/presence/ctl, no
+ *  `$JS.>` (the effects/pool bind rows are the D14 credential assembly). The value MUST be the
+ *  branded ARTIFACT `authorizeServeGrant` returned, and its mint context binds: same space, and
+ *  the minted principal is the registered owner. This builds the ROWS; the RELEASE fence is the
+ *  durable issuance-gate CAS `mintCreds` runs (SPEC §13.1) — a raw/copied/diverging value or a
+ *  foreign space/principal refuses here, and a stale incarnation loses the gate CAS. */
 function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
   if (!opts.endpointServe)
-    throw new Error("permissionsFor: endpoint-serve requires opts.endpointServe (the authorized serve grant tuple)");
-  assertServeGrantAuthorized(opts.endpointServe);
-  const rows = epServeGrantRows(space, { ...opts.endpointServe, commands: [...opts.endpointServe.commands] });
+    throw new Error("permissionsFor: endpoint-serve requires opts.endpointServe (the authorized serve artifact)");
+  const snap = assertServeGrantMintable(opts.endpointServe, { space, holderOwner: pr.owner });
+  const rows = epServeGrantRows(space, {
+    endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, commands: [...snap.commands],
+  });
   return {
     pub: { allow: rows.pub },
     sub: { allow: [...rows.sub, `_INBOX_${pr.connId}.>`] },

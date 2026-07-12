@@ -1,9 +1,13 @@
 /**
  * v0.4 serve-credential confinement smoke (SPEC §13.9 serve rows; the D4 half of the split
  * serve-cred/D14 gate) — a real JWT-auth broker proves the DEDICATED `endpoint-serve` profile
- * minted from an `authorizeServeGrant`-branded tuple:
- *   - minting is gated on registry authorization: a raw tuple, a structural copy, an
- *     agent-profile fold, and foreign name/instance/command tuples all REFUSE at the mint;
+ * minted from an `authorizeServeGrant`-branded ARTIFACT:
+ *   - minting is gated on registry authorization over VERIFIED cluster bytes: a raw value, a
+ *     structural copy, an agent-profile fold, and foreign name/instance/command grants all
+ *     REFUSE at the mint;
+ *   - the mint context is BOUND and FRESH: a foreign space, a foreign principal, a stale
+ *     (un-re-verified) artifact, a superseded epoch, and a re-registered instance all refuse —
+ *     every successful mint rides its own fresh registry fence;
  *   - a registered instance serves and replies THROUGH the restricted credential on all three
  *     rails (one/all/inst) plus the DERIVED describe, and the positive serve connection is
  *     watched for async violations (none may occur);
@@ -31,10 +35,12 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import type { KV } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError,
-  serveEndpoint, compileContract, registerServiceInstance, authorizeServeGrant,
+  serveEndpoint, compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
+  finalizeServeIssuance,
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
-  type EpCaller, type EpServeIdentity, type EndpointReply, type EpCommandDef,
-  type DescribeDescriptor, type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
+  type EpCaller, type EndpointReply, type EpCommandDef,
+  type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
+  type EpIssuanceGate, type EpGateState, type EpServeLedgerRow,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -62,26 +68,70 @@ const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ign
 
 const contract = compileContract({ root: { type: "object", properties: { n: { type: "number" } }, additionalProperties: false } });
 const D = contract.closureDigest;
+// The §13.7 cluster document: the digest-verified authority for the served surface. The store
+// holds BOTH the manifest (at the closure digest) and the root document (at its artifact digest).
+const DOC = {
+  urn: "ai.cotal.manager", revision: 1, attributes: [], events: [],
+  commands: [{ name: "status", class: "ephemeral", targeted: false, capability: "manager.call", inputDigest: D, outputDigest: D }],
+};
+const DOC_ROOT = contractDigest(DOC);
+const DC = contractDigest({ v: 1, root: DOC_ROOT, members: [] });
+const store = new Map<string, unknown>([[DC, { v: 1, root: DOC_ROOT, members: [] }], [DOC_ROOT, DOC]]);
+const readClusterArtifact = (d: string) => store.get(d);
 
 /** In-process KV stub carrying the registration the PROVISIONER authorizes against — the
  *  broker's job in this smoke is enforcing the minted ROWS; the registry read itself is the
  *  provisioner's trusted seam (its broker-side grant is the D14 gate). */
 function memKv(): KV {
-  const store = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
+  const store2 = new Map<string, { value: Uint8Array; revision: number; operation: "PUT" }>();
   let seq = 0;
   return {
-    get: async (k: string) => store.get(k),
+    get: async (k: string) => store2.get(k),
     create: async (k: string, v: Uint8Array) => {
-      if (store.has(k)) throw new Error(`wrong last sequence: ${k} exists`);
-      store.set(k, { value: v, revision: ++seq, operation: "PUT" });
+      if (store2.has(k)) throw new Error(`wrong last sequence: ${k} exists`);
+      store2.set(k, { value: v, revision: ++seq, operation: "PUT" });
       return seq;
     },
     update: async (k: string, v: Uint8Array, expected: number) => {
-      if (store.get(k)?.revision !== expected) throw new Error("wrong last sequence");
-      store.set(k, { value: v, revision: ++seq, operation: "PUT" });
+      if (store2.get(k)?.revision !== expected) throw new Error("wrong last sequence");
+      store2.set(k, { value: v, revision: ++seq, operation: "PUT" });
       return seq;
     },
   } as unknown as KV;
+}
+
+/** A faithful in-memory model of the §13.1 durable issuance gate (`gate.<lifecycleUid>`): ONE
+ *  key binding `{state, generation, processEpoch, registrationRevision, revision}`, with a
+ *  revision-pinned CAS. `commit` is the mint's serialization point; `freeze` is what a takeover
+ *  or a re-registration barrier CASes FIRST — both advance `revision`, so exactly one of a
+ *  parked mint's `commit` and a barrier's `freeze` wins. The staged ledger rows are the
+ *  `cred.` rows a barrier would enumerate and revoke. */
+function makeGate(init: { generation: number; processEpoch: number; registrationRevision: number }) {
+  const gate = { state: "open" as "open" | "frozen" | "retired", ...init, revision: 1 };
+  const rows = new Map<string, { row: EpServeLedgerRow; state: "staged" | "revoked" }>();
+  const seam: EpIssuanceGate = {
+    observe: (): EpGateState => ({ ...gate }),
+    stage: (row) => { rows.set(row.credentialId, { row, state: "staged" }); },
+    commit: (expectedRevision) => {
+      if (gate.state !== "open" || gate.revision !== expectedRevision) return false;
+      gate.revision++; // a winning mint advances the gate revision, staying open at the same tuple
+      return true;
+    },
+    revoke: (row) => { const e = rows.get(row.credentialId); if (e) e.state = "revoked"; },
+  };
+  return {
+    seam, rows,
+    /** A barrier (takeover or re-registration) CAS-freezes the gate BEFORE enumerating. */
+    freeze: () => { gate.state = "frozen"; gate.revision++; },
+    /** Reopen at successor authority coordinates (post-enumeration barrier step). */
+    reopen: (next: { processEpoch?: number; registrationRevision?: number }) => {
+      gate.state = "open"; gate.generation++; gate.revision++;
+      if (next.processEpoch !== undefined) gate.processEpoch = next.processEpoch;
+      if (next.registrationRevision !== undefined) gate.registrationRevision = next.registrationRevision;
+    },
+    staged: () => [...rows.values()].filter((e) => e.state === "staged").length,
+    revoked: () => [...rows.values()].filter((e) => e.state === "revoked").length,
+  };
 }
 
 /** Connect with `creds`, run `op`, and classify: any async permission/authorization violation
@@ -115,46 +165,119 @@ try {
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVERS); if (!up) await wait(100); }
   if (!up) throw new Error("auth broker did not come up");
 
-  // ---- authorize the serve tuple against the REGISTERED service (the mint gate) ----
+  // ---- authorize the serve artifact against the REGISTERED service ----
   const authority: ServiceNameAuthority = { isOperatorOwner: (o) => o === "u_op", domainOwnerOf: () => undefined };
   const kv = memKv();
-  const descriptor: DescribeDescriptor = {
-    endpoint: "manager", owner: "u_op", protocol: { v: 1 },
-    clusters: [{ digest: D, commands: ["status"] }],
-  };
-  const svcSpec = { endpoint: "manager", owner: "u_op", clusterDigests: [D], protocol: { v: 1 as const } };
-  await registerServiceInstance(kv, { spec: svcSpec, instanceId: IID, registrant: { owner: "u_op" }, authority });
+  const svcSpec = { endpoint: "manager", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
+  const reg = await registerServiceInstance(kv, { spec: svcSpec, instanceId: IID, registrant: { owner: "u_op" }, authority });
   const serveGrant = await authorizeServeGrant(kv, {
-    endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["status"],
-    descriptor, holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH,
+    space, endpoint: "manager", instanceId: IID, epoch: EPOCH,
+    holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact,
   });
-  c("a registered instance's serve tuple authorizes for minting", serveGrant.commands.length === 1);
-  await rejects("a FOREIGN NAME cannot authorize a mintable serve tuple (holder is not the registered owner)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["status"], descriptor, holder: { owner: "u_evil" }, authority, readProcessEpoch: () => EPOCH }), "permission-denied");
+  c("a registered instance's serve artifact authorizes for minting (verified full surface, bound space/owner)",
+    serveGrant.commands.length === 1 && serveGrant.commands[0] === "status" && serveGrant.space === space && serveGrant.owner === "u_op"
+    && serveGrant.registrationRevision === reg.registrationRevision);
+  await rejects("a FOREIGN NAME cannot authorize a mintable serve artifact (holder is not the registered owner)",
+    () => authorizeServeGrant(kv, { space, endpoint: "manager", instanceId: IID, epoch: EPOCH, holder: { owner: "u_evil" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact }), "permission-denied");
   await rejects("a FOREIGN INSTANCE cannot authorize (unregistered)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID_B, epoch: EPOCH, commands: ["status"], descriptor, holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH }), "failed-precondition");
-  await rejects("a FOREIGN COMMAND cannot authorize (outside the registered contract surface)",
-    () => authorizeServeGrant(kv, { endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["stop"], descriptor, holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH }), "permission-denied");
+    () => authorizeServeGrant(kv, { space, endpoint: "manager", instanceId: IID_B, epoch: EPOCH, holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact }), "failed-precondition");
 
-  // ---- the mint consumes ONLY branded serve authority ----
+  // ---- the durable issuance gate is the mint fence (SPEC 13.1); the gate binds epoch + reg rev ----
+  const gate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+  const mintServe = (over: Record<string, unknown> = {}) => mintCreds(auth, newIdentity(), "endpoint-serve", {
+    principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam, ...over,
+  } as Parameters<typeof mintCreds>[3]);
   const mintThrows = async (opts: Parameters<typeof mintCreds>[3], profile: Parameters<typeof mintCreds>[2] = "endpoint-serve") => {
     try { await mintCreds(auth, newIdentity(), profile, opts); return false; } catch { return true; }
   };
-  c("a RAW unbranded serve tuple refuses at the mint",
-    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["status"] } as EpServeGrant }));
-  c("a STRUCTURAL COPY of the authorized grant refuses at the mint",
-    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { ...serveGrant, commands: [...serveGrant.commands] } as EpServeGrant }));
+  c("a RAW unbranded serve value refuses at the mint",
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["status"] } as EpServeGrant, serveIssuance: gate.seam }));
+  c("a STRUCTURAL COPY of the authorized artifact refuses at the mint",
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { ...serveGrant } as EpServeGrant, serveIssuance: gate.seam }));
   c("the AGENT profile refuses serve rows (a serve credential is never an agent-baseline cred)",
-    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant }, "agent"));
-  c("the endpoint-serve profile without a tuple refuses",
-    await mintThrows({ principal: { owner: "u_op", actor: "mgr" } }));
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam }, "agent"));
+  c("the endpoint-serve profile without an artifact refuses",
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, serveIssuance: gate.seam }));
+  c("the endpoint-serve profile without the issuance gate refuses (the release fence is mandatory)",
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant }));
 
-  // ---- mint the restricted profiles ----
+  // ---- mint the restricted profiles (each mint wins its own CAS on the open gate) ----
   const serveId = newIdentity();
   const serveCreds = await mintCreds(auth, serveId, "endpoint-serve", {
-    principal: { owner: "u_op", actor: "mgr" },
-    endpointServe: serveGrant,
+    principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam,
   });
+  c("the mint STAGED its credential-ledger row and WON the gate CAS (one committed row)",
+    gate.staged() === 1 && gate.revoked() === 0);
+  c("a SECOND mint from the same artifact wins its own fresh CAS (standing-renewable re-mint)",
+    (await mintServe()).includes("USER JWT") && gate.staged() === 2);
+
+  // ---- mint context binding (space + principal) ----
+  await rejects("a FOREIGN PRINCIPAL cannot mint from the artifact (the minted principal IS the registered owner)",
+    () => mintServe({ principal: { owner: "u_evil", actor: "mgr" } }), "permission-denied");
+  {
+    const foreign = await createSpaceAuth("foreignspace");
+    await rejects("a CROSS-SPACE mint refuses (the artifact binds its space)",
+      () => mintCreds(foreign, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam }), "permission-denied");
+  }
+
+  // ---- the durable fence: parked mint vs takeover, and vs re-registration (SPEC 13.1) ----
+  // A gate whose epoch/reg-rev has already advanced past the artifact's is `expired` at observe.
+  {
+    const drifted = makeGate({ generation: 2, processEpoch: EPOCH + 1, registrationRevision: reg.registrationRevision });
+    await rejects("EPOCH DRIFT: the gate is at a newer processEpoch than the artifact; mint refuses, releases nothing",
+      () => mintServe({ serveIssuance: drifted.seam }), "expired");
+    c("…and the drifted mint staged NO surviving row (it never reached the CAS)", drifted.staged() === 0);
+  }
+  {
+    const reReg = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision + 1 });
+    await rejects("RE-REGISTRATION DRIFT: the gate is at a newer registrationRevision; mint refuses (superseded surface)",
+      () => mintServe({ serveIssuance: reReg.seam }), "expired");
+  }
+  {
+    const frozenGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+    frozenGate.freeze(); // a takeover/re-registration barrier CAS-froze the gate FIRST
+    await rejects("a FROZEN gate refuses the mint (a barrier won the single-key serialization)",
+      () => mintServe({ serveIssuance: frozenGate.seam }), "expired");
+  }
+  // Parked-mint-vs-takeover: the mint observes an OPEN gate, then a barrier freezes it before the
+  // mint's CAS. The CAS loses, the staged row is revoked, and NO credential is released.
+  {
+    const raceGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+    let barrierWon = false;
+    const racing: EpIssuanceGate = {
+      observe: raceGate.seam.observe,
+      stage: (row) => { raceGate.seam.stage(row); raceGate.freeze(); barrierWon = true; }, // barrier freezes between stage and commit
+      commit: raceGate.seam.commit,
+      revoke: raceGate.seam.revoke,
+    };
+    let released = "";
+    try { released = await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: racing }); } catch { /* expected */ }
+    c("parked-mint-vs-takeover: the barrier's freeze wins the CAS, the mint releases NOTHING and revokes its staged row",
+      barrierWon && released === "" && raceGate.staged() === 0 && raceGate.revoked() === 1);
+  }
+  // Parked-mint-vs-re-registration: same single-key serialization, the barrier advancing the
+  // registrationRevision. The mint's revision-pinned CAS loses; nothing is released.
+  {
+    const raceGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+    const racing: EpIssuanceGate = {
+      observe: raceGate.seam.observe,
+      stage: (row) => { raceGate.seam.stage(row); raceGate.freeze(); raceGate.reopen({ registrationRevision: reg.registrationRevision + 1 }); },
+      commit: raceGate.seam.commit,
+      revoke: raceGate.seam.revoke,
+    };
+    let released = "";
+    try { released = await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: racing }); } catch { /* expected */ }
+    c("parked-mint-vs-re-registration: the re-registration barrier wins, the mint releases NOTHING and revokes its row",
+      released === "" && raceGate.revoked() === 1);
+  }
+  // finalizeServeIssuance is only released on a genuine CAS win: prove the winning path directly.
+  {
+    const winGate = makeGate({ generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision });
+    await finalizeServeIssuance(winGate.seam, serveGrant, newIdentity().id);
+    c("a mint that wins the CAS on an open, current gate commits its row (the positive fence path)",
+      winGate.staged() === 1 && winGate.revoked() === 0);
+  }
+
   const callerId = newIdentity();
   const callerCreds = await mintCreds(auth, callerId, "agent", {
     principal: { owner: "u_abc", actor: "worker" },
@@ -179,14 +302,12 @@ try {
       if (/permission|authorization/i.test(JSON.stringify(s))) serveViolations.push(JSON.stringify(s));
     }
   })().catch(() => {});
-  const identity: EpServeIdentity = { endpoint: "manager", instanceId: IID, epoch: EPOCH };
   const statusDef: EpCommandDef = {
-    command: "status", class: "ephemeral",
+    command: "status",
     contract: { input: contract, output: contract },
     handler: () => ({ n: 1 }),
   };
-  const handle = serveEndpoint(serveNc, space, identity, [statusDef],
-    { descriptor, authz: { public: true }, spec: svcSpec });
+  const handle = serveEndpoint(serveNc, space, serveGrant, [statusDef], { public: true });
   await serveNc.flush();
 
   const callerNc = await connect({

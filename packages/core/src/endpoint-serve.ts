@@ -18,16 +18,18 @@ import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { ValidateFunction } from "ajv";
 import { spacePrefix } from "./subjects.js";
 import {
-  endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner, epClassQueueGroup,
-  deriveReplySubject, parseEpSubject, EP_AUTHZ_MODES,
-  type EpCaller, type ParsedEpRequest, type EpAuthzMode,
+  endpointToken, assertCommandToken, assertLifecycleToken, epClassQueueGroup,
+  deriveReplySubject, parseEpSubject,
+  type EpCaller, type ParsedEpRequest,
 } from "./endpoint-subjects.js";
 import {
   EpEnvelopeError, parseEndpointRequest, checkRequestSubjectAgreement, assertClassMatches,
   assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EpClass,
 } from "./endpoint-envelope.js";
-import { compileContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
+import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
+import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
+import type { DescribeDescriptor } from "./endpoint-cluster.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -47,33 +49,32 @@ export interface EpServeContext {
   request: EndpointRequest;
 }
 
-/** One served command. `class` states the command's declared delivery contract (only
- *  `ephemeral` serves on rails; `journal` refuses at construction). `contract` carries the
- *  COMPILED §13.7 contracts (schema-profile {@link compileContract}): the pinned invocation
- *  digests are DERIVED from each side's `closureDigest`, so the digest a caller pins and the
- *  validator that enforces it travel as one value and can never diverge. `input.validate`
- *  gates args before any effect (`bad-request`), `output.validate` gates before the success
- *  publish (`internal` — an invalid reply is a server bug, §13.3/§13.7). Runtime validation at
- *  the serving boundary is not optional. `targetModes` is the command's REGISTERED §13.2
- *  authorization-mode surface: a targeted request whose subject mode is not listed is
- *  `permission-denied`; absent/empty admits only the untargeted form (default-deny). */
+/** One served command: its handler plus the COMPILED §13.7 contracts (schema-profile
+ *  {@link compileContract} — provenance-branded, so a fabricated `{validate, closureDigest}`
+ *  pair refuses at construction). Everything AUTHORITY-shaped about the command — its class,
+ *  whether it is targeted and which modes it admits, its schema closure digests — comes from
+ *  the serve artifact's digest-VERIFIED registered declaration, never from this def: the def
+ *  only supplies the code, and its compiled contracts must EQUAL the registered digests.
+ *  `input.validate` gates args before any effect (`bad-request`), `output.validate` gates
+ *  before the success publish (`internal` — an invalid reply is a server bug, §13.3/§13.7).
+ *  Runtime validation at the serving boundary is not optional. */
 export interface EpCommandDef {
   command: string;
-  class: EpClass;
   contract: { input: CompiledContract; output: CompiledContract };
-  targetModes?: EpAuthzMode[];
   handler: (ctx: EpServeContext) => Promise<unknown> | unknown;
 }
 
 /** The internal dispatch shape: registered defs plus the ONE reserved describe. `digests` is
  *  absent exactly for describe (it pins no contract, §13.7); `validate` is ALWAYS present —
  *  describe validates against the canonical void input and the declared
- *  {@link DescribeAnswer} output ({@link describeValidators}). */
+ *  {@link DescribeAnswer} output ({@link describeValidators}). `targeted`/`targetModes` are
+ *  the command's REGISTERED §13.2/§13.7 admission surface, out of verified cluster bytes. */
 interface ActiveDef {
   command: string;
   class: EpClass;
   digests?: { input: string; output: string };
   validate: { args: ValidateFunction; output: ValidateFunction };
+  targeted: boolean;
   targetModes: ReadonlySet<string>;
   handler: (ctx: EpServeContext) => Promise<unknown> | unknown;
 }
@@ -130,8 +131,6 @@ async function assertTargetCurrent(env: EndpointRequest, resolve: EpTargetResolv
     throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} pinned mappingRevision ${t.mappingRevision} but the current mapping is at ${mapping.mappingRevision} (SPEC 13.3: the pin is exact)`);
 }
 
-const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
-
 /** §13.7 invocation binding at the pre-effect seam. `parseEndpointRequest` already enforced
  *  digest PRESENCE for every non-describe command; here the pinned values must EQUAL the served
  *  contract. `describe` has no contract to pin (`digests` absent exactly there), so a digest
@@ -146,13 +145,21 @@ function bindContract(env: EndpointRequest, def: ActiveDef): void {
     throw new EpEnvelopeError("contract-mismatch", `pinned digests ${env.op.inputDigest}/${env.op.outputDigest} do not match the served contract ${def.digests.input}/${def.digests.output}; a member that cannot honor a pinned digest rejects, never coerces (SPEC 13.7)`);
 }
 
-/** §13.2 registered-mode admission at the pre-effect seam: a command serves ONLY the
- *  authorization modes it registered. The subject's mode token is broker-authenticated (the
- *  caller's credential pinned it, §13.9), but the GRANT proves what the caller may claim, not
- *  what this command supports — an unregistered mode is `permission-denied`, before args
- *  validation and before any target resolution. */
+/** §13.2/§13.7 registered admission at the pre-effect seam: a command serves ONLY the form its
+ *  verified registered declaration admits. The subject's mode token is broker-authenticated
+ *  (the caller's credential pinned it, §13.9), but the GRANT proves what the caller may claim,
+ *  not what this command supports — default-deny BOTH ways: a targeted command refuses the
+ *  untargeted form (it would bypass the per-mode fresh authorization entirely), an untargeted
+ *  command refuses every targeted form, and a targeted request whose mode is not declared is
+ *  `permission-denied` — all before args validation and before any target resolution. */
 function assertModeAdmitted(parsed: ParsedEpRequest, def: ActiveDef): void {
-  if (parsed.target === null) return; // the untargeted form is every command's base surface
+  if (parsed.target === null) {
+    if (def.targeted)
+      throw new EpEnvelopeError("permission-denied", `command "${def.command}" is registered TARGETED; the untargeted form is not its surface and would bypass the per-mode fresh authorization (SPEC 13.2/13.7)`);
+    return;
+  }
+  if (!def.targeted)
+    throw new EpEnvelopeError("permission-denied", `command "${def.command}" is registered untargeted; a targeted form is not its surface (SPEC 13.2/13.7)`);
   if (!def.targetModes.has(parsed.target.mode))
     throw new EpEnvelopeError("permission-denied", `command "${def.command}" does not admit the "${parsed.target.mode}" authorization mode; a command serves only its registered target modes (SPEC 13.2)`);
 }
@@ -198,90 +205,87 @@ export interface EpServeHandle {
 }
 
 /**
- * Serve `commands` as one instance of `identity.endpoint` on the three §13.2 rails, exactly the
+ * Serve an authorized instance's granted commands on the three §13.2 rails, exactly the
  * per-command forms the serve credential grants (§13.9 {@link epServeSubscribeRows}): the class
  * rail queue-qualified under the canonical queue group (`one` = queue-group anycast), the
- * scatter rail plain, and this instance's own `inst` rail. The reserved `describe` (§13.7:
- * every endpoint MUST serve it) is built HERE from the `describe` parameter — a `describe` def
- * in `commands` refuses at construction, so the authorization seam cannot be replaced by a
- * custom unscoped handler — and the descriptor is bound both to the served surface (its
- * endpoint must be this identity's, every advertised command must have a handler in THIS
- * table) and to the REGISTERED spec: `describe.spec` is the registration this instance runs
- * under, and {@link assertDescriptorMatchesSpec} refuses a descriptor advertising another
- * owner's or an unregistered contract surface at construction.
+ * scatter rail plain, and this instance's own `inst` rail.
+ *
+ * `serve` is the registry-authorized ARTIFACT {@link authorizeServeGrant} returned — the same
+ * value the credential minted from. Construction refuses anything else (brand check), refuses
+ * a foreign space, and binds every def to the artifact's digest-VERIFIED registered
+ * declaration: the def must be a GRANTED command, its provenance-branded compiled contracts
+ * must equal the registered schema digests, its class/targeted/modes come from the verified
+ * declaration (a journal-class registered command never rail-serves), and every granted
+ * command must have a def (a credential row nobody serves is a construction bug, not a
+ * runtime mystery). The reserved `describe` (§13.7: every endpoint MUST serve it) is built
+ * HERE over the artifact's DERIVED deep-frozen descriptor — a `describe` def refuses at
+ * construction, so the authorization seam cannot be replaced, and no hand-authored or
+ * later-mutated descriptor can reach the wire.
  *
  * Boundary discipline per message: subject parse (a non-request subject has no sender and is
  * never handled), body validation with the exact §13.3 catalog codes, body-subject agreement,
- * class match against the DEF's declared class, digest binding, registered-mode admission,
- * args schema validation, fresh target currency, then the per-mode fresh authorization
- * (`child`/`ledger` seams) — all before any effect — then dispatch, and budgeted output schema
- * validation before the success publish. A call's reply (success OR structured error) is
- * published on the DERIVED reply subject (§13.2: never a body-supplied target); a cast is
- * never replied to, even on error (§13.5: at-most-once, the caller never reads the rail). A
- * request whose body cannot be parsed carries no trustworthy verb; it is answered (the derived
- * subject is nonce-scoped to this caller, and a cast caller simply holds no subscription
- * there). A reply that does not serialize is replaced by a structured `internal` error reply,
- * never dropped.
+ * class match against the REGISTERED class, digest binding, registered admission (targeted
+ * commands refuse the untargeted form and vice versa), args schema validation, fresh target
+ * currency, the per-mode fresh authorization (`child`/`ledger` seams), then — because those
+ * seams await — target currency AGAIN immediately before dispatch (§13.2/§13.3: a mapping
+ * rotated during the authority read must fail, never ride a pre-rotation read into the
+ * effect), and budgeted output schema validation before the success publish. A call's reply
+ * (success OR structured error) is published on the DERIVED reply subject (§13.2: never a
+ * body-supplied target); a cast is never replied to, even on error (§13.5: at-most-once, the
+ * caller never reads the rail). A request whose body cannot be parsed carries no trustworthy
+ * verb; it is answered (the derived subject is nonce-scoped to this caller, and a cast caller
+ * simply holds no subscription there). A reply that does not serialize is replaced by a
+ * structured `internal` error reply, never dropped.
  */
 export function serveEndpoint(
   nc: NatsConnection,
   space: string,
-  identity: EpServeIdentity,
+  serve: EpServeGrant,
   commands: EpCommandDef[],
-  describe: {
-    descriptor: DescribeDescriptor;
-    authz: DescribeAuthorization;
-    /** The REGISTERED service spec this instance runs under (§13.7): binding it here is what
-     *  makes discovery authoritative for the registration, not for whatever a composition
-     *  happened to pass. */
-    spec: { endpoint: string; owner: string; clusterDigests: string[] };
-  },
+  describe: DescribeAuthorization,
   opts: { resolveTarget?: EpTargetResolver; childAuthority?: EpChildAuthority; ledgerAuthority?: EpLedgerAuthority } = {},
 ): EpServeHandle {
+  assertServeGrantAuthorized(serve); // §13.9: the serve table consumes ONLY registry-authorized serve authority
+  if (serve.space !== space)
+    throw new Error(`the serve artifact was authorized for space "${serve.space}", not "${space}" (SPEC 13.9)`);
+  const identity: EpServeIdentity = { endpoint: serve.endpoint, instanceId: serve.instanceId, epoch: serve.epoch };
   const e = endpointToken(identity.endpoint);
   const iId = assertLifecycleToken(identity.instanceId, "instanceId");
-  if (!Number.isSafeInteger(identity.epoch) || identity.epoch < 0)
-    throw new Error(`epoch ${identity.epoch} is not an unsigned integer`);
   const seen = new Set<string>();
   const defs: ActiveDef[] = [];
   for (const def of commands) {
     assertCommandToken(def.command);
     if (def.command === "describe")
-      throw new Error("describe is reserved and built from the describe parameter; a custom describe def would bypass the authorization seam (SPEC 13.7)");
+      throw new Error("describe is reserved and built from the serve artifact; a custom describe def would bypass the authorization seam (SPEC 13.7)");
     if (seen.has(def.command)) throw new Error(`command "${def.command}" is served twice`);
     seen.add(def.command);
-    if (def.class !== "ephemeral")
-      throw new Error(`command "${def.command}" declares class "${def.class}": only ephemeral commands are rail-served; journal work rides epj submissions (SPEC 13.4/13.5)`);
-    // §13.7 digest-bound validators: the def carries COMPILED contracts, so the pinned digest
-    // is DERIVED from the closure the validator was compiled from — a digest/validator
-    // mismatch is unrepresentable, not merely checked.
-    if (typeof def.contract?.input?.validate !== "function" || !isDigest(def.contract.input.closureDigest)
-      || typeof def.contract?.output?.validate !== "function" || !isDigest(def.contract.output.closureDigest))
-      throw new Error(`command "${def.command}" must carry COMPILED contracts (schema-profile compileContract) for both sides: the invocation digest and its enforcing validator travel as one value (SPEC 13.7)`);
-    const targetModes = new Set<string>();
-    for (const mode of def.targetModes ?? []) {
-      if (!(EP_AUTHZ_MODES as readonly string[]).includes(mode))
-        throw new Error(`command "${def.command}" registers unknown target mode "${mode}" (SPEC 13.2)`);
-      targetModes.add(mode);
-    }
+    const decl = serve.surface[def.command];
+    if (decl === undefined)
+      throw new Error(`command "${def.command}" is not granted by the serve artifact; the serve table is exactly the granted registered surface (SPEC 13.9)`);
+    if (decl.class !== "ephemeral")
+      throw new Error(`command "${def.command}" is registered class "${decl.class}": only ephemeral commands are rail-served; journal work rides epj submissions (SPEC 13.4/13.5)`);
+    // §13.7 digest-bound validators: the def carries provenance-BRANDED compiled contracts
+    // (a structural {validate, closureDigest} pair refuses — an arbitrary validator cannot
+    // wear a registered digest), and their closure digests must EQUAL the verified registered
+    // declaration's, so the schema the caller pinned at describe time is the schema this
+    // boundary enforces.
+    const input = assertCompiledContract(def.contract?.input, `command "${def.command}" input contract`);
+    const output = assertCompiledContract(def.contract?.output, `command "${def.command}" output contract`);
+    if (input.closureDigest !== decl.inputDigest || output.closureDigest !== decl.outputDigest)
+      throw new Error(`command "${def.command}" compiled contracts ${input.closureDigest}/${output.closureDigest} do not equal the registered declaration ${decl.inputDigest}/${decl.outputDigest} (SPEC 13.7: the registered cluster document is the schema authority)`);
     defs.push({
       command: def.command,
-      class: def.class,
-      digests: { input: def.contract.input.closureDigest, output: def.contract.output.closureDigest },
-      validate: { args: def.contract.input.validate, output: def.contract.output.validate },
-      targetModes,
+      class: decl.class,
+      digests: { input: decl.inputDigest, output: decl.outputDigest },
+      validate: { args: input.validate, output: output.validate },
+      targeted: decl.targeted,
+      targetModes: new Set(decl.modes),
       handler: def.handler,
     });
   }
-  assertDescriptorShape(describe.descriptor);
-  if (endpointToken(describe.descriptor.endpoint) !== e)
-    throw new Error(`the descriptor names endpoint "${describe.descriptor.endpoint}" but this instance serves "${identity.endpoint}" (SPEC 13.7: describe is authoritative for ITS endpoint)`);
-  assertDescriptorMatchesSpec(describe.descriptor, describe.spec);
-  for (const cluster of describe.descriptor.clusters) {
-    for (const cmd of cluster.commands) {
-      if (cmd !== "describe" && !seen.has(cmd))
-        throw new Error(`the descriptor advertises command "${cmd}" with no handler in this serve table (SPEC 13.7: authoritative discovery cannot advertise a nonexistent surface)`);
-    }
+  for (const cmd of serve.commands) {
+    if (!seen.has(cmd))
+      throw new Error(`granted command "${cmd}" has no def in this serve table; the credential subscribes a rail nobody would serve (SPEC 13.9)`);
   }
   defs.push({
     command: "describe",
@@ -290,8 +294,9 @@ export function serveEndpoint(
     // (`bad-request` on any payload, BEFORE the authorization-view lookup) and the declared
     // DescribeAnswer output shape.
     validate: describeValidators(),
-    targetModes: new Set(), // §13.7: describe is reserved UNTARGETED; every targeted form refuses
-    handler: describeHandler(describe.descriptor, describe.authz),
+    targeted: false, // §13.7: describe is reserved UNTARGETED; every targeted form refuses
+    targetModes: new Set(),
+    handler: describeHandler(serve.descriptor, describe),
   });
 
   const p = spacePrefix(space);
@@ -320,6 +325,12 @@ export function serveEndpoint(
       await assertTargetCurrent(env, opts.resolveTarget);
       // §13.2: per-mode fresh authorization (child spawner check / ledger read), fail closed.
       await assertTargetModeAuthorized(env, parsed, opts);
+      // §13.2/§13.3: the child/ledger seams AWAIT — the mapping can rotate (delete/recreate,
+      // revision advance) during that read, so currency is re-resolved AFTER dynamic
+      // authorization, immediately before the effect; a pre-rotation read never rides into
+      // the handler.
+      if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
+        await assertTargetCurrent(env, opts.resolveTarget);
       if (!env.replyExpected) {
         await def.handler({ identity, subject: parsed, request: env });
         return; // cast: the responder MUST NOT reply (§13.5)
@@ -371,17 +382,6 @@ export function serveEndpoint(
 }
 
 // ---- describe (§13.7: reserved, untargeted, ephemeral, authorization-scoped) --------------------
-
-/** The authoritative describe answer's descriptor: identity plus the served clusters, each
- *  inline (`document`) or by digest (§13.7). `commands` names what each cluster serves so the
- *  authorization intersection has a unit. */
-export interface DescribeDescriptor {
-  endpoint: string;
-  owner: string;
-  endpointType?: string;
-  protocol: { v: 1 };
-  clusters: { digest: string; commands: string[]; document?: Record<string, unknown> }[];
-}
 
 /** A caller's authority view from the TRUSTED source (§13.7): the command set this caller may
  *  see. `undefined` = no fresh view (stale beyond its bound, or the source has no answer) —
@@ -454,56 +454,28 @@ function describeValidators(): { args: ValidateFunction; output: ValidateFunctio
   return describeValidate;
 }
 
-const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-
-/** Shape-validate a descriptor at construction: bounded owner, pinned protocol, digest-keyed
- *  clusters with token-valid non-empty command lists. */
-export function assertDescriptorShape(d: DescribeDescriptor): void {
-  endpointToken(d.endpoint);
-  assertBoundedOwner(d.owner, "descriptor owner");
-  if (d.endpointType !== undefined && typeof d.endpointType !== "string") throw new Error("descriptor endpointType must be a string");
-  if (!isRec(d.protocol) || d.protocol.v !== 1) throw new Error("descriptor protocol.v must be 1 (SPEC 13.7: additive evolution)");
-  if (!Array.isArray(d.clusters) || d.clusters.length === 0) throw new Error("descriptor needs at least one cluster");
-  for (const c of d.clusters) {
-    if (!isDigest(c.digest)) throw new Error(`cluster digest ${JSON.stringify(c.digest)} is not a sha256 digest`);
-    if (!Array.isArray(c.commands) || c.commands.length === 0) throw new Error(`cluster ${c.digest} advertises no commands`);
-    for (const cmd of c.commands) assertCommandToken(cmd);
-    if (c.document !== undefined && !isRec(c.document)) throw new Error(`cluster ${c.digest} inline document must be an object`);
-  }
-}
-
-/** Bind a descriptor to the REGISTERED spec (§13.7: describe is authoritative for the
- *  registered service): same endpoint, same owner, and exactly the registered cluster digests.
- *  The composition calls this with the spec it registered; discovery can then never advertise
- *  another owner's or an unregistered surface. */
-export function assertDescriptorMatchesSpec(
-  descriptor: DescribeDescriptor,
-  spec: { endpoint: string; owner: string; clusterDigests: string[] },
-): void {
-  if (endpointToken(descriptor.endpoint) !== endpointToken(spec.endpoint))
-    throw new Error(`descriptor endpoint "${descriptor.endpoint}" is not the registered "${spec.endpoint}"`);
-  if (descriptor.owner !== spec.owner)
-    throw new Error(`descriptor owner "${descriptor.owner}" is not the registered owner "${spec.owner}"`);
-  const advertised = descriptor.clusters.map((c) => c.digest).sort();
-  const registered = [...spec.clusterDigests].sort();
-  if (advertised.length !== registered.length || advertised.some((d, i) => d !== registered[i]))
-    throw new Error("descriptor cluster digests do not equal the registered clusterDigests (SPEC 13.7)");
-}
-
 /** The reserved describe handler (internal: {@link serveEndpoint} is the only constructor —
- *  §13.7 makes describe mandatory and this seam non-replaceable). The scoped answer intersects
- *  the descriptor against a FRESH trusted view of the caller's authority; an unavailable or
- *  answerless view is `unavailable` (fail closed). An authorized-but-empty intersection is a
- *  valid (empty) answer: describe is the default-granted bootstrap (§13.9), and descriptor
- *  visibility is never inferred from its reachability alone. */
+ *  §13.7 makes describe mandatory and this seam non-replaceable). The authorization policy is
+ *  SNAPSHOTTED at construction (the discriminant + the view function), so a later mutation of
+ *  the caller-supplied `authz` object — flipping `{view}` to `{public:true}` — can never change
+ *  what a running describe answers; the descriptor itself is deep-frozen at authorization. The
+ *  scoped answer intersects the descriptor against a FRESH trusted view of the caller's
+ *  authority; an unavailable or answerless view is `unavailable` (fail closed). An
+ *  authorized-but-empty intersection is a valid (empty) answer: describe is the default-granted
+ *  bootstrap (§13.9), and descriptor visibility is never inferred from its reachability alone. */
 function describeHandler(descriptor: DescribeDescriptor, authz: DescribeAuthorization) {
+  const isPublic = authz.public === true;
+  // Snapshot the view function once; when not public the union guarantees it is present.
+  const viewFn = isPublic ? undefined : authz.view;
   return async (ctx: EpServeContext): Promise<DescribeAnswer> => {
     if (endpointToken(descriptor.endpoint) !== endpointToken(ctx.identity.endpoint))
       throw new EpEnvelopeError("internal", "describe descriptor does not name the serving endpoint");
-    if (authz.public === true) return { public: true, descriptor };
+    if (isPublic) return { public: true, descriptor };
+    if (viewFn === undefined)
+      throw new EpEnvelopeError("internal", "describe has no snapshotted authorization view but is not public");
     let view: DescribeView | undefined;
     try {
-      view = await authz.view(ctx.subject.caller);
+      view = await viewFn!(ctx.subject.caller);
     } catch (err) {
       throw new EpEnvelopeError("unavailable", `the trusted authorization view failed; describe fails closed, never answers from a weaker source (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
     }

@@ -120,7 +120,10 @@ export interface EndpointRequest {
    *  serve machinery enforces with the contract in hand); shape-checked here when present. */
   goalId?: string;
   target?: EpTargetBlock;
-  args?: Record<string, unknown>;
+  /** The input payload: a JSON object, or explicit `null` — a canonical-void side's payload is
+   *  absent OR `null` (§13.7), so `null` must survive parsing for the command's own schema
+   *  validator to decide (an object-input contract still rejects it there, as `bad-request`). */
+  args?: Record<string, unknown> | null;
   from: EndpointRef;
   /** Caller deadline budget, bounded never unbounded: required for calls and for journal-class
    *  submissions (there it is the decision deadline, §13.4). */
@@ -293,7 +296,9 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
     };
   }
 
-  const args = o.args === undefined ? undefined : asRecord(o.args, "args") as Record<string, unknown>;
+  // §13.7: explicit `null` is a VALID canonical-void payload and must reach the command's own
+  // schema validator, so only non-null args are shape-gated here.
+  const args = o.args === undefined || o.args === null ? (o.args as undefined | null) : asRecord(o.args, "args") as Record<string, unknown>;
 
   const f = asRecord(o.from, "from");
   const from: EndpointRef = {
@@ -417,13 +422,15 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  *  invocation-time `bad-request` (registration-time violations are `contract-invalid`,
  *  {@link import("./schema-profile.js").ContractInvalidError}). Against the void schema the
  *  payload is absent or `null` (§13.7), so `undefined` args validate as `null` here and only
- *  here. The §13.8 validation budget is the PROFILE's fixed 10ms, read internally so no caller
+ *  here; an explicit `null` passes through unchanged, and it is the SCHEMA (an object-typed
+ *  input contract) that rejects null for non-void commands. The §13.8 validation budget is the
+ *  PROFILE's fixed 10ms, read internally so no caller
  *  can tune it away, and is enforced post-hoc, fail-loud as `bad-request` (the spec's
  *  over-budget code for validate time, distinct from compile's `contract-invalid`). Post-hoc
  *  measurement classifies, it cannot preempt — the pre-emptive defense is the registration-time
  *  bounded-pattern gate (schema-profile), which keeps the exponential backtracking class out of
  *  registered contracts in the first place. */
-export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | undefined): unknown {
+export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
   const started = Date.now();
   const okValid = validate(value);
@@ -437,11 +444,12 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
   return value;
 }
 
-/** Validate a handler's output against the command's compiled output schema BEFORE the success
- *  publish — the symmetric budgeted half of {@link assertArgsValid}, under the SAME fixed
+/** Validate an output payload against the command's compiled output schema at EITHER §13.7
+ *  boundary — the responder's, before the success publish, or the caller's, on the consumed
+ *  reply — the symmetric budgeted half of {@link assertArgsValid}, under the SAME fixed
  *  §13.8 `validateBudgetMs` (read internally, never caller-tunable). Both failure classes are
- *  structured `internal`: an invalid reply is a server bug (§13.3/§13.7), and an over-budget
- *  output validation is the same bug class on the responder's side, never the caller's
+ *  structured `internal`: an invalid output is a responder bug (§13.3/§13.7) whichever side
+ *  detects it, and an over-budget output validation is the same bug class, never the caller's
  *  `bad-request`. A void output is `undefined`, validated as `null` against the void schema,
  *  mirroring the args side. */
 export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
@@ -450,9 +458,9 @@ export function assertOutputValid(validate: ValidateFunction, data: unknown): vo
   const okValid = validate(value);
   const elapsed = Date.now() - started;
   if (elapsed > SCHEMA_PROFILE.validateBudgetMs)
-    fail("internal", `output validation took ${elapsed}ms (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; an over-budget output validation is a server bug, SPEC 13.7/13.8)`);
+    fail("internal", `output validation took ${elapsed}ms (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; an over-budget output validation is a responder bug, SPEC 13.7/13.8)`);
   if (!okValid) {
     const first = validate.errors?.[0];
-    fail("internal", `handler output does not validate against the output schema; refusing to publish an invalid reply (SPEC 13.7)${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
+    fail("internal", `output does not validate against the pinned output schema; an invalid reply is a responder bug, never success (SPEC 13.7)${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
   }
 }
