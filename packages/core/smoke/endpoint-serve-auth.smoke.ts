@@ -396,6 +396,12 @@ try {
     const lostBarrier: EpIssuanceBarrier = { ...glost.barrier, freeze: () => null };
     await rejects("registration whose freeze LOSES the CAS refuses conflict (a concurrent barrier won the key)",
       () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: lostBarrier }), "conflict");
+    // cross-space registration refusal (mirror the mint-side crossSpace probe): the `(space, endpoint,
+    // instanceId)` gate-identity check is not mint-only - a gate constructed for ANOTHER space refuses a
+    // registration too, so a composition mixup can't drive a space-A registration through a space-B gate.
+    const gCrossSpace = makeGate({ space: "otherspace", endpoint: "reg3", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
+    await rejects("registration against a gate for ANOTHER space refuses internal (full (space, endpoint, instance) identity, §13.1)",
+      () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gCrossSpace.barrier }), "internal");
     // abort path: a re-registration that fails ownership stability AFTER the freeze must reopen.
     const authAcme: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_acme", revision: 0 }) };
     const specAcme = { endpoint: "com.acme.reg", owner: "u_acme", clusterDigests: [DC], protocol: { v: 1 as const } };

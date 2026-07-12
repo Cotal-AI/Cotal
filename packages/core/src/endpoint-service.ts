@@ -164,6 +164,7 @@ export async function registerServiceInstance(
   kv: KV,
   args: { space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier },
 ): Promise<{ registrationRevision: number }> {
+  spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
   assertBoundedOwner(args.registrant.owner, "registrant owner");
   if (args.registrant.owner !== spec.owner)
