@@ -616,6 +616,12 @@ export function permissionsFor(
   // chosen nonce (untrusted), so a metacharacter here would escalate the inbox grant to every inbox.
   // Assert once, for all profiles (each early-returning profile builds its own inbox from pr.connId).
   assertInboxConnId(pr.connId);
+  // Extraneous serve-artifact refusal, hoisted ABOVE the profile dispatch: every early-return
+  // profile (delivery/supervisor/observer/...) must refuse it too, not just the agent tail, or a
+  // misconfigured sensitive mint is silently masked (MintOpts: every other profile refuses it).
+  // The "endpoint-serve" profile is excluded so its own arm below keeps the call-mintCreds redirect.
+  if (opts.endpointServe && profile !== "endpoint-serve")
+    throw new Error(`permissionsFor: endpointServe rides the dedicated "endpoint-serve" profile - a serve credential is per-instance authority (SPEC 13.9), never folded into a "${profile}" cred`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
@@ -722,8 +728,6 @@ export function permissionsFor(
   // than mint it agent perms by accident (the no-fallbacks rule; matches the deleted `manager`'s intent).
   if (profile !== "agent")
     throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
-  if (opts.endpointServe)
-    throw new Error('permissionsFor: endpointServe rides the dedicated "endpoint-serve" profile - a serve credential is per-instance authority (SPEC 13.9), never folded into an agent-baseline cred');
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy

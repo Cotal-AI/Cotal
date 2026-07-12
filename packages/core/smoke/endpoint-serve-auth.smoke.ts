@@ -244,6 +244,9 @@ try {
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { ...serveGrant } as EpServeGrant, serveIssuance: gate.seam }));
   c("the AGENT profile refuses serve rows (a serve credential is never an agent-baseline cred)",
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam }, "agent"));
+  c("NON-AGENT profiles refuse an extraneous serve artifact too (early-return arms must not silently ignore it)",
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam }, "supervisor")
+    && await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam }, "observer"));
   c("the endpoint-serve profile without an artifact refuses",
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, serveIssuance: gate.seam }));
   c("the endpoint-serve profile without the issuance gate refuses (the release fence is mandatory)",
