@@ -24,9 +24,15 @@ export function epfStreamName(space: string): string { return `EPF_${token(space
 export function canonDurable(endpoint: string): string { return `canon_${token(endpoint)}`; }
 
 /** Decision facts live on the caller-scoped subject — distinct callers can never squat each
- *  other's ids because the caller triple IS part of the subject (§13.4 item 3). */
-export function epfDecisionSubject(space: string, endpoint: string, caller: EpCaller, id: string): string {
-  return epfSubject(space, endpoint, ["dec", caller.owner, caller.actor, caller.uid, id]);
+ *  other's ids because the caller triple IS part of the subject (§13.4 item 3). Provenance is
+ *  STRUCTURAL, as for {@link deriveReplySubject}: the builder takes the broker-authenticated
+ *  PARSED submission and derives endpoint + caller internally — there is no argument through
+ *  which a body-supplied `from`/`op.endpoint` could address another caller's rail (the
+ *  canonicalizer holds broad `epf.<e>.dec.>` authority; the broker cannot catch a confused
+ *  call site, so the API must). */
+export function epfDecisionSubject(space: string, request: ParsedEpRequest, id: string): string {
+  const c = request.caller;
+  return epfSubject(space, request.endpoint, ["dec", c.owner, c.actor, c.uid, id]);
 }
 /** Quarantine facts key on the source SEQUENCE — a family disjoint from caller-chosen `dec`
  *  ids by construction, so no legal request id can collide with a quarantine key. */
@@ -35,9 +41,10 @@ export function epfQuarantineSubject(space: string, endpoint: string, sourceSeq:
   return epfSubject(space, endpoint, ["quar", String(sourceSeq)]);
 }
 /** The per-goal first-wins bind (§13.4 item 3): stops a second id naming one goalId BEFORE
- *  acceptance and effect. */
-export function epfGoalBindSubject(space: string, endpoint: string, caller: EpCaller, goalId: string): string {
-  return epfSubject(space, endpoint, ["goal", caller.owner, caller.actor, caller.uid, goalId, "bind"]);
+ *  acceptance and effect. Structural provenance as {@link epfDecisionSubject}. */
+export function epfGoalBindSubject(space: string, request: ParsedEpRequest, goalId: string): string {
+  const c = request.caller;
+  return epfSubject(space, request.endpoint, ["goal", c.owner, c.actor, c.uid, goalId, "bind"]);
 }
 
 /** Default idempotency horizon (§13.4 item 6; space-configurable). The horizon is REALIZED by
@@ -70,7 +77,12 @@ export function submissionFingerprint(
   if (op.outputDigest !== undefined) object.outputDigest = op.outputDigest;
   if (subject.target) object.authz = subject.target.mode;
   if (body.target !== undefined) object.target = body.target;
-  if (typeof body.auth === "string") object.authDigest = rawDigest(body.auth); // throws on a lone surrogate → quarantine
+  if (body.auth !== undefined) {
+    if (typeof body.auth === "string") object.authDigest = rawDigest(body.auth); // throws on a lone surrogate → quarantine
+    // Wrong-typed but canonicalizable auth is CARRIED effect-defining content: fingerprint it
+    // as carried (distinct from absent auth AND from a real authDigest), never collapse it.
+    else object.auth = body.auth;
+  }
   object.caller = { id: `${subject.caller.owner}.${subject.caller.actor}`, lifecycleUid: subject.caller.uid };
   return { object, fingerprint: contractDigest(object) }; // contractDigest throws on non-I-JSON → quarantine
 }

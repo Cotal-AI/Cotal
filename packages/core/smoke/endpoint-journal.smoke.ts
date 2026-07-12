@@ -53,6 +53,10 @@ c("the authz mode rides the subject into the fingerprint",
   submissionFingerprint(sub1, targeted).object.authz === "owner");
 throws("a lone-surrogate auth slot has NO fingerprint (quarantine path)",
   () => submissionFingerprint({ ...sub1, auth: "\ud800" }, subj));
+c("wrong-typed carried auth is fingerprinted AS CARRIED, never collapsed onto absent",
+  submissionFingerprint({ ...sub1, auth: null }, subj).fingerprint !== f1.fingerprint
+  && submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint !== f1.fingerprint
+  && submissionFingerprint({ ...sub1, auth: null }, subj).fingerprint !== submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint);
 
 // ── fact shapes (broker-free) ──
 const acc: AcceptanceFact = {
@@ -111,7 +115,7 @@ try {
     stored !== null && !stored.header?.get("Nats-Msg-Id"));
 
   // First decision wins atomically; the loser reads the winner instead of deciding again.
-  const dSubj = epfDecisionSubject("epjrn", "manager", caller, "req-1");
+  const dSubj = epfDecisionSubject("epjrn", subj, "req-1");
   const w1 = await publishFactCreateOnly(js, dSubj, assertFactFits(acc, 1024 * 1024));
   c("the first decision wins its CAS", w1.won);
   const w2 = await publishFactCreateOnly(js, dSubj, assertFactFits(rej, 1024 * 1024));
@@ -120,7 +124,8 @@ try {
   c("the loser reads the winning fact (accepted, not the late rejection)", winner.decision === "accepted");
 
   // Distinct callers can never squat each other's ids: the caller triple is in the subject.
-  const w3 = await publishFactCreateOnly(js, epfDecisionSubject("epjrn", "manager", caller2, "req-1"),
+  const subj2 = parseEpSubject(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "spawn", caller: caller2, nonce: NONCE })) as ParsedEpRequest;
+  const w3 = await publishFactCreateOnly(js, epfDecisionSubject("epjrn", subj2, "req-1"),
     assertFactFits({ ...rej, caller: { id: "u_zed.worker", lifecycleUid: caller2.uid } }, 1024 * 1024));
   c("the same id under another caller is a DIFFERENT subject and wins", w3.won);
 
@@ -130,10 +135,12 @@ try {
   const wq = await publishFactCreateOnly(js, qSubj, assertFactFits(quar, 1024 * 1024));
   c("a quarantine fact publishes create-only", wq.won);
   c("the goal-bind subject is the caller-scoped .bind leaf",
-    epfGoalBindSubject("epjrn", "manager", caller, "g1") === `cotal.epjrn.epf.manager.goal.u_abc.worker.${UID}.g1.bind`);
-  const wg = await publishFactCreateOnly(js, epfGoalBindSubject("epjrn", "manager", caller, "g1"),
+    epfGoalBindSubject("epjrn", subj, "g1") === `cotal.epjrn.epf.manager.goal.u_abc.worker.${UID}.g1.bind`);
+  c("fact subjects derive STRUCTURALLY from the authenticated request (no body argument exists)",
+    dSubj === `cotal.epjrn.epf.manager.dec.u_abc.worker.${UID}.req-1`);
+  const wg = await publishFactCreateOnly(js, epfGoalBindSubject("epjrn", subj, "g1"),
     new TextEncoder().encode(JSON.stringify({ v: 1, fingerprint: f1.fingerprint })));
-  const wg2 = await publishFactCreateOnly(js, epfGoalBindSubject("epjrn", "manager", caller, "g1"),
+  const wg2 = await publishFactCreateOnly(js, epfGoalBindSubject("epjrn", subj, "g1"),
     new TextEncoder().encode(JSON.stringify({ v: 1, fingerprint: "sha256:" + "b".repeat(64) })));
   c("the goal bind is first-wins (a second id naming one goal stops BEFORE acceptance)", wg.won && !wg2.won);
 
