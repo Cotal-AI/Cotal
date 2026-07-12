@@ -13,8 +13,9 @@
  * registration-time `contract-invalid`).
  */
 import type { ValidateFunction } from "ajv/dist/2020.js";
-import { rawDigest, isContractDigest } from "./canonical.js";
+import { rawDigest, isContractDigest, isWellFormedUnicode } from "./canonical.js";
 import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
+import { SCHEMA_PROFILE } from "./schema-profile.js";
 import type { EndpointRef } from "./types.js";
 
 /** The envelope schema version — independent of the wire `protocolVersion`; starts at its own
@@ -154,9 +155,12 @@ export interface EndpointEvent {
 
 /** `authDigest`: `sha256:<hex>` over the UTF-8 bytes of the `auth` slot EXACTLY as carried. The
  *  slot is already a canonical signed artifact, so it is digested as bytes, never
- *  re-canonicalized; absent from the §13.4 fingerprint iff `auth` is absent. */
+ *  re-canonicalized; absent from the §13.4 fingerprint iff `auth` is absent. A malformed-UTF-16
+ *  slot is refused (`bad-request`): a lone surrogate has no UTF-8 encoding, so its "digest"
+ *  would be over a substituted value and two distinct slots could share one fingerprint. */
 export function authDigest(auth: string): string {
-  if (typeof auth !== "string") throw new EpEnvelopeError("bad-request", "auth slot is not a string");
+  if (typeof auth !== "string" || !isWellFormedUnicode(auth))
+    throw new EpEnvelopeError("bad-request", "auth slot is not a well-formed Unicode string");
   return rawDigest(auth);
 }
 
@@ -189,12 +193,36 @@ function grammar<T>(fn: () => T): T {
   }
 }
 
+/** W3C `traceparent`: version, 32-hex trace-id, 16-hex parent-id, 2-hex flags; a higher-version
+ *  value may carry additional printable-ASCII fields after the flags (parsed leniently per the
+ *  W3C forward-compatibility rule). Version `ff` and all-zero ids are invalid per the spec. */
+const TRACEPARENT = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}(-[\x21-\x7e]+)?$/;
+const CORRELATION_BYTE_BOUNDS = { tracestate: 512, baggage: 8192 } as const;
+
+/** Correlation is validated, never trusted opaque (§13.3 "per W3C Trace Context"): these fields
+ *  are PROPAGATED downstream (calls, events, facts, receipts), so an unvalidated value becomes
+ *  header injection or amplification wherever they are re-emitted. `traceparent` is checked
+ *  against the W3C grammar; `tracestate`/`baggage` stay content-opaque but are bounded to the
+ *  W3C size limits and refused any control character (no CR/LF crosses the boundary). */
 function pickCorrelation(v: unknown): EpCorrelation | undefined {
   if (v === undefined) return undefined;
   const o = asRecord(v, "correlation");
   const out: EpCorrelation = {};
-  for (const k of ["traceparent", "tracestate", "baggage"] as const) {
-    if (o[k] !== undefined) out[k] = asString(o[k], `correlation.${k}`);
+  if (o.traceparent !== undefined) {
+    const tp = asString(o.traceparent, "correlation.traceparent");
+    const m = TRACEPARENT.exec(tp);
+    if (!m || m[1] === "ff" || /^0+$/.test(m[2]) || /^0+$/.test(m[3]))
+      fail("bad-request", "correlation.traceparent is not a valid W3C Trace Context traceparent");
+    out.traceparent = tp;
+  }
+  for (const k of ["tracestate", "baggage"] as const) {
+    if (o[k] === undefined) continue;
+    const s = asString(o[k], `correlation.${k}`);
+    if (Buffer.byteLength(s, "utf8") > CORRELATION_BYTE_BOUNDS[k])
+      fail("bad-request", `correlation.${k} exceeds ${CORRELATION_BYTE_BOUNDS[k]} bytes`);
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f\x7f]/.test(s)) fail("bad-request", `correlation.${k} carries a control character`);
+    out[k] = s;
   }
   return out;
 }
@@ -268,6 +296,8 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
   };
 
   const auth = o.auth === undefined ? undefined : asString(o.auth, "auth");
+  if (auth !== undefined && !isWellFormedUnicode(auth))
+    fail("bad-request", "auth slot is not well-formed Unicode (a lone surrogate has no UTF-8 encoding, so it cannot be digested as carried)");
   const correlation = pickCorrelation(o.correlation);
 
   return {
@@ -294,6 +324,11 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
     fail("op-mismatch", `op.endpoint "${env.op.endpoint}" does not agree with the subject endpoint "${subject.endpoint}"`);
   if (env.op.command !== subject.command)
     fail("op-mismatch", `op.command "${env.op.command}" does not agree with the subject command "${subject.command}"`);
+
+  // §13.3: deadlineMs is a MUST for call, SCATTER, and journal submissions. Call and journal
+  // are enforced at parse time; scatter is only knowable here, where the route is in hand.
+  if (subject.route === "all" && env.deadlineMs === undefined)
+    fail("bad-request", "deadlineMs is required on the scatter rail (SPEC 13.3: MUST for call/scatter and journal submissions)");
 
   const t = subject.target;
   if (!t || t.mode === "self") {
@@ -375,16 +410,19 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  *  invocation-time `bad-request` (registration-time violations are `contract-invalid`,
  *  {@link import("./schema-profile.js").ContractInvalidError}). Against the void schema the
  *  payload is absent or `null` (§13.7), so `undefined` args validate as `null` here and only
- *  here. The §13.8 validation budget is enforced post-hoc, fail-loud as `bad-request` (the
- *  spec's over-budget code for validate time, distinct from compile's `contract-invalid`):
- *  pathological values cannot silently stall the serving boundary. */
-export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | undefined, budgetMs: number): unknown {
+ *  here. The §13.8 validation budget is the PROFILE's fixed 10ms, read internally so no caller
+ *  can tune it away, and is enforced post-hoc, fail-loud as `bad-request` (the spec's
+ *  over-budget code for validate time, distinct from compile's `contract-invalid`). Post-hoc
+ *  measurement classifies, it cannot preempt — the pre-emptive defense is the registration-time
+ *  bounded-pattern gate (schema-profile), which keeps the exponential backtracking class out of
+ *  registered contracts in the first place. */
+export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | undefined): unknown {
   const value = args === undefined ? null : args;
   const started = Date.now();
   const okValid = validate(value);
   const elapsed = Date.now() - started;
-  if (elapsed > budgetMs)
-    fail("bad-request", `args validation took ${elapsed}ms (budget ${budgetMs}ms; over budget is bad-request, SPEC 13.8)`);
+  if (elapsed > SCHEMA_PROFILE.validateBudgetMs)
+    fail("bad-request", `args validation took ${elapsed}ms (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; over budget is bad-request, SPEC 13.8)`);
   if (!okValid) {
     const first = validate.errors?.[0];
     fail("bad-request", `args do not validate against the input schema${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);

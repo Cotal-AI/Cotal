@@ -117,4 +117,42 @@ cache.compile({ root: { type: "boolean" } });
 ok("capacity bounds the cache", cache.size() === 2);
 ok("an evicted closure recompiles to a fresh validator", cache.compile({ root: member }).validate !== a.validate);
 
+// 11) The structural pattern gate: length alone does not bound backtracking.
+refuses("nested-repetition pattern refused (the ^(a+)+$ exponential class)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a+)+$" } }), "repeats a group");
+refuses("bounded-brace repetition of a quantified group refused", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a*){2,}$" } }), "repeats a group");
+refuses("backreference pattern refused", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a)\\1$" } }), "backreference");
+ok("the (…)? label idiom still compiles (a ? adds one alternative, not per-character ambiguity)", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" } });
+  return v("ok-1") === true && v("-no") === false;
+})());
+
+// 12) I-JSON violations in a schema surface as contract-invalid, never a raw canonicalizer error.
+refuses("lone-surrogate schema is contract-invalid", () =>
+  compileContractSchema({ root: { type: "string", description: "bad \ud800" } }), "I-JSON");
+
+// 13) Unreachable members refuse deterministically — cold, warm, and forged alike (nothing
+//     unverified or outside the closure identity ever reaches the compiler).
+refuses("unreachable extra member refused", () =>
+  compileContractSchema({ root: { type: "string" }, members: { [memberDigest]: member } }), "unreachable");
+refuses("unreachable FORGED member refused", () =>
+  compileContractSchema({ root: { type: "string" }, members: { [contractDigest({ type: "number" })]: { type: "boolean" } } }), "unreachable");
+const warm = createCompiledContractCache(4);
+warm.compile({ root: { type: "string" } });
+refuses("extras refuse even when the closure is already cached (no history dependence)", () =>
+  warm.compile({ root: { type: "string" }, members: { [memberDigest]: member } }), "unreachable");
+
+// 14) A reachable-member $id collision is contract-invalid, not a raw ajv error.
+const idA = { $id: "urn:test:same", type: "string" };
+const idB = { $id: "urn:test:same", type: "number" };
+const dA = contractDigest(idA);
+const dB = contractDigest(idB);
+refuses("member $id collision is contract-invalid", () =>
+  compileContractSchema({
+    root: { type: "object", properties: { a: { $ref: `cotal:${dA}` }, b: { $ref: `cotal:${dB}` } } },
+    members: { [dA]: idA, [dB]: idB },
+  }), "does not compile");
+
 console.log(`schema-profile.smoke: ${pass} checks passed`);

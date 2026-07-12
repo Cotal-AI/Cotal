@@ -13,7 +13,7 @@ import {
   parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
-  compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
+  compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -41,21 +41,34 @@ c("authDigest digests the carried bytes exactly",
   authDigest(authSlot) === "sha256:" + createHash("sha256").update(authSlot, "utf8").digest("hex"));
 c("authDigest never re-canonicalizes (whitespace changes the digest)",
   authDigest(authSlot) !== authDigest('{"grant":"exactly-as-carried"}'));
+rejects("authDigest refuses a lone surrogate (would collapse distinct slots onto one digest)", "bad-request",
+  () => authDigest("\ud800"));
 
 // ── request shape ──
+const TP = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 const goodReq = {
   v: 1, id: "req-1",
   op: { endpoint: "manager", command: "spawn", inputDigest: D, outputDigest: D },
   class: "ephemeral", replyExpected: true, deadlineMs: 5000,
   args: { name: "x" }, from: { id: "u_abc.worker", name: "worker" },
-  correlation: { traceparent: "00-abc-def-01" },
+  correlation: { traceparent: TP },
   auth: authSlot,
   unknownField: "ignored (§5), never kept",
 };
 const req = parseEndpointRequest(goodReq);
 c("request parses and picks exactly the defined fields",
   req.id === "req-1" && req.op.inputDigest === D && req.auth === authSlot && !("unknownField" in req));
-c("correlation is picked through", req.correlation?.traceparent === "00-abc-def-01");
+c("correlation is picked through", req.correlation?.traceparent === TP);
+rejects("a malformed traceparent is bad-request (W3C grammar enforced)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, correlation: { traceparent: "00-abc-def-01" } }));
+rejects("an all-zero trace-id is bad-request (invalid per W3C)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, correlation: { traceparent: `00-${"0".repeat(32)}-b7ad6b7169203331-01` } }));
+rejects("a control character in tracestate is bad-request (no CR/LF crosses the boundary)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, correlation: { tracestate: "a=b\r\nX-Evil: 1" } }));
+rejects("an oversized baggage is bad-request (W3C byte bound)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, correlation: { baggage: "k=" + "v".repeat(8200) } }));
+rejects("a lone-surrogate auth slot is bad-request (no UTF-8 form; cannot digest as carried)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, auth: "\ud800grant" }));
 rejects("v !== 1 is unsupported-version, checked before any shape", "unsupported-version",
   () => parseEndpointRequest({ v: 2, garbage: true }));
 rejects("missing digest on a non-describe command is contract-mismatch", "contract-mismatch",
@@ -111,6 +124,11 @@ rejects("from.id must equal the subject sender principal", "sender-mismatch",
   () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, from: { id: "u_abc.impostor", name: "x" } }), untargeted));
 rejects("the declared class must equal the contract class", "class-mismatch",
   () => assertClassMatches(req, "journal"));
+const scatterSub = parse(epRequestSubject("demo", { route: { mode: "all" }, endpoint: "manager", command: "spawn", caller, nonce: NONCE }));
+rejects("a deadline-less cast on the scatter rail is bad-request (deadlineMs is a MUST for scatter)", "bad-request",
+  () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false, deadlineMs: undefined }), scatterSub));
+checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false }), scatterSub);
+c("a scatter cast WITH a deadline agrees", true);
 
 // ── reply / event shapes ──
 const okReply = parseEndpointReply({ v: 1, id: "req-1", ok: true, data: { pid: 1 }, junk: 1 });
@@ -135,13 +153,13 @@ rejects("a negative ts is bad-request", "bad-request", () => parseEndpointEvent(
 
 // ── invocation-time schema validation, distinct from registration time ──
 const validate = compileContractSchema({ root: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } });
-c("valid args pass and are returned", (assertArgsValid(validate, { name: "x" }, SCHEMA_PROFILE.validateBudgetMs) as { name: string }).name === "x");
+c("valid args pass and are returned", (assertArgsValid(validate, { name: "x" }) as { name: string }).name === "x");
 rejects("invalid args are the invocation-time bad-request", "bad-request",
-  () => assertArgsValid(validate, {}, SCHEMA_PROFILE.validateBudgetMs));
+  () => assertArgsValid(validate, {}));
 const voidValidate = compileContractSchema({ root: VOID_SCHEMA });
-c("absent args validate against the void schema as null", assertArgsValid(voidValidate, undefined, SCHEMA_PROFILE.validateBudgetMs) === null);
+c("absent args validate against the void schema as null", assertArgsValid(voidValidate, undefined) === null);
 rejects("present args against the void schema are bad-request", "bad-request",
-  () => assertArgsValid(voidValidate, { any: 1 }, SCHEMA_PROFILE.validateBudgetMs));
+  () => assertArgsValid(voidValidate, { any: 1 }));
 
 console.log(`\nENDPOINT ENVELOPE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 if (fail > 0) process.exit(1);

@@ -55,6 +55,25 @@ export class ContractInvalidError extends Error {
   }
 }
 
+/** Canonicalize within the profile boundary: an I-JSON violation (lone surrogate, undefined,
+ *  non-finite number) in a schema document is a PROFILE violation and must surface as
+ *  `contract-invalid`, never as a raw canonicalizer error (§13.7). */
+function canonicalOrInvalid(v: unknown, label: string): string {
+  try {
+    return canonicalJson(v);
+  } catch (e) {
+    throw new ContractInvalidError(`${label}: ${(e as Error).message}`);
+  }
+}
+
+function digestOrInvalid(v: unknown, label: string): string {
+  try {
+    return contractDigest(v);
+  } catch (e) {
+    throw new ContractInvalidError(`${label}: ${(e as Error).message}`);
+  }
+}
+
 function structuralDepth(v: unknown, depth = 0): number {
   if (depth > SCHEMA_PROFILE.maxDepth) return depth; // short-circuit, caller throws
   if (v === null || typeof v !== "object") return depth;
@@ -68,7 +87,59 @@ function structuralDepth(v: unknown, depth = 0): number {
   return max;
 }
 
-/** Collect every `$ref` string in a schema document and bound its regex patterns (structural
+/** The bounded-pattern-complexity gate (§13.7/§13.8 "bounded pattern complexity", "bounded
+ *  regex"). A LENGTH bound alone does not bound backtracking (`^(a+)+$` is 8 characters and
+ *  exponential), so the gate is structural and conservative:
+ *   - length ≤ {@link SCHEMA_PROFILE.maxPatternChars};
+ *   - NO backreferences (`\1`…`\9`), which admit exponential matching;
+ *   - NO nested REPETITION: an unbounded/iterating quantifier (`*`, `+`, `{…}`) applied to a
+ *     group that itself contains a quantifier (the classic `^(a+)+$` exponential-backtracking
+ *     class). A `?` over such a group is exempt — it contributes one alternative in total,
+ *     never per-input-character ambiguity (this admits the common `(…)?` label idiom).
+ *  Conservative means some safe patterns are refused; a refused pattern is rewritten by its
+ *  author at registration time (`contract-invalid`), never probed at validation time. Residual
+ *  ambiguous-alternation cost is bounded by the threat model: patterns come from REGISTERED,
+ *  mediated contract artifacts (an authenticated author), never from request payloads. */
+function assertBoundedPattern(p: string, label: string, where: string): void {
+  if (p.length > SCHEMA_PROFILE.maxPatternChars)
+    throw new ContractInvalidError(`${label}: ${where} of ${p.length} characters exceeds the profile complexity bound (${SCHEMA_PROFILE.maxPatternChars})`);
+  // One escape/class-aware scan: track, per open group, whether any quantifier occurs inside it.
+  const stack: boolean[] = [false]; // [0] = top level
+  let inClass = false;
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i];
+    if (ch === "\\") {
+      const next = p[i + 1];
+      if (!inClass && next >= "1" && next <= "9")
+        throw new ContractInvalidError(`${label}: ${where} uses a backreference (\\${next}), refused by the profile: ${JSON.stringify(p)}`);
+      i++; // the escaped character is literal
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") { inClass = true; continue; }
+    if (ch === "(") { stack.push(false); continue; }
+    if (ch === ")") {
+      const hadQuant = stack.length > 1 ? (stack.pop() as boolean) : false;
+      const next = p[i + 1];
+      if (next === "*" || next === "+" || next === "?" || next === "{") {
+        if (hadQuant && next !== "?")
+          throw new ContractInvalidError(`${label}: ${where} repeats a group that itself contains a quantifier (exponential backtracking class): ${JSON.stringify(p)}`);
+        stack[stack.length - 1] = true;
+        i++; // consume the quantifier head; a `{m,n}` body scans as literals below
+      } else if (hadQuant) {
+        stack[stack.length - 1] = true; // unquantified group: its inner quantifiers count at the parent level
+      }
+      continue;
+    }
+    if (ch === "*" || ch === "+") stack[stack.length - 1] = true;
+    else if (ch === "{" && /^\{\d+(,\d*)?\}/.test(p.slice(i))) stack[stack.length - 1] = true;
+  }
+}
+
+/** Collect every `$ref` string in a schema document and gate its regex patterns (structural
  *  walk; `$ref` in 2020-12 is always a string-valued keyword wherever it appears; `pattern`
  *  values and `patternProperties` keys are the profile's bounded-pattern-complexity surface). */
 function collectRefs(v: unknown, label: string, out: string[] = []): string[] {
@@ -79,13 +150,9 @@ function collectRefs(v: unknown, label: string, out: string[] = []): string[] {
   }
   for (const [k, c] of Object.entries(v as Record<string, unknown>)) {
     if ((k === "$ref" || k === "$dynamicRef") && typeof c === "string") out.push(c);
-    if (k === "pattern" && typeof c === "string" && c.length > SCHEMA_PROFILE.maxPatternChars)
-      throw new ContractInvalidError(`${label}: a pattern of ${c.length} characters exceeds the profile complexity bound (${SCHEMA_PROFILE.maxPatternChars})`);
+    if (k === "pattern" && typeof c === "string") assertBoundedPattern(c, label, "a pattern");
     if (k === "patternProperties" && c !== null && typeof c === "object" && !Array.isArray(c)) {
-      for (const p of Object.keys(c as Record<string, unknown>)) {
-        if (p.length > SCHEMA_PROFILE.maxPatternChars)
-          throw new ContractInvalidError(`${label}: a patternProperties key of ${p.length} characters exceeds the profile complexity bound (${SCHEMA_PROFILE.maxPatternChars})`);
-      }
+      for (const p of Object.keys(c as Record<string, unknown>)) assertBoundedPattern(p, label, "a patternProperties key");
     }
     collectRefs(c, label, out);
   }
@@ -103,7 +170,7 @@ export interface SchemaBundle {
 /** Enforce the D27 profile on one document: size, depth, and reference closure. Returns the
  *  digest-refs the document makes (for closure walking). */
 function assertDocumentProfile(doc: unknown, label: string): string[] {
-  const canonical = canonicalJson(doc); // also enforces I-JSON
+  const canonical = canonicalOrInvalid(doc, label); // also enforces I-JSON, as contract-invalid
   const bytes = Buffer.byteLength(canonical, "utf8");
   if (bytes > SCHEMA_PROFILE.maxDocumentBytes)
     throw new ContractInvalidError(`${label}: document is ${bytes} bytes (profile max ${SCHEMA_PROFILE.maxDocumentBytes})`);
@@ -138,9 +205,10 @@ function assertClosureProfile(bundle: SchemaBundle): string {
   for (const d of Object.keys(members)) {
     if (!isContractDigest(d)) throw new ContractInvalidError(`bundle member key ${JSON.stringify(d)} is not a sha256 digest`);
   }
-  let closureBytes = Buffer.byteLength(canonicalJson(bundle.root), "utf8");
   const seen = new Set<string>();
+  let closureBytes = 0;
   let frontier = assertDocumentProfile(bundle.root, "root schema");
+  closureBytes += Buffer.byteLength(canonicalOrInvalid(bundle.root, "root schema"), "utf8");
   for (let chain = 0; frontier.length > 0; chain++) {
     if (chain >= SCHEMA_PROFILE.maxRefChain)
       throw new ContractInvalidError(`reference chain exceeds profile depth ${SCHEMA_PROFILE.maxRefChain}`);
@@ -151,16 +219,23 @@ function assertClosureProfile(bundle: SchemaBundle): string {
       const member = members[digest];
       if (member === undefined)
         throw new ContractInvalidError(`unresolved digest reference ${digest}: not present in the bundle (schemas are closed; nothing is fetched)`);
-      if (contractDigest(member) !== digest)
-        throw new ContractInvalidError(`bundle member under ${digest} does not hash to its key (content is ${contractDigest(member)})`);
-      closureBytes += Buffer.byteLength(canonicalJson(member), "utf8");
+      if (digestOrInvalid(member, `member ${digest}`) !== digest)
+        throw new ContractInvalidError(`bundle member under ${digest} does not hash to its key (content is ${digestOrInvalid(member, `member ${digest}`)})`);
+      closureBytes += Buffer.byteLength(canonicalOrInvalid(member, `member ${digest}`), "utf8");
       if (closureBytes > SCHEMA_PROFILE.maxClosureBytes)
         throw new ContractInvalidError(`closure is ${closureBytes} bytes (profile max ${SCHEMA_PROFILE.maxClosureBytes})`);
       next.push(...assertDocumentProfile(member, `member ${digest}`));
     }
     frontier = next;
   }
-  return contractDigest({ v: 1, root: contractDigest(bundle.root), members: [...seen].sort() });
+  // A closed bundle lists EXACTLY the closure: a member unreachable from the root escaped every
+  // bound and digest check above and never enters the closure identity, so accepting it would
+  // make registration history-dependent (cold compile vs cache hit) and hand unverified,
+  // unbounded input to the compiler. Refused deterministically, before hit and miss alike.
+  const extras = Object.keys(members).filter((d) => !seen.has(d));
+  if (extras.length > 0)
+    throw new ContractInvalidError(`bundle carries ${extras.length} member(s) unreachable from the root (${extras.slice(0, 3).join(", ")}${extras.length > 3 ? ", …" : ""})`);
+  return contractDigest({ v: 1, root: digestOrInvalid(bundle.root, "root schema"), members: [...seen].sort() });
 }
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
@@ -173,9 +248,12 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
     validateFormats: false,
     loadSchema: undefined,
   });
-  for (const [digest, member] of Object.entries(bundle.members ?? {})) ajv.addSchema(member as object, `cotal:${digest}`);
   let validate: ValidateFunction;
   try {
+    // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so
+    // exactly the closure registers. A registration failure (e.g. a `$id` collision between
+    // members) is a profile rejection, same as a compile failure.
+    for (const [digest, member] of Object.entries(bundle.members ?? {})) ajv.addSchema(member as object, `cotal:${digest}`);
     validate = ajv.compile(bundle.root as object);
   } catch (e) {
     throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(e as Error).message}`);

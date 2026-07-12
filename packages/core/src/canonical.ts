@@ -19,6 +19,13 @@ export function isContractDigest(s: string): boolean {
   return DIGEST_RE.test(s);
 }
 
+/** True iff the string is well-formed UTF-16 (no unpaired surrogate). A lone surrogate has NO
+ *  UTF-8 byte encoding — encoders silently substitute U+FFFD, so two distinct malformed strings
+ *  can collapse to one byte sequence; anything digest- or wire-bound must refuse them. */
+export function isWellFormedUnicode(s: string): boolean {
+  return !hasLoneSurrogate(s);
+}
+
 /** True iff the string contains an unpaired UTF-16 surrogate (not well-formed / I-JSON
  *  violation). Manual scan: the repo's TS lib target predates `String#isWellFormed`. */
 function hasLoneSurrogate(s: string): boolean {
@@ -81,11 +88,18 @@ export function contractDigest(value: unknown): string {
 
 /** `sha256:<hex>` over RAW bytes (a string digests as its UTF-8 encoding), NEVER re-canonicalized:
  *  the digest form for artifacts carried as opaque bytes — the §13.3 `auth` slot (`authDigest`,
- *  digested exactly as carried) and the §13.4 raw stored submission bytes (`submissionDigest`). */
+ *  digested exactly as carried) and the §13.4 raw stored submission bytes (`submissionDigest`).
+ *  A string input MUST be well-formed UTF-16: a lone surrogate has no UTF-8 encoding, the
+ *  encoder would substitute U+FFFD, and two DISTINCT carried values would silently share one
+ *  digest — the opposite of "exactly as carried". Throws instead. */
 export function rawDigest(data: Uint8Array | string): string {
   const h = createHash("sha256");
-  if (typeof data === "string") h.update(data, "utf8");
-  else h.update(data);
+  if (typeof data === "string") {
+    if (hasLoneSurrogate(data)) throw new Error("rawDigest: lone surrogate in string input — no UTF-8 encoding exists, the digest would not be over the carried value");
+    h.update(data, "utf8");
+  } else {
+    h.update(data);
+  }
   return DIGEST_PREFIX + h.digest("hex");
 }
 
