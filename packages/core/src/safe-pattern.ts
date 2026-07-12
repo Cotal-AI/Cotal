@@ -255,30 +255,43 @@ interface Facts {
   /** Contains an alternation with overlapping or multiply-nullable branches (the per-input
    *  ambiguity `(a|aa)` even without any quantifier of its own). */
   ambiguousAlt: boolean;
+  /** The character sets an UNBOUNDED repetition (`*`/`+`/`{n,}`) can match at this node's
+   *  LEADING and TRAILING edge — even when the repetition is hidden inside an alternation
+   *  branch or group (`(a*|b)` exposes `{a}` at both edges). Two nodes adjacent in a sequence
+   *  (through nullable-only gaps) whose trailing and leading repeat-sets intersect are the
+   *  `a*a*` polynomial class regardless of how deep the repetitions are nested. */
+  leadRep: CharSet;
+  trailRep: CharSet;
 }
 
-const isVariableQuant = (n: Node): n is Extract<Node, { kind: "quant" }> =>
-  n.kind === "quant" && (n.max > n.min || (n.max > 1 && analyze(n.body).variable));
+/** Front-to-back accumulation of an edge repeat-set across a sequence: a leading repetition can
+ *  surface through any nullable prefix, so union each item's edge set while items stay nullable,
+ *  and include the first obligatory item's edge set before stopping. `pick` selects the edge. */
+function edgeRepeat(facts: Facts[], pick: (f: Facts) => CharSet): CharSet {
+  let acc = EMPTY;
+  for (const f of facts) {
+    acc = union(acc, pick(f));
+    if (!f.nullable) break;
+  }
+  return acc;
+}
 
 function analyze(node: Node): Facts {
   switch (node.kind) {
     case "anchor":
-      return { set: EMPTY, nullable: true, variable: false, ambiguousAlt: false };
+      return { set: EMPTY, nullable: true, variable: false, ambiguousAlt: false, leadRep: EMPTY, trailRep: EMPTY };
     case "atom":
-      return { set: node.set, nullable: node.set.ranges.length === 0 && !node.set.neg, variable: false, ambiguousAlt: false };
+      return { set: node.set, nullable: node.set.ranges.length === 0 && !node.set.neg, variable: false, ambiguousAlt: false, leadRep: EMPTY, trailRep: EMPTY };
     case "seq": {
       const facts = node.items.map(analyze);
-      // The polynomial overlap class: two variable repetitions with intersecting sets and only
-      // nullable items between them (`a*a*`, `a*b?a*`) — refuse.
-      for (let i = 0; i < node.items.length; i++) {
-        if (!isVariableQuant(node.items[i])) continue;
-        for (let j = i + 1; j < node.items.length; j++) {
-          if (isVariableQuant(node.items[j])) {
-            if (intersects(facts[i].set, facts[j].set))
-              refuse("two overlapping variable repetitions in sequence (polynomial backtracking class)");
-            if (!facts[j].nullable) break; // an obligatory, disjoint repetition ends this window
-            continue; // a nullable one is transparent (`a*b?a*` still overlaps through it)
-          }
+      // The polynomial overlap class (`a*a*`, `a*b?a*`, and — via edge repeat-sets — repetitions
+      // hidden inside groups/alternations like `(a*|b)a*`): a node whose TRAILING repeat-set
+      // intersects a later node's LEADING repeat-set, through a nullable-only gap, is refused.
+      for (let i = 0; i < facts.length; i++) {
+        if (facts[i].trailRep.ranges.length === 0 && !facts[i].trailRep.neg) continue;
+        for (let j = i + 1; j < facts.length; j++) {
+          if (intersects(facts[i].trailRep, facts[j].leadRep))
+            refuse("two overlapping variable repetitions in sequence (polynomial backtracking class)");
           if (!facts[j].nullable) break; // an obligatory consumer separates the repetitions
         }
       }
@@ -287,6 +300,8 @@ function analyze(node: Node): Facts {
         nullable: facts.every((f) => f.nullable),
         variable: facts.some((f) => f.variable),
         ambiguousAlt: facts.some((f) => f.ambiguousAlt),
+        leadRep: edgeRepeat(facts, (f) => f.leadRep),
+        trailRep: edgeRepeat([...facts].reverse(), (f) => f.trailRep),
       };
     }
     case "alt": {
@@ -298,11 +313,15 @@ function analyze(node: Node): Facts {
           if (intersects(facts[i].set, facts[j].set)) { ambiguous = true; break; }
         }
       }
+      // ANY branch may be the matched one, so its edge repeat-sets are all exposed at this
+      // alternation's edges.
       return {
         set: facts.reduce((s, f) => union(s, f.set), EMPTY),
         nullable: facts.some((f) => f.nullable),
         variable: facts.some((f) => f.variable),
         ambiguousAlt: ambiguous,
+        leadRep: facts.reduce((s, f) => union(s, f.leadRep), EMPTY),
+        trailRep: facts.reduce((s, f) => union(s, f.trailRep), EMPTY),
       };
     }
     case "quant": {
@@ -313,11 +332,18 @@ function analyze(node: Node): Facts {
         if (body.nullable) refuse("repeats a nullable body (unbounded ambiguity on empty matches)");
         if (body.ambiguousAlt) refuse("repeats an ambiguous alternation (branches overlap — exponential backtracking class)");
       }
+      // Only an UNBOUNDED repetition (`*`/`+`/`{n,}`) drives the polynomial overlap; a bounded
+      // one (`a?`, `a{2,5}`) adds a constant factor, not a per-character choice. An unbounded
+      // repetition exposes its BODY's set at both edges (its own repeated content), plus any
+      // repeat-set the body already carried.
+      const unbounded = node.max === Infinity;
       return {
         set: body.set,
         nullable: body.nullable || node.min === 0,
         variable: body.variable || node.max > node.min || repeats,
         ambiguousAlt: body.ambiguousAlt,
+        leadRep: unbounded ? union(body.set, body.leadRep) : body.leadRep,
+        trailRep: unbounded ? union(body.set, body.trailRep) : body.trailRep,
       };
     }
   }

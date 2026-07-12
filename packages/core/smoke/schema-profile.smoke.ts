@@ -143,6 +143,16 @@ refuses("astral overlap refused (an emoji is ONE code point under /u)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^😀*😀*X$" } }), "overlapping variable repetitions");
 refuses("surrogate escapes refused", () =>
   compileContractSchema({ root: { type: "string", pattern: "^\\uD83D\\uDE00*$" } }), "surrogate");
+refuses("repetition hidden in a leading alternation refused ((a*|b)a*)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a*|b)a*X$" } }), "overlapping variable repetitions");
+refuses("repetition hidden in a trailing alternation refused (a*(a*|b))", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^a*(a*|b)X$" } }), "overlapping variable repetitions");
+refuses("repetitions hidden in both alternations refused ((a*|b)(a*|b))", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a*|b)(a*|b)X$" } }), "overlapping variable repetitions");
+ok("a disjoint repetition hidden in an alternation still compiles ((a*|c)b*)", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^(a*|c)b*X$" } });
+  return v("aabbX") === true && v("cbX") === true && v("aaY") === false;
+})());
 ok("negated classes and braced code points still compile", (() => {
   const v = compileContractSchema({ root: { type: "string", pattern: "^[^a-z]+x\\u{1F600}*$" } });
   return v("A1x😀") === true && v("abc") === false;
