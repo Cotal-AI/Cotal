@@ -44,6 +44,7 @@ runtimes ship this way.
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
+| Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
@@ -87,7 +88,7 @@ maintainers, [setup internals](setup-internals.md).
 ## up
 
 ```bash
-cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>]
+cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
 
@@ -104,7 +105,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
-| `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime (`pty` built in; others installed extensions) |
+| `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
@@ -318,6 +319,28 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, or `@cotal-ai/cmux`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+
+## runtimes
+
+```bash
+cotal runtimes
+```
+
+Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
+(`orca`, `tmux`, `cmux`), and any custom provider installed via `cotal ext add`. Each installed
+provider is probed so you can see what is actually reachable on this machine before selecting it:
+
+```
+pty   built in
+orca  installed · reachable   @cotal-ai/orca
+tmux  available · cotal ext add @cotal-ai/tmux
+cmux  available · cotal ext add @cotal-ai/cmux
+```
+
+`installed · reachable` / `unreachable` is the provider's own `available()` probe; `available` means
+it is a known runtime you can add with the shown command. Selecting an unknown or uninstalled runtime
+via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
+package — there is no silent fallback to `pty`.
 
 ## send
 
