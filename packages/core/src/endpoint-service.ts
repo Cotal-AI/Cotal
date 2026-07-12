@@ -128,45 +128,93 @@ export function assertServiceNameAuthority(endpoint: string, owner: string, auth
 
 // ---- registration (spec writes, the `provisioner-registration` principal) ---------------------
 
-/** Register (or re-register) a service instance: name authority, then the spec-key CAS. The
- *  returned `registrationRevision` is the spec key's store revision (§13.7) — a re-registration
- *  advances it, which is exactly what invalidates a frozen scatter slot (§13.5 `churn`). A
- *  concurrent registration race is a loud `conflict` (§13.8: re-read and re-decide). */
+/** Register (or re-register) a service instance: authenticated-registrant binding, name
+ *  authority, then the spec-key CAS. The returned `registrationRevision` is the spec key's
+ *  store revision (§13.7) — a re-registration advances it, which is exactly what invalidates a
+ *  frozen scatter slot (§13.5 `churn`). A concurrent registration race is a loud `conflict`
+ *  (§13.8: re-read and re-decide).
+ *
+ *  `registrant` is the BROKER-AUTHENTICATED caller of the registration request (its subject
+ *  principal, §13.9 — never a payload claim): the descriptor owner must BE that caller, so a
+ *  privileged owner's descriptor cannot be registered by anyone else, and a re-registration can
+ *  never change an instance's ownership. `instanceId` MUST be provisioner-minted and never
+ *  reused (§13.1); the allocator that enforces non-reuse is the lifecycle registry (D13) — this
+ *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS. */
 export async function registerServiceInstance(
   kv: KV,
-  args: { spec: ServiceSpec; instanceId: string; authority: ServiceNameAuthority },
+  args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority },
 ): Promise<{ registrationRevision: number }> {
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
+  assertBoundedOwner(args.registrant.owner, "registrant owner");
+  if (args.registrant.owner !== spec.owner)
+    throw new EpEnvelopeError("permission-denied", `the registration's authenticated caller "${args.registrant.owner}" is not the descriptor owner "${spec.owner}" (SPEC 13.9: authenticated caller binding, never a payload claim)`);
   assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
   const key = recordSpecKey(RECORD_KINDS.svc, [spec.endpoint, assertLifecycleToken(args.instanceId, "instanceId")]);
   const current = await kv.get(key);
-  const revision = current && current.operation === "PUT"
-    ? await updateRecordEntry(kv, key, spec, current.revision)
-    : await createRecordEntry(kv, key, spec);
-  return { registrationRevision: revision };
+  if (current && current.operation === "PUT") {
+    const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
+    if (stored.owner !== spec.owner)
+      throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
+    return { registrationRevision: await updateRecordEntry(kv, key, spec, current.revision) };
+  }
+  return { registrationRevision: await createRecordEntry(kv, key, spec) };
 }
 
-/** Write an instance's status, EPOCH-FENCED (§13.6/§13.8: a superseded epoch cannot commit).
- *  `epoch` is the WRITER-AUTHENTICATED epoch — in production the record writer reads it from
- *  the broker-authenticated `epr` subject (§13.9), never from the payload; this helper trusts
- *  its caller to be that seam and additionally requires the payload to agree. A write from an
- *  epoch behind the recorded one fails `expired`; the racing CAS loss is a loud `conflict`. */
+function decodeJson(value: Uint8Array, key: string): unknown {
+  try {
+    return JSON.parse(new TextDecoder().decode(value));
+  } catch (e) {
+    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(e as Error).message}`);
+  }
+}
+
+/** Write an instance's status with the FULL §13.9 writer fence. `epoch` is the
+ *  WRITER-AUTHENTICATED epoch — in production the record writer reads it from the
+ *  broker-authenticated `epr` subject (§13.9), never from the payload; this helper trusts its
+ *  caller to be that seam and additionally requires the payload to agree. The fence is
+ *  THREE-part, in order:
+ *   1. a registered spec must exist and `observedSpecRevision` must not run AHEAD of it — a
+ *      spec-less status is the torn record state readers reject (§13.4), never written;
+ *   2. the epoch must equal a FRESH read of the authoritative lifecycle mapping's
+ *      `processEpoch` (`expired` otherwise) — monotonicity against the stored status alone is
+ *      NOT sufficient: between the takeover CAS (N→N+1) and the completed revoke/evict barrier
+ *      the superseded N still equals the stored epoch (§13.9);
+ *   3. a below-stored epoch is `conflict` (§13.9), distinct from the mapping fence.
+ *  `readProcessEpoch` is the trusted mapping-reader seam (leader-served, §13.9; the D13
+ *  lifecycle registry provides the production reader). The racing CAS loss is a loud `conflict`. */
 export async function writeServiceStatus(
   kv: KV,
-  args: { endpoint: string; instanceId: string; epoch: number; status: ServiceStatus },
+  args: {
+    endpoint: string;
+    instanceId: string;
+    epoch: number;
+    status: ServiceStatus;
+    readProcessEpoch: () => Promise<number> | number;
+  },
 ): Promise<number> {
   const status = parseServiceStatus(args.status);
   if (status.epoch !== args.epoch)
     throw new EpEnvelopeError("internal", `status.epoch ${status.epoch} disagrees with the writer-authenticated epoch ${args.epoch} (SPEC 13.9: the epoch rides the subject)`);
   assertStatusValue(status);
   // The endpoint NAME rides through: the kind's own qualifier assert tokenizes it exactly once.
-  const key = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, assertLifecycleToken(args.instanceId, "instanceId")]);
-  const current = await kv.get(key);
-  if (current && current.operation === "PUT") {
-    const recorded = parseServiceStatus(JSON.parse(new TextDecoder().decode(current.value)));
+  const iId = assertLifecycleToken(args.instanceId, "instanceId");
+  const specEntry = await kv.get(recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId]));
+  if (!specEntry || specEntry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `status write for "${args.endpoint}/${args.instanceId}" has no registered spec; writing it would create the torn record state readers reject (SPEC 13.4)`);
+  if (status.observedSpecRevision > specEntry.revision)
+    throw new EpEnvelopeError("failed-precondition", `observedSpecRevision ${status.observedSpecRevision} runs AHEAD of the spec revision ${specEntry.revision}; a status can only observe a registration that exists (SPEC 13.4)`);
+  const current = await args.readProcessEpoch();
+  if (!Number.isSafeInteger(current) || current < 0)
+    throw new EpEnvelopeError("internal", `the authoritative mapping read returned ${JSON.stringify(current)}, not an unsigned processEpoch`);
+  if (args.epoch !== current)
+    throw new EpEnvelopeError("expired", `status write from epoch ${args.epoch} is not the authoritative mapping's current processEpoch ${current}; stored-status monotonicity alone is insufficient during takeover (SPEC 13.9)`);
+  const key = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
+  const stored = await kv.get(key);
+  if (stored && stored.operation === "PUT") {
+    const recorded = parseServiceStatus(decodeJson(stored.value, key));
     if (args.epoch < recorded.epoch)
-      throw new EpEnvelopeError("expired", `status write from epoch ${args.epoch} is superseded (recorded epoch ${recorded.epoch}); a superseded incarnation cannot commit (SPEC 13.6)`);
-    return updateRecordEntry(kv, key, status, current.revision);
+      throw new EpEnvelopeError("conflict", `status write from epoch ${args.epoch} is below the stored status epoch ${recorded.epoch} (SPEC 13.9)`);
+    return updateRecordEntry(kv, key, status, stored.revision);
   }
   return createRecordEntry(kv, key, status);
 }
@@ -182,21 +230,42 @@ export interface FrozenInstance {
 }
 
 /** Freeze the request-scoped expected set (§13.5): the LIVE instances of a class from the
- *  service registry at send time — registered spec present, status present, and not
- *  {@link SERVICE_EXITED}. An empty or unreadable registry is `failed-precondition`, never an
- *  empty success (§13.5). The read grant this runs under is a §13.9 matrix row. */
+ *  service registry at send time — VALIDATED registered spec, status present and caught up to
+ *  the current registration (a stale projection is an instance not yet live under it, so
+ *  freezing `(new registrationRevision, pre-registration epoch)` would combine a registration
+ *  with liveness it never had), and not {@link SERVICE_EXITED}. An EMPTY or UNREADABLE registry
+ *  is `failed-precondition`, never an empty success (§13.5); a MALFORMED registry record fails
+ *  loud (`internal`, §13.9: readers fail loud on invalid mediated-writer state). The read grant
+ *  this runs under is a §13.9 matrix row. */
 export async function freezeExpectedSet(kv: KV, endpoint: string): Promise<FrozenInstance[]> {
   const e = endpointToken(endpoint);
   const frozen: FrozenInstance[] = [];
-  const iter = await kv.keys(`svc.${e}.*.spec`);
+  const unreadable = (err: unknown): never => {
+    if (err instanceof EpEnvelopeError) throw err; // invalid state stays loud; torn state is already failed-precondition
+    const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
+    (wrapped as Error & { cause?: unknown }).cause = err;
+    throw wrapped;
+  };
   const instanceIds: string[] = [];
-  for await (const key of iter) instanceIds.push(key.split(".")[2]);
+  try {
+    const iter = await kv.keys(`svc.${e}.*.spec`);
+    for await (const key of iter) instanceIds.push(key.split(".")[2]);
+  } catch (err) {
+    unreadable(err);
+  }
   for (const instanceId of instanceIds) {
     // The NAME, not the pre-tokenized `e`: the kind's qualifier assert tokenizes exactly once.
-    const rec = await readRecord(kv, RECORD_KINDS.svc, [endpoint, instanceId]);
+    let rec;
+    try {
+      rec = await readRecord(kv, RECORD_KINDS.svc, [endpoint, instanceId]);
+    } catch (err) {
+      unreadable(err);
+    }
     if (!rec || !rec.status) continue; // registered but never converged: not a live class member
+    parseServiceSpec(rec.spec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
     const status = parseServiceStatus(rec.status.value);
     if (status.state === SERVICE_EXITED) continue;
+    if (rec.staleProjection) continue; // liveness predates the CURRENT registration: not live under it
     frozen.push({ instanceId, registrationRevision: rec.spec.revision, epoch: status.epoch });
   }
   if (frozen.length === 0)

@@ -68,7 +68,7 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
-import { epCallerGrantRows, type EpCapability } from "./endpoint-grants.js";
+import { epCallerGrantRows, epServeGrantRows, type EpCapability } from "./endpoint-grants.js";
 import { credsClaims, type Identity } from "./identity.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
@@ -350,6 +350,12 @@ export interface MintOpts {
    *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
    *  forge-locks it as the third caller token. */
   lifecycleUid?: string;
+  /** v0.4 SERVE identity (SPEC §13.9 serve rows): mints the instance's queue-qualified class
+   *  subscribes (no plain class-rail subscribe exists on any credential), the plain scatter and
+   *  own `inst` rails per registered command, and the epoch-pinned egress
+   *  (reply/epe/ept-schedule/epr). Default-deny when absent. The `$JS.API` bind rows
+   *  (effects/pool durables) ride the D14 credential assembly, not this subject-space builder. */
+  endpointServe?: { endpoint: string; instanceId: string; epoch: number; commands: string[] };
   /** Delivery-daemon shard seam (`delivery` profile only). N=1 is the only operating mode; these do
    *  not change permissions in this build (the daemon owns the whole space at N=1). Present so the
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
@@ -762,6 +768,13 @@ export function permissionsFor(
     if (!opts.lifecycleUid)
       throw new Error("permissionsFor: endpointCapabilities require a lifecycleUid - the caller triple pins it at mint time (SPEC 13.1/13.2)");
     const rows = epCallerGrantRows(space, opts.endpointCapabilities, { owner: pr.owner, actor: pr.actor, uid: opts.lifecycleUid });
+    pubAllow.push(...rows.pub);
+    epSub.push(...rows.sub);
+  }
+  // v0.4 serve rows (SPEC §13.9): the instance's per-command rails (class rail queue-qualified
+  // ONLY) and its epoch-pinned egress. Default-deny when absent.
+  if (opts.endpointServe) {
+    const rows = epServeGrantRows(space, opts.endpointServe);
     pubAllow.push(...rows.pub);
     epSub.push(...rows.sub);
   }
