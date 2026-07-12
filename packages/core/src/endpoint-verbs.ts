@@ -125,7 +125,9 @@ function assertDeadline(deadlineMs: number, what = "deadlineMs"): number {
 /** A NATS "no responders" control message: the broker answered that the request subject had zero
  *  subscribers (SPEC 13.5: no responder → unavailable), delivered to the publish reply-to as an empty
  *  message with a 503 status header — distinct from a responder that exists but missed the deadline.
- *  A real responder's reply is plain JSON with no headers, so this never mistakes one for the other. */
+ *  A responder CAN attach a 503 header to its own reply, so this header alone is not proof of broker
+ *  authorship: callers must trust it ONLY on the reserved no-responders sentinel subject (which carries
+ *  no responder publish grant), never on a normal reply subject. */
 function isNoRespondersMsg(msg: Msg): boolean {
   const h = msg.headers as { code?: number; status?: string } | null | undefined;
   return h != null && (h.code === 503 || h.status === "503");
@@ -227,7 +229,16 @@ export async function epCall(
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
         callback: (err, msg) => {
           if (err) { reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return; }
-          if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`)); return; }
+          // Broker no-responders is authoritative ONLY on the reserved sentinel reply-to: no responder
+          // holds a publish grant for the `_nr._nr._nr` subject (§13.9), so only the broker's control
+          // frame reaches it. A 503 status header on a NORMAL responder subject is just a responder
+          // frame carrying a status line — a recipient knows the nonce and could forge one to
+          // impersonate transport absence — so it takes the ordinary attributed-reply path below, never
+          // the broker-control path.
+          if (msg.subject === noRespReplyTo) {
+            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`)); return; }
+            reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${op.endpoint}.${op.command}; nothing but the broker control frame is addressable there`)); return;
+          }
           resolve({ subject: msg.subject, data: msg.data });
         },
       });
@@ -238,7 +249,12 @@ export async function epCall(
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     if (route.mode === "one") {
       // §13.2:1187-1189 currency for the queue winner, bounded by the REMAINING budget so the whole
-      // call stays within one `deadlineMs`.
+      // call stays within ONE `deadlineMs` (deliberately NOT a second dedicated budget like scatter's
+      // `reconcileDeadlineMs`: a call's reply usually arrives well before T, leaving room to verify,
+      // whereas scatter's gather deterministically eats its whole deadline). The consequence is a
+      // deliberate disposition: a VALID reply that lands with no budget left to verify currency is
+      // `deadline-exceeded`, not the reply — the operation could not complete-and-verify within its
+      // budget. Recorded for the panel's §13.5 reconciliation (dedicated one-rail currency budget?).
       const remaining = deadlineMs - (Date.now() - started);
       if (remaining <= 0) throw new EpEnvelopeError("deadline-exceeded", `no budget left to verify the \`one\` responder's currency within ${deadlineMs}ms (SPEC 13.5)`);
       const cur = await raceBounded(() => opts.currentEpoch!(attributed.responder.instanceId), remaining, `the \`one\` currency read for ${op.endpoint}.${op.command}`);
@@ -397,6 +413,17 @@ export interface EpScatterResult {
   invalid: { instanceId: string; epoch: number; message: string }[];
 }
 
+/** The reconcile hook's per-instance verdict. An instance STILL in the registry carries its current
+ *  `registrationRevision`; one the mediated §13.9 read observed as GONE is `{ registered: false }`.
+ *  This is an EXPLICIT value, distinct from an absent Map entry — an absent entry stays an incomplete
+ *  read (`failed-precondition`), so a buggy/partial hook can never masquerade as "everyone deregistered".
+ *  A mid-scatter deregistration is NOT registration-churn (a re-registration advances the revision and
+ *  invalidates the reply; a plain departure does not): a valid reply the instance already gave still
+ *  counts, and if it never replied its slot falls to `missing`. */
+export type EpRegistrationState =
+  | { registered: true; registrationRevision: number }
+  | { registered: false };
+
 /**
  * Scatter one command to a FROZEN expected set (§13.5): publish once on the `all` rail, gather
  * attributed replies on the caller's nonce-scoped rail, and CLASSIFY against the freeze. An empty set
@@ -410,25 +437,30 @@ export interface EpScatterResult {
  * requested horizon. It is OBSERVATIONAL only: it may add to `late`/`duplicate`, never move
  * `missing`/`churn`/`complete`. With `lateDrainMs` omitted the rail closes at T (no `late`).
  *
- * WHOLE-OPERATION BUDGET. The op is bounded but spends its budgets in SEQUENCE, not one shared
- * deadline: worst-case wall-clock ≈ `deadlineMs` (gather) + `reconcileDeadlineMs` (post-T read) +
- * `lateDrainMs` (drain, concurrent with the read). The reconcile is a bounded read taken SHORTLY
- * AFTER T (not a zero-width at-T snapshot): a true instant-of-T revision would need a watch/frontier,
- * so a re-registration strictly concurrent with the bounded read is an inherent, documented window
- * (recorded for the §13.5 SPEC reconciliation).
+ * WHOLE-OPERATION BUDGET. The op is bounded: the gather to T comes FIRST, then a post-T phase in which
+ * the reconcile and the drain run CONCURRENTLY (the drain is armed at T, before the reconcile await).
+ * So worst-case wall-clock ≈ `deadlineMs` (gather) + `max(reconcileDeadlineMs, lateDrainMs)` (post-T),
+ * NOT their sum. The reconcile is a bounded read taken SHORTLY AFTER T (not a zero-width at-T snapshot):
+ * a true instant-of-T revision would need a watch/frontier, so a re-registration strictly concurrent
+ * with the bounded read is an inherent, documented window (recorded for the §13.5 SPEC reconciliation).
  *
  * Two §13.5 signals are not on the reply rail, so the caller supplies them as HOOKS (keeping the verb
  * free of storage coupling; the §13.9 read grant stays with the caller, and a caller-read revision is
  * more trustworthy than a responder-stamped one):
- *  - `reconcileRegistration` (REQUIRED): reads EVERY frozen slot's CURRENT registrationRevision after
- *    the classification point; a slot whose value advanced past its frozen one is `churn`
- *    ("registration") and uncounted (a re-registration advances registrationRevision WITHOUT advancing
- *    the epoch, so the reply rail cannot see it). Its result is COMPLETENESS-validated: a frozen id
- *    absent from the returned Map is an incomplete read (`failed-precondition`), and a revision BELOW
- *    the frozen one is a non-monotonic/buggy read (`failed-precondition`) — otherwise a partial hook
- *    would silently preserve the old full-triple over-claim. It is BOUNDED by `reconcileDeadlineMs`:
- *    a never-settling read is `unavailable`, never a hung scatter (SPEC 13.5: deadline mandatory); an
- *    unreadable registry is `failed-precondition`. Authoritative `complete` requires it.
+ *  - `reconcileRegistration` (REQUIRED): reads EVERY frozen slot's CURRENT state after the classification
+ *    point, returning a per-instance `EpRegistrationState` verdict. A slot still registered at a revision
+ *    ADVANCED past its frozen one is `churn` ("registration") and uncounted (a re-registration advances
+ *    registrationRevision WITHOUT advancing the epoch, so the reply rail cannot see it). A slot the read
+ *    observed as GONE (`{ registered: false }`) is an explicit mid-scatter deregistration: NOT churn, and
+ *    a valid reply it already gave still counts (a plain departure does not invalidate the reply the way
+ *    a re-registration would). Its result is COMPLETENESS-validated: a frozen id ABSENT from the returned
+ *    Map is an incomplete read (`failed-precondition`) — distinct from an explicit `{ registered: false }`
+ *    verdict — a non-integer/non-positive revision is a garbled read (`failed-precondition`), and a
+ *    revision BELOW the frozen one is a non-monotonic/buggy read (`failed-precondition`); otherwise a
+ *    partial hook would silently preserve the old full-triple over-claim. It is BOUNDED by
+ *    `reconcileDeadlineMs`: a never-settling read is `unavailable`, never a hung scatter (SPEC 13.5:
+ *    deadline mandatory); an unreadable registry is `failed-precondition`. Authoritative `complete`
+ *    requires it.
  *  - `reconcileDeadlineMs` (optional, default `deadlineMs`): the explicit bound on that post-T read,
  *    named so the single `deadlineMs` is not silently spent twice.
  *  - `lateDrainMs` (optional): the absolute post-T horizon for `late` classification. Omitted → none.
@@ -440,7 +472,7 @@ export async function epScatter(
   opts: {
     deadlineMs: number;
     expected: EpScatterSlot[];
-    reconcileRegistration: () => Promise<Map<string, number>>;
+    reconcileRegistration: () => Promise<Map<string, EpRegistrationState>>;
     reconcileDeadlineMs?: number;
     lateDrainMs?: number;
   },
@@ -453,6 +485,14 @@ export async function epScatter(
   const frozen = new Map<string, { epoch: number; registrationRevision: number }>();
   for (const slot of opts.expected) {
     const iId = assertLifecycleToken(slot.instanceId, "instanceId");
+    // Validate the frozen (epoch, registrationRevision) coordinates at this public ingress: an untyped
+    // adapter that handed in a NaN/float/negative would otherwise slip past the currency and
+    // monotonicity fences downstream (a NaN compares false both ways). Epoch is a non-negative safe
+    // integer (the subject epoch), registrationRevision a positive safe integer (a KV revision, §13.7).
+    if (!Number.isSafeInteger(slot.epoch) || slot.epoch < 0)
+      throw new EpEnvelopeError("bad-request", `frozen instance ${iId} has a non-integer/negative epoch ${slot.epoch}; a frozen coordinate must be a safe integer so an untyped adapter cannot disable the currency fence (§13.2)`);
+    if (!Number.isSafeInteger(slot.registrationRevision) || slot.registrationRevision <= 0)
+      throw new EpEnvelopeError("bad-request", `frozen instance ${iId} has a non-integer/non-positive registrationRevision ${slot.registrationRevision}; a frozen coordinate must be a positive safe integer so an untyped adapter cannot disable the monotonicity fence (§13.7)`);
     if (frozen.has(iId))
       throw new EpEnvelopeError("failed-precondition", `the frozen expected set names instance ${iId} twice`);
     frozen.set(iId, { epoch: slot.epoch, registrationRevision: slot.registrationRevision });
@@ -534,7 +574,7 @@ export async function epScatter(
 
     // Reconcile shortly after T, bounded by its OWN explicit budget (not a second full `deadlineMs`):
     // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`.
-    let current: Map<string, number>;
+    let current: Map<string, EpRegistrationState>;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       current = await Promise.race([
@@ -547,14 +587,22 @@ export async function epScatter(
     } finally {
       if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
     }
-    // COMPLETENESS + MONOTONICITY: the mandatory reconcile must cover every frozen slot with a
-    // revision no lower than its frozen one, else a partial/buggy read would silently preserve the old
-    // full-triple over-claim. Absent → incomplete read; below-frozen → non-monotonic (revisions only
-    // advance on mediated registration writes, §13.7). Both are fail-loud, never a counted completion.
+    // COMPLETENESS + MONOTONICITY: the mandatory reconcile must return an EXPLICIT verdict for every
+    // frozen slot, else a partial/buggy read would silently preserve the old full-triple over-claim.
+    // An ABSENT Map entry is an incomplete read (fail-loud) — distinct from an explicit deregistration
+    // verdict. A still-registered slot's revision below-frozen is non-monotonic (revisions only advance
+    // on mediated registration writes, §13.7), a NaN/non-integer one is garbled: both fail-loud. An
+    // advanced revision is registration-churn (drops the counted reply). An explicit deregistration is
+    // NOT churn: a valid reply the instance already gave still counts, and if it never replied its slot
+    // falls to `missing` below.
     for (const [instanceId, slot] of frozen) {
-      const now = current.get(instanceId);
-      if (now === undefined)
-        throw new EpEnvelopeError("failed-precondition", `the reconcile did not cover frozen instance ${instanceId}; an incomplete registration read cannot authorize completion (SPEC 13.5)`);
+      const state = current.get(instanceId);
+      if (state === undefined)
+        throw new EpEnvelopeError("failed-precondition", `the reconcile returned no verdict for frozen instance ${instanceId}; an incomplete registration read cannot authorize completion, and an absent Map entry is NOT an implicit deregistration (SPEC 13.5)`);
+      if (!state.registered) continue; // explicit mid-scatter deregistration: not churn; a prior reply still counts
+      const now = state.registrationRevision;
+      if (!Number.isSafeInteger(now) || now <= 0)
+        throw new EpEnvelopeError("failed-precondition", `the reconcile reports instance ${instanceId} at a non-integer/non-positive registrationRevision ${now}; a NaN or garbled value is neither below nor above the frozen revision and would silently disable the monotonicity fence (§13.7), so it is refused, never a counted completion`);
       if (now < slot.registrationRevision)
         throw new EpEnvelopeError("failed-precondition", `the reconcile reports instance ${instanceId} at registrationRevision ${now}, below its frozen ${slot.registrationRevision}; registration revisions are monotonic (§13.7), so a lower value is a buggy/unreadable read`);
       if (now > slot.registrationRevision) {

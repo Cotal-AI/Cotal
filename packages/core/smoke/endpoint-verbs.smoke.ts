@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, headers } from "@nats-io/transport-node";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import {
   isReachable, EpEnvelopeError,
@@ -25,6 +25,7 @@ import {
   parseEpSubject, epReplySubject, epeSubject, spacePrefix,
   epCall, epCast, epWatchEvents, epScatter,
   type EpCaller, type EpVerbOp, type ParsedEpRequest, type FrozenInstance, type EpAttributedEvent,
+  type EpRegistrationState,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -45,16 +46,19 @@ const inContract = compileContract({ root: { type: "object", properties: { n: { 
 const outContract = compileContract({ root: { type: "object", properties: { which: { type: "string" } }, required: ["which"], additionalProperties: false } });
 const contract = { input: inContract, output: outContract };
 const opFor = (over: Partial<EpVerbOp> = {}): EpVerbOp => ({ endpoint: ENDPOINT, command: "ping", contract, caller, args: { n: "x" }, ...over });
-const okReconcile = (m: Record<string, number>) => async () => new Map(Object.entries(m));
+// `registered` at revision N (the common case); `dereg(id)` produces an EXPLICIT deregistration verdict.
+const reg = (n: number): EpRegistrationState => ({ registered: true, registrationRevision: n });
+const okReconcile = (m: Record<string, number>) => async () => new Map(Object.entries(m).map(([k, v]): [string, EpRegistrationState] => [k, reg(v)]));
 
 // One crafted reply for a simulated instance. `endpoint` overrides the responder endpoint (the
-// wrong-endpoint probe); `ok:false` sends a structured app error; malformed `data` fails the boundary.
-interface CraftedReply { instanceId: string; epoch: number; ok: boolean; data?: unknown; endpoint?: string; delayMs?: number }
+// wrong-endpoint probe); `ok:false` sends a structured app error; malformed `data` fails the boundary;
+// `status` forges a NATS status header (the 503-spoof probe) on the responder's OWN normal subject.
+interface CraftedReply { instanceId: string; epoch: number; ok: boolean; data?: unknown; endpoint?: string; delayMs?: number; status?: number }
 function publishReply(nc: NatsConnection, req: ParsedEpRequest, requestId: string, r: CraftedReply) {
   const subject = epReplySubject(SPACE, { endpoint: r.endpoint ?? req.endpoint, instanceId: r.instanceId, epoch: r.epoch, caller: req.caller, nonce: req.nonce });
   const env = r.ok ? { v: 1, id: requestId, ok: true, ...(r.data !== undefined ? { data: r.data } : {}) }
                    : { v: 1, id: requestId, ok: false, error: { code: "failed-precondition", message: "app said no" } };
-  nc.publish(subject, enc.encode(JSON.stringify(env)));
+  nc.publish(subject, enc.encode(JSON.stringify(env)), r.status !== undefined ? { headers: headers(r.status, "No Responders") } : undefined);
 }
 function respond(nc: NatsConnection, filter: string, batch: (req: ParsedEpRequest, requestId: string, replyExpected: boolean) => CraftedReply[]): Subscription {
   return nc.subscribe(filter, {
@@ -181,11 +185,44 @@ try {
   await rejects("scatter surfaces an unreadable reconcile as failed-precondition",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }), "failed-precondition");
   await rejects("scatter BOUNDS a never-settling reconcile as unavailable (deadline mandatory, no hung scatter)",
-    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, number>>(() => { /* never settles */ }) }), "unavailable");
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, EpRegistrationState>>(() => { /* never settles */ }) }), "unavailable");
   await rejects("scatter FAILS LOUD when the reconcile omits a frozen slot (incomplete read can't authorize completion)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: B, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "failed-precondition");
   await rejects("scatter FAILS LOUD when the reconcile reports a below-frozen revision (non-monotonic/buggy read)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 5, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 3 }) }), "failed-precondition");
+  await rejects("scatter FAILS LOUD when the reconcile reports a NaN/garbled revision (a NaN must not slip past the monotonicity fence)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => new Map<string, EpRegistrationState>([[A, { registered: true, registrationRevision: NaN }]]) }), "failed-precondition");
+  // Frozen-coordinate ingress fence: an untyped adapter cannot hand in a NaN/negative that would disable
+  // the currency/monotonicity checks downstream.
+  await rejects("scatter refuses a frozen slot with a NaN registrationRevision (bad-request at ingress)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 100, expected: [{ instanceId: A, registrationRevision: NaN, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "bad-request");
+  await rejects("scatter refuses a frozen slot with a negative epoch (bad-request at ingress)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 100, expected: [{ instanceId: A, registrationRevision: 1, epoch: -1 }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "bad-request");
+
+  // EXPLICIT mid-scatter deregistration is NOT registration-churn (SPEC §13.5 recorded intent): a valid
+  // reply the instance already gave still counts, distinct from an ABSENT Map entry (an incomplete read,
+  // which stays fail-loud above).
+  {
+    const sub = respond(nc, allFilter, () => [{ instanceId: A, epoch: EP, ok: true, data: { which: A } }]);
+    const res = await epScatter(nc, SPACE, opFor(), {
+      deadlineMs: 300,
+      expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }],
+      reconcileRegistration: async () => new Map<string, EpRegistrationState>([[A, { registered: false }]]),
+    });
+    await sub.drain();
+    c("explicit deregistration of a slot that already replied: reply still counts, complete stays true, no churn",
+      res.complete === true && res.replies.has(A) && res.churn.length === 0);
+  }
+  {
+    // deregistered WITHOUT a prior reply -> `missing` (honest: expected, no counted reply), never a throw.
+    const res = await epScatter(nc, SPACE, opFor(), {
+      deadlineMs: 150,
+      expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }],
+      reconcileRegistration: async () => new Map<string, EpRegistrationState>([[A, { registered: false }]]),
+    });
+    c("explicit deregistration of a slot that never replied is `missing`, not thrown, complete false",
+      res.missing.includes(A) && res.complete === false);
+  }
 
   // late does NOT leak past its horizon: with no lateDrainMs, a reply arriving after the deadline but
   // DURING a slow reconcile is not classified `late` (the rail is closed at T, absolute).
@@ -194,7 +231,7 @@ try {
     const res = await epScatter(nc, SPACE, opFor(), {
       deadlineMs: 100, reconcileDeadlineMs: 600,
       expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }],
-      reconcileRegistration: async () => { await wait(250); return new Map([[A, 1]]); }, // slow reconcile still running at 180ms
+      reconcileRegistration: async () => { await wait(250); return new Map([[A, reg(1)]]); }, // slow reconcile still running at 180ms
     });
     await sub.drain();
     c("no lateDrainMs: a reply during a slow reconcile is NOT classified late (rail closed at T)", res.late.length === 0 && res.missing.includes(A));
@@ -217,6 +254,21 @@ try {
   }
   await rejects("epCall with NO responder rejects `unavailable` (SPEC 13.5), not deadline-exceeded",
     () => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26), epoch: 1 }, opFor(), { deadlineMs: 400 }), "unavailable");
+  {
+    // A selected responder knows the nonce and can forge a 503 status header on its OWN normal reply
+    // subject. That must NOT be read as the broker's no-responders control (which lands only on the
+    // reserved `_nr._nr._nr` sentinel reply-to): the forged 503 takes the ordinary attributed-reply path.
+    // A spy proves the forged frame carries a GENUINE 503 code — the code-only detector WOULD fire on it,
+    // so the reserved-subject bind (not a library header quirk) is the load-bearing defense.
+    let sawCode: number | undefined;
+    const spy = nc.subscribe(`${spacePrefix(SPACE)}.ep.reply.*.*.*.>`, { callback: (_e, m) => { if (m.headers) sawCode = (m.headers as { code?: number }).code; } });
+    const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 3, ok: true, data: { which: "forged" }, status: 503 }]);
+    const r = await epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 800 });
+    await wait(50); await sub.drain(); await spy.drain();
+    c("the forged reply carries a GENUINE 503 status code (so the sentinel-subject bind, not a library quirk, is the defense)", sawCode === 503);
+    c("a responder's forged 503 header on its NORMAL reply subject is parsed as a reply, never broker no-responders (`unavailable`)",
+      r.reply.ok === true && (r.reply.data as { which: string }).which === "forged");
+  }
   {
     const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 9, ok: true, data: { which: "stale" } }]); // replies at a DIFFERENT epoch
     await rejects("epCall rejects a STALE-epoch reply as `expired` (§13.2: callers reject stale replies)",
