@@ -3,6 +3,7 @@ export * from "./subjects.js";
 export * from "./endpoint-subjects.js";
 export * from "./endpoint-grants.js";
 export * from "./endpoint-envelope.js";
+export * from "./endpoint-records.js";
 export * from "./resolve.js";
 export * from "./link.js";
 export * from "./identity.js";
