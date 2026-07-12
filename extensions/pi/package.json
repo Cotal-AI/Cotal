@@ -2,6 +2,11 @@
   "name": "@cotal-ai/pi",
   "version": "0.11.3",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "extensions/pi"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
