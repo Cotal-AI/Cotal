@@ -147,10 +147,10 @@ const authority: ServiceNameAuthority = {
 // instanceId) gate. This smoke exercises the registry/serve/describe SURFACE; the fence internals
 // (revision-pinned CAS, freeze token, verified evict, drift) are proven in endpoint-serve-auth.smoke.ts.
 // Here the barrier only needs to be a faithful freeze->(spec write)->reopen writer.
-const gateStates = new Map<string, { lifecycleUid: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+const gateStates = new Map<string, { endpoint: string; lifecycleUid: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
 function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
   const key = `${endpoint}/${instanceId}`;
-  if (!gateStates.has(key)) gateStates.set(key, { lifecycleUid: instanceId, state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
+  if (!gateStates.has(key)) gateStates.set(key, { endpoint, lifecycleUid: instanceId, state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
   const g = gateStates.get(key)!;
   return {
     observe: () => ({ ...g }),
@@ -165,16 +165,16 @@ function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
 const reg = (kvArg: KV, args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority }) =>
   registerServiceInstance(kvArg, { ...args, barrier: barrierFor(args.spec.endpoint, args.instanceId) });
 
-// ── name authority (broker-free) ──
+// ── name authority (broker-free; the authority read is async) ──
 c("a core name under the operator owner admits",
-  (assertServiceNameAuthority("manager", "u_op", authority), true));
-throws("a core name under a non-operator owner refuses",
+  (await assertServiceNameAuthority("manager", "u_op", authority)) === 0);
+await rejects("a core name under a non-operator owner refuses",
   () => assertServiceNameAuthority("manager", "u_abc", authority), "permission-denied");
 c("a reverse-DNS name under its registered owner admits",
-  (assertServiceNameAuthority("com.acme.builds", "u_acme", authority), true));
-throws("a reverse-DNS name under a foreign owner refuses",
+  (await assertServiceNameAuthority("com.acme.builds", "u_acme", authority)) === 0);
+await rejects("a reverse-DNS name under a foreign owner refuses",
   () => assertServiceNameAuthority("com.acme.builds", "u_abc", authority), "permission-denied");
-throws("an UNREGISTERED reverse-DNS name fails closed (never first-come adoption)",
+await rejects("an UNREGISTERED reverse-DNS name fails closed (never first-come adoption)",
   () => assertServiceNameAuthority("com.evil.squat", "u_abc", authority), "permission-denied");
 
 // ── record-value validators (broker-free) ──

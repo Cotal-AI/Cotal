@@ -113,7 +113,7 @@ export interface ServiceNameAuthority {
    *  operator provisioning authority; for a reverse-DNS name, iff `owner` is the REGISTERED
    *  domain owner (an unregistered name is never authorized, fail-closed). `revision` advances
    *  whenever the name transfers or its operator-authority grant changes. */
-  authorize(name: string, owner: string): { authorized: boolean; revision: number };
+  authorize(name: string, owner: string): Promise<{ authorized: boolean; revision: number }> | { authorized: boolean; revision: number };
 }
 
 /** Enforce §13.9 name authority before a registration/serve grant is minted, from ONE atomic
@@ -122,10 +122,10 @@ export interface ServiceNameAuthority {
  *  fails closed. Returns the name-authority binding REVISION read atomically WITH the decision —
  *  the caller binds it into the issuance gate so a transfer between decision and mint is fenced,
  *  never a torn owner-vs-revision read. */
-export function assertServiceNameAuthority(endpoint: string, owner: string, authority: ServiceNameAuthority): number {
+export async function assertServiceNameAuthority(endpoint: string, owner: string, authority: ServiceNameAuthority): Promise<number> {
   endpointToken(endpoint); // grammar first: a malformed name is refused before any authority answer
   assertBoundedOwner(owner, "service owner");
-  const snapshot = authority.authorize(endpoint, owner);
+  const snapshot = await authority.authorize(endpoint, owner);
   if (!snapshot.authorized)
     throw new EpEnvelopeError("permission-denied", `service name "${endpoint}" does not authorize owner "${owner}" (SPEC 13.9: a core name needs operator authority; a reverse-DNS name binds to its registered owner and an unregistered one is never adopted first-come)`);
   if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0)
@@ -150,10 +150,11 @@ export function assertServiceNameAuthority(endpoint: string, owner: string, auth
  *
  *  ISSUANCE-GATE BARRIER (§13.1). A registration is a WRITER on the instance's issuance gate: to
  *  be linearizable against an in-flight serve mint it MUST run the barrier protocol on the SAME
- *  `gate.<lifecycleUid>` key — freeze the gate (so a fresh mint observes `frozen` and refuses, and
- *  a staged-but-uncommitted mint loses its revision-pinned CAS), advance the spec, enumerate and
- *  revoke the ledger rows the superseded surface authorized, then reopen at the successor
- *  `registrationRevision`. This is REQUIRED, not documented: core exports no bare spec-key advance
+ *  `gate.<lifecycleUid>` key, in order: freeze the gate (so a fresh mint observes `frozen` and
+ *  refuses, and a staged-but-uncommitted mint loses its revision-pinned CAS), authorize the owner
+ *  under the frozen gate, revoke + VERIFIED-evict the superseded credential family, THEN advance
+ *  the spec, then reopen at the successor `registrationRevision`. Old authority dies before new
+ *  authority is published. This is REQUIRED, not documented: core exports no bare spec-key advance
  *  that could leave a mint's observed `registrationRevision` permanently equal to its snapshot,
  *  win a never-frozen CAS, and silently release a superseded-surface credential. The gate is
  *  created by the provisioner at instance mint (D13); a missing gate is `failed-precondition`. The
@@ -167,7 +168,10 @@ export async function registerServiceInstance(
   assertBoundedOwner(args.registrant.owner, "registrant owner");
   if (args.registrant.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the registration's authenticated caller "${args.registrant.owner}" is not the descriptor owner "${spec.owner}" (SPEC 13.9: authenticated caller binding, never a payload claim)`);
-  assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
+  // The NAME-AUTHORITY decision is deferred until UNDER the frozen gate (phase 1): a transfer must
+  // freeze this same gate, so authorizing while we hold the freeze serializes the decision with the
+  // transfer — checking here (pre-freeze) would repeat the torn owner-vs-revision read the atomic
+  // authorize() closed for authorizeServeGrant.
   const key = recordSpecKey(RECORD_KINDS.svc, [spec.endpoint, assertLifecycleToken(args.instanceId, "instanceId")]);
 
   // §13.1 barrier: freeze the instance's gate FIRST so no serve mint can win against the surface
@@ -176,8 +180,8 @@ export async function registerServiceInstance(
   const obs = await args.barrier.observe();
   if (obs === null)
     throw new EpEnvelopeError("failed-precondition", `no issuance gate for instance "${args.instanceId}"; a registration writes only behind the provisioner-created gate (SPEC 13.1)`);
-  if (obs.lifecycleUid !== args.instanceId)
-    throw new EpEnvelopeError("internal", `the issuance gate is for lifecycle "${obs.lifecycleUid}", not "${args.instanceId}"; a registration drives only its OWN instance's gate (SPEC 13.1)`);
+  if (obs.endpoint !== spec.endpoint || obs.lifecycleUid !== args.instanceId)
+    throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.endpoint}/${obs.lifecycleUid}", not "${spec.endpoint}/${args.instanceId}"; a registration drives only its OWN instance's gate, and the instance token is unique only within (space, endpoint) (SPEC 13.1)`);
   if (obs.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`);
   if (obs.state !== "open")
@@ -192,10 +196,19 @@ export async function registerServiceInstance(
     generation: obs.generation + 1, processEpoch: obs.processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
   });
 
-  // PHASE 1 — ownership stability (a LOCAL read; a mismatch or a read failure is a DEFINITE
-  // no-write and no revoke has run, so reopen the ORIGINAL coordinate and rethrow).
+  // PHASE 1 — authorize UNDER the frozen gate, then ownership stability. Both are authority /
+  // local reads with NO write side-effect, so any failure (owner not authorized, name-authority
+  // drift, a garbled stored spec, an ownership change) is a DEFINITE no-write and no revoke has
+  // run → reopen the ORIGINAL coordinate and rethrow.
+  //  - the name-authority decision is made HERE (holding the freeze), and the authorized revision
+  //    MUST equal the frozen gate's `nameAuthorityRevision`: a transfer that raced would have to
+  //    freeze this same gate (it can't) or would leave the gate at a different coordinate, so a
+  //    mismatch is a raced transfer — a loud `conflict`, never a stale-owner registration.
   let current: Awaited<ReturnType<KV["get"]>>;
   try {
+    const authorizedNameRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
+    if (authorizedNameRevision !== obs.nameAuthorityRevision)
+      throw new EpEnvelopeError("conflict", `a name-authority transfer raced this registration: owner "${spec.owner}" is authorized at nameAuthorityRevision ${authorizedNameRevision} but the frozen gate is at ${obs.nameAuthorityRevision}; re-read and re-decide (SPEC 13.9)`);
     current = await kv.get(key);
     if (current && current.operation === "PUT") {
       const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
@@ -211,10 +224,14 @@ export async function registerServiceInstance(
   // (§13.1 order: old authority must die before new authority is visible). Fail-closed: if any
   // revoke/eviction cannot be verified, leave the gate FROZEN for reconciliation — never reopen,
   // or old credentials could come back to life against a pending re-registration.
+  //  - revoke every ACTIVE row (an already-`revoked` row was flipped by an earlier barrier);
+  //  - but verified-evict the distinct holder principals of the ENTIRE enumerated family: an
+  //    already-revoked row from a PARTIALLY FAILED prior barrier may still have a live connection
+  //    that was never verified gone, so eviction must not skip it (§13.1).
   try {
-    const active = (await args.barrier.enumerate()).filter((row) => row.state === "active");
-    for (const row of active) await args.barrier.revoke(row);
-    for (const holderPrincipal of new Set(active.map((row) => row.holderPrincipal)))
+    const family = await args.barrier.enumerate();
+    for (const row of family) if (row.state === "active") await args.barrier.revoke(row);
+    for (const holderPrincipal of new Set(family.map((row) => row.holderPrincipal)))
       if (!(await args.barrier.evict(holderPrincipal)))
         throw new Error(`principal "${holderPrincipal}" is not verified evicted`);
   } catch (err) {
@@ -497,7 +514,7 @@ export async function authorizeServeGrant(
   // RECORDED (not fenced here — a read is never a fence, §13.1); the issuance gate carries it and
   // the mint refuses on drift, so a name transfer after this authorization can never release an
   // old-owner credential.
-  const nameAuthorityRevision = assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
+  const nameAuthorityRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
 
   // §13.7 two-stage content-address read: the registered digest is a CLOSURE digest naming a
   // MANIFEST; the manifest's `root` names the cluster DOCUMENT. Both fetched, both verified —
@@ -624,9 +641,16 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  barrier bumps it, so a superseded mint's rebuilt CAS loses even if two coordinates coincide).
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export interface EpGateState {
-  /** The gate's OWN instance identity (§13.1 `gate.<lifecycleUid>`): a mint or a barrier binds
-   *  its serve instance to the gate it was handed, so a caller that passes the WRONG instance's
-   *  gate (even with coincidentally matching coordinates) is refused, never confused. */
+  /** The gate's OWN instance identity, `(endpoint, lifecycleUid)` (§13.1). For an endpoint the
+   *  lifecycle identity is `instanceId`, which SPEC 13.1:1008-1013 makes unique only within
+   *  `(space, endpoint)` (its ≥128-bit CSPRNG entropy is what makes the SPEC's `gate.<lifecycleUid>`
+   *  key collision-free within the space bucket). Binding the ENDPOINT here is the explicit
+   *  identity check that does not rely on that entropy: a caller that passes a DIFFERENT endpoint's
+   *  gate sharing the instance token (or any wrong gate) is refused, never confused, and the
+   *  credential family stays per-`(endpoint, instance)`. When D13/D14 wires the durable key it
+   *  should carry the endpoint too (`gate.<endpoint>.<lifecycleUid>`), so the key derivation matches
+   *  this check rather than leaning on entropy alone. */
+  endpoint: string;
   lifecycleUid: string;
   state: "open" | "frozen" | "retired";
   generation: number;
@@ -665,6 +689,9 @@ export interface EpServeLedgerRow {
   credentialId: string;
   credentialKey: string;
   holderPrincipal: string;
+  /** The served endpoint — the instance token is unique only within `(space, endpoint)`, so the
+   *  credential family is keyed by `(endpoint, lifecycleUid)`, never the instance token alone. */
+  endpoint: string;
   lifecycleUid: string;
   sourceChain: readonly string[];
   state: "active" | "revoked";
@@ -755,10 +782,14 @@ export interface EpServeCredential {
   exp?: number;
 }
 
-/** A §13.1 source-chain element: the root anchor, a handle-redemption step, or a session step.
- *  Owner/actor principal components are NOT a lineage; the mint records `["root"]` for a serve
- *  credential minted directly by the provisioner authority. */
-const SOURCE_CHAIN_ELEMENT = /^(root|handle\.[a-z0-9][a-z0-9._-]{0,127}|session\.[a-z0-9][a-z0-9._-]{0,127})$/;
+/** A §13.1 source-chain element, EXACT grammar: the `root` anchor, a handle-redemption step
+ *  `handle.<issuerKeyId>.<id>` (exactly two record-grammar id segments), or a session step
+ *  `session.<sessionId>` (exactly one). Owner/actor principal components are NOT a lineage; the
+ *  mint records `["root"]` for a serve credential minted directly by the provisioner authority.
+ *  Ids are the record grammar `[A-Za-z0-9_-]` (uppercase admitted), bounded, and every segment is
+ *  non-empty — so `handle.x`, `handle.x.`, and `session.x.y` all refuse. */
+const SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,128}";
+const SOURCE_CHAIN_ELEMENT = new RegExp(`^(root|handle\\.${SOURCE_CHAIN_ID}\\.${SOURCE_CHAIN_ID}|session\\.${SOURCE_CHAIN_ID})$`);
 
 /**
  * The serve-credential release fence (§13.1 "observe gate → write rows → CAS the gate →
@@ -795,10 +826,12 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
   const obs = await gate.observe();
   if (obs === null)
     throw new EpEnvelopeError("expired", `no issuance gate for "${snap.endpoint}/${snap.instanceId}"; a serve credential never mints against a missing gate (SPEC 13.1)`);
-  // Gate IDENTITY: the gate must be this instance's own (§13.1 `gate.<lifecycleUid>`); a caller
-  // that handed a foreign instance's gate with coincidentally matching coordinates is refused.
-  if (obs.lifecycleUid !== snap.instanceId)
-    throw new EpEnvelopeError("internal", `the issuance gate is for lifecycle "${obs.lifecycleUid}", not the authorized instance "${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
+  // Gate IDENTITY `(endpoint, lifecycleUid)`: the instance token is unique only within
+  // `(space, endpoint)`, so BOTH must match — a caller that handed a foreign gate (a different
+  // endpoint sharing the instance token, or any wrong gate) with coincidentally matching
+  // coordinates is refused.
+  if (obs.endpoint !== snap.endpoint || obs.lifecycleUid !== snap.instanceId)
+    throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.endpoint}/${obs.lifecycleUid}", not the authorized instance "${snap.endpoint}/${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
   if (obs.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${snap.endpoint}/${snap.instanceId}" is ${obs.state}; minting is closed (SPEC 13.1)`);
   // JOINT currency on ONE key: a takeover advances processEpoch, a re-registration advances
@@ -818,6 +851,7 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     // on (never an ad-hoc `owner.actor` join, subjects.ts principalKey invariant) so the barrier's
     // enumeration key can never drift from the credential's.
     holderPrincipal: principalKey(snap.owner, credential.holderActor).key,
+    endpoint: snap.endpoint,
     lifecycleUid: snap.instanceId,
     sourceChain: Object.freeze([...credential.sourceChain]),
     state: "active",
@@ -828,20 +862,21 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     nameAuthorityRevision: obs.nameAuthorityRevision,
   };
   await gate.stage(row);
+  // Best-effort revoke of the staged row on any non-win, ALWAYS surfacing a revoke failure (never
+  // swallowed) so the reconciliation debt is visible — the credential is released only on a win.
+  const revokeStaged = async (): Promise<string | undefined> => {
+    try { await gate.revoke(row); return undefined; }
+    catch (err) { return (err as Error)?.message ?? String(err); }
+  };
   let won: boolean;
   try {
     won = await gate.commit(obs.revision);
   } catch (err) {
-    await Promise.resolve(gate.revoke(row)).catch(() => { /* the throw below reports the failure */ });
-    throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a serve credential (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    const revokeFailed = await revokeStaged();
+    throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a serve credential (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
   }
   if (!won) {
-    let revokeFailed: string | undefined;
-    try {
-      await gate.revoke(row);
-    } catch (err) {
-      revokeFailed = (err as Error)?.message ?? String(err); // surfaced, never swallowed
-    }
+    const revokeFailed = await revokeStaged();
     throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
   }
 }
