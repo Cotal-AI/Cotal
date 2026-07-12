@@ -120,7 +120,7 @@ cotal console       # terminal view of presence, channels, and messages
 
 > [!NOTE]
 > **Want each teammate in its own terminal?** Run the manager with `cotal supervise --runtime cmux`
-> (a **[cmux](https://cmux.com)** tab per agent) or `--runtime tmux` (a **[tmux](https://github.com/tmux/tmux/wiki)** window per agent). Otherwise they run in the
+> (a **[cmux](https://cmux.com)** tab per agent), `--runtime tmux` (a **[tmux](https://github.com/tmux/tmux/wiki)** window per agent), or `--runtime orca` (an **[Orca](https://www.onorca.dev/)** terminal in the matching worktree). Otherwise they run in the
 > background on the same mesh, watched with `cotal console` or the dashboard.
 
 > [!TIP]
@@ -129,7 +129,7 @@ cotal console       # terminal view of presence, channels, and messages
 > on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
 
 **Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), agents in
-cmux/tmux panes, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
+cmux/tmux/Orca terminals, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
 instead of Claude, or the guided expert team (`cotal setup --demo`). Start at
 [docs/getting-started.md](docs/getting-started.md).
 
@@ -156,14 +156,16 @@ Full index: [docs/examples.md](docs/examples.md).
 
 <table>
 <tr>
-<td align="center" width="33%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
-<td align="center" width="33%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
-<td align="center" width="33%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+<td align="center" width="25%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
+<td align="center" width="25%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
+<td align="center" width="25%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+<td align="center" width="25%"><a href="extensions/pi"><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
 </table>
 
-They attach differently but expose the same `cotal_*` tools, and all three push, so a
-peer message wakes an idle agent the instant it arrives. Any agent that implements the
+They attach differently but expose the same `cotal_*` tools, and all four push, so a
+peer message wakes an idle agent the instant it arrives; pi additionally drives a live
+turn, folding an arriving message into an in-flight one with `steer()`. Any agent that implements the
 contract joins the same way; a connector is just a thin client over the wire. Want one
 for an agent that isn't here yet?
 [Vote for the next connector](https://github.com/Cotal-AI/Cotal/discussions/80).
@@ -216,14 +218,14 @@ concrete mechanism you can check against the code.
 | Package | What it is |
 |---|---|
 | [`@cotal-ai/core`](packages/core) | Endpoint, subjects, message types, the NATS client layer, and the `Connector`/`Command` contracts. |
-| [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `up`, `join`, `watch`, `console`, `web`, `spawn`, `mint`, `channels`, `history`. |
-| [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux), with `start`/`stop`/`ps`/`attach`. |
+| [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `up`, `down`, `join`, `console`, `spawn`, `mint`, `channels`, `history`, and the operator extension loader. |
+| [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux / Orca), with `start`/`stop`/`ps`/`attach`. |
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-Plus the three agent connectors above and the [`@cotal-ai/cmux`](extensions/cmux) /
-[`@cotal-ai/tmux`](extensions/tmux) integrations (agents in cmux tabs or tmux windows); the full
-package list is in [AGENTS.md](AGENTS.md).
+Plus the three agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
+[`@cotal-ai/tmux`](extensions/tmux), and [`@cotal-ai/orca`](extensions/orca) runtime integrations;
+the full package list is in [AGENTS.md](AGENTS.md).
 
 ## Documentation
 

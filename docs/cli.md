@@ -22,8 +22,9 @@ runs it through `tsx` with no build step. Bare `cotal` prints help. Every comman
 
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
-`cotal ext add <npm-package>` adds a package's commands to this same surface (the `web` dashboard
-ships this way; see [`web`](#web)).
+`cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
+runtimes, and local process lifecycle descriptors. The `web` dashboard and optional manager
+runtimes ship this way.
 
 ## Commands
 
@@ -31,7 +32,8 @@ ships this way; see [`web`](#web)).
 |---|---|---|
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
-| Set up & lifecycle | [`down`](#down) | Stop a background mesh, or tear down a manifest / `spawn -f` deploy |
+| Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
+| Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
 | Set up & lifecycle | [`meshes`](#meshes-use-status) | List the running meshes on this machine |
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#meshes-use-status) | Read-only diagnostics for setup, processes, and the selected mesh |
@@ -42,6 +44,8 @@ ships this way; see [`web`](#web)).
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
+| Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
@@ -84,8 +88,8 @@ maintainers, [setup internals](setup-internals.md).
 ## up
 
 ```bash
-cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>]
-cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
+cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
 
 | Flag | Default | Meaning |
@@ -101,7 +105,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <pty|tmux|cmux>]
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
-| `--runtime <pty\|tmux\|cmux>` | manifest's | With `-f`: override the manifest's runtime |
+| `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
@@ -120,6 +124,7 @@ without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
 ```bash
 cotal down
+cotal down manager [delivery auth web nats ...]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 ```
 
@@ -127,10 +132,45 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | — | Tear down this manifest's deploy |
 | `--run <id>` | — | Tear down one `spawn -f` run by id |
-| `--dry-run` | off | Print the plan, mutate nothing |
+| `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
 
-Bare `cotal down` stops a background mesh started with `cotal up --detach`. The `-f` / `--run` forms
-tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh.
+Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
+only those self-registered local processes; for example, `cotal down manager` leaves delivery and
+the broker running, and `cotal down web` is available when the web extension is installed. The
+`-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
+and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
+registered daemon is still live; include those components or use bare `cotal down`.
+
+`down` never deletes on-disk state; that is [`clean`](#clean).
+
+## clean
+
+```bash
+cotal clean <history|store|all> --force
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | `history`: target mesh |
+| `--dms` | off | `history`: also clear DM history |
+| `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
+| `--force` | — | Required: destructive, no prompting |
+
+One configurable cleanup verb; every target requires `--force`.
+
+- `history` purges the retained message backlog on the **running** broker (channels, plus DMs
+  with `--dms`). The same operation as [`history clear`](#history), which stays as an alias.
+- `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
+  consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
+  minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle.
+- `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
+  it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
+  registry entry; the next `cotal up` mints a fresh identity.
+
+`history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
+alive (run `cotal down` first). Personas (`.cotal/agents`) and logs are never touched. A custom
+store location is not recorded anywhere, so `--store-dir` must repeat whatever the mesh was
+launched with.
 
 ## meshes, use, status
 
@@ -176,7 +216,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--file <cotal.yaml>`, `-f` | — | Deploy a manifest onto the running mesh |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
-| `--runtime <pty\|tmux\|cmux>` | manifest's | With `-f`: override the manifest's runtime |
+| `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
@@ -200,6 +240,16 @@ cotal models [--agent <connector>] [--refresh]
 Asks the running manager for each connector's model catalog (model ids plus their variants)
 for connectors that expose one (OpenCode today; a connector without a catalog says so). Pick a
 result with `cotal spawn --model <provider/model> --variant <v>`.
+
+## endpoints
+
+```bash
+cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
+```
+
+Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
+endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
+it is not limited to child processes owned by the manager.
 
 ## ps, stop, attach
 
@@ -251,14 +301,14 @@ Personas are the local agent files under `.cotal/agents/` that `cotal spawn` lau
 ## supervise
 
 ```bash
-cotal supervise [--runtime <pty|tmux|cmux>] [--space <s>] [--server <url>] [--spawn <names>]
+cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | this folder's auth space | Space to supervise |
 | `--server <url>` | the local mesh | Broker URL |
-| `--runtime <pty\|tmux\|cmux>` | `pty` | Agent runtime (`tmux`/`cmux` are explicit-only) |
+| `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
 | `--roster <file>` | — | Declarative roster to boot at startup |
 | `--launch <spec>` | — | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
@@ -266,8 +316,31 @@ cotal supervise [--runtime <pty|tmux|cmux>] [--space <s>] [--server <url>] [--sp
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
-directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; `tmux`/`cmux`
-require their extensions and are never selected implicitly. See [Deploy](deploy.md).
+directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
+optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, or `@cotal-ai/cmux`) and
+select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+
+## runtimes
+
+```bash
+cotal runtimes
+```
+
+Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
+(`orca`, `tmux`, `cmux`), and any custom provider installed via `cotal ext add`. Each installed
+provider is probed so you can see what is actually reachable on this machine before selecting it:
+
+```
+pty   built in
+orca  installed · reachable   @cotal-ai/orca
+tmux  available · cotal ext add @cotal-ai/tmux
+cmux  available · cotal ext add @cotal-ai/cmux
+```
+
+`installed · reachable` / `unreachable` is the provider's own `available()` probe; `available` means
+it is a known runtime you can add with the shown command. Selecting an unknown or uninstalled runtime
+via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
+package — there is no silent fallback to `pty`.
 
 ## send
 
@@ -319,9 +392,9 @@ cotal history clear --force [--dms] [--space <s>]
 | `--dms` | off | Also clear DM history |
 | `--force` | — | Required: clear without prompting |
 
-Purges retained channel history; `--dms` extends it to direct-message history. On a user-auth
-mesh the purge rides a short-lived purger view over your login, which needs ledger scope `admin`
-([Identity & auth](identity-and-auth.md)).
+Purges retained channel history; `--dms` extends it to direct-message history. An alias of
+[`clean history`](#clean). On a user-auth mesh the purge rides a short-lived purger view over
+your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 
 ## console
 
@@ -483,10 +556,16 @@ cotal ext remove <name>
 cotal ext list
 ```
 
-Operator-installed CLI extensions: `add` installs an npm package into a cotal-owned prefix and makes
-its commands appear in help, completion, and dispatch; `remove` and `list` manage them. The
-`@cotal-ai/web` dashboard is the canonical example. Installed packages and their location are described
-in [config](config.md).
+Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
+every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
+providers are lazy-loaded by commands such as `supervise`; local process providers participate in
+`status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
+canonical command/process example. Installed packages and their location are described in
+[config](config.md).
+
+Removing an extension that owns a running local process is refused with the mesh root and its
+`cotal down <component>` command; stop it first so uninstalling the package never strands a process
+whose lifecycle provider is gone.
 
 ## completion
 

@@ -35,7 +35,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: false,
   },
-  down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: false },
+  down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: true },
   meshes: { flags: [], positionals: false },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean"], positionals: true },
@@ -48,6 +48,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   send: { flags: [...TARGET], positionals: true },
+  endpoints: { flags: [...TARGET], positionals: false },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
   // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
@@ -84,6 +85,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
+  // The unified cleanup verb: `history clear`'s grammar + the local-state targets' --store-dir.
+  clean: { flags: [...TARGET, "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server
   // moved to implementations/delivery as `feedback-intake`.
   feedback: {
@@ -97,6 +100,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: ["console-port:string", "launch:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
     positionals: false,
   },
+  // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
+  runtimes: { flags: [], positionals: false },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string"], positionals: false },

@@ -1,0 +1,47 @@
+{
+  "name": "@cotal-ai/pi",
+  "version": "0.11.1",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/standalone.js"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json && esbuild src/standalone.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/standalone.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
+    "test": "pnpm run build && tsx pi.smoke.ts && tsx pi-sdk.smoke.ts && node --input-type=module -e \"await import('./dist/standalone.js'); console.log('pi standalone smoke: import passed')\"",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@cotal-ai/connector-core": "workspace:*",
+    "typebox": "^1.1.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@earendil-works/pi-ai": "0.79.10",
+    "@earendil-works/pi-coding-agent": "0.79.10",
+    "esbuild": "^0.28.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

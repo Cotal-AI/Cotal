@@ -1,15 +1,60 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { registry, type Command, type Registry } from "@cotal-ai/core";
+import {
+  registry,
+  type Command,
+  type Extension,
+  type ExtensionRef,
+  type Registry,
+  type RuntimeProvider,
+} from "@cotal-ai/core";
 import {
   extensionPackageDir,
+  extensionLocalProcesses,
+  extensionMutationLockState,
+  extensionProvides,
   installedExtensionVersion,
   loadExtensionsManifest,
   type CachedCommand,
   type InstalledExtension,
+  type LocalProcess,
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
+
+/** The official first-party runtimes, name → npm package. This is NOT authority — registration is
+ *  still explicit (`cotal ext add` installs the package; importing it self-registers the provider).
+ *  It is the CLI's UX source of truth so an uninstalled runtime error names a REAL package, a typo
+ *  says "unknown" instead of inventing `@cotal-ai/<typo>`, and `cotal runtimes` can list what's one
+ *  `cotal ext add` away. A third-party runtime installs under its own package name and, once added,
+ *  resolves like any other — it just isn't listed here up front. */
+export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
+  orca: "@cotal-ai/orca",
+  tmux: "@cotal-ai/tmux",
+  cmux: "@cotal-ai/cmux",
+};
+
+/** Every runtime name the CLI knows about without importing anything: `pty` (built in) + the officials. */
+export function knownRuntimeNames(): string[] {
+  return ["pty", ...Object.keys(OFFICIAL_RUNTIMES)];
+}
+
+/** The error for a runtime that has no installed provider: name the exact package for an official
+ *  runtime, else say it's unknown and list the ones the CLI knows — never invent an `@cotal-ai/<name>`
+ *  package for a typo (a custom provider installs under its own package name). */
+function unknownRuntimeError(name: string): string {
+  const pkg = OFFICIAL_RUNTIMES[name];
+  if (pkg) return `no installed extension provides runtime "${name}" - install it with \`cotal ext add ${pkg}\``;
+  return `unknown runtime "${name}" (known: ${knownRuntimeNames().join(", ")}) - install a provider with \`cotal ext add <npm-package>\`, or check the name`;
+}
+
+function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
+  const message = e instanceof Error ? e.message : String(e);
+  const compatibility = /does not provide an export named/.test(message) && /@cotal-ai\/(core|workspace)/.test(message)
+    ? " (the extension is not compatible with this cotal binary's linked @cotal-ai/* packages; update the binary and extension together)"
+    : "";
+  return new Error(`extension ${pkg}@${ext.version} failed to import: ${message}${compatibility} - reinstall it: \`cotal ext add ${ext.spec}\``);
+}
 
 /**
  * The installed-extensions loader — opt-in for the PUBLISHED binary only (`runCli(…, { extensions:
@@ -51,11 +96,48 @@ function stubFor(ext: InstalledExtension, cached: CachedCommand): Command {
  *  stubs when the root opted in). The completion dispatcher reads it so <TAB> sees the same
  *  surface help does — set once per invocation by runCli, before any command runs. */
 let surface: Command[] | undefined;
+let installedEnabled = false;
+
+/** The published binary enables installed-package resolution; library roots retain explicit imports. */
+export function setInstalledExtensionsEnabled(enabled: boolean): void {
+  installedEnabled = enabled;
+}
 export function setCommandSurface(commands: Command[]): void {
   surface = commands;
 }
 export function commandSurface(): Command[] {
   return surface ?? registry.all<Command>("command");
+}
+
+/** Registered and installed provider names without importing packages (safe for help/completion). */
+export function extensionNames(kind: string): string[] {
+  const names = new Set(registry.all().filter((ext) => ext.kind === kind).map((ext) => ext.name));
+  if (installedEnabled) {
+    for (const ext of loadExtensionsManifest().extensions) {
+      if (kind === "local-process") {
+        for (const process of extensionLocalProcesses(ext)) names.add(process.name);
+      } else {
+        for (const ref of extensionProvides(ext)) if (ref.kind === kind) names.add(ref.name);
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+/** Base + cached installed process descriptors. No extension package is imported. */
+export function localProcessSurface(): LocalProcess[] {
+  const processes = [...registry.all<LocalProcess>("local-process")];
+  const owners = new Map(processes.map((process) => [process.name, "this CLI"]));
+  if (!installedEnabled) return processes;
+  for (const ext of loadExtensionsManifest().extensions) {
+    for (const process of extensionLocalProcesses(ext)) {
+      const owner = owners.get(process.name);
+      if (owner) throw new Error(`local process "${process.name}" is provided by both ${owner} and ${ext.pkg}@${ext.version}`);
+      owners.set(process.name, `${ext.pkg}@${ext.version}`);
+      processes.push(process);
+    }
+  }
+  return processes;
 }
 
 /** True when this command is a manifest stub that must be materialized before parsing/running. */
@@ -100,6 +182,47 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   if (!pkg) return stub; // not a stub — already live
   const ext = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
   if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
+  await importInstalledExtension(ext);
+  const live = registry.all<Command>("command").find((cm) => cm.name === stub.name);
+  if (!live) {
+    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" - its cache is stale; re-add it: \`cotal ext add ${ext.spec}\``);
+  }
+  return live;
+}
+
+/** Resolve a provider, lazily importing the installed package that advertised it when necessary. */
+export async function materializeExtension<T extends Extension = Extension>(ref: ExtensionRef): Promise<T> {
+  const registered = registry.all().find((ext) => ext.kind === ref.kind && ext.name === ref.name);
+  if (registered) return registered as T;
+  if (!installedEnabled)
+    throw new Error(`no ${ref.kind} registered for "${ref.name}" - import its integration in this composition root`);
+  const ext = loadExtensionsManifest().extensions.find((candidate) =>
+    extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+  );
+  if (!ext) {
+    if (ref.kind === "runtime") throw new Error(unknownRuntimeError(ref.name));
+    throw new Error(`no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``);
+  }
+  await importInstalledExtension(ext);
+  try {
+    return registry.resolve<T>(ref.kind, ref.name);
+  } catch {
+    throw new Error(`extension ${ext.pkg} imported but did not register ${ref.kind} "${ref.name}" - re-add it: \`cotal ext add ${ext.spec}\``);
+  }
+}
+
+/** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */
+export async function preflightRuntime(name: string): Promise<void> {
+  if (name === "pty") return;
+  const provider = await materializeExtension<RuntimeProvider>({ kind: "runtime", name });
+  if (!provider.available()) throw new Error(`${name} runtime requested but it is not reachable`);
+}
+
+async function importInstalledExtension(ext: InstalledExtension): Promise<void> {
+  const mutation = extensionMutationLockState();
+  if (mutation.state === "active")
+    throw new Error(`extension install/remove is in progress (pid ${mutation.owner}) - retry after the active \`cotal ext\` command finishes`);
+  const pkg = ext.pkg;
   const onDisk = installedExtensionVersion(pkg);
   if (!onDisk) {
     throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
@@ -121,11 +244,6 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   try {
     await import(pathToFileURL(join(dir, entry)).href); // self-registers into OUR registry (core is linked)
   } catch (e) {
-    throw new Error(`extension ${pkg}@${ext.version} failed to import: ${(e as Error).message} - reinstall it: \`cotal ext add ${ext.spec}\``);
+    throw importFailure(pkg, ext, e);
   }
-  const live = registry.all<Command>("command").find((cm) => cm.name === stub.name);
-  if (!live) {
-    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" - its cache is stale; re-add it: \`cotal ext add ${ext.spec}\``);
-  }
-  return live;
 }

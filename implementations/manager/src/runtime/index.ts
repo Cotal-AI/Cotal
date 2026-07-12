@@ -5,27 +5,25 @@ import { PtyRuntime } from "./pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
-/** How a manager picks its backend. `auto` is the deterministic default — always `pty`. tmux and
- *  cmux are never auto-selected; choose them explicitly (`--runtime tmux`/`cmux`), which resolves
+/** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External
+ *  runtimes are never auto-selected; choose one explicitly, which resolves
  *  the integration from the registry and fails loud if it isn't imported. No fallbacks. */
 export type RuntimeMode = RuntimeKind | "auto";
 
 /** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
- *  resolves to. `tmux` and `cmux` are extensions, selected only by an explicit kind and resolved
- *  from a registered {@link RuntimeProvider} they self-register on import (`@cotal-ai/tmux`,
- *  `@cotal-ai/cmux`); an explicit kind whose integration isn't imported — or whose backend isn't
- *  reachable — throws, never a silent fallback to pty. `session` names the tmux session (per space). */
+ *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
+ *  provider that is absent or unreachable throws, never a silent fallback to pty. */
 export function createRuntime(mode: RuntimeMode, session: string): Runtime {
   const kind: RuntimeKind = mode === "auto" ? "pty" : mode;
   if (kind === "pty") {
     // node-pty's native spawn-helper hangs before exec under Bun — it never becomes the child, so
     // every agent wedges at "starting…" with no error. Fail loud rather than silently break the mesh:
-    // the pty runtime is Node-only. tmux/cmux drive their own CLIs (no node-pty), so they're fine.
+    // the pty runtime is Node-only. External runtimes drive their own CLIs (no node-pty), so they're fine.
     if (process.versions.bun)
       throw new Error(
         `the pty runtime requires Node.js - the manager is running under Bun (v${process.versions.bun}), ` +
           `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
-          `Run the manager under node, or use --runtime tmux / --runtime cmux (which don't use node-pty).`,
+          `Run the manager under node, or install and select an external runtime.`,
       );
     return new PtyRuntime();
   }
@@ -34,7 +32,7 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
     provider = registry.resolve<RuntimeProvider>("runtime", kind);
   } catch {
     throw new Error(
-      `unknown runtime "${kind}" - is its integration imported? (e.g. import "@cotal-ai/tmux" or "@cotal-ai/cmux")`,
+      `unknown runtime "${kind}" - install its integration with \`cotal ext add <npm-package>\`, or import it in this composition root`,
     );
   }
   if (!provider.available())

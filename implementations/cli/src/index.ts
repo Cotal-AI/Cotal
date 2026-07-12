@@ -1,7 +1,8 @@
 import { registry, type Command } from "@cotal-ai/core";
-import { targetFlags } from "@cotal-ai/workspace";
-import { up } from "./commands/up.js";
-import { down } from "./commands/down.js";
+import { targetFlags, type LocalProcess } from "@cotal-ai/workspace";
+import { up, upComplete, upFlags } from "./commands/up.js";
+import { runtimes } from "./commands/runtimes.js";
+import { down, downComplete } from "./commands/down.js";
 import { use, useComplete } from "./commands/use.js";
 import { meshes } from "./commands/meshes.js";
 import { setup, setupFlags } from "./commands/setup.js";
@@ -16,12 +17,14 @@ import { completion, completionComplete, complete } from "./commands/completion.
 import { mint } from "./commands/mint.js";
 import { channels } from "./commands/channels.js";
 import { history } from "./commands/history.js";
+import { clean, cleanComplete } from "./commands/clean.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
+import { endpoints } from "./commands/endpoints.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -44,7 +47,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "ext",
     group: "Setup",
-    summary: "operator-installed CLI extensions - add an npm package's commands to this CLI",
+    summary: "operator-installed extensions - add commands, runtimes, and local process providers",
     usage: "ext <add <npm-package> | remove <name> | list>",
     positionals: "<add <npm-package> | remove <name> | list>",
     run: ext,
@@ -74,33 +77,48 @@ const baseCommands: Command[] = [
     name: "up",
     group: "Mesh",
     summary: "start a local mesh (nats-server + JetStream, JWT auth by default) - or `-f <cotal.yaml>` for a whole manifest",
-    flags: [
-      { name: "server", type: "string", value: "<url>", description: "listen URL override" },
-      { name: "host", type: "string", value: "<host>", description: "bind host override" },
-      { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
-      { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
-      { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
-      { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
-      { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
-      { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
-      { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
-      { name: "runtime", type: "string", value: "<pty|tmux|cmux>", description: "with -f: override the manifest's runtime" },
-      { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
-      { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
-    ],
+    flags: upFlags,
     run: up,
+    complete: upComplete,
+  },
+  {
+    kind: "command",
+    name: "runtimes",
+    group: "Manager",
+    summary: "list the agent runtimes the manager can spawn through (pty built in; others via `cotal ext add`) and whether each is reachable",
+    run: runtimes,
   },
   {
     kind: "command",
     name: "down",
     group: "Mesh",
-    summary: "stop a background mesh - or `-f <cotal.yaml>` / `--run <id>` to tear down a `spawn -f` deploy",
+    summary: "stop the whole local stack, or name only the components to stop",
+    positionals: "[<component> …]",
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
       { name: "run", type: "string", value: "<id>", description: "tear down one `spawn -f` run by id" },
-      { name: "dry-run", type: "boolean", description: "print the plan, mutate nothing" },
+      { name: "dry-run", type: "boolean", description: "print what would stop, mutate nothing" },
     ],
     run: down,
+    complete: downComplete,
+  },
+  {
+    kind: "command",
+    name: "clean",
+    group: "Mesh",
+    summary:
+      "configurable cleanup - `history` purges the live backlog; `store`/`all` wipe the stopped mesh's local state",
+    usage:
+      "clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>]",
+    positionals: "<history|store|all>",
+    flags: [
+      ...targetFlags,
+      { name: "dms", type: "boolean", description: "history: also clear DM history" },
+      { name: "store-dir", type: "string", value: "<dir>", description: "store/all: JetStream store directory (default .cotal/nats)" },
+      { name: "force", type: "boolean", description: "required - destructive, no prompting" },
+    ],
+    run: clean,
+    complete: cleanComplete,
   },
   {
     kind: "command",
@@ -211,7 +229,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "history",
     group: "Messaging",
-    summary: "clear retained message history",
+    summary: "clear retained message history (alias of `clean history`)",
     usage: "history clear --force [--dms] [--space <s>]",
     positionals: "<clear>",
     flags: [
@@ -329,6 +347,14 @@ const baseCommands: Command[] = [
   // ---- Observe ------------------------------------------------------------------------------
   {
     kind: "command",
+    name: "endpoints",
+    group: "Observe",
+    summary: "list every endpoint in the live presence roster, including the manager",
+    flags: [...targetFlags],
+    run: endpoints,
+  },
+  {
+    kind: "command",
     name: "console",
     group: "Observe",
     summary: "live protocol view for a space - lazygit-style TUI, or a line stream on --plain",
@@ -339,7 +365,43 @@ const baseCommands: Command[] = [
   // `cotal ext add`, it self-registers here and appears in this same surface.
 ];
 
-registry.register(...baseCommands);
+const baseProcesses: LocalProcess[] = [
+  {
+    kind: "local-process",
+    name: "manager",
+    label: "manager",
+    order: 10,
+    pidFile: "manager.pid",
+    artifacts: ["manager.delivery-aware"],
+  },
+  {
+    kind: "local-process",
+    name: "delivery",
+    label: "delivery daemon",
+    order: 20,
+    pidFile: "delivery.pid",
+    artifacts: ["delivery.creds"],
+  },
+  {
+    kind: "local-process",
+    name: "auth",
+    label: "user-auth service",
+    order: 30,
+    pidFile: "auth-service.{space}.pid",
+    visibleWhen: "user-auth",
+  },
+  {
+    kind: "local-process",
+    name: "nats",
+    label: "nats-server",
+    order: 100,
+    pidFile: "nats.pid",
+    stopLast: true,
+    clearsMesh: true,
+  },
+];
+
+registry.register(...baseCommands, ...baseProcesses);
 
 export { runCli } from "./command.js";
 export { c, statusBadge } from "./ui.js";

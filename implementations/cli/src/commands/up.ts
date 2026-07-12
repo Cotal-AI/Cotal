@@ -29,6 +29,8 @@ import {
   type SpaceAuth,
   type ChannelRegistryFile,
   type ParsedArgs,
+  type FlagSpec,
+  type CompletionResult,
 } from "@cotal-ai/core";
 import {
   assertUserAuthInfo,
@@ -52,11 +54,41 @@ import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
-import { stopManager } from "../lib/manager-proc.js";
+import { managerHasDeliveryMarker, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
+import { extensionNames, preflightRuntime } from "../ext-loader.js";
+import { completingFlagValue } from "../lib/completion.js";
+
+/** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
+export const upFlags: FlagSpec[] = [
+  { name: "server", type: "string", value: "<url>", description: "listen URL override" },
+  { name: "host", type: "string", value: "<host>", description: "bind host override" },
+  { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
+  { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
+  { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
+  { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
+  { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
+  { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
+  { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
+  { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
+  { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
+  { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
+];
+
+/** Completion for `cotal up` — `--runtime <TAB>` offers `pty` + installed runtime providers (the same
+ *  offline source `spawn` uses; a <TAB> never imports or probes). Run `cotal runtimes` to also see the
+ *  official ones that aren't installed yet. Any other position falls back to the command's flags, the
+ *  same set the dispatcher offers for a command with no hook — the hook only ADDS runtime values. */
+export function upComplete(argv: string[]): CompletionResult {
+  const flag = completingFlagValue(argv, upFlags);
+  if (flag?.name === "runtime")
+    return { items: ["pty", ...extensionNames("runtime")].filter((v, i, a) => a.indexOf(v) === i).map((value) => ({ value })), directive: "nofiles" };
+  const items = upFlags.map((f) => ({ value: `--${f.name}`, description: f.description }));
+  return { items, directive: items.length ? "nofiles" : "default" };
+}
 
 export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as { server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string; channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean };
@@ -89,6 +121,12 @@ export async function up(args: ParsedArgs): Promise<void> {
     });
     return;
   }
+  // `--runtime <name>` selects the backend the mesh's manager spawns agents through. The `-f` path
+  // preflights inside upManifest; the no-manifest path must too, or the flag is silently dropped and
+  // the detached manager boots the default pty. Resolve + probe the runtime NOW, in the operator's
+  // process, so an uninstalled/unreachable runtime fails loud HERE (with the `cotal ext add`
+  // recourse) instead of a silent fallback in a detached child. No fallbacks. (`pty`/unset: no-op.)
+  if (values.runtime) await preflightRuntime(values.runtime);
   let server = values.server ?? DEFAULT_SERVER;
   const host = values.host ?? "127.0.0.1";
   if (await isReachable(server)) {
@@ -148,8 +186,22 @@ export async function up(args: ParsedArgs): Promise<void> {
       // Auth/user meshes also need their resident renewal owner. A same-root refresh is the normal
       // repair command after a stale/missing manager, so ensure the delivery daemon + manager before
       // claiming the running mesh is healthy. Open meshes have no auth creds or delivery daemon.
-      if (held.mode !== "open") {
-        const controlPlane = await startDeliveryWithBroker(held.space, server);
+      // Re-ensure the control plane on a refresh. The manager is ensured for every mode that reaches
+      // here (a heal after a dead/missing manager adopts `--runtime`); the delivery daemon self-gates
+      // to auth mode inside `ensureControlPlane`. Open meshes normally skip this (a bare refresh has
+      // nothing to heal that must be touched), but a `--runtime` request must be honored there too,
+      // not silently dropped.
+      if (held.mode !== "open" || values.runtime) {
+        // Warn only when the manager is genuinely REUSED: a live delivery-aware (this-build) manager
+        // is kept as-is by `ensureManager`, so its runtime can't change. An old hosting manager (no
+        // delivery marker) is stopped and REPLACED by the ensure below carrying the requested runtime,
+        // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
+        // with it.
+        if (values.runtime && managerUp() && managerHasDeliveryMarker())
+          console.error(
+            c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
+          );
+        const controlPlane = await startDeliveryWithBroker(held.space, server, { runtime: values.runtime });
         if (!controlPlane) process.exitCode = 1;
       }
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ts: new Date().toISOString() });
@@ -179,6 +231,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       channels: values.channels,
       host,
+      runtime: values.runtime,
     });
     console.log(c.dim(`Started nats-server (${source}).`));
     console.log(c.green(`✓ mesh running in the background (pid ${pid}) - stop with: cotal down`));
@@ -259,7 +312,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     // Class-2 credential renewal is NOT wired here: the MANAGER is the renewal owner (it is resident
     // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
-    await startDeliveryWithBroker(space, server);
+    await startDeliveryWithBroker(space, server, { runtime: values.runtime });
   }
   await new Promise<void>(() => {});
 }
@@ -301,10 +354,6 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   } catch (e) {
     failManifest(e);
   }
-  if (opts.runtime && !["pty", "tmux", "cmux"].includes(opts.runtime)) {
-    console.error(c.red(`✗ unknown --runtime "${opts.runtime}" - expected pty, tmux, or cmux`));
-    process.exit(1);
-  }
   // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
   // exact correction in one sentence (a no-fallback identity decision, never a bare enum error).
   const declared = prepared.manifest.broker?.auth;
@@ -335,6 +384,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.log(renderUpPlan(eff, server));
     return;
   }
+
+  // Preflight an extension runtime before starting the broker. The detached manager re-execs this
+  // CLI and resolves the same installed package when `supervise --runtime <name>` starts.
+  await preflightRuntime(runtime);
 
   // up -f never adopts a running broker. Reachable at the bind address ⇒ redirect to spawn -f.
   if (await isReachable(server)) {
@@ -787,7 +840,9 @@ async function authSetup(
  *  only, delivery is untouched). Runs only on a FRESH space (the `if (!auth)` branch); a normal down/up
  *  keeps `.cotal/auth` + these creds and reuses them. A space provisioned before this feature has no
  *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
- *  — a documented migration property, not a silent no-op. */
+ *  — a documented migration property, not a silent no-op.
+ *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
+ *  a cred added here must be added to that removal list too. */
 async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());

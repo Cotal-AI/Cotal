@@ -1,18 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { Command, FlagSpec } from "@cotal-ai/core";
+import { dirname, join } from "node:path";
+import type { Command, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
+import { localProcessPath, type LocalProcess } from "./local-process.js";
 
 /**
- * Operator-installed CLI extensions (`cotal ext add <npm-package>`): the workstation state.
+ * Operator-installed extensions (`cotal ext add <npm-package>`): the workstation state.
  *
  * Extensions install into a cotal-owned npm prefix (`$XDG_CONFIG_HOME/cotal/extensions/`, with
  * its own package.json) — never the user's project. A MANIFEST records each installed package
- * plus a CACHE of the command metadata it contributed. Two hard rules from the design review:
+ * plus a cache of every registry key it contributed and display metadata for commands. Two hard
+ * rules from the design review:
  *
- *  - The manifest is a DISPLAY/TAB cache ONLY. Help and `__complete` read it (so a <TAB> never
- *    imports an extension), but at dispatch the freshly-imported command's LIVE specs are
- *    authoritative — cached specs never drive parsing (version skew would corrupt `run`'s input).
+ *  - Cached command specs are DISPLAY/TAB ONLY: dispatch uses the freshly imported command's live
+ *    grammar. Local-process metadata is deliberately declarative and operational, so lifecycle
+ *    commands can act without importing third-party code.
  *  - `name@version` is pinned at add time and verified at run-import; a mismatch is a loud error
  *    prescribing `cotal ext add` again — never a silent re-cache.
  */
@@ -37,7 +39,12 @@ export interface InstalledExtension {
   readonly version: string;
   /** The spec the operator passed to `ext add` (registry range, file:, tarball…) — for re-adds. */
   readonly spec: string;
+  /** Every registry contribution made by the package. Older command-only manifests omit this; the
+   *  loader derives `command:<name>` entries from `commands` for compatibility. */
+  readonly provides?: readonly ExtensionRef[];
   readonly commands: readonly CachedCommand[];
+  /** Declarative process metadata used without importing package code. */
+  readonly localProcesses?: readonly LocalProcess[];
 }
 
 export interface ExtensionsManifest {
@@ -51,6 +58,39 @@ export function extensionsDir(): string {
 
 export function extensionsManifestPath(): string {
   return join(extensionsDir(), "extensions.json");
+}
+
+export function extensionMutationLockPath(): string {
+  return join(dirname(extensionsDir()), ".extensions.lock");
+}
+
+export type ExtensionMutationLockState =
+  | { readonly state: "absent" | "stale" }
+  | { readonly state: "active"; readonly owner: number };
+
+/** Inspect the extension-prefix writer lock. Permission denial means the owner may still be live;
+ * only ESRCH proves that a recorded owner is gone. */
+export function extensionMutationLockState(): ExtensionMutationLockState {
+  const lock = extensionMutationLockPath();
+  let raw: string;
+  try {
+    raw = readFileSync(lock, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent" };
+    throw new Error(`can't read extension mutation lock ${lock}: ${(e as Error).message}`);
+  }
+
+  const owner = Number(raw.trim());
+  if (!Number.isInteger(owner) || owner <= 0) return { state: "stale" };
+  try {
+    process.kill(owner, 0);
+    return { state: "active", owner };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { state: "stale" };
+    if (code === "EPERM") return { state: "active", owner };
+    throw new Error(`can't check extension mutation lock owner ${owner}: ${(e as Error).message}`);
+  }
 }
 
 /** Load the manifest. Missing file → no extensions. A CORRUPT file is a loud error (never treat
@@ -85,6 +125,40 @@ export function cacheCommand(cmd: Command): CachedCommand {
     flags: cmd.flags,
     positionals: cmd.positionals,
   };
+}
+
+/** Stable, serializable registry keys contributed by one imported package. */
+export function cacheExtension(ext: Extension): ExtensionRef {
+  return { kind: ext.kind, name: ext.name };
+}
+
+export function cacheLocalProcess(component: LocalProcess): LocalProcess {
+  if (typeof component.pidFile !== "string") throw new Error(`local-process ${component.name} must declare a string pidFile template`);
+  localProcessPath(component.pidFile, { root: process.cwd(), space: "validation" });
+  for (const artifact of component.artifacts ?? []) {
+    if (typeof artifact !== "string") throw new Error(`local-process ${component.name} artifacts must be string templates`);
+    localProcessPath(artifact, { root: process.cwd(), space: "validation" });
+  }
+  return {
+    kind: "local-process",
+    name: component.name,
+    label: component.label,
+    order: component.order,
+    pidFile: component.pidFile,
+    artifacts: component.artifacts,
+    stopLast: component.stopLast,
+    clearsMesh: component.clearsMesh,
+    visibleWhen: component.visibleWhen,
+  };
+}
+
+export function extensionLocalProcesses(ext: InstalledExtension): readonly LocalProcess[] {
+  return ext.localProcesses ?? [];
+}
+
+/** Registry contributions recorded for an installed package, including old command-only entries. */
+export function extensionProvides(ext: InstalledExtension): readonly ExtensionRef[] {
+  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name }));
 }
 
 /** The installed package's on-disk root inside the prefix. */

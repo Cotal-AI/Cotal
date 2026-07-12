@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { registry, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir, loadExtensionsManifest, provenance } from "@cotal-ai/workspace";
+import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, provenance } from "@cotal-ai/workspace";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
@@ -264,7 +264,7 @@ async function runEnsure(demo: boolean): Promise<void> {
  *  `@cotal-ai/web` in stage 4) — decides whether the ready-card says "start it" or "install it". */
 function webInstalled(): boolean {
   try {
-    return loadExtensionsManifest().extensions.some((e) => e.commands.some((cm) => cm.name === "web"));
+    return loadExtensionsManifest().extensions.some((e) => installedExtensionVersion(e.pkg) !== undefined && e.commands.some((cm) => cm.name === "web"));
   } catch {
     return false; // corrupt manifest — the card stays honest ("not installed"); `ext` commands surface the error
   }

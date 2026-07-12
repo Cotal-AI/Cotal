@@ -6,6 +6,13 @@ Cotal uses [Changesets](https://github.com/changesets/changesets) to version and
 workspace packages under `packages/*`, `extensions/*`, and `implementations/*` to npm.
 `examples/**` is ignored, since it is not published.
 
+## 0.11 runtime migration
+
+The published binary no longer bundles the optional tmux and cmux runtimes. Existing operators
+must run `cotal ext add @cotal-ai/tmux` or `cotal ext add @cotal-ai/cmux` once after upgrading,
+before using `runtime: tmux|cmux` in a manifest or passing `--runtime tmux|cmux`. Missing runtimes
+fail loudly with the matching install command; they never fall back to pty.
+
 ## One-time npm setup: trusted publishing (OIDC)
 
 Trusted publishing replaces the long-lived `NPM_TOKEN` secret with short-lived OIDC tokens
@@ -13,7 +20,7 @@ issued by GitHub Actions. Each published package must be configured once on npmj
 
 For **every** published package (`@cotal-ai/core`, `@cotal-ai/cli`, `@cotal-ai/manager`,
 `@cotal-ai/delivery`, `@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`,
-`@cotal-ai/connector-opencode`, `@cotal-ai/connector-hermes`, `@cotal-ai/cmux`, and the
+`@cotal-ai/connector-opencode`, `@cotal-ai/connector-hermes`, `@cotal-ai/pi`, `@cotal-ai/cmux`, `@cotal-ai/orca`, and the
 `cotal-ai` binary):
 
 1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.

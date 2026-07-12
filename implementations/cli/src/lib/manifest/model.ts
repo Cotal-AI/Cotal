@@ -65,7 +65,7 @@ export interface ResolvedAgent {
 export interface ResolvedManifest {
   space: string;
   broker?: { servers?: string; host?: string; auth?: boolean | "static" | "user"; idp?: string };
-  runtime?: "pty" | "tmux" | "cmux";
+  runtime?: string;
   personaPermissions: PersonaPermissions;
   defaults?: ChannelDefaults;
   agents: ResolvedAgent[];

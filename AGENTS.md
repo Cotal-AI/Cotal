@@ -88,17 +88,23 @@ with no silent fallback.
   (native in-process plugin injected via `OPENCODE_CONFIG_CONTENT`).
 - **`@cotal-ai/connector-hermes`** (`extensions/connector-hermes`): the Hermes (Nous Research)
   adapter; includes a Python sidecar.
+- **`@cotal-ai/pi`** (`extensions/pi`): the pi adapter — a pi extension (loaded into the
+  user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's process and
+  drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
+  See [docs/agent-frameworks.md](docs/agent-frameworks.md).
 - **`@cotal-ai/cmux`** (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
   plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 - **`@cotal-ai/tmux`** (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
   plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
+- **`@cotal-ai/orca`** (`extensions/orca`): the Orca integration: a driver over the public Orca
+  CLI plus a self-registering `orca` Runtime provider.
 - **`@cotal-ai/cli`** (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,
   `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
 - **`@cotal-ai/web`** (`implementations/web`): the browser dashboard as a `cotal ext`-installable
   extension package — it peer-depends on core + workspace (linked to the binary's copies at add
   time) and self-registers its command.
 - **`@cotal-ai/manager`** (`implementations/manager`): the agent supervisor: spawns and manages
-  nodes via a pluggable Runtime (`pty` built-in; `tmux` and `cmux` via extensions), with `start`/`stop`/`ps`/`attach` and
+  nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, and `orca` via extensions), with `start`/`stop`/`ps`/`attach` and
   a WebSocket attach endpoint.
 - **`@cotal-ai/delivery`** (`implementations/delivery`): the server-side Plane-3 delivery daemon
   — the durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped,

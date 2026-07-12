@@ -11,11 +11,13 @@
       "@cotal-ai/manager",
       "@cotal-ai/delivery",
       "@cotal-ai/cmux",
+      "@cotal-ai/orca",
       "@cotal-ai/tmux",
       "@cotal-ai/connector-core",
       "@cotal-ai/connector-claude-code",
       "@cotal-ai/connector-hermes",
       "@cotal-ai/connector-opencode",
+      "@cotal-ai/pi",
       "@cotal-ai/auth"
     ]
   ],

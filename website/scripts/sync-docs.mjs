@@ -53,6 +53,7 @@ const groups = [
       'docs/connect-claude.md',
       'docs/connect-opencode.md',
       'docs/connect-hermes.md',
+      'docs/agent-frameworks.md',
       'docs/build-a-client.md',
     ],
   },

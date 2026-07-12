@@ -97,7 +97,7 @@ export interface ManagerOptions {
   space: string;
   servers?: string;
   name?: string;
-  /** Spawn backend. `auto` (default) → pty; tmux/cmux are explicit-only (fail loud if unimported). */
+  /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
   /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
@@ -1268,14 +1268,14 @@ export class Manager {
    *  Presence is keyed on the EXACT freshly-minted id, never the name — a fresh id has no prior record, so
    *  any live presence for it is from THIS launch (stale/same-name records can't false-start it). The
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
-   *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (tmux/cmux,
+   *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
   private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
     } catch {
-      /* tmux/cmux stream no exit — presence-or-backstop only */
+      /* external surfaces stream no exit — presence-or-backstop only */
     }
     const s = session;
     // Presence cards carry the wire PRINCIPAL dot-form (`<owner>.<actor>`), never a raw nkey — match
@@ -1345,7 +1345,7 @@ export class Manager {
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
-   *  its children (P4b/P4c). Only pty streams exit (via the attach session's `onExit`); tmux/cmux
+   *  its children (P4b/P4c). Only pty streams exit (via the attach session's `onExit`); external runtimes'
    *  attach() throws, so this is a no-op there — a self-EXITED agent under those runtimes is reaped
    *  by nothing until it's explicitly despawned (graceful-stop runs on despawn, not self-exit). The
    *  cap still holds (a lingering corpse counts toward it); runtime-agnostic exit-reaping (a real
@@ -1360,7 +1360,7 @@ export class Manager {
       // subscribing and reap it now if it already went. onAgentExit is idempotent (freeSlot's guard).
       if (a.handle.status() === "exited") this.onAgentExit(a);
     } catch {
-      /* runtime doesn't stream an exit signal (tmux/cmux) — nothing to wire */
+      /* runtime doesn't stream an exit signal — nothing to wire */
     }
   }
 
@@ -1486,9 +1486,8 @@ export class Manager {
     // mesh, the caller's owner-domain) on the privileged tier, any agent on admin.
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    // Only pty streams over the WS attach endpoint. tmux/cmux are watched natively, and
-    // each handle's attach() throws with the right per-runtime guidance (tmux attach … /
-    // switch to the cmux tab) — surface that instead of assuming tmux.
+    // Only pty streams over the WS attach endpoint. External runtimes are watched natively,
+    // and each handle's attach() throws with the right per-runtime guidance.
     if (a.handle.kind !== "pty") {
       try {
         a.handle.attach();

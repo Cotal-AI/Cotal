@@ -1,0 +1,38 @@
+{
+  "name": "@cotal-ai/orca",
+  "description": "Cotal Orca integration: an Orca Runtime provider for spawning agents into the right Orca worktree.",
+  "version": "0.11.2",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "extensions/orca"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": "*"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "tsx": "^4.22.4"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
