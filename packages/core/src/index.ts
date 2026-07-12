@@ -6,6 +6,8 @@ export * from "./endpoint-envelope.js";
 export * from "./endpoint-records.js";
 export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
+export * from "./endpoint-service.js";
+export * from "./endpoint-serve.js";
 export * from "./safe-pattern.js";
 export * from "./resolve.js";
 export * from "./link.js";
