@@ -1,5 +1,11 @@
 # @cotal-ai/connector-hermes
 
+## 0.11.3
+
+### Patch Changes
+
+- @cotal-ai/connector-core@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes

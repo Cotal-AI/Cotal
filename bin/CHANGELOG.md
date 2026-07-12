@@ -1,5 +1,23 @@
 # cotal-ai
 
+## 0.11.3
+
+### Patch Changes
+
+- 1a954e8: Add the Pi host-native connector with confirmed custom-message delivery, cooperative shutdown, and a standalone extension artifact.
+- Updated dependencies [1a954e8]
+  - @cotal-ai/pi@0.11.3
+  - @cotal-ai/core@0.11.3
+  - @cotal-ai/workspace@0.11.3
+  - @cotal-ai/cli@0.11.3
+  - @cotal-ai/manager@0.11.3
+  - @cotal-ai/delivery@0.11.3
+  - @cotal-ai/connector-core@0.11.3
+  - @cotal-ai/connector-claude-code@0.11.3
+  - @cotal-ai/connector-hermes@0.11.3
+  - @cotal-ai/connector-opencode@0.11.3
+  - @cotal-ai/auth@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes
