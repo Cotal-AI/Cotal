@@ -2090,17 +2090,23 @@ Every composite name is **collision-free by construction**, and
 each derivation states why: `pool_<e>_<pool>` parses uniquely from its LAST `_` because a
 pool token contains no `_` (`[a-z0-9-]`) while `<e>` may (a dash separator would be
 ambiguous, both tokens admit `-`); `dec_<uid>-<e>` parses from its FIRST `-` because
-`<uid>` is `[a-z0-9]` and contains none, and `goal_<uid>-<e>` likewise; `eve_<uid>-<e>-<gid>-<n>` and
-`rec_<uid>-<gid>-<n>` carry a per-grant id `<gid>` then a numeric index, so distinct grants
-(and distinct subtree indices within a grant) never collide. A derivation that cannot state its collision-freedom argument is
-non-conformant. Reader consumers use **mint-time-enumerated LITERAL names**, and every one
+`<uid>` is `[a-z0-9]` and contains none, and `goal_<uid>-<e>` likewise; `eve_<uid>-<e>-<gid>-<n>`
+carries TWO `-`-adjacent soft components (`<e>` and `<gid>`), so `<gid>` is constrained
+SEPARATOR-FREE (`[a-z0-9]`, no `-` or `_`): then `<uid>` (leading, `-`-free), `<n>` (trailing
+digits) and `<gid>` (separator-free) are each a single token off their edges, leaving `<e>` as
+the only `-`-bearing component with an unambiguous extent (`eve_<uid>-a-b-c-0` can ONLY be
+endpoint `a-b`/gid `c`, never endpoint `a`/gid `b-c`). `rec_<uid>-<gid>-<n>` has one soft
+component `<gid>` bounded by `-`-free `<uid>` and digit `<n>`. Without the separator-free `<gid>`
+the two grants above would collide on one durable name. A derivation that cannot state its
+collision-freedom argument is non-conformant. Reader consumers use **mint-time-enumerated LITERAL names**, and every one
 is **pre-created by the provisioner at capability mint as a PULL durable with its exact
 filter; the holder receives BIND-ONLY grants** (INFO/MSG.NEXT/ACK, never CREATE or
 DELETE): `decD = dec_<uid>-<e>` (one per journal capability), `goalD = goal_<uid>-<e>`
 (one per action capability),
 `eveD = eve_<uid>-<e>-<gid>-<n>` and `recD = rec_<uid>-<gid>-<n>` (one per granted subtree;
-`<gid>` is the **grant id**, a short stable id the provisioner assigns per minted capability
-grant, so two independent capability mints for one lifecycle UID never collide, and `<n>` is
+`<gid>` is the **grant id**, a short stable SEPARATOR-FREE (`[a-z0-9]`) id the provisioner
+assigns per minted capability grant, so two independent capability mints for one lifecycle UID
+never collide AND the `<e>`/`<gid>` boundary stays unambiguous, and `<n>` is
 the subtree's zero-based index within THAT grant, sorted lexicographically at mint; the
 deprovision key is `<uid>-<gid>`, so revoking one capability deletes exactly its own reader
 durables and cannot reach a sibling capability's). Two reasons, both

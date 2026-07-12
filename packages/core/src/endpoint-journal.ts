@@ -15,7 +15,7 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { token } from "./subjects.js";
 import { contractDigest, rawDigest } from "./canonical.js";
 import {
-  epfSubject, parseEpSubject, assertBoundedOwner, assertCommandToken, assertIdToken,
+  epfSubject, parseEpSubject, endpointToken, assertBoundedOwner, assertCommandToken, assertIdToken,
   assertLifecycleToken, type EpCaller, type ParsedEpRequest,
 } from "./endpoint-subjects.js";
 import { EpEnvelopeError, isEpErrorCode } from "./endpoint-envelope.js";
@@ -24,8 +24,10 @@ import { isCasLoss } from "./endpoint-records.js";
 /** §13.12 stream names for the two journal-side streams. */
 export function epjStreamName(space: string): string { return `EPJ_${token(space)}`; }
 export function epfStreamName(space: string): string { return `EPF_${token(space)}`; }
-/** The canonicalizer's durable (§13.9 consumer-name grammar): `canon_<e>`. */
-export function canonDurable(endpoint: string): string { return `canon_${token(endpoint)}`; }
+/** The canonicalizer's durable (§13.9 consumer-name grammar): `canon_<e>`. Uses the fail-loud
+ *  {@link endpointToken} (not the lenient `token`) so a malformed endpoint is refused, never
+ *  silently sanitized into a colliding durable name. */
+export function canonDurable(endpoint: string): string { return `canon_${endpointToken(endpoint)}`; }
 
 /** Decision facts live on the caller-scoped subject — distinct callers can never squat each
  *  other's ids because the caller triple IS part of the subject (§13.4 item 3). Provenance is

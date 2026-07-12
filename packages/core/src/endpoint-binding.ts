@@ -23,11 +23,13 @@ import { spacePrefix, token } from "./subjects.js";
 import {
   endpointToken,
   assertIdToken,
+  assertGrantId,
   assertPoolToken,
   assertLifecycleToken,
   callerTokens,
   type EpCaller,
 } from "./endpoint-subjects.js";
+import type { RecordKindDef } from "./endpoint-records.js";
 import { epjStreamName, epfStreamName, canonDurable } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
 
@@ -238,17 +240,22 @@ export function goalReaderDurable(uid: string, endpoint: string): string {
 }
 
 /** `eveD = eve_<uid>-<e>-<gid>-<n>` — one per granted event subtree: `<gid>` is the mint-time
- *  grant id (two independent mints for one lifecycle never collide), `<n>` the subtree's
- *  zero-based index within THAT grant. The deprovision key is `<uid>-…-<gid>-…`. */
+ *  grant id, `<n>` the subtree's zero-based index within THAT grant. INJECTIVE by construction:
+ *  `<uid>` is `-`-free (leading), `<n>` is digits (trailing), `<gid>` is separator-free
+ *  (`assertGrantId`), so `<e>` is the ONLY `-`-bearing component and its extent is unambiguous
+ *  (parse `<n>` and `<gid>` off the right, `<uid>` off the left, `<e>` is what remains). Without
+ *  the separator-free `<gid>` the two soft components `<e>` and `<gid>` would collide
+ *  (`eve_<uid>-a-b-c-0` = endpoint `a-b`/gid `c` OR endpoint `a`/gid `b-c`, §13.9). */
 export function eventReaderDurable(uid: string, endpoint: string, grantId: string, n: number): string {
   if (!Number.isInteger(n) || n < 0) throw new Error(`event-reader subtree index must be a non-negative integer, got ${n}`);
-  return `eve_${assertLifecycleToken(uid)}-${endpointToken(endpoint)}-${assertIdToken(grantId, "grantId")}-${n}`;
+  return `eve_${assertLifecycleToken(uid)}-${endpointToken(endpoint)}-${assertGrantId(grantId)}-${n}`;
 }
 
-/** `recD = rec_<uid>-<gid>-<n>` — one per granted record subtree (grammar as {@link eventReaderDurable}). */
+/** `recD = rec_<uid>-<gid>-<n>` — one per granted record subtree (grammar as {@link eventReaderDurable};
+ *  `<gid>` separator-free, `<uid>` `-`-free, `<n>` digits, so the single soft component is bounded). */
 export function recordReaderDurable(uid: string, grantId: string, n: number): string {
   if (!Number.isInteger(n) || n < 0) throw new Error(`record-reader subtree index must be a non-negative integer, got ${n}`);
-  return `rec_${assertLifecycleToken(uid)}-${assertIdToken(grantId, "grantId")}-${n}`;
+  return `rec_${assertLifecycleToken(uid)}-${assertGrantId(grantId)}-${n}`;
 }
 
 // ---- Infrastructure consumer configs (pull durables, explicit ack, full-tail single filters) ----
@@ -290,17 +297,22 @@ export function effectsConsumerConfig(
   };
 }
 
-/** A record kind's writer durable on EPR (`recw_<space>-<kind>`, filter on the kind token of
- *  §13.2's `epr` grammar) — one principal and one consumer PER KIND, never a single writer
- *  draining every kind (§13.9). */
+/** A record kind's writer durable on EPR (`recw_<space>-<kind>`) — one principal and one
+ *  consumer PER KIND, never a single writer draining every kind (§13.9). The filter is DERIVED
+ *  from the kind's qualifier arity: a NATS `>` matches one-or-more tokens (it does NOT match a
+ *  bare parent), so a kind with ≥1 qualifier filters `…<kind>.>` while a ZERO-qualifier kind
+ *  (a single space-wide record) filters exactly `…<kind>` — else the writer would miss every
+ *  write for that registered grammar. Takes the RecordKindDef so the arity cannot be guessed. */
 export function recordWriterConsumerConfig(
   space: string,
-  kind: string,
+  def: RecordKindDef,
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
+  const kind = assertIdToken(def.kind, "record kind");
+  const tail = def.qualifiers.length > 0 ? `.${kind}.>` : `.${kind}`;
   return {
-    durable_name: recordWriterDurable(space, kind),
-    filter_subject: `${spacePrefix(space)}.epr.*.*.*.${assertIdToken(kind, "record kind")}.>`,
+    durable_name: recordWriterDurable(space, def.kind),
+    filter_subject: `${spacePrefix(space)}.epr.*.*.*${tail}`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -374,4 +386,135 @@ export function goalReaderConfig(
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
   };
+}
+
+/** Assert a granted subtree filter is a full literal tail under `prefix` (§13.9 "JetStream API
+ *  tails are always spelled in FULL"): a relative tail matches nothing, and a broadened tail
+ *  (a bare `prefix` or one climbing outside it) would widen the reader past its capability. */
+function assertFullTail(filter: string, prefix: string, what: string): string {
+  if (!filter.startsWith(`${prefix}.`))
+    throw new Error(`${what} filter ${JSON.stringify(filter)} must be a full literal tail under ${JSON.stringify(prefix)} (§13.9)`);
+  return filter;
+}
+
+/** `eveD = eve_<uid>-<e>-<gid>-<n>` — one per GRANTED event subtree (§13.9): a PULL durable the
+ *  provisioner pre-creates with the capability's EXACT full-tail event filter, bound by the read
+ *  mediator (never the caller). `subtree` is the granted `cotal.<space>.epe.…` tail verbatim
+ *  (`<n>` is its zero-based index within the grant, sorted at mint). Live event progress is the
+ *  caller's own core subscription; this durable is the mediator's catch-up reader. */
+export function eventReaderConfig(
+  space: string,
+  args: { uid: string; endpoint: string; grantId: string; index: number; subtree: string },
+  opts: { ackWaitMs?: number } = {},
+): Partial<ConsumerConfig> {
+  return {
+    durable_name: eventReaderDurable(args.uid, args.endpoint, args.grantId, args.index),
+    filter_subject: assertFullTail(args.subtree, `${spacePrefix(space)}.epe`, "event-reader subtree"),
+    ack_policy: AckPolicy.Explicit,
+    ack_wait: nanos(opts.ackWaitMs ?? 60_000),
+    deliver_policy: DeliverPolicy.All,
+  };
+}
+
+/** `recD = rec_<uid>-<gid>-<n>` — one per GRANTED record subtree (§13.9): a PULL durable over the
+ *  records KV stream (`KV_cotal_records_<space>`), pre-created by the provisioner with the
+ *  capability's EXACT full `$KV.cotal_records_<space>.…` subtree tail, bound by the read
+ *  mediator. `<n>` is the subtree's zero-based index within the grant. */
+export function recordReaderConfig(
+  space: string,
+  args: { uid: string; grantId: string; index: number; subtree: string },
+  opts: { ackWaitMs?: number } = {},
+): Partial<ConsumerConfig> {
+  return {
+    durable_name: recordReaderDurable(args.uid, args.grantId, args.index),
+    filter_subject: assertFullTail(args.subtree, `$KV.${recordsBucket(space)}`, "record-reader subtree"),
+    ack_policy: AckPolicy.Explicit,
+    ack_wait: nanos(opts.ackWaitMs ?? 60_000),
+    deliver_policy: DeliverPolicy.All,
+  };
+}
+
+/** The backing JetStream STREAM of the records KV (its grant rows key on `KV_<bucket>`, §13.9). */
+export function recordsKvStreamName(space: string): string { return `KV_${recordsBucket(space)}`; }
+
+// ---- §13.9 JetStream API grant rows (the single source: derived from the SAME stream + config) ----
+// permissionsFor folds these into a profile's `pub.allow`. Every CONSUMER.CREATE row pins the
+// EXACT full-tail filter from the consumer config, so a holder can only create the consumer the
+// matrix names, never a body-filter-selectable one; a bind-only holder gets INFO/MSG.NEXT/ACK
+// with NO create and NO delete. The rows and the consumer configs come from one place here, so
+// "the grant and the consumer cannot diverge" is structural, not a convention.
+
+const JSAPI = "$JS.API";
+
+function consumeCreateRow(stream: string, cfg: Partial<ConsumerConfig>): string {
+  if (!cfg.durable_name || !cfg.filter_subject)
+    throw new Error("a consume-create grant needs a durable_name and a full-tail filter_subject");
+  // The extended-create form embeds the stored-subject filter tail verbatim (§13.9): pinning it
+  // is what stops a body-selected filter.
+  return `${JSAPI}.CONSUMER.CREATE.${stream}.${cfg.durable_name}.${cfg.filter_subject}`;
+}
+function consumeBindRows(stream: string, durable: string): string[] {
+  return [
+    `${JSAPI}.CONSUMER.INFO.${stream}.${durable}`,
+    `${JSAPI}.CONSUMER.MSG.NEXT.${stream}.${durable}`,
+    `$JS.ACK.${stream}.${durable}.>`,
+  ];
+}
+function consumeDeleteRow(stream: string, durable: string): string {
+  return `${JSAPI}.CONSUMER.DELETE.${stream}.${durable}`;
+}
+
+/** The canonicalizer principal's EPJ rows: it OWNS its durable (create) and consumes + acks it. */
+export function canonicalizerGrants(space: string, endpoint: string): string[] {
+  const stream = epjStreamName(space);
+  const cfg = canonConsumerConfig(space, endpoint);
+  return [consumeCreateRow(stream, cfg), ...consumeBindRows(stream, cfg.durable_name!)];
+}
+
+/** A serving instance's effects rows: BIND-ONLY on the provisioner-pre-created shared `eff_<e>`
+ *  (INFO/MSG.NEXT/ACK, never create) — instances pull-compete, none owns the durable (§13.9). */
+export function effectsBindGrants(space: string, endpoint: string): string[] {
+  return consumeBindRows(epfStreamName(space), effectsDurable(endpoint));
+}
+
+/** A per-kind record-writer principal's EPR rows: owns + consumes + acks its `recw_<space>-<kind>`. */
+export function recordWriterGrants(space: string, def: RecordKindDef): string[] {
+  const stream = eprStreamName(space);
+  const cfg = recordWriterConsumerConfig(space, def);
+  return [consumeCreateRow(stream, cfg), ...consumeBindRows(stream, cfg.durable_name!)];
+}
+
+/** The timer-writer principal's EPT_REQ rows: owns + consumes + acks its `timerw_<space>`. */
+export function timerWriterGrants(space: string): string[] {
+  const stream = eptReqStreamName(space);
+  const cfg = timerWriterConsumerConfig(space);
+  return [consumeCreateRow(stream, cfg), ...consumeBindRows(stream, cfg.durable_name!)];
+}
+
+/** A pool-owning endpoint's EPW rows: BIND-ONLY on the provisioner-pre-created `pool_<e>_<pool>`
+ *  (INFO/MSG.NEXT/ACK, never create — the bare create form is body-filter-selectable, §13.5/§13.9). */
+export function poolOwnerBindGrants(space: string, endpoint: string, pool: string): string[] {
+  return consumeBindRows(epwStreamName(space), poolDurable(endpoint, pool));
+}
+
+/** The read mediator's BIND-ONLY rows for one caller-scoped reader durable, on the stream the
+ *  durable lives on (EPF for dec/goal, EPE for eve, `KV_cotal_records_<space>` for rec). */
+export function readerBindGrants(stream: string, cfg: Partial<ConsumerConfig>): string[] {
+  if (!cfg.durable_name) throw new Error("a reader bind grant needs a durable_name");
+  return consumeBindRows(stream, cfg.durable_name);
+}
+
+/** One pre-created durable the provisioner owns: its stream + the config (durable + full-tail filter). */
+export interface PreCreatedDurable { stream: string; config: Partial<ConsumerConfig> }
+
+/** The provisioner's rows for a batch of pre-created durables (§13.9): the exact full-tail
+ *  CONSUMER.CREATE for every one it pre-creates, plus the matching CONSUMER.DELETE for
+ *  deprovisioning — and nothing else (it never consumes; owners bind). The create pins each
+ *  filter, so the provisioner can create ONLY the matrix's durables, not an arbitrary consumer. */
+export function provisionerConsumerGrants(durables: PreCreatedDurable[]): string[] {
+  const rows: string[] = [];
+  for (const d of durables) {
+    rows.push(consumeCreateRow(d.stream, d.config), consumeDeleteRow(d.stream, d.config.durable_name!));
+  }
+  return rows;
 }

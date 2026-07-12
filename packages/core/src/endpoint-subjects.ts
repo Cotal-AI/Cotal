@@ -32,6 +32,7 @@ const COMMAND = /^[a-z0-9-]{1,32}$/;
 const NONCE = /^[A-Za-z0-9_-]{22,64}$/;
 const LIFECYCLE = /^[a-z0-9]{26,32}$/; // one grammar for lifecycleUid AND instanceId (§13.1/§13.2)
 const ID = /^[A-Za-z0-9_-]{1,64}$/; // <id>, <goalId>, <timerId>, <token>, <sessionId>
+const GRANT_ID = /^[a-z0-9]{1,32}$/; // <gid>: separator-free, so multi-soft-component durable names stay injective (§13.9)
 const DIGEST_HEX = /^[a-f0-9]{64}$/;
 const EPOCH = /^(0|[1-9][0-9]*)$/;
 
@@ -77,6 +78,17 @@ export function assertLifecycleToken(v: string, what = "lifecycleUid"): string {
 
 export function assertIdToken(v: string, what = "id"): string {
   if (!ID.test(v)) throw new Error(`${what} "${v}" is not a valid id token ([A-Za-z0-9_-]{1,64})`);
+  return v;
+}
+
+/** The provisioner-assigned grant id `<gid>` (§13.9). Deliberately SEPARATOR-FREE ([a-z0-9]):
+ *  the `eve_<uid>-<e>-<gid>-<n>` and `rec_<uid>-<gid>-<n>` reader-durable names carry it adjacent
+ *  to other soft components across `-`, so a `-` (or `_`) inside `<gid>` would make the name
+ *  non-injective (`eve_<uid>-a-b-c-0` could be endpoint `a-b`/gid `c` OR endpoint `a`/gid `b-c`).
+ *  Constraining `<gid>` to a separator-free grammar keeps the tuple encoding unambiguous while
+ *  `<uid>` is `-`-free (leading) and `<n>` is digits (trailing). */
+export function assertGrantId(v: string, what = "grantId"): string {
+  if (!GRANT_ID.test(v)) throw new Error(`${what} "${v}" is not a valid grant id ([a-z0-9]{1,32}; separator-free so reader-durable names stay injective)`);
   return v;
 }
 
