@@ -135,6 +135,18 @@ refuses("repeated nullable body refused ((a?)*)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(a?)*$" } }), "repeats a group");
 refuses("lookaround refused (outside the safe subset)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(?=a)ab$" } }), "safe subset");
+refuses("double-negated class overlap refused ([^\\D]* \\d* is digit* digit*)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^[^\\D]*\\d*X$" } }), "overlapping variable repetitions");
+refuses("unknown alphanumeric escape refused (\\cA is control-A, not literal c+A)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^\\cA*\\cA*X$" } }), "safe subset");
+refuses("astral overlap refused (an emoji is ONE code point under /u)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^😀*😀*X$" } }), "overlapping variable repetitions");
+refuses("surrogate escapes refused", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^\\uD83D\\uDE00*$" } }), "surrogate");
+ok("negated classes and braced code points still compile", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^[^a-z]+x\\u{1F600}*$" } });
+  return v("A1x😀") === true && v("abc") === false;
+})());
 ok("the (…)? label idiom still compiles (a ? adds one alternative, not per-character ambiguity)", (() => {
   const v = compileContractSchema({ root: { type: "string", pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" } });
   return v("ok-1") === true && v("-no") === false;

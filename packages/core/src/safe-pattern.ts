@@ -143,38 +143,51 @@ class Parser {
     if (c === "^" || c === "$") return { kind: "anchor" };
     if (c === "\\") return { kind: "atom", set: this.escape(false) };
     if (c === ")" || c === undefined) refuse("unbalanced group");
-    return { kind: "atom", set: single(c!.charCodeAt(0)) };
+    return { kind: "atom", set: single(this.codePoint()) };
+  }
+
+  /** One literal code POINT (never a lone code unit): `/u` semantics treat an astral pair as
+   *  one atom, so the analyzer must too, or `😀*` models as high-surrogate + repeated
+   *  low-surrogate and adjacency/overlap analysis silently under-approximates. */
+  codePoint(): number {
+    const cp = this.src.codePointAt(this.i - 1)!;
+    if (cp > 0xffff) this.i++; // consumed the low half too
+    return cp;
   }
 
   charClass(): CharSet {
     let neg = false;
     if (this.peek() === "^") { this.next(); neg = true; }
     const ranges: Array<[number, number]> = [];
-    let widened = false;
-    let prev: number | undefined;
+    let approx = false; // any widened member: the set is an over-approximation
     while (this.peek() !== "]") {
       if (this.eof()) refuse("unterminated character class");
       let lo: number | undefined;
       const c = this.next();
       if (c === "\\") {
-        const s = this.escape(true);
-        if (s.neg || s.ranges.length !== 1 || s.ranges[0][0] !== s.ranges[0][1]) {
-          widened = true; // \d, \w, \p{…} inside a class: fold in conservatively
-          for (const r of s.neg ? [[0, 0x10ffff] as [number, number]] : s.ranges) ranges.push(r);
-        } else lo = s.ranges[0][0];
-      } else lo = c.charCodeAt(0);
+        if (this.peek() === "b") { this.next(); lo = 0x08; } // in a class, \b is backspace
+        else {
+          const s = this.escape(true);
+          if (s.neg || s.ranges.length !== 1 || s.ranges[0][0] !== s.ranges[0][1]) {
+            approx = true; // \d, \D, \p{…} inside a class: fold in conservatively
+            for (const r of s.neg ? [[0, 0x10ffff] as [number, number]] : s.ranges) ranges.push(r);
+          } else lo = s.ranges[0][0];
+        }
+      } else lo = this.codePoint();
       if (lo !== undefined) {
         if (this.peek() === "-" && this.src[this.i + 1] !== "]" && this.src[this.i + 1] !== undefined) {
           this.next();
           const hiC = this.next();
-          const hi = hiC === "\\" ? (() => { const s = this.escape(true); return s.ranges[0]?.[0] ?? 0x10ffff; })() : hiC.charCodeAt(0);
+          const hi = hiC === "\\" ? (() => { const s = this.escape(true); if (s.neg || s.ranges.length !== 1) { approx = true; return 0x10ffff; } return s.ranges[0][0]; })() : this.codePoint();
           ranges.push([lo, hi]);
         } else ranges.push([lo, lo]);
       }
-      prev = lo;
     }
-    void prev; void widened;
     this.next(); // ']'
+    // An over-approximated set NEGATED becomes an UNDER-approximation ([^\D] would model as
+    // complement(ALL) = EMPTY while the engine sees \d) — widening must survive negation, so
+    // an approximate negated class is FULL, never its complement.
+    if (neg && approx) return FULL;
     return { neg, ranges };
   }
 
@@ -198,14 +211,35 @@ class Parser {
       case "v": return single(0x0b);
       case "0": return single(0);
       case "x": { const m = /^[0-9a-fA-F]{2}/.exec(this.src.slice(this.i)); if (!m) refuse("malformed \\x escape"); this.i += 2; return single(parseInt(m![0], 16)); }
-      case "u": { const m = /^[0-9a-fA-F]{4}/.exec(this.src.slice(this.i)); if (!m) refuse("malformed \\u escape"); this.i += 4; return single(parseInt(m![0], 16)); }
+      case "u": {
+        const braced = /^\{([0-9a-fA-F]{1,6})\}/.exec(this.src.slice(this.i));
+        if (braced) {
+          this.i += braced[0].length;
+          const cp = parseInt(braced[1], 16);
+          if (cp >= 0xd800 && cp <= 0xdfff) refuse("surrogate code point escapes are outside the safe subset");
+          return single(cp);
+        }
+        const m = /^[0-9a-fA-F]{4}/.exec(this.src.slice(this.i));
+        if (!m) refuse("malformed \\u escape");
+        this.i += 4;
+        const cp = parseInt(m![0], 16);
+        // Under /u a surrogate escape pairs with its sibling into one code point; modeling the
+        // halves separately under-approximates repetition — refuse, write the character or \u{…}.
+        if (cp >= 0xd800 && cp <= 0xdfff) refuse("surrogate escapes are outside the safe subset (write the character or \\u{…})");
+        return single(cp);
+      }
       case "p": case "P": {
         const m = /^\{[^}]*\}/.exec(this.src.slice(this.i));
         if (!m) refuse("malformed \\p escape");
         this.i += m![0].length;
         return FULL; // unknown property set: widen — uncertainty refuses more, never less
       }
-      default: return single(c.charCodeAt(0)); // an escaped metacharacter is that literal
+      default:
+        // An escaped ALPHANUMERIC we do not model has (or may gain) engine meaning (\cA is
+        // control-A, not literal c+A — modeling it as such under-approximated repetition):
+        // refuse instead of fallback-admitting. Escaped punctuation is exactly that literal.
+        if (/[A-Za-z0-9]/.test(c)) refuse(`escape \\${c} is outside the profile's safe subset`);
+        return single(c.codePointAt(0)!);
     }
   }
 }
