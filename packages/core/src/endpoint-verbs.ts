@@ -13,8 +13,7 @@
  * verbs pin `class: "ephemeral"`; submissions go through the `epj` journal machinery (§13.4).
  */
 import { randomBytes } from "node:crypto";
-import { NoRespondersError, RequestError } from "@nats-io/transport-node";
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import { spacePrefix } from "./subjects.js";
 import {
   epRequestSubject, parseEpSubject, callerTokens, assertLifecycleToken, assertBoundedOwner,
@@ -123,10 +122,25 @@ function assertDeadline(deadlineMs: number, what = "deadlineMs"): number {
   return deadlineMs;
 }
 
-/** A NATS "no responders" signal: the broker answered that the request subject had zero subscribers,
- *  distinct from a responder that exists but missed the deadline (SPEC 13.5: no responder → unavailable). */
-function isNoResponders(e: unknown): boolean {
-  return e instanceof NoRespondersError || (e instanceof RequestError && e.isNoResponders());
+/** A NATS "no responders" control message: the broker answered that the request subject had zero
+ *  subscribers (SPEC 13.5: no responder → unavailable), delivered to the publish reply-to as an empty
+ *  message with a 503 status header — distinct from a responder that exists but missed the deadline.
+ *  A real responder's reply is plain JSON with no headers, so this never mistakes one for the other. */
+function isNoRespondersMsg(msg: Msg): boolean {
+  const h = msg.headers as { code?: number; status?: string } | null | undefined;
+  return h != null && (h.code === 503 || h.status === "503");
+}
+
+/** Race a caller-supplied read against a bounded budget so a never-settling hook cannot exceed the
+ *  operation deadline (SPEC 13.5: deadline mandatory). Clears its timer on either outcome. */
+async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: string): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      (async () => read())(),
+      new Promise<never>((_, reject) => { t = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `${what} did not settle within the ${ms}ms budget (SPEC 13.5)`)), ms); }),
+    ]);
+  } finally { if (t !== undefined) clearTimeout(t); }
 }
 
 /** The caller's per-request reply subscription: its own rail narrowed to exactly this request's
@@ -172,53 +186,69 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  * Call one command and await its reply within `deadlineMs`: on the `one` (queue-group anycast) or
  * `inst` (stable incarnation) rail with `replyExpected: true`, subscribe the caller's own
  * nonce-scoped reply subject BEFORE publishing, and resolve the first attributed reply — BOUND to
- * the invoked identity (§13.2): the reply must come from `op.endpoint`, and an `inst` call pins the
- * addressed `(instanceId, epoch)` incarnation so a stale-epoch or wrong-instance reply is rejected.
- * The `inst` route carries `epoch` as the caller's currency pin (read from the registry/presence);
- * whoever answers the queued `one` rail is by definition a live current instance.
+ * the invoked identity (§13.2:1187-1189: "callers reject" stale-process replies), on BOTH rails:
+ *  - `inst` pins the addressed `(instanceId, epoch)` incarnation up front; a stale-epoch reply is
+ *    `expired` and a wrong-instance reply `internal`.
+ *  - `one` cannot pin an instance up front (the queue picks the responder), so the caller MUST supply
+ *    `currentEpoch(instanceId)`: after the reply lands, the answering incarnation's epoch is checked
+ *    against its current registry epoch, and a superseded-but-still-connected queue member's reply is
+ *    `expired`. The queue winner is NOT implicitly current — that is a check, not an assumption.
  *
  * Application-level failure is NOT a throw: the resolved `reply` carries `ok: false` with the
  * responder's structured error (§13.3). This boundary throws only for its own refusals: invalid args
- * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal`; a stale-epoch reply
- * `expired`; NO responder `unavailable` (SPEC 13.5, distinct from a slow one via the broker's
- * no-responders signal — responders reply on the DERIVED rail, never this request's reply-to, so the
- * request inbox only ever receives that signal); a failed reply subscription `unavailable`; and the
- * elapsed budget `deadline-exceeded`.
+ * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal`; a stale reply `expired`;
+ * NO responder `unavailable` (SPEC 13.5:1484 — the broker's no-responders 503 lands on a reply-to that
+ * sits on THIS caller's own rail, so a manual, fully-disposed probe distinguishes it from a slow
+ * responder without leaving a lingering request); a failed reply subscription `unavailable`; the
+ * elapsed budget `deadline-exceeded`. Every subscription and timer is released in the `finally`.
  */
 export async function epCall(
   nc: NatsConnection,
   space: string,
   route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number },
   op: EpVerbOp,
-  opts: { deadlineMs: number },
+  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number },
 ): Promise<EpAttributedReply> {
   const deadlineMs = assertDeadline(opts.deadlineMs);
+  if (route.mode === "one" && opts.currentEpoch === undefined)
+    throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2:1187-1189)");
   const req = buildRequest(space, route, op, { replyExpected: true, deadlineMs });
   const expect = route.mode === "inst" ? { instanceId: route.instanceId, epoch: route.epoch } : undefined;
+  // A no-responders reply-to that lands on THIS caller's OWN rail (within its §13.9 read grant, no
+  // inbox prefix needed): responders answer on the DERIVED rail, so this sentinel only ever carries
+  // the broker's no-responders 503, which our rail subscription observes and disposes with everything
+  // else in the finally — no ghost request/subscription/timer survives a successful call.
+  const noRespReplyTo = `${spacePrefix(space)}.ep.reply._nr._nr._nr.${callerTokens(op.caller).join(".")}.${req.n}`;
+  const started = Date.now();
   let sub: Subscription | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const first = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
+    const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
-        callback: (err, msg) => { if (err) reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); else resolve({ subject: msg.subject, data: msg.data }); },
+        callback: (err, msg) => {
+          if (err) { reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return; }
+          if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`)); return; }
+          resolve({ subject: msg.subject, data: msg.data });
+        },
       });
     });
-    // Publish via request/noMux so a genuine NO-RESPONDER surfaces as `unavailable` (SPEC 13.5:1484),
-    // distinct from a live-but-slow responder (`deadline-exceeded`). The responder ignores this
-    // reply-to and answers on the DERIVED rail (deriveReplySubject), so the request inbox only ever
-    // receives the broker's no-responders signal; a live responder makes nc.request time out, which we
-    // fold back into `first` (the real reply already landed on the rail).
-    const noResponder = nc.request(req.subject, req.body, { noMux: true, timeout: deadlineMs }).then(
-      () => first,
-      (e) => { if (isNoResponders(e)) throw new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`); return first; },
-    );
-    const timeout = new Promise<never>((_, reject) => {
-      const t = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`)), deadlineMs);
-      void first.finally(() => clearTimeout(t)).catch(() => { /* the race below reports it */ });
-    });
-    const msg = await Promise.race([first, noResponder, timeout]);
-    return parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
+    nc.publish(req.subject, req.body, { reply: noRespReplyTo });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`)), deadlineMs); });
+    const msg = await Promise.race([outcome, timeout]);
+    const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
+    if (route.mode === "one") {
+      // §13.2:1187-1189 currency for the queue winner, bounded by the REMAINING budget so the whole
+      // call stays within one `deadlineMs`.
+      const remaining = deadlineMs - (Date.now() - started);
+      if (remaining <= 0) throw new EpEnvelopeError("deadline-exceeded", `no budget left to verify the \`one\` responder's currency within ${deadlineMs}ms (SPEC 13.5)`);
+      const cur = await raceBounded(() => opts.currentEpoch!(attributed.responder.instanceId), remaining, `the \`one\` currency read for ${op.endpoint}.${op.command}`);
+      if (attributed.responder.epoch !== cur)
+        throw new EpEnvelopeError("expired", `the \`one\` responder ${attributed.responder.instanceId} answered at epoch ${attributed.responder.epoch}, not its current ${cur}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
+    }
+    return attributed;
   } finally {
     sub?.unsubscribe();
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -333,9 +363,12 @@ export type EpChurnReason = "epoch" | "registration";
 
 /** The §13.5 scatter outcome. `complete` means EXPECTED-SLOT COVERAGE — every frozen slot produced
  *  exactly one counted valid reply at its frozen `(epoch, registrationRevision)`, verified against the
- *  registration reconcile — NOT that the gather was anomaly-free: `duplicate` and `unexpected` are
- *  reported ALONGSIDE a `complete: true` (they do not force it false), while `missing`, `churn`, and
- *  `invalid` do. First valid reply per frozen `(instanceId, epoch)` wins. */
+ *  registration reconcile — NOT that the gather was anomaly-free. `missing` and `invalid` force
+ *  `complete` false; a `registration`-churn drops a slot's counted reply (so that slot becomes
+ *  uncovered → false). But `duplicate`, `unexpected`, and an `epoch`-churn reply do NOT by themselves
+ *  force false: a slot that answered validly at its frozen epoch stays counted even if a stray
+ *  different-epoch reply from another incarnation also arrived. First valid reply per frozen
+ *  `(instanceId, epoch)` wins. */
 export interface EpScatterResult {
   complete: boolean;
   /** instanceId → the first VALID attributed reply from that frozen slot at its frozen epoch. */
@@ -370,23 +403,35 @@ export interface EpScatterResult {
  * refuses (`failed-precondition`, never an empty success), and the observation channel is fail-loud:
  * a failed reply subscription is `unavailable`, never fabricated member silence.
  *
- * CLASSIFICATION LINEARIZES AT THE DEADLINE. The classification point is `min(all frozen slots
- * answered-valid, deadline)`; the registration reconcile snapshots THERE and `missing` is fixed there.
- * A `lateDrainMs` window runs AFTER and is OBSERVATIONAL only — it may add to `late`/`duplicate`, never
- * move `missing`/`churn`/`complete`.
+ * CLASSIFICATION LINEARIZES AT THE GATHER DEADLINE. The classification point T is `min(all frozen
+ * slots answered-valid, deadline)`; `missing` is fixed at T (from the `respondedAtDeadline` snapshot).
+ * The `lateDrainMs` window runs AFTER T on an ABSOLUTE clock — the rail is closed exactly `lateDrainMs`
+ * after T regardless of how long the reconcile takes, so late classification cannot leak past the
+ * requested horizon. It is OBSERVATIONAL only: it may add to `late`/`duplicate`, never move
+ * `missing`/`churn`/`complete`. With `lateDrainMs` omitted the rail closes at T (no `late`).
+ *
+ * WHOLE-OPERATION BUDGET. The op is bounded but spends its budgets in SEQUENCE, not one shared
+ * deadline: worst-case wall-clock ≈ `deadlineMs` (gather) + `reconcileDeadlineMs` (post-T read) +
+ * `lateDrainMs` (drain, concurrent with the read). The reconcile is a bounded read taken SHORTLY
+ * AFTER T (not a zero-width at-T snapshot): a true instant-of-T revision would need a watch/frontier,
+ * so a re-registration strictly concurrent with the bounded read is an inherent, documented window
+ * (recorded for the §13.5 SPEC reconciliation).
  *
  * Two §13.5 signals are not on the reply rail, so the caller supplies them as HOOKS (keeping the verb
  * free of storage coupling; the §13.9 read grant stays with the caller, and a caller-read revision is
  * more trustworthy than a responder-stamped one):
- *  - `reconcileRegistration` (REQUIRED): reads each frozen slot's CURRENT registrationRevision at the
- *    classification point; a slot whose value advanced past its frozen one is `churn` ("registration")
- *    and uncounted (a re-registration advances registrationRevision WITHOUT advancing the epoch, so the
- *    reply rail cannot see it). It is BOUNDED by the deadline: a never-settling read is `unavailable`,
- *    never a hung scatter (SPEC 13.5: deadline mandatory); an unreadable registry is
- *    `failed-precondition`. Authoritative `complete` requires it — it is not optional (a frozen third
- *    coordinate never re-compared is dead data, and `complete` would over-claim full-triple coverage).
- *  - `lateDrainMs` (optional): keeps the rail open a bounded window after the deadline; a valid first
- *    reply from a still-missing frozen slot there is `late`. Omitted → no drain, `late` empty.
+ *  - `reconcileRegistration` (REQUIRED): reads EVERY frozen slot's CURRENT registrationRevision after
+ *    the classification point; a slot whose value advanced past its frozen one is `churn`
+ *    ("registration") and uncounted (a re-registration advances registrationRevision WITHOUT advancing
+ *    the epoch, so the reply rail cannot see it). Its result is COMPLETENESS-validated: a frozen id
+ *    absent from the returned Map is an incomplete read (`failed-precondition`), and a revision BELOW
+ *    the frozen one is a non-monotonic/buggy read (`failed-precondition`) — otherwise a partial hook
+ *    would silently preserve the old full-triple over-claim. It is BOUNDED by `reconcileDeadlineMs`:
+ *    a never-settling read is `unavailable`, never a hung scatter (SPEC 13.5: deadline mandatory); an
+ *    unreadable registry is `failed-precondition`. Authoritative `complete` requires it.
+ *  - `reconcileDeadlineMs` (optional, default `deadlineMs`): the explicit bound on that post-T read,
+ *    named so the single `deadlineMs` is not silently spent twice.
+ *  - `lateDrainMs` (optional): the absolute post-T horizon for `late` classification. Omitted → none.
  */
 export async function epScatter(
   nc: NatsConnection,
@@ -396,10 +441,12 @@ export async function epScatter(
     deadlineMs: number;
     expected: EpScatterSlot[];
     reconcileRegistration: () => Promise<Map<string, number>>;
+    reconcileDeadlineMs?: number;
     lateDrainMs?: number;
   },
 ): Promise<EpScatterResult> {
   const deadlineMs = assertDeadline(opts.deadlineMs);
+  const reconcileDeadlineMs = opts.reconcileDeadlineMs !== undefined ? assertDeadline(opts.reconcileDeadlineMs, "reconcileDeadlineMs") : deadlineMs;
   const lateDrainMs = opts.lateDrainMs !== undefined ? assertDeadline(opts.lateDrainMs, "lateDrainMs") : 0;
   if (opts.expected.length === 0)
     throw new EpEnvelopeError("failed-precondition", "scatter requires a non-empty frozen expected set (SPEC 13.5: an empty registry is never an empty success)");
@@ -470,41 +517,56 @@ export async function epScatter(
     nc.publish(req.subject, req.body);
   });
 
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (subError !== undefined)
       throw new EpEnvelopeError("unavailable", `the scatter reply subscription failed; without a working observation channel member silence cannot be classified, never fabricated (SPEC 13.5): ${failMsg(subError)}`);
 
-    // Phase 2 — reconcile AT the classification point (before the drain), BOUNDED by the deadline: a
-    // re-registration advances registrationRevision without advancing the epoch, so the rail can't see
-    // it; a slot whose value advanced is churn ("registration") and its counted reply is dropped.
+    // The late window is an ABSOLUTE horizon from T: close the rail exactly `lateDrainMs` after T
+    // (early completion has no window), independent of how long the reconcile below runs — so a reply
+    // during a slow reconcile is NOT misclassified `late`, and with no `lateDrainMs` the rail closes
+    // now. Runs concurrently with the reconcile.
+    const drainMs = deadlinePassed ? lateDrainMs : 0;
+    const drainDone = new Promise<void>((resolve) => {
+      if (drainMs > 0) drainTimer = setTimeout(() => { sub?.unsubscribe(); resolve(); }, drainMs);
+      else { sub?.unsubscribe(); resolve(); }
+    });
+
+    // Reconcile shortly after T, bounded by its OWN explicit budget (not a second full `deadlineMs`):
+    // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`.
     let current: Map<string, number>;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       current = await Promise.race([
         opts.reconcileRegistration(),
-        new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within the ${deadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`)), deadlineMs); }),
+        new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within its ${reconcileDeadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`)), reconcileDeadlineMs); }),
       ]);
     } catch (e) {
-      if (e instanceof EpEnvelopeError && e.code === "unavailable") throw e; // the deadline bound
+      if (e instanceof EpEnvelopeError && e.code === "unavailable") throw e; // the reconcile bound
       throw new EpEnvelopeError("failed-precondition", `the scatter registration reconcile is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${failMsg(e)}`);
     } finally {
-      if (reconcileTimer !== undefined) clearTimeout(reconcileTimer); // don't keep the event loop alive after a fast reconcile
+      if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
     }
+    // COMPLETENESS + MONOTONICITY: the mandatory reconcile must cover every frozen slot with a
+    // revision no lower than its frozen one, else a partial/buggy read would silently preserve the old
+    // full-triple over-claim. Absent → incomplete read; below-frozen → non-monotonic (revisions only
+    // advance on mediated registration writes, §13.7). Both are fail-loud, never a counted completion.
     for (const [instanceId, slot] of frozen) {
       const now = current.get(instanceId);
-      if (now !== undefined && now > slot.registrationRevision) {
+      if (now === undefined)
+        throw new EpEnvelopeError("failed-precondition", `the reconcile did not cover frozen instance ${instanceId}; an incomplete registration read cannot authorize completion (SPEC 13.5)`);
+      if (now < slot.registrationRevision)
+        throw new EpEnvelopeError("failed-precondition", `the reconcile reports instance ${instanceId} at registrationRevision ${now}, below its frozen ${slot.registrationRevision}; registration revisions are monotonic (§13.7), so a lower value is a buggy/unreadable read`);
+      if (now > slot.registrationRevision) {
         result.replies.delete(instanceId);
         result.churn.push({ instanceId, epoch: slot.epoch, reason: "registration" });
         regChurned.add(instanceId);
       }
     }
 
-    // Phase 3 — optional observational drain (only when the deadline, not early completion, ended the
-    // gather): the rail stays open lateDrainMs longer; a valid first reply from a still-missing frozen
-    // slot lands in `late`. It never moves the frozen classification above.
-    if (lateDrainMs > 0 && deadlinePassed)
-      await new Promise<void>((resolve) => setTimeout(resolve, lateDrainMs));
+    await drainDone; // let the absolute late window fully elapse (observational) before finalizing
   } finally {
+    if (drainTimer !== undefined) clearTimeout(drainTimer);
     sub?.unsubscribe();
   }
 

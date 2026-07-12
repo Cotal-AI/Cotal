@@ -182,6 +182,23 @@ try {
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }), "failed-precondition");
   await rejects("scatter BOUNDS a never-settling reconcile as unavailable (deadline mandatory, no hung scatter)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, number>>(() => { /* never settles */ }) }), "unavailable");
+  await rejects("scatter FAILS LOUD when the reconcile omits a frozen slot (incomplete read can't authorize completion)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: B, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "failed-precondition");
+  await rejects("scatter FAILS LOUD when the reconcile reports a below-frozen revision (non-monotonic/buggy read)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 5, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 3 }) }), "failed-precondition");
+
+  // late does NOT leak past its horizon: with no lateDrainMs, a reply arriving after the deadline but
+  // DURING a slow reconcile is not classified `late` (the rail is closed at T, absolute).
+  {
+    const sub = respond(nc, allFilter, () => [{ instanceId: A, epoch: EP, ok: true, data: { which: A }, delayMs: 180 }]); // after the 100ms deadline
+    const res = await epScatter(nc, SPACE, opFor(), {
+      deadlineMs: 100, reconcileDeadlineMs: 600,
+      expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }],
+      reconcileRegistration: async () => { await wait(250); return new Map([[A, 1]]); }, // slow reconcile still running at 180ms
+    });
+    await sub.drain();
+    c("no lateDrainMs: a reply during a slow reconcile is NOT classified late (rail closed at T)", res.late.length === 0 && res.missing.includes(A));
+  }
 
   // ---- epCall: reply / application-error / no-responder / deadline / stale-epoch / wrong-instance / bad-args ----
   const IID = "1".repeat(26);
@@ -222,6 +239,25 @@ try {
     () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor({ args: { n: 123 } as unknown as Record<string, unknown> }), { deadlineMs: 200 }), "bad-request");
   await rejects("epCall refuses a deadline beyond the setTimeout timer bound (2^31-1)",
     () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 2_147_483_648 }), "bad-request");
+
+  // epCall `one` (queue anycast): the caller cannot pin an instance up front, so it MUST supply a
+  // currentEpoch hook; the queue winner's currency is CHECKED, not assumed (§13.2:1187-1189).
+  const oneFilter = `${spacePrefix(SPACE)}.ep.one.>`;
+  const OID = "7".repeat(26);
+  {
+    const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 4, ok: true, data: { which: "one" } }]);
+    const r = await epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => 4 });
+    await sub.drain();
+    c("epCall `one` accepts a reply whose responder epoch matches currentEpoch", r.reply.ok === true && r.responder.epoch === 4);
+  }
+  {
+    const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 4, ok: true, data: { which: "stale" } }]); // answers at epoch 4
+    await rejects("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2:1187-1189)",
+      () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 5 }), "expired");
+    await sub.drain();
+  }
+  await rejects("epCall on the `one` rail WITHOUT currentEpoch refuses bad-request (queue winner is not implicitly current)",
+    () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 200, currentEpoch: undefined as unknown as () => number }), "bad-request");
 
   // ---- epCast: fire-and-forget; honors replyExpected=false; all-rail needs a deadline ------------
   {
