@@ -106,6 +106,25 @@ pnpm --filter @cotal-ai/example-05-code-review-bench-local attribute
 
 Severity data flows from reviewer output into `candidates.json`, so variants only work for runs produced after this feature was added.
 
+## Swarm v2 and cross-run voting (the best-scoring recipe)
+
+See `EXPERIMENTS.md` for the full experiment log: what moved the score (full-file context, team
+aim, cross-run voting) and the graveyard of things that did not (coordination, retrieval,
+instructions, post-hoc filters). The relevant switches:
+
+- `COTAL_BENCH_FULL_FILES=1` fetches the complete changed files at the PR head into the reviewer
+  prompt (`COTAL_BENCH_MAX_CONTEXT_FILES`/`COTAL_BENCH_MAX_CONTEXT_CHARS` cap it).
+- `COTAL_BENCH_PERSONAS=bug-hunter,keeper,sweeper` selects the aimed swarm; `sweeper` targets
+  minor-but-real defects.
+- `COTAL_BENCH_PROMPT_V2=1` appends the generation-side selection rules; `COTAL_BENCH_DEDUP=1`
+  adds an LLM dedup-merge pass per PR (a merge, not a filter).
+- `COTAL_BENCH_MAX_FINDINGS`, `COTAL_BENCH_RETRIEVE`, `COTAL_BENCH_VERIFY` exist for ablations;
+  all three are documented failures for this benchmark (see EXPERIMENTS.md).
+- `COTAL_BENCH_PERSONA_OPENAI_MODEL=<model>` routes reviewer calls through the direct OpenAI API
+  (Responses API for `-pro` models) instead of OpenCode.
+- `src/majority.ts <out> <minSupport> <candidates.json:toolKey> ...` builds the cross-run vote:
+  run the same team 3x, keep unanimous findings, judge the merged set.
+
 ## Local judge caveats
 
 The OpenCode local judge fallback is not Martian's official judge, and its numbers are not comparable to Martian-scored results:
