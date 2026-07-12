@@ -20,7 +20,6 @@ interface PiRuntime {
   config: AgentConfig;
   mesh: MeshAgent;
   driver: PiDriver;
-  started: Promise<void>;
   controlServer?: ReturnType<typeof startControlServer>;
   personaCleaned: boolean;
 }
@@ -98,7 +97,6 @@ function createRuntime(config: AgentConfig): PiRuntime {
     config,
     mesh,
     driver,
-    started: Promise.resolve(),
     personaCleaned: false,
   };
 
@@ -134,8 +132,6 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime = createRuntime(config);
     runtimes.set(key, runtime);
   }
-  await runtime.started;
-
   runtime.driver.bind(pi);
   registerCotalTools(pi, runtime.mesh, runtime.config);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));

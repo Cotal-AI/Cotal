@@ -41,7 +41,6 @@
     "@cotal-ai/delivery": "workspace:*",
     "@cotal-ai/manager": "workspace:*",
     "@cotal-ai/pi": "workspace:*",
-    "@cotal-ai/tmux": "workspace:*",
     "@cotal-ai/workspace": "workspace:*"
   },
   "files": [

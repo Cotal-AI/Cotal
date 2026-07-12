@@ -35,13 +35,17 @@ required by Pi's SDK if they expect proactive delivery into an idle session.
 ## Delivery
 
 Inbound traffic is injected as a `cotal-inbox` custom message. Its opaque batch details must appear
-in Pi's `message_start` and in the exact provider `context`; only the following successful provider
-response marks that batch consumed. Acknowledgement waits for a terminal agent boundary and drains
-only an exact current inbox prefix.
+in Pi's `message_start` and in the exact provider `context`. A successful `after_provider_response`
+confirms the batch early when the transport exposes an HTTP response; transports such as the Codex
+subscription may omit that hook, so an exact context is confirmed instead by its following clean
+terminal boundary. Acknowledgement waits for that boundary and drains only an exact current inbox
+prefix.
 
 - Crash or quit before a terminal boundary: acknowledge nothing; durable traffic redelivers.
-- Provider-confirmed error or user abort: consume confirmed work so tools cannot repeat.
-- Work not confirmed by the provider: retain it and enter an observable `waiting` hold.
+- Non-aborted `stop`, `toolUse`, and non-overflow `length` (positive output) are terminal and may
+  commit confirmed work. Error, abort, zero/missing-output `length`, and unknown stop reasons retain
+  the association in observable `waiting`; Pi exposes no retry-finality event, so retained work waits
+  for a later proven terminal boundary.
 - Overflow compaction with `willRetry`: retain the batch through Pi's automatic continuation.
 - Watchdog or headless abort: never timer-replay while the original provider call may still run;
   managed restart is the safe recovery path.

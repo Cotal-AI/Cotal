@@ -87,9 +87,6 @@ importers:
       '@cotal-ai/pi':
         specifier: workspace:*
         version: link:../extensions/pi
-      '@cotal-ai/tmux':
-        specifier: workspace:*
-        version: link:../extensions/tmux
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace

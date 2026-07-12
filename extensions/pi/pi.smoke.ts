@@ -143,6 +143,27 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(mesh.drained.join() === "m1", "a clean terminal boundary drains the exact confirmed prefix");
 }
 
+// Real Pi may expose the request context before all extensions observe message_start.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const details = host.sent.at(-1)?.details;
+  assert.ok(details);
+  driver.onAgentStart(ctx);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details }]);
+  driver.onMessageStart({ role: "custom", customType: "cotal-inbox", details });
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(
+    mesh.drained.join() === "m1",
+    "a clean terminal boundary confirms exact context even when context precedes message_start and no response hook fires",
+  );
+}
+
 // Own channel echoes are dropped, while self-selected anycast remains valid directed traffic.
 {
   const mesh = new FakeMesh();
@@ -172,7 +193,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(host.sent.length === 1, "new traffic and a mention cannot race a second unconfirmed trigger");
 }
 
-// Abort commits only provider-confirmed work, holds new traffic, then a human turn recovers.
+// Abort retains even provider-confirmed work, holds new traffic, then a clean continuation commits.
 {
   const mesh = new FakeMesh();
   mesh.items = [item("m1")];
@@ -187,12 +208,17 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   confirm(driver, details);
   controller.abort();
   driver.onAgentEnd([{ role: "assistant", stopReason: "aborted" }], ctx);
-  ok(driver.state === "held" && mesh.drained.join() === "m1", "abort consumes confirmed work and enters held");
+  ok(driver.state === "held" && mesh.drained.length === 0, "abort retains confirmed work and enters held");
   mesh.items.push(item("m2"));
   driver.onIncoming();
   ok(host.sent.length === 1, "new traffic cannot auto-replay while held");
-  driver.onAgentStart(context());
+  const continuation = context();
+  driver.onAgentStart(continuation);
   ok(host.sent.length === 2 && host.sent[1]?.details.ids.join() === "m2", "the next human turn carries held backlog");
+  const next = startBatch(driver, host);
+  confirm(driver, next);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], continuation);
+  ok(mesh.drained.join() === "m1,m2", "the later clean boundary commits retained and continued work once");
 }
 
 // An unconfirmed abort retains the same association and a later human provider call can confirm it.
@@ -217,7 +243,75 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(mesh.drained.join() === "m1", "late confirmation resolves the retained association without re-dispatch");
 }
 
-// agent_end precedes overflow events in Pi: defer ordinary error policy so retry is not acked early.
+// Error retention does not race a later overflow event, even across event-loop delays.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const controller = new AbortController();
+  const ctx = context(controller.signal);
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const details = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, details);
+  controller.abort();
+  driver.onAgentEnd([{ role: "assistant", stopReason: "error" }], ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  ok(driver.state === "held" && mesh.drained.length === 0, "an error end retains confirmed work without timer inference");
+  driver.onBeforeCompact("overflow", true);
+  await tick();
+  ok(mesh.drained.length === 0, "a later overflow retry still cannot commit the retained batch");
+  const retry = context();
+  driver.onAgentStart(retry);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], retry);
+  ok(mesh.drained.join() === "m1", "the successful overflow continuation commits once");
+}
+
+// A non-overflow provider error may auto-retry after backoff without a before_compact event.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const details = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details }]);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "error" }], ctx);
+  await driver.flushPresence();
+  ok(driver.state === "held" && mesh.drained.length === 0, "an error waits without acknowledging before Pi's retry decision");
+  const retry = context();
+  driver.onAgentStart(retry);
+  confirm(driver, details);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], retry);
+  ok(mesh.drained.join() === "m1" && driver.state === "idle", "the automatic retry commits only at its later clean boundary");
+}
+
+// An unconfirmed error with no automatic continuation remains observably held without a timer.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "error" }], ctx);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await driver.flushPresence();
+  ok(
+    driver.state === "held" && mesh.drained.length === 0 && mesh.statuses.at(-1)?.status === "waiting",
+    "an error without continuation stays held and visible without time-based acknowledgement",
+  );
+}
+
+// Managed shutdown is absorbing even when Pi reports late lifecycle events.
 {
   const mesh = new FakeMesh();
   mesh.items = [item("m1")];
@@ -229,14 +323,88 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   const details = startBatch(driver, host);
   driver.onAgentStart(ctx);
   confirm(driver, details);
-  driver.onAgentEnd([{ role: "assistant", stopReason: "error" }], ctx);
+  await driver.flushPresence();
+  const statusesBefore = mesh.statuses.length;
+  driver.requestShutdown();
+  driver.onAgentStart(ctx);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details }]);
+  driver.onProviderResponse(200);
+  driver.onToolStart("bash");
+  driver.onToolEnd();
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
   driver.onBeforeCompact("overflow", true);
-  await tick();
-  ok(mesh.drained.length === 0, "overflow retry suppresses the deferred ordinary-error commit");
-  const retry = context();
-  driver.onAgentStart(retry);
-  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], retry);
-  ok(mesh.drained.join() === "m1", "the successful overflow continuation commits once");
+  await driver.flushPresence();
+  ok(ctx.shutdowns === 2, "shutdown reaches both the active context and any late agent start");
+  ok(driver.state === "shuttingDown" && mesh.drained.length === 0, "late lifecycle cannot acknowledge or escape shutdown");
+  ok(mesh.statuses.length === statusesBefore, "late lifecycle cannot publish presence after shutdown");
+
+  const between = new PiDriver(new FakeMesh() as unknown as MeshAgent);
+  between.requestShutdown();
+  const replacement = context();
+  between.onSessionStart(replacement);
+  ok(replacement.shutdowns === 1 && between.state === "shuttingDown", "shutdown between sessions closes the replacement context");
+}
+
+// Unknown future stop reasons fail closed until an exact clean stop proves terminality.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const details = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, details);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "future-reason" }], ctx);
+  ok(driver.state === "held" && mesh.drained.length === 0, "a non-stop boundary cannot acknowledge confirmed work");
+  const continuation = context();
+  driver.onAgentStart(continuation);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], continuation);
+  ok(mesh.drained.join() === "m1", "an exact later stop resolves an unknown retained boundary");
+}
+
+// Known non-overflow terminal reasons commit and keep the headless peer live.
+for (const assistant of [
+  { role: "assistant", stopReason: "length", usage: { output: 12 } },
+  { role: "assistant", stopReason: "toolUse" },
+]) {
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const details = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, details);
+  mesh.items.push(item("m2"));
+  driver.onAgentEnd([assistant], ctx);
+  ok(mesh.drained.join() === "m1", `${assistant.stopReason} commits the confirmed terminal batch`);
+  ok(host.sent.length === 2 && host.sent[1]?.details.ids.join() === "m2", `${assistant.stopReason} keeps dispatch live`);
+}
+
+// Pi's zero-output length overflow is not terminal and must wait for continuation.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const details = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, details);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "length", usage: { output: 0 } }], ctx);
+  ok(driver.state === "held" && mesh.drained.length === 0, "zero-output length retains the overflow batch");
+  driver.onBeforeCompact("overflow", true);
+  const continuation = context();
+  driver.onAgentStart(continuation);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], continuation);
+  ok(mesh.drained.join() === "m1", "the overflow-length continuation commits at its terminal boundary");
 }
 
 // Dispatch-start watchdog holds association and blocks competing delivery; late lifecycle still wins.

@@ -39,12 +39,6 @@ interface Batch {
   watchdog?: ReturnType<typeof setTimeout>;
 }
 
-interface PendingEnd {
-  stopReason?: string;
-  context: PiContextLike;
-  timer?: ReturnType<typeof setImmediate>;
-}
-
 function detailsOf(message: unknown): CotalBatchDetails | undefined {
   if (!message || typeof message !== "object") return undefined;
   const value = message as { role?: unknown; customType?: unknown; details?: unknown };
@@ -73,11 +67,13 @@ export class PiDriver {
   private host?: PiHost;
   private context?: PiContextLike;
   private batches: Batch[] = [];
+  private contextBatchIds = new Set<string>();
   private requestBatchIds = new Set<string>();
+  private terminalEvidenceBatchIds = new Set<string>();
   private nudges: string[] = [];
   private presence = Promise.resolve();
   private activeSignal?: AbortSignal;
-  private pendingEnd?: PendingEnd;
+  private pendingContinuation = false;
   private overflowRetry = false;
   private _state: DriverState = "idle";
   private heldReason?: string;
@@ -123,6 +119,7 @@ export class PiDriver {
   }
 
   onMentionWake(item: InboxItem): void {
+    if (this._state === "shuttingDown") return;
     const who = item.fromRole ? `${item.fromName}/${item.fromRole}` : item.fromName;
     this.nudges.push(
       `Cotal: you were @mentioned on #${item.channel} by ${who} while focused. ` +
@@ -134,9 +131,17 @@ export class PiDriver {
 
   onAgentStart(context: PiContextLike): void {
     this.context = context;
+    if (this._state === "shuttingDown") {
+      context.shutdown();
+      return;
+    }
     this.activeSignal = context.signal;
     this.overflowRetry = false;
-    if (this._state === "held" && this.batches.length === 0) {
+    if (this.pendingContinuation) {
+      this.pendingContinuation = false;
+      this.heldReason = undefined;
+      this._state = this.batches.some((batch) => !batch.confirmed) ? "dispatching" : "streaming";
+    } else if (this._state === "held" && this.batches.length === 0) {
       this.heldReason = undefined;
       this._state = "streaming";
     } else if (this._state !== "held") {
@@ -147,80 +152,104 @@ export class PiDriver {
   }
 
   onMessageStart(message: unknown): void {
+    if (this._state === "shuttingDown") return;
     const details = detailsOf(message);
     if (!details) return;
     const batch = this.batches.find((candidate) => candidate.id === details.batchId);
     if (!batch || batch.ids.length !== details.ids.length || !batch.ids.every((id, i) => id === details.ids[i])) return;
     batch.started = true;
+    if (this.contextBatchIds.has(batch.id)) {
+      this.requestBatchIds.add(batch.id);
+      this.terminalEvidenceBatchIds.add(batch.id);
+    }
     if (batch.watchdog) clearTimeout(batch.watchdog);
     batch.watchdog = undefined;
   }
 
   onContext(messages: readonly unknown[]): void {
+    if (this._state === "shuttingDown") return;
     const visible = new Set(messages.map(detailsOf).filter((details): details is CotalBatchDetails => Boolean(details)).map((d) => d.batchId));
-    this.requestBatchIds = new Set(
-      this.batches.filter((batch) => batch.started && !batch.confirmed && visible.has(batch.id)).map((batch) => batch.id),
-    );
+    const candidates = this.batches.filter((batch) => !batch.confirmed && visible.has(batch.id));
+    this.contextBatchIds = new Set(candidates.map((batch) => batch.id));
+    this.requestBatchIds = new Set(candidates.filter((batch) => batch.started).map((batch) => batch.id));
+    for (const id of this.requestBatchIds) this.terminalEvidenceBatchIds.add(id);
   }
 
   onProviderResponse(status: number): void {
+    if (this._state === "shuttingDown") return;
     if (status >= 200 && status < 300) {
       for (const id of this.requestBatchIds) {
         const batch = this.batches.find((candidate) => candidate.id === id);
         if (batch) batch.confirmed = true;
       }
+    } else {
+      for (const id of this.requestBatchIds) this.terminalEvidenceBatchIds.delete(id);
     }
+    this.contextBatchIds.clear();
     this.requestBatchIds.clear();
-    if (this._state !== "held" && this._state !== "shuttingDown") {
+    if (this._state !== "held") {
       this._state = "streaming";
       this.pump();
     }
   }
 
   onToolStart(name: string): void {
+    if (this._state === "shuttingDown") return;
     this.enqueuePresence("working", `running ${name || "tool"}`);
   }
 
   onToolEnd(): void {
+    if (this._state === "shuttingDown") return;
     this.enqueuePresence("working", "thinking");
   }
 
   onAgentEnd(messages: readonly unknown[], context: PiContextLike): void {
+    if (this._state === "shuttingDown") return;
     const lastAssistant = [...messages]
       .reverse()
       .find((message) => message && typeof message === "object" && (message as { role?: unknown }).role === "assistant") as
-      | { stopReason?: string }
+      | { stopReason?: string; usage?: { output?: number } }
       | undefined;
     const aborted = this.activeSignal?.aborted === true;
     this.activeSignal = undefined;
+    this.contextBatchIds.clear();
+    this.requestBatchIds.clear();
+    const terminal =
+      !aborted &&
+      (lastAssistant?.stopReason === "stop" ||
+        lastAssistant?.stopReason === "toolUse" ||
+        (lastAssistant?.stopReason === "length" && (lastAssistant.usage?.output ?? 0) > 0));
 
-    if (aborted) {
-      this.finalizeEnd("abort", context);
+    if (!terminal) {
+      this.terminalEvidenceBatchIds.clear();
+      if (this.batches.length === 0) {
+        this._state = "idle";
+        this.publishIdleWhenSettled(context);
+        return;
+      }
+      this.pendingContinuation = true;
+      this.hold(
+        aborted || lastAssistant?.stopReason === "aborted"
+          ? "Pi turn was aborted; Cotal delivery is retained until a proven clean continuation completes"
+          : `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}; ` +
+              "Cotal delivery is retained until a proven clean continuation completes",
+      );
       return;
     }
 
-    if (lastAssistant?.stopReason === "error") {
-      const pending: PendingEnd = { stopReason: "error", context };
-      pending.timer = setImmediate(() => {
-        if (this.pendingEnd === pending) {
-          this.pendingEnd = undefined;
-          this.finalizeEnd("error", context);
-        }
-      });
-      this.pendingEnd = pending;
-      return;
+    for (const id of this.terminalEvidenceBatchIds) {
+      const batch = this.batches.find((candidate) => candidate.id === id);
+      if (batch) batch.confirmed = true;
     }
-
-    this.finalizeEnd("clean", context);
+    this.terminalEvidenceBatchIds.clear();
+    this.pendingContinuation = false;
+    this.finalizeEnd(context);
   }
 
   onBeforeCompact(reason: string, willRetry: boolean): void {
+    if (this._state === "shuttingDown") return;
     if (reason !== "overflow" || !willRetry) return;
     this.overflowRetry = true;
-    if (this.pendingEnd?.timer) clearImmediate(this.pendingEnd.timer);
-    this.pendingEnd = undefined;
-    if (this._state !== "held") this._state = "streaming";
-    this.enqueuePresence("working", "compacting before automatic retry");
   }
 
   requestShutdown(): void {
@@ -289,7 +318,8 @@ export class PiDriver {
     }
   }
 
-  private finalizeEnd(kind: "clean" | "error" | "abort", context: PiContextLike): void {
+  private finalizeEnd(context: PiContextLike): void {
+    if (this._state === "shuttingDown") return;
     if (this.overflowRetry) return;
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
@@ -300,16 +330,8 @@ export class PiDriver {
       this.hold(committed.error);
       return;
     }
-    if (kind === "abort") {
-      this.hold("Pi turn was aborted; Cotal delivery is held until a human turn or managed restart");
-      return;
-    }
     if (this.batches.length > 0) {
-      this.hold(
-        kind === "error"
-          ? "Pi failed before confirming all dispatched Cotal messages"
-          : "Pi ended before confirming a queued Cotal steer",
-      );
+      this.hold("Pi ended before confirming a queued Cotal steer");
       return;
     }
 
@@ -320,6 +342,7 @@ export class PiDriver {
   }
 
   private hold(reason: string): void {
+    if (this._state === "shuttingDown") return;
     this._state = "held";
     this.heldReason = reason;
     this.clearWatchdogs();
@@ -355,7 +378,5 @@ export class PiDriver {
 
   private clearTimers(): void {
     this.clearWatchdogs();
-    if (this.pendingEnd?.timer) clearImmediate(this.pendingEnd.timer);
-    this.pendingEnd = undefined;
   }
 }

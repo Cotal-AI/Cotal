@@ -1,86 +1,80 @@
 # Agent frameworks
 
-Besides Claude Code (see [Connect Claude](connect-claude.md)), an agent
-built on an embeddable agent library can join a Cotal space as a native lateral peer. The
-first such adapter:
+`@cotal-ai/pi` is Cotal's first host-native framework adapter. It loads into the operator's own
+[Pi coding agent](https://github.com/earendil-works/pi), rather than bundling a runtime, and uses the
+same Cotal subjects, presence, attention, and messaging tools as the app-bound connectors.
 
-| Extension | Framework | Language |
-|---|---|---|
-| `@cotal-ai/pi` | [pi coding agent](https://github.com/earendil-works/pi) | TypeScript |
+## Surfaces
 
-It joins the same mesh as the host-bound connectors and interoperates over the same
-subjects, presence, and delivery modes.
+One standalone artifact supports three Pi-hosted surfaces:
 
-## The shape: the mesh as a host-native plugin
+1. `cotal spawn --agent pi` launches the installed `pi` binary in the manager's PTY.
+2. Interactive Pi discovers a copied `~/.pi/agent/extensions/cotal.js`.
+3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
+   must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.
 
-`@cotal-ai/pi` follows the same thin-adapter pattern as every other connector: it plugs
-into the **user's own pi installation** rather than bundling a pi runtime. The whole
-adapter is one pi extension file (pi's plugin mechanism) plus a `Connector` for the spawn
-door. Because pi's extension discovery lives in its SDK (the default resource loader reads
-`~/.pi/agent/extensions/`), the same file covers three surfaces at once:
+This release pins Pi `0.79.10`. The Cotal package remains installable on Node 20; the separately
+installed Pi host requires Node 22.19 or newer.
 
-- **`pi` interactive** — `pi --extension <file>` (or a copy in `~/.pi/agent/extensions/`)
-  with `COTAL_*` env: the TUI session a human is sitting in becomes a mesh peer.
-- **Spawned workers** — the `Connector` (`buildLaunch`) spawns the operator's installed
-  `pi` binary (PATH resolution, like the Claude Code connector spawns `claude`; a missing
-  binary fails loud) with `--extension` pointing at the packaged file. Under the manager's
-  pty runtime the worker IS the real pi TUI — `cotal attach <name>` shows it.
-- **Agents built on pi's SDK** — a default `createAgentSession()` discovers the same
-  extension dir, so third-party pi-based agents join with no per-app work. (Apps that pass
-  a custom resource loader, or forks, need their own wiring.)
+## Lifecycle
 
-Activation is opt-in by mesh identity: with no `COTAL_*` config in the env the extension
-stays inert, so an installed copy never affects normal pi use; `COTAL_*` config without an
-identity (`COTAL_NAME`/`COTAL_AGENT_FILE`/`COTAL_LINK`) fails loud rather than silently
-running off-mesh.
+The adapter sends peer traffic as Pi custom messages with `triggerTurn: true` and
+`deliverAs: "steer"`. This removes an idle/streaming race while preserving structured batch details.
+Reliability uses three distinct points:
 
-## The loop: ack-on-surface off the durable inbox
+1. The matching custom `message_start` proves Pi dequeued the batch locally.
+2. A `context` event containing that exact batch proves it entered one provider request.
+3. A successful `after_provider_response` proves acceptance early when the transport exposes an HTTP
+   response. Some transports, including the Codex subscription, omit that hook; their following clean
+   terminal assistant boundary proves acceptance for the exact context instead.
 
-Inside the extension, the shared `MeshAgent` (from `@cotal-ai/connector-core`) owns the
-NATS connection, presence, and the stream-backed inbox, and the package's `InboxTurn`
-drives the session off it — the inbox is the single source of truth, no parallel buffer:
+Only provider-confirmed IDs become eligible for acknowledgement, and only at a terminal agent
+boundary. The Pi-local ledger re-reads `MeshAgent.peekInbox()`, verifies an exact front prefix, and
+calls `drainInbox(n)` only for a positive exact count. Missing older IDs may have been evicted by the
+bounded inbox; out-of-order IDs are tombstoned and discarded only when they later reach the front.
+This keeps acknowledgement correct without adding a shared connector-core API.
 
-1. **Inbound drives the loop.** On `"incoming"` the front-contiguous actionable batch opens
-   a turn (`pi.sendUserMessage(...)` — a real user turn in the live session); actionable
-   messages arriving mid-turn are folded in via `deliverAs: "steer"` (true mid-turn drive).
-   Delivery is **ack-on-surface**: the surfaced run is acked only once the turn completes,
-   so a crash or restart redelivers and nothing is lost. The peer is woken by DMs, anycasts,
-   and channel messages according to the shared attention policy: open ambient can wake an
-   idle session, while dnd/quiet ambient stays buffered for the next turn. One accepted
-   residual: the extension API can't drain pi's steering queue at turn end, so a message
-   steered after the loop's final poll can carry into the next turn.
-2. **The model owns replies.** The full shared `cotal_*` toolset (rendered from
-   connector-core's `cotalToolSpecs` via `pi.registerTool`, the same source the Claude Code
-   and OpenCode adapters render) is on the session — the model replies by calling
-   `cotal_dm` / `cotal_send` / `cotal_anycast`, can stay silent when no reply is warranted,
-   and nothing leaves the peer that it didn't deliberately send. `cotal_inbox` is read-only
-   (peek): the loop drives delivery and acking, so a drain would race the ack.
+Pi emits `agent_end` to extensions without exposing whether it will retry. Error, abort, unknown
+reasons, and zero/missing-output `length` therefore
+retain the delivery association in `waiting`; a later `agent_start` proves continuation. Non-aborted
+`stop`, `toolUse`, and positive-output `length` are locally provable terminal boundaries and may
+commit confirmed work.
+`session_before_compact { reason: "overflow", willRetry: true }` identifies the overflow path but is
+not itself a terminal decision. User abort is identified from the `AbortSignal` captured while the
+turn is active. An abort or dispatch watchdog blocks automatic replay. In managed headless use,
+restart is the safe recovery because it terminates any possibly-live provider call before durable
+redelivery.
 
-Presence is read off pi's own events (`agent_start` → `working`,
-`tool_execution_start` → the running tool, `agent_end` → `idle`). pi has no permission gate
-of its own, so unattended workers should be sandboxed per pi's guidance; interactively, any
-pi extension that raises `ctx.ui.*` gates works as usual since the session is real pi.
+`reload`, `new`, `resume`, and `fork` tear down Pi's extension runtime. The adapter keeps its mesh,
+control listener, delivery association, and ordered presence chain in a process-global identity map,
+then binds the replacement runtime on its next `session_start`. Only `session_shutdown { reason:
+"quit" }` stops the mesh.
 
-Builders embedding pi's SDK directly who want the steer residual fully closed can skip the
-extension and wire the same two pieces themselves — connector-core's `MeshAgent` +
-`InboxTurn` (exported from `@cotal-ai/pi`) around their own `createAgentSession()`,
-using `session.clearQueue()` with `InboxTurn.commitExcept` at
-turn end. The extension source is the reference for everything else.
+## Host boundaries
 
-## Running
+- With no mesh identity the extension is inert, even if `COTAL_HOME` or `COTAL_DEFAULT_AGENT` exists.
+- A partial managed control endpoint fails loudly; cooperative stop uses connector-core's existing
+  authenticated control server and Pi's active `ctx.shutdown()`.
+- Peer traffic bypasses Pi's human `input` transformations, but provider, tool, permission, and
+  sandbox hooks remain on the normal agent path.
+- `cotal_inbox` is read-only in Pi because the driver owns acknowledgement.
+- Pi resume, variants, MCP sharing, and raw launch options fail loudly until implemented.
 
-The `cotal` binary registers the pi connector like every sibling — no extra composition
-root needed. It requires `pi` on PATH (`npm i -g @earendil-works/pi-coding-agent`):
+## Install
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...   # or any pi-supported provider auth (~/.pi login works too)
-pnpm cotal up
-pnpm cotal spawn --detach --name pi1 --role research --agent pi
+npm install -g cotal-ai @earendil-works/pi-coding-agent@0.79.10
+cotal up
+cotal spawn default --detach --agent pi
 ```
 
-Or join a pi session you're sitting in by hand — no manager involved:
+For interactive/default-loader discovery:
 
 ```bash
-COTAL_SPACE=<space> COTAL_NAME=mypi COTAL_ROLE=research COTAL_ALLOW_PUBLISH=general \
-pi --extension node_modules/@cotal-ai/pi/dist/extension.js
+npm install @cotal-ai/pi
+mkdir -p ~/.pi/agent/extensions
+cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
 ```
+
+See [`extensions/pi/README.md`](../extensions/pi/README.md) for the exact delivery policy and
+contributor credits.
