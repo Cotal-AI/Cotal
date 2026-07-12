@@ -69,6 +69,7 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, type EpCapability } from "./endpoint-grants.js";
+import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
 import { credsClaims, type Identity } from "./identity.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
@@ -92,7 +93,11 @@ export type Profile =
   // the authority), so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
   | "control-caller-privileged" // ps/start → ctl.<privileged>.<id> only (no cross-agent reach)
   | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
-  | "deployer"; // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+  | "deployer" // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+  // v0.4 control surface (SPEC §13.9): the per-instance endpoint serve credential — EXACTLY the
+  // instance's registered rails + epoch-pinned egress, no agent baseline. Consumes only an
+  // authorizeServeGrant-branded tuple; re-minted on takeover with the new epoch.
+  | "endpoint-serve";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -150,6 +155,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
+  "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
@@ -350,12 +356,16 @@ export interface MintOpts {
    *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
    *  forge-locks it as the third caller token. */
   lifecycleUid?: string;
-  /** v0.4 SERVE identity (SPEC §13.9 serve rows): mints the instance's queue-qualified class
-   *  subscribes (no plain class-rail subscribe exists on any credential), the plain scatter and
-   *  own `inst` rails per registered command, and the epoch-pinned egress
-   *  (reply/epe/ept-schedule/epr). Default-deny when absent. The `$JS.API` bind rows
-   *  (effects/pool durables) ride the D14 credential assembly, not this subject-space builder. */
-  endpointServe?: { endpoint: string; instanceId: string; epoch: number; commands: string[] };
+  /** v0.4 SERVE identity (SPEC §13.9 serve rows), `endpoint-serve` profile ONLY: mints the
+   *  instance's queue-qualified class subscribes (no plain class-rail subscribe exists on any
+   *  credential), the plain scatter and own `inst` rails per registered command plus the
+   *  derived `describe`, the own epoch-pinned timer-fire read, and the epoch-pinned egress
+   *  (reply/epe/ept-schedule/epr). MUST be the branded tuple `authorizeServeGrant` returned —
+   *  a raw literal, a structural copy, or a mutated tuple refuses at the mint. Every other
+   *  profile refuses it (a serve credential is per-instance, never an agent-baseline cred).
+   *  The `$JS.API` bind rows (effects/pool durables) ride the D14 credential assembly, not
+   *  this subject-space builder. */
+  endpointServe?: EpServeGrant;
   /** Delivery-daemon shard seam (`delivery` profile only). N=1 is the only operating mode; these do
    *  not change permissions in this build (the daemon owns the whole space at N=1). Present so the
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
@@ -585,6 +595,7 @@ export function permissionsFor(
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, CONTROL_PRIVILEGED); // ps/start (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, CONTROL_ADMIN); // stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? CONTROL_ADMIN); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
+  if (profile === "endpoint-serve") return endpointServePermissions(space, pr, opts); // v0.4 per-instance serve credential (SPEC 13.9)
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
@@ -600,14 +611,18 @@ export function permissionsFor(
     // creates on CHAT + the presence KV. No chat/inst/svc/ctl publish → can't post.
     //   observer — sub chat.> only; DM_<space>/svc never named → DMs + anycast structurally
     //     invisible (step-6 inbox scoping means it can't sniff deliveries either).
-    //   admin — sub widened to the whole space so the dashboard's tap also sees DMs (inst.>)
-    //     and anycast (svc.>) live, PLUS DM-stream read verbs so it can backfill DM history.
-    //     A deliberate god-view: DMs are plaintext + ACL-gated, so mint this only for a trusted
-    //     audit dashboard. CONSUMER.CREATE on DM_<space> is the DM-confidentiality surface —
-    //     granted here ONLY for this elevated read-only profile, never to agents.
+    //   admin — sub widened to the MESSAGING plane, enumerated (SPEC 13.9/13.11): the
+    //     dashboard's tap also sees DMs (inst.>) and anycast (svc.>) live, PLUS DM-stream read
+    //     verbs so it can backfill DM history. A deliberate god-view over messaging only: a
+    //     space-wide `>` would additionally plain-subscribe every v0.4 endpoint request rail
+    //     (collecting the reply nonces the queue-qualified-only rule protects) and every
+    //     core-only session frame, so the ep/epe/epf/epj/ept/epr/epw/eps/epc planes are
+    //     deliberately excluded. DMs are plaintext + ACL-gated, so mint this only for a
+    //     trusted audit dashboard. CONSUMER.CREATE on DM_<space> is the DM-confidentiality
+    //     surface — granted here ONLY for this elevated read-only profile, never to agents.
     const sub =
       profile === "admin"
-        ? [`${spacePrefix(space)}.>`, inbox]
+        ? [`${spacePrefix(space)}.chat.>`, `${spacePrefix(space)}.inst.>`, `${spacePrefix(space)}.svc.>`, inbox]
         : [`${spacePrefix(space)}.chat.>`, inbox];
     const allow = [
       "$JS.API.INFO",
@@ -662,6 +677,8 @@ export function permissionsFor(
   // than mint it agent perms by accident (the no-fallbacks rule; matches the deleted `manager`'s intent).
   if (profile !== "agent")
     throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
+  if (opts.endpointServe)
+    throw new Error('permissionsFor: endpointServe rides the dedicated "endpoint-serve" profile - a serve credential is per-instance authority (SPEC 13.9), never folded into an agent-baseline cred');
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
@@ -768,13 +785,6 @@ export function permissionsFor(
     if (!opts.lifecycleUid)
       throw new Error("permissionsFor: endpointCapabilities require a lifecycleUid - the caller triple pins it at mint time (SPEC 13.1/13.2)");
     const rows = epCallerGrantRows(space, opts.endpointCapabilities, { owner: pr.owner, actor: pr.actor, uid: opts.lifecycleUid });
-    pubAllow.push(...rows.pub);
-    epSub.push(...rows.sub);
-  }
-  // v0.4 serve rows (SPEC §13.9): the instance's per-command rails (class rail queue-qualified
-  // ONLY) and its epoch-pinned egress. Default-deny when absent.
-  if (opts.endpointServe) {
-    const rows = epServeGrantRows(space, opts.endpointServe);
     pubAllow.push(...rows.pub);
     epSub.push(...rows.sub);
   }
@@ -1043,6 +1053,27 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
     // to subscribe that subtree — without this grant the reply sub is broker-denied and every control call
     // hangs to timeout (endpoint.ts:803-806 predicts exactly this).
     sub: { allow: [`_INBOX_${pr.connId}.>`, `${reqSubject}.reply.>`] },
+  };
+}
+
+/** ENDPOINT-SERVE (v0.4, SPEC §13.9 "Serve grants") — the per-instance serve credential:
+ *  EXACTLY the instance's registered rails and nothing else. Subscribe: the queue-qualified
+ *  class rail, the plain scatter rail, and the own-instance rail per registered command plus
+ *  the derived `describe`, and the own epoch-pinned timer-fire subjects; publish: the
+ *  epoch-pinned egress (reply / `epe` events / `ept` schedule requests / `epr` record-write
+ *  ingress). No agent baseline of any kind — no chat/DM/anycast/presence/ctl, no `$JS.>`
+ *  (the effects/pool bind rows are the D14 credential assembly). The tuple MUST be the
+ *  branded grant `authorizeServeGrant` returned (registered instance, registered owner + fresh
+ *  name authority, registered command set, current epoch) — a raw or mutated tuple refuses
+ *  here, so serve authority is mintable only THROUGH the registry authorization. */
+function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
+  if (!opts.endpointServe)
+    throw new Error("permissionsFor: endpoint-serve requires opts.endpointServe (the authorized serve grant tuple)");
+  assertServeGrantAuthorized(opts.endpointServe);
+  const rows = epServeGrantRows(space, { ...opts.endpointServe, commands: [...opts.endpointServe.commands] });
+  return {
+    pub: { allow: rows.pub },
+    sub: { allow: [...rows.sub, `_INBOX_${pr.connId}.>`] },
   };
 }
 

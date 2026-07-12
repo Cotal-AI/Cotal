@@ -136,7 +136,11 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
 {
   const before = aclConsulted;
   const admin = forView(tok("admin", ["spawn", "admin"]), CONN) as Perms;
-  check("admin view subscribes the WHOLE space (the god-view tap)", (admin.sub?.allow ?? []).includes(`${spacePrefix(SPACE)}.>`), admin.sub);
+  // The god-view is the enumerated MESSAGING plane (SPEC 13.9/13.11): chat/inst/svc, never the
+  // space-wide `>` (it would plain-subscribe every v0.4 endpoint request rail).
+  check("admin view subscribes the messaging plane (chat/inst/svc), never the space-wide tap",
+    ["chat", "inst", "svc"].every((pl) => (admin.sub?.allow ?? []).includes(`${spacePrefix(SPACE)}.${pl}.>`))
+    && !(admin.sub?.allow ?? []).includes(`${spacePrefix(SPACE)}.>`), admin.sub);
   check("admin view mints without the channel ACL resolver", aclConsulted === before);
   check(
     "admin view carries NO chat publish (read-only by ACL)",

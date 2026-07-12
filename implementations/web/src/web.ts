@@ -7,7 +7,7 @@ import {
   CotalEndpoint,
   deliveryOf,
   parseSubject,
-  spaceWildcard,
+  spacePrefix,
   mintCreds,
   newIdentity,
   clearChannel,
@@ -161,16 +161,19 @@ export async function web(args: ParsedArgs): Promise<void> {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
   // Every comm on the mesh (chat / unicast / anycast) → push to the live feed. The admin cred
-  // allows the whole space, so the observer taps everything — DMs + anycast included.
-  const tapSubject = spaceWildcard(space);
-  ep.tap((subject, msg) => {
+  // allows exactly the MESSAGING plane (SPEC 13.9/13.11: chat + inst + svc, enumerated — never
+  // the space-wide `>`, which would also plain-subscribe the v0.4 endpoint request rails), so
+  // the tap is one subscription per plane.
+  const onTap = (subject: string, msg: unknown) => {
     const mode = deliveryOf(subject);
     if (!mode || !msg) return;
     // senderId is the subject's sender token — the *verified* publisher (the server
     // policed who could publish it), vs the advisory `from` in the payload.
     const senderId = parseSubject(subject)?.sender;
     broadcast("message", { mode, senderId, msg });
-  }, { subject: tapSubject });
+  };
+  for (const plane of ["chat", "inst", "svc"])
+    ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
 
   const httpServer = createServer(async (req, res) => {
     const path = (req.url ?? "/").split("?")[0];

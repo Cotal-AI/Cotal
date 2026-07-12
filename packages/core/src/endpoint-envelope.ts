@@ -436,3 +436,23 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
   }
   return value;
 }
+
+/** Validate a handler's output against the command's compiled output schema BEFORE the success
+ *  publish — the symmetric budgeted half of {@link assertArgsValid}, under the SAME fixed
+ *  §13.8 `validateBudgetMs` (read internally, never caller-tunable). Both failure classes are
+ *  structured `internal`: an invalid reply is a server bug (§13.3/§13.7), and an over-budget
+ *  output validation is the same bug class on the responder's side, never the caller's
+ *  `bad-request`. A void output is `undefined`, validated as `null` against the void schema,
+ *  mirroring the args side. */
+export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
+  const value = data === undefined ? null : data;
+  const started = Date.now();
+  const okValid = validate(value);
+  const elapsed = Date.now() - started;
+  if (elapsed > SCHEMA_PROFILE.validateBudgetMs)
+    fail("internal", `output validation took ${elapsed}ms (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; an over-budget output validation is a server bug, SPEC 13.7/13.8)`);
+  if (!okValid) {
+    const first = validate.errors?.[0];
+    fail("internal", `handler output does not validate against the output schema; refusing to publish an invalid reply (SPEC 13.7)${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
+  }
+}

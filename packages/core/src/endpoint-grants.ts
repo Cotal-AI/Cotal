@@ -144,14 +144,25 @@ export function epServePublishRows(space: string, endpoint: string, instanceId: 
   ];
 }
 
-/** All serve-credential subject-space rows for an instance serving `commands`. The `$JS.API`
- *  bind rows (effects/pool durables) ride the §13.12 stream binding, not this builder. */
+/** All serve-credential subject-space rows for an instance serving `commands`. The reserved
+ *  `describe` is DERIVED here — every endpoint serves it (§13.7), so this ONE assembly seam
+ *  emits its rails for every serve credential and an explicit `describe` in `commands` refuses
+ *  (mirroring {@link import("./endpoint-serve.js").serveEndpoint}'s construction rule: there is
+ *  no custom describe). The subscribe side also carries the instance's OWN epoch-pinned timer
+ *  FIRE row (§13.9 "Timer fire consume": `ept.<e>.<i>.<epoch>.*.fire` — consume only; the
+ *  publish side stays `.schedule`-only, no credential publishes `.armed`/`.fire`). The
+ *  `$JS.API` bind rows (effects/pool durables) ride the §13.12 stream binding, not this
+ *  builder. */
 export function epServeGrantRows(
   space: string,
   serve: { endpoint: string; instanceId: string; epoch: number; commands: string[] },
 ): { pub: string[]; sub: string[] } {
   if (serve.commands.length === 0) throw new Error(`serve grant for "${serve.endpoint}" needs at least one registered command`);
+  if (serve.commands.includes("describe"))
+    throw new Error(`"describe" is not a mintable serve command: it is reserved and derived here for every serve credential (SPEC 13.7/13.9)`);
   const sub: string[] = [];
-  for (const cmd of serve.commands) sub.push(...epServeSubscribeRows(space, serve.endpoint, serve.instanceId, cmd));
-  return { pub: epServePublishRows(space, serve.endpoint, serve.instanceId, serve.epoch), sub };
+  for (const cmd of [...serve.commands, "describe"]) sub.push(...epServeSubscribeRows(space, serve.endpoint, serve.instanceId, cmd));
+  const pub = epServePublishRows(space, serve.endpoint, serve.instanceId, serve.epoch); // validates the tuple's tokens + epoch
+  sub.push(`${spacePrefix(space)}.ept.${endpointToken(serve.endpoint)}.${assertLifecycleToken(serve.instanceId, "instanceId")}.${serve.epoch}.*.fire`);
+  return { pub, sub };
 }

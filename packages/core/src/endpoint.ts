@@ -966,7 +966,9 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Subscribe to a read-only observer feed. Defaults to the whole space; an observer under
    *  auth must pass `chatWildcard(space)` since its `sub.allow` only covers chat (DM/anycast
-   *  stay confidential), otherwise the space-wildcard subscribe is denied and the feed dies. */
+   *  stay confidential), and an admin must tap the messaging planes individually
+   *  (`chat`/`inst`/`svc` — its enumerated `sub.allow` excludes the v0.4 endpoint rails,
+   *  SPEC 13.9/13.11), otherwise the space-wildcard subscribe is denied and the feed dies. */
   tap(
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },

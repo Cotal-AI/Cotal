@@ -30,7 +30,7 @@ import {
   commitMember,
   chatSubject,
   chatWildcard,
-  spaceWildcard,
+  spacePrefix,
   channelFromChatSubscription,
   membershipBucket,
   membershipKey,
@@ -105,7 +105,10 @@ try {
   const adminConn = () => connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(adminCreds)), inboxPrefix: `_INBOX_${adminId.id}`, name: "cotal:web" });
   const webNc = await adminConn();
   conns.push(webNc);
-  webNc.subscribe(spaceWildcard(space)); // the whole-space god tap — self-excludes (yields no chat channel)
+  // The admin god-view is the enumerated MESSAGING plane (SPEC 13.9/13.11: chat/inst/svc; the
+  // space-wide `>` is broker-denied), so the real web tap is one sub per plane — chat.>
+  // exercises the <5-token guard, inst.>/svc.> the not-a-chat-subject guard.
+  for (const plane of ["chat", "inst", "svc"]) webNc.subscribe(`${spacePrefix(space)}.${plane}.>`);
   await webNc.flush();
 
   // --- a console-style observer: taps chatWildcard (`cotal.<space>.chat.>`) like `cotal console`. Must
@@ -156,7 +159,7 @@ try {
   check("alice's durable arm merged in (live ∪ durable)", !!aliceRec && eq(aliceRec.durable, ["general"]), aliceRec?.durable);
   check("durable-only member (no live conn) appears", !!bobRec && eq(bobRec.durable, ["deploys"]) && eq(bobRec.live, []), bobRec);
   const daveRec = out.get(membershipKey(pkey(dave.id)));
-  check("the web god-tap (whole-space sub) self-excludes (no membership record)", !out.has(membershipKey(pkey(adminId.id))), [...out.keys()]);
+  check("the web god-tap (messaging-plane subs) self-excludes (no membership record)", !out.has(membershipKey(pkey(adminId.id))), [...out.keys()]);
   check("a console-style chat.> tap self-excludes (no phantom reads-all node)", !out.has(membershipKey(pkey(consoleId.id))), [...out.keys()]);
   check("channelFromChatSubscription(chatWildcard) is null — pins the console parseSubject<5 branch", channelFromChatSubscription(space, chatWildcard(space)) === null);
   check("a broad-read agent (allowSubscribe '>') SURFACES as a `>` reader, not dropped", !!daveRec && daveRec.live.includes(">"), daveRec);

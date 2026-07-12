@@ -12,13 +12,14 @@
  */
 import type { KV } from "@nats-io/kv";
 import {
-  endpointToken, assertBoundedOwner, assertLifecycleToken,
+  endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken,
 } from "./endpoint-subjects.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, recordSpecKey, recordStatusKey, readRecord,
   createRecordEntry, updateRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
+import { assertDescriptorMatchesSpec, type DescribeDescriptor } from "./endpoint-serve.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -241,7 +242,12 @@ export async function freezeExpectedSet(kv: KV, endpoint: string): Promise<Froze
   const e = endpointToken(endpoint);
   const frozen: FrozenInstance[] = [];
   const unreadable = (err: unknown): never => {
-    if (err instanceof EpEnvelopeError) throw err; // invalid state stays loud; torn state is already failed-precondition
+    // Only the freeze's OWN classifications stay loud: malformed mediated-writer state
+    // (`internal`, §13.9) and the torn-state `failed-precondition` the record reader already
+    // makes. Every other failure — including a typed `permission-denied` from an
+    // access-checked read path — IS the unreadable-registry condition: it normalizes to
+    // `failed-precondition` (§13.5), never escapes as a weaker or misleading code.
+    if (err instanceof EpEnvelopeError && (err.code === "internal" || err.code === "failed-precondition")) throw err;
     const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
     (wrapped as Error & { cause?: unknown }).cause = err;
     throw wrapped;
@@ -271,4 +277,104 @@ export async function freezeExpectedSet(kv: KV, endpoint: string): Promise<Froze
   if (frozen.length === 0)
     throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances; an empty registry is never an empty scatter success (SPEC 13.5)`);
   return frozen;
+}
+
+// ---- serve-credential authorization (§13.9 "Serve grants") -------------------------------------
+
+/** A serve-credential grant tuple as {@link authorizeServeGrant} returns it: frozen, and
+ *  brand-registered so the credential mint (`permissionsFor`, profile `endpoint-serve`) can
+ *  refuse any tuple that did not pass registry authorization. The registry stays discovery
+ *  (§13.9) — this seam is what turns a REGISTRATION into mintable serve authority, so a raw
+ *  `{endpoint, instanceId, epoch, commands}` literal can never mint a serve credential. */
+export interface EpServeGrant {
+  endpoint: string;
+  instanceId: string;
+  epoch: number;
+  commands: readonly string[];
+}
+
+/** Brand registry: authorized tuple → its immutable authorized snapshot. Like the §13.12
+ *  consumer-config family bond, the snapshot (not object identity alone) is what emission
+ *  checks, so a post-authorization mutation can never widen the minted rows. */
+const AUTHORIZED_SERVE = new WeakMap<EpServeGrant, { endpoint: string; instanceId: string; epoch: number; commands: string[] }>();
+
+/**
+ * Authorize a serve-credential tuple against the REGISTERED service (§13.9: serving is granted
+ * authority, dual to calling — the registry is discovery, the serve grant is the authority).
+ * Runs inside the provisioner at mint time. The fence, in order:
+ *  1. the instance must be REGISTERED (its `svc….spec` record exists) — `failed-precondition`;
+ *  2. the credential's holder must BE the registered owner (`permission-denied`), and the name
+ *     authority is re-checked FRESH (`permission-denied` on drift; a name re-minted to another
+ *     owner cannot keep minting serve creds for the old registration's instances);
+ *  3. the descriptor must match the registered spec ({@link assertDescriptorMatchesSpec}) and
+ *     every minted command must be advertised by it — the registered command set is the
+ *     cluster documents', carried by digest in the spec, so the digest-bound descriptor is the
+ *     command source (`permission-denied` for a foreign command); `describe` is derived by the
+ *     row builder, never minted explicitly;
+ *  4. the epoch must EQUAL a fresh read of the authoritative mapping's `processEpoch`
+ *     (`expired`): a serve credential binds the CURRENT incarnation — minting another epoch
+ *     would arm a superseded (or not-yet-current) incarnation's epoch-pinned egress.
+ */
+export async function authorizeServeGrant(
+  kv: KV,
+  args: {
+    endpoint: string;
+    instanceId: string;
+    epoch: number;
+    commands: string[];
+    descriptor: DescribeDescriptor;
+    holder: { owner: string };
+    authority: ServiceNameAuthority;
+    readProcessEpoch: () => Promise<number> | number;
+  },
+): Promise<EpServeGrant> {
+  const iId = assertLifecycleToken(args.instanceId, "instanceId");
+  if (!Number.isSafeInteger(args.epoch) || args.epoch < 0)
+    throw new EpEnvelopeError("internal", `epoch ${args.epoch} is not an unsigned integer`);
+  const specEntry = await kv.get(recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId]));
+  if (!specEntry || specEntry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `no registered spec for "${args.endpoint}/${args.instanceId}"; a serve credential is minted only for a REGISTERED instance (SPEC 13.9)`);
+  const spec = parseServiceSpec(decodeJson(specEntry.value, recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId])), { endpoint: args.endpoint });
+  assertBoundedOwner(args.holder.owner, "serve credential holder");
+  if (args.holder.owner !== spec.owner)
+    throw new EpEnvelopeError("permission-denied", `the serve credential holder "${args.holder.owner}" is not the registered owner "${spec.owner}" of "${args.endpoint}" (SPEC 13.9: serving is the registered owner's authority)`);
+  assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
+  assertDescriptorMatchesSpec(args.descriptor, spec);
+  if (args.commands.length === 0)
+    throw new EpEnvelopeError("failed-precondition", `a serve grant for "${args.endpoint}" needs at least one registered command`);
+  if (new Set(args.commands).size !== args.commands.length)
+    throw new EpEnvelopeError("failed-precondition", `the serve grant's command list carries duplicates`);
+  const advertised = new Set(args.descriptor.clusters.flatMap((c) => c.commands));
+  for (const cmd of args.commands) {
+    assertCommandToken(cmd);
+    if (cmd === "describe")
+      throw new EpEnvelopeError("failed-precondition", `"describe" is reserved and derived on every serve credential, never minted explicitly (SPEC 13.7/13.9)`);
+    if (!advertised.has(cmd))
+      throw new EpEnvelopeError("permission-denied", `command "${cmd}" is not part of "${args.endpoint}"'s registered contract surface (SPEC 13.9: the serve grant binds the REGISTERED command set)`);
+  }
+  const current = await args.readProcessEpoch();
+  if (!Number.isSafeInteger(current) || current < 0)
+    throw new EpEnvelopeError("internal", `the authoritative mapping read returned ${JSON.stringify(current)}, not an unsigned processEpoch`);
+  if (args.epoch !== current)
+    throw new EpEnvelopeError("expired", `serve grant for epoch ${args.epoch} but the authoritative mapping's current processEpoch is ${current}; a serve credential binds the CURRENT incarnation only (SPEC 13.1/13.9)`);
+  const grant: EpServeGrant = Object.freeze({
+    endpoint: spec.endpoint,
+    instanceId: iId,
+    epoch: args.epoch,
+    commands: Object.freeze([...args.commands]) as readonly string[],
+  });
+  AUTHORIZED_SERVE.set(grant, { endpoint: spec.endpoint, instanceId: iId, epoch: args.epoch, commands: [...args.commands] });
+  return grant;
+}
+
+/** The mint-side check: `serve` must be a tuple {@link authorizeServeGrant} returned, field-
+ *  for-field equal to its authorized snapshot. A structural copy, a raw literal, or a mutated
+ *  tuple refuses — the mint consumes only provisioner-authorized serve authority. */
+export function assertServeGrantAuthorized(serve: { endpoint: string; instanceId: string; epoch: number; commands: readonly string[] }): void {
+  const minted = AUTHORIZED_SERVE.get(serve as EpServeGrant);
+  if (!minted)
+    throw new EpEnvelopeError("permission-denied", "the serve tuple was not authorized against the registered service (authorizeServeGrant); a raw tuple never mints a serve credential (SPEC 13.9)");
+  if (minted.endpoint !== serve.endpoint || minted.instanceId !== serve.instanceId || minted.epoch !== serve.epoch
+    || minted.commands.length !== serve.commands.length || minted.commands.some((cmd, i) => serve.commands[i] !== cmd))
+    throw new EpEnvelopeError("permission-denied", "the serve tuple diverges from its authorized snapshot; refusing to mint from mutated serve authority (SPEC 13.9)");
 }
