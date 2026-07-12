@@ -63,6 +63,13 @@ rejects("a malformed traceparent is bad-request (W3C grammar enforced)", "bad-re
   () => parseEndpointRequest({ ...goodReq, correlation: { traceparent: "00-abc-def-01" } }));
 rejects("an all-zero trace-id is bad-request (invalid per W3C)", "bad-request",
   () => parseEndpointRequest({ ...goodReq, correlation: { traceparent: `00-${"0".repeat(32)}-b7ad6b7169203331-01` } }));
+rejects("a version-00 traceparent with an extension tail is bad-request (v00 is exactly 55 chars)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, correlation: { traceparent: `${TP}-extra` } }));
+rejects("an oversized future-version traceparent is bad-request (finite profile bound)", "bad-request",
+  () => parseEndpointRequest({ ...goodReq, correlation: { traceparent: `01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01-${"x".repeat(1000)}` } }));
+c("a bounded future-version traceparent tail is accepted (W3C forward compatibility)",
+  parseEndpointRequest({ ...goodReq, correlation: { traceparent: "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01-extra" } })
+    .correlation?.traceparent?.startsWith("01-") === true);
 rejects("a control character in tracestate is bad-request (no CR/LF crosses the boundary)", "bad-request",
   () => parseEndpointRequest({ ...goodReq, correlation: { tracestate: "a=b\r\nX-Evil: 1" } }));
 rejects("an oversized baggage is bad-request (W3C byte bound)", "bad-request",

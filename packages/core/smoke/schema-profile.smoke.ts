@@ -117,16 +117,39 @@ cache.compile({ root: { type: "boolean" } });
 ok("capacity bounds the cache", cache.size() === 2);
 ok("an evicted closure recompiles to a fresh validator", cache.compile({ root: member }).validate !== a.validate);
 
-// 11) The structural pattern gate: length alone does not bound backtracking.
+// 11) The safe-subset pattern gate: length alone does not bound backtracking, and a
+//     nested-quantifier denylist alone does not either.
 refuses("nested-repetition pattern refused (the ^(a+)+$ exponential class)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(a+)+$" } }), "repeats a group");
 refuses("bounded-brace repetition of a quantified group refused", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(a*){2,}$" } }), "repeats a group");
 refuses("backreference pattern refused", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(a)\\1$" } }), "backreference");
+refuses("ambiguous alternation under repetition refused (the ^(a|aa)+$ exponential class)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a|aa)+$" } }), "ambiguous alternation");
+refuses("overlapping variable repetitions in sequence refused (the a*a* polynomial class)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^a*a*a*b$" } }), "overlapping variable repetitions");
+refuses("overlap through a nullable separator refused (a*b?a*)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^a*b?a*$" } }), "overlapping variable repetitions");
+refuses("repeated nullable body refused ((a?)*)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a?)*$" } }), "repeats a group");
+refuses("lookaround refused (outside the safe subset)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(?=a)ab$" } }), "safe subset");
 ok("the (…)? label idiom still compiles (a ? adds one alternative, not per-character ambiguity)", (() => {
   const v = compileContractSchema({ root: { type: "string", pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" } });
   return v("ok-1") === true && v("-no") === false;
+})());
+ok("disjoint alternation under repetition still compiles ((a|b)+)", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^(a|b)+$" } });
+  return v("abab") === true && v("c") === false;
+})());
+ok("disjoint sequential repetitions and fixed counts still compile", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^[a-z]+[0-9]*-\\d{4}$" } });
+  return v("ab12-2026") === true && v("ab-26") === false;
+})());
+ok("the digest-shape pattern still compiles", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" } });
+  return v(`sha256:${"a".repeat(64)}`) === true && v("sha256:xyz") === false;
 })());
 
 // 12) I-JSON violations in a schema surface as contract-invalid, never a raw canonicalizer error.

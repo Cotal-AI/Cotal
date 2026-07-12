@@ -193,10 +193,13 @@ function grammar<T>(fn: () => T): T {
   }
 }
 
-/** W3C `traceparent`: version, 32-hex trace-id, 16-hex parent-id, 2-hex flags; a higher-version
- *  value may carry additional printable-ASCII fields after the flags (parsed leniently per the
- *  W3C forward-compatibility rule). Version `ff` and all-zero ids are invalid per the spec. */
+/** W3C `traceparent`: version, 32-hex trace-id, 16-hex parent-id, 2-hex flags. Version `00` is
+ *  EXACTLY this 55-character form — no extension tail. A higher version may carry additional
+ *  printable-ASCII fields after the flags (the W3C forward-compatibility rule), bounded to a
+ *  finite profile size so nothing unbounded is retained for propagation. Version `ff` and
+ *  all-zero ids are invalid per the spec. */
 const TRACEPARENT = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}(-[\x21-\x7e]+)?$/;
+const MAX_TRACEPARENT_BYTES = 256;
 const CORRELATION_BYTE_BOUNDS = { tracestate: 512, baggage: 8192 } as const;
 
 /** Correlation is validated, never trusted opaque (§13.3 "per W3C Trace Context"): these fields
@@ -210,9 +213,13 @@ function pickCorrelation(v: unknown): EpCorrelation | undefined {
   const out: EpCorrelation = {};
   if (o.traceparent !== undefined) {
     const tp = asString(o.traceparent, "correlation.traceparent");
+    if (Buffer.byteLength(tp, "utf8") > MAX_TRACEPARENT_BYTES)
+      fail("bad-request", `correlation.traceparent exceeds ${MAX_TRACEPARENT_BYTES} bytes`);
     const m = TRACEPARENT.exec(tp);
     if (!m || m[1] === "ff" || /^0+$/.test(m[2]) || /^0+$/.test(m[3]))
       fail("bad-request", "correlation.traceparent is not a valid W3C Trace Context traceparent");
+    if (m[1] === "00" && m[4] !== undefined)
+      fail("bad-request", "correlation.traceparent version 00 is exactly 55 characters — it carries no extension fields");
     out.traceparent = tp;
   }
   for (const k of ["tracestate", "baggage"] as const) {

@@ -10,6 +10,7 @@
  */
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
+import { assertSafePattern } from "./safe-pattern.js";
 
 /** Registration-time bounds (SPEC §13.7/§13.8). Fixed by the profile, not caller-tunable. */
 export const SCHEMA_PROFILE = {
@@ -88,54 +89,17 @@ function structuralDepth(v: unknown, depth = 0): number {
 }
 
 /** The bounded-pattern-complexity gate (§13.7/§13.8 "bounded pattern complexity", "bounded
- *  regex"). A LENGTH bound alone does not bound backtracking (`^(a+)+$` is 8 characters and
- *  exponential), so the gate is structural and conservative:
- *   - length ≤ {@link SCHEMA_PROFILE.maxPatternChars};
- *   - NO backreferences (`\1`…`\9`), which admit exponential matching;
- *   - NO nested REPETITION: an unbounded/iterating quantifier (`*`, `+`, `{…}`) applied to a
- *     group that itself contains a quantifier (the classic `^(a+)+$` exponential-backtracking
- *     class). A `?` over such a group is exempt — it contributes one alternative in total,
- *     never per-input-character ambiguity (this admits the common `(…)?` label idiom).
- *  Conservative means some safe patterns are refused; a refused pattern is rewritten by its
- *  author at registration time (`contract-invalid`), never probed at validation time. Residual
- *  ambiguous-alternation cost is bounded by the threat model: patterns come from REGISTERED,
- *  mediated contract artifacts (an authenticated author), never from request payloads. */
+ *  regex"): the {@link assertSafePattern} SAFE SUBSET — a length bound plus an admission
+ *  analysis that refuses nested repetition, repeated nullable or ambiguous-alternation bodies,
+ *  overlapping variable repetitions in sequence, backreferences, lookarounds, and anything it
+ *  cannot parse. Conservative by construction: uncertainty refuses. A refused pattern is
+ *  rewritten by its author at registration time (`contract-invalid`), never probed at
+ *  validation time — the post-hoc validate budget can only classify a stall, not prevent it. */
 function assertBoundedPattern(p: string, label: string, where: string): void {
-  if (p.length > SCHEMA_PROFILE.maxPatternChars)
-    throw new ContractInvalidError(`${label}: ${where} of ${p.length} characters exceeds the profile complexity bound (${SCHEMA_PROFILE.maxPatternChars})`);
-  // One escape/class-aware scan: track, per open group, whether any quantifier occurs inside it.
-  const stack: boolean[] = [false]; // [0] = top level
-  let inClass = false;
-  for (let i = 0; i < p.length; i++) {
-    const ch = p[i];
-    if (ch === "\\") {
-      const next = p[i + 1];
-      if (!inClass && next >= "1" && next <= "9")
-        throw new ContractInvalidError(`${label}: ${where} uses a backreference (\\${next}), refused by the profile: ${JSON.stringify(p)}`);
-      i++; // the escaped character is literal
-      continue;
-    }
-    if (inClass) {
-      if (ch === "]") inClass = false;
-      continue;
-    }
-    if (ch === "[") { inClass = true; continue; }
-    if (ch === "(") { stack.push(false); continue; }
-    if (ch === ")") {
-      const hadQuant = stack.length > 1 ? (stack.pop() as boolean) : false;
-      const next = p[i + 1];
-      if (next === "*" || next === "+" || next === "?" || next === "{") {
-        if (hadQuant && next !== "?")
-          throw new ContractInvalidError(`${label}: ${where} repeats a group that itself contains a quantifier (exponential backtracking class): ${JSON.stringify(p)}`);
-        stack[stack.length - 1] = true;
-        i++; // consume the quantifier head; a `{m,n}` body scans as literals below
-      } else if (hadQuant) {
-        stack[stack.length - 1] = true; // unquantified group: its inner quantifiers count at the parent level
-      }
-      continue;
-    }
-    if (ch === "*" || ch === "+") stack[stack.length - 1] = true;
-    else if (ch === "{" && /^\{\d+(,\d*)?\}/.test(p.slice(i))) stack[stack.length - 1] = true;
+  try {
+    assertSafePattern(p, SCHEMA_PROFILE.maxPatternChars);
+  } catch (e) {
+    throw new ContractInvalidError(`${label}: ${where} refused: ${(e as Error).message}`);
   }
 }
 
