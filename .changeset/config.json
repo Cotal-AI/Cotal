@@ -10,6 +10,7 @@
       "@cotal-ai/cli",
       "@cotal-ai/manager",
       "@cotal-ai/delivery",
+      "@cotal-ai/web",
       "@cotal-ai/cmux",
       "@cotal-ai/orca",
       "@cotal-ai/tmux",
