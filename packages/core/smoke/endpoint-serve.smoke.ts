@@ -135,26 +135,30 @@ const DC_MIXED = register(DOC_MIXED);
 const readClusterArtifact = (d: string) => store.get(d);
 
 const authority: ServiceNameAuthority = {
-  isOperatorOwner: (o) => o === "u_op",
-  domainOwnerOf: (name) => (name === "com.acme.builds" ? "u_acme" : undefined),
-  authorityRevision: () => 0,
+  // ONE atomic snapshot: a core name needs operator authority (u_op); a reverse-DNS name binds to
+  // its registered owner (com.acme.builds -> u_acme); an unregistered name is never authorized.
+  authorize: (name, owner) => ({
+    authorized: name.includes(".") ? (name === "com.acme.builds" && owner === "u_acme") : owner === "u_op",
+    revision: 0,
+  }),
 };
 
 // Per-instance §13.1 issuance-gate barriers so every registration serializes on a per-(endpoint,
 // instanceId) gate. This smoke exercises the registry/serve/describe SURFACE; the fence internals
-// (revision-pinned CAS, enumerate/revoke/evict, drift) are proven in endpoint-serve-auth.smoke.ts.
-// Here the barrier only needs to be a faithful freeze→(spec write)→reopen writer.
-const gateStates = new Map<string, { state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+// (revision-pinned CAS, freeze token, verified evict, drift) are proven in endpoint-serve-auth.smoke.ts.
+// Here the barrier only needs to be a faithful freeze->(spec write)->reopen writer.
+const gateStates = new Map<string, { lifecycleUid: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
 function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
   const key = `${endpoint}/${instanceId}`;
-  if (!gateStates.has(key)) gateStates.set(key, { state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
+  if (!gateStates.has(key)) gateStates.set(key, { lifecycleUid: instanceId, state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
   const g = gateStates.get(key)!;
   return {
     observe: () => ({ ...g }),
-    freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return false; g.state = "frozen"; g.revision++; return true; },
+    freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return null; g.state = "frozen"; g.revision++; return g.revision; },
     enumerate: () => [],
     revoke: () => {},
-    reopen: (succ) => { g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; },
+    evict: () => true,
+    reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
   };
 }
 /** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
@@ -244,7 +248,7 @@ try {
   // take over an instanceId registered under the old one.
   const acmeSpec: ServiceSpec = { endpoint: "com.acme.builds", owner: "u_acme", clusterDigests: [DC_MAIN], protocol: { v: 1 } };
   await reg(kv, { spec: acmeSpec, instanceId: IID_A, registrant: { owner: "u_acme" }, authority });
-  const driftedAuthority: ServiceNameAuthority = { ...authority, domainOwnerOf: () => "u_evil" };
+  const driftedAuthority: ServiceNameAuthority = { authorize: (_n, owner) => ({ authorized: owner === "u_evil", revision: 0 }) };
   await rejects("a re-registration cannot change an instance's ownership (id reuse across identities)",
     () => reg(kv, { spec: { ...acmeSpec, owner: "u_evil" }, instanceId: IID_A, registrant: { owner: "u_evil" }, authority: driftedAuthority }), "permission-denied");
 
@@ -357,7 +361,7 @@ try {
   await rejects("a holder that is not the registered owner cannot authorize (foreign name)",
     () => authorizeA({ holder: { owner: "u_abc" } }), "permission-denied");
   await rejects("name-authority DRIFT refuses fresh (the old registration cannot keep minting)",
-    () => authorizeA({ authority: { ...authority, isOperatorOwner: () => false } }), "permission-denied");
+    () => authorizeA({ authority: { authorize: () => ({ authorized: false, revision: 0 }) } }), "permission-denied");
   await rejects("a serve grant for a NON-CURRENT epoch refuses expired (only the current incarnation mints)",
     () => authorizeA({ epoch: 2 }), "expired");
   throws("a RAW unbranded serve artifact refuses",

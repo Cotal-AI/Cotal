@@ -101,42 +101,36 @@ export function parseServiceStatus(raw: unknown): ServiceStatus {
 
 /** The deployment's name-authority source (pluggable — identity is an adapter, §13.9): core
  *  single-label names require operator provisioning authority; reverse-DNS names bind to their
- *  REGISTERED domain owner. Both answers come from the deployment's trusted registry, never
- *  from the registrant's claim. */
+ *  REGISTERED domain owner. The answer comes from the deployment's trusted registry, never from
+ *  the registrant's claim. */
 export interface ServiceNameAuthority {
-  /** True iff `owner` holds operator provisioning authority for core (single-label) names. */
-  isOperatorOwner(owner: string): boolean;
-  /** The registered owner of a reverse-DNS name, or `undefined` when unregistered (fail-closed). */
-  domainOwnerOf(name: string): string | undefined;
-  /** The store revision of the NAME's authority binding (§13.9): a monotonic coordinate that
-   *  advances whenever the name is transferred to a different owner or its operator-authority
-   *  grant changes. It is a THIRD currency dimension the serve mint fences on (§13.1: a read is
-   *  never a fence). {@link authorizeServeGrant} records it into the artifact, the issuance gate
-   *  carries it, and {@link finalizeServeIssuance} refuses when it has advanced — so a name
-   *  transfer AFTER authorization can never release an old-owner credential, exactly as a
-   *  takeover (epoch) or re-registration (registrationRevision) cannot. The production reader is
-   *  the trusted name-authority registry (§13.9); a transfer freezes+reopens every affected
-   *  instance gate advancing this coordinate. */
-  authorityRevision(name: string): number;
+  /** ONE atomic leader-served authority decision for `(name, owner)` (§13.9), returning the
+   *  authorization result AND the name-authority binding revision from a SINGLE read so the two
+   *  can never TEAR across a concurrent transfer (a read is never a fence, §13.1; the returned
+   *  revision is a THIRD currency dimension bound into the issuance gate and re-checked at mint,
+   *  so a transfer AFTER authorization can never release an old-owner credential). `authorized`
+   *  is true iff `owner` may serve `name`: for a core single-label name, iff `owner` holds
+   *  operator provisioning authority; for a reverse-DNS name, iff `owner` is the REGISTERED
+   *  domain owner (an unregistered name is never authorized, fail-closed). `revision` advances
+   *  whenever the name transfers or its operator-authority grant changes. */
+  authorize(name: string, owner: string): { authorized: boolean; revision: number };
 }
 
-/** Enforce §13.9 name authority before a registration is written: an endpoint name binds to
- *  exactly ONE owner (§13.2), so the name alone determines the serving owner — a registration
- *  claiming a name its owner does not hold fails `permission-denied`, and an UNREGISTERED
- *  reverse-DNS name fails closed rather than being adopted first-come. */
-export function assertServiceNameAuthority(endpoint: string, owner: string, authority: ServiceNameAuthority): void {
+/** Enforce §13.9 name authority before a registration/serve grant is minted, from ONE atomic
+ *  snapshot: an endpoint name binds to exactly ONE owner (§13.2), so a registration claiming a
+ *  name its owner does not hold fails `permission-denied`, and an UNREGISTERED reverse-DNS name
+ *  fails closed. Returns the name-authority binding REVISION read atomically WITH the decision —
+ *  the caller binds it into the issuance gate so a transfer between decision and mint is fenced,
+ *  never a torn owner-vs-revision read. */
+export function assertServiceNameAuthority(endpoint: string, owner: string, authority: ServiceNameAuthority): number {
   endpointToken(endpoint); // grammar first: a malformed name is refused before any authority answer
   assertBoundedOwner(owner, "service owner");
-  if (!endpoint.includes(".")) {
-    if (!authority.isOperatorOwner(owner))
-      throw new EpEnvelopeError("permission-denied", `core service name "${endpoint}" requires operator provisioning authority; owner "${owner}" does not hold it (SPEC 13.9)`);
-    return;
-  }
-  const registered = authority.domainOwnerOf(endpoint);
-  if (registered === undefined)
-    throw new EpEnvelopeError("permission-denied", `reverse-DNS service name "${endpoint}" has no registered owner; an unregistered name is never adopted first-come (SPEC 13.9)`);
-  if (registered !== owner)
-    throw new EpEnvelopeError("permission-denied", `reverse-DNS service name "${endpoint}" is registered to "${registered}", not "${owner}" (SPEC 13.9)`);
+  const snapshot = authority.authorize(endpoint, owner);
+  if (!snapshot.authorized)
+    throw new EpEnvelopeError("permission-denied", `service name "${endpoint}" does not authorize owner "${owner}" (SPEC 13.9: a core name needs operator authority; a reverse-DNS name binds to its registered owner and an unregistered one is never adopted first-come)`);
+  if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0)
+    throw new EpEnvelopeError("internal", `the name-authority revision for "${endpoint}" is ${JSON.stringify(snapshot.revision)}, not an unsigned integer`);
+  return snapshot.revision;
 }
 
 // ---- registration (spec writes, the `provisioner-registration` principal) ---------------------
@@ -182,63 +176,84 @@ export async function registerServiceInstance(
   const obs = await args.barrier.observe();
   if (obs === null)
     throw new EpEnvelopeError("failed-precondition", `no issuance gate for instance "${args.instanceId}"; a registration writes only behind the provisioner-created gate (SPEC 13.1)`);
+  if (obs.lifecycleUid !== args.instanceId)
+    throw new EpEnvelopeError("internal", `the issuance gate is for lifecycle "${obs.lifecycleUid}", not "${args.instanceId}"; a registration drives only its OWN instance's gate (SPEC 13.1)`);
   if (obs.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`);
   if (obs.state !== "open")
     throw new EpEnvelopeError("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it — re-read and re-decide (SPEC 13.8)`);
-  if (!(await args.barrier.freeze(obs.revision)))
+  const token = await args.barrier.freeze(obs.revision);
+  if (token === null)
     throw new EpEnvelopeError("conflict", `a concurrent barrier froze the issuance gate for "${args.instanceId}" first; re-read and re-decide (SPEC 13.1/13.8)`);
 
-  // The gate is frozen; every exit below MUST reopen it — at the original coordinate if nothing
-  // was written, or at the successor once the spec advanced.
-  let newRev: number;
+  // The gate is frozen; every exit below reopens it (token-pinned, at the original coordinate) or
+  // deliberately leaves it FROZEN for reconciliation. The successor the completing reopen targets.
+  const successorAt = (registrationRevision: number): EpGateSuccessor => ({
+    generation: obs.generation + 1, processEpoch: obs.processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
+  });
+
+  // PHASE 1 — ownership stability (a LOCAL read; a mismatch or a read failure is a DEFINITE
+  // no-write and no revoke has run, so reopen the ORIGINAL coordinate and rethrow).
+  let current: Awaited<ReturnType<KV["get"]>>;
   try {
-    const current = await kv.get(key);
+    current = await kv.get(key);
     if (current && current.operation === "PUT") {
       const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
       if (stored.owner !== spec.owner)
         throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
-      newRev = await updateRecordEntry(kv, key, spec, current.revision);
-    } else {
-      newRev = await createRecordEntry(kv, key, spec);
     }
   } catch (err) {
-    // Nothing was written — restore the gate to its original currency (bumped generation, so a
-    // mid-flight mint's revision pin still loses) and rethrow the original failure.
-    await reopenGateAfterAbort(args.barrier, obs, err);
+    await reopenGateAfterAbort(args.barrier, token, successorAt(obs.registrationRevision), err);
     throw err;
   }
 
-  // The spec advanced to newRev: evict every credential the superseded surface authorized, then
-  // reopen at the successor registrationRevision. If the barrier does not complete, the gate is
-  // left frozen (fail-closed: no mint proceeds on a frozen gate) for reconciliation.
+  // PHASE 2 — revoke + VERIFIED eviction of the superseded family BEFORE publishing the new spec
+  // (§13.1 order: old authority must die before new authority is visible). Fail-closed: if any
+  // revoke/eviction cannot be verified, leave the gate FROZEN for reconciliation — never reopen,
+  // or old credentials could come back to life against a pending re-registration.
   try {
-    for (const row of await args.barrier.enumerate())
-      if (row.state === "active") await args.barrier.revoke(row);
-    await args.barrier.reopen({
-      generation: obs.generation + 1,
-      processEpoch: obs.processEpoch,
-      registrationRevision: newRev,
-      nameAuthorityRevision: obs.nameAuthorityRevision,
-    });
+    const active = (await args.barrier.enumerate()).filter((row) => row.state === "active");
+    for (const row of active) await args.barrier.revoke(row);
+    for (const holderPrincipal of new Set(active.map((row) => row.holderPrincipal)))
+      if (!(await args.barrier.evict(holderPrincipal)))
+        throw new Error(`principal "${holderPrincipal}" is not verified evicted`);
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the issuance barrier did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    throw new EpEnvelopeError("unavailable", `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen for reconciliation, no new spec published (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+  }
+
+  // PHASE 3 — publish the new spec. ANY write error stays FROZEN for reconciliation, never
+  // reopening the old coordinate: the KV may have committed while the ack was lost (an ambiguous
+  // outcome), and reopening old would release stale-surface credentials against a spec that
+  // advanced. Under the frozen gate THIS barrier is the sole spec-key writer, so a write error is
+  // genuinely infra/ambiguous — never a concurrent-CAS loss we could treat as a definite no-write.
+  let newRev: number;
+  try {
+    newRev = current && current.operation === "PUT"
+      ? await updateRecordEntry(kv, key, spec, current.revision)
+      : await createRecordEntry(kv, key, spec);
+  } catch (err) {
+    throw new EpEnvelopeError("unavailable", `the re-registration spec-write outcome is ambiguous (it may have committed); the gate is left frozen for reconciliation, never reopened at the old coordinate (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+  }
+
+  // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
+  // may reopen; a lost CAS means a reconciler/newer barrier superseded us → leave frozen.
+  try {
+    if (!(await args.barrier.reopen(token, successorAt(newRev))))
+      throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
+  } catch (err) {
+    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
   return { registrationRevision: newRev };
 }
 
-/** Restore a barrier-frozen gate to `open` at its ORIGINAL currency (bumped generation) after a
- *  registration aborted before any spec write. A failed reopen leaves the gate frozen for
- *  reconciliation and is surfaced with the aborting cause attached (§13.1: fail closed, never a
- *  silently stuck gate). */
-async function reopenGateAfterAbort(barrier: EpIssuanceBarrier, obs: EpGateState, cause: unknown): Promise<void> {
+/** Reopen a barrier-frozen gate (token-pinned) after a registration aborted before any spec write
+ *  or revoke — the gate returns to `open` at the given successor. A lost or failed reopen leaves
+ *  the gate frozen for reconciliation and is surfaced with the aborting cause attached (§13.1:
+ *  fail closed, never a silently stuck gate). */
+async function reopenGateAfterAbort(barrier: EpIssuanceBarrier, token: number, successor: EpGateSuccessor, cause: unknown): Promise<void> {
   try {
-    await barrier.reopen({
-      generation: obs.generation + 1,
-      processEpoch: obs.processEpoch,
-      registrationRevision: obs.registrationRevision,
-      nameAuthorityRevision: obs.nameAuthorityRevision,
-    });
+    if (await barrier.reopen(token, successor)) return;
+    throw new Error("the reopen CAS lost its freeze token");
   } catch (err) {
     const e = new EpEnvelopeError("unavailable", `registration aborted and the issuance gate could not be reopened; it is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
     (e as Error & { cause?: unknown }).cause = cause;
@@ -477,13 +492,12 @@ export async function authorizeServeGrant(
   assertBoundedOwner(args.holder.owner, "serve credential holder");
   if (args.holder.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the serve credential holder "${args.holder.owner}" is not the registered owner "${spec.owner}" of "${args.endpoint}" (SPEC 13.9: serving is the registered owner's authority)`);
-  assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
-  // §13.9 name-authority coordinate: the revision the owner was verified against, RECORDED (not
-  // fenced — a read is never a fence, §13.1). The issuance gate carries it and the mint refuses
-  // on drift, so a name transfer after this authorization can never release an old-owner cred.
-  const nameAuthorityRevision = args.authority.authorityRevision(spec.endpoint);
-  if (!Number.isSafeInteger(nameAuthorityRevision) || nameAuthorityRevision < 0)
-    throw new EpEnvelopeError("internal", `the name-authority revision for "${spec.endpoint}" is ${JSON.stringify(nameAuthorityRevision)}, not an unsigned integer`);
+  // §13.9 name authority: ONE atomic snapshot binds the owner DECISION and the binding REVISION
+  // together (never a torn owner-vs-revision read, engineer/distsys/security). The revision is
+  // RECORDED (not fenced here — a read is never a fence, §13.1); the issuance gate carries it and
+  // the mint refuses on drift, so a name transfer after this authorization can never release an
+  // old-owner credential.
+  const nameAuthorityRevision = assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
 
   // §13.7 two-stage content-address read: the registered digest is a CLOSURE digest naming a
   // MANIFEST; the manifest's `root` names the cluster DOCUMENT. Both fetched, both verified —
@@ -610,6 +624,10 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  barrier bumps it, so a superseded mint's rebuilt CAS loses even if two coordinates coincide).
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export interface EpGateState {
+  /** The gate's OWN instance identity (§13.1 `gate.<lifecycleUid>`): a mint or a barrier binds
+   *  its serve instance to the gate it was handed, so a caller that passes the WRONG instance's
+   *  gate (even with coincidentally matching coordinates) is refused, never confused. */
+  lifecycleUid: string;
   state: "open" | "frozen" | "retired";
   generation: number;
   processEpoch: number;
@@ -628,17 +646,24 @@ export interface EpGateSuccessor {
   nameAuthorityRevision: number;
 }
 
-/** One staged credential-ledger row (§13.1 `cred.`/`bysrc.`): written BEFORE the winning CAS and
- *  carrying the NORMATIVE ledger fields (§13.1) so a later barrier's enumeration can find the
- *  credential, prove which surface/incarnation it covered, and EVICT its holder:
- *   - `holderPrincipal` (owner+actor) is what cluster-wide eviction targets;
+/** One staged credential-ledger row (§13.1 `cred.<lifecycleUid>.<credentialId>`): written BEFORE
+ *  the winning CAS and carrying the NORMATIVE ledger fields (§13.1) so a later barrier's
+ *  enumeration can find the credential, prove which surface/incarnation it covered, and EVICT its
+ *  holder:
+ *   - `credentialId` is the PER-ISSUED-JWT identity (a digest of the credential), so standing
+ *     renewal (multiple JWTs for one nkey) writes a DISTINCT row each time — the §13.1 invariant
+ *     "every credential ever released resolves to a row" holds, and monotonic `state` is never
+ *     overwritten by a re-mint;
+ *   - `credentialKey` is the stable holder NKEY the broker revokes by (many JWTs share it);
+ *   - `holderPrincipal` (owner.actor) is what cluster-wide eviction targets;
  *   - `lifecycleUid` is the instance's never-reused lifecycle identity (the gate key);
- *   - `sourceChain` is the credential's provenance lineage (who delegated it);
+ *   - `sourceChain` is the credential's §13.1 issuance lineage (`root` | `handle.…` | `session.…`);
  *   - `state` is monotonic — a barrier flips `active`→`revoked`, never back;
  *   - `exp` is the credential's expiry (for ledger audit/GC);
  *   - the three currency coordinates + `generation` pin the incarnation the surface covered. */
 export interface EpServeLedgerRow {
   credentialId: string;
+  credentialKey: string;
   holderPrincipal: string;
   lifecycleUid: string;
   sourceChain: readonly string[];
@@ -661,7 +686,10 @@ export interface EpIssuanceGate {
    *  closed — a serve credential never mints against a missing gate). */
   observe: () => Promise<EpGateState | null> | EpGateState | null;
   /** Write the staged credential-ledger row (the §13.1 "write rows" step), before the CAS.
-   *  Create-safe: staging the same `credentialId` twice is the caller's retry, not a new row. */
+   *  CREATE-ONLY / idempotent-if-identical: staging a `credentialId` that is already present must
+   *  succeed only when the row is byte-identical (a retry of the SAME issuance), and CONFLICT when
+   *  it differs (a different holder/lineage must never overwrite the row revocation/audit relies
+   *  on). Because `credentialId` is a per-JWT digest, a re-mint is a new id, never an overwrite. */
   stage: (row: EpServeLedgerRow) => Promise<void> | void;
   /** Revision-pinned CAS: keep the gate `open`, unchanged, at `expectedRevision`. TRUE iff this
    *  mint won the single-key serialization; FALSE on any change (a freeze/retire, or a
@@ -683,18 +711,28 @@ export interface EpIssuanceGate {
 export interface EpIssuanceBarrier {
   /** Leader-served read of the gate (same key as the mint's {@link EpIssuanceGate.observe}). */
   observe: () => Promise<EpGateState | null> | EpGateState | null;
-  /** Revision-pinned CAS `open` → `frozen` at `expectedRevision`. TRUE iff this barrier won the
-   *  single key; FALSE on any change (another barrier froze/reopened, or the gate retired) — the
-   *  caller MUST abort and never write the spec, so no writer proceeds on a stale gate. */
-  freeze: (expectedRevision: number) => Promise<boolean> | boolean;
+  /** Revision-pinned CAS `open` → `frozen` at `expectedRevision`, returning the FENCING TOKEN
+   *  (the frozen store revision) on success, or `null` on loss (another barrier froze/reopened,
+   *  or the gate retired) — a loser MUST abort and never write the spec. The token is consumed by
+   *  {@link reopen} so ONLY the barrier that still holds its freeze can reopen: a stalled/duplicate
+   *  barrier resuming after a reconciler cannot clobber the newer gate (§13.1). */
+  freeze: (expectedRevision: number) => Promise<number | null> | number | null;
   /** Enumerate the credential-ledger rows under the frozen gate (§13.1 "enumerate the family"):
-   *  every credential the incarnation the barrier supersedes authorized, so it can be revoked. */
+   *  every credential the incarnation the barrier supersedes authorized. */
   enumerate: () => Promise<EpServeLedgerRow[]> | EpServeLedgerRow[];
-  /** Flip one enumerated row `active`→`revoked` (§13.1 eviction targets its `holderPrincipal`). */
+  /** Flip one enumerated row `active`→`revoked` (§13.1: enforce revocation on the ledger). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
-  /** CAS `frozen` → `open` at the successor coordinate (§13.1): advancing the currency the
-   *  barrier changed, so a superseded mint's rebuilt CAS still loses. */
-  reopen: (successor: EpGateSuccessor) => Promise<void> | void;
+  /** VERIFIED cluster-wide eviction of a revoked `holderPrincipal` (§13.1): enforce the
+   *  revocation on every server, evict the principal's live connections, and RE-SCAN — returning
+   *  `true` only when the principal is verified GONE. FAIL-CLOSED: `false` (or a throw) means the
+   *  barrier MUST NOT complete (no spec write, no reopen); the gate stays frozen for reconciliation
+   *  so old authority is never published-over while it is still live. */
+  evict: (holderPrincipal: string) => Promise<boolean> | boolean;
+  /** Token-pinned CAS `frozen` → `open` at the successor coordinate (§13.1). TRUE iff the gate is
+   *  still frozen at THIS barrier's `token`; FALSE if a reconciler/newer barrier superseded it (a
+   *  stale reopen loses and never clobbers the newer gate). Advances the currency the barrier
+   *  changed, so a superseded mint's rebuilt CAS still loses. */
+  reopen: (token: number, successor: EpGateSuccessor) => Promise<boolean> | boolean;
 }
 
 /** The minted-credential context the release fence records into its §13.1 ledger row: the
@@ -703,15 +741,24 @@ export interface EpIssuanceBarrier {
  *  `mintCreds` supplies these from the same values it stamps into the JWT — the ledger row and
  *  the credential describe ONE credential, never two. */
 export interface EpServeCredential {
-  /** The minted credential's public key (nkey). */
+  /** PER-ISSUED-JWT identity (a digest of the credential): the ledger key, unique per JWT so a
+   *  standing renewal never overwrites the prior row. */
   credentialId: string;
-  /** The holder's actor (owner+actor is the §13.1 eviction target). */
+  /** The stable holder NKEY (public key) the broker revokes by; many JWTs share it. */
+  credentialKey: string;
+  /** The holder's actor (owner.actor is the §13.1 eviction target). */
   holderActor: string;
-  /** The credential's provenance chain (§13.1 `sourceChain`) — who delegated it. */
+  /** The credential's §13.1 issuance lineage: each element `root` | `handle.<issuerKeyId>.<id>` |
+   *  `session.<sessionId>` (a root serve mint is `["root"]`). */
   sourceChain: readonly string[];
   /** The credential's expiry (unix seconds), or `undefined` for a non-expiring credential. */
   exp?: number;
 }
+
+/** A §13.1 source-chain element: the root anchor, a handle-redemption step, or a session step.
+ *  Owner/actor principal components are NOT a lineage; the mint records `["root"]` for a serve
+ *  credential minted directly by the provisioner authority. */
+const SOURCE_CHAIN_ELEMENT = /^(root|handle\.[a-z0-9][a-z0-9._-]{0,127}|session\.[a-z0-9][a-z0-9._-]{0,127})$/;
 
 /**
  * The serve-credential release fence (§13.1 "observe gate → write rows → CAS the gate →
@@ -734,16 +781,24 @@ export interface EpServeCredential {
  */
 export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServeGrant, credential: EpServeCredential): Promise<void> {
   const snap = assertServeGrantAuthorized(serve);
-  if (typeof credential.credentialId !== "string" || credential.credentialId.length === 0 || credential.credentialId.length > 128)
-    throw new EpEnvelopeError("internal", "credentialId must be a bounded non-empty identifier (the minted credential's public key)");
+  const boundedId = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 128;
+  if (!boundedId(credential.credentialId))
+    throw new EpEnvelopeError("internal", "credentialId must be a bounded non-empty per-JWT identifier");
+  if (!boundedId(credential.credentialKey))
+    throw new EpEnvelopeError("internal", "credentialKey must be a bounded non-empty identifier (the minted credential's nkey)");
   assertBoundedOwner(credential.holderActor, "serve credential holder actor");
-  if (!Array.isArray(credential.sourceChain) || credential.sourceChain.length === 0 || !credential.sourceChain.every((p) => typeof p === "string" && p.length > 0))
-    throw new EpEnvelopeError("internal", "the serve credential sourceChain must be a non-empty chain of principals (SPEC 13.1)");
+  if (!Array.isArray(credential.sourceChain) || credential.sourceChain.length === 0
+    || !credential.sourceChain.every((p) => typeof p === "string" && SOURCE_CHAIN_ELEMENT.test(p)))
+    throw new EpEnvelopeError("internal", "the serve credential sourceChain must be a non-empty §13.1 issuance lineage (root | handle.<issuer>.<id> | session.<id>), never principal components");
   if (credential.exp !== undefined && (!Number.isSafeInteger(credential.exp) || credential.exp < 0))
     throw new EpEnvelopeError("internal", `the serve credential exp ${JSON.stringify(credential.exp)} is not an unsigned unix timestamp`);
   const obs = await gate.observe();
   if (obs === null)
     throw new EpEnvelopeError("expired", `no issuance gate for "${snap.endpoint}/${snap.instanceId}"; a serve credential never mints against a missing gate (SPEC 13.1)`);
+  // Gate IDENTITY: the gate must be this instance's own (§13.1 `gate.<lifecycleUid>`); a caller
+  // that handed a foreign instance's gate with coincidentally matching coordinates is refused.
+  if (obs.lifecycleUid !== snap.instanceId)
+    throw new EpEnvelopeError("internal", `the issuance gate is for lifecycle "${obs.lifecycleUid}", not the authorized instance "${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
   if (obs.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${snap.endpoint}/${snap.instanceId}" is ${obs.state}; minting is closed (SPEC 13.1)`);
   // JOINT currency on ONE key: a takeover advances processEpoch, a re-registration advances
@@ -758,6 +813,7 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     throw new EpEnvelopeError("expired", `the issuance gate is at nameAuthorityRevision ${obs.nameAuthorityRevision}, not the authorized ${snap.nameAuthorityRevision}; a name transfer superseded the serving owner (SPEC 13.9)`);
   const row: EpServeLedgerRow = {
     credentialId: credential.credentialId,
+    credentialKey: credential.credentialKey,
     // The eviction target, serialized through the ONE principal serializer the eviction feed keys
     // on (never an ad-hoc `owner.actor` join, subjects.ts principalKey invariant) so the barrier's
     // enumeration key can never drift from the credential's.

@@ -70,6 +70,7 @@ import {
 } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
+import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
@@ -543,7 +544,12 @@ export async function mintCreds(
 ): Promise<string> {
   const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
   const pr = principalOf(identity, opts.principal);
-  const perms = permissionsFor(profile, auth.space, pr, opts);
+  // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor
+  // refuses "endpoint-serve" (so a direct caller can never obtain unfenced serve rows), and only
+  // this fenced path calls the row builder.
+  const perms = profile === "endpoint-serve"
+    ? endpointServePermissions(auth.space, pr, opts)
+    : permissionsFor(profile, auth.space, pr, opts);
   const validDates = userValidDates(profile, opts);
   const userJwt = await encodeUser(
     profile,
@@ -570,9 +576,17 @@ export async function mintCreds(
     if (!opts.serveIssuance)
       throw new Error("mintCreds: endpoint-serve requires opts.serveIssuance (the durable issuance-gate seam; the mint releases only on its revision-pinned CAS win, SPEC 13.1)");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
-      credentialId: identity.id,
+      // PER-ISSUED-JWT id (digest of the credential): every issuance (a standing renewal included)
+      // has distinct bytes (fresh exp/iat), so it writes a DISTINCT ledger row and never overwrites
+      // or resurrects a prior one. The create-only / idempotent-if-identical guarantee lives at the
+      // finalize/stage seam (the SAME credential object staged twice), not the mint layer. The
+      // stable nkey rides separately as `credentialKey` for broker revocation.
+      credentialId: rawDigest(creds),
+      credentialKey: identity.id,
       holderActor: pr.actor,
-      sourceChain: [pr.owner, pr.actor],
+      // A serve credential is minted directly by the provisioner authority, so its §13.1 issuance
+      // lineage is the root anchor (not owner/actor principal components).
+      sourceChain: ["root"],
       ...(validDates.exp !== undefined ? { exp: validDates.exp } : {}),
     });
   }
@@ -623,7 +637,10 @@ export function permissionsFor(
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, CONTROL_PRIVILEGED); // ps/start (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, CONTROL_ADMIN); // stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? CONTROL_ADMIN); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
-  if (profile === "endpoint-serve") return endpointServePermissions(space, pr, opts); // v0.4 per-instance serve credential (SPEC 13.9)
+  if (profile === "endpoint-serve")
+    // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
+    // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
+    throw new Error("permissionsFor: endpoint-serve rows are emitted only by mintCreds behind the §13.1 issuance fence; call mintCreds");
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
