@@ -388,13 +388,22 @@ export function goalReaderConfig(
   };
 }
 
-/** Assert a granted subtree filter is a full literal tail under `prefix` (§13.9 "JetStream API
- *  tails are always spelled in FULL"): a relative tail matches nothing, and a broadened tail
- *  (a bare `prefix` or one climbing outside it) would widen the reader past its capability. */
-function assertFullTail(filter: string, prefix: string, what: string): string {
+/** Assert a granted subtree filter is a full LITERAL tail under `prefix` (§13.9 "JetStream API
+ *  tails are always spelled in FULL"): a relative tail matches nothing, a bare `prefix` or one
+ *  climbing outside it would widen the reader past its capability, and so would a wildcard —
+ *  a caller subtree is literal tokens with at most ONE trailing `.>`, never an interior `*`/`>`
+ *  and never `>` alone (a whole-plane read is a trusted-reader grant family, not a caller
+ *  capability). Returns the tail tokens (after `prefix.`) for provenance checks. */
+function assertFullTail(filter: string, prefix: string, what: string): string[] {
   if (!filter.startsWith(`${prefix}.`))
     throw new Error(`${what} filter ${JSON.stringify(filter)} must be a full literal tail under ${JSON.stringify(prefix)} (§13.9)`);
-  return filter;
+  const toks = filter.slice(prefix.length + 1).split(".");
+  toks.forEach((t, i) => {
+    if (t === ">" && i === toks.length - 1 && i > 0) return; // one trailing subtree wildcard, never the whole tail
+    if (t.length === 0 || /[*>\s]/.test(t))
+      throw new Error(`${what} filter ${JSON.stringify(filter)} must be literal (one trailing ".>" is the only wildcard, §13.9): bad token ${JSON.stringify(t)}`);
+  });
+  return toks;
 }
 
 /** `eveD = eve_<uid>-<e>-<gid>-<n>` — one per GRANTED event subtree (§13.9): a PULL durable the
@@ -407,9 +416,15 @@ export function eventReaderConfig(
   args: { uid: string; endpoint: string; grantId: string; index: number; subtree: string },
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
+  const tail = assertFullTail(args.subtree, `${spacePrefix(space)}.epe`, "event-reader subtree");
+  // Durable and filter must carry ONE provenance: the durable's `<e>` names the endpoint the
+  // grant was minted for, so a subtree addressing a DIFFERENT endpoint's events would let the
+  // attributed durable read outside its mint scope.
+  if (tail[0] !== endpointToken(args.endpoint))
+    throw new Error(`event-reader subtree ${JSON.stringify(args.subtree)} names endpoint token ${JSON.stringify(tail[0])} but the durable is minted for ${JSON.stringify(endpointToken(args.endpoint))} (§13.9: durable and filter provenance must agree)`);
   return {
     durable_name: eventReaderDurable(args.uid, args.endpoint, args.grantId, args.index),
-    filter_subject: assertFullTail(args.subtree, `${spacePrefix(space)}.epe`, "event-reader subtree"),
+    filter_subject: args.subtree,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -425,9 +440,10 @@ export function recordReaderConfig(
   args: { uid: string; grantId: string; index: number; subtree: string },
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
+  assertFullTail(args.subtree, `$KV.${recordsBucket(space)}`, "record-reader subtree");
   return {
     durable_name: recordReaderDurable(args.uid, args.grantId, args.index),
-    filter_subject: assertFullTail(args.subtree, `$KV.${recordsBucket(space)}`, "record-reader subtree"),
+    filter_subject: args.subtree,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -446,14 +462,40 @@ export function recordsKvStreamName(space: string): string { return `KV_${record
 
 const JSAPI = "$JS.API";
 
+/** A grant NAME component (stream or durable) occupies ONE token of an emitted permission row:
+ *  it must be a literal wildcard-free name, or the row silently broadens to every stream/durable
+ *  the wildcard matches (a `*` durable grants INFO/MSG.NEXT/ACK on ALL durables of the stream).
+ *  Every grammar in this module emits `[A-Za-z0-9_-]`, so anything else is refused loudly. */
+function assertGrantName(v: string, what: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(v))
+    throw new Error(`${what} ${JSON.stringify(v)} must be a literal wildcard-free name component ([A-Za-z0-9_-]+)`);
+  return v;
+}
+/** A consume-create row embeds the consumer's filter verbatim, so the filter's tokens become
+ *  permission tokens: each must be a literal token, a full `*` token (the matrix's principal
+ *  wildcards, e.g. the record writer's `epr.*.*.*`), or ONE trailing `>` — a malformed or
+ *  mid-filter `>` token would broaden the row past the §13.9 matrix. */
+function assertGrantFilter(filter: string, what: string): string {
+  const toks = filter.split(".");
+  toks.forEach((t, i) => {
+    if (t === "*") return;
+    if (t === ">" && i === toks.length - 1) return;
+    if (t.length === 0 || /[*>\s]/.test(t))
+      throw new Error(`${what} filter ${JSON.stringify(filter)} token ${JSON.stringify(t)} is not a literal token, a full "*" token, or one trailing ">"`);
+  });
+  return filter;
+}
+
 function consumeCreateRow(stream: string, cfg: Partial<ConsumerConfig>): string {
   if (!cfg.durable_name || !cfg.filter_subject)
     throw new Error("a consume-create grant needs a durable_name and a full-tail filter_subject");
   // The extended-create form embeds the stored-subject filter tail verbatim (§13.9): pinning it
   // is what stops a body-selected filter.
-  return `${JSAPI}.CONSUMER.CREATE.${stream}.${cfg.durable_name}.${cfg.filter_subject}`;
+  return `${JSAPI}.CONSUMER.CREATE.${assertGrantName(stream, "grant stream")}.${assertGrantName(cfg.durable_name, "grant durable")}.${assertGrantFilter(cfg.filter_subject, "consume-create")}`;
 }
 function consumeBindRows(stream: string, durable: string): string[] {
+  assertGrantName(stream, "grant stream");
+  assertGrantName(durable, "grant durable");
   return [
     `${JSAPI}.CONSUMER.INFO.${stream}.${durable}`,
     `${JSAPI}.CONSUMER.MSG.NEXT.${stream}.${durable}`,
@@ -461,7 +503,7 @@ function consumeBindRows(stream: string, durable: string): string[] {
   ];
 }
 function consumeDeleteRow(stream: string, durable: string): string {
-  return `${JSAPI}.CONSUMER.DELETE.${stream}.${durable}`;
+  return `${JSAPI}.CONSUMER.DELETE.${assertGrantName(stream, "grant stream")}.${assertGrantName(durable, "grant durable")}`;
 }
 
 /** The canonicalizer principal's EPJ rows: it OWNS its durable (create) and consumes + acks it. */

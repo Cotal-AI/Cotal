@@ -103,6 +103,16 @@ c("the record-reader config carries its exact $KV granted subtree",
   recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: recSubtree }).filter_subject === recSubtree);
 throws("a reader subtree that is not a full literal tail refuses (a relative tail matches nothing)",
   () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: "epe.manager.foo" }));
+// Wildcard confinement at the grant seams: a poisoned name, subtree, or filter component must
+// refuse loudly, never broaden an emitted row or reader past the §13.9 matrix.
+throws("an event-reader subtree naming a different endpoint than its durable refuses (provenance divergence)",
+  () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: `cotal.${SPACE}.epe.other.${IID}.7.goal.u_abc.worker.${UID}.>` }));
+throws("a wildcard token inside a granted reader subtree refuses (literal tails only)",
+  () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: `cotal.${SPACE}.epe.manager.*.7.goal.u_abc.worker.${UID}.>` }));
+throws("a whole-bucket record subtree refuses (a bare `>` tail is not a caller capability)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.>` }));
+throws("a mid-subtree `>` refuses (only one TRAILING subtree wildcard)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.svc.>.status` }));
 
 // ── §13.9 API grant rows: the single source, exact matrix strings (broker-free) ──
 c("the canonicalizer grants own + consume its EPJ durable (create pins the full-tail filter)",
@@ -131,6 +141,12 @@ c("the provisioner grants pair a full-tail CREATE with a DELETE per pre-created 
       && rows[1] === "$JS.API.CONSUMER.DELETE.EPW_epbind.pool_manager_builds"
       && !rows.some((r) => r.includes("MSG.NEXT") || r.includes(".INFO.")); // the provisioner never consumes
   })());
+throws("a wildcard durable in a reader bind grant refuses (would grant EVERY durable on the stream)",
+  () => readerBindGrants(recordsKvStreamName(SPACE), { durable_name: "*" }));
+throws("a dotted stream name in a provisioner grant refuses (extra permission tokens)",
+  () => provisionerConsumerGrants([{ stream: "EPW_epbind.>", config: poolConsumerConfig(SPACE, "manager", "builds") }]));
+throws("a mid-filter `>` in a pre-created durable's create row refuses (broadened matrix row)",
+  () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: "cotal.epbind.epw.>.builds" } }]));
 
 // ── the resources + live behaviors (real broker) ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
