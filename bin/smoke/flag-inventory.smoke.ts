@@ -100,6 +100,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: ["console-port:string", "launch:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
     positionals: false,
   },
+  // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
+  runtimes: { flags: [], positionals: false },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string"], positionals: false },

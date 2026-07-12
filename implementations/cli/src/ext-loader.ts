@@ -22,6 +22,32 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
 
+/** The official first-party runtimes, name → npm package. This is NOT authority — registration is
+ *  still explicit (`cotal ext add` installs the package; importing it self-registers the provider).
+ *  It is the CLI's UX source of truth so an uninstalled runtime error names a REAL package, a typo
+ *  says "unknown" instead of inventing `@cotal-ai/<typo>`, and `cotal runtimes` can list what's one
+ *  `cotal ext add` away. A third-party runtime installs under its own package name and, once added,
+ *  resolves like any other — it just isn't listed here up front. */
+export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
+  orca: "@cotal-ai/orca",
+  tmux: "@cotal-ai/tmux",
+  cmux: "@cotal-ai/cmux",
+};
+
+/** Every runtime name the CLI knows about without importing anything: `pty` (built in) + the officials. */
+export function knownRuntimeNames(): string[] {
+  return ["pty", ...Object.keys(OFFICIAL_RUNTIMES)];
+}
+
+/** The error for a runtime that has no installed provider: name the exact package for an official
+ *  runtime, else say it's unknown and list the ones the CLI knows — never invent an `@cotal-ai/<name>`
+ *  package for a typo (a custom provider installs under its own package name). */
+function unknownRuntimeError(name: string): string {
+  const pkg = OFFICIAL_RUNTIMES[name];
+  if (pkg) return `no installed extension provides runtime "${name}" - install it with \`cotal ext add ${pkg}\``;
+  return `unknown runtime "${name}" (known: ${knownRuntimeNames().join(", ")}) - install a provider with \`cotal ext add <npm-package>\`, or check the name`;
+}
+
 function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
   const message = e instanceof Error ? e.message : String(e);
   const compatibility = /does not provide an export named/.test(message) && /@cotal-ai\/(core|workspace)/.test(message)
@@ -174,10 +200,8 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
     extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
   );
   if (!ext) {
-    const official = ref.kind === "runtime" && /^[a-z0-9-]+$/.test(ref.name)
-      ? `; for the official same-named integration: \`cotal ext add @cotal-ai/${ref.name}\``
-      : "";
-    throw new Error(`no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\`${official}`);
+    if (ref.kind === "runtime") throw new Error(unknownRuntimeError(ref.name));
+    throw new Error(`no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``);
   }
   await importInstalledExtension(ext);
   try {

@@ -1,6 +1,7 @@
 import { registry, type Command } from "@cotal-ai/core";
 import { targetFlags, type LocalProcess } from "@cotal-ai/workspace";
-import { up } from "./commands/up.js";
+import { up, upComplete, upFlags } from "./commands/up.js";
+import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
 import { use, useComplete } from "./commands/use.js";
 import { meshes } from "./commands/meshes.js";
@@ -76,21 +77,16 @@ const baseCommands: Command[] = [
     name: "up",
     group: "Mesh",
     summary: "start a local mesh (nats-server + JetStream, JWT auth by default) - or `-f <cotal.yaml>` for a whole manifest",
-    flags: [
-      { name: "server", type: "string", value: "<url>", description: "listen URL override" },
-      { name: "host", type: "string", value: "<host>", description: "bind host override" },
-      { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
-      { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
-      { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
-      { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
-      { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
-      { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
-      { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
-      { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
-      { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
-      { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
-    ],
+    flags: upFlags,
     run: up,
+    complete: upComplete,
+  },
+  {
+    kind: "command",
+    name: "runtimes",
+    group: "Manager",
+    summary: "list the agent runtimes the manager can spawn through (pty built in; others via `cotal ext add`) and whether each is reachable",
+    run: runtimes,
   },
   {
     kind: "command",
