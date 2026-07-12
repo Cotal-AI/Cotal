@@ -131,10 +131,30 @@ const tK = recordStatusKey(RECORD_KINDS.svc, svcQ);
   const kv = { watch: async () => { const n = incarnations++; if (n >= 2) ac.abort(); return new StubWatchIter(scripts(n)); } } as unknown as AnyKv;
   const views: MergedRecord[] = [];
   for await (const m of watchRecord(kv, RECORD_KINDS.svc, svcQ, { signal: ac.signal })) views.push(m);
-  c("the ahead-status is NEVER forward-patched onto the stale spec",
+  c("an ahead-status DELTA is NEVER forward-patched onto the stale spec",
     !views.some((m) => m.spec.revision === 1 && m.status !== undefined));
   c("after resync the correct merged view (spec@5 + its observed status) is delivered",
     views.some((m) => m.spec.revision === 5 && m.status?.observedSpecRevision === 5));
+}
+
+// 4. STATUS-FIRST REPLAY, never yield the mismatched ahead-pair: when a status is cached first
+//    in replay (isUpdate=false) and the SPEC entry then COMPLETES replay behind it, the
+//    replay-completion path must re-validate the pair — else it yields {spec:10, observed:20}
+//    (the panel's exact repro: the per-status-entry check alone misses this).
+{
+  const ac = new AbortController();
+  let incarnations = 0;
+  const scripts = (n: number): Array<StubEntry | "throw"> =>
+    n === 0 ? [stubEntry(tK, 5, { state: "x", observedSpecRevision: 20 }, false), stubEntry(sK, 10, { endpoint: "manager" }, true)]
+    : n === 1 ? [stubEntry(sK, 10, { endpoint: "manager" }, true), stubEntry(tK, 11, { state: "x", observedSpecRevision: 10 }, true)]
+    : [];
+  const kv = { watch: async () => { const n = incarnations++; if (n >= 2) ac.abort(); return new StubWatchIter(scripts(n)); } } as unknown as AnyKv;
+  const views: MergedRecord[] = [];
+  for await (const m of watchRecord(kv, RECORD_KINDS.svc, svcQ, { signal: ac.signal })) views.push(m);
+  c("a status-first replay never yields the forbidden ahead-pair (observed > spec.revision)",
+    !views.some((m) => m.status !== undefined && m.status.observedSpecRevision > m.spec.revision));
+  c("after resync the consistent view (spec@10 + observed<=10) is delivered",
+    views.some((m) => m.spec.revision === 10 && m.status?.observedSpecRevision === 10));
 }
 
 // ── the live half: CAS, merged read, head, watch ──

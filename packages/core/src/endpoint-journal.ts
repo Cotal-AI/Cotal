@@ -15,10 +15,10 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { token } from "./subjects.js";
 import { contractDigest, rawDigest } from "./canonical.js";
 import {
-  epfSubject, parseEpSubject, endpointToken, assertBoundedOwner, assertCommandToken, assertIdToken,
+  epfSubject, parseEpSubject, endpointToken, assertBoundedOwner, assertIdToken,
   assertLifecycleToken, type EpCaller, type ParsedEpRequest,
 } from "./endpoint-subjects.js";
-import { EpEnvelopeError, isEpErrorCode } from "./endpoint-envelope.js";
+import { EpEnvelopeError, isEpErrorCode, parseEndpointRequest, type EndpointRequest } from "./endpoint-envelope.js";
 import { isCasLoss } from "./endpoint-records.js";
 
 /** §13.12 stream names for the two journal-side streams. */
@@ -182,24 +182,26 @@ function checkTarget(v: unknown): void {
   }
   if (v.mappingRevision !== undefined && !wireInt(v.mappingRevision)) factFail("target.mappingRevision");
 }
-/** The embedded canonical request of an acceptance: the accepted journal-class submission,
- *  cross-checked against the fact address so a stored acceptance can never smuggle a request
- *  for a different id/endpoint into effects or replay. */
-function checkEmbeddedRequest(v: unknown, addr: FactAddress): void {
-  if (!isRec(v)) factFail("request");
-  if (v.v !== 1) factFail("request.v");
-  if (v.id !== addr.id) factFail("request.id disagrees with the fact address");
-  if (v.class !== "journal") factFail("request.class (only journal-class submissions produce decision facts)");
-  const op = v.op;
-  if (!isRec(op) || typeof op.endpoint !== "string" || typeof op.command !== "string") factFail("request.op");
-  if (op.endpoint !== addr.endpoint) factFail("request.op.endpoint disagrees with the fact address");
+/** The embedded canonical request of an acceptance: it MUST be a fully valid canonical
+ *  `EndpointRequest` (§13.3/§13.4), not merely a `{v,id,class,op}` shell — so it is routed
+ *  through the SAME {@link parseEndpointRequest} the request boundary uses (its boundary error,
+ *  a caller-facing code, maps to `internal` here because a malformed STORED request is a writer
+ *  bug, not a caller error). Then it is cross-checked against the fact address so a stored
+ *  acceptance can never smuggle a request for a different id/endpoint/caller into effects or
+ *  replay: journal class, id, op.endpoint, and the request's own `from.id` must all agree with
+ *  the broker-authenticated fact subject. Returns the parsed request for the target cross-check. */
+function checkEmbeddedRequest(v: unknown, addr: FactAddress): EndpointRequest {
+  let req: EndpointRequest;
   try {
-    assertCommandToken(op.command);
-  } catch {
-    factFail("request.op.command grammar");
+    req = parseEndpointRequest(v);
+  } catch (e) {
+    return factFail(`request is not a canonical EndpointRequest: ${(e as Error).message}`);
   }
-  if (op.inputDigest !== undefined && !isDigest(op.inputDigest)) factFail("request.op.inputDigest");
-  if (op.outputDigest !== undefined && !isDigest(op.outputDigest)) factFail("request.op.outputDigest");
+  if (req.class !== "journal") factFail("request.class (only journal-class submissions produce decision facts)");
+  if (req.id !== addr.id) factFail("request.id disagrees with the fact address");
+  if (req.op.endpoint !== addr.endpoint) factFail("request.op.endpoint disagrees with the fact address");
+  if (req.from.id !== addr.caller.id) factFail("request.from.id disagrees with the authenticated fact caller");
+  return req;
 }
 
 /** The authenticated ADDRESS of a decision fact: the `epf….dec.<cO>.<cA>.<cUid>.<id>` subject
@@ -235,7 +237,9 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
   }
   if (o.id !== addr.id) factFail("id disagrees with the fact subject");
   if (!isDigest(o.fingerprint)) factFail("fingerprint");
-  if (!posInt(o.sourceSeq) || !posInt(o.ts)) factFail("sourceSeq/ts must be positive integers");
+  // sourceSeq is a stream sequence (>= 1); ts is a wire timestamp (>= 0, §13.7).
+  if (!posInt(o.sourceSeq)) factFail("sourceSeq must be a positive stream sequence");
+  if (!wireInt(o.ts)) factFail("ts must be a non-negative integer");
   const caller = checkCaller(o.caller, "caller");
   if (caller.id !== addr.caller.id || caller.lifecycleUid !== addr.caller.lifecycleUid)
     factFail("caller disagrees with the fact subject");
@@ -245,13 +249,22 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
     return o as unknown as RejectionFact;
   }
   if (o.decision !== "accepted") factFail(`decision ${JSON.stringify(o.decision)}`);
-  checkEmbeddedRequest(o.request, addr);
-  if (o.target !== undefined) checkTarget(o.target);
+  const req = checkEmbeddedRequest(o.request, addr);
+  if (o.target !== undefined) {
+    checkTarget(o.target);
+    // Where the request itself named a target, the RESOLVED fact target must name the same alias
+    // identity (owner+actor); only the lifecycleUid/mappingRevision are filled by resolution, so
+    // those may differ — but a resolved target for a DIFFERENT principal than the caller asked
+    // for is a smuggle.
+    const ft = o.target as { owner: string; actor: string };
+    if (req.target && (req.target.owner !== ft.owner || req.target.actor !== ft.actor))
+      factFail("the resolved fact target names a different alias than the embedded request's target");
+  }
   const cd = o.contractDigests;
   if (!isRec(cd) || !isDigest(cd.input) || !isDigest(cd.output)) factFail("contractDigests");
   checkAuthzDecision(o.authzDecision, "authzDecision");
   if (o.route !== "effects" && !(typeof o.route === "string" && /^pool\.[a-z0-9-]{1,32}$/.test(o.route))) factFail("route");
-  if (o.readinessDeadlineMs !== undefined && !posInt(o.readinessDeadlineMs)) factFail("readinessDeadlineMs");
+  if (o.readinessDeadlineMs !== undefined && !wireInt(o.readinessDeadlineMs)) factFail("readinessDeadlineMs must be a non-negative integer");
   if (o.workExpiry !== undefined && !posInt(o.workExpiry)) factFail("workExpiry");
   if (String(o.route).startsWith("pool.") !== (o.workExpiry !== undefined)) factFail("workExpiry is present iff the route is a pool");
   return o as unknown as AcceptanceFact;
@@ -270,7 +283,7 @@ export function parseQuarantineFact(raw: unknown, subject: string): QuarantineFa
   if (!isDigest(o.submissionDigest)) factFail("submissionDigest");
   checkError(o.error, "error");
   if (o.caller !== undefined) checkCaller(o.caller, "caller");
-  if (!posInt(o.ts)) factFail("ts must be a positive integer");
+  if (!wireInt(o.ts)) factFail("ts must be a non-negative integer");
   return o as unknown as QuarantineFact;
 }
 

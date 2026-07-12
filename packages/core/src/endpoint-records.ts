@@ -460,6 +460,12 @@ export async function* watchRecord<S = unknown, T = unknown>(
         } else {
           progressed = true;
         }
+        // Never yield a mismatched ahead-pair — a status observed a spec revision higher than the
+        // one we hold (a re-read signal, §13.4). The per-status-entry check above catches a
+        // status DELTA arriving ahead; this universal guard also catches the replay case where a
+        // status was cached first and the SPEC entry then completed replay behind it, which that
+        // check would miss (it fires only while processing a status entry).
+        if (spec && status && status.observedSpecRevision > spec.revision) break; // resync, never patch forward
         const m = merged();
         if (m) yield m;
       }

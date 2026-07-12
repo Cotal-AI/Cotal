@@ -98,8 +98,23 @@ throws("an acceptance whose embedded request.id disagrees with the fact refuses"
   () => parseDecisionFact({ ...acc, request: { ...sub1, id: "req-2" } }, accSubj));
 throws("an acceptance whose embedded request names a different endpoint refuses",
   () => parseDecisionFact({ ...acc, request: { ...sub1, op: { ...sub1.op, endpoint: "other" } } }, accSubj));
+// The embedded request must be a FULLY canonical EndpointRequest (routed through the request
+// boundary), not a {v,id,class,op} shell — the panel's partial-fix repros.
+throws("an embedded request missing its mandatory journal deadlineMs refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, deadlineMs: undefined } }, accSubj));
+throws("an embedded request missing its non-describe contract digests refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, op: { endpoint: "manager", command: "spawn" } } }, accSubj));
+throws("an embedded request with replyExpected:true (not a journal cast) refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, replyExpected: true } }, accSubj));
+throws("an embedded request whose from.id contradicts the authenticated fact caller refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, from: { id: "u_evil.other", name: "w" } } }, accSubj));
 throws("an acceptance with a non-object target refuses",
   () => parseDecisionFact({ ...acc, target: 42 }, accSubj));
+throws("a resolved fact target naming a different alias than the request's target refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, target: { owner: "u_zed", actor: "svc", lifecycleUid: "z".repeat(26) } }, target: { owner: "u_other", actor: "svc", lifecycleUid: "z".repeat(26) } }, accSubj));
+c("ts:0 and readinessDeadlineMs:0 are CONFORMING (non-negative wire integers, not positive)",
+  parseDecisionFact({ ...rej, ts: 0 }, accSubj).decision === "rejected"
+  && (parseDecisionFact({ ...acc, readinessDeadlineMs: 0 }, accSubj) as AcceptanceFact).readinessDeadlineMs === 0);
 c("a well-formed resolved target validates",
   (parseDecisionFact({ ...acc, target: { owner: "u_zed", actor: "svc", lifecycleUid: "z".repeat(26), mappingRevision: 4 } }, accSubj) as AcceptanceFact).decision === "accepted");
 throws("a fact whose body id disagrees with the subject refuses (no cross-id smuggling)",
