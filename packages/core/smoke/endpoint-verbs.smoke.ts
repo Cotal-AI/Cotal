@@ -1,15 +1,15 @@
 /**
- * v0.4 caller-side VERBS smoke (SPEC §13.5 call/cast/watch/scatter, §13.3 envelope) against a real
- * broker. The meat is epScatter's §13.5 classification against a FROZEN expected set: valid gather,
- * missing, churn (epoch AND registration-advance), duplicate (first-wins, REPORTED), unexpected,
- * invalid (§13.3 fail-loud), late (bounded post-deadline drain), and complete only when every frozen
- * slot produced exactly one counted valid reply. Plus epCall (reply / application-error / deadline /
- * bad-args), epCast (silent, honors replyExpected), and epWatch (valid event / fail-loud onError).
+ * v0.4 caller-side VERBS smoke (SPEC §13.5 call/cast/watch/scatter, §13.3 envelope, §13.2 identity)
+ * against a real broker. Covers the responder-identity/currency binding, epScatter's §13.5
+ * classification with a MANDATORY bounded registration reconcile linearized at the deadline, the
+ * (instanceId,epoch) seen-set for duplicate reporting, non-terminal invalid frames, and the
+ * adversarial probes the review round required (wrong-endpoint/same-id scatter, invalid-then-valid,
+ * invalid-last-pending, repeated churn/late => duplicate, stale-epoch / wrong-instance / no-responder
+ * calls, all-rail cast deadline, timer-bound deadline).
  *
- * The responders read the caller triple + nonce off the request SUBJECT (never the body), exactly
- * like a real serve responder, and reply via deriveReplySubject. A single subscriber on the `all`
- * rail emits the crafted batch of replies (one per simulated instance) so one scatter exercises every
- * classification at once.
+ * Responders read the caller triple + nonce off the request SUBJECT (never the body), like a real
+ * serve responder, and reply via epReplySubject. One subscriber on the `all` rail emits the crafted
+ * batch (one reply per simulated instance) so one scatter exercises every classification at once.
  *
  * Run: pnpm smoke:ep-verbs   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -22,8 +22,8 @@ import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import {
   isReachable, EpEnvelopeError,
   compileContract,
-  parseEpSubject, deriveReplySubject, epeSubject, spacePrefix,
-  epCall, epCast, epWatch, epScatter,
+  parseEpSubject, epReplySubject, epeSubject, spacePrefix,
+  epCall, epCast, epWatchEvents, epScatter,
   type EpCaller, type EpVerbOp, type ParsedEpRequest, type FrozenInstance, type EpAttributedEvent,
 } from "../src/index.js";
 
@@ -45,18 +45,19 @@ const inContract = compileContract({ root: { type: "object", properties: { n: { 
 const outContract = compileContract({ root: { type: "object", properties: { which: { type: "string" } }, required: ["which"], additionalProperties: false } });
 const contract = { input: inContract, output: outContract };
 const opFor = (over: Partial<EpVerbOp> = {}): EpVerbOp => ({ endpoint: ENDPOINT, command: "ping", contract, caller, args: { n: "x" }, ...over });
+const okReconcile = (m: Record<string, number>) => async () => new Map(Object.entries(m));
 
-// One crafted reply for a simulated instance.
-interface CraftedReply { instanceId: string; epoch: number; ok: boolean; data?: unknown; delayMs?: number }
+// One crafted reply for a simulated instance. `endpoint` overrides the responder endpoint (the
+// wrong-endpoint probe); `ok:false` sends a structured app error; malformed `data` fails the boundary.
+interface CraftedReply { instanceId: string; epoch: number; ok: boolean; data?: unknown; endpoint?: string; delayMs?: number }
 function publishReply(nc: NatsConnection, req: ParsedEpRequest, requestId: string, r: CraftedReply) {
-  const subject = deriveReplySubject(SPACE, req, { instanceId: r.instanceId, epoch: r.epoch });
+  const subject = epReplySubject(SPACE, { endpoint: r.endpoint ?? req.endpoint, instanceId: r.instanceId, epoch: r.epoch, caller: req.caller, nonce: req.nonce });
   const env = r.ok ? { v: 1, id: requestId, ok: true, ...(r.data !== undefined ? { data: r.data } : {}) }
                    : { v: 1, id: requestId, ok: false, error: { code: "failed-precondition", message: "app said no" } };
   nc.publish(subject, enc.encode(JSON.stringify(env)));
 }
-// Subscribe a request filter; for each request, emit the batch the caller supplies for THIS test.
 function respond(nc: NatsConnection, filter: string, batch: (req: ParsedEpRequest, requestId: string, replyExpected: boolean) => CraftedReply[]): Subscription {
-  const sub = nc.subscribe(filter, {
+  return nc.subscribe(filter, {
     callback: (err, msg) => {
       if (err) return;
       const p = parseEpSubject(msg.subject);
@@ -68,7 +69,6 @@ function respond(nc: NatsConnection, filter: string, batch: (req: ParsedEpReques
       }
     },
   });
-  return sub;
 }
 
 // ── live broker ──
@@ -87,88 +87,143 @@ try {
   // ---- epScatter: the full §13.5 classification in one gather -------------------------------------
   const EP = 5;
   const A = "a".repeat(26), B = "b".repeat(26), C = "cc".repeat(13), D = "d".repeat(26), E = "e".repeat(26), F = "f".repeat(26), Z = "z".repeat(26);
-  const expected: FrozenInstance[] = [A, B, C, D, E, F].map((instanceId) => ({ instanceId, registrationRevision: 1, epoch: EP }));
+  const sixSlots: FrozenInstance[] = [A, B, C, D, E, F].map((instanceId) => ({ instanceId, registrationRevision: 1, epoch: EP }));
   {
-    const sub = respond(nc, allFilter, (_req, _id) => [
-      { instanceId: A, epoch: EP, ok: true, data: { which: A } },        // valid
-      { instanceId: B, epoch: EP + 1, ok: true, data: { which: B } },    // churn (epoch)
-      { instanceId: C, epoch: EP, ok: true, data: { which: C } },        // valid
-      { instanceId: C, epoch: EP, ok: true, data: { which: C } },        // duplicate (first wins, reported)
-      { instanceId: D, epoch: EP, ok: true, data: { which: 123 } },      // invalid (output-contract fail)
-      { instanceId: F, epoch: EP, ok: true, data: { which: F } },        // valid, but reg-advanced -> churn(registration)
-      { instanceId: Z, epoch: EP, ok: true, data: { which: Z } },        // unexpected (not in frozen set)
+    const sub = respond(nc, allFilter, () => [
+      { instanceId: A, epoch: EP, ok: true, data: { which: A } },          // valid
+      { instanceId: B, epoch: EP + 1, ok: true, data: { which: B } },      // churn (epoch)
+      { instanceId: C, epoch: EP, ok: true, data: { which: C } },          // valid
+      { instanceId: C, epoch: EP, ok: true, data: { which: C } },          // duplicate (first wins, reported)
+      { instanceId: D, epoch: EP, ok: true, data: { which: 123 } },        // invalid (output-contract fail)
+      { instanceId: F, epoch: EP, ok: true, data: { which: F } },          // valid, but reg-advanced -> churn(registration)
+      { instanceId: Z, epoch: EP, ok: true, data: { which: Z } },          // unexpected (not in frozen set)
+      { instanceId: A, epoch: EP, ok: true, data: { which: A }, endpoint: "other" }, // wrong-endpoint, colliding (A, EP)
       // E: no reply -> missing
     ]);
-    // reconcileRegistration reports F advanced past its frozen registrationRevision (a re-registration
-    // that the reply rail cannot see); everyone else unchanged.
     const res = await epScatter(nc, SPACE, opFor(), {
-      deadlineMs: 600, expected,
-      reconcileRegistration: async () => new Map([[A, 1], [B, 1], [C, 1], [D, 1], [E, 1], [F, 2]]),
+      deadlineMs: 600, expected: sixSlots,
+      reconcileRegistration: okReconcile({ [A]: 1, [B]: 1, [C]: 1, [D]: 1, [E]: 1, [F]: 2 }), // F advanced
     });
     await sub.drain();
-    c("scatter counts the valid frozen-epoch reply from A", res.replies.get(A)?.reply.ok === true && res.replies.has(A));
-    c("scatter counts the valid frozen-epoch reply from C (first of two)", res.replies.has(C));
-    c("scatter reg-churn removed F from the counted replies", !res.replies.has(F));
-    c("scatter replies map holds exactly the two counted valid slots (A, C)", res.replies.size === 2);
-    c("scatter reports E as MISSING (never answered)", res.missing.length === 1 && res.missing[0] === E);
-    c("scatter reports B as churn(epoch), not missing", res.churn.some((x) => x.instanceId === B && x.reason === "epoch") && !res.missing.includes(B));
-    c("scatter reports F as churn(registration) via reconcile", res.churn.some((x) => x.instanceId === F && x.reason === "registration"));
-    c("a churned slot is never also missing (B, F)", !res.missing.includes(B) && !res.missing.includes(F));
-    c("scatter reports the second C reply as DUPLICATE, never dropped", res.duplicate.some((x) => x.instanceId === C));
-    c("scatter reports Z as UNEXPECTED (outside the frozen set)", res.unexpected.some((x) => x.instanceId === Z));
-    c("scatter reports D as INVALID (output-contract fail at the consuming boundary)", res.invalid.some((x) => x.instanceId === D));
-    c("scatter did not fold any classification into success: complete is FALSE", res.complete === false);
-    c("scatter late bucket is empty (no lateDrainMs)", res.late.length === 0);
+    c("scatter counts the valid frozen-epoch reply from A", res.replies.get(A)?.reply.ok === true);
+    c("scatter counts C (first of two)", res.replies.has(C));
+    c("reg-churn removed F from the counted replies", !res.replies.has(F));
+    c("replies map holds exactly the two counted valid slots (A, C)", res.replies.size === 2);
+    c("E reported MISSING (never answered)", res.missing.length === 1 && res.missing[0] === E);
+    c("B reported churn(epoch), not missing", res.churn.some((x) => x.instanceId === B && x.reason === "epoch") && !res.missing.includes(B));
+    c("F reported churn(registration) via the mandatory reconcile", res.churn.some((x) => x.instanceId === F && x.reason === "registration"));
+    c("no churned slot is also missing (B, F)", !res.missing.includes(B) && !res.missing.includes(F));
+    c("second C reply reported DUPLICATE, never dropped", res.duplicate.some((x) => x.instanceId === C));
+    c("Z reported UNEXPECTED (outside the frozen set)", res.unexpected.some((x) => x.instanceId === Z));
+    c("wrong-ENDPOINT reply with a colliding (A, EP) is UNEXPECTED, never counted as slot A (§13.2 endpoint bind)",
+      res.unexpected.some((x) => x.instanceId === A) && res.replies.get(A)?.responder.endpoint === ENDPOINT);
+    c("D reported INVALID (output-contract fail at the consuming boundary)", res.invalid.some((x) => x.instanceId === D));
+    c("nothing folded into success: complete is FALSE", res.complete === false);
+    c("late bucket empty (no lateDrainMs)", res.late.length === 0);
     c("responder attribution comes from the reply SUBJECT (A at frozen epoch)", res.replies.get(A)?.responder.instanceId === A && res.replies.get(A)?.responder.epoch === EP);
   }
 
-  // complete: TRUE only when every frozen slot produced one counted valid reply (early completion).
+  // complete: TRUE only when every frozen slot produced one counted valid reply (early completion),
+  // verified by the reconcile showing no advance.
   {
     const sub = respond(nc, allFilter, () => [{ instanceId: A, epoch: EP, ok: true, data: { which: A } }]);
-    const res = await epScatter(nc, SPACE, opFor(), { deadlineMs: 800, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }] });
+    const res = await epScatter(nc, SPACE, opFor(), { deadlineMs: 800, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) });
     await sub.drain();
-    c("a fully-answered scatter completes early with complete=TRUE", res.complete === true && res.missing.length === 0 && res.replies.size === 1);
+    c("a fully-answered, reconciled scatter completes with complete=TRUE", res.complete === true && res.missing.length === 0 && res.replies.size === 1);
   }
 
-  // late: a valid frozen-slot reply AFTER the deadline, within the drain window, is `late` not counted.
+  // duplicate generalizes: repeated CHURN(epoch) and repeated LATE both dedupe to `duplicate`.
   {
-    const sub = respond(nc, allFilter, () => [{ instanceId: A, epoch: EP, ok: true, data: { which: A }, delayMs: 250 }]);
-    const res = await epScatter(nc, SPACE, opFor(), { deadlineMs: 150, lateDrainMs: 400, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }] });
+    const sub = respond(nc, allFilter, () => [
+      { instanceId: B, epoch: EP + 1, ok: true, data: { which: B } },   // churn(epoch)
+      { instanceId: B, epoch: EP + 1, ok: true, data: { which: B } },   // repeat same (B, EP+1) -> duplicate
+    ]);
+    const res = await epScatter(nc, SPACE, opFor(), { deadlineMs: 400, expected: [{ instanceId: B, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [B]: 1 }) });
     await sub.drain();
-    c("a post-deadline reply within lateDrainMs is classified LATE", res.late.some((x) => x.instanceId === A));
-    c("a late reply does NOT count toward completion", res.complete === false && res.replies.size === 0);
-    c("a late responder is not reported MISSING (it did answer)", res.missing.length === 0);
+    c("a repeated wrong-epoch reply is one churn + one duplicate (seen-set dedupe, §13.5)",
+      res.churn.filter((x) => x.instanceId === B).length === 1 && res.duplicate.some((x) => x.instanceId === B));
   }
 
-  // empty / duplicate-in-freeze refusals (§13.5): never an empty success, never a torn freeze.
-  await rejects("scatter refuses an EMPTY frozen expected set (never an empty success)",
-    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 100, expected: [] }), "failed-precondition");
-  await rejects("scatter refuses a frozen set naming one instance twice",
-    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 100, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: A, registrationRevision: 2, epoch: EP }] }), "failed-precondition");
-  await rejects("scatter surfaces an unreadable registration reconcile as failed-precondition",
-    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }), "failed-precondition");
+  // late: a valid post-deadline reply within lateDrainMs is `late`; a repeat is `duplicate`. The slot
+  // is BOTH missing (no on-time reply) and late (observational) — classification linearized at deadline.
+  {
+    const sub = respond(nc, allFilter, () => [
+      { instanceId: A, epoch: EP, ok: true, data: { which: A }, delayMs: 250 },
+      { instanceId: A, epoch: EP, ok: true, data: { which: A }, delayMs: 320 }, // repeat late -> duplicate
+    ]);
+    const res = await epScatter(nc, SPACE, opFor(), { deadlineMs: 150, lateDrainMs: 400, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) });
+    await sub.drain();
+    c("a post-deadline reply within lateDrainMs is LATE, not counted", res.late.some((x) => x.instanceId === A) && res.replies.size === 0 && res.complete === false);
+    c("a repeated late reply is DUPLICATE", res.duplicate.some((x) => x.instanceId === A));
+    c("the late slot is MISSING (no on-time reply) — classification linearized at the deadline", res.missing.includes(A));
+  }
 
-  // ---- epCall: reply / application-error / deadline / bad-args ------------------------------------
+  // invalid is NON-TERMINAL: an invalid-first frame does not consume the slot; a later valid reply
+  // COUNTS (not mislabeled duplicate), and an invalid from the last-pending slot never early-completes.
+  {
+    const sub = respond(nc, allFilter, () => [
+      { instanceId: A, epoch: EP, ok: true, data: { which: 999 } },              // invalid first (bad type)
+      { instanceId: A, epoch: EP, ok: true, data: { which: A }, delayMs: 120 },  // valid later
+    ]);
+    const res = await epScatter(nc, SPACE, opFor(), { deadlineMs: 600, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) });
+    await sub.drain();
+    c("invalid-first: the later valid reply COUNTS, not duplicate (invalid is non-terminal)", res.replies.has(A));
+    c("invalid-first: the invalid frame is still reported", res.invalid.some((x) => x.instanceId === A));
+    c("invalid-last-pending did NOT early-complete before the valid reply arrived", res.replies.has(A) && res.missing.length === 0);
+    c("an observed invalid keeps complete=FALSE even after a valid recovery (§13.3 fail-loud)", res.complete === false);
+  }
+
+  // empty / duplicate-in-freeze / unbounded / unreadable reconcile refusals (§13.5).
+  await rejects("scatter refuses an EMPTY frozen expected set (never an empty success)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 100, expected: [], reconcileRegistration: okReconcile({}) }), "failed-precondition");
+  await rejects("scatter refuses a frozen set naming one instance twice",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 100, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: A, registrationRevision: 2, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "failed-precondition");
+  await rejects("scatter surfaces an unreadable reconcile as failed-precondition",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }), "failed-precondition");
+  await rejects("scatter BOUNDS a never-settling reconcile as unavailable (deadline mandatory, no hung scatter)",
+    () => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, number>>(() => { /* never settles */ }) }), "unavailable");
+
+  // ---- epCall: reply / application-error / no-responder / deadline / stale-epoch / wrong-instance / bad-args ----
   const IID = "1".repeat(26);
   {
-    const sub = respond(nc, instFilter, (_req, _id) => [{ instanceId: IID, epoch: 3, ok: true, data: { which: "hello" } }]);
-    const r = await epCall(nc, SPACE, { mode: "inst", instanceId: IID }, opFor(), { deadlineMs: 800 });
+    const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 3, ok: true, data: { which: "hello" } }]);
+    const r = await epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 800 });
     await sub.drain();
     c("epCall resolves the attributed reply within the budget", r.reply.ok === true && (r.reply.data as { which: string }).which === "hello");
     c("epCall attribution is subject-borne (instance + epoch)", r.responder.instanceId === IID && r.responder.epoch === 3);
   }
   {
     const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 3, ok: false }]);
-    const r = await epCall(nc, SPACE, { mode: "inst", instanceId: IID }, opFor(), { deadlineMs: 800 });
+    const r = await epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 800 });
     await sub.drain();
     c("an application failure is a reply with ok=false, NOT a thrown error (§13.3)", r.reply.ok === false && r.reply.error?.code === "failed-precondition");
   }
-  await rejects("epCall with no responder rejects deadline-exceeded",
-    () => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26) }, opFor(), { deadlineMs: 200 }), "deadline-exceeded");
+  await rejects("epCall with NO responder rejects `unavailable` (SPEC 13.5), not deadline-exceeded",
+    () => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26), epoch: 1 }, opFor(), { deadlineMs: 400 }), "unavailable");
+  {
+    const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 9, ok: true, data: { which: "stale" } }]); // replies at a DIFFERENT epoch
+    await rejects("epCall rejects a STALE-epoch reply as `expired` (§13.2: callers reject stale replies)",
+      () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }), "expired");
+    await sub.drain();
+  }
+  {
+    const sub = respond(nc, instFilter, () => [{ instanceId: "2".repeat(26), epoch: 3, ok: true, data: { which: "wrong" } }]); // replies as a DIFFERENT instance
+    await rejects("epCall(inst) rejects a WRONG-instance reply as `internal` (identity bind)",
+      () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }), "internal");
+    await sub.drain();
+  }
+  {
+    const sub = respond(nc, instFilter, () => []); // subscriber exists but never replies -> slow, not absent
+    await rejects("epCall with a live-but-silent responder rejects deadline-exceeded (distinct from unavailable)",
+      () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 250 }), "deadline-exceeded");
+    await sub.drain();
+  }
   await rejects("epCall whose args fail its own input contract refuses bad-request BEFORE publish",
-    () => epCall(nc, SPACE, { mode: "inst", instanceId: IID }, opFor({ args: { n: 123 } as unknown as Record<string, unknown> }), { deadlineMs: 200 }), "bad-request");
+    () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor({ args: { n: 123 } as unknown as Record<string, unknown> }), { deadlineMs: 200 }), "bad-request");
+  await rejects("epCall refuses a deadline beyond the setTimeout timer bound (2^31-1)",
+    () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 2_147_483_648 }), "bad-request");
 
-  // ---- epCast: fire-and-forget, honors replyExpected=false ----------------------------------------
+  // ---- epCast: fire-and-forget; honors replyExpected=false; all-rail needs a deadline ------------
   {
     let replied = 0;
     const sub = respond(nc, instFilter, (_req, _id, replyExpected) => { if (replyExpected) { replied++; return [{ instanceId: IID, epoch: 3, ok: true, data: { which: "x" } }]; } return []; });
@@ -177,21 +232,23 @@ try {
     await sub.drain();
     c("epCast resolves after flush and the responder saw replyExpected=false (no reply)", replied === 0);
   }
+  await rejects("epCast to the ALL rail without deadlineMs refuses bad-request (would be silently dropped)",
+    () => epCast(nc, SPACE, { mode: "all" }, opFor()), "bad-request");
 
-  // ---- epWatch: live event read on a granted epe subtree ------------------------------------------
+  // ---- epWatchEvents: live event read on a granted epe subtree ------------------------------------
   {
     const events: EpAttributedEvent[] = []; const errors: EpEnvelopeError[] = [];
-    const watch = epWatch(nc, SPACE, `${spacePrefix(SPACE)}.epe.>`, { onEvent: (e) => events.push(e), onError: (e) => errors.push(e) });
+    const watch = epWatchEvents(nc, SPACE, `${spacePrefix(SPACE)}.epe.>`, { onEvent: (e) => events.push(e), onError: (e) => errors.push(e) });
     await wait(50);
     const evSubject = epeSubject(SPACE, ENDPOINT, IID, 3, ["progress"]);
     nc.publish(evSubject, enc.encode(JSON.stringify({ v: 1, topic: "progress", ts: 42, data: { pct: 50 } })));
     nc.publish(evSubject, enc.encode("{ not json"));                       // unparseable body -> onError
     await wait(150);
     await watch.stop();
-    c("epWatch delivers a valid event with subject-borne instance + epoch attribution", events.some((e) => e.instanceId === IID && e.epoch === 3 && (e.event.data as { pct: number }).pct === 50));
-    c("epWatch reports an unparseable event body through onError, never onEvent (§13.3 fail loud)", errors.length >= 1 && events.length === 1);
+    c("epWatchEvents delivers a valid event with subject-borne instance + epoch", events.some((e) => e.instanceId === IID && e.epoch === 3 && (e.event.data as { pct: number }).pct === 50));
+    c("epWatchEvents reports an unparseable event body through onError, never onEvent (§13.3)", errors.length >= 1 && events.length === 1);
   }
-  await new Promise<void>((res) => { const bad = "not.an.epe.subtree"; try { epWatch(nc, SPACE, bad, { onEvent: () => {}, onError: () => {} }); c("epWatch refuses a non-epe filter", false, "no throw"); } catch { c("epWatch refuses a filter that is not an epe subtree of the space", true); } res(); });
+  await new Promise<void>((res) => { try { epWatchEvents(nc, SPACE, "not.an.epe.subtree", { onEvent: () => {}, onError: () => {} }); c("epWatchEvents refuses a non-epe filter", false, "no throw"); } catch { c("epWatchEvents refuses a filter that is not an epe subtree of the space", true); } res(); });
 
   await nc.drain();
   console.log(`\nENDPOINT VERBS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
