@@ -204,11 +204,12 @@ async function main(): Promise<void> {
   // One wake-nudge path, shared by incoming messages and the Stop→idle flush. It stays a stable
   // function gated on a *mutable* `channelActive` flag (flipped true only after the MCP
   // handshake confirms the client speaks claude/channel — see below). If it fires before then it
-  // simply no-ops; a *buffered* message waits in the inbox and is drained at the next
-  // UserPromptSubmit, so nothing is lost. This only ever *wakes* a turn (drainInbox and the focus
-  // ingest ack-drop are the ack sites). One exception: a focus @mention's body was already
-  // ack-dropped at ingest (not buffered), so a missed mention-wake is recoverable only by an
-  // explicit cotal_inbox pull (recall) — there is no buffered copy to drain.
+  // simply no-ops; the *buffered* message stays in the inbox and the post-handshake reconcile +
+  // idle reconciler below re-fire the wake, so the message still surfaces without a human turn.
+  // This only ever *wakes* a turn (drainInbox and the focus ingest ack-drop are the ack sites).
+  // One exception: a focus @mention's body was already ack-dropped at ingest (not buffered), so a
+  // missed mention-wake is recoverable only by an explicit cotal_inbox pull (recall) — there is
+  // no buffered copy to drain.
   let channelActive = false;
   const nudge = (item?: InboxItem, pullHint?: string): void => {
     if (!channelActive) return;
@@ -262,6 +263,24 @@ async function main(): Promise<void> {
   process.stderr.write(
     `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
   );
+
+  // Post-activation reconcile: an "incoming" that fired before the flag flipped was nudge-dropped
+  // — a spawn with a DM already pending delivers within ms of the durable bind, well before this
+  // point — and JetStream redelivery never re-emits it (ingest's pending-duplicate branch only
+  // refreshes the ack handle). Without a re-fired wake the session sits idle-but-deaf forever.
+  if (agent.pendingWake() > 0) nudge();
+
+  // Idle reconciler — the self-healing net for every lost-wake class, not just the boot race: the
+  // client declares claude/channel at the handshake but registers its notification handler
+  // asynchronously (observed ~1.4s later), so even the reconcile above can land in a window where
+  // the push is silently discarded client-side. A nudge has no ack, so re-derive from state:
+  // wake-pending messages while idle ⇒ a wake was lost ⇒ fire it again. pendingWake() is the same
+  // mode-and-channel-aware predicate as the Stop→idle flush (held quiet/dnd ambient never wakes),
+  // and a delivered wake drains the inbox on its UserPromptSubmit, so re-nudges stop themselves —
+  // no storm. unref: never holds the process open.
+  setInterval(() => {
+    if (channelActive && agent.status === "idle" && agent.pendingWake() > 0) nudge();
+  }, 30_000).unref();
 
   process.stderr.write(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,
