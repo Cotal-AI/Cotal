@@ -153,6 +153,20 @@ ok("a disjoint repetition hidden in an alternation still compiles ((a*|c)b*)", (
   const v = compileContractSchema({ root: { type: "string", pattern: "^(a*|c)b*X$" } });
   return v("aabbX") === true && v("cbX") === true && v("aaY") === false;
 })());
+refuses("overlapping FINITE-range repetitions refused (a{0,100000}a{0,100000} is not constant)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^a{0,100000}a{0,100000}X$" } }), "overlapping variable repetitions");
+refuses("finite range hidden in an alternation refused ((a{0,9}|b)a{0,9})", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^(a{0,100000}|b)a{0,100000}X$" } }), "overlapping variable repetitions");
+refuses("a chain of overlapping optionals refused (a?a?a?a? is bounded-backtracking)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^a?a?a?a?X$" } }), "overlapping variable repetitions");
+ok("a single optional still compiles (colou?r)", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^colou?r$" } });
+  return v("color") === true && v("colour") === true && v("colouur") === false;
+})());
+ok("disjoint finite ranges still compile (\\d{1,9}[a-z]{1,9})", (() => {
+  const v = compileContractSchema({ root: { type: "string", pattern: "^[0-9]{1,9}[a-z]{1,9}$" } });
+  return v("12ab") === true && v("12") === false;
+})());
 ok("negated classes and braced code points still compile", (() => {
   const v = compileContractSchema({ root: { type: "string", pattern: "^[^a-z]+x\\u{1F600}*$" } });
   return v("A1x😀") === true && v("abc") === false;

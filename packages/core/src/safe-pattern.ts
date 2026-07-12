@@ -332,18 +332,21 @@ function analyze(node: Node): Facts {
         if (body.nullable) refuse("repeats a nullable body (unbounded ambiguity on empty matches)");
         if (body.ambiguousAlt) refuse("repeats an ambiguous alternation (branches overlap — exponential backtracking class)");
       }
-      // Only an UNBOUNDED repetition (`*`/`+`/`{n,}`) drives the polynomial overlap; a bounded
-      // one (`a?`, `a{2,5}`) adds a constant factor, not a per-character choice. An unbounded
-      // repetition exposes its BODY's set at both edges (its own repeated content), plus any
-      // repeat-set the body already carried.
-      const unbounded = node.max === Infinity;
+      // Every NONDETERMINISTIC repetition (`max > min`: `*`, `+`, `{n,}`, `?`, and any `{m,n}`
+      // with n>m) drives the polynomial overlap, because it can match a VARIABLE number of the
+      // same characters, so an adjacent one over an intersecting set is a `C(input,k)` split
+      // ambiguity — and an author-chosen finite bound like `{0,100000}` is not a "constant
+      // factor" at a 10ms budget. Only a FIXED `{n}` (max===min) is deterministic and exempt.
+      // A nondeterministic repetition exposes its BODY's set at both edges (its own repeated
+      // content), plus any repeat-set the body already carried.
+      const nondet = node.max > node.min;
       return {
         set: body.set,
         nullable: body.nullable || node.min === 0,
-        variable: body.variable || node.max > node.min || repeats,
+        variable: body.variable || nondet || repeats,
         ambiguousAlt: body.ambiguousAlt,
-        leadRep: unbounded ? union(body.set, body.leadRep) : body.leadRep,
-        trailRep: unbounded ? union(body.set, body.trailRep) : body.trailRep,
+        leadRep: nondet ? union(body.set, body.leadRep) : body.leadRep,
+        trailRep: nondet ? union(body.set, body.trailRep) : body.trailRep,
       };
     }
   }
