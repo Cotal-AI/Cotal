@@ -141,7 +141,9 @@ function targetTokens(target: EpTarget): string[] {
   return [target.mode, assertBoundedOwner(target.tOwner, "target owner")];
 }
 
-function callerTokens(caller: EpCaller): string[] {
+/** The caller triple as validated subject tokens — the ONE validation every caller-scoped
+ *  subject and filter goes through. */
+export function callerTokens(caller: EpCaller): string[] {
   return [
     assertBoundedOwner(caller.owner, "caller owner"),
     assertBoundedOwner(caller.actor, "caller actor"),
