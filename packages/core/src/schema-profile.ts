@@ -25,8 +25,9 @@ export const SCHEMA_PROFILE = {
   compileBudgetMs: 100,
   /** Bounded pattern complexity: max characters of any `pattern` / `patternProperties` regex. */
   maxPatternChars: 256,
-  /** Per-value validation budget at the serving boundary, ms (post-hoc, fail-loud). */
-  validateBudgetMs: 50,
+  /** Per-value validation budget at the serving boundary, ms (§13.8 reference; post-hoc,
+   *  fail-loud as `bad-request`). */
+  validateBudgetMs: 10,
   /** Compiled-schema cache entries (the SPEC's reference 256-entry LRU). */
   compiledCacheEntries: 256,
 } as const;

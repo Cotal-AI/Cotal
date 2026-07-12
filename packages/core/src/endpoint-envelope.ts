@@ -375,7 +375,8 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  *  invocation-time `bad-request` (registration-time violations are `contract-invalid`,
  *  {@link import("./schema-profile.js").ContractInvalidError}). Against the void schema the
  *  payload is absent or `null` (§13.7), so `undefined` args validate as `null` here and only
- *  here. The §13.7 validation budget is enforced post-hoc, fail-loud (`resource-exhausted`):
+ *  here. The §13.8 validation budget is enforced post-hoc, fail-loud as `bad-request` (the
+ *  spec's over-budget code for validate time, distinct from compile's `contract-invalid`):
  *  pathological values cannot silently stall the serving boundary. */
 export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | undefined, budgetMs: number): unknown {
   const value = args === undefined ? null : args;
@@ -383,7 +384,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
   const okValid = validate(value);
   const elapsed = Date.now() - started;
   if (elapsed > budgetMs)
-    fail("resource-exhausted", `args validation took ${elapsed}ms (budget ${budgetMs}ms)`);
+    fail("bad-request", `args validation took ${elapsed}ms (budget ${budgetMs}ms; over budget is bad-request, SPEC 13.8)`);
   if (!okValid) {
     const first = validate.errors?.[0];
     fail("bad-request", `args do not validate against the input schema${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
