@@ -135,6 +135,10 @@ refuses("repeated nullable body refused ((a?)*)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(a?)*$" } }), "repeats a group");
 refuses("lookaround refused (outside the safe subset)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^(?=a)ab$" } }), "safe subset");
+refuses("an unanchored pattern refused (Ajv tests unanchored → O(n²) at every start position)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "[0b]*$" } }), "start anchor");
+refuses("an unanchored alternation branch refused (^a|b$ leaves the 2nd branch unpinned)", () =>
+  compileContractSchema({ root: { type: "string", pattern: "^[ba]+|[0b]*$" } }), "start anchor");
 refuses("double-negated class overlap refused ([^\\D]* \\d* is digit* digit*)", () =>
   compileContractSchema({ root: { type: "string", pattern: "^[^\\D]*\\d*X$" } }), "overlapping variable repetitions");
 refuses("unknown alphanumeric escape refused (\\cA is control-A, not literal c+A)", () =>

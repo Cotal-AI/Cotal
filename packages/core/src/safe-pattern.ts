@@ -55,7 +55,9 @@ function intersects(a: CharSet, b: CharSet): boolean {
 }
 
 function union(a: CharSet, b: CharSet): CharSet {
-  if (a.neg || b.neg) return FULL; // conservative: complements widen to ALL
+  if (!a.neg && a.ranges.length === 0) return b; // EMPTY is the identity — never widen past it
+  if (!b.neg && b.ranges.length === 0) return a;
+  if (a.neg || b.neg) return FULL; // two non-trivial sets, one a complement: widen to ALL (sound)
   return { neg: false, ranges: [...a.ranges, ...b.ranges] };
 }
 
@@ -65,7 +67,7 @@ type Node =
   | { kind: "seq"; items: Node[] }
   | { kind: "alt"; branches: Node[] }
   | { kind: "atom"; set: CharSet }
-  | { kind: "anchor" }
+  | { kind: "anchor"; at: "start" | "end" }
   | { kind: "quant"; body: Node; min: number; max: number } // max = Infinity for unbounded
   ;
 
@@ -140,7 +142,8 @@ class Parser {
     }
     if (c === "[") return { kind: "atom", set: this.charClass() };
     if (c === ".") return { kind: "atom", set: FULL };
-    if (c === "^" || c === "$") return { kind: "anchor" };
+    if (c === "^") return { kind: "anchor", at: "start" };
+    if (c === "$") return { kind: "anchor", at: "end" };
     if (c === "\\") return { kind: "atom", set: this.escape(false) };
     if (c === ")" || c === undefined) refuse("unbalanced group");
     return { kind: "atom", set: single(this.codePoint()) };
@@ -276,6 +279,29 @@ function edgeRepeat(facts: Facts[], pick: (f: Facts) => CharSet): CharSet {
   return acc;
 }
 
+/** Every alternation branch reachable at the top level MUST begin with a `^` start anchor.
+ *  Ajv matches `pattern` with unanchored `RegExp.test()`, which retries at EVERY input position;
+ *  a branch not pinned to the start therefore turns even a single repetition-plus-obligation
+ *  (`[0b]*$`, `[a-z]+@`) into an O(n²) scan across n start positions. A `^` collapses the search
+ *  to one position, under which the overlap analysis below is sound. (End-anchoring is not
+ *  required: a trailing repetition with no obligation after it is linear.) */
+function assertStartAnchored(node: Node): void {
+  switch (node.kind) {
+    case "anchor":
+      if (node.at !== "start") refuse("a top-level branch must begin with a '^' start anchor (Ajv tests patterns unanchored)");
+      return;
+    case "seq":
+      if (node.items.length === 0) refuse("an empty top-level branch is not start-anchored");
+      assertStartAnchored(node.items[0]);
+      return;
+    case "alt":
+      for (const b of node.branches) assertStartAnchored(b);
+      return;
+    default:
+      refuse("a top-level branch must begin with a '^' start anchor (Ajv tests patterns unanchored)");
+  }
+}
+
 function analyze(node: Node): Facts {
   switch (node.kind) {
     case "anchor":
@@ -284,15 +310,19 @@ function analyze(node: Node): Facts {
       return { set: node.set, nullable: node.set.ranges.length === 0 && !node.set.neg, variable: false, ambiguousAlt: false, leadRep: EMPTY, trailRep: EMPTY };
     case "seq": {
       const facts = node.items.map(analyze);
-      // The polynomial overlap class (`a*a*`, `a*b?a*`, and — via edge repeat-sets — repetitions
-      // hidden inside groups/alternations like `(a*|b)a*`): a node whose TRAILING repeat-set
-      // intersects a later node's LEADING repeat-set, through a nullable-only gap, is refused.
+      // The polynomial overlap class (`a*a*`, `a*b?a*`, `(a*|b)a*`, `\d*0000 0*`): a node whose
+      // TRAILING repeat-set `T` intersects a later node's LEADING repeat-set is refused. The
+      // window is only closed by a HARD SEPARATOR — a non-nullable item whose set is DISJOINT
+      // from `T`. A non-nullable item whose set INTERSECTS `T` does NOT separate: the run of
+      // `T`-characters sloshes through it (the fixed `0000` between `\d*` and `0*` is satisfiable
+      // anywhere in a zero-run, so the two still split the run ambiguously).
       for (let i = 0; i < facts.length; i++) {
-        if (facts[i].trailRep.ranges.length === 0 && !facts[i].trailRep.neg) continue;
+        const T = facts[i].trailRep;
+        if (T.ranges.length === 0 && !T.neg) continue;
         for (let j = i + 1; j < facts.length; j++) {
-          if (intersects(facts[i].trailRep, facts[j].leadRep))
+          if (intersects(T, facts[j].leadRep))
             refuse("two overlapping variable repetitions in sequence (polynomial backtracking class)");
-          if (!facts[j].nullable) break; // an obligatory consumer separates the repetitions
+          if (!facts[j].nullable && !intersects(facts[j].set, T)) break; // a disjoint obligation separates the run
         }
       }
       return {
@@ -359,7 +389,9 @@ export function assertSafePattern(pattern: string, maxChars: number): void {
   if (pattern.length > maxChars)
     throw new Error(`pattern of ${pattern.length} characters exceeds the profile complexity bound (${maxChars})`);
   try {
-    analyze(new Parser(pattern).parse());
+    const ast = new Parser(pattern).parse();
+    assertStartAnchored(ast); // sound only under single-start matching (Ajv tests unanchored)
+    analyze(ast);
   } catch (e) {
     if (e instanceof PatternRefused) throw new Error(`pattern ${JSON.stringify(pattern)} is outside the profile's safe subset: ${e.message}`);
     throw new Error(`pattern ${JSON.stringify(pattern)} did not parse under the profile's safe subset: ${(e as Error).message}`);
