@@ -147,10 +147,10 @@ const authority: ServiceNameAuthority = {
 // instanceId) gate. This smoke exercises the registry/serve/describe SURFACE; the fence internals
 // (revision-pinned CAS, freeze token, verified evict, drift) are proven in endpoint-serve-auth.smoke.ts.
 // Here the barrier only needs to be a faithful freeze->(spec write)->reopen writer.
-const gateStates = new Map<string, { endpoint: string; lifecycleUid: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+const gateStates = new Map<string, { space: string; endpoint: string; lifecycleUid: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
 function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
   const key = `${endpoint}/${instanceId}`;
-  if (!gateStates.has(key)) gateStates.set(key, { endpoint, lifecycleUid: instanceId, state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
+  if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
   const g = gateStates.get(key)!;
   return {
     observe: () => ({ ...g }),
@@ -163,7 +163,7 @@ function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
 }
 /** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
 const reg = (kvArg: KV, args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority }) =>
-  registerServiceInstance(kvArg, { ...args, barrier: barrierFor(args.spec.endpoint, args.instanceId) });
+  registerServiceInstance(kvArg, { ...args, space: SPACE, barrier: barrierFor(args.spec.endpoint, args.instanceId) });
 
 // ── name authority (broker-free; the authority read is async) ──
 c("a core name under the operator owner admits",

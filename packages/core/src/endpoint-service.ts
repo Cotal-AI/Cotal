@@ -162,7 +162,7 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
  *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
 export async function registerServiceInstance(
   kv: KV,
-  args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier },
+  args: { space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier },
 ): Promise<{ registrationRevision: number }> {
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
   assertBoundedOwner(args.registrant.owner, "registrant owner");
@@ -180,8 +180,8 @@ export async function registerServiceInstance(
   const obs = await args.barrier.observe();
   if (obs === null)
     throw new EpEnvelopeError("failed-precondition", `no issuance gate for instance "${args.instanceId}"; a registration writes only behind the provisioner-created gate (SPEC 13.1)`);
-  if (obs.endpoint !== spec.endpoint || obs.lifecycleUid !== args.instanceId)
-    throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.endpoint}/${obs.lifecycleUid}", not "${spec.endpoint}/${args.instanceId}"; a registration drives only its OWN instance's gate, and the instance token is unique only within (space, endpoint) (SPEC 13.1)`);
+  if (obs.space !== args.space || obs.endpoint !== spec.endpoint || obs.lifecycleUid !== args.instanceId)
+    throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.space}/${obs.endpoint}/${obs.lifecycleUid}", not "${args.space}/${spec.endpoint}/${args.instanceId}"; a registration drives only its OWN instance's gate, and the instance token is unique only within (space, endpoint) (SPEC 13.1)`);
   if (obs.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`);
   if (obs.state !== "open")
@@ -641,6 +641,12 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  barrier bumps it, so a superseded mint's rebuilt CAS loses even if two coordinates coincide).
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export interface EpGateState {
+  /** The gate's space. In production the gate physically lives in the per-space
+   *  `KV_cotal_auth_<space>` bucket (§13.9:2393), so the space is the bucket and cannot be crossed;
+   *  carrying it here is defense-in-depth for the in-memory seam/fake, so a mint/registration
+   *  handed a gate constructed for another space is refused rather than trusting the caller wired
+   *  the right bucket. */
+  space: string;
   /** The gate's OWN instance identity, `(endpoint, lifecycleUid)` (§13.1). For an endpoint the
    *  lifecycle identity is `instanceId`, which SPEC 13.1:1008-1013 makes unique only within
    *  `(space, endpoint)` (its ≥128-bit CSPRNG entropy is what makes the SPEC's `gate.<lifecycleUid>`
@@ -788,7 +794,7 @@ export interface EpServeCredential {
  *  mint records `["root"]` for a serve credential minted directly by the provisioner authority.
  *  Ids are the record grammar `[A-Za-z0-9_-]` (uppercase admitted), bounded, and every segment is
  *  non-empty — so `handle.x`, `handle.x.`, and `session.x.y` all refuse. */
-const SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,128}";
+const SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,64}"; // the §13.2:1248 / assertIdToken id bound
 const SOURCE_CHAIN_ELEMENT = new RegExp(`^(root|handle\\.${SOURCE_CHAIN_ID}\\.${SOURCE_CHAIN_ID}|session\\.${SOURCE_CHAIN_ID})$`);
 
 /**
@@ -826,12 +832,13 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
   const obs = await gate.observe();
   if (obs === null)
     throw new EpEnvelopeError("expired", `no issuance gate for "${snap.endpoint}/${snap.instanceId}"; a serve credential never mints against a missing gate (SPEC 13.1)`);
-  // Gate IDENTITY `(endpoint, lifecycleUid)`: the instance token is unique only within
-  // `(space, endpoint)`, so BOTH must match — a caller that handed a foreign gate (a different
-  // endpoint sharing the instance token, or any wrong gate) with coincidentally matching
-  // coordinates is refused.
-  if (obs.endpoint !== snap.endpoint || obs.lifecycleUid !== snap.instanceId)
-    throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.endpoint}/${obs.lifecycleUid}", not the authorized instance "${snap.endpoint}/${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
+  // Gate IDENTITY `(space, endpoint, lifecycleUid)`: the instance token is unique only within
+  // `(space, endpoint)`, so ALL must match — a caller that handed a foreign gate (another space's,
+  // a different endpoint sharing the instance token, or any wrong gate) with coincidentally
+  // matching coordinates is refused (the per-space auth bucket is the production space fence; this
+  // is the seam's defense-in-depth).
+  if (obs.space !== snap.space || obs.endpoint !== snap.endpoint || obs.lifecycleUid !== snap.instanceId)
+    throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.space}/${obs.endpoint}/${obs.lifecycleUid}", not the authorized instance "${snap.space}/${snap.endpoint}/${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
   if (obs.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${snap.endpoint}/${snap.instanceId}" is ${obs.state}; minting is closed (SPEC 13.1)`);
   // JOINT currency on ONE key: a takeover advances processEpoch, a re-registration advances
