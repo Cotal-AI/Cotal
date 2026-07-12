@@ -32,6 +32,7 @@ const caller: EpCaller = { owner: "u_abc", actor: "worker", uid: UID };
 const caller2: EpCaller = { owner: "u_zed", actor: "worker", uid: "z".repeat(26) };
 const NONCE = "n".repeat(24);
 const D = `sha256:${"a".repeat(64)}`;
+const D2 = `sha256:${"b".repeat(64)}`;
 
 // ── fingerprint (broker-free) ──
 const subj = parseEpSubject(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "spawn", caller, nonce: NONCE })) as ParsedEpRequest;
@@ -108,15 +109,35 @@ throws("an embedded request with replyExpected:true (not a journal cast) refuses
   () => parseDecisionFact({ ...acc, request: { ...sub1, replyExpected: true } }, accSubj));
 throws("an embedded request whose from.id contradicts the authenticated fact caller refuses",
   () => parseDecisionFact({ ...acc, request: { ...sub1, from: { id: "u_evil.other", name: "w" } } }, accSubj));
+// The acceptance must expose ONE coherent effect authority (the panel's cross-field binding
+// repros): target presence equivalent to the request's, the FULL tuple + any pinned
+// mappingRevision equal, and the fact's contractDigests equal to the pinned op digests.
+const tTup = { owner: "u_zed", actor: "svc", lifecycleUid: "z".repeat(26) };
+const tReq = { ...sub1, target: tTup };
 throws("an acceptance with a non-object target refuses",
-  () => parseDecisionFact({ ...acc, target: 42 }, accSubj));
-throws("a resolved fact target naming a different alias than the request's target refuses",
-  () => parseDecisionFact({ ...acc, request: { ...sub1, target: { owner: "u_zed", actor: "svc", lifecycleUid: "z".repeat(26) } }, target: { owner: "u_other", actor: "svc", lifecycleUid: "z".repeat(26) } }, accSubj));
+  () => parseDecisionFact({ ...acc, request: tReq, target: 42 }, accSubj));
+throws("a fact target naming a different alias than the request's target refuses",
+  () => parseDecisionFact({ ...acc, request: tReq, target: { ...tTup, owner: "u_other" } }, accSubj));
+throws("a fact target naming a different lifecycleUid than the request's expected UID refuses",
+  () => parseDecisionFact({ ...acc, request: tReq, target: { ...tTup, lifecycleUid: "y".repeat(26) } }, accSubj));
+throws("a fact target altering the mappingRevision the request pinned refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, target: { ...tTup, mappingRevision: 4 } }, target: { ...tTup, mappingRevision: 9 } }, accSubj));
+throws("a fact target dropping the mappingRevision the request pinned refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, target: { ...tTup, mappingRevision: 4 } }, target: tTup }, accSubj));
+throws("a targeted request whose acceptance dropped the target refuses (not self-sufficient)",
+  () => parseDecisionFact({ ...acc, request: tReq }, accSubj));
+throws("an untargeted request with a spurious fact target refuses (smuggled authority)",
+  () => parseDecisionFact({ ...acc, target: tTup }, accSubj));
+throws("fact contractDigests.input disagreeing with the pinned op.inputDigest refuses",
+  () => parseDecisionFact({ ...acc, contractDigests: { input: D2, output: D } }, accSubj));
+throws("fact contractDigests.output disagreeing with the pinned op.outputDigest refuses",
+  () => parseDecisionFact({ ...acc, contractDigests: { input: D, output: D2 } }, accSubj));
 c("ts:0 and readinessDeadlineMs:0 are CONFORMING (non-negative wire integers, not positive)",
   parseDecisionFact({ ...rej, ts: 0 }, accSubj).decision === "rejected"
   && (parseDecisionFact({ ...acc, readinessDeadlineMs: 0 }, accSubj) as AcceptanceFact).readinessDeadlineMs === 0);
-c("a well-formed resolved target validates",
-  (parseDecisionFact({ ...acc, target: { owner: "u_zed", actor: "svc", lifecycleUid: "z".repeat(26), mappingRevision: 4 } }, accSubj) as AcceptanceFact).decision === "accepted");
+c("a coherent resolved target validates (an omitted request mappingRevision is the ONE fill)",
+  (parseDecisionFact({ ...acc, request: tReq, target: { ...tTup, mappingRevision: 4 } }, accSubj) as AcceptanceFact).decision === "accepted"
+  && (parseDecisionFact({ ...acc, request: { ...sub1, target: { ...tTup, mappingRevision: 4 } }, target: { ...tTup, mappingRevision: 4 } }, accSubj) as AcceptanceFact).decision === "accepted");
 throws("a fact whose body id disagrees with the subject refuses (no cross-id smuggling)",
   () => parseDecisionFact({ ...rej, id: "req-9" }, accSubj));
 throws("a fact whose body caller disagrees with the subject refuses",

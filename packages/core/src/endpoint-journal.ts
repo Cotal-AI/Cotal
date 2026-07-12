@@ -250,18 +250,38 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
   }
   if (o.decision !== "accepted") factFail(`decision ${JSON.stringify(o.decision)}`);
   const req = checkEmbeddedRequest(o.request, addr);
-  if (o.target !== undefined) {
+  // The stored acceptance must expose ONE coherent effect authority (§13.4: self-sufficient for
+  // effect and replay) — target presence is EQUIVALENT to the request's (§13.3: a body target
+  // exists exactly for the targeted modes): a targeted acceptance that dropped its target is not
+  // replayable, and an untargeted request with a spurious fact target smuggles authority the
+  // caller never asked for.
+  if ((req.target !== undefined) !== (o.target !== undefined))
+    factFail(req.target !== undefined
+      ? "a targeted request's acceptance must persist the resolved target"
+      : "an untargeted request's acceptance must not carry a target");
+  if (o.target !== undefined && req.target !== undefined) {
     checkTarget(o.target);
-    // Where the request itself named a target, the RESOLVED fact target must name the same alias
-    // identity (owner+actor); only the lifecycleUid/mappingRevision are filled by resolution, so
-    // those may differ — but a resolved target for a DIFFERENT principal than the caller asked
-    // for is a smuggle.
-    const ft = o.target as { owner: string; actor: string };
-    if (req.target && (req.target.owner !== ft.owner || req.target.actor !== ft.actor))
-      factFail("the resolved fact target names a different alias than the embedded request's target");
+    // The fact target must equal the request's FULL tuple. lifecycleUid is the caller's EXPECTED
+    // binding, validator-checked against the current mapping (§13.3) — resolution validates it,
+    // never replaces it; goals bind (principal, lifecycleUid) (§13.6), so a substituted UID
+    // redirects effect/replay to a recycled alias. A caller-pinned mappingRevision pins the
+    // exact observed revision; only an OMITTED one may be filled by resolution.
+    const ft = o.target as { owner: string; actor: string; lifecycleUid: string; mappingRevision?: number };
+    if (req.target.owner !== ft.owner || req.target.actor !== ft.actor || req.target.lifecycleUid !== ft.lifecycleUid)
+      factFail("the fact target does not equal the embedded request's target tuple");
+    if (req.target.mappingRevision !== undefined && ft.mappingRevision !== req.target.mappingRevision)
+      factFail("the fact target does not carry the mappingRevision the request pinned");
   }
   const cd = o.contractDigests;
   if (!isRec(cd) || !isDigest(cd.input) || !isDigest(cd.output)) factFail("contractDigests");
+  // Where the request pinned contract digests (§13.3: required on every command except
+  // `describe`), the fact's contractDigests must EQUAL them — otherwise consumers validate and
+  // effect under a different contract than the caller accepted. An omitted digest (describe)
+  // is the only fill: the fact then carries the canonicalizer-resolved digest uncompared.
+  if (req.op.inputDigest !== undefined && cd.input !== req.op.inputDigest)
+    factFail("contractDigests.input disagrees with the embedded request's pinned op.inputDigest");
+  if (req.op.outputDigest !== undefined && cd.output !== req.op.outputDigest)
+    factFail("contractDigests.output disagrees with the embedded request's pinned op.outputDigest");
   checkAuthzDecision(o.authzDecision, "authzDecision");
   if (o.route !== "effects" && !(typeof o.route === "string" && /^pool\.[a-z0-9-]{1,32}$/.test(o.route))) factFail("route");
   if (o.readinessDeadlineMs !== undefined && !wireInt(o.readinessDeadlineMs)) factFail("readinessDeadlineMs must be a non-negative integer");
