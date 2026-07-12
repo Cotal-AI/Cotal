@@ -262,6 +262,24 @@ export function recordReaderDurable(uid: string, grantId: string, n: number): st
 // Each config is created by exactly ONE principal per the §13.9 matrix; every filter below is
 // the matrix row's full-tail form, so the emitted grants and these configs cannot diverge.
 
+/** Family brand: every config a builder below mints is registered against the ONE §13.12
+ *  stream its family lives on. The grant-row builders accept ONLY branded (config, stream)
+ *  pairs — a raw hand-built config, or a family config paired with a foreign stream, refuses
+ *  loudly. This is what makes "the rows and the configs come from one place" STRUCTURAL: an
+ *  authority row can never be built around a filter the §13.9 matrix does not name. */
+const FAMILY_STREAM = new WeakMap<Partial<ConsumerConfig>, string>();
+function family(stream: string, cfg: Partial<ConsumerConfig>): Partial<ConsumerConfig> {
+  FAMILY_STREAM.set(cfg, stream);
+  return cfg;
+}
+function assertFamilyPair(stream: string, cfg: Partial<ConsumerConfig>, what: string): void {
+  const bound = FAMILY_STREAM.get(cfg);
+  if (bound === undefined)
+    throw new Error(`${what} requires a consumer config minted by a §13.9 family builder, not a raw config (durable ${JSON.stringify(cfg.durable_name ?? "")})`);
+  if (bound !== stream)
+    throw new Error(`${what}: durable ${JSON.stringify(cfg.durable_name ?? "")} belongs to stream ${JSON.stringify(bound)}, not ${JSON.stringify(stream)} (§13.9: no cross-family pairing)`);
+}
+
 /** The canonicalizer's durable on EPJ (`canon_<e>`): every raw submission to one endpoint.
  *  Acks only after the durable decision (and, for pool routes, after the enqueue), §13.4. */
 export function canonConsumerConfig(
@@ -269,14 +287,14 @@ export function canonConsumerConfig(
   endpoint: string,
   opts: { ackWaitMs?: number; maxAckPending?: number } = {},
 ): Partial<ConsumerConfig> {
-  return {
+  return family(epjStreamName(space), {
     durable_name: canonDurable(endpoint),
     filter_subject: `${spacePrefix(space)}.epj.${endpointToken(endpoint)}.>`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
     max_ack_pending: opts.maxAckPending ?? 1000,
-  };
+  });
 }
 
 /** The endpoint's ONE shared effects durable on EPF (`eff_<e>`, filter `epf.<e>.dec.>`):
@@ -287,14 +305,14 @@ export function effectsConsumerConfig(
   endpoint: string,
   opts: { ackWaitMs?: number; maxAckPending?: number } = {},
 ): Partial<ConsumerConfig> {
-  return {
+  return family(epfStreamName(space), {
     durable_name: effectsDurable(endpoint),
     filter_subject: `${spacePrefix(space)}.epf.${endpointToken(endpoint)}.dec.>`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
     max_ack_pending: opts.maxAckPending ?? 1000,
-  };
+  });
 }
 
 /** A record kind's writer durable on EPR (`recw_<space>-<kind>`) — one principal and one
@@ -310,13 +328,13 @@ export function recordWriterConsumerConfig(
 ): Partial<ConsumerConfig> {
   const kind = assertIdToken(def.kind, "record kind");
   const tail = def.qualifiers.length > 0 ? `.${kind}.>` : `.${kind}`;
-  return {
+  return family(eprStreamName(space), {
     durable_name: recordWriterDurable(space, def.kind),
     filter_subject: `${spacePrefix(space)}.epr.*.*.*${tail}`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
-  };
+  });
 }
 
 /** The timer writer's durable on EPT_REQ (`timerw_<space>`, full-tail filter on `.schedule`).
@@ -326,13 +344,13 @@ export function timerWriterConsumerConfig(
   space: string,
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
-  return {
+  return family(eptReqStreamName(space), {
     durable_name: timerWriterDurable(space),
     filter_subject: `${spacePrefix(space)}.ept.*.*.*.*.schedule`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
-  };
+  });
 }
 
 /** A pool's durable on the EPW WorkQueue (`pool_<e>_<pool>`, exact filter
@@ -346,12 +364,12 @@ export function poolConsumerConfig(
   pool: string,
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
-  return {
+  return family(epwStreamName(space), {
     durable_name: poolDurable(endpoint, pool),
     filter_subject: `${spacePrefix(space)}.epw.${endpointToken(endpoint)}.${assertPoolToken(pool)}.>`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
-  };
+  });
 }
 
 /** A caller's decision-reader durable on EPF (`dec_<uid>-<e>`, exact filter on the caller's
@@ -363,13 +381,13 @@ export function decisionReaderConfig(
   caller: EpCaller,
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
-  return {
+  return family(epfStreamName(space), {
     durable_name: decisionReaderDurable(caller.uid, endpoint),
     filter_subject: `${spacePrefix(space)}.epf.${endpointToken(endpoint)}.dec.${callerTokens(caller).join(".")}.>`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
-  };
+  });
 }
 
 /** A caller's goal-result durable on EPF (`goal_<uid>-<e>`; grammar as {@link decisionReaderConfig}). */
@@ -379,29 +397,32 @@ export function goalReaderConfig(
   caller: EpCaller,
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
-  return {
+  return family(epfStreamName(space), {
     durable_name: goalReaderDurable(caller.uid, endpoint),
     filter_subject: `${spacePrefix(space)}.epf.${endpointToken(endpoint)}.goal.${callerTokens(caller).join(".")}.>`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
-  };
+  });
 }
 
-/** Assert a granted subtree filter is a full LITERAL tail under `prefix` (§13.9 "JetStream API
- *  tails are always spelled in FULL"): a relative tail matches nothing, a bare `prefix` or one
- *  climbing outside it would widen the reader past its capability, and so would a wildcard —
- *  a caller subtree is literal tokens with at most ONE trailing `.>`, never an interior `*`/`>`
- *  and never `>` alone (a whole-plane read is a trusted-reader grant family, not a caller
- *  capability). Returns the tail tokens (after `prefix.`) for provenance checks. */
+/** Assert a granted subtree filter is a full tail under `prefix` (§13.9 "JetStream API tails
+ *  are always spelled in FULL"): a relative tail matches nothing, and a bare `prefix` or one
+ *  climbing outside it would widen the reader past its capability. Tokens are literal or full
+ *  `*` wildcards (whole-token `*` is NORMATIVE in granted subtrees — the per-goal event row
+ *  wildcards the instanceId/epoch positions, §13.9; mint-time literalness constrains the
+ *  DURABLE name, not the filter interior), with at most ONE trailing `.>` and never `>` alone
+ *  (a whole-plane read is a trusted-reader grant family, not a caller capability). Returns the
+ *  tail tokens (after `prefix.`) for provenance checks. */
 function assertFullTail(filter: string, prefix: string, what: string): string[] {
   if (!filter.startsWith(`${prefix}.`))
-    throw new Error(`${what} filter ${JSON.stringify(filter)} must be a full literal tail under ${JSON.stringify(prefix)} (§13.9)`);
+    throw new Error(`${what} filter ${JSON.stringify(filter)} must be a full tail under ${JSON.stringify(prefix)} (§13.9)`);
   const toks = filter.slice(prefix.length + 1).split(".");
   toks.forEach((t, i) => {
+    if (t === "*") return;
     if (t === ">" && i === toks.length - 1 && i > 0) return; // one trailing subtree wildcard, never the whole tail
     if (t.length === 0 || /[*>\s]/.test(t))
-      throw new Error(`${what} filter ${JSON.stringify(filter)} must be literal (one trailing ".>" is the only wildcard, §13.9): bad token ${JSON.stringify(t)}`);
+      throw new Error(`${what} filter ${JSON.stringify(filter)} token ${JSON.stringify(t)} is not a literal token, a full "*" token, or one trailing ">" (§13.9)`);
   });
   return toks;
 }
@@ -422,13 +443,13 @@ export function eventReaderConfig(
   // attributed durable read outside its mint scope.
   if (tail[0] !== endpointToken(args.endpoint))
     throw new Error(`event-reader subtree ${JSON.stringify(args.subtree)} names endpoint token ${JSON.stringify(tail[0])} but the durable is minted for ${JSON.stringify(endpointToken(args.endpoint))} (§13.9: durable and filter provenance must agree)`);
-  return {
+  return family(epeStreamName(space), {
     durable_name: eventReaderDurable(args.uid, args.endpoint, args.grantId, args.index),
     filter_subject: args.subtree,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
-  };
+  });
 }
 
 /** `recD = rec_<uid>-<gid>-<n>` — one per GRANTED record subtree (§13.9): a PULL durable over the
@@ -440,14 +461,18 @@ export function recordReaderConfig(
   args: { uid: string; grantId: string; index: number; subtree: string },
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
-  assertFullTail(args.subtree, `$KV.${recordsBucket(space)}`, "record-reader subtree");
-  return {
+  const tail = assertFullTail(args.subtree, `$KV.${recordsBucket(space)}`, "record-reader subtree");
+  // The grant family is a per-kind subtree: the kind token pins it. A `*` kind would read
+  // across every registered kind — a trusted-reader grant family, not a caller capability.
+  if (tail[0] === "*")
+    throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} must pin its record kind (a cross-kind read is not a caller capability, §13.9)`);
+  return family(recordsKvStreamName(space), {
     durable_name: recordReaderDurable(args.uid, args.grantId, args.index),
     filter_subject: args.subtree,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
-  };
+  });
 }
 
 /** The backing JetStream STREAM of the records KV (its grant rows key on `KV_<bucket>`, §13.9). */
@@ -479,7 +504,7 @@ function assertGrantFilter(filter: string, what: string): string {
   const toks = filter.split(".");
   toks.forEach((t, i) => {
     if (t === "*") return;
-    if (t === ">" && i === toks.length - 1) return;
+    if (t === ">" && i === toks.length - 1 && i > 0) return; // never the WHOLE filter
     if (t.length === 0 || /[*>\s]/.test(t))
       throw new Error(`${what} filter ${JSON.stringify(filter)} token ${JSON.stringify(t)} is not a literal token, a full "*" token, or one trailing ">"`);
   });
@@ -487,6 +512,10 @@ function assertGrantFilter(filter: string, what: string): string {
 }
 
 function consumeCreateRow(stream: string, cfg: Partial<ConsumerConfig>): string {
+  // A create row is AUTHORITY: only a (config, stream) pair minted together by a §13.9 family
+  // builder may become one — syntax checks alone cannot stop a raw config carrying a broad or
+  // foreign-family filter under a legitimate stream + durable.
+  assertFamilyPair(stream, cfg, "a consume-create grant");
   if (!cfg.durable_name || !cfg.filter_subject)
     throw new Error("a consume-create grant needs a durable_name and a full-tail filter_subject");
   // The extended-create form embeds the stored-subject filter tail verbatim (§13.9): pinning it
@@ -542,6 +571,7 @@ export function poolOwnerBindGrants(space: string, endpoint: string, pool: strin
 /** The read mediator's BIND-ONLY rows for one caller-scoped reader durable, on the stream the
  *  durable lives on (EPF for dec/goal, EPE for eve, `KV_cotal_records_<space>` for rec). */
 export function readerBindGrants(stream: string, cfg: Partial<ConsumerConfig>): string[] {
+  assertFamilyPair(stream, cfg, "a reader bind grant");
   if (!cfg.durable_name) throw new Error("a reader bind grant needs a durable_name");
   return consumeBindRows(stream, cfg.durable_name);
 }

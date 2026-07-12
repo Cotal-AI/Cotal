@@ -104,13 +104,22 @@ c("the record-reader config carries its exact $KV granted subtree",
 throws("a reader subtree that is not a full literal tail refuses (a relative tail matches nothing)",
   () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: "epe.manager.foo" }));
 // Wildcard confinement at the grant seams: a poisoned name, subtree, or filter component must
-// refuse loudly, never broaden an emitted row or reader past the §13.9 matrix.
+// refuse loudly, never broaden an emitted row or reader past the §13.9 matrix — while the
+// matrix's NORMATIVE whole-token `*` positions (instanceId/epoch in the per-goal row) admit.
+c("the normative per-goal event subtree (interior `*` positions) admits",
+  eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: `cotal.${SPACE}.epe.manager.*.*.goal.u_abc.worker.${UID}.>` }).filter_subject
+    === `cotal.${SPACE}.epe.manager.*.*.goal.u_abc.worker.${UID}.>`);
+c("an interior `*` in a granted record subtree admits (all instances of one kind+endpoint)",
+  recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.svc.manager.*.status` }).filter_subject
+    === `$KV.${recordsBucket(SPACE)}.svc.manager.*.status`);
 throws("an event-reader subtree naming a different endpoint than its durable refuses (provenance divergence)",
   () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: `cotal.${SPACE}.epe.other.${IID}.7.goal.u_abc.worker.${UID}.>` }));
-throws("a wildcard token inside a granted reader subtree refuses (literal tails only)",
-  () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: `cotal.${SPACE}.epe.manager.*.7.goal.u_abc.worker.${UID}.>` }));
+throws("an event-reader subtree wildcarding the endpoint position refuses (provenance must be literal)",
+  () => eventReaderConfig(SPACE, { uid: UID, endpoint: "manager", grantId: "g1", index: 0, subtree: `cotal.${SPACE}.epe.*.${IID}.7.goal.u_abc.worker.${UID}.>` }));
 throws("a whole-bucket record subtree refuses (a bare `>` tail is not a caller capability)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.>` }));
+throws("a cross-kind record subtree refuses (`*` kind reads every registered kind)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.*.>` }));
 throws("a mid-subtree `>` refuses (only one TRAILING subtree wildcard)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.svc.>.status` }));
 
@@ -141,10 +150,18 @@ c("the provisioner grants pair a full-tail CREATE with a DELETE per pre-created 
       && rows[1] === "$JS.API.CONSUMER.DELETE.EPW_epbind.pool_manager_builds"
       && !rows.some((r) => r.includes("MSG.NEXT") || r.includes(".INFO.")); // the provisioner never consumes
   })());
-throws("a wildcard durable in a reader bind grant refuses (would grant EVERY durable on the stream)",
+throws("a raw (unbranded) config in a reader bind grant refuses (only §13.9 family configs)",
   () => readerBindGrants(recordsKvStreamName(SPACE), { durable_name: "*" }));
-throws("a dotted stream name in a provisioner grant refuses (extra permission tokens)",
+throws("a family config paired with a foreign stream refuses (no cross-family pairing)",
   () => provisionerConsumerGrants([{ stream: "EPW_epbind.>", config: poolConsumerConfig(SPACE, "manager", "builds") }]));
+throws("a pool config on another family's stream refuses (create-side provenance)",
+  () => provisionerConsumerGrants([{ stream: epeStreamName(SPACE), config: poolConsumerConfig(SPACE, "manager", "builds") }]));
+throws("a raw config with a whole-stream `>` filter refuses (no arbitrary create authority)",
+  () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: ">" } }]));
+throws("a raw config broadening a literal durable to the whole plane refuses",
+  () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: "cotal.epbind.epw.>" } }]));
+throws("a raw config binding a durable to another endpoint's pool refuses (misattribution)",
+  () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: "cotal.epbind.epw.other.secret.>" } }]));
 throws("a mid-filter `>` in a pre-created durable's create row refuses (broadened matrix row)",
   () => provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: { durable_name: "pool_manager_builds", filter_subject: "cotal.epbind.epw.>.builds" } }]));
 
