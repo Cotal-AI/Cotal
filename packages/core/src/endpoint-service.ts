@@ -412,6 +412,10 @@ export interface EpCommandAuthority {
   capability: string;
   inputDigest: string;
   outputDigest: string;
+  /** Declared trait URNs (§13.7), out of the digest-verified cluster bytes; empty when the
+   *  declaration carries none. Governed entries (`ai.cotal.guarded`/`ai.cotal.priced`) are
+   *  what the serve boundary's pre-effect gate keys on; the rest are vocabulary. */
+  traits: readonly string[];
 }
 
 /** The registry-authorized serve ARTIFACT {@link authorizeServeGrant} returns: ONE deep-frozen,
@@ -560,6 +564,7 @@ export async function authorizeServeGrant(
         capability: cmd.capability,
         inputDigest: cmd.inputDigest,
         outputDigest: cmd.outputDigest,
+        traits: Object.freeze([...(cmd.traits ?? [])]) as readonly string[],
       });
       commands.push(cmd.name);
     }

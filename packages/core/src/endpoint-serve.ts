@@ -30,6 +30,10 @@ import {
 import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
 import type { DescribeDescriptor } from "./endpoint-cluster.js";
+import {
+  GOVERNED_TRAIT_URNS, TRAIT_GUARDED, TRAIT_PRICED,
+  assertGovernedSurfaceFor, assertGovernedPreEffect, type EpTraitEnforcement,
+} from "./endpoint-traits.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -42,11 +46,14 @@ export interface EpServeIdentity {
 }
 
 /** What a handler sees: the broker-authenticated SUBJECT shape (route, caller, target) beside
- *  the validated body — provenance never comes from the body (§13.2/§13.3). */
+ *  the validated body — provenance never comes from the body (§13.2/§13.3). `obligations` is
+ *  present exactly when a guard allowed WITH signed attenuations (§13.6): the endpoint MUST
+ *  apply them (monotonic); the applying policy engine is an extension behind the seam. */
 export interface EpServeContext {
   identity: EpServeIdentity;
   subject: ParsedEpRequest;
   request: EndpointRequest;
+  obligations?: readonly unknown[];
 }
 
 /** One served command: its handler plus the COMPILED §13.7 contracts (schema-profile
@@ -76,6 +83,9 @@ interface ActiveDef {
   validate: { args: ValidateFunction; output: ValidateFunction };
   targeted: boolean;
   targetModes: ReadonlySet<string>;
+  /** True iff the REGISTERED declaration carries a governed trait (§13.7): the pre-effect
+   *  gate runs for exactly these commands, keyed on the verified governed surface. */
+  governed: boolean;
   handler: (ctx: EpServeContext) => Promise<unknown> | unknown;
 }
 
@@ -230,7 +240,10 @@ export interface EpServeHandle {
  * currency, the per-mode fresh authorization (`child`/`ledger` seams), then — because those
  * seams await — target currency AGAIN immediately before dispatch (§13.2/§13.3: a mapping
  * rotated during the authority read must fail, never ride a pre-rotation read into the
- * effect), and budgeted output schema validation before the success publish. A call's reply
+ * effect), the §13.7 governed pre-effect gate for a command whose REGISTERED declaration
+ * carries a governed trait (guard-then-priced, {@link assertGovernedPreEffect}; construction
+ * already refused a governed surface/hook gap, so a bypass is structurally impossible), and
+ * budgeted output schema validation before the success publish. A call's reply
  * (success OR structured error) is published on the DERIVED reply subject (§13.2: never a
  * body-supplied target); a cast is never replied to, even on error (§13.5: at-most-once, the
  * caller never reads the rail). A request whose body cannot be parsed carries no trustworthy
@@ -244,7 +257,16 @@ export function serveEndpoint(
   serve: EpServeGrant,
   commands: EpCommandDef[],
   describe: DescribeAuthorization,
-  opts: { resolveTarget?: EpTargetResolver; childAuthority?: EpChildAuthority; ledgerAuthority?: EpLedgerAuthority } = {},
+  opts: {
+    resolveTarget?: EpTargetResolver;
+    childAuthority?: EpChildAuthority;
+    ledgerAuthority?: EpLedgerAuthority;
+    /** The §13.9 trait seam: REQUIRED (with the matching hooks) when any granted command's
+     *  registered declaration carries a governed trait — construction refuses a governed
+     *  command it cannot enforce, and refuses an extraneous enforcement bundle on an
+     *  ungoverned surface (fail loud both ways, never a silent no-op). */
+    traits?: EpTraitEnforcement;
+  } = {},
 ): EpServeHandle {
   assertServeGrantAuthorized(serve); // §13.9: the serve table consumes ONLY registry-authorized serve authority
   if (serve.space !== space)
@@ -281,6 +303,7 @@ export function serveEndpoint(
       validate: { args: input.validate, output: output.validate },
       targeted: decl.targeted,
       targetModes: new Set(decl.modes),
+      governed: decl.traits.some((t) => GOVERNED_TRAIT_URNS.includes(t)),
       handler: def.handler,
     });
   }
@@ -290,9 +313,37 @@ export function serveEndpoint(
   // or mixed endpoint constructs and serves its mandatory `describe` (SPEC 13.7), rather than
   // being impossible because the full-surface rule and the journal-rejection rule contradict.
   for (const cmd of serve.commands) {
-    if (serve.surface[cmd].class !== "ephemeral") continue; // journal command: no rail def, by design
+    const governedUrns = serve.surface[cmd].traits.filter((t) => GOVERNED_TRAIT_URNS.includes(t));
+    if (serve.surface[cmd].class !== "ephemeral") {
+      // Journal command: no rail def, by design — but a GOVERNED journal command has no
+      // enforcement point in this slice (its pre-effect seam is the epj acceptance→effect
+      // path), so refusing to construct beats serving governance unenforced (fail closed).
+      if (governedUrns.length > 0)
+        throw new Error(`journal-class command "${cmd}" declares governed trait(s) ${governedUrns.join(", ")}; the journal-side pre-effect gate is not built in this slice, and a governed command is never served unenforced (SPEC 13.7: fail closed)`);
+      continue;
+    }
     if (!seen.has(cmd))
       throw new Error(`ephemeral command "${cmd}" has no def in this serve table; the credential subscribes a rail nobody would serve (SPEC 13.9)`);
+  }
+  // §13.7/§13.9 governed wiring, decided at CONSTRUCTION (a bypass must be structurally
+  // impossible, never a first-request surprise): a governed command demands the verified
+  // governed surface (branded, bound to exactly THIS grant) plus each trait's hook; an
+  // enforcement bundle on an ungoverned surface is a misconfiguration and refuses loudly.
+  const governedDefs = defs.filter((d) => d.governed);
+  if (opts.traits === undefined) {
+    if (governedDefs.length > 0)
+      throw new Error(`command(s) ${governedDefs.map((d) => `"${d.command}"`).join(", ")} declare governed traits and no trait enforcement is wired (opts.traits); missing or unverifiable governed attachments refuse before effect, so construction refuses (SPEC 13.7: fail closed)`);
+  } else {
+    if (governedDefs.length === 0)
+      throw new Error("opts.traits is wired but no granted command declares a governed trait; an extraneous enforcement bundle is a misconfiguration, refused loudly rather than silently ignored (SPEC 13.7)");
+    assertGovernedSurfaceFor(opts.traits.governed, serve);
+    for (const d of governedDefs) {
+      const per = opts.traits.governed.commands.get(d.command);
+      if (per?.has(TRAIT_GUARDED) && opts.traits.guard === undefined)
+        throw new Error(`command "${d.command}" is guarded and no guard seam is wired; an unreachable guard is deny, so construction refuses rather than denying every request (SPEC 13.6)`);
+      if (per?.has(TRAIT_PRICED) && opts.traits.verifyPaymentProof === undefined)
+        throw new Error(`command "${d.command}" is priced and no proof verifier is wired; an unverifiable proof never effects, so construction refuses (SPEC 13.10)`);
+    }
   }
   defs.push({
     command: "describe",
@@ -303,6 +354,7 @@ export function serveEndpoint(
     validate: describeValidators(),
     targeted: false, // §13.7: describe is reserved UNTARGETED; every targeted form refuses
     targetModes: new Set(),
+    governed: false, // §13.7: describe is the discovery bootstrap; it carries no traits
     handler: describeHandler(serve.descriptor, describe),
   });
 
@@ -338,11 +390,25 @@ export function serveEndpoint(
       // the handler.
       if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
         await assertTargetCurrent(env, opts.resolveTarget);
+      // §13.7/§13.9 governed pre-effect gate, immediately before the handler, for calls AND
+      // casts (casts have effects too): guard-then-priced, every anomalous answer refuses.
+      // Construction refused a governed def without opts.traits, so the assertion is total.
+      let obligations: readonly unknown[] | undefined;
+      if (def.governed)
+        ({ obligations } = await assertGovernedPreEffect({
+          enforcement: opts.traits!,
+          endpoint: identity.endpoint,
+          command: def.command,
+          caller: parsed.caller,
+          requestId: env.id,
+          ...(env.auth !== undefined ? { auth: env.auth } : {}),
+        }));
+      const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
       if (!env.replyExpected) {
-        await def.handler({ identity, subject: parsed, request: env });
+        await def.handler(ctx);
         return; // cast: the responder MUST NOT reply (§13.5)
       }
-      const data = await def.handler({ identity, subject: parsed, request: env });
+      const data = await def.handler(ctx);
       // §13.7: the reply validates against the output schema BEFORE it is published, under the
       // same fixed budget as args — an invalid reply is a server bug and fails loud, never
       // reaches the caller as success.

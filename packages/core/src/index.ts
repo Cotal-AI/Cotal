@@ -10,6 +10,8 @@ export * from "./endpoint-binding.js";
 export * from "./endpoint-service.js";
 export * from "./endpoint-serve.js";
 export * from "./endpoint-verbs.js";
+export * from "./endpoint-signing.js";
+export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";
 export * from "./resolve.js";
 export * from "./link.js";

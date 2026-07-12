@@ -28,6 +28,12 @@ const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
 /** Reverse-DNS cluster type URN (§13.7: `ai.cotal.lifecycle`, `com.acme.deploy`). */
 const URN = /^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62}){1,15}$/;
+
+/** True iff `s` is a bounded reverse-DNS URN — the shared form for cluster type URNs and
+ *  trait URNs (§13.7: `ai.cotal.guarded`, `com.acme.deploy`). */
+export function isReverseDnsUrn(s: string): boolean {
+  return URN.test(s);
+}
 /** A named capability requirement (§13.7/§13.9: minting maps it to subjects). */
 const CAPABILITY = /^[a-z][a-z0-9._-]{0,63}$/;
 
@@ -105,7 +111,13 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
     if (!isDigest(cmd.outputDigest)) invalid(`command "${name}" outputDigest is not a sha256 closure digest`);
     let traits: string[] | undefined;
     if (cmd.traits !== undefined) {
-      if (!Array.isArray(cmd.traits) || !cmd.traits.every((t) => typeof t === "string")) invalid(`command "${name}" traits is not a string array`);
+      if (!Array.isArray(cmd.traits)) invalid(`command "${name}" traits is not an array`);
+      const tSeen = new Set<string>();
+      for (const t of cmd.traits) {
+        if (typeof t !== "string" || !URN.test(t)) invalid(`command "${name}" trait ${JSON.stringify(t)} is not a reverse-DNS trait URN (SPEC 13.7)`);
+        if (tSeen.has(t)) invalid(`command "${name}" declares trait "${t}" twice`);
+        tSeen.add(t);
+      }
       traits = [...(cmd.traits as string[])];
     }
     return {
