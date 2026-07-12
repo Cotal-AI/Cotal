@@ -11,8 +11,14 @@
  *    content) REFUSES a body that is itself variable (nested repetition, `(a+)+`), nullable
  *    (`(a?)*`), or ambiguous (an alternation anywhere inside with overlapping or multiply
  *    nullable branches, `(a|aa)+`) — the three per-input-character ambiguity sources;
- *  - in a sequence, two variable repetitions with intersecting character sets and only
- *    nullable items between them refuse (`a*a*`, `a*b?a*` — the polynomial overlap class);
+ *  - in a sequence, two variable repetitions with intersecting character sets refuse unless a
+ *    HARD separator (non-nullable AND disjoint from the run) fences them (`a*a*`, `a*b?a*`,
+ *    `\d*0{3}0*` — the polynomial overlap class); edge repeat-sets propagate through grouping
+ *    AND through mandatory items the run can absorb (`a*(aa*)` refuses — grouping never
+ *    changes the proof);
+ *  - the AGGREGATE ambiguity across the whole pattern is budgeted: fixed ambiguous choices
+ *    multiply through a sequence (`(a|aa)(a|aa)…` is 2^k paths with no quantifier), so a
+ *    pattern whose path bound exceeds the budget refuses;
  *  - `?` (0-or-1) is repetition-exempt where it cannot multiply per input character: `(…)?`
  *    over quantified content stays admitted (one alternative in total).
  *
@@ -258,6 +264,12 @@ interface Facts {
   /** Contains an alternation with overlapping or multiply-nullable branches (the per-input
    *  ambiguity `(a|aa)` even without any quantifier of its own). */
   ambiguousAlt: boolean;
+  /** Upper bound on the number of distinct backtracking paths through this node for ONE fixed
+   *  input span — the AGGREGATE ambiguity. A single `(a|aa)` is 2; a sequence MULTIPLIES
+   *  (`(a|aa)(a|aa)…` is 2^k with no quantifier anywhere), which is why per-node ambiguity
+   *  flags alone cannot bound the whole pattern. Saturating arithmetic; refused at the root
+   *  when it exceeds {@link CHOICE_BUDGET}. */
+  choices: number;
   /** The character sets an UNBOUNDED repetition (`*`/`+`/`{n,}`) can match at this node's
    *  LEADING and TRAILING edge — even when the repetition is hidden inside an alternation
    *  branch or group (`(a*|b)` exposes `{a}` at both edges). Two nodes adjacent in a sequence
@@ -267,14 +279,38 @@ interface Facts {
   trailRep: CharSet;
 }
 
-/** Front-to-back accumulation of an edge repeat-set across a sequence: a leading repetition can
- *  surface through any nullable prefix, so union each item's edge set while items stay nullable,
- *  and include the first obligatory item's edge set before stopping. `pick` selects the edge. */
+/** The aggregate-ambiguity ceiling: an admitted pattern explores at most this many alternative
+ *  paths per match attempt from fixed (unquantified) ambiguous choices — small enough to be
+ *  noise at the 10 ms validation budget, generous enough for real idioms (a chain of six
+ *  two-way ambiguous alternations). Beyond it the fixed-alternation class turns exponential in
+ *  the author's pattern length (`(a|aa)`×25 is 153 chars and 2^25 paths). */
+const CHOICE_BUDGET = 64;
+const CHOICE_SAT = 1 << 20; // saturation ceiling for the bookkeeping, far above the budget
+const mulSat = (a: number, b: number): number => Math.min(a * b, CHOICE_SAT);
+function powSat(base: number, exp: number): number {
+  let out = 1;
+  for (let i = 0; i < exp && out < CHOICE_SAT; i++) out = mulSat(out, base);
+  return out;
+}
+
+/** Front-to-back accumulation of an edge repeat-set across a sequence. A repetition surfaces at
+ *  the edge through any NULLABLE prefix — and ALSO through a mandatory item that the repeated
+ *  run can ABSORB (its set intersects a repetition edge-set deeper in the scan): the mandatory
+ *  `a` in `(aa*)` does not fence the inner `a*` off from a neighboring `a*`, it is satisfiable
+ *  anywhere inside the same run (the grouped form of the run-slosh class — grouping must not
+ *  change the proof). Only a mandatory item DISJOINT from everything deeper stops the scan.
+ *  `pick` selects the edge. */
 function edgeRepeat(facts: Facts[], pick: (f: Facts) => CharSet): CharSet {
+  // Suffix unions of the picked edge sets: what a mandatory item at position i would need to
+  // be absorbable by (any repetition surfacing deeper in scan order).
+  const deeper: CharSet[] = new Array(facts.length + 1);
+  deeper[facts.length] = EMPTY;
+  for (let i = facts.length - 1; i >= 0; i--) deeper[i] = union(pick(facts[i]), deeper[i + 1]);
+
   let acc = EMPTY;
-  for (const f of facts) {
-    acc = union(acc, pick(f));
-    if (!f.nullable) break;
+  for (let i = 0; i < facts.length; i++) {
+    acc = union(acc, pick(facts[i]));
+    if (!facts[i].nullable && !intersects(facts[i].set, deeper[i + 1])) break;
   }
   return acc;
 }
@@ -305,9 +341,9 @@ function assertStartAnchored(node: Node): void {
 function analyze(node: Node): Facts {
   switch (node.kind) {
     case "anchor":
-      return { set: EMPTY, nullable: true, variable: false, ambiguousAlt: false, leadRep: EMPTY, trailRep: EMPTY };
+      return { set: EMPTY, nullable: true, variable: false, ambiguousAlt: false, choices: 1, leadRep: EMPTY, trailRep: EMPTY };
     case "atom":
-      return { set: node.set, nullable: node.set.ranges.length === 0 && !node.set.neg, variable: false, ambiguousAlt: false, leadRep: EMPTY, trailRep: EMPTY };
+      return { set: node.set, nullable: node.set.ranges.length === 0 && !node.set.neg, variable: false, ambiguousAlt: false, choices: 1, leadRep: EMPTY, trailRep: EMPTY };
     case "seq": {
       const facts = node.items.map(analyze);
       // The polynomial overlap class (`a*a*`, `a*b?a*`, `(a*|b)a*`, `\d*0000 0*`): a node whose
@@ -330,6 +366,9 @@ function analyze(node: Node): Facts {
         nullable: facts.every((f) => f.nullable),
         variable: facts.some((f) => f.variable),
         ambiguousAlt: facts.some((f) => f.ambiguousAlt),
+        // A sequence MULTIPLIES its items' path counts — the fixed-alternation class
+        // (`(a|aa)(a|aa)…`) turns exponential exactly here, with no quantifier anywhere.
+        choices: facts.reduce((n, f) => mulSat(n, f.choices), 1),
         leadRep: edgeRepeat(facts, (f) => f.leadRep),
         trailRep: edgeRepeat([...facts].reverse(), (f) => f.trailRep),
       };
@@ -350,6 +389,11 @@ function analyze(node: Node): Facts {
         nullable: facts.some((f) => f.nullable),
         variable: facts.some((f) => f.variable),
         ambiguousAlt: ambiguous,
+        // Overlapping branches can EACH match the same span (paths add); disjoint branches are
+        // mutually exclusive on any given input (only the surviving branch's paths count).
+        choices: ambiguous
+          ? facts.reduce((n, f) => Math.min(n + f.choices, CHOICE_SAT), 0)
+          : facts.reduce((n, f) => Math.max(n, f.choices), 1),
         leadRep: facts.reduce((s, f) => union(s, f.leadRep), EMPTY),
         trailRep: facts.reduce((s, f) => union(s, f.trailRep), EMPTY),
       };
@@ -375,6 +419,14 @@ function analyze(node: Node): Facts {
         nullable: body.nullable || node.min === 0,
         variable: body.variable || nondet || repeats,
         ambiguousAlt: body.ambiguousAlt,
+        // Fixed {n}: the body's paths multiply per iteration (a repeat over an ambiguous body
+        // is refused above, so this stays 1 there; `?` adds the skip alternative). Variable
+        // repetitions contribute their split ambiguity through the edge-set analysis instead.
+        choices: node.max === node.min
+          ? powSat(body.choices, node.min)
+          : node.min === 0 && node.max === 1
+            ? Math.min(body.choices + 1, CHOICE_SAT)
+            : body.choices,
         leadRep: nondet ? union(body.set, body.leadRep) : body.leadRep,
         trailRep: nondet ? union(body.set, body.trailRep) : body.trailRep,
       };
@@ -391,7 +443,9 @@ export function assertSafePattern(pattern: string, maxChars: number): void {
   try {
     const ast = new Parser(pattern).parse();
     assertStartAnchored(ast); // sound only under single-start matching (Ajv tests unanchored)
-    analyze(ast);
+    const facts = analyze(ast);
+    if (facts.choices > CHOICE_BUDGET)
+      refuse(`aggregate alternation ambiguity of ${facts.choices >= CHOICE_SAT ? "at least " : ""}${facts.choices} paths exceeds the ${CHOICE_BUDGET}-path budget (the fixed-alternation exponential class)`);
   } catch (e) {
     if (e instanceof PatternRefused) throw new Error(`pattern ${JSON.stringify(pattern)} is outside the profile's safe subset: ${e.message}`);
     throw new Error(`pattern ${JSON.stringify(pattern)} did not parse under the profile's safe subset: ${(e as Error).message}`);

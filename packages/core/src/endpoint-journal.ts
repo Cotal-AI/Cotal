@@ -14,8 +14,12 @@ import { headers as natsHeaders } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { token } from "./subjects.js";
 import { contractDigest, rawDigest } from "./canonical.js";
-import { epfSubject, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
+import {
+  epfSubject, parseEpSubject, assertBoundedOwner, assertCommandToken, assertIdToken,
+  assertLifecycleToken, type EpCaller, type ParsedEpRequest,
+} from "./endpoint-subjects.js";
 import { EpEnvelopeError, isEpErrorCode } from "./endpoint-envelope.js";
+import { isCasLoss } from "./endpoint-records.js";
 
 /** §13.12 stream names for the two journal-side streams. */
 export function epjStreamName(space: string): string { return `EPJ_${token(space)}`; }
@@ -141,6 +145,7 @@ function factFail(what: string): never {
 }
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const wireInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+const posInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
 const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
 
 function checkError(v: unknown, what: string): { code: string; detail?: string } {
@@ -150,43 +155,120 @@ function checkError(v: unknown, what: string): { code: string; detail?: string }
 }
 function checkCaller(v: unknown, what: string): FactCaller {
   if (!isRec(v) || typeof v.id !== "string" || typeof v.lifecycleUid !== "string") factFail(what);
+  const toks = v.id.split(".");
+  if (toks.length !== 2) factFail(`${what}.id is not an <owner>.<actor> principal`);
+  try {
+    assertBoundedOwner(toks[0], `${what} owner`);
+    assertBoundedOwner(toks[1], `${what} actor`);
+    assertLifecycleToken(v.lifecycleUid, `${what}.lifecycleUid`);
+  } catch (e) {
+    factFail(`${what}: ${(e as Error).message}`);
+  }
   return v as unknown as FactCaller;
+}
+function checkAuthzDecision(v: unknown, what: string): void {
+  if (!isRec(v) || !wireInt(v.revision) || !wireInt(v.epoch)) factFail(what);
+}
+function checkTarget(v: unknown): void {
+  if (!isRec(v) || typeof v.owner !== "string" || typeof v.actor !== "string" || typeof v.lifecycleUid !== "string") factFail("target");
+  try {
+    assertBoundedOwner(v.owner, "target owner");
+    assertBoundedOwner(v.actor, "target actor");
+    assertLifecycleToken(v.lifecycleUid, "target lifecycleUid");
+  } catch (e) {
+    factFail(`target: ${(e as Error).message}`);
+  }
+  if (v.mappingRevision !== undefined && !wireInt(v.mappingRevision)) factFail("target.mappingRevision");
+}
+/** The embedded canonical request of an acceptance: the accepted journal-class submission,
+ *  cross-checked against the fact address so a stored acceptance can never smuggle a request
+ *  for a different id/endpoint into effects or replay. */
+function checkEmbeddedRequest(v: unknown, addr: FactAddress): void {
+  if (!isRec(v)) factFail("request");
+  if (v.v !== 1) factFail("request.v");
+  if (v.id !== addr.id) factFail("request.id disagrees with the fact address");
+  if (v.class !== "journal") factFail("request.class (only journal-class submissions produce decision facts)");
+  const op = v.op;
+  if (!isRec(op) || typeof op.endpoint !== "string" || typeof op.command !== "string") factFail("request.op");
+  if (op.endpoint !== addr.endpoint) factFail("request.op.endpoint disagrees with the fact address");
+  try {
+    assertCommandToken(op.command);
+  } catch {
+    factFail("request.op.command grammar");
+  }
+  if (op.inputDigest !== undefined && !isDigest(op.inputDigest)) factFail("request.op.inputDigest");
+  if (op.outputDigest !== undefined && !isDigest(op.outputDigest)) factFail("request.op.outputDigest");
+}
+
+/** The authenticated ADDRESS of a decision fact: the `epf….dec.<cO>.<cA>.<cUid>.<id>` subject
+ *  tokens the broker enforced on the mediated writer's publish. */
+export interface FactAddress { endpoint: string; caller: FactCaller; id: string }
+
+/** Parse a decision-fact subject into its address — the mandatory seam through which every
+ *  consuming boundary proves body↔subject agreement. Throws `internal` on a non-decision
+ *  subject (a consumer wired to the wrong subject family is a bug, never a data error). */
+export function parseDecisionFactSubject(subject: string): FactAddress {
+  const p = parseEpSubject(subject);
+  if (!p || p.plane !== "fact" || p.topic.length !== 5 || p.topic[0] !== "dec")
+    throw new EpEnvelopeError("internal", `${subject} is not a decision-fact subject`);
+  return { endpoint: p.endpoint, caller: { id: `${p.topic[1]}.${p.topic[2]}`, lifecycleUid: p.topic[3] }, id: p.topic[4] };
 }
 
 /** Validate a decision fact at its consuming boundary (§13.3: every plane is runtime-validated;
- *  effects and replay read THE FACT, never the raw submission). */
-export function parseDecisionFact(raw: unknown): DecisionFact {
+ *  effects and replay read THE FACT, never the raw submission). The fact must be
+ *  SELF-SUFFICIENT canonical authority: every field is grammar-validated (caller principal,
+ *  positive source sequence/timestamp, digest forms, the embedded canonical request, the
+ *  resolved target triple), and the body's id/caller/endpoint must AGREE with the
+ *  broker-authenticated fact subject — a mismatch is a writer bug or corrupt store and fails
+ *  loud before effects or replay can attribute the decision. */
+export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
+  const addr = parseDecisionFactSubject(subject);
   const o = isRec(raw) ? raw : factFail("not an object");
   if (o.v !== 1) factFail("v");
-  if (typeof o.id !== "string" || o.id.length === 0) factFail("id");
+  if (typeof o.id !== "string") factFail("id");
+  try {
+    assertIdToken(o.id, "fact id");
+  } catch {
+    factFail("id grammar");
+  }
+  if (o.id !== addr.id) factFail("id disagrees with the fact subject");
   if (!isDigest(o.fingerprint)) factFail("fingerprint");
-  if (!wireInt(o.sourceSeq) || !wireInt(o.ts)) factFail("sourceSeq/ts");
-  checkCaller(o.caller, "caller");
+  if (!posInt(o.sourceSeq) || !posInt(o.ts)) factFail("sourceSeq/ts must be positive integers");
+  const caller = checkCaller(o.caller, "caller");
+  if (caller.id !== addr.caller.id || caller.lifecycleUid !== addr.caller.lifecycleUid)
+    factFail("caller disagrees with the fact subject");
   if (o.decision === "rejected") {
     checkError(o.error, "error");
+    if (o.authzDecision !== undefined) checkAuthzDecision(o.authzDecision, "authzDecision");
     return o as unknown as RejectionFact;
   }
   if (o.decision !== "accepted") factFail(`decision ${JSON.stringify(o.decision)}`);
-  if (!isRec(o.request)) factFail("request");
+  checkEmbeddedRequest(o.request, addr);
+  if (o.target !== undefined) checkTarget(o.target);
   const cd = o.contractDigests;
   if (!isRec(cd) || !isDigest(cd.input) || !isDigest(cd.output)) factFail("contractDigests");
-  const az = o.authzDecision;
-  if (!isRec(az) || !wireInt(az.revision) || !wireInt(az.epoch)) factFail("authzDecision");
+  checkAuthzDecision(o.authzDecision, "authzDecision");
   if (o.route !== "effects" && !(typeof o.route === "string" && /^pool\.[a-z0-9-]{1,32}$/.test(o.route))) factFail("route");
-  if (o.readinessDeadlineMs !== undefined && !wireInt(o.readinessDeadlineMs)) factFail("readinessDeadlineMs");
-  if (o.workExpiry !== undefined && !wireInt(o.workExpiry)) factFail("workExpiry");
+  if (o.readinessDeadlineMs !== undefined && !posInt(o.readinessDeadlineMs)) factFail("readinessDeadlineMs");
+  if (o.workExpiry !== undefined && !posInt(o.workExpiry)) factFail("workExpiry");
   if (String(o.route).startsWith("pool.") !== (o.workExpiry !== undefined)) factFail("workExpiry is present iff the route is a pool");
   return o as unknown as AcceptanceFact;
 }
 
-export function parseQuarantineFact(raw: unknown): QuarantineFact {
+/** Validate a quarantine fact at its consuming boundary; the body's source sequence must agree
+ *  with the `epf….quar.<seq>` subject it was stored under. */
+export function parseQuarantineFact(raw: unknown, subject: string): QuarantineFact {
+  const p = parseEpSubject(subject);
+  if (!p || p.plane !== "fact" || p.topic.length !== 2 || p.topic[0] !== "quar")
+    throw new EpEnvelopeError("internal", `${subject} is not a quarantine-fact subject`);
   const o = isRec(raw) ? raw : factFail("not an object");
   if (o.v !== 1 || o.decision !== "quarantined") factFail("v/decision");
-  if (!wireInt(o.sourceSeq)) factFail("sourceSeq");
+  if (!posInt(o.sourceSeq)) factFail("sourceSeq must be a positive integer");
+  if (String(o.sourceSeq) !== p.topic[1]) factFail("sourceSeq disagrees with the fact subject");
   if (!isDigest(o.submissionDigest)) factFail("submissionDigest");
   checkError(o.error, "error");
   if (o.caller !== undefined) checkCaller(o.caller, "caller");
-  if (!wireInt(o.ts)) factFail("ts");
+  if (!posInt(o.ts)) factFail("ts must be a positive integer");
   return o as unknown as QuarantineFact;
 }
 
@@ -223,20 +305,33 @@ export async function publishFactCreateOnly(
     const pa = await js.publish(subject, factBytes, { headers: h });
     return { won: true, seq: pa.seq };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/wrong last sequence/i.test(msg)) return { won: false };
+    // The SHARED structured classifier (err_code, never message text): a missed classification
+    // here would turn a benign concurrent decision into an unhandled throw in the mediated
+    // writer — a normal race becoming an error/stall is exactly the failure text-matching risks.
+    if (isCasLoss(e)) return { won: false };
     throw e;
   }
 }
 
-/** Last-by-subject read of a fact (the §13.9 CAS-winner read: subject-confined DIRECT.GET
- *  form). `undefined` when no fact exists on the subject. */
+/** Last-by-subject read of a fact — LEADER-SERVED (`STREAM.MSG.GET`, never `DIRECT.GET`). The
+ *  §13.4 loser-reads-winner contract needs read-your-writes against the leader that just
+ *  rejected the CAS: a follower-served Direct Get carries no such guarantee and, after legal
+ *  post-horizon id reuse, can return a STALE prior fact (semantically a DIFFERENT decision) or
+ *  nothing — and no retry can distinguish a stale nonempty fact from the current winner. EPF
+ *  keeps `allow_direct=true` for other trusted subject-confined reads (§13.12); the CAS-winner
+ *  read is deliberately not one of them. `undefined` when no fact exists on the subject. */
 export async function readLastFact(
   jsm: JetStreamManager,
   stream: string,
   subject: string,
 ): Promise<unknown | undefined> {
-  const m = await jsm.direct.getMessage(stream, { last_by_subj: subject });
+  let m;
+  try {
+    m = await jsm.streams.getMessage(stream, { last_by_subj: subject });
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 10037) return undefined; // no message found on the subject
+    throw e;
+  }
   if (!m) return undefined;
   try {
     return JSON.parse(new TextDecoder().decode(m.data));

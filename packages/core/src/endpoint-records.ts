@@ -225,9 +225,15 @@ function encodeValue(value: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
-function isCasLoss(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return /wrong last sequence|already exists|exceeded last sequence|expected last/i.test(msg);
+/** JetStream's expected-last-subject-sequence failure — the ONE broker condition behind every
+ *  create-only/revision-pinned CAS loss here and in the journal (§13.4/§13.8). Keyed on the
+ *  STRUCTURED `err_code` (`JetStreamApiCodes.StreamWrongLastSequence` 10071 and its
+ *  `…Unknown` sibling 10164, the same pair the KV client's own create() classifies), never on
+ *  message text: wording varies across server versions and a missed classification would turn
+ *  a benign concurrent write into an unhandled throw inside a mediated writer. */
+export function isCasLoss(e: unknown): boolean {
+  const code = (e as { code?: unknown })?.code;
+  return code === 10071 || code === 10164;
 }
 
 function conflict(message: string, cause: unknown): never {
@@ -309,13 +315,21 @@ export async function readRecord<S = unknown, T = unknown>(
   const deadline = Date.now() + (opts.deadlineMs ?? 15_000);
 
   let specEntry = await kv.get(sKey);
-  const statusEntry = await kv.get(tKey);
+  let statusEntry = await kv.get(tKey);
 
-  if (!liveEntry(specEntry)) {
-    if (liveEntry(statusEntry))
-      throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key — torn record state, refusing to read`);
-    return undefined;
+  // Absent spec + live status is USUALLY a read-order artifact, not corruption: the spec get
+  // can land just before an ordered create commits spec-then-status, both visible by the time
+  // the status get runs. Stabilize with bounded spec re-reads (re-checking status in case the
+  // record is mid-deletion) and declare torn state only when the absence is STABLE across the
+  // deadline — a transient interleaving must never be classified as corruption (§13.4).
+  for (let attempt = 0; !liveEntry(specEntry) && liveEntry(statusEntry); attempt++) {
+    if (Date.now() >= deadline)
+      throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key (stable across bounded re-reads) — torn record state, refusing to read`);
+    await new Promise((r) => setTimeout(r, Math.min(backoffMs(attempt), Math.max(0, deadline - Date.now()))));
+    specEntry = await kv.get(sKey);
+    if (!liveEntry(specEntry)) statusEntry = await kv.get(tKey);
   }
+  if (!liveEntry(specEntry)) return undefined;
 
   if (!liveEntry(statusEntry)) {
     return { spec: { value: decodeEntry<S>(specEntry, sKey), revision: specEntry.revision }, staleProjection: false };
@@ -362,11 +376,25 @@ export async function readAtomicRecord<V = unknown>(
 // ---- merged watch (§13.4/§13.8 snapshot-then-deltas, resync on gap) -------------------------
 
 /** Watch a split record: the current merged snapshot first, then a re-merged view per delta.
- *  Discipline (§13.4/§13.8): a watcher that falls behind, errors, or observes a status ahead of
- *  its cached spec (a delta gap — impossible in an unbroken per-bucket ordered watch, since the
- *  status writer's observed spec write precedes it) re-reads BOTH keys and resumes; it never
- *  patches forward across a gap. Restarts are bounded (`unavailable` when exhausted). Ends when
- *  the spec key is deleted (the record is being retired) or `signal` aborts. */
+ *
+ *  Cursor discipline (§13.4/§13.8): ONE ordered consumer supplies BOTH the snapshot (the
+ *  per-key last values the watch replays first) and the deltas after it — the cursor is the
+ *  consumer's own position, so nothing between "snapshot" and "watch start" can ever be
+ *  skipped. (A cursor derived from independent `get` reads — `max(specRev,statusRev)+1` — is
+ *  provably gap-prone: mixed-freshness/TOCTOU reads let a higher revision on one key jump the
+ *  resume point past an unseen update on the other.) Replay entries accumulate silently; the
+ *  first merged view is yielded when the replay completes, and every later delta re-yields the
+ *  merged view. A watcher that errors, ends, or observes a status ahead of its cached spec
+ *  (impossible from honest writers in an unbroken ordered watch) RESYNCS with a fresh consumer
+ *  — a fresh full snapshot, duplicates tolerated, never a patch across a gap.
+ *
+ *  Resyncs are budgeted on CONSECUTIVE no-progress incarnations, reset once an incarnation
+ *  delivers at least one ordered post-snapshot delta (a lifetime-cumulative budget would kill a
+ *  long-lived watch on accumulated benign blips; a snapshot alone must not count as progress or
+ *  an immediately-ending iterator would spin forever). Ends when the spec key is deleted (the
+ *  record is retired — a watch started on an already-retired record ends immediately) or when
+ *  `signal` aborts. A status whose spec key NEVER existed in the consistent replay view is real
+ *  torn state (`failed-precondition`) — the single-consumer view cannot false-positive this. */
 export async function* watchRecord<S = unknown, T = unknown>(
   kv: KV,
   def: RecordKindDef,
@@ -377,66 +405,74 @@ export async function* watchRecord<S = unknown, T = unknown>(
   const tKey = recordStatusKey(def, qualifiers);
   const maxResyncs = opts.maxResyncs ?? 8;
 
-  for (let resync = 0; ; resync++) {
-    if (resync > maxResyncs)
-      throw new EpEnvelopeError("unavailable", `watch of ${sKey} exhausted ${maxResyncs} resyncs without a stable stream`);
+  let consecutiveNoProgress = 0;
+  for (;;) {
+    if (consecutiveNoProgress > maxResyncs)
+      throw new EpEnvelopeError("unavailable", `watch of ${sKey} exhausted ${maxResyncs} consecutive resyncs without delta progress`);
 
-    // Snapshot: the merged current state (also what a fell-behind watcher re-reads).
-    let snapshot = await readRecord<S, T>(kv, def, qualifiers);
-    let specRev = snapshot?.spec.revision ?? 0;
-    let statusRev = snapshot?.status?.revision ?? 0;
-    let spec = snapshot?.spec;
-    let status = snapshot?.status;
-    if (snapshot) yield snapshot;
-
-    const iter = await kv.watch({
-      key: [sKey, tKey],
-      // Deltas only, from just past the snapshot (resumeFromRevision forces StartSequence);
-      // the snapshot above already delivered current values.
-      resumeFromRevision: Math.max(specRev, statusRev) + 1,
-      include: "updates",
-    });
+    // Last values + updates from one ordered consumer. The client marks replay entries with
+    // isUpdate=false up to the LAST initial entry (which arrives with isUpdate=true) — so the
+    // first isUpdate=true entry completes the snapshot, and a zero-entry replay (absent record)
+    // yields nothing until the first live delta arrives.
+    const iter = await kv.watch({ key: [sKey, tKey] });
     const stop = () => iter.stop();
     opts.signal?.addEventListener("abort", stop, { once: true });
+
+    let spec: MergedRecord<S, T>["spec"] | undefined;
+    let status: MergedRecord<S, T>["status"] | undefined;
+    let specSeen = false; // a DEL/PURGE last value counts as seen (retired), just not live
+    let initialized = false;
+    let progressed = false;
+    const merged = (): MergedRecord<S, T> | undefined =>
+      spec
+        ? { spec, ...(status ? { status } : {}), staleProjection: !!status && status.observedSpecRevision < spec.revision }
+        : undefined;
 
     try {
       for await (const e of iter) {
         if (opts.signal?.aborted) return;
+        const completesReplay = !initialized && e.isUpdate;
         if (e.key === sKey) {
-          if (e.operation !== "PUT") return; // spec deleted: the record is being retired
+          specSeen = true;
+          if (e.operation !== "PUT") return; // spec deleted: the record is (or was) retired
           spec = { value: decodeEntry<S>(e, sKey), revision: e.revision };
-          specRev = e.revision;
         } else if (e.key === tKey) {
           if (e.operation !== "PUT") {
             status = undefined;
-            statusRev = e.revision;
           } else {
             const v = decodeEntry<T & { observedSpecRevision: unknown }>(e, tKey);
             const observed = v.observedSpecRevision;
             if (typeof observed !== "number" || !Number.isSafeInteger(observed) || observed < 0)
               throw new EpEnvelopeError("internal", `record ${tKey} carries no valid observedSpecRevision (SPEC 13.4)`);
-            if (!spec || observed > spec.revision) break; // gap: status ahead of cached spec — resync, never patch forward
+            // Within replay, a status may precede its spec in stream order (older last value
+            // first) — judge coherence only once the replay's consistent view is complete.
+            if ((initialized || completesReplay) && spec && observed > spec.revision) break; // status ahead of spec: writer anomaly — resync, never patch forward
             status = { value: v as T, revision: e.revision, observedSpecRevision: observed };
-            statusRev = e.revision;
           }
         }
-        if (spec) {
-          yield {
-            spec,
-            ...(status ? { status } : {}),
-            staleProjection: !!status && status.observedSpecRevision < spec.revision,
-          };
+        if (!initialized && !e.isUpdate) continue; // mid-replay: accumulate silently
+        if (completesReplay) {
+          initialized = true;
+          // The replay is a consistent view: a live status whose spec key never appeared is
+          // REAL torn state, not a read-order artifact — fail loud, never relist over it.
+          if (status && !specSeen)
+            throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key in a consistent watch replay — torn record state`);
+        } else {
+          progressed = true;
         }
+        const m = merged();
+        if (m) yield m;
       }
       if (opts.signal?.aborted) return;
-      // The iterator ended without a spec delete: stream hiccup — resync.
+      // gap-break or iterator end: stream hiccup / writer anomaly — resync below
     } catch (e) {
-      if (e instanceof EpEnvelopeError && e.code === "internal") throw e; // writer bug, not a gap
-      // watcher error — resync from a fresh snapshot
+      if (e instanceof EpEnvelopeError && (e.code === "internal" || e.code === "failed-precondition")) throw e; // writer bug, not a gap
+      // watcher transport error — resync from a fresh consumer
     } finally {
       opts.signal?.removeEventListener("abort", stop);
       iter.stop();
     }
     if (opts.signal?.aborted) return;
+    consecutiveNoProgress = progressed ? 0 : consecutiveNoProgress + 1;
   }
 }

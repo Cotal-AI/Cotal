@@ -211,6 +211,11 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
     allErrors: false,
     validateFormats: false,
     loadSchema: undefined,
+    // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
+    // semantics exactly (astral atoms, surrogate refusals), so the engine MUST compile
+    // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one
+    // grammar and executed under another (an admitting under-approximation).
+    unicodeRegExp: true,
   });
   let validate: ValidateFunction;
   try {

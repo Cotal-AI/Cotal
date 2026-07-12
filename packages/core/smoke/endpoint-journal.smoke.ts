@@ -58,7 +58,11 @@ c("wrong-typed carried auth is fingerprinted AS CARRIED, never collapsed onto ab
   && submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint !== f1.fingerprint
   && submissionFingerprint({ ...sub1, auth: null }, subj).fingerprint !== submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint);
 
-// ── fact shapes (broker-free) ──
+// ── fact shapes + consuming-boundary validation (broker-free) ──
+// Every consuming boundary proves body↔subject agreement, so the parsers take the authenticated
+// fact subject. These are the same subjects the CAS below publishes on.
+const accSubj = epfDecisionSubject("demo", subj, "req-1"); // …epf.manager.dec.u_abc.worker.<UID>.req-1
+const quarSubj = epfQuarantineSubject("demo", "manager", 9);
 const acc: AcceptanceFact = {
   v: 1, id: "req-1", decision: "accepted", fingerprint: f1.fingerprint,
   request: sub1 as unknown as Record<string, unknown>,
@@ -66,24 +70,52 @@ const acc: AcceptanceFact = {
   contractDigests: { input: D, output: D }, authzDecision: { revision: 3, epoch: 1 },
   route: "effects", sourceSeq: 7, ts: 1_720_600_000_000,
 };
-c("an acceptance fact validates", (parseDecisionFact(acc) as AcceptanceFact).route === "effects");
+c("an acceptance fact validates", (parseDecisionFact(acc, accSubj) as AcceptanceFact).route === "effects");
 const pooled: AcceptanceFact = { ...acc, route: "pool.builds", workExpiry: 1_720_600_100_000 };
-c("a pool-routed acceptance carries its workExpiry", (parseDecisionFact(pooled) as AcceptanceFact).workExpiry === 1_720_600_100_000);
-throws("a pool route WITHOUT workExpiry refuses", () => parseDecisionFact({ ...acc, route: "pool.builds" }));
-throws("an effects route WITH workExpiry refuses", () => parseDecisionFact({ ...acc, workExpiry: 5 }));
+c("a pool-routed acceptance carries its workExpiry", (parseDecisionFact(pooled, accSubj) as AcceptanceFact).workExpiry === 1_720_600_100_000);
+throws("a pool route WITHOUT workExpiry refuses", () => parseDecisionFact({ ...acc, route: "pool.builds" }, accSubj));
+throws("an effects route WITH workExpiry refuses", () => parseDecisionFact({ ...acc, workExpiry: 5 }, accSubj));
 const rej: RejectionFact = {
   v: 1, id: "req-1", decision: "rejected", fingerprint: f1.fingerprint,
   error: { code: "conflict", detail: "same id, different fingerprint" },
   caller: { id: "u_abc.worker", lifecycleUid: UID }, sourceSeq: 8, ts: 1_720_600_000_001,
 };
-c("a rejection fact validates (as durable as acceptance)", parseDecisionFact(rej).decision === "rejected");
-throws("an over-256-byte error detail refuses", () => parseDecisionFact({ ...rej, error: { code: "conflict", detail: "x".repeat(257) } }));
-throws("an off-catalog error code refuses", () => parseDecisionFact({ ...rej, error: { code: "Oops" } }));
+c("a rejection fact validates (as durable as acceptance)", parseDecisionFact(rej, accSubj).decision === "rejected");
+throws("an over-256-byte error detail refuses", () => parseDecisionFact({ ...rej, error: { code: "conflict", detail: "x".repeat(257) } }, accSubj));
+throws("an off-catalog error code refuses", () => parseDecisionFact({ ...rej, error: { code: "Oops" } }, accSubj));
+
+// A stored fact must be SELF-SUFFICIENT canonical authority and AGREE with its subject —
+// malformed-authority repros the panel found must all fail loud at the consuming boundary.
+throws("a rejection with an empty caller principal refuses",
+  () => parseDecisionFact({ ...rej, caller: { id: "", lifecycleUid: "" } }, accSubj));
+throws("a decision with sourceSeq 0 refuses (a fact rides a positive stream sequence)",
+  () => parseDecisionFact({ ...rej, sourceSeq: 0 }, accSubj));
+throws("a rejection with a wrong-typed authzDecision refuses",
+  () => parseDecisionFact({ ...rej, authzDecision: "not-an-object" }, accSubj));
+throws("an acceptance whose request is not the canonical EndpointRequest refuses",
+  () => parseDecisionFact({ ...acc, request: {} }, accSubj));
+throws("an acceptance whose embedded request.id disagrees with the fact refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, id: "req-2" } }, accSubj));
+throws("an acceptance whose embedded request names a different endpoint refuses",
+  () => parseDecisionFact({ ...acc, request: { ...sub1, op: { ...sub1.op, endpoint: "other" } } }, accSubj));
+throws("an acceptance with a non-object target refuses",
+  () => parseDecisionFact({ ...acc, target: 42 }, accSubj));
+c("a well-formed resolved target validates",
+  (parseDecisionFact({ ...acc, target: { owner: "u_zed", actor: "svc", lifecycleUid: "z".repeat(26), mappingRevision: 4 } }, accSubj) as AcceptanceFact).decision === "accepted");
+throws("a fact whose body id disagrees with the subject refuses (no cross-id smuggling)",
+  () => parseDecisionFact({ ...rej, id: "req-9" }, accSubj));
+throws("a fact whose body caller disagrees with the subject refuses",
+  () => parseDecisionFact({ ...rej, caller: { id: "u_zed.worker", lifecycleUid: caller2.uid } }, accSubj));
+throws("parseDecisionFact on a non-decision subject refuses",
+  () => parseDecisionFact(rej, quarSubj));
+
 const quar: QuarantineFact = {
   v: 1, decision: "quarantined", sourceSeq: 9,
   submissionDigest: D, error: { code: "bad-request", detail: "not canonicalizable I-JSON" }, ts: 1_720_600_000_002,
 };
-c("a quarantine fact validates (no id, no fingerprint required)", parseQuarantineFact(quar).sourceSeq === 9);
+c("a quarantine fact validates (no id, no fingerprint required)", parseQuarantineFact(quar, quarSubj).sourceSeq === 9);
+throws("a quarantine fact whose sourceSeq disagrees with its subject refuses",
+  () => parseQuarantineFact({ ...quar, sourceSeq: 10 }, quarSubj));
 c("size preflight passes a bounded fact", assertFactFits(rej, 1024 * 1024).length > 0);
 throws("size preflight refuses an acceptance that cannot fit", () => assertFactFits(acc, 64));
 
@@ -120,7 +152,7 @@ try {
   c("the first decision wins its CAS", w1.won);
   const w2 = await publishFactCreateOnly(js, dSubj, assertFactFits(rej, 1024 * 1024));
   c("a second decision on the same subject LOSES", !w2.won);
-  const winner = parseDecisionFact(await readLastFact(jsm, epfStreamName("epjrn"), dSubj));
+  const winner = parseDecisionFact(await readLastFact(jsm, epfStreamName("epjrn"), dSubj), dSubj);
   c("the loser reads the winning fact (accepted, not the late rejection)", winner.decision === "accepted");
 
   // Distinct callers can never squat each other's ids: the caller triple is in the subject.

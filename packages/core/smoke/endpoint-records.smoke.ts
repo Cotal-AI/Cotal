@@ -66,6 +66,77 @@ throws("re-registration at the same arity is refused", () => registerRecordKind(
 throws("a status value without observedSpecRevision is refused at the write seam", () => assertStatusValue({ state: "up" }));
 c("a status value with observedSpecRevision passes", assertStatusValue({ state: "up", observedSpecRevision: 3 }).observedSpecRevision === 3);
 
+// ── deterministic race regressions (KV stub, broker-free): the three interleavings the panel
+//    found that a real single-server broker cannot reproduce on demand ──
+type StubEntry = { key: string; operation: "PUT" | "DEL" | "PURGE"; revision: number; isUpdate: boolean; value: unknown };
+const stubEntry = (key: string, revision: number, value: unknown, isUpdate = true, operation: StubEntry["operation"] = "PUT"): StubEntry =>
+  ({ key, revision, value, isUpdate, operation });
+const withJson = (e: StubEntry) => ({ ...e, json: () => e.value, string: () => JSON.stringify(e.value) });
+class StubWatchIter {
+  private stopped = false;
+  constructor(private readonly script: Array<StubEntry | "throw">) {}
+  stop() { this.stopped = true; }
+  async *[Symbol.asyncIterator]() {
+    for (const item of this.script) {
+      if (this.stopped) return;
+      await Promise.resolve();
+      if (item === "throw") throw new Error("transient watch blip");
+      yield withJson(item);
+    }
+  }
+}
+type AnyKv = Parameters<typeof watchRecord>[0];
+const svcQ = ["manager", UID];
+const sK = recordSpecKey(RECORD_KINDS.svc, svcQ);
+const tK = recordStatusKey(RECORD_KINDS.svc, svcQ);
+
+// 1. FALSE-TORN: spec absent on the first read, present on re-read (ordered create seen mid-flight)
+//    must NOT be misclassified as torn state — it returns the record.
+{
+  const specReads = [null, stubEntry(sK, 1, { endpoint: "manager" })];
+  let i = 0;
+  const kv = { get: async (k: string) => (k.endsWith(".spec") ? (specReads[Math.min(i++, 1)] && withJson(specReads[Math.min(i - 1, 1)]!)) : withJson(stubEntry(tK, 2, { state: "up", observedSpecRevision: 1 }))) } as unknown as AnyKv;
+  const merged = await readRecord(kv, RECORD_KINDS.svc, svcQ, { deadlineMs: 800 });
+  c("an absent-then-present spec read is NOT called torn (bounded re-read stabilizes it)",
+    merged?.spec.revision === 1 && (merged.status as { value: { state: string } }).value.state === "up");
+}
+
+// 2. RESYNC BUDGET is CONSECUTIVE, reset on progress: a watch that delivers a fresh delta each
+//    incarnation then hits a transient blip must survive far past maxResyncs (a lifetime-
+//    cumulative budget would kill it after maxResyncs+1 total blips).
+{
+  const maxResyncs = 2, LIMIT = 6;
+  const ac = new AbortController();
+  let incarnations = 0;
+  const kv = { watch: async () => { const n = incarnations++; if (n >= LIMIT) ac.abort(); return new StubWatchIter(
+    n >= LIMIT ? [] : [stubEntry(sK, 1, { endpoint: "manager" }), stubEntry(sK, 2 + n, { endpoint: "manager", g: n }), "throw"]); } } as unknown as AnyKv;
+  let threw: string | undefined;
+  try {
+    for await (const _ of watchRecord(kv, RECORD_KINDS.svc, svcQ, { signal: ac.signal, maxResyncs })) { void _; }
+  } catch (e) { threw = (e as Error).message; }
+  c("a watch making delta progress between blips survives far past a cumulative budget",
+    threw === undefined && incarnations >= LIMIT, `threw=${threw} incarnations=${incarnations}`);
+}
+
+// 3. GAP RESYNC, never forward-patch: a status delta whose observedSpecRevision is AHEAD of the
+//    cached spec forces a resync with a fresh consumer; the ahead-status is never attached to
+//    the stale spec, and after resync the correct merged view is delivered.
+{
+  const ac = new AbortController();
+  let incarnations = 0;
+  const scripts = (n: number): Array<StubEntry | "throw"> =>
+    n === 0 ? [stubEntry(sK, 1, { endpoint: "manager" }), stubEntry(tK, 5, { state: "x", observedSpecRevision: 5 })]
+    : n === 1 ? [stubEntry(sK, 5, { endpoint: "manager", g: 5 }), stubEntry(tK, 6, { state: "x", observedSpecRevision: 5 })]
+    : [];
+  const kv = { watch: async () => { const n = incarnations++; if (n >= 2) ac.abort(); return new StubWatchIter(scripts(n)); } } as unknown as AnyKv;
+  const views: MergedRecord[] = [];
+  for await (const m of watchRecord(kv, RECORD_KINDS.svc, svcQ, { signal: ac.signal })) views.push(m);
+  c("the ahead-status is NEVER forward-patched onto the stale spec",
+    !views.some((m) => m.spec.revision === 1 && m.status !== undefined));
+  c("after resync the correct merged view (spec@5 + its observed status) is delivered",
+    views.some((m) => m.spec.revision === 5 && m.status?.observedSpecRevision === 5));
+}
+
 // ── the live half: CAS, merged read, head, watch ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-eprec-"));
@@ -103,8 +174,8 @@ try {
   c("an absent record reads undefined", missing === undefined);
   const tornKey = recordStatusKey(svc, ["manager", "t".repeat(26)]);
   await createRecordEntry(kv, tornKey, assertStatusValue({ state: "ghost", observedSpecRevision: 1 }));
-  await rejects("a status without its spec is torn state", "failed-precondition",
-    readRecord(kv, svc, ["manager", "t".repeat(26)]));
+  await rejects("a status STABLY without its spec is torn state", "failed-precondition",
+    readRecord(kv, svc, ["manager", "t".repeat(26)], { deadlineMs: 700 }));
   await kv.put(sKey, new TextEncoder().encode("not-json"));
   await rejects("a garbled record value fails loud", "internal", readRecord(kv, svc, q));
   await updateRecordEntry(kv, sKey, { endpoint: "manager", generation: 4 }, (await kv.get(sKey))!.revision);
