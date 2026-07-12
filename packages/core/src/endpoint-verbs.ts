@@ -173,7 +173,13 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
     throw new EpEnvelopeError("internal", `reply instance "${parsed.instanceId}" is not the addressed instance "${expect.instanceId}" (SPEC 13.2)`);
   if (expect?.epoch !== undefined && parsed.epoch !== expect.epoch)
     throw new EpEnvelopeError("expired", `reply epoch ${parsed.epoch} is not the addressed epoch ${expect.epoch}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
-  const reply = parseEndpointReply(JSON.parse(new TextDecoder().decode(data)));
+  // §13.3: an unparseable body is THIS boundary's own structured refusal — the documented catalog
+  // (`internal`) holds; a raw SyntaxError must never escape the verb (the watch path already wraps
+  // its decode the same way).
+  let rawBody: unknown;
+  try { rawBody = JSON.parse(new TextDecoder().decode(data)); }
+  catch (e) { throw new EpEnvelopeError("internal", `the reply body on the caller's rail is not JSON (${e instanceof Error ? e.message : String(e)}); an unparseable reply is a responder bug surfaced as the caller boundary's structured refusal (SPEC 13.3)`); }
+  const reply = parseEndpointReply(rawBody);
   if (reply.id !== requestId)
     throw new EpEnvelopeError("internal", `reply id "${reply.id}" does not echo the request id "${requestId}" on its nonce-scoped rail (SPEC 13.3)`);
   // §13.3: a success payload validates against the pinned output contract at ITS consuming
@@ -198,7 +204,9 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  *
  * Application-level failure is NOT a throw: the resolved `reply` carries `ok: false` with the
  * responder's structured error (§13.3). This boundary throws only for its own refusals: invalid args
- * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal`; a stale reply `expired`;
+ * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal` (a raw decode error never
+ * escapes); a throwing `currentEpoch` hook `internal` and a garbled (non-integer/negative) currency
+ * value `failed-precondition` (the read's own failure, never mislabeled staleness); a stale reply `expired`;
  * NO responder `unavailable` (SPEC 13.5:1484 — the broker's no-responders 503 lands on a reply-to that
  * sits on THIS caller's own rail, so a manual, fully-disposed probe distinguishes it from a slow
  * responder without leaving a lingering request); a failed reply subscription `unavailable`; the
@@ -257,7 +265,19 @@ export async function epCall(
       // budget. Recorded for the panel's §13.5 reconciliation (dedicated one-rail currency budget?).
       const remaining = deadlineMs - (Date.now() - started);
       if (remaining <= 0) throw new EpEnvelopeError("deadline-exceeded", `no budget left to verify the \`one\` responder's currency within ${deadlineMs}ms (SPEC 13.5)`);
-      const cur = await raceBounded(() => opts.currentEpoch!(attributed.responder.instanceId), remaining, `the \`one\` currency read for ${op.endpoint}.${op.command}`);
+      // The hook is an untrusted caller-supplied boundary (same class as scatter's reconcile): its
+      // own throw is normalized into the documented catalog, and its VALUE is runtime-fenced — a
+      // NaN/garbled epoch compares unequal to any real epoch and would masquerade as staleness
+      // (`expired`), mislabeling a valid reply; fail loud as the read's own failure instead.
+      let cur: number;
+      try {
+        cur = await raceBounded(() => opts.currentEpoch!(attributed.responder.instanceId), remaining, `the \`one\` currency read for ${op.endpoint}.${op.command}`);
+      } catch (e) {
+        if (e instanceof EpEnvelopeError) throw e; // the bound's deadline-exceeded, or the hook's own structured refusal
+        throw new EpEnvelopeError("internal", `the \`one\` currency read threw (${e instanceof Error ? e.message : String(e)}); the documented error catalog holds at this boundary (SPEC 13.3)`);
+      }
+      if (!Number.isSafeInteger(cur) || cur < 0)
+        throw new EpEnvelopeError("failed-precondition", `the \`one\` currency read returned a non-integer/negative epoch ${String(cur)}; a garbled currency read is refused as the read's own failure, never reported as responder staleness (SPEC 13.2)`);
       if (attributed.responder.epoch !== cur)
         throw new EpEnvelopeError("expired", `the \`one\` responder ${attributed.responder.instanceId} answered at epoch ${attributed.responder.epoch}, not its current ${cur}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
     }

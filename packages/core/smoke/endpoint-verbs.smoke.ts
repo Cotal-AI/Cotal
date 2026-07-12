@@ -314,6 +314,21 @@ try {
     () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor({ args: { n: 123 } as unknown as Record<string, unknown> }), { deadlineMs: 200 }), "bad-request");
   await rejects("epCall refuses a deadline beyond the setTimeout timer bound (2^31-1)",
     () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 2_147_483_648 }), "bad-request");
+  {
+    // A correctly ATTRIBUTED reply whose BODY is not JSON: the documented catalog holds — the caller
+    // boundary refuses structured `internal`; a raw SyntaxError never escapes the verb (§13.3).
+    const sub = nc.subscribe(instFilter, {
+      callback: (err, msg) => {
+        if (err) return;
+        const p = parseEpSubject(msg.subject);
+        if (!p || p.plane !== "request") return;
+        nc.publish(epReplySubject(SPACE, { endpoint: p.endpoint, instanceId: IID, epoch: 3, caller: p.caller, nonce: p.nonce }), enc.encode("{"));
+      },
+    });
+    await rejects("epCall surfaces an UNPARSEABLE reply body as structured `internal`, never a raw SyntaxError",
+      () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }), "internal");
+    await sub.drain();
+  }
 
   // epCall `one` (queue anycast): the caller cannot pin an instance up front, so it MUST supply a
   // currentEpoch hook; the queue winner's currency is CHECKED, not assumed (§13.2:1187-1189).
@@ -333,6 +348,17 @@ try {
   }
   await rejects("epCall on the `one` rail WITHOUT currentEpoch refuses bad-request (queue winner is not implicitly current)",
     () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 200, currentEpoch: undefined as unknown as () => number }), "bad-request");
+  {
+    // The hook is an untrusted caller-supplied boundary (same class as scatter's reconcile): its own
+    // throw normalizes into the catalog, and a garbled VALUE fails as the read's own failure — a NaN
+    // compares unequal to any real epoch and would otherwise mislabel a valid reply `expired`.
+    const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 4, ok: true, data: { which: "one" } }]);
+    await rejects("epCall `one` normalizes a THROWING currentEpoch hook into structured `internal` (the catalog holds)",
+      () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => { throw new TypeError("registry exploded"); } }), "internal");
+    await rejects("epCall `one` refuses a NaN currentEpoch value as failed-precondition, never mislabeled `expired` staleness",
+      () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => Number.NaN }), "failed-precondition");
+    await sub.drain();
+  }
 
   // ---- epCast: fire-and-forget; honors replyExpected=false; all-rail needs a deadline ------------
   {
