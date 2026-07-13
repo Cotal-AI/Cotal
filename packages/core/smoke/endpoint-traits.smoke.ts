@@ -197,6 +197,39 @@ await rejects("a definition with an extra field in nested `signer` refuses",
 await rejects("an attachment with an extra field in nested `signer` refuses (no unsigned field rides D28)",
   () => verifyTraitAttachment(signArtifact(attBody({ signer: { keyId: "op-traits-1", rogue: 1 } }), opKp), { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact }));
 
+// ── D28 signed-value TOCTOU: the artifact is SNAPSHOT at entry, before any await — a caller
+//    mutating the raw object DURING the awaited anchor/schema reads (after the signature
+//    verified) must not change what gets branded (finding: signed "warden", branded "evil"
+//    via the `att.value` ← `raw.value` alias). ──
+{
+  const rawAtt = signArtifact(attBody(), opKp) as Record<string, unknown>;
+  const mutatingRead = (d: string) => {
+    (rawAtt.value as Record<string, unknown>).guard = "evil"; // fires DURING the awaited schema reads
+    return store.get(d);
+  };
+  const attSnap = await verifyTraitAttachment(rawAtt, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact: mutatingRead });
+  c("mutating the raw attachment DURING the awaited schema reads cannot change the branded value (the verified bytes ARE the branded bytes)",
+    (attSnap.value as { guard: string }).guard === "warden");
+  c("the branded attachment re-verifies exactly as returned (no unsigned byte rode the brand)",
+    isVerifiedTraitAttachment(await verifyTraitAttachment(attSnap, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact })));
+}
+{
+  const rawDef = signArtifact(defBody(), opKp) as Record<string, unknown>;
+  const mutResolve: AnchorResolver = async (k) => { rawDef.urn = "ai.cotal.other"; return anchors.get(k); };
+  const defSnap = await verifyTraitDefinition(rawDef, { resolveAnchor: mutResolve });
+  c("mutating the raw definition DURING the anchor resolve cannot change the branded urn (snapshot at entry)",
+    defSnap.urn === TRAIT_GUARDED);
+}
+await rejects("an artifact that does not JSON-serialize refuses at the entry snapshot (a signed artifact is plain JSON data)",
+  () => {
+    const cyc = attBody() as Record<string, unknown>;
+    const v: Record<string, unknown> = { guard: "warden" };
+    v.self = v;
+    cyc.value = v;
+    cyc.sig = "A".repeat(86);
+    return verifyTraitAttachment(cyc, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
+  });
+
 // ── live broker: registration → serve grant → governed surface → the pre-effect gate ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-eptraits-"));
@@ -539,6 +572,122 @@ try {
     rTgtRot?.reply.ok === false && rTgtRot.reply.error?.code === "expired" && tgtRuns === 1);
   await tgtHandle.stop();
   tgtSub.unsubscribe();
+
+  // ── a valid command named "constructor": null-prototype dictionaries make it an OWN entry —
+  //    no Object.prototype resolution, no attachment state on the global Object function, no
+  //    cross-surface leak (finding: a plain `{}` resolved `commands["constructor"]` to the
+  //    GLOBAL Object function, wrote the attachment onto it, and a global delete un-governed
+  //    the command post-brand). ──
+  const CTOR_CMDS = [{ name: "constructor", class: "ephemeral", targeted: false, capability: "ctor.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_GUARDED] }];
+  const DC_CTOR = register({ urn: "ai.cotal.ctor", revision: 1, attributes: [], events: [], commands: CTOR_CMDS });
+  await reg({ endpoint: "ctorvault", owner: "u_op", clusterDigests: [DC_CTOR], protocol: { v: 1 } }, IID);
+  const grantCtor = await grantFor("ctorvault", IID);
+  c("a command named \"constructor\" registers and grants as an OWN surface entry (no false duplicate via Object.prototype)",
+    Object.prototype.hasOwnProperty.call(grantCtor.surface, "constructor") && grantCtor.surface["constructor"].traits.includes(TRAIT_GUARDED));
+  const ctorSurface = await verifyGovernedSurface({
+    serve: grantCtor, definitions: [defGuarded], resolveAnchor, readArtifact,
+    attachments: [signArtifact(attBody({ endpoint: "ctorvault", command: "constructor", traitUrn: TRAIT_GUARDED, value: { guard: "warden" }, contractDigest: DC_CTOR }), opKp)],
+  });
+  c("the governed surface holds \"constructor\" as an OWN frozen entry and NOTHING landed on the global Object function",
+    Object.prototype.hasOwnProperty.call(ctorSurface.commands, "constructor")
+    && ctorSurface.commands["constructor"]?.[TRAIT_GUARDED] !== undefined
+    && (Object as unknown as Record<string, unknown>)[TRAIT_GUARDED] === undefined
+    && (Object.prototype as unknown as Record<string, unknown>)[TRAIT_GUARDED] === undefined);
+  c("cross-surface isolation: other surfaces do NOT see an inherited \"constructor\" entry",
+    surfaceV4.commands["constructor"] === undefined && emptySurface.commands["constructor"] === undefined);
+  let ctorDeny = true;
+  let ctorRuns = 0;
+  const ctorHandle = serveEndpoint(nc, SPACE, grantCtor,
+    [{ command: "constructor", contract: { input: argsContract, output: outContract }, handler: () => { ctorRuns++; return { which: "ctor" }; } }],
+    { public: true },
+    { traits: { governed: ctorSurface, guard: () => (ctorDeny ? { verdict: "deny", reason: "no" } : { verdict: "allow" }) } });
+  await nc.flush();
+  const ctorReplies: { reply: EndpointReply }[] = [];
+  const ctorSub = nc.subscribe(epCallerReplyFilter(SPACE, caller), { callback: (_e, m) => { ctorReplies.push({ reply: JSON.parse(new TextDecoder().decode(m.data)) as EndpointReply }); } });
+  await nc.flush();
+  const callCtor = async () => {
+    ctorReplies.length = 0;
+    const body = {
+      v: 1, id: `ctor-${reqN++}`, op: { endpoint: "ctorvault", command: "constructor", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
+      class: "ephemeral", replyExpected: true, deadlineMs: 2000, args: { name: "x" }, from: { id: "u_abc.worker", name: "w" },
+    };
+    nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "ctorvault", command: "constructor", caller, nonce: nonce() }), new TextEncoder().encode(JSON.stringify(body)));
+    await nc.flush();
+    for (let i = 0; i < 40 && ctorReplies.length === 0; i++) await wait(50);
+    return ctorReplies.shift();
+  };
+  const rCtorDeny = await callCtor();
+  c("the gate ENFORCES the own \"constructor\" entry: guard deny refuses with no effect",
+    rCtorDeny?.reply.ok === false && rCtorDeny.reply.error?.code === "permission-denied" && ctorRuns === 0);
+  ctorDeny = false;
+  const rCtorOk = await callCtor();
+  c("guard allow effects the \"constructor\" command (the gate read the own entry, not inherited state)",
+    rCtorOk?.reply.ok === true && ctorRuns === 1);
+  await ctorHandle.stop();
+  ctorSub.unsubscribe();
+
+  // ── the POST-GATE child/ledger authorization is ITSELF an await: a mapping that rotates
+  //    DURING it must be caught by the FINAL currency read (currency → auth → currency, the
+  //    same discipline as the pre-gate path) — for calls AND casts (finding: the post-gate
+  //    recheck ran currency → auth and stopped, leaving the last dynamic await unfenced;
+  //    the owner-mode probe above cannot see it because owner-mode auth is a no-op). ──
+  const CH_UID = "3".repeat(26);
+  const CH_ROT = "4".repeat(26);
+  const CH_CMDS = [{ name: "guardchild", class: "ephemeral", targeted: true, modes: ["child"], capability: "vault.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_GUARDED] }];
+  const DC_CH = register({ urn: "ai.cotal.ch", revision: 1, attributes: [], events: [], commands: CH_CMDS });
+  await reg({ endpoint: "chvault", owner: "u_op", clusterDigests: [DC_CH], protocol: { v: 1 } }, IID);
+  const grantCh = await grantFor("chvault", IID);
+  const chSurface = await verifyGovernedSurface({
+    serve: grantCh, definitions: [defGuarded], resolveAnchor, readArtifact,
+    attachments: [signArtifact(attBody({ endpoint: "chvault", command: "guardchild", traitUrn: TRAIT_GUARDED, value: { guard: "warden" }, contractDigest: DC_CH }), opKp)],
+  });
+  let chMappingUid = CH_UID;
+  let chSeamCalls = 0;
+  let rotateOnPostGateAuth = false;
+  let chRuns = 0;
+  const chHandle = serveEndpoint(nc, SPACE, grantCh,
+    [{ command: "guardchild", contract: { input: argsContract, output: outContract }, handler: () => { chRuns++; return { which: "ch" }; } }],
+    { public: true },
+    {
+      resolveTarget: (t) => (t.owner === "u_abc" && t.actor === "svc" ? { lifecycleUid: chMappingUid, mappingRevision: 1 } : undefined),
+      childAuthority: async () => {
+        chSeamCalls++;
+        // The seam runs twice per governed request (pre-gate, then post-gate). Rotating on the
+        // SECOND run mutates the mapping DURING the post-gate authorization await — exactly
+        // the window the panel showed unfenced.
+        if (rotateOnPostGateAuth && chSeamCalls === 2) { await wait(50); chMappingUid = CH_ROT; }
+        return true;
+      },
+      traits: { governed: chSurface, guard: () => ({ verdict: "allow" }) },
+    });
+  await nc.flush();
+  const chReplies: { reply: EndpointReply }[] = [];
+  const chSub = nc.subscribe(epCallerReplyFilter(SPACE, caller), { callback: (_e, m) => { chReplies.push({ reply: JSON.parse(new TextDecoder().decode(m.data)) as EndpointReply }); } });
+  await nc.flush();
+  const callCh = async (replyExpected: boolean) => {
+    chReplies.length = 0; chSeamCalls = 0;
+    const body = {
+      v: 1, id: `ch-${reqN++}`, op: { endpoint: "chvault", command: "guardchild", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
+      class: "ephemeral", replyExpected, ...(replyExpected ? { deadlineMs: 2000 } : {}), args: { name: "x" }, target: { owner: "u_abc", actor: "svc", lifecycleUid: CH_UID }, from: { id: "u_abc.worker", name: "w" },
+    };
+    nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "chvault", command: "guardchild", caller, nonce: nonce(), target: { mode: "child", tOwner: "u_abc" } }), new TextEncoder().encode(JSON.stringify(body)));
+    await nc.flush();
+    if (!replyExpected) { await wait(500); return undefined; }
+    for (let i = 0; i < 40 && chReplies.length === 0; i++) await wait(50);
+    return chReplies.shift();
+  };
+  const rChOk = await callCh(true);
+  c("a governed child-mode call with a stable mapping authorizes twice (pre+post gate) and effects",
+    rChOk?.reply.ok === true && chRuns === 1 && chSeamCalls === 2, JSON.stringify({ r: rChOk?.reply, chRuns, chSeamCalls }));
+  rotateOnPostGateAuth = true; chMappingUid = CH_UID;
+  const rChRot = await callCh(true);
+  c("a mapping that rotates DURING the POST-GATE child authorization is caught by the FINAL currency read (expired, no effect)",
+    rChRot?.reply.ok === false && rChRot.reply.error?.code === "expired" && chRuns === 1, JSON.stringify({ r: rChRot?.reply, chRuns }));
+  chMappingUid = CH_UID;
+  await callCh(false); // a CAST through the same rotation: silent — the only observable is that no effect happened
+  c("a CAST with the same post-gate rotation has no effect (silent refusal, at-most-once)", chRuns === 1);
+  await chHandle.stop();
+  chSub.unsubscribe();
 
   await nc.close();
 } finally {

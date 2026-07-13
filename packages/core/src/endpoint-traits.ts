@@ -104,6 +104,25 @@ function invalid(what: string): never {
   throw new ContractInvalidError(`trait artifact does not validate: ${what}`);
 }
 
+/** Deep-copy a received artifact into a PRIVATE, deep-frozen JSON snapshot BEFORE any await:
+ *  the parse, the signature, the value-schema validation, and the brand must all attest the
+ *  SAME bytes. A parsed artifact that aliases caller-reachable objects (`att.value` ←
+ *  `raw.value`) can otherwise be mutated DURING the awaited anchor/schema reads AFTER the
+ *  signature verified — branding a value nobody signed (finding: signed "warden", branded
+ *  "evil"). The JSON round-trip yields plain JSON data only, which `deepFreeze` genuinely
+ *  locks (a frozen Date/Map keeps internal mutability), and matches the wire semantics the
+ *  D28 canonical form covers; an artifact that does not JSON-serialize refuses. */
+function snapshotArtifact(raw: unknown, what: string): Record<string, unknown> {
+  let copy: unknown;
+  try {
+    copy = JSON.parse(JSON.stringify(raw));
+  } catch (e) {
+    invalid(`${what} does not JSON-serialize (${(e as Error)?.message ?? String(e)}); a signed artifact is plain JSON data (SPEC 13.10)`);
+  }
+  if (!isRec(copy)) invalid(`${what} is not an object`);
+  return deepFreeze(copy);
+}
+
 /** A closed `{ keyId: <non-empty string> }` object, nothing else (§13.10, D28): the nested
  *  signer/authority shapes are part of the signed artifact, so an UNKNOWN nested field must
  *  refuse — otherwise it would ride UNSIGNED under a field-dropping projection and the recomputed
@@ -154,13 +173,18 @@ export async function verifyTraitDefinition(
   raw: unknown,
   opts: { resolveAnchor: AnchorResolver; now?: number },
 ): Promise<TraitDefinition> {
-  const def = parseTraitDefinitionShape(raw); // closed schema incl. closed nested {keyId}
+  // Snapshot FIRST (before the anchor await): the parse, the signature, and the returned
+  // artifact all attest one immutable copy — a caller mutating `raw` mid-verification races
+  // nothing (§13.10 D28: the verified bytes ARE the branded bytes).
+  const artifact = snapshotArtifact(raw, "trait definition");
+  const def = parseTraitDefinitionShape(artifact); // closed schema incl. closed nested {keyId}
   const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: def.signer.keyId, role: "traits", at: opts.now ?? Date.now() });
   assertAnchorScopeCovers(anchor, "traits", def.urn, "trait definition urn");
-  // §13.10 D28: verify over the EXACT received artifact (minus sig), never a field-dropping
-  // reconstruction — the closed nested-shape checks above already guarantee raw and the parsed
-  // projection agree, so an unsigned field can neither survive nor change the verified bytes.
-  verifyArtifactSignature(raw as Record<string, unknown>, anchor);
+  // §13.10 D28: verify over the EXACT received artifact as snapshot at entry (minus sig),
+  // never a field-dropping reconstruction — the closed nested-shape checks above already
+  // guarantee the snapshot and the parsed projection agree, so an unsigned field can neither
+  // survive nor change the verified bytes.
+  verifyArtifactSignature(artifact, anchor);
   const frozen = deepFreeze(def);
   VERIFIED_DEFINITIONS.add(frozen);
   return frozen;
@@ -231,7 +255,12 @@ export async function verifyTraitAttachment(
 ): Promise<TraitAttachment> {
   if (!isVerifiedTraitDefinition(opts.definition))
     throw new EpEnvelopeError("failed-precondition", "the supplied trait definition is not a verified artifact (verifyTraitDefinition); an unverified definition carries no attachment authority (SPEC 13.7)");
-  const att = parseTraitAttachmentShape(raw);
+  // Snapshot FIRST (before any await): `att.value` below references the snapshot, so a caller
+  // mutating `raw.value` during the awaited anchor/schema reads cannot change what gets
+  // signature-verified, schema-validated, or branded (finding: signed "warden" branded as
+  // "evil" via the alias). The verified bytes ARE the branded bytes (§13.10 D28).
+  const artifact = snapshotArtifact(raw, "trait attachment");
+  const att = parseTraitAttachmentShape(artifact);
   const def = opts.definition;
   if (att.traitUrn !== def.urn)
     throw new EpEnvelopeError("failed-precondition", `attachment traitUrn "${att.traitUrn}" is not the definition's "${def.urn}"; an attachment verifies only against its own trait's definition (SPEC 13.7)`);
@@ -247,8 +276,9 @@ export async function verifyTraitAttachment(
     throw new EpEnvelopeError("permission-denied", `attachment is signed by ${att.signer.keyId}, not the definition's named authority ${def.authority.keyId}; attachment authority is the definition's to name (SPEC 13.7)`);
   const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: att.signer.keyId, role: "traits", at: opts.now ?? Date.now() });
   assertAnchorScopeCovers(anchor, "traits", att.traitUrn, "trait attachment urn");
-  // §13.10 D28: verify over the EXACT received artifact (minus sig), never a reconstruction.
-  verifyArtifactSignature(raw as Record<string, unknown>, anchor);
+  // §13.10 D28: verify over the EXACT received artifact as snapshot at entry (minus sig),
+  // never a reconstruction — and never the caller's still-mutable `raw`.
+  verifyArtifactSignature(artifact, anchor);
   // Value-schema validation through the digest-verified two-step read (§13.7): manifest at the
   // closure digest, root at manifest.root, profile-compiled; the compiled closure digest must
   // round-trip to the definition's valueSchema, so no unverified byte enters the validator.
@@ -289,11 +319,14 @@ export function isVerifiedTraitAttachment(att: unknown): att is TraitAttachment 
  *  verified attachment. Opaque to construction — only {@link verifyGovernedSurface} brands
  *  one, and the serve boundary refuses anything unbranded or bound to a different grant.
  *
- *  A DEEP-FROZEN plain nested record, never a `Map`: `Object.freeze` does not disable a Map's
- *  `set`/`delete`/`clear`, so a WeakMap brand over a mutable Map would attest provenance WITHOUT
- *  integrity — a caller could delete a governed command after verification and the gate would
- *  then see it as ungoverned and run the handler unguarded. The frozen record is genuinely
- *  immutable, so the brand means integrity. */
+ *  A DEEP-FROZEN, NULL-PROTOTYPE nested record, never a `Map`: `Object.freeze` does not disable
+ *  a Map's `set`/`delete`/`clear`, so a WeakMap brand over a mutable Map would attest provenance
+ *  WITHOUT integrity — a caller could delete a governed command after verification and the gate
+ *  would then see it as ungoverned and run the handler unguarded. And a plain `{}` record would
+ *  resolve the valid command token "constructor" through `Object.prototype`, landing attachment
+ *  state on the GLOBAL `Object` function instead of an own frozen entry. The frozen null-proto
+ *  record is genuinely immutable and every lookup an own-property read, so the brand means
+ *  integrity. */
 export interface EpGovernedSurface {
   commands: Readonly<Record<string, Readonly<Record<string, TraitAttachment>>>>;
 }
@@ -322,10 +355,9 @@ const VERIFIED_GOVERNED = new WeakMap<EpGovernedSurface, GovernedBond>();
  * This verifies the CURRENT surface's declaration<->attachment coherence (both strip directions
  * WITHIN a revision). Cross-REVISION governed-continuity (a re-registration may not strip an
  * authority-imposed trait from a surviving command, §13.7) is enforced at the TRUSTED registration
- * write ({@link registerServiceInstance}'s governed-continuity seam) against the registry's prior
+ * write (registerServiceInstance's governed-continuity seam) against the registry's prior
  * spec — NOT here, and NOT from a caller-supplied prior surface, which the owner could forge by
- * claiming "first governance". {@link assertGovernedContinuity} remains exported as the
- * same-comparison helper for tooling and defense-in-depth.
+ * claiming "first governance".
  */
 export async function verifyGovernedSurface(args: {
   serve: EpServeGrant;
@@ -346,7 +378,14 @@ export async function verifyGovernedSurface(args: {
       throw new EpEnvelopeError("failed-precondition", `two definitions supplied for "${def.urn}"; a governed trait has one definition per verification (SPEC 13.7)`);
     defs.set(def.urn, def);
   }
-  const commands: Record<string, Record<string, TraitAttachment>> = {};
+  // NULL-PROTOTYPE dictionaries at BOTH levels: a command is caller-named text under the
+  // `[a-z0-9-]{1,32}` grammar, and "constructor" is a valid token — on a plain `{}` it would
+  // resolve the inherited `Object.prototype.constructor` (truthy!), so the attachment would be
+  // written onto the GLOBAL `Object` function instead of an own frozen entry: coverage would
+  // pass via inherited state, another surface could observe/reuse it, and deleting the global
+  // property post-brand would un-govern the command (finding). `Object.create(null)` has no
+  // prototype, so every lookup is an own-property read.
+  const commands: Record<string, Record<string, TraitAttachment>> = Object.create(null);
   for (const raw of args.attachments) {
     // Route on minimally-read fields; full verification below binds them all over the signature.
     const o = isRec(raw) ? raw : invalid("attachment is not an object");
@@ -369,7 +408,7 @@ export async function verifyGovernedSurface(args: {
       readArtifact: args.readArtifact,
       ...(args.now !== undefined ? { now: args.now } : {}),
     });
-    const per = commands[command] ?? (commands[command] = {});
+    const per = commands[command] ?? (commands[command] = Object.create(null) as Record<string, TraitAttachment>);
     if (per[urn] !== undefined)
       throw new EpEnvelopeError("failed-precondition", `two attachments supplied for ${command}/${urn}; the governed surface is one attachment per (command, trait) (SPEC 13.7)`);
     per[urn] = att;

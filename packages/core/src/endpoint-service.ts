@@ -607,7 +607,11 @@ export async function authorizeServeGrant(
       throw new EpEnvelopeError("failed-precondition", `${what} ${digest} is not readable from the contract store; an unverifiable registered surface never authorizes (SPEC 13.7)`);
     return raw;
   };
-  const surface: Record<string, EpCommandAuthority> = {};
+  // Null-prototype: "constructor" is a valid command token, and on a plain `{}` the duplicate
+  // check below would resolve the inherited `Object.prototype.constructor` (falsely refusing a
+  // legitimate command as "declared twice") while every downstream `surface[command]` lookup
+  // (serve construction, governed-surface verification) would leak through the prototype.
+  const surface: Record<string, EpCommandAuthority> = Object.create(null);
   const commands: string[] = [];
   const clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[] = [];
   for (const closureDigest of spec.clusterDigests) {

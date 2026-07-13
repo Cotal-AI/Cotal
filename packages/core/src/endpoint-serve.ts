@@ -411,13 +411,17 @@ export function serveEndpoint(
           ...(env.deadlineMs !== undefined ? { deadlineMs: env.deadlineMs } : {}),
         }));
         // §13.2/§13.3 TOCTOU: the gate AWAITED guard/proof, so a target mapping or child/ledger
-        // grant can have rotated since the last currency read — re-resolve currency and re-run
-        // the dynamic authorization immediately before effect (the same discipline :387-392
-        // follows for the child/ledger await; the gate is a further await after it). A one-use
-        // priced proof MAY be consumed before this refusal fires: fail-closed, no effect occurs,
-        // and the caller retries with a fresh request id and proof.
+        // grant can have rotated since the last currency read — re-resolve currency, re-run the
+        // dynamic authorization, and then (because the child/ledger authorization is ITSELF an
+        // await the mapping can rotate during) re-resolve currency a FINAL time immediately
+        // before the effect. This is the SAME currency → auth → currency discipline the
+        // pre-gate path above follows; currency → auth alone leaves the last await unfenced.
+        // A one-use priced proof MAY be consumed before this refusal fires: fail-closed, no
+        // effect occurs, and the caller retries with a fresh request id and proof.
         await assertTargetCurrent(env, opts.resolveTarget);
         await assertTargetModeAuthorized(env, parsed, opts);
+        if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
+          await assertTargetCurrent(env, opts.resolveTarget);
       }
       const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
       if (!env.replyExpected) {
