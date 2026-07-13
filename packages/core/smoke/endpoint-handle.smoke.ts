@@ -93,6 +93,14 @@ throws("nbf after exp is schema-invalid (an empty window is garbled)",
   () => parseHandle(signArtifact(rootBody({ nbf: NOW + 70_000 }) as Record<string, unknown>, rootKp)), "contract-invalid");
 throws("a wildcard read scope is schema-invalid (reads are literal subtrees; the containment order supplies the prefix semantics)",
   () => parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "status" }], reads: ["goal.*.b"] }] }) as Record<string, unknown>, rootKp)), "contract-invalid");
+// The read-scope token grammar IS the record-key grammar (the §3 charset the §13.7 qualifiers
+// use): a character no legal key can carry is refused (a wider grammar would mint inert grants
+// a conforming implementation refuses), and a legal `_`-leading qualifier is reachable.
+throws("a read-scope token outside the record-key charset is schema-invalid (`:` names no legal key)",
+  () => parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "status" }], reads: ["goal.u_a.b:c"] }] }) as Record<string, unknown>, rootKp)), "contract-invalid");
+c("a `_`-leading token is a LEGAL read-scope token (assertIdToken admits it in a goalId; the grammars agree)",
+  parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "status" }], reads: ["goal.u_a.b._g1"] }] }) as Record<string, unknown>, rootKp))
+    .grants[0].reads?.[0] === "goal.u_a.b._g1");
 
 // ── the normative compiler: reads + explicit routes + journal seam ──
 {

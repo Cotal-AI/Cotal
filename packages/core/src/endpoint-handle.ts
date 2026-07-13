@@ -138,15 +138,20 @@ function parseGrantCommand(raw: unknown): HandleGrantCommand {
 }
 
 /** A read scope names an exact record-key or event-topic SUBTREE (§13.6): dot-separated
- *  literal tokens in the BOUNDED record/event token grammar, never a wildcard — the subtree
- *  semantics live in the containment order (dot-prefix), not in the entry. */
-const READ_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,63}$/;
+ *  literal tokens in the ONE token grammar record keys are built from (the §3 subject charset,
+ *  which the §13.7 key qualifiers use: [A-Za-z0-9_-], 1..64 per token), never a wildcard — the
+ *  subtree semantics live in the containment order (dot-prefix), not in the entry. The grammar
+ *  is exactly the key grammar on purpose: a wider charset would mint inert grants naming keys
+ *  that can never exist (and that a conforming implementation refuses — a divergence in a
+ *  normative compiler), while a narrower one would make legal keys (a `_`-leading goalId)
+ *  unreachable by any grant. */
+const READ_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
 function assertReadSubtree(r: unknown, endpoint: string): string {
   if (typeof r !== "string" || r.length === 0 || r.length > 256)
     invalid(`grant entry for "${endpoint}" read scope is not a bounded string (1..256)`);
   const tokens = r.split(".");
   if (tokens.length > 16 || tokens.some((t) => !READ_TOKEN.test(t)))
-    invalid(`grant entry for "${endpoint}" read scope "${r}" is not a bounded literal dot-token subtree (at most 16 tokens of 1..64 [A-Za-z0-9_:-] with a leading alnum; no wildcards)`);
+    invalid(`grant entry for "${endpoint}" read scope "${r}" is not a bounded literal dot-token subtree (at most 16 tokens of 1..64 [A-Za-z0-9_-]; no wildcards)`);
   return r;
 }
 
