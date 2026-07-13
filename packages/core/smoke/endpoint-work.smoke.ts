@@ -61,8 +61,14 @@ try {
   const jsm = await jetstreamManager(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const kv = await openRecordsBucket(nc, SPACE);
-  const ctx: WorkPoolContext = workPoolContext(kv, js, jsm, SPACE);
+  // 5aa0114 MEDIUM 1: the context derives ALL its resources from ONE binding-layer connection +
+  // space; four already-separated resources are unrepresentable, so a space-A KV can never be
+  // bonded to a space-B stream.
+  const ctx: WorkPoolContext = await workPoolContext(nc, SPACE);
   c("the work-pool context is FROZEN (the space bond cannot be swapped after construction)", Object.isFrozen(ctx));
+  c("the context's resources are DERIVED from the one connection+space (records bucket bound to the space)", ctx.space === SPACE && ctx.kv !== undefined && ctx.js !== undefined && ctx.jsm !== undefined);
+  await rejects("a context over a NON-connection refuses (separate resources are never accepted)",
+    () => workPoolContext({ kv, js, jsm } as never, SPACE), "failed-precondition");
   const NOW = 1_000_000;
   const EXPIRY = NOW + 60_000;
 
@@ -337,6 +343,50 @@ try {
 
   c("terminal subjects are acceptance-identity-scoped",
     workTerminalSubject(SPACE, r1) !== workTerminalSubject(SPACE, r2) && workTerminalSubject(SPACE, r1).includes(".wrk.builds.u_abc.worker."));
+
+  // ── re-verify 5aa0114 MEDIUM 3: positive execution coordinates, symmetrically ──
+  {
+    const rz = ref("req-zero");
+    const zSeq = (await enqueueWorkItem(ctx, rz, enc("wz"))).seq!;
+    await rejects("a lease ISSUE with sourceSeq 0 refuses (a zero coordinate would create a lease the parser refuses forever)",
+      () => leaseWorkItem(ctx, { ref: rz, sourceSeq: 0, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY }), "failed-precondition");
+    await leaseWorkItem(ctx, { ref: rz, sourceSeq: zSeq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    await rejects("a COMMIT carrying fencingToken 0 refuses at the boundary (positive at issue, parse, and commit)",
+      () => commitWorkItem(ctx, { ref: rz, caller: workerA, lease: { sourceSeq: zSeq, attempt: 1, fencingToken: 0 }, outcome: {}, now: NOW + 5 }), "failed-precondition");
+    await rejects("a COMMIT carrying sourceSeq 0 refuses at the boundary",
+      () => commitWorkItem(ctx, { ref: rz, caller: workerA, lease: { sourceSeq: 0, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW + 5 }), "failed-precondition");
+    // a stored worker-bearing lease with token 0 is garbled at PARSE (could only exist via
+    // out-of-band tampering; it must never authorize a commit that then poisons the terminal rail)
+    const zKey = `lease.manager.builds.u_abc.worker.${UID}.req-zerostore.spec`;
+    await kv.put(zKey, enc(JSON.stringify({ v: 1, state: "leased", sourceSeq: 3, attempt: 1, worker: workerA, fencingToken: 0, leaseDeadline: NOW + 5_000, workExpiry: EXPIRY })));
+    await rejects("a STORED worker-bearing lease with fencingToken 0 is garbled at parse (never authorizes)",
+      () => commitWorkItem(ctx, { ref: ref("req-zerostore"), caller: workerA, lease: { sourceSeq: 3, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW + 5 }), "internal");
+  }
+
+  // ── re-verify 5aa0114 MEDIUM 2: the FULL operation input is snapshotted at entry ──
+  {
+    // lease: getters shifting after their single entry-read cannot move the persisted coordinates
+    const rs = ref("req-snap2");
+    const sSeq = (await enqueueWorkItem(ctx, rs, enc("ws2"))).seq!;
+    let seqReads = 0, expReads = 0;
+    const shiftyArgs = {
+      ref: rs, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000,
+      get sourceSeq() { return seqReads++ === 0 ? sSeq : 999_999; },
+      get workExpiry() { return expReads++ === 0 ? EXPIRY : 1; },
+    };
+    const snapLease = await leaseWorkItem(ctx, shiftyArgs as never);
+    c("lease coordinates persist from the ENTRY read (shifting getters cannot move sourceSeq/workExpiry mid-seam)",
+      snapLease.sourceSeq === sSeq && snapLease.workExpiry === EXPIRY);
+    // commit: a clock getter turning invalid after validation cannot reach the persisted record
+    let nowReads = 0;
+    const shiftyCommit = {
+      ref: rs, caller: workerA, lease: { sourceSeq: sSeq, attempt: 1, fencingToken: 1 }, outcome: { ok: true },
+      get now() { return nowReads++ === 0 ? NOW + 10 : Number.NaN; },
+    };
+    const snapFact = await commitWorkItem(ctx, shiftyCommit as never);
+    c("the commit clock persists from the ENTRY read (a post-validation NaN clock never reaches the record or the fact)",
+      snapFact.fact.disposition === "committed" && snapFact.fact.ts === NOW + 10);
+  }
 
   // ── a DEL marker on the lease record never resets an authoritative lease ──
   {

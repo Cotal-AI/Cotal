@@ -32,12 +32,12 @@
  * at commit (§13.8), so a superseded process cannot settle a lease its predecessor held.
  */
 import type { KV } from "@nats-io/kv";
-import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import { headers as natsHeaders } from "@nats-io/transport-node";
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epwSubject, epfSubject, assertBoundedOwner, assertLifecycleToken, type EpCaller } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket } from "./endpoint-records.js";
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
 // The §13.12 resource names and consumer configs live in endpoint-binding.ts (the single source
 // of the stream/durable table: epwStreamName, poolDurable, poolConsumerConfig); this module is
@@ -52,9 +52,10 @@ export interface WorkItemRef {
   acceptance: EpCaller & { id: string };
 }
 
-/** A trusted, space-bonded work-pool context: the KV + JS + JSM + space are bundled by ONE
- *  constructor so a caller can never check a space-A lease against space-B facts (the resources
- *  are not independently injectable at each call). Every seam takes this context. */
+/** A trusted, space-bonded work-pool context: the KV + JS + JSM are all DERIVED from one
+ *  binding-layer connection and one space by the constructor (never injected independently), so
+ *  a caller can never check a space-A lease against space-B facts. Every seam takes this
+ *  context. */
 export interface WorkPoolContext {
   kv: KV;
   js: JetStreamClient;
@@ -62,12 +63,19 @@ export interface WorkPoolContext {
   space: string;
 }
 
-/** Bond the resources to one space. The returned context is FROZEN (no later swap) and
- *  BRANDED: every seam accepts only a context this constructor built, so a hand-assembled
- *  structural look-alike (the cross-space mixup the bond exists to prevent) is rejected at
- *  the consuming boundary, not just discouraged. */
-export function workPoolContext(kv: KV, js: JetStreamClient, jsm: JetStreamManager, space: string): WorkPoolContext {
+/** Bond the resources to one space by CONSTRUCTION: the JetStream client, the manager, and the
+ *  records KV (the space's own bucket) all derive from the ONE connection passed in — four
+ *  already-separated resources are not accepted, so the advertised bond is real, not asserted.
+ *  The returned context is FROZEN (no later swap) and BRANDED: every seam accepts only a
+ *  context this constructor built, so a hand-assembled structural look-alike (the cross-space
+ *  mixup the bond exists to prevent) is rejected at the consuming boundary. */
+export async function workPoolContext(nc: NatsConnection, space: string): Promise<WorkPoolContext> {
+  if (nc === null || typeof nc !== "object" || typeof (nc as unknown as { close?: unknown }).close !== "function")
+    throw new EpEnvelopeError("failed-precondition", "a work-pool context is constructed from ONE binding-layer connection; separate resources are never accepted (SPEC 13.4)");
   if (typeof space !== "string" || space.length === 0) throw new EpEnvelopeError("failed-precondition", "a work-pool context needs a space");
+  const js = jetstream(nc);
+  const jsm = await jetstreamManager(nc);
+  const kv = await openRecordsBucket(nc, space);
   const ctx = Object.freeze({ kv, js, jsm, space });
   BRANDED_CONTEXTS.add(ctx);
   return ctx;
@@ -85,11 +93,22 @@ function assertCtx(ctx: WorkPoolContext): void {
  *  CAS and its terminal publish (settle item A, publish item B). Every seam works only on
  *  this copy. */
 function snapshotRef(ref: WorkItemRef): WorkItemRef {
-  const a = ref?.acceptance;
-  if (ref === null || typeof ref !== "object" || typeof ref.endpoint !== "string" || typeof ref.pool !== "string"
-    || a === null || typeof a !== "object" || typeof a.owner !== "string" || typeof a.actor !== "string" || typeof a.uid !== "string" || typeof a.id !== "string")
+  // Every property is READ EXACTLY ONCE: a getter answering differently between a validation
+  // read and a copy read must not split what was checked from what is used.
+  if (ref === null || typeof ref !== "object")
     throw new EpEnvelopeError("failed-precondition", `a work-item ref must carry string endpoint/pool and a full acceptance identity (SPEC 13.2)`);
-  return { endpoint: ref.endpoint, pool: ref.pool, acceptance: { owner: a.owner, actor: a.actor, uid: a.uid, id: a.id } };
+  const endpoint = ref.endpoint;
+  const pool = ref.pool;
+  const a = ref.acceptance;
+  if (typeof endpoint !== "string" || typeof pool !== "string" || a === null || typeof a !== "object")
+    throw new EpEnvelopeError("failed-precondition", `a work-item ref must carry string endpoint/pool and a full acceptance identity (SPEC 13.2)`);
+  const owner = a.owner;
+  const actor = a.actor;
+  const uid = a.uid;
+  const id = a.id;
+  if (typeof owner !== "string" || typeof actor !== "string" || typeof uid !== "string" || typeof id !== "string")
+    throw new EpEnvelopeError("failed-precondition", `a work-item ref must carry string endpoint/pool and a full acceptance identity (SPEC 13.2)`);
+  return { endpoint, pool, acceptance: { owner, actor, uid, id } };
 }
 
 /** The item's stored subject (`epw.<e>.<pool>.<cOwner>.<cActor>.<cUid>.<id>`). */
@@ -109,6 +128,16 @@ function leaseKeyOf(ref: WorkItemRef): string {
 function assertSafeInt(v: unknown, what: string): number {
   if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0)
     throw new EpEnvelopeError("failed-precondition", `${what} must be a non-negative safe integer; got ${JSON.stringify(v)}`);
+  return v;
+}
+
+/** Execution coordinates (sourceSeq/attempt/fencingToken) are POSITIVE at issue, parse, and
+ *  commit — symmetrically. Zero is reserved for the worker-less never-leased expiry sentinel;
+ *  admitting it anywhere else would durably poison the terminal rail (parseTerminal refuses
+ *  zero coordinates, so a zero-coordinate settle could never be projected). */
+function assertPositiveInt(v: unknown, what: string): number {
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1)
+    throw new EpEnvelopeError("failed-precondition", `${what} must be a positive safe integer; got ${JSON.stringify(v)} (SPEC 13.5)`);
   return v;
 }
 
@@ -133,11 +162,14 @@ export async function enqueueWorkItem(
 ): Promise<{ enqueued: boolean; seq?: number }> {
   assertCtx(ctx);
   const ref = snapshotRef(itemRef);
+  if (!(itemBytes instanceof Uint8Array))
+    throw new EpEnvelopeError("failed-precondition", `itemBytes must be a Uint8Array (the acceptance-derived stored bytes, SPEC 13.6)`);
+  const bytes = itemBytes.slice(); // detached at entry: the published body and the CAS-loss identity check read the SAME bytes
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", "0");
   const subject = workItemSubject(ctx.space, ref);
   try {
-    const pa = await ctx.js.publish(subject, itemBytes, { headers: h });
+    const pa = await ctx.js.publish(subject, bytes, { headers: h });
     return { enqueued: true, seq: pa.seq };
   } catch (e) {
     const code = (e as { code?: unknown })?.code;
@@ -255,8 +287,12 @@ function parseLease(raw: unknown, key: string): WorkLease {
   if (expired && o.outcome !== undefined)
     throw new EpEnvelopeError("internal", `expired lease record ${key} carries an outcome; garbled cross-variant state never authorizes (SPEC 13.5)`);
   const needsWorker = o.state === "leased" || committed;
-  if (needsWorker && ((o.attempt as number) < 1 || (o.sourceSeq as number) < 1))
-    throw new EpEnvelopeError("internal", `lease record ${key} is ${o.state}/${String(o.disposition ?? "")} with zero execution coordinates (attempt/sourceSeq); garbled state never authorizes (SPEC 13.5)`);
+  // An EXECUTED coordinate set (any record that carries a worker, including a worker-bearing
+  // expired record) is positive across ALL THREE coordinates; only the worker-less never-leased
+  // expiry sentinel may carry zeros.
+  const executed = needsWorker || o.worker !== undefined;
+  if (executed && ((o.attempt as number) < 1 || (o.sourceSeq as number) < 1 || (o.fencingToken as number) < 1))
+    throw new EpEnvelopeError("internal", `lease record ${key} is ${o.state}/${String(o.disposition ?? "")} with zero execution coordinates (attempt/sourceSeq/fencingToken); garbled state never authorizes (SPEC 13.5)`);
   if (committed && !("outcome" in o))
     throw new EpEnvelopeError("internal", `committed lease record ${key} carries no outcome; garbled state never authorizes (SPEC 13.5)`);
   if (o.state === "settled" && (typeof o.committedTs !== "number" || !Number.isSafeInteger(o.committedTs) || o.committedTs < 0))
@@ -309,25 +345,30 @@ export async function leaseWorkItem(
   },
 ): Promise<WorkLease> {
   assertCtx(ctx);
-  const ref = snapshotRef(args.ref); // detached at entry: a mid-flight ref mutation cannot split the operation's identity
+  // Snapshot the FULL operation input to detached, validated locals at entry, BEFORE the first
+  // await; nothing below reads args again (a live args object mutated across an await must not
+  // move any coordinate mid-seam).
+  const ref = snapshotRef(args.ref);
   const worker = assertWorker(args.worker, "lease worker");
-  assertSafeInt(args.sourceSeq, "sourceSeq");
-  assertSafeInt(args.now, "now");
-  assertSafeInt(args.workExpiry, "workExpiry");
-  if (!Number.isSafeInteger(args.attempt) || args.attempt < 1)
-    throw new EpEnvelopeError("failed-precondition", `attempt must be a positive delivery count; got ${JSON.stringify(args.attempt)} (SPEC 13.5)`);
-  if (!Number.isSafeInteger(args.leaseTtlMs) || args.leaseTtlMs <= 0)
-    throw new EpEnvelopeError("failed-precondition", `leaseTtlMs must be a positive integer; got ${JSON.stringify(args.leaseTtlMs)}`);
-  if (args.now >= args.workExpiry)
-    throw new EpEnvelopeError("expired", `the item's workExpiry (${args.workExpiry}) has passed at the owner clock (${args.now}); expired work is settled by reconciliation, never leased (SPEC 13.6/13.8)`);
-  const leaseDeadline = Math.min(args.now + args.leaseTtlMs, args.workExpiry); // no valid lease outlives the horizon
+  const sourceSeq = assertPositiveInt(args.sourceSeq, "sourceSeq"); // positive at ISSUE: a zero here would create a lease parseLease refuses forever
+  const now = assertSafeInt(args.now, "now");
+  const workExpiry = assertSafeInt(args.workExpiry, "workExpiry");
+  const attempt = args.attempt;
+  const leaseTtlMs = args.leaseTtlMs;
+  if (!Number.isSafeInteger(attempt) || attempt < 1)
+    throw new EpEnvelopeError("failed-precondition", `attempt must be a positive delivery count; got ${JSON.stringify(attempt)} (SPEC 13.5)`);
+  if (!Number.isSafeInteger(leaseTtlMs) || leaseTtlMs <= 0)
+    throw new EpEnvelopeError("failed-precondition", `leaseTtlMs must be a positive integer; got ${JSON.stringify(leaseTtlMs)}`);
+  if (now >= workExpiry)
+    throw new EpEnvelopeError("expired", `the item's workExpiry (${workExpiry}) has passed at the owner clock (${now}); expired work is settled by reconciliation, never leased (SPEC 13.6/13.8)`);
+  const leaseDeadline = Math.min(now + leaseTtlMs, workExpiry); // no valid lease outlives the horizon
   const key = leaseKeyOf(ref);
   for (let pass = 0; pass < 2; pass++) {
     const entry = await ctx.kv.get(key);
     if (!entry || entry.operation !== "PUT") {
       if (entry && entry.operation !== "PUT")
         throw new EpEnvelopeError("failed-precondition", `the lease record ${key} carries a ${entry.operation} marker; a deletion never resets an authoritative lease (SPEC 13.5)`);
-      const lease: WorkLease = { v: 1, state: "leased", sourceSeq: args.sourceSeq, attempt: args.attempt, worker, fencingToken: 1, leaseDeadline, workExpiry: args.workExpiry };
+      const lease: WorkLease = { v: 1, state: "leased", sourceSeq, attempt, worker, fencingToken: 1, leaseDeadline, workExpiry };
       try { await createRecordEntry(ctx.kv, key, lease); return lease; }
       catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
     }
@@ -336,17 +377,17 @@ export async function leaseWorkItem(
     // sentinel coordinates (sourceSeq 0), so binding refusals on a settled item would mislead.
     if (stored.state === "settled")
       throw new EpEnvelopeError("failed-precondition", `the item is already settled ${stored.disposition}; a committed item can never be leased again — observe the terminal and ack the redelivery without effect (SPEC 13.5/13.6)`);
-    if (stored.sourceSeq !== args.sourceSeq)
-      throw new EpEnvelopeError("conflict", `the lease for this acceptance identity binds stream sequence ${stored.sourceSeq}, not ${args.sourceSeq}; a request id becomes new work only after workExpiry AND fact retention pass (SPEC 13.8)`);
+    if (stored.sourceSeq !== sourceSeq)
+      throw new EpEnvelopeError("conflict", `the lease for this acceptance identity binds stream sequence ${stored.sourceSeq}, not ${sourceSeq}; a request id becomes new work only after workExpiry AND fact retention pass (SPEC 13.8)`);
     // `workExpiry` is IDENTITY-BOUND: it is set once from the AcceptanceFact and every later
     // lease call for the same execution MUST carry the SAME horizon (a redelivery cannot extend
     // or shorten the absolute work expiry, SPEC 13.8).
-    if (stored.workExpiry !== args.workExpiry)
-      throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${stored.workExpiry} but this call supplies ${args.workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);
-    if (stored.attempt === args.attempt) return stored; // first-wins: the still-current attempt's lease, verbatim
-    if (stored.attempt > args.attempt)
-      throw new EpEnvelopeError("expired", `attempt ${args.attempt} is superseded: redelivery advanced this item to attempt ${stored.attempt} (SPEC 13.5)`);
-    const next: WorkLease = { v: 1, state: "leased", sourceSeq: args.sourceSeq, attempt: args.attempt, worker, fencingToken: stored.fencingToken + 1, leaseDeadline, workExpiry: args.workExpiry };
+    if (stored.workExpiry !== workExpiry)
+      throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${stored.workExpiry} but this call supplies ${workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);
+    if (stored.attempt === attempt) return stored; // first-wins: the still-current attempt's lease, verbatim
+    if (stored.attempt > attempt)
+      throw new EpEnvelopeError("expired", `attempt ${attempt} is superseded: redelivery advanced this item to attempt ${stored.attempt} (SPEC 13.5)`);
+    const next: WorkLease = { v: 1, state: "leased", sourceSeq, attempt, worker, fencingToken: stored.fencingToken + 1, leaseDeadline, workExpiry };
     try { await updateRecordEntry(ctx.kv, key, next, entry.revision); return next; }
     catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
   }
@@ -472,18 +513,20 @@ export async function commitWorkItem(
   },
 ): Promise<{ won: boolean; fact: WorkTerminalFact }> {
   assertCtx(ctx);
-  // Snapshot EVERY authority coordinate at entry, BEFORE the first await: a caller-shared
-  // mutable ref/tuple/outcome can otherwise split one commit's identity across the lease CAS
-  // and the terminal publish (settle item A, publish item B).
+  // Snapshot EVERY operation input at entry, BEFORE the first await: a caller-shared mutable
+  // ref/tuple/outcome/clock/resolver can otherwise split one commit's identity across the lease
+  // CAS and the terminal publish (settle item A, publish item B) or move the validated clock.
   const ref = snapshotRef(args.ref);
   const tuple = {
-    sourceSeq: assertSafeInt(args.lease?.sourceSeq, "lease.sourceSeq"),
-    attempt: assertSafeInt(args.lease?.attempt, "lease.attempt"),
-    fencingToken: assertSafeInt(args.lease?.fencingToken, "lease.fencingToken"),
+    sourceSeq: assertPositiveInt(args.lease?.sourceSeq, "lease.sourceSeq"),
+    attempt: assertPositiveInt(args.lease?.attempt, "lease.attempt"),
+    fencingToken: assertPositiveInt(args.lease?.fencingToken, "lease.fencingToken"),
   };
   const outcomeSnapshot: unknown = JSON.parse(canonicalJson(args.outcome === undefined ? null : args.outcome));
-  assertSafeInt(args.now, "now");
+  const now = assertSafeInt(args.now, "now");
   const caller = assertWorker(args.caller, "commit caller");
+  const resolveCurrentEpoch = args.resolveCurrentEpoch;
+  const epochResolveBudgetMs = args.epochResolveBudgetMs;
   const key = leaseKeyOf(ref);
   const entry = await ctx.kv.get(key);
   if (!entry || entry.operation !== "PUT")
@@ -514,12 +557,12 @@ export async function commitWorkItem(
   // FRESH lifecycle/epoch currency for an endpoint worker (§13.8): a superseded process cannot
   // settle its predecessor's lease.
   if (bound.kind === "endpoint") {
-    if (typeof args.resolveCurrentEpoch !== "function")
+    if (typeof resolveCurrentEpoch !== "function")
       throw new EpEnvelopeError("failed-precondition", `committing an endpoint worker's item requires a fresh-epoch resolver (SPEC 13.8: lifecycle/epoch currency is validated at the commit boundary)`);
-    const budget = args.epochResolveBudgetMs ?? 5_000;
+    const budget = epochResolveBudgetMs ?? 5_000;
     if (!Number.isSafeInteger(budget) || budget <= 0)
-      throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(args.epochResolveBudgetMs)}`);
-    const current = await resolveWithBudget(args.resolveCurrentEpoch(bound), budget);
+      throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(epochResolveBudgetMs)}`);
+    const current = await resolveWithBudget(resolveCurrentEpoch(bound), budget);
     if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
       throw new EpEnvelopeError("internal", `the fresh-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.8)`);
     if (current === null)
@@ -527,14 +570,14 @@ export async function commitWorkItem(
     if (current !== bound.epoch)
       throw new EpEnvelopeError("expired", `the endpoint worker's lease bound epoch ${bound.epoch} but the current process epoch is ${current}; a superseded process cannot settle (SPEC 13.8)`);
   }
-  if (args.now >= stored.workExpiry)
-    throw new EpEnvelopeError("expired", `the item's workExpiry (${stored.workExpiry}) has passed at the owner clock (${args.now}); the item is dead, leased or not (SPEC 13.8)`);
-  if (args.now >= stored.leaseDeadline)
-    throw new EpEnvelopeError("expired", `the lease expired at ${stored.leaseDeadline} (owner clock ${args.now}); expiry revokes the claim AT that deadline (SPEC 13.5)`);
+  if (now >= stored.workExpiry)
+    throw new EpEnvelopeError("expired", `the item's workExpiry (${stored.workExpiry}) has passed at the owner clock (${now}); the item is dead, leased or not (SPEC 13.8)`);
+  if (now >= stored.leaseDeadline)
+    throw new EpEnvelopeError("expired", `the lease expired at ${stored.leaseDeadline} (owner clock ${now}); expiry revokes the claim AT that deadline (SPEC 13.5)`);
 
   // THE FENCE: advance the lease to settled on its OWN revision. A concurrent redelivery-advance
   // or expiry-settle contends on this exact revision; the loser re-reads and re-decides.
-  const settled: WorkLease = { ...stored, state: "settled", disposition: "committed", outcome: outcomeSnapshot, committedTs: args.now };
+  const settled: WorkLease = { ...stored, state: "settled", disposition: "committed", outcome: outcomeSnapshot, committedTs: now };
   try {
     await updateRecordEntry(ctx.kv, key, settled, entry.revision);
   } catch (e) {
@@ -611,9 +654,15 @@ export async function reconcileWorkItem(
   },
 ): Promise<WorkReconcileVerdict> {
   assertCtx(ctx);
-  const ref = snapshotRef(args.ref); // detached at entry: one identity across the whole predicate
-  assertSafeInt(args.now, "now");
-  assertSafeInt(args.workExpiry, "workExpiry");
+  // Snapshot the FULL operation input at entry (ref, clock, horizon, and a DETACHED copy of the
+  // item bytes): nothing below reads args again, so a mid-flight mutation cannot re-enqueue
+  // different bytes or move the horizon between classification and repair.
+  const ref = snapshotRef(args.ref);
+  const now = assertSafeInt(args.now, "now");
+  const workExpiry = assertSafeInt(args.workExpiry, "workExpiry");
+  if (!(args.itemBytes instanceof Uint8Array))
+    throw new EpEnvelopeError("failed-precondition", `itemBytes must be a Uint8Array (the acceptance-derived stored bytes, SPEC 13.6)`);
+  const itemBytes = args.itemBytes.slice();
   const key = leaseKeyOf(ref);
   // A DEL/PURGE marker on the lease is REFUSED before any classification (same fail-closed rule
   // as lease/commit): reconciling over a deletion could recreate authoritative state.
@@ -625,8 +674,8 @@ export async function reconcileWorkItem(
     // The horizon is IDENTITY-BOUND (§13.8): whenever a record exists, the caller-supplied
     // workExpiry must equal the persisted one before ANY classification - a mis-wired
     // reconciliation must not expire a live lease early (or late) against a foreign horizon.
-    if (rec.workExpiry !== args.workExpiry)
-      throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${rec.workExpiry} but this reconcile supplies ${args.workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);
+    if (rec.workExpiry !== workExpiry)
+      throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${rec.workExpiry} but this reconcile supplies ${workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);
     return rec;
   };
   const terminal = await readWorkTerminal(ctx, ref);
@@ -646,7 +695,7 @@ export async function reconcileWorkItem(
   // worker-less settled:expired record create-only, so a racing FIRST lease loses its create and
   // observes the settlement instead of assigning dead work. Only a settled lease derives the
   // terminal — the EPF fact never leads the lease.
-  if (args.now >= args.workExpiry) {
+  if (now >= workExpiry) {
     for (let pass = 0; pass < 2; pass++) {
       const entry = pass === 0 ? leaseEntry : await ctx.kv.get(key);
       const cur = readLease(entry);
@@ -655,8 +704,8 @@ export async function reconcileWorkItem(
         return { state: pub.fact.disposition === "expired" ? "expired-settled" : "settled", fact: pub.fact };
       }
       const settledExpired: WorkLease = cur !== undefined
-        ? { ...cur, state: "settled", disposition: "expired", committedTs: args.now }
-        : { v: 1, state: "settled", sourceSeq: 0, attempt: 0, fencingToken: 0, leaseDeadline: args.workExpiry, workExpiry: args.workExpiry, disposition: "expired", committedTs: args.now };
+        ? { ...cur, state: "settled", disposition: "expired", committedTs: now }
+        : { v: 1, state: "settled", sourceSeq: 0, attempt: 0, fencingToken: 0, leaseDeadline: workExpiry, workExpiry, disposition: "expired", committedTs: now };
       try {
         if (cur !== undefined) await updateRecordEntry(ctx.kv, key, settledExpired, entry!.revision);
         else await createRecordEntry(ctx.kv, key, settledExpired);
@@ -674,7 +723,7 @@ export async function reconcileWorkItem(
   // (5) re-check the terminal (a commit may have landed during the live probe) before re-enqueue.
   const late = await readWorkTerminal(ctx, ref);
   if (late !== undefined) return { state: late.disposition === "expired" ? "expired-settled" : "settled", fact: late };
-  const re = await enqueueWorkItem(ctx, ref, args.itemBytes);
+  const re = await enqueueWorkItem(ctx, ref, itemBytes);
   if (!re.enqueued) {
     if (await liveEntryExists(ctx, ref)) return { state: "live" };
     const after = await readWorkTerminal(ctx, ref);
