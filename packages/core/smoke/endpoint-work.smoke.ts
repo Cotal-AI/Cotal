@@ -6,9 +6,12 @@
  * token → bound worker → FRESH endpoint epoch → workExpiry → leaseDeadline), the lease-fence CAS
  * (a stale attempt cannot commit after reassignment; an already-settled item cannot be leased),
  * the workExpiry commit fence + identity-bind, the duplicate-dominates-expiry cache rule, the
- * no-lease expiry settling THROUGH the lease key (a racing first lease contends), the detached
- * outcome snapshot, the budgeted/validated epoch resolver, and the §13.6 reconciliation
- * predicate incl. crashed-commit recovery and the DIRECT-failure distinction.
+ * no-lease expiry settling THROUGH the lease key (a racing first lease contends), the
+ * entry-snapshotted authority coordinates (a mid-flight ref mutation cannot split lease and
+ * terminal), the detached outcome snapshot, the budgeted/validated epoch resolver (incl. the
+ * non-native-thenable bypass), the branded context, the closed lease/terminal schemas + the
+ * winner-equality terminal CAS, and the §13.6 reconciliation predicate incl. crashed-commit
+ * recovery, the horizon identity-bind, DEL refusal, and the DIRECT-failure distinction.
  *
  * Run: pnpm smoke:ep-work   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -270,6 +273,54 @@ try {
     await kv.put(`lease.manager.builds.u_abc.worker.${UID}.req-garbled.spec`, enc(JSON.stringify({ v: 1, state: "leased", sourceSeq: 1, attempt: 1, worker: workerA, fencingToken: 1, leaseDeadline: NOW + 1_000, workExpiry: EXPIRY, disposition: "committed" })));
     await rejects("a `leased` record carrying settlement fields is garbled and never authorizes",
       () => commitWorkItem(ctx, { ref: rg, caller: workerA, lease: { sourceSeq: 1, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW }), "internal");
+    const rx = ref("req-extra");
+    await kv.put(`lease.manager.builds.u_abc.worker.${UID}.req-extra.spec`, enc(JSON.stringify({ v: 1, state: "leased", sourceSeq: 1, attempt: 1, worker: workerA, fencingToken: 1, leaseDeadline: NOW + 1_000, workExpiry: EXPIRY, hax: true })));
+    await rejects("a lease record carrying UNKNOWN fields is garbled (closed schema admits no extras)",
+      () => commitWorkItem(ctx, { ref: rx, caller: workerA, lease: { sourceSeq: 1, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW }), "internal");
+  }
+
+  // ── MEDIUM: every authority coordinate is snapshotted at seam entry (mutable-ref split) ──
+  {
+    const rm = ref("req-mut");
+    const mSeq = (await enqueueWorkItem(ctx, rm, enc("wm"))).seq!;
+    await leaseWorkItem(ctx, { ref: rm, sourceSeq: mSeq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    const mutRef: WorkItemRef = { endpoint: "manager", pool: "builds", acceptance: { ...caller, id: "req-mut" } };
+    const pending = commitWorkItem(ctx, { ref: mutRef, caller: workerA, lease: { sourceSeq: mSeq, attempt: 1, fencingToken: 1 }, outcome: { m: 1 }, now: NOW + 10 });
+    mutRef.acceptance.id = "req-HIJACKED"; // same tick, while the commit awaits inside
+    const mres = await pending;
+    c("a mid-flight ref mutation cannot split the commit: the lease AND the terminal both land on the ENTRY-SNAPSHOTTED item",
+      mres.won && (await readWorkTerminal(ctx, ref("req-mut")))?.disposition === "committed"
+      && (await readWorkTerminal(ctx, ref("req-HIJACKED"))) === undefined);
+  }
+
+  // ── MEDIUM: reconcile identity-binds the horizon to a present lease record ──
+  await rejects("a reconcile supplying a workExpiry that differs from the persisted lease horizon refuses (never expires against a foreign horizon)",
+    () => reconcileWorkItem(ctx, { ref: ref("req-bind"), itemBytes: enc("wb"), workExpiry: EXPIRY + 5, now: NOW + 20 }), "conflict");
+
+  // ── MEDIUM: the epoch budget cannot be bypassed by a non-native thenable ──
+  {
+    const rth = ref("req-thenable");
+    const tSeq = (await enqueueWorkItem(ctx, rth, enc("wt"))).seq!;
+    await leaseWorkItem(ctx, { ref: rth, sourceSeq: tSeq, attempt: 1, worker: epWorker(1), now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    await rejects("a resolver answering with a never-settling NON-NATIVE THENABLE still refuses `unavailable` within the budget",
+      () => commitWorkItem(ctx, { ref: rth, caller: epWorker(1), lease: { sourceSeq: tSeq, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW + 10, resolveCurrentEpoch: (() => ({ then() { /* never settles */ } })) as unknown as () => number, epochResolveBudgetMs: 100 }), "unavailable");
+  }
+
+  // ── MEDIUM: the context brand — a hand-assembled resource bundle never authorizes ──
+  await rejects("a structural context look-alike NOT built by workPoolContext() is refused at every seam",
+    () => enqueueWorkItem({ kv, js, jsm, space: SPACE } as WorkPoolContext, ref("req-unbranded"), enc("wu")), "failed-precondition");
+
+  // ── MEDIUM: a lost terminal CAS proves the winner equals the lease-derived fact ──
+  {
+    const rf = ref("req-forge");
+    const fSeq = (await enqueueWorkItem(ctx, rf, enc("wf"))).seq!;
+    await leaseWorkItem(ctx, { ref: rf, sourceSeq: fSeq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    // a valid-SHAPED but foreign terminal lands on the subject before the real commit publishes
+    const forged = { v: 1, disposition: "committed", pool: "builds", caller: rf.acceptance, sourceSeq: fSeq, attempt: 1, fencingToken: 1, worker: workerB, outcome: { forged: true }, ts: NOW };
+    const h2 = (await import("@nats-io/transport-node")).headers(); h2.set("Nats-Expected-Last-Subject-Sequence", "0");
+    await js.publish(workTerminalSubject(SPACE, rf), enc(JSON.stringify(forged)), { headers: h2 });
+    await rejects("the committing owner's lost terminal CAS REFUSES a winner that does not match its settled-lease derivation (a foreign terminal never authorizes)",
+      () => commitWorkItem(ctx, { ref: rf, caller: workerA, lease: { sourceSeq: fSeq, attempt: 1, fencingToken: 1 }, outcome: { real: true }, now: NOW + 10 }), "internal");
   }
 
   // ── malformed terminal fact does NOT count as settlement ──
@@ -295,6 +346,8 @@ try {
     await kv.delete(`lease.manager.builds.u_abc.worker.${UID}.req-5.spec`);
     await rejects("a DEL marker on the lease record refuses (a deletion never resets an authoritative lease)",
       () => leaseWorkItem(ctx, { ref: rDel, sourceSeq: eDel.seq!, attempt: 1, worker: workerB, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY }), "failed-precondition");
+    await rejects("reconciliation over a DEL lease marker refuses too (never classified, never reconciled over)",
+      () => reconcileWorkItem(ctx, { ref: rDel, itemBytes: enc("w5"), workExpiry: EXPIRY, now: NOW }), "failed-precondition");
   }
 
   await nc.close();
