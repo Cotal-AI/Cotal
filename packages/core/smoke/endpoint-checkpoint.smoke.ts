@@ -5,7 +5,9 @@
  * idempotence), heartbeat generation supersede (the superseded deadline's fire NO-OPS), the
  * broker-authored fire origin check (forged fires discard), the ONE-USE settle CAS (resume
  * and expiry race; duplicate resume is conflict; expiry fails closed), holder-bound resume,
- * and the durable reconciler's harmless over-emission.
+ * the durable reconciler's harmless over-emission, and deletion fail-closure (a DEL on the
+ * spec or status never rebinds the holder or resurrects a settled checkpoint — the create
+ * CAS covers the key's entire history and is the arbiter, not the client's marker check).
  *
  * Run: pnpm smoke:ep-checkpoint   (needs nats-server ≥2.12 on PATH; part of smoke:ci)
  */
@@ -212,6 +214,42 @@ try {
   await kv.delete("cp.manager.cp7.status");
   await rejects("a re-mint over a DEL status marker REFUSES (a deleted one-use checkpoint is never resurrected; the same holder cannot resume twice)",
     () => mintCheckpoint(kv, js, SPACE, { ref: ref("cp7"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW + 200 }), "failed-precondition");
+
+  // ── c371d62 HIGH 1: a spec DEL never rebinds the one-use resume holder — the spec create is
+  //    CAS-fenced against the key's ENTIRE history, so a deleted spec is a permanent refusal. ──
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp11"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+  await drainAndArm(1);
+  await kv.delete("cp.manager.cp11.spec");
+  await rejects("a re-mint over a spec DEL marker refuses (a deletion never rebinds the resume holder to a NEW principal)",
+    () => mintCheckpoint(kv, js, SPACE, { ref: ref("cp11"), instanceId: IID, epoch: EPOCH, holder: holderB, deadline: NOW + 60_000, now: NOW + 10 }), "failed-precondition");
+  await rejects("…and resume against the deleted spec refuses for EVERY presenter (fail-closed, reconcile the store)",
+    () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp11"), presenter: holderB, now: NOW + 20 }), "failed-precondition");
+
+  // ── c371d62 HIGH 2: the status marker pre-check is only a FAST PATH — the CREATE is the
+  //    arbiter. A delete landing after the pre-check read (simulated: a kv whose first status
+  //    get answers ABSENT while the real tombstone sits on the broker) loses at the create's
+  //    history-covering CAS and is classified fail-closed, never resurrected. ──
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp12"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+  await drainAndArm(1);
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp12"), presenter: holderA, now: NOW + 30 });
+  await kv.delete("cp.manager.cp12.status");
+  {
+    let lied = false;
+    const racingKv = new Proxy(kv, {
+      get(target, prop) {
+        if (prop === "get") return async (k: string, o?: unknown) => {
+          if (!lied && k === "cp.manager.cp12.status") { lied = true; return null; }
+          return target.get(k, o as never);
+        };
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    await rejects("a status DELETE racing past the mint's marker pre-check STILL refuses at the create (the CAS covers the key's history; the client check is not the arbiter)",
+      () => mintCheckpoint(racingKv, js, SPACE, { ref: ref("cp12"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW + 40 }), "failed-precondition");
+    c("…and the settlement's derived one-use fact is UNTOUCHED by the deletion (the EPF fact persists)",
+      (await readCheckpointSettle(jsm, SPACE, ref("cp12")))?.settle === "resumed");
+  }
 
   // ── re-verify 8ea3abe MEDIUM 1: a lost fact CAS requires a winner CANONICALLY EQUAL to the
   //    status arbiter — a pre-placed contradicting fact is a loud internal, never adopted. ──

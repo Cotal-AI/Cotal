@@ -93,8 +93,8 @@ function memKv(): KV {
   let seq = 0;
   return {
     get: async (k: string) => store2.get(k),
-    create: async (k: string, v: Uint8Array) => {
-      if (store2.has(k)) throw new Error(`wrong last sequence: ${k} exists`);
+    put: async (k: string, v: Uint8Array, o?: { previousSeq?: number }) => {
+      if (o?.previousSeq === 0 && store2.has(k)) throw new Error(`wrong last sequence: ${k} exists`);
       store2.set(k, { value: v, revision: ++seq, operation: "PUT" });
       return seq;
     },
@@ -461,7 +461,7 @@ try {
     let seq = 0;
     const flakyKv = {
       get: async (k: string) => backing.get(k),
-      create: async (k: string, v: Uint8Array) => {
+      put: async (k: string, v: Uint8Array) => {
         backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
         if (k.startsWith("govern.")) return seq; // the governance slot-take commits cleanly first
         throw new Error("ack lost after the write committed"); // the SPEC write is the ambiguous one

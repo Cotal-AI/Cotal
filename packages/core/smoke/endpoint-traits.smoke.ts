@@ -609,6 +609,7 @@ try {
     ({
       get: (k: string) => kv.get(k),
       create: async (k: string, v: Uint8Array) => { await hooks.beforeWrite?.(k); return kv.create(k, v); },
+      put: async (k: string, v: Uint8Array, o?: { previousSeq?: number }) => { await hooks.beforeWrite?.(k); return kv.put(k, v, o); },
       update: async (k: string, v: Uint8Array, r: number) => { await hooks.beforeWrite?.(k); return kv.update(k, v, r); },
     }) as unknown as KV;
   const regOn = (kvArg: KV, spec: ServiceSpec, instanceId: string) =>

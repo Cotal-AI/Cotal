@@ -268,13 +268,23 @@ function conflict(message: string, cause: unknown): never {
   throw err;
 }
 
-/** Create-only write of one record key (revision-0 CAS). An existing key is a loud `conflict`;
- *  any other broker failure propagates untranslated. Returns the created revision. */
+/** Create-only write of one record key, CAS-fenced against the key's ENTIRE history (a
+ *  revision-0 expectation on the subject): an existing key OR a DEL/PURGE tombstone is a loud
+ *  `conflict`. Deliberately NOT the KV client's own `create()`, which silently RECREATES over a
+ *  tombstone — that would let whoever can delete a key re-open a one-use identity (rebind a
+ *  settled checkpoint's holder, reset a decided lease, resurrect a terminal goal). Here a
+ *  deletion permanently CLOSES the key (§13.8's create-only discipline; deletion is fail-closed
+ *  state, never absence), and this CAS is the arbiter — a caller's marker pre-check is only a
+ *  fast path, since a delete landing between check and create loses here, not there. Residual:
+ *  a tombstone COMPACTED out of the bucket's history is indistinguishable from true absence at
+ *  the broker; nothing in core compacts or deletes records keys, so that is operator store
+ *  surgery — reconcile-the-store territory. Any other broker failure propagates untranslated.
+ *  Returns the created revision. */
 export async function createRecordEntry(kv: KV, key: string, value: unknown): Promise<number> {
   try {
-    return await kv.create(key, encodeValue(value));
+    return await kv.put(key, encodeValue(value), { previousSeq: 0 });
   } catch (e) {
-    if (isCasLoss(e)) conflict(`create of ${key} lost its CAS: the key already exists (re-read and re-decide, SPEC 13.8)`, e);
+    if (isCasLoss(e)) conflict(`create of ${key} lost its CAS: the key already exists or carries a deletion marker (re-read and re-decide, SPEC 13.8)`, e);
     throw e;
   }
 }

@@ -182,6 +182,22 @@ try {
   const rev2 = await updateRecordEntry(kv, sKey, { endpoint: "manager", owner: "operator", generation: 2 }, rev1);
   c("a revision-pinned update advances", rev2 > rev1);
 
+  // Create is CAS-fenced against the key's ENTIRE history: a DEL/PURGE tombstone never re-opens
+  // a records key (the KV client's own create() would silently recreate over it, letting whoever
+  // can delete a key re-open a one-use identity — a settled checkpoint, a decided lease).
+  {
+    const delKey = recordSpecKey(svc, ["manager", "a".repeat(26)]);
+    await createRecordEntry(kv, delKey, { endpoint: "manager" });
+    await kv.delete(delKey);
+    await rejects("create over a DEL tombstone is a loud conflict (deletion permanently closes a records key)",
+      "conflict", createRecordEntry(kv, delKey, { endpoint: "manager" }));
+    const purgeKey = recordSpecKey(svc, ["manager", "b".repeat(26)]);
+    await createRecordEntry(kv, purgeKey, { endpoint: "manager" });
+    await kv.purge(purgeKey);
+    await rejects("create over a PURGE tombstone is a loud conflict too",
+      "conflict", createRecordEntry(kv, purgeKey, { endpoint: "manager" }));
+  }
+
   // Merged read: current, stale-but-valid projection, torn state, lagging spec.
   await createRecordEntry(kv, tKey, assertStatusValue({ state: "up", observedSpecRevision: rev2 }));
   const cur = await readRecord<{ generation?: number }, { state: string }>(kv, svc, q);

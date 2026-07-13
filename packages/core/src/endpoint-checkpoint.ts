@@ -297,14 +297,18 @@ export async function mintCheckpoint(
   // Idempotent-if-identical (the mint is a two-key composite; a crash between spec and status, or
   // a retry, must not strand a spec-only token): create the spec; on a conflict re-read it and
   // require an IDENTICAL spec (a differing spec under the same token is a loud conflict), then
-  // ensure the initial `waiting` status exists.
+  // ensure the initial `waiting` status exists. The create CAS covers the key's ENTIRE history
+  // (createRecordEntry never recreates over a tombstone), so a DELETED spec is a permanent
+  // refusal here — a spec-DEL can never rebind the one-use resume holder to a new principal.
   let specRevision: number;
   try {
     specRevision = await createRecordEntry(kv, specKey, spec);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
     const existing = await kv.get(specKey);
-    if (!existing || existing.operation !== "PUT")
+    if (existing && existing.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" spec carries a ${existing.operation} marker; a deletion never erases a pause and a re-mint never rebinds its holder - reconcile the store (SPEC 13.6)`);
+    if (!existing)
       throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" spec is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
     const prior = parseCpSpec(JSON.parse(new TextDecoder().decode(existing.value)), ref, specKey);
     if (prior.holder.id !== holder.id || prior.holder.lifecycleUid !== holder.lifecycleUid
@@ -315,9 +319,11 @@ export async function mintCheckpoint(
     specRevision = existing.revision;
   }
   // A DEL/PURGE marker on the status is a DELETION of one-use settlement state, never absence:
-  // KV create can recreate after DEL, which would re-open a settled one-use checkpoint and let
-  // the same holder resume twice. Refuse every non-PUT marker (the same fail-closed rule as
-  // readCheckpointStatus).
+  // recreating over it would re-open a settled one-use checkpoint and let the same holder
+  // resume twice. This marker read is only the FAST-PATH refusal (the same fail-closed rule as
+  // readCheckpointStatus); the ARBITER is the create below — createRecordEntry's CAS covers the
+  // key's entire history, so a delete landing between this read and the create loses THERE, and
+  // the conflict path classifies the tombstone. The check-then-create pair carries no race.
   const existingStatus = await kv.get(statusKey);
   if (existingStatus && existingStatus.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" status carries a ${existingStatus.operation} marker; a deletion never erases a pause and a mint never resurrects one - reconcile the store (SPEC 13.6)`);
@@ -329,10 +335,13 @@ export async function mintCheckpoint(
       statusValue = initial;
     } catch (e) {
       if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-      // A concurrent mint won the status create: re-read and PROVE the winner (parse + the
-      // replay rules below), never assume it.
+      // The create lost its CAS: either a concurrent mint won (re-read and PROVE the winner —
+      // parse + the replay rules below, never assume it) or the key carries a tombstone the
+      // fast-path read missed (the race the arbiter exists for) — refuse it fail-closed.
       const won = await kv.get(statusKey);
-      if (!won || won.operation !== "PUT")
+      if (won && won.operation !== "PUT")
+        throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" status carries a ${won.operation} marker; a deletion never erases a pause and a mint never resurrects one - reconcile the store (SPEC 13.6)`);
+      if (!won)
         throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" status is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
       statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(won.value)), statusKey);
     }
