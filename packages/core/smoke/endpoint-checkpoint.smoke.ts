@@ -312,6 +312,46 @@ try {
       (await readCheckpointStatus(kv, ref("cp10"))) !== undefined && (await readCheckpointStatus(kv, ref("cp-evil"))) === undefined);
   }
 
+  // ── re-review 8dcad72 (distsys): M3 spec-deadline crash identity, M4 admission bounds, M6
+  //    reconcile re-read, M7 settled-generation equality ──
+  {
+    // M7: a settled status whose settledGeneration disagrees with its deadlineGeneration is
+    // garbled - a settlement is of the CURRENT generation, never a contradictory coordinate pair.
+    await putStatus("cpx6", { state: "expired", deadlineGeneration: 2, deadline: NOW + 1_000, observedSpecRevision: 1, settledGeneration: 1, settledTs: NOW });
+    await rejects("a settled status whose settledGeneration != deadlineGeneration refuses (a settlement is of the current generation)",
+      () => readCheckpointStatus(kv, ref("cpx6")), "internal");
+
+    // M4: admission (mint AND heartbeat) rejects a deadline beyond the scheduler's representable
+    // range, so a MAX_SAFE deadline never strands a waiting checkpoint the writer could not arm.
+    await rejects("a mint deadline beyond the scheduler's range refuses at admission",
+      () => mintCheckpoint(kv, js, SPACE, { ref: ref("cpm4"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: Number.MAX_SAFE_INTEGER, now: NOW }), "failed-precondition");
+    await rejects("a heartbeat deadline beyond the scheduler's range refuses (never advances to an unarmable deadline)",
+      () => heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp9"), instanceId: IID, epoch: EPOCH, deadline: Number.MAX_SAFE_INTEGER, now: NOW + 300 }), "failed-precondition");
+
+    // M3: the crash-before-status window. A spec exists WITHOUT a status (the mint crashed after
+    // the spec but before the status). A retry with a DIFFERENT deadline must conflict on the
+    // spec's IMMUTABLE initialDeadline; a retry with the SAME deadline creates the missing status
+    // at the ORIGINAL deadline (never silently installs a divergent one).
+    await kv.put(`cp.manager.cpm3.spec`, new TextEncoder().encode(JSON.stringify({ v: 1, token: "cpm3", holder: holderA, mintedAt: NOW, initialDeadline: NOW + 60_000 })));
+    await rejects("a retry of a spec-only checkpoint with a DIFFERENT deadline conflicts on the immutable spec initialDeadline",
+      () => mintCheckpoint(kv, js, SPACE, { ref: ref("cpm3"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 99_000, now: NOW + 10 }), "conflict");
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpm3"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW + 10 });
+    c("a retry with the SAME deadline creates the missing status at the ORIGINAL deadline",
+      (await readCheckpointStatus(kv, ref("cpm3")))?.value.deadline === NOW + 60_000);
+    await drainAndArm(1);
+
+    // M6: after a heartbeat advances the generation, the reconciler re-emits the CURRENT
+    // generation (it re-reads the authoritative status AFTER the settle-gate, never the stale
+    // first-read generation the writer would discard).
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpm6"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    await heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpm6"), instanceId: IID, epoch: EPOCH, deadline: NOW + 120_000, now: NOW + 100 });
+    await drainAndArm(1);
+    const rec = await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cpm6"), instanceId: IID, epoch: EPOCH });
+    c("the reconciler re-emits the CURRENT generation after a heartbeat advanced it", rec.reEmitted && rec.generation === 2);
+    await drainAndArm(1);
+  }
+
   // ── fail-closed storage read ──
   await kv.delete("cp.manager.cp3.status");
   await rejects("a DEL marker on the checkpoint status refuses (a deletion never erases a pause)",

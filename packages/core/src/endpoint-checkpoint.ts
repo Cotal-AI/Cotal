@@ -63,6 +63,12 @@ export interface CheckpointSpecValue {
   goal?: { caller: EpCaller; goalId: string };
   holder: { id: string; lifecycleUid: string };
   mintedAt: number;
+  /** The initial (generation-1) deadline, recorded in the IMMUTABLE spec (distsys 8dcad72 M3):
+   *  a mint that crashes after the spec exists but before the status is created must, on retry,
+   *  re-derive the SAME initial deadline from the spec - never silently install a different one
+   *  because the status was missing. Heartbeats extend the LIVE deadline in the status; this is
+   *  only the original intent, fixed at mint. */
+  initialDeadline: number;
 }
 
 /** Closed-schema guard: an unknown field in a persisted record (or a smuggled extra on an
@@ -131,9 +137,10 @@ function parseCpSpec(raw: unknown, ref: CheckpointRef, key: string): CheckpointS
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint spec ${key} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  closedKeys(o, ["v", "token", "goal", "holder", "mintedAt"], `checkpoint spec ${key}`, "internal");
+  closedKeys(o, ["v", "token", "goal", "holder", "mintedAt", "initialDeadline"], `checkpoint spec ${key}`, "internal");
   if (o.v !== 1 || o.token !== ref.token || !isHolder(o.holder)
-    || typeof o.mintedAt !== "number" || !Number.isSafeInteger(o.mintedAt) || o.mintedAt < 0)
+    || typeof o.mintedAt !== "number" || !Number.isSafeInteger(o.mintedAt) || o.mintedAt < 0
+    || typeof o.initialDeadline !== "number" || !Number.isSafeInteger(o.initialDeadline) || o.initialDeadline < 0)
     throw new EpEnvelopeError("internal", `checkpoint spec ${key} is malformed or its token disagrees with its subject (SPEC 13.6); garbled state never authorizes`);
   let goal: { caller: EpCaller; goalId: string } | undefined;
   if (o.goal !== undefined) {
@@ -146,7 +153,7 @@ function parseCpSpec(raw: unknown, ref: CheckpointRef, key: string): CheckpointS
     v: 1, token: o.token as string,
     ...(goal !== undefined ? { goal } : {}),
     holder: { id: (o.holder as { id: string }).id, lifecycleUid: (o.holder as { lifecycleUid: string }).lifecycleUid },
-    mintedAt: o.mintedAt,
+    mintedAt: o.mintedAt, initialDeadline: o.initialDeadline,
   };
 }
 
@@ -225,6 +232,12 @@ function parseCpStatus(raw: unknown, key: string): CheckpointStatusValue {
     ? (o.settledGeneration !== undefined || o.settledHolder !== undefined || o.settledTs !== undefined)
     : (!settledShape || (o.state === "resumed" ? !isHolder(o.settledHolder) : o.settledHolder !== undefined)))
     throw new EpEnvelopeError("internal", `checkpoint status ${key} violates its ${String(o.state)} variant (settled coordinates are exact, never defaulted) (SPEC 13.6)`);
+  // A settlement is the settlement of the CURRENT deadline generation (distsys 8dcad72 M7): the
+  // settledGeneration must EQUAL the deadlineGeneration, so `deriveSettleFact` and the one-use
+  // `.cp` fact can never publish a settled coordinate that contradicts the generation the
+  // checkpoint actually reached. A record naming two different generations is garbled, never split.
+  if (o.state !== "waiting" && o.settledGeneration !== o.deadlineGeneration)
+    throw new EpEnvelopeError("internal", `checkpoint status ${key} settles generation ${String(o.settledGeneration)} but its deadline generation is ${String(o.deadlineGeneration)}; a settlement is of the current generation (SPEC 13.6)`);
   return {
     state: o.state, deadlineGeneration: o.deadlineGeneration, deadline: o.deadline,
     observedSpecRevision: o.observedSpecRevision,
@@ -287,10 +300,12 @@ export async function mintCheckpoint(
   const now = assertOwnerClock(args.now);
   if (!Number.isSafeInteger(deadline) || deadline <= now)
     throw new EpEnvelopeError("failed-precondition", `a checkpoint deadline is mandatory and must be in the owner's future (deadline ${deadline}, now ${now}); deadlines are the §13.6 contract, never optional`);
+  if (deadline > MAX_SCHEDULE_MS)
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint deadline ${deadline} exceeds the scheduler's representable range (${MAX_SCHEDULE_MS}); admission rejects a deadline the timer writer could never arm, so a MAX_SAFE deadline never strands a waiting checkpoint unarmable (distsys 8dcad72 M4, SPEC 13.6/13.9)`);
   const spec: CheckpointSpecValue = {
     v: 1, token: ref.token,
     ...(goal !== undefined ? { goal } : {}),
-    holder, mintedAt: now,
+    holder, mintedAt: now, initialDeadline: deadline,
   };
   const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(ref));
   const statusKey = recordStatusKey(RECORD_KINDS.cp, cpQualifiers(ref));
@@ -312,11 +327,16 @@ export async function mintCheckpoint(
       throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" spec is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
     const prior = parseCpSpec(JSON.parse(new TextDecoder().decode(existing.value)), ref, specKey);
     if (prior.holder.id !== holder.id || prior.holder.lifecycleUid !== holder.lifecycleUid
+      || prior.initialDeadline !== deadline
       || (prior.goal === undefined) !== (goal === undefined)
       || (goal !== undefined && prior.goal !== undefined && (prior.goal.goalId !== goal.goalId
         || prior.goal.caller.owner !== goal.caller.owner || prior.goal.caller.actor !== goal.caller.actor || prior.goal.caller.uid !== goal.caller.uid)))
-      throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" already exists with a DIFFERENT spec (holder/goal); a token is minted once (SPEC 13.6)`);
+      throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" already exists with a DIFFERENT spec (holder/goal/deadline); a token is minted once (SPEC 13.6)`);
     specRevision = existing.revision;
+    // The spec's immutable initialDeadline is now the authority for the generation-1 status: a
+    // retry that reached here supplied the SAME deadline (the conflict check above), so creating
+    // the missing status at `deadline` re-establishes the ORIGINAL intent, never a new one - the
+    // crash-before-status window can no longer install a divergent deadline (distsys 8dcad72 M3).
   }
   // A DEL/PURGE marker on the status is a DELETION of one-use settlement state, never absence:
   // recreating over it would re-open a settled one-use checkpoint and let the same holder
@@ -453,6 +473,8 @@ export async function heartbeatCheckpoint(
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is at/after its deadline ${current.value.deadline} (now ${now}); a due checkpoint expires and cannot be extended (SPEC 13.6)`);
   if (!Number.isSafeInteger(deadline) || deadline <= now)
     throw new EpEnvelopeError("failed-precondition", `the extended deadline must be in the owner's future (deadline ${deadline}, now ${now})`);
+  if (deadline > MAX_SCHEDULE_MS)
+    throw new EpEnvelopeError("failed-precondition", `the extended deadline ${deadline} exceeds the scheduler's representable range (${MAX_SCHEDULE_MS}); a heartbeat never advances a checkpoint to an unarmable deadline (distsys 8dcad72 M4, SPEC 13.6/13.9)`);
   if (current.value.deadlineGeneration + 1 > Number.MAX_SAFE_INTEGER)
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" generation would overflow; reconcile the store (SPEC 13.6)`);
   const next: CheckpointStatusValue = assertStatusValue({
@@ -539,31 +561,40 @@ export async function armCheckpointTimer(
   opts?: { statusBudgetMs?: number },
 ): Promise<{ armed: boolean; armedSubject?: string; fireSubject?: string; generation?: number; reason?: "stale" | "settled" | "unknown" }> {
   assertTimerCtx(ctx);
+  // Snapshot the FULL request input to detached locals at entry (the subject, the headers ref, and
+  // the body bytes are read EXACTLY ONCE, before any parse/space-check/publish): a shifting subject
+  // getter must not let the writer parse one coordinate, then space-check, arm, or error against a
+  // different one (distsys 8dcad72 M5). Nothing below reads `msg` again.
+  const subject = msg.subject;
+  const headers = msg.headers;
+  const data = msg.data;
+  if (typeof subject !== "string" || subject.length === 0)
+    throw new EpEnvelopeError("failed-precondition", `a .schedule request carries a subject string (SPEC 13.2)`);
   const budget = opts?.statusBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `statusBudgetMs must be a positive integer; got ${JSON.stringify(opts?.statusBudgetMs)}`);
   for (const h of SCHEDULING_HEADERS)
-    if (msg.headers?.get(h))
-      throw new EpEnvelopeError("permission-denied", `the .schedule request on ${msg.subject} carries the scheduling header ${h}; a request's headers are inert bytes and the writer rejects them - only the writer's own .armed publish schedules (SPEC 13.2, ADR-51)`);
-  const parsed = parseEpSubject(msg.subject);
+    if (headers?.get(h))
+      throw new EpEnvelopeError("permission-denied", `the .schedule request on ${subject} carries the scheduling header ${h}; a request's headers are inert bytes and the writer rejects them - only the writer's own .armed publish schedules (SPEC 13.2, ADR-51)`);
+  const parsed = parseEpSubject(subject);
   if (parsed === null || parsed.plane !== "timer" || parsed.phase !== "schedule")
-    throw new EpEnvelopeError("failed-precondition", `${msg.subject} is not a .schedule request subject; the writer arms nothing else (SPEC 13.2)`);
-  if (space(msg.subject) !== ctx.space)
-    throw new EpEnvelopeError("permission-denied", `the .schedule request on ${msg.subject} is for space "${space(msg.subject)}" but this writer serves "${ctx.space}"; a cross-space fresh-check would answer with the wrong authority (SPEC 13.2)`);
+    throw new EpEnvelopeError("failed-precondition", `${subject} is not a .schedule request subject; the writer arms nothing else (SPEC 13.2)`);
+  if (space(subject) !== ctx.space)
+    throw new EpEnvelopeError("permission-denied", `the .schedule request on ${subject} is for space "${space(subject)}" but this writer serves "${ctx.space}"; a cross-space fresh-check would answer with the wrong authority (SPEC 13.2)`);
   let body: unknown;
-  try { body = JSON.parse(new TextDecoder().decode(msg.data)); } catch (e) {
-    throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${msg.subject} does not decode as JSON: ${(e as Error).message}`);
+  try { body = JSON.parse(new TextDecoder().decode(data)); } catch (e) {
+    throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${subject} does not decode as JSON: ${(e as Error).message}`);
   }
   const o = (body ?? {}) as Record<string, unknown>;
   if (o.v !== 1 || o.timerId !== parsed.timerId
     || typeof o.generation !== "number" || !Number.isSafeInteger(o.generation) || o.generation < 1
     || typeof o.deadline !== "number" || !Number.isSafeInteger(o.deadline) || o.deadline < 0 || o.deadline > MAX_SCHEDULE_MS)
-    throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${msg.subject} is malformed, its body timerId disagrees with the authenticated subject token, or its deadline is out of the scheduler's date range (SPEC 13.2)`);
+    throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${subject} is malformed, its body timerId disagrees with the authenticated subject token, or its deadline is out of the scheduler's date range (SPEC 13.2)`);
   // FRESH-CHECK (bounded): arm only the current generation/deadline from the context's own
   // records KV; discard a stale or settled request.
   const current = await withStatusBudget(
     readCheckpointStatus(ctx.kv, { endpoint: parsed.endpoint, token: parsed.timerId }),
-    budget, `the status fresh-check for ${msg.subject}`,
+    budget, `the status fresh-check for ${subject}`,
   );
   if (current === undefined) return { armed: false, reason: "unknown" };
   if (current.value.state !== "waiting") return { armed: false, reason: "settled" };
@@ -818,9 +849,16 @@ export async function reconcileCheckpointSchedule(
   // the fact publish) is exactly what the durable reconciler must repair - converge ensures the
   // fact exists before this seam declares nothing to do.
   if ((await settledOrConverge(kv, js, jsm, space_, ref)) !== undefined) return { reEmitted: false };
+  // Emit from a FRESH authoritative read taken AFTER the settle-gate (distsys 8dcad72 M6): the
+  // status may have advanced (a heartbeat CAS-ed a new generation) between the first read above and
+  // here. Re-emitting the STALE first-read generation would be discarded by the writer, leaving the
+  // LIVE generation unarmed until another scan. Re-read and emit the current generation; a
+  // checkpoint that settled or vanished in the meantime re-emits nothing.
+  const live = await readCheckpointStatus(kv, ref);
+  if (live === undefined || live.value.state !== "waiting") return { reEmitted: false };
   await emitScheduleRequest(js, space_, {
     endpoint: ref.endpoint, instanceId, epoch,
-    token: ref.token, generation: status.value.deadlineGeneration, deadline: status.value.deadline,
+    token: ref.token, generation: live.value.deadlineGeneration, deadline: live.value.deadline,
   });
-  return { reEmitted: true, generation: status.value.deadlineGeneration };
+  return { reEmitted: true, generation: live.value.deadlineGeneration };
 }
