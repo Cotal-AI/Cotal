@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, headers } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
@@ -67,12 +67,15 @@ try {
   if (!up) throw new Error("broker did not come up");
   const nc = await connect({ servers: `nats://127.0.0.1:${PORT}` });
   const jsm = await jetstreamManager(nc);
+  const js = jetstream(nc); // a raw handle for planting tampered/oversize artifacts the context would never publish
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const ctx = await contractStoreContext(nc, SPACE);
   const artifact = (v: unknown) => contractArtifactCanonicalBytes(v);
 
-  await rejects("a hand-assembled context never authorizes (the space bond is constructed, not asserted)",
-    () => publishContractArtifact({ js: ctx.js, jsm: ctx.jsm, space: SPACE } as ContractStoreContext, artifact({ a: 1 })), "failed-precondition");
+  await rejects("a hand-assembled context never authorizes (resources are WeakMap-private, not on the token)",
+    () => publishContractArtifact({ space: SPACE } as ContractStoreContext, artifact({ a: 1 })), "failed-precondition");
+  c("the context token exposes NO js/jsm to rebind (resources are WeakMap-private)",
+    (ctx as unknown as Record<string, unknown>).js === undefined && (ctx as unknown as Record<string, unknown>).jsm === undefined);
 
   // ── publish + fetch + two-proof verify-on-read ──
   const A = artifact({ refs: [], schema: "A" });
@@ -104,13 +107,13 @@ try {
     // the tamper boundary, both proofs: (a) bytes planted at a subject they do not digest to;
     // (b) NONCANONICAL bytes planted at their own digest subject — a garbled store never serves.
     const h1 = headers(); h1.set("Nats-Expected-Last-Subject-Sequence", "0");
-    await ctx.js.publish(epcSubject(SPACE, "f".repeat(64)), enc("not the content"), { headers: h1 });
+    await js.publish(epcSubject(SPACE, "f".repeat(64)), enc("not the content"), { headers: h1 });
     await rejects("a mis-addressed artifact FAILS verify-on-read (content addressing is the tamper boundary)",
       () => fetchContractArtifact(ctx, "f".repeat(64)), "internal");
     const nonCanon = enc('{"b":1,"a":2}');
     const nonCanonHex = contractArtifactDigestHex(nonCanon);
     const h2 = headers(); h2.set("Nats-Expected-Last-Subject-Sequence", "0");
-    await ctx.js.publish(epcSubject(SPACE, nonCanonHex), nonCanon, { headers: h2 });
+    await js.publish(epcSubject(SPACE, nonCanonHex), nonCanon, { headers: h2 });
     await rejects("NONCANONICAL bytes at their own digest subject STILL fail the read (canonical form is the second proof)",
       () => fetchContractArtifact(ctx, nonCanonHex), "internal");
   }
@@ -203,6 +206,39 @@ try {
     const res = await fetchContractClosure(ctx, pubM.closureDigestHex, (bytes, hex) => { const refs = refsOf(bytes); bytes.fill(0x20); return refs; });
     c("a MUTATING resolution seam cannot poison the returned artifacts (every handed-out buffer is detached)",
       [...res.artifacts.entries()].every(([hex, bytes]) => contractArtifactDigestHex(bytes) === hex));
+  }
+  // ── re-review 8dcad72 (distsys): 1H manifest digest spelling, M2 read ceiling, M4 depth-order ──
+  {
+    // HIGH: a manifest digest field must be EXACTLY sha256:<hex>; a bare-hex spelling gives one
+    // closure a second identity. Both publication and the fetch parse refuse the noncanonical form.
+    await rejects("a manifest with a BARE-HEX root refuses (a digest field is exactly sha256:<hex>, never a second spelling)",
+      () => publishContractClosureManifest(ctx, { v: 1, root: r, members: [`sha256:${l1}`, `sha256:${l2}`, `sha256:${m}`].sort() }), "contract-invalid");
+    await rejects("a manifest with a BARE-HEX member refuses",
+      () => publishContractClosureManifest(ctx, { v: 1, root: `sha256:${r}`, members: [l1, `sha256:${l2}`, `sha256:${m}`].sort() }), "contract-invalid");
+
+    // M2: the 256 KiB document ceiling is enforced on READ, not just publication. Plant a canonical
+    // artifact just over the bound directly (bypassing publishContractArtifact); the fetch refuses it.
+    const big = contractArtifactCanonicalBytes({ big: "a".repeat(263_000) });
+    const bigHex = contractArtifactDigestHex(big);
+    const hb = headers(); hb.set("Nats-Expected-Last-Subject-Sequence", "0");
+    await js.publish(epcSubject(SPACE, bigHex), big, { headers: hb });
+    await rejects("an OVERSIZE artifact planted directly FAILS verify-on-read (the document ceiling is enforced on every read)",
+      () => fetchContractArtifact(ctx, bigHex), "internal");
+
+    // M4: an over-depth edge that RE-REACHES the already-visited root must trip the depth bound,
+    // not be skipped by the visited-node dedupe. Content-addressed artifacts can't truly cycle, but
+    // the caller's extractRefs seam can declare one: R -> C1 -> ... -> C32 -> R (root at depth 33).
+    const nodes: string[] = [];
+    for (let i = 0; i < 33; i++) nodes.push((await publishContractArtifact(ctx, artifact({ probe: `m4-${i}` }))).digestHex);
+    const seam = (_b: Uint8Array, hex: string): string[] => {
+      const idx = nodes.indexOf(hex);
+      if (idx === 32) return [`sha256:${nodes[0]}`]; // C32 -> R: the over-depth edge back to the visited root
+      if (idx >= 0) return [`sha256:${nodes[idx + 1]}`]; // Ci -> Ci+1
+      return [];
+    };
+    const m4M = await publishContractClosureManifest(ctx, buildContractClosureManifest(nodes[0], nodes));
+    await rejects("an over-depth edge re-reaching the already-visited root trips the depth bound (checked before the visited dedupe)",
+      () => fetchContractClosure(ctx, m4M.closureDigestHex, seam), "contract-invalid");
   }
 
   await nc.close();

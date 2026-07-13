@@ -51,18 +51,24 @@ export const CONTRACT_CLOSURE_MAX_ARTIFACTS = 64;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
-/** A trusted, space-bonded contract-store context: JS + JSM DERIVE from one binding-layer
- *  connection and one space by the constructor (never injected independently), so a lost
- *  publish CAS can never validate its "recorded artifact" through a different broker than the
- *  one it published to. Every store seam takes this context. */
+/** A trusted, space-bonded contract-store context: an OPAQUE token carrying only the space. Its
+ *  JS + JSM resources DERIVE from one binding-layer connection by the constructor and live in a
+ *  module-private WeakMap keyed by this token, NEVER as reachable properties (distsys 8dcad72
+ *  MEDIUM): a caller holding the context cannot rebind its broker to validate a lost-CAS "winner"
+ *  through a different broker than it published to. Every store seam takes this context. */
 export interface ContractStoreContext {
-  js: JetStreamClient;
-  jsm: JetStreamManager;
-  space: string;
+  readonly space: string;
 }
 
-/** Bond the resources to one space by CONSTRUCTION (frozen + branded, the shared context
- *  discipline): a hand-assembled structural look-alike is rejected at every seam. */
+interface StoreResources { js: JetStreamClient; jsm: JetStreamManager; }
+
+/** The resources, unreachable from the context token itself. A structural look-alike never
+ *  appears in this map (so never authorizes); and `ctx.js`/`ctx.jsm` do not exist to reassign. */
+const STORE_RESOURCES = new WeakMap<ContractStoreContext, StoreResources>();
+
+/** Bond the resources to one space by CONSTRUCTION (frozen token + WeakMap-private resources, the
+ *  shared context discipline): a hand-assembled structural look-alike is rejected at every seam,
+ *  and the broker cannot be rebound out from under a live operation. */
 export async function contractStoreContext(nc: NatsConnection, space: string): Promise<ContractStoreContext> {
   if (nc === null || typeof nc !== "object" || typeof (nc as unknown as { close?: unknown }).close !== "function")
     throw new EpEnvelopeError("failed-precondition", "a contract-store context is constructed from ONE binding-layer connection; separate resources are never accepted (SPEC 13.4)");
@@ -70,16 +76,18 @@ export async function contractStoreContext(nc: NatsConnection, space: string): P
     throw new EpEnvelopeError("failed-precondition", "a contract-store context needs a space");
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
-  const ctx = Object.freeze({ js, jsm, space });
-  BRANDED_STORE_CONTEXTS.add(ctx);
+  const ctx: ContractStoreContext = Object.freeze({ space });
+  STORE_RESOURCES.set(ctx, { js, jsm });
   return ctx;
 }
 
-const BRANDED_STORE_CONTEXTS = new WeakSet<ContractStoreContext>();
-
-function assertCtx(ctx: ContractStoreContext): void {
-  if (!BRANDED_STORE_CONTEXTS.has(ctx))
+/** The brand check AND the resource fetch in one: a context not minted by contractStoreContext()
+ *  is absent from the map and never authorizes. */
+function resources(ctx: ContractStoreContext): StoreResources {
+  const r = ctx === null || typeof ctx !== "object" ? undefined : STORE_RESOURCES.get(ctx);
+  if (r === undefined)
     throw new EpEnvelopeError("failed-precondition", `the contract-store context was not constructed by contractStoreContext(); a hand-assembled resource bundle never authorizes - the space bond is constructed, not asserted (SPEC 13.4)`);
+  return r;
 }
 
 /** The artifact's subject token: SHA-256 hex over the artifact's CANONICAL bytes (§13.7: the
@@ -134,7 +142,7 @@ export async function publishContractArtifact(
   ctx: ContractStoreContext,
   bytes: Uint8Array,
 ): Promise<{ digestHex: string; won: boolean }> {
-  assertCtx(ctx);
+  const { js } = resources(ctx);
   if (!(bytes instanceof Uint8Array) || bytes.length === 0)
     throw new EpEnvelopeError("contract-invalid", "a contract artifact is non-empty canonical JSON bytes (SPEC 13.7)");
   if (bytes.length > CONTRACT_ARTIFACT_MAX_BYTES)
@@ -146,7 +154,7 @@ export async function publishContractArtifact(
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", "0");
   try {
-    await ctx.js.publish(subject, snapshot, { headers: h });
+    await js.publish(subject, snapshot, { headers: h });
     return { digestHex, won: true };
   } catch (e) {
     const code = (e as { code?: unknown })?.code;
@@ -167,16 +175,21 @@ export async function fetchContractArtifact(
   ctx: ContractStoreContext,
   digestHex: string,
 ): Promise<Uint8Array | undefined> {
-  assertCtx(ctx);
+  const { jsm } = resources(ctx);
   const subject = epcSubject(ctx.space, digestHex); // validates the token
   let stored;
   try {
-    stored = await ctx.jsm.direct.getMessage(epcStreamName(ctx.space), { last_by_subj: subject });
+    stored = await jsm.direct.getMessage(epcStreamName(ctx.space), { last_by_subj: subject });
   } catch (e) {
     if ((e as { code?: unknown })?.code === 10037) return undefined; // the ONLY "genuinely absent" result
     throw new EpEnvelopeError("unavailable", `the contract-store read for ${digestHex} failed (a failed observation is never absence, SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
   }
   if (stored === null) return undefined;
+  // The 256 KiB document bound is enforced on EVERY consuming read, not just publication (distsys
+  // 8dcad72 M2): a directly-planted oversize artifact (bypassing publishContractArtifact) must
+  // never be served, and the closure walk (which reads through here) inherits the per-document cap.
+  if (stored.data.length > CONTRACT_ARTIFACT_MAX_BYTES)
+    throw new EpEnvelopeError("internal", `the artifact at ${subject} is ${stored.data.length} bytes, above the ${CONTRACT_ARTIFACT_MAX_BYTES} document bound; a store that admitted an oversize artifact never serves it (SPEC 13.7)`);
   if (contractArtifactDigestHex(stored.data) !== digestHex)
     throw new EpEnvelopeError("internal", `the artifact at ${subject} does not recompute its digest; verify-on-read is the tamper boundary and fails loud (SPEC 13.7)`);
   try { assertCanonicalArtifactBytes(stored.data, `the artifact at ${subject}`); }
@@ -199,6 +212,17 @@ export interface ContractClosureManifest {
 
 const sha256Ref = (hex: string): string => `sha256:${hex}`;
 
+/** A manifest digest field is EXACTLY `sha256:<64-hex>` (frozen SPEC 13.7:1858-1861), never a
+ *  bare `<hex>` or any other spelling (distsys 8dcad72 HIGH): two manifests differing only in
+ *  digest spelling are both canonical JSON, receive DIFFERENT closure digests, yet verify the same
+ *  walked graph - so one closure would have two identities. Normalization belongs in the BUILDER's
+ *  input; the consuming parse requires the canonical prefixed form and refuses anything else. */
+const SHA256_REF = /^sha256:[0-9a-f]{64}$/;
+function assertManifestDigest(ref: unknown, what: string): void {
+  if (typeof ref !== "string" || !SHA256_REF.test(ref))
+    throw new EpEnvelopeError("contract-invalid", `${what} must be exactly "sha256:<64-hex>" (SPEC 13.7); a bare-hex or otherwise-spelled digest gives one closure two identities and never names it`);
+}
+
 /** Build the canonical manifest for a walked closure: refs normalize, members sort + dedup.
  *  The ROOT is named by its own field and belongs in `members` only when a reference
  *  re-reaches it (the §13.7 "reachable THROUGH references" rule, pinned here so two
@@ -218,13 +242,12 @@ function parseClosureManifest(value: unknown, what: string): ContractClosureMani
       throw new EpEnvelopeError("contract-invalid", `${what} carries the unknown field "${k}"; the manifest schema is closed (SPEC 13.7)`);
   if (o.v !== 1 || typeof o.root !== "string" || !Array.isArray(o.members))
     throw new EpEnvelopeError("contract-invalid", `${what} is not { v: 1, root, members } (SPEC 13.7)`);
-  contractRefToHex(o.root);
+  assertManifestDigest(o.root, `${what} root`);
   if (o.members.length > CONTRACT_CLOSURE_MAX_ARTIFACTS)
     throw new EpEnvelopeError("contract-invalid", `${what} names ${o.members.length} members, above the ${CONTRACT_CLOSURE_MAX_ARTIFACTS}-artifact ceiling (SPEC 13.7)`);
   for (let i = 0; i < o.members.length; i++) {
     const m = o.members[i];
-    if (typeof m !== "string") throw new EpEnvelopeError("contract-invalid", `${what} member ${i} is not a string (SPEC 13.7)`);
-    contractRefToHex(m);
+    assertManifestDigest(m, `${what} member ${i}`);
     // The canonical form IS sorted + deduplicated: an unsorted or duplicated members list is a
     // DIFFERENT byte sequence claiming the same closure — refused, never silently normalized.
     if (i > 0 && (o.members[i - 1] as string) >= m)
@@ -239,7 +262,7 @@ export async function publishContractClosureManifest(
   ctx: ContractStoreContext,
   manifest: ContractClosureManifest,
 ): Promise<{ closureDigestHex: string; won: boolean }> {
-  assertCtx(ctx);
+  resources(ctx); // brand-check (resources unused here; the delegated publish/fetch use them)
   const value = parseClosureManifest(manifest, "the manifest");
   const res = await publishContractArtifact(ctx, contractArtifactCanonicalBytes(value));
   return { closureDigestHex: res.digestHex, won: res.won };
@@ -262,7 +285,7 @@ export async function fetchContractClosure(
   extractRefs: (bytes: Uint8Array, digestHex: string) => string[],
   opts: { maxArtifacts?: number; walkBudgetMs?: number } = {},
 ): Promise<{ manifest: ContractClosureManifest; artifacts: Map<string, Uint8Array> }> {
-  assertCtx(ctx);
+  resources(ctx); // brand-check (resources unused here; the delegated publish/fetch use them)
   const max = opts.maxArtifacts ?? CONTRACT_CLOSURE_MAX_ARTIFACTS;
   if (!Number.isSafeInteger(max) || max <= 0 || max > CONTRACT_CLOSURE_MAX_ARTIFACTS)
     throw new EpEnvelopeError("failed-precondition", `maxArtifacts must be a positive integer at or below the frozen ${CONTRACT_CLOSURE_MAX_ARTIFACTS}-artifact ceiling (a caller narrows, never widens); got ${JSON.stringify(opts.maxArtifacts)} (SPEC 13.7)`);
@@ -273,9 +296,21 @@ export async function fetchContractClosure(
     throw new EpEnvelopeError("failed-precondition", "a closure fetch requires the reference-resolution seam (extractRefs); the store never guesses a document's reference shape (SPEC 13.7)");
   const startedAt = performance.now();
   const overBudget = (): boolean => performance.now() - startedAt > budgetMs;
+  // The ONE monotonic budget bounds the WHOLE walk, including the awaited reads and the synchronous
+  // extractor (distsys 8dcad72 M1): every Direct Get is raced against the REMAINING budget (a stuck
+  // read is a bounded deadline, never a hang), and overBudget() is checked after each extractRefs
+  // and before returning, so a slow synchronous seam cannot blow the budget and still return success.
+  const raceBudget = async <T>(p: Promise<T>, what: string): Promise<T> => {
+    const rem = budgetMs - (performance.now() - startedAt);
+    if (rem <= 0)
+      throw new EpEnvelopeError("deadline-exceeded", `the closure walk exhausted its ${budgetMs}ms budget before ${what} (SPEC 13.7/13.8)`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `the closure walk exceeded its ${budgetMs}ms budget during ${what}; a closure fetch is bounded and fails loud, never hangs (SPEC 13.7/13.8)`)), rem); });
+    try { return await Promise.race([p, deadline]); } finally { clearTimeout(timer); }
+  };
 
   const closureHex = contractRefToHex(closureDigestRef);
-  const manifestBytes = await fetchContractArtifact(ctx, closureHex);
+  const manifestBytes = await raceBudget(fetchContractArtifact(ctx, closureHex), `the manifest fetch for ${closureHex}`);
   if (manifestBytes === undefined)
     throw new EpEnvelopeError("failed-precondition", `the closure manifest ${closureHex} is not published; a closure digest names its manifest artifact (SPEC 13.7)`);
   const manifest = parseClosureManifest(assertCanonicalArtifactBytes(manifestBytes, `the manifest ${closureHex}`), `the manifest ${closureHex}`);
@@ -291,12 +326,15 @@ export async function fetchContractClosure(
     if (overBudget())
       throw new EpEnvelopeError("deadline-exceeded", `the closure walk for ${closureHex} exceeded its ${budgetMs}ms budget; a closure fetch is bounded and fails loud, never hangs (SPEC 13.7/13.8)`);
     const { hex, depth } = queue.shift()!;
-    if (out.has(hex)) continue; // cycle/diamond-safe
+    // The reference-chain depth is checked on EVERY dequeued edge, BEFORE the visited dedupe
+    // (distsys 8dcad72 M4): an over-depth edge that happens to re-reach an already-visited node
+    // (e.g. a 33-deep cycle back to the root) must still trip the bound, never be silently skipped.
     if (depth > CONTRACT_CLOSURE_MAX_REF_DEPTH)
       throw new EpEnvelopeError("contract-invalid", `the closure walk for ${closureHex} exceeds the ${CONTRACT_CLOSURE_MAX_REF_DEPTH}-deep reference chain bound (SPEC 13.7)`);
+    if (out.has(hex)) continue; // cycle/diamond-safe (after the depth bound)
     if (out.size >= max)
       throw new EpEnvelopeError("failed-precondition", `the contract closure exceeds the ${max}-artifact bound; a truncated closure never verifies as complete (SPEC 13.7)`);
-    const bytes = await fetchContractArtifact(ctx, hex);
+    const bytes = await raceBudget(fetchContractArtifact(ctx, hex), `the fetch of ${hex}`);
     if (bytes === undefined)
       throw new EpEnvelopeError("failed-precondition", `the closure references artifact ${hex} but it is not published; a closure is fetched all-or-nothing (SPEC 13.7)`);
     totalBytes += bytes.length;
@@ -308,6 +346,8 @@ export async function fetchContractClosure(
       throw new EpEnvelopeError("internal", `the reference-resolution seam returned a non-string-array for ${hex}; a garbled resolution never extends a closure (SPEC 13.7)`);
     if (refs.length > CONTRACT_CLOSURE_MAX_ARTIFACTS)
       throw new EpEnvelopeError("contract-invalid", `artifact ${hex} names ${refs.length} references, above the ${CONTRACT_CLOSURE_MAX_ARTIFACTS}-reference cap; an unbounded reference list never extends a closure (SPEC 13.7)`);
+    if (overBudget()) // a slow synchronous extractRefs cannot be interrupted mid-run, but it must not blow the budget and still return success (M1)
+      throw new EpEnvelopeError("deadline-exceeded", `the closure walk for ${closureHex} exceeded its ${budgetMs}ms budget resolving references for ${hex} (SPEC 13.7/13.8)`);
     for (const r of refs) {
       const rHex = contractRefToHex(r);
       if (rHex === rootHex) rootReReached = true; // a cycle back makes the root a member too
