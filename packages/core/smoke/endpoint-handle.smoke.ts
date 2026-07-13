@@ -121,10 +121,21 @@ throws("a wildcard read scope is schema-invalid (reads are literal subtrees; the
 {
   const withReads = parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "status" }], reads: ["goal.u_a.b.c"] }] }), rootKp));
   const compiled = compileHandleGrants(withReads, { commandContract: contract });
-  c("signed read subtrees are COMPILED (consumed, never silently dropped)",
-    compiled.reads.length === 1 && compiled.reads[0] === "goal.u_a.b.c");
+  c("signed read subtrees are COMPILED, ENDPOINT-BOUND (consumed, never silently dropped, never detached from their grant endpoint)",
+    compiled.reads.length === 1 && compiled.reads[0].endpoint === "manager" && compiled.reads[0].subtree === "goal.u_a.b.c");
   const journal = compileHandleGrants(withReads, { commandContract: () => ({ noTargetForm: "untargeted", journal: true }) });
-  c("a journal-class command (per the REQUIRED contract seam) compiles with journal: true", journal.caps[0].journal === true);
+  c("a journal-class command compiles journal-EXCLUSIVE (journal: true with NO request rails: journal submissions ride only epj)",
+    journal.caps[0].journal === true && Array.isArray(journal.caps[0].routes) && journal.caps[0].routes.length === 0 && journal.caps[0].instanceId === undefined);
+  const instJournal = parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", instanceId: "i".repeat(26), commands: [{ name: "status" }] }] }), rootKp));
+  throws("an INSTANCE-pinned journal-class command REFUSES as unrepresentable (the frozen epj grammar has no instance coordinate; the signed pin is never widened away)",
+    () => compileHandleGrants(instJournal, { commandContract: () => ({ noTargetForm: "untargeted", journal: true }) }), "permission-denied");
+  const twoEp = parseHandle(signArtifact(rootBody({ grants: [
+    { endpoint: "manager", commands: [{ name: "status" }], reads: ["goal.u_a.b.c"] },
+    { endpoint: "delivery", commands: [{ name: "status" }], reads: ["goal.u_a.b.c"] },
+  ] }), rootKp));
+  const twoCompiled = compileHandleGrants(twoEp, { commandContract: contract });
+  c("the SAME subtree under two endpoints compiles to two DISTINGUISHABLE endpoint-bound reads",
+    twoCompiled.reads.length === 2 && twoCompiled.reads.some((r) => r.endpoint === "manager") && twoCompiled.reads.some((r) => r.endpoint === "delivery"));
   const selfForm = compileHandleGrants(withReads, { commandContract: () => ({ noTargetForm: "self", journal: false }) });
   c("a no-target command whose CONTRACT says `self` compiles to self mode (the compiler never guesses the form)",
     selfForm.caps[0].target?.mode === "self");
@@ -220,8 +231,10 @@ await rejects("a revocation reader answering UNDEFINED refuses (strict-false-onl
     res.compiled.caps[0].target?.mode === "owner");
 }
 {
-  // a tampered leaf (grants mutated after signing) fails its signature.
-  const raw = signArtifact(childBody(), holderKp) as Record<string, unknown>;
+  // a tampered leaf (grants mutated after signing) fails its signature. The tamper happens on a
+  // DETACHED copy: childBody() shares the childHolder fixture object by reference, so mutating
+  // the signed artifact in place would poison every later probe's presenter.
+  const raw = JSON.parse(JSON.stringify(signArtifact(childBody(), holderKp))) as Record<string, unknown>;
   (raw as { holder: { id: string } }).holder.id = "u_evil"; // change a signed field
   await rejects("a tampered handle fails its signature",
     () => verifyHandleChain([raw, rootHandle], { ...baseOpts, now: NOW, presenter: { id: "u_evil", lifecycleUid: childHolder.lifecycleUid } }), "permission-denied");
@@ -284,6 +297,12 @@ await rejects("a chain longer than the verification bound refuses",
   () => verifyHandleChain(new Array(HANDLE_MAX_CHAIN_LENGTH + 1).fill({}), { ...baseOpts, now: NOW, presenter: holderP }), "permission-denied");
 await rejects("a HUNG revocation reader refuses `unavailable` within the verify budget, never a hung verification",
   () => verifyHandleChain([rootHandle], { ...baseOpts, now: NOW, presenter: holderP, readRevocation: (() => ({ then() { /* never settles */ } })) as unknown as HandleRevocationReader, verifyBudgetMs: 100 }), "unavailable");
+await rejects("the verify budget is ONE total clock across the whole walk (a per-await reset would let every link burn a fresh budget)",
+  () => verifyHandleChain([childHandle, rootHandle], {
+    ...baseOpts, now: NOW, presenter: childHolder,
+    resolveAnchor: (keyId) => new Promise<SignerAnchor | undefined>((res) => setTimeout(() => res(anchors.get(keyId)), 160)),
+    verifyBudgetMs: 250, // each single anchor read (160ms) fits the budget; their SUM must not
+  }), "unavailable");
 
 // ── bounded canonical grammars + verification bounds (MEDIUM restatement) ──
 throws("a handle id that is not a bounded canonical token is a catalog contract-invalid error",

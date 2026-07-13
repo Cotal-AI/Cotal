@@ -21,7 +21,7 @@
  * off its predecessor's handles). Every link — not only the leaf — is currency-checked
  * (window, TTL ceilings clock-anchored at `now`, live-epoch), sturdy revocation is
  * strict-`false`-only (an unreadable status is REVOKED), and the whole walk is bounded
- * (chain length + per-await budget).
+ * (chain length + ONE total await budget across the walk).
  *
  * Two uses, both fail-closed: ATTENUATION (presented in the `auth` slot — the handler enforces
  * effective = presenter-cred ∩ handle.grants ∩ issuer-authority, never conferring reach) and
@@ -138,13 +138,15 @@ function parseGrantCommand(raw: unknown): HandleGrantCommand {
 }
 
 /** A read scope names an exact record-key or event-topic SUBTREE (§13.6): dot-separated
- *  non-empty literal tokens, never a wildcard — the subtree semantics live in the containment
- *  order (dot-prefix), not in the entry. */
+ *  literal tokens in the BOUNDED record/event token grammar, never a wildcard — the subtree
+ *  semantics live in the containment order (dot-prefix), not in the entry. */
+const READ_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,63}$/;
 function assertReadSubtree(r: unknown, endpoint: string): string {
-  if (typeof r !== "string" || r.length === 0) invalid(`grant entry for "${endpoint}" has a non-string read scope`);
+  if (typeof r !== "string" || r.length === 0 || r.length > 256)
+    invalid(`grant entry for "${endpoint}" read scope is not a bounded string (1..256)`);
   const tokens = r.split(".");
-  if (tokens.some((t) => t.length === 0 || t === "*" || t === ">" || /\s/.test(t)))
-    invalid(`grant entry for "${endpoint}" read scope "${r}" is not a literal dot-token subtree (no wildcards, no empty tokens)`);
+  if (tokens.length > 16 || tokens.some((t) => !READ_TOKEN.test(t)))
+    invalid(`grant entry for "${endpoint}" read scope "${r}" is not a bounded literal dot-token subtree (at most 16 tokens of 1..64 [A-Za-z0-9_:-] with a leading alnum; no wildcards)`);
   return r;
 }
 
@@ -186,7 +188,11 @@ export function parseHandle(raw: unknown): CapabilityHandle {
   if (!isRec(o.holder)) invalid("the handle holder is not an object");
   for (const k of Object.keys(o.holder)) if (k !== "id" && k !== "lifecycleUid") invalid(`the handle holder carries the unknown field "${k}" (closed schema)`);
   assertHandleToken((o.holder as Record<string, unknown>).id, "the handle holder id");
-  assertHandleToken((o.holder as Record<string, unknown>).lifecycleUid, "the handle holder lifecycleUid");
+  {
+    const uid = (o.holder as Record<string, unknown>).lifecycleUid;
+    if (typeof uid !== "string") invalid("the handle holder lifecycleUid is not a string");
+    try { assertLifecycleToken(uid, "the handle holder lifecycleUid"); } catch (e) { invalid((e as Error).message); }
+  }
   if (!Array.isArray(o.grants) || o.grants.length === 0) invalid("the handle has no grants");
   if (o.grants.length > HANDLE_MAX_GRANTS) invalid(`the handle exceeds ${HANDLE_MAX_GRANTS} grant entries (bounded, never truncated)`);
   // Any token-validator throw inside a grant becomes a CATALOG contract-invalid error (§13.6:
@@ -247,9 +253,12 @@ function compileTarget(cmd: HandleGrantCommand, contract: CommandContract): EpTa
  *  halves are signed components; neither is ever silently dropped. */
 export interface CompiledHandleGrants {
   caps: EpCapability[];
-  /** The signed read subtrees (record-key / event-topic prefixes), deduplicated — the
-   *  redemption mints these as read rows exactly as signed. */
-  reads: string[];
+  /** The signed read subtrees (record-key / event-topic prefixes), ENDPOINT-BOUND — a subtree
+   *  is meaningless without the grant endpoint it was signed under, so two grants naming the
+   *  same subtree on different endpoints stay distinguishable. Deduplicated per
+   *  (endpoint, subtree); the redemption mints these as endpoint-scoped read rows exactly as
+   *  signed. */
+  reads: { endpoint: string; subtree: string }[];
 }
 
 /** Compile a handle's grants to the EpCapability set + read subtrees the equivalent minted
@@ -260,7 +269,12 @@ export interface CompiledHandleGrants {
  *     compiles to `routes: ["one"]` (scatter `all` is not expressible in a handle);
  *   - a NO-TARGET command's untargeted-vs-`.self` form and the `journal` rail come from the
  *     REQUIRED command-contract seam (the compiler never guesses either);
- *   - `reads` are returned alongside, never dropped. */
+ *   - a JOURNAL-class command compiles to a journal-EXCLUSIVE capability (`routes: []`, no
+ *     request rails): journal submissions ride ONLY `epj` (§13.9), so emitting a request row
+ *     alongside would be equivalent-mint WIDENING. The frozen `epj` grammar has no instance
+ *     coordinate, so an instance-pinned journal command is UNREPRESENTABLE and refuses — the
+ *     signed instance pin is never silently dropped onto a class-wide journal row;
+ *   - `reads` are returned alongside, endpoint-bound, never dropped. */
 export function compileHandleGrants(
   handle: CapabilityHandle,
   opts: { commandContract: CommandContractSeam },
@@ -268,22 +282,33 @@ export function compileHandleGrants(
   if (typeof opts?.commandContract !== "function")
     throw new EpEnvelopeError("failed-precondition", "compiling handle grants requires the command-contract seam; the compiler never guesses a command's no-target form or journal class (SPEC 13.6/13.9)");
   const caps: EpCapability[] = [];
-  const reads: string[] = [];
+  const reads: { endpoint: string; subtree: string }[] = [];
   for (const g of handle.grants) {
     for (const cmd of g.commands) {
       const contract = opts.commandContract(g.endpoint, cmd.name);
       if (!contract || (contract.noTargetForm !== "untargeted" && contract.noTargetForm !== "self") || typeof contract.journal !== "boolean")
         throw new EpEnvelopeError("internal", `the command-contract seam returned a malformed contract for ${g.endpoint}.${cmd.name}; a garbled contract never compiles (SPEC 13.6)`);
       const target = compileTarget(cmd, contract);
+      if (contract.journal) {
+        if (g.instanceId !== undefined)
+          throw new EpEnvelopeError("permission-denied", `grant entry for "${g.endpoint}" pins instance "${g.instanceId}" but command "${cmd.name}" is journal-class; the frozen epj grammar has no instance coordinate, so the signed instance pin cannot be honored - unrepresentable, refused rather than widened (SPEC 13.6/13.9)`);
+        caps.push({
+          endpoint: g.endpoint, command: cmd.name,
+          routes: [],
+          ...(target !== undefined ? { target } : {}),
+          journal: true,
+        });
+        continue;
+      }
       caps.push({
         endpoint: g.endpoint, command: cmd.name,
         routes: g.instanceId !== undefined ? [] : ["one"],
         ...(g.instanceId !== undefined ? { instanceId: g.instanceId } : {}),
         ...(target !== undefined ? { target } : {}),
-        ...(contract.journal ? { journal: true } : {}),
       });
     }
-    for (const r of g.reads ?? []) if (!reads.includes(r)) reads.push(r);
+    for (const r of g.reads ?? [])
+      if (!reads.some((x) => x.endpoint === g.endpoint && x.subtree === r)) reads.push({ endpoint: g.endpoint, subtree: r });
   }
   return { caps, reads };
 }
@@ -402,13 +427,18 @@ export function assertIssuerScopeCoversHandle(anchor: SignerAnchor, handle: Capa
  *  `true`, `undefined`, or an unreadable status all FAIL CLOSED as revoked. */
 export type HandleRevocationReader = (issuerKeyId: string, id: string) => Promise<boolean> | boolean;
 
-/** Race an await against the verification budget: a stuck registry/revocation authority is a
- *  bounded `unavailable` refusal, never a hung verification. Races `Promise.resolve(p)`
- *  unconditionally (a non-native thenable must not bypass the deadline). */
-async function withVerifyBudget<T>(p: Promise<T> | T, budgetMs: number, what: string): Promise<T> {
+/** Race an await against the REMAINING verification budget: a stuck registry/revocation
+ *  authority is a bounded `unavailable` refusal, never a hung verification. The caller passes
+ *  the remaining milliseconds of ONE total walk budget (never a per-await reset: sixteen links
+ *  each burning a full fresh budget would multiply the ceiling); an exhausted budget refuses
+ *  immediately. Races `Promise.resolve(p)` unconditionally (a non-native thenable must not
+ *  bypass the deadline). */
+async function withVerifyBudget<T>(p: Promise<T> | T, remainingMs: number, what: string): Promise<T> {
+  if (remainingMs <= 0)
+    throw new EpEnvelopeError("unavailable", `${what} found the verification budget already exhausted; the whole chain walk is ONE bounded operation and fails closed (SPEC 13.10)`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; verification is bounded and fails closed (SPEC 13.10)`)), budgetMs);
+    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within the remaining ${remainingMs}ms verification budget; verification is bounded and fails closed (SPEC 13.10)`)), remainingMs);
   });
   try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
 }
@@ -462,6 +492,10 @@ export async function verifyHandleChain(
   const budget = opts.verifyBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `verifyBudgetMs must be a positive integer; got ${JSON.stringify(opts.verifyBudgetMs)}`);
+  // ONE total walk budget: every await races the REMAINING time on this clock, so sixteen
+  // links cannot each burn a fresh full budget (bounded as one operation, SPEC 13.10).
+  const verifyDeadlineAt = Date.now() + budget;
+  const remainingBudget = () => verifyDeadlineAt - Date.now();
   // Snapshot each RAW artifact to a detached, byte-bounded, deep-frozen copy at entry (D28: the
   // signature and digest identity are checked over EXACTLY this snapshot; the parsed projection
   // derives from the same bytes, so a projection/default can never be the signed value, and a
@@ -522,7 +556,7 @@ export async function verifyHandleChain(
         // intermediate kills every descendant, exactly like a revoked sturdy ancestor).
         if (typeof opts.resolveHolderEpoch !== "function")
           throw new EpEnvelopeError("failed-precondition", `the chain contains a LIVE ancestor ("${h.id}") but no resolveHolderEpoch seam was supplied; a live link's epoch currency is never assumed (SPEC 13.6)`);
-        const current = await withVerifyBudget(opts.resolveHolderEpoch(h.holder), budget, `the holder-epoch resolver for "${h.id}"`);
+        const current = await withVerifyBudget(opts.resolveHolderEpoch(h.holder), remainingBudget(), `the holder-epoch resolver for "${h.id}"`);
         if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
           throw new EpEnvelopeError("internal", `the holder-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.6)`);
         if (current === null || current !== h.epoch)
@@ -534,7 +568,7 @@ export async function verifyHandleChain(
 
     const anchor = await withVerifyBudget(
       resolveAnchorForUse(opts.resolveAnchor, { keyId: h.issuer.keyId, role: "handles", at: opts.now }),
-      budget, `the anchor-registry read for ${h.issuer.keyId}`);
+      remainingBudget(), `the anchor-registry read for ${h.issuer.keyId}`);
     // The issuer of a CHILD is the PARENT's holder — bound by LIFECYCLE, not owner text: a
     // recycled alias (same id, new lifecycleUid) re-registering a key must never issue off its
     // predecessor's handles. An anchor without the lifecycle binding fails closed here.
@@ -555,7 +589,7 @@ export async function verifyHandleChain(
     verifyArtifactSignature(raws[i], anchor);
 
     if (h.sturdy) {
-      const revoked = await withVerifyBudget(opts.readRevocation(h.issuer.keyId, h.id), budget, `the revocation read for "${h.id}"`);
+      const revoked = await withVerifyBudget(opts.readRevocation(h.issuer.keyId, h.id), remainingBudget(), `the revocation read for "${h.id}"`);
       if (revoked !== false)
         throw new EpEnvelopeError("permission-denied", `a sturdy link in the chain is not provably unrevoked (handle "${h.id}", issuer ${h.issuer.keyId}, status ${JSON.stringify(revoked)}); ONLY a literal false is "not revoked" — an unreadable/undefined status fails closed, and every sturdy link is checked, not only the leaf (SPEC 13.6)`);
     }
