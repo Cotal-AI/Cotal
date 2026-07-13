@@ -15,13 +15,11 @@
  * projection. The gate never guesses: every path that is not a well-formed, obligation-valid
  * ALLOW or HOLD is a refusal.
  */
-import type { KV } from "@nats-io/kv";
-import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, type AnchorResolver } from "./endpoint-signing.js";
 import { mintCheckpoint, resumeCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
-import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
+import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -189,9 +187,7 @@ export async function runGuardGate(opts: {
  *  checkpoint coordinate. The mint is idempotent and the timer is armed through the mediated
  *  plane by the checkpoint module. */
 export async function holdGuardedGoal(
-  kv: KV,
-  js: JetStreamClient,
-  space: string,
+  ctx: ActionContext,
   args: {
     goal: GoalRef;
     hold: { token: string; holdDeadlineMs: number; responder: { id: string; lifecycleUid: string } };
@@ -201,14 +197,17 @@ export async function holdGuardedGoal(
     now: number;
   },
 ): Promise<GoalStatusValue> {
-  await mintCheckpoint(kv, js, space, {
+  await mintCheckpoint(ctx.kv, ctx.js, ctx.space, {
     ref: { endpoint: args.goal.endpoint, token: args.hold.token },
     instanceId: args.instanceId, epoch: args.epoch,
     goal: { caller: args.goal.caller, goalId: args.goal.goalId },
     holder: args.hold.responder,
     deadline: args.now + args.hold.holdDeadlineMs, now: args.now,
   });
-  return transitionGoal(kv, args.goal, "waiting", { checkpoint: { token: args.hold.token, deadlineGeneration: 1 } });
+  // The pause is OWNER-authored (the owner mints the checkpoint and records the wait), not a
+  // remote executor's progress step, so a target-pinned goal's hold does not require executor
+  // currency here — the guard responder, not a superseded executor, is the checkpoint holder.
+  return transitionGoal(ctx, args.goal, "waiting", { fields: { checkpoint: { token: args.hold.token, deadlineGeneration: 1 } }, ownerAuthored: true });
 }
 
 /** Release a guard hold: the GUARD (the checkpoint's holder, presenting as itself) resumes the
@@ -217,16 +216,15 @@ export async function holdGuardedGoal(
  *  settlement and throws on everything else (a hold past its deadline drives the EXPIRED
  *  settlement there and refuses; an expired hold never releases). */
 export async function releaseGuardHold(
-  kv: KV,
-  js: JetStreamClient,
-  jsm: JetStreamManager,
-  space: string,
+  ctx: ActionContext,
   args: { goal: GoalRef; token: string; presenter: { id: string; lifecycleUid: string }; now: number },
 ): Promise<{ settle: CheckpointSettleFact; status: GoalStatusValue }> {
-  const settle = await resumeCheckpoint(kv, js, jsm, space, {
+  const settle = await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, {
     ref: { endpoint: args.goal.endpoint, token: args.token }, presenter: args.presenter, now: args.now,
   });
-  const status = await transitionGoal(kv, args.goal, "running");
+  // The release is OWNER-authored (the guard's holder-bound resume is the authority, verified
+  // by resumeCheckpoint); the goal returns from the owner-driven pause to running.
+  const status = await transitionGoal(ctx, args.goal, "running", { ownerAuthored: true });
   return { settle, status };
 }
 
@@ -236,20 +234,17 @@ export async function releaseGuardHold(
  *  the projection converges either way). Idempotent: an already-terminal goal returns its
  *  winner. */
 export async function expireGuardHold(
-  kv: KV,
-  js: JetStreamClient,
-  jsm: JetStreamManager,
-  space: string,
+  ctx: ActionContext,
   args: { goal: GoalRef; token: string; now: number },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  const status = await readGoalStatus(kv, args.goal);
+  const status = await readGoalStatus(ctx, args.goal);
   if (status === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${args.goal.goalId}" is unknown; an expiry settles only an accepted goal (SPEC 13.6)`);
-  const res = await commitGoalResult(kv, js, jsm, space, {
-    ref: args.goal, state: "failed",
+  // An expired hold is DENY (owner-authored fail-closed) → the goal commits terminal failed via
+  // the `deny` cause at the shared commit point, where a racing completion/cancel may win first.
+  const res = await commitGoalResult(ctx, {
+    ref: args.goal, now: args.now, cause: "deny",
     data: { code: "permission-denied", reason: `the guard hold "${args.token}" expired without a release; timeout is deny (SPEC 13.6: fail closed)` },
-    now: args.now,
   });
-  if (!res.won) await projectGoalTerminal(kv, jsm, space, args.goal); // converge onto the racing winner
   return res;
 }

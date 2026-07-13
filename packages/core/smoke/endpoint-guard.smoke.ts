@@ -20,9 +20,9 @@ import { createUser } from "@nats-io/nkeys";
 import {
   isReachable, EpEnvelopeError, signArtifact,
   createEndpointStreams, openRecordsBucket,
-  runGuardGate, holdGuardedGoal, releaseGuardHold, expireGuardHold,
+  actionContext, runGuardGate, holdGuardedGoal, releaseGuardHold, expireGuardHold,
   createGoal, readGoalStatus, transitionGoal, commitGoalResult, readCheckpointStatus,
-  type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam,
+  type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam, type ActionContext,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -117,46 +117,47 @@ try {
   const jsm = await jetstreamManager(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const kv = await openRecordsBucket(nc, SPACE);
+  const ctx: ActionContext = actionContext(kv, js, jsm, SPACE);
   const INSTANCE = "i".repeat(26);
   const spec = (fingerprint: string) => ({ fingerprint, command: "deploy", caller: { id: "u_abc.worker", lifecycleUid: UID }, sourceSeq: 1, acceptedAt: NOW });
 
   // hold → checkpoint owned by the guard responder + goal waiting
   const g1 = goalOf("g-hold");
-  await createGoal(kv, g1, spec("sha256:h1"));
-  await transitionGoal(kv, g1, "running");
-  const held = await holdGuardedGoal(kv, js, SPACE, { goal: g1, hold: { token: "cp-g1", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  await createGoal(ctx, g1, spec("sha256:h1"));
+  await transitionGoal(ctx, g1, "running", { ownerAuthored: true });
+  const held = await holdGuardedGoal(ctx, { goal: g1, hold: { token: "cp-g1", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   c("a HOLD converts the action to waiting carrying the checkpoint coordinate",
     held.state === "waiting" && held.checkpoint?.token === "cp-g1" && held.checkpoint?.deadlineGeneration === 1);
   const cpStatus = await readCheckpointStatus(kv, { endpoint: "manager", token: "cp-g1" });
   c("…and the minted checkpoint is waiting with the hold's deadline", cpStatus?.value.state === "waiting" && cpStatus?.value.deadline === NOW + 60_000);
   await rejects("a release by a presenter that is NOT the guard responder refuses (the checkpoint is owned by the guard decision)",
-    () => releaseGuardHold(kv, js, jsm, SPACE, { goal: g1, token: "cp-g1", presenter: { id: "u_evil", lifecycleUid: "e".repeat(26) }, now: NOW + 100 }), "permission-denied");
-  const released = await releaseGuardHold(kv, js, jsm, SPACE, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 200 });
+    () => releaseGuardHold(ctx, { goal: g1, token: "cp-g1", presenter: { id: "u_evil", lifecycleUid: "e".repeat(26) }, now: NOW + 100 }), "permission-denied");
+  const released = await releaseGuardHold(ctx, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 200 });
   c("the guard responder's release resumes the one-use checkpoint and the goal returns to running",
     released.settle.settle === "resumed" && released.status.state === "running");
   await rejects("a DUPLICATE release refuses (resume is one-use)",
-    () => releaseGuardHold(kv, js, jsm, SPACE, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 300 }), "conflict");
+    () => releaseGuardHold(ctx, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 300 }), "conflict");
 
   // expiry: an expired hold is DENY → the goal fails closed
   const g2 = goalOf("g-expire");
-  await createGoal(kv, g2, spec("sha256:h2"));
-  await transitionGoal(kv, g2, "running");
-  await holdGuardedGoal(kv, js, SPACE, { goal: g2, hold: { token: "cp-g2", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  await createGoal(ctx, g2, spec("sha256:h2"));
+  await transitionGoal(ctx, g2, "running", { ownerAuthored: true });
+  await holdGuardedGoal(ctx, { goal: g2, hold: { token: "cp-g2", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   await rejects("a release AFTER the hold deadline refuses (the resume seam drives EXPIRED; an expired hold never releases)",
-    () => releaseGuardHold(kv, js, jsm, SPACE, { goal: g2, token: "cp-g2", presenter: guardResponder, now: NOW + 1_000 }), "failed-precondition");
-  const expired = await expireGuardHold(kv, js, jsm, SPACE, { goal: g2, token: "cp-g2", now: NOW + 1_100 });
+    () => releaseGuardHold(ctx, { goal: g2, token: "cp-g2", presenter: guardResponder, now: NOW + 1_000 }), "failed-precondition");
+  const expired = await expireGuardHold(ctx, { goal: g2, token: "cp-g2", now: NOW + 1_100 });
   c("an expired hold commits the goal terminal FAILED (timeout is deny, fail closed)",
     expired.won && expired.fact.state === "failed" && (expired.fact.data as { code: string }).code === "permission-denied");
-  c("…and the goal's projection follows", (await readGoalStatus(kv, g2))?.value.state === "failed");
+  c("…and the goal's projection follows", (await readGoalStatus(ctx, g2))?.value.state === "failed");
 
   // expiry racing a completion: the commit point decides; the expiry observes the winner
   const g3 = goalOf("g-race");
-  await createGoal(kv, g3, spec("sha256:h3"));
-  await transitionGoal(kv, g3, "running");
-  await commitGoalResult(kv, js, jsm, SPACE, { ref: g3, state: "succeeded", now: NOW + 10 });
-  const raced = await expireGuardHold(kv, js, jsm, SPACE, { goal: g3, token: "cp-g3", now: NOW + 20 });
+  await createGoal(ctx, g3, spec("sha256:h3"));
+  await transitionGoal(ctx, g3, "running", { ownerAuthored: true });
+  await commitGoalResult(ctx, { ref: g3, now: NOW + 10, cause: "complete", state: "succeeded" });
+  const raced = await expireGuardHold(ctx, { goal: g3, token: "cp-g3", now: NOW + 20 });
   c("an expiry racing a completed goal observes the WINNING terminal (first terminal fact wins uniformly)",
-    !raced.won && raced.fact.state === "succeeded" && (await readGoalStatus(kv, g3))?.value.state === "succeeded");
+    !raced.won && raced.fact.state === "succeeded" && (await readGoalStatus(ctx, g3))?.value.state === "succeeded");
 
   await nc.close();
 } finally {
