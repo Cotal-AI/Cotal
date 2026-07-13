@@ -53,6 +53,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const until = async (cond: () => boolean, ms = 8000): Promise<boolean> => {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) await wait(100);
@@ -124,6 +125,11 @@ try {
   const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
   check("up exits 0", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
+  check(
+    "up summary reports the complete user-auth component set",
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: cotal down$/m.test(plain(up.out)),
+    up.out,
+  );
   const stateDir = userAuthStateDir(root, SPACE);
   for (const f of ["callout.json", "issuer.json", "owner-secret.json", "idp.json", "service-keys.json", "auth-service.json"])
     check(`space-scoped state exists: ${f}`, existsSync(join(stateDir, f)));
