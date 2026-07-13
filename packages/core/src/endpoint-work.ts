@@ -195,18 +195,26 @@ export type WorkWorker =
   | { kind: "agent"; owner: string; actor: string; lifecycleUid: string }
   | { kind: "endpoint"; owner: string; actor: string; lifecycleUid: string; epoch: number };
 
+/** Detach + validate a caller-supplied worker at seam entry, reading each property EXACTLY
+ *  ONCE (single-read: a getter answering differently between a validation read and a
+ *  construction read must not split the principal that was checked from the one persisted). */
 function assertWorker(w: WorkWorker, what: string): WorkWorker {
-  assertBoundedOwner(w.owner, `${what} owner`);
-  assertBoundedOwner(w.actor, `${what} actor`);
-  assertLifecycleToken(w.lifecycleUid, `${what} lifecycleUid`);
-  if (w.kind === "endpoint") {
-    if (!Number.isSafeInteger(w.epoch) || w.epoch < 0)
+  const kind = w.kind;
+  const owner = w.owner;
+  const actor = w.actor;
+  const lifecycleUid = w.lifecycleUid;
+  assertBoundedOwner(owner, `${what} owner`);
+  assertBoundedOwner(actor, `${what} actor`);
+  assertLifecycleToken(lifecycleUid, `${what} lifecycleUid`);
+  if (kind === "endpoint") {
+    const epoch = w.epoch;
+    if (!Number.isSafeInteger(epoch) || epoch < 0)
       throw new EpEnvelopeError("failed-precondition", `${what} is an endpoint worker but carries no valid epoch; an endpoint worker's process epoch is its fence (SPEC 13.8)`);
-    return { kind: "endpoint", owner: w.owner, actor: w.actor, lifecycleUid: w.lifecycleUid, epoch: w.epoch };
+    return Object.freeze({ kind: "endpoint", owner, actor, lifecycleUid, epoch });
   }
-  if (w.kind !== "agent")
+  if (kind !== "agent")
     throw new EpEnvelopeError("failed-precondition", `${what} has an unknown worker kind; a worker is "agent" or "endpoint" (SPEC 13.5)`);
-  return { kind: "agent", owner: w.owner, actor: w.actor, lifecycleUid: w.lifecycleUid };
+  return Object.freeze({ kind: "agent", owner, actor, lifecycleUid });
 }
 
 function assertClosedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {

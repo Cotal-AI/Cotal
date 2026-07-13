@@ -432,6 +432,22 @@ try {
       () => reconcileWorkItem(ctx, { ref: rDel, itemBytes: enc("w5"), workExpiry: EXPIRY, now: NOW }), "failed-precondition");
   }
 
+  // ── the worker is detached SINGLE-READ at seam entry: a getter answering one principal to
+  //    the validation read and another to a construction read must not split what was checked
+  //    from what is persisted — each property is read exactly once. ──
+  {
+    const rShift = ref("req-6");
+    const eShift = await enqueueWorkItem(ctx, rShift, enc("w6"));
+    let ownerReads = 0;
+    const shiftyWorker = {
+      kind: "agent", actor: "alpha", lifecycleUid: "a".repeat(26),
+      get owner() { return ownerReads++ === 0 ? "u_wrk" : "u_evil"; },
+    } as WorkWorker;
+    const leased = await leaseWorkItem(ctx, { ref: rShift, sourceSeq: eShift.seq!, attempt: 1, worker: shiftyWorker, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    c("a shifting worker getter binds exactly the FIRST-read principal (validated = persisted)",
+      leased.worker?.owner === "u_wrk" && ownerReads === 1, JSON.stringify({ owner: leased.worker?.owner, ownerReads }));
+  }
+
   await nc.close();
 } finally {
   broker.kill("SIGKILL");
