@@ -5,8 +5,10 @@
  * broker delivery count), fencing advance on redelivery, the commit gate (execution binding →
  * token → bound worker → FRESH endpoint epoch → workExpiry → leaseDeadline), the lease-fence CAS
  * (a stale attempt cannot commit after reassignment; an already-settled item cannot be leased),
- * the workExpiry commit fence, the duplicate-dominates-expiry cache rule, and the §13.6
- * reconciliation predicate incl. crashed-commit recovery and the DIRECT-failure distinction.
+ * the workExpiry commit fence + identity-bind, the duplicate-dominates-expiry cache rule, the
+ * no-lease expiry settling THROUGH the lease key (a racing first lease contends), the detached
+ * outcome snapshot, the budgeted/validated epoch resolver, and the §13.6 reconciliation
+ * predicate incl. crashed-commit recovery and the DIRECT-failure distinction.
  *
  * Run: pnpm smoke:ep-work   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -57,6 +59,7 @@ try {
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const kv = await openRecordsBucket(nc, SPACE);
   const ctx: WorkPoolContext = workPoolContext(kv, js, jsm, SPACE);
+  c("the work-pool context is FROZEN (the space bond cannot be swapped after construction)", Object.isFrozen(ctx));
   const NOW = 1_000_000;
   const EXPIRY = NOW + 60_000;
 
@@ -82,10 +85,10 @@ try {
     () => leaseWorkItem(ctx, { ref: r1, sourceSeq: m1!.seq, attempt: 1, worker: workerA, now: EXPIRY + 1, leaseTtlMs: 5_000, workExpiry: EXPIRY }), "expired");
   const lease1 = await leaseWorkItem(ctx, { ref: r1, sourceSeq: m1!.seq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
   c("the first lease records attempt 1 / token 1 / the owner deadline / the recorded worker",
-    lease1.state === "leased" && lease1.attempt === 1 && lease1.fencingToken === 1 && lease1.leaseDeadline === NOW + 5_000 && lease1.worker.actor === "alpha");
+    lease1.state === "leased" && lease1.attempt === 1 && lease1.fencingToken === 1 && lease1.leaseDeadline === NOW + 5_000 && lease1.worker?.actor === "alpha");
   const lease1b = await leaseWorkItem(ctx, { ref: r1, sourceSeq: m1!.seq, attempt: 1, worker: workerB, now: NOW + 100, leaseTtlMs: 5_000, workExpiry: EXPIRY });
   c("a duplicate lease for the STILL-CURRENT attempt returns the SAME lease (no reassignment within an attempt)",
-    lease1b.fencingToken === 1 && lease1b.worker.actor === "alpha" && lease1b.leaseDeadline === NOW + 5_000);
+    lease1b.fencingToken === 1 && lease1b.worker?.actor === "alpha" && lease1b.leaseDeadline === NOW + 5_000);
   await rejects("a lease naming a DIFFERENT stream sequence for the same identity refuses",
     () => leaseWorkItem(ctx, { ref: r1, sourceSeq: m1!.seq + 99, attempt: 1, worker: workerB, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY }), "conflict");
   {
@@ -206,6 +209,68 @@ try {
   c("a raced/duplicate expired settlement reads the winning terminal", rec4b.state === "expired-settled");
   await rejects("a lease on the expired-settled item refuses", // expired work refuses at the workExpiry guard
     () => leaseWorkItem(ctx, { ref: r4, sourceSeq: 42, attempt: 1, worker: workerA, now: NOW + 2, leaseTtlMs: 5_000, workExpiry: NOW - 1 }), "expired");
+
+  // ── HIGH: no-lease expiry settles THROUGH the lease key, so a racing first lease contends ──
+  {
+    // An expired NEVER-LEASED item is settled by CAS-CREATING a worker-less settled:expired
+    // lease on the LEASE KEY (never by writing the fact directly), so a racing first lease —
+    // e.g. an owner whose clock is behind the reconciler's — contends on the same key and
+    // observes the settlement instead of assigning dead work behind the expiry.
+    const rr = ref("req-race");
+    await enqueueWorkItem(ctx, rr, enc("wr"));
+    const horizon = NOW + 100;
+    const recR = await reconcileWorkItem(ctx, { ref: rr, itemBytes: enc("wr"), workExpiry: horizon, now: horizon });
+    c("an expired never-leased item settles terminally `expired`", recR.state === "expired-settled" && recR.fact.disposition === "expired");
+    const rrEntry = await kv.get(`lease.manager.builds.u_abc.worker.${UID}.req-race.spec`);
+    const rrLease = rrEntry && rrEntry.operation === "PUT" ? JSON.parse(new TextDecoder().decode(rrEntry.value)) as { state: string; disposition: string; worker?: unknown } : undefined;
+    c("…by CAS-creating a worker-less settled:expired LEASE record (the lease key is the arbiter, not the fact)",
+      rrLease?.state === "settled" && rrLease?.disposition === "expired" && rrLease?.worker === undefined);
+    await rejects("a racing first lease (owner clock still BEFORE the horizon) contends on the key and refuses settled",
+      () => leaseWorkItem(ctx, { ref: rr, sourceSeq: 7, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: horizon }), "failed-precondition");
+  }
+
+  // ── workExpiry is identity-bound across lease calls ──
+  {
+    const rb2 = ref("req-bind");
+    const bSeq = (await enqueueWorkItem(ctx, rb2, enc("wb"))).seq!;
+    await leaseWorkItem(ctx, { ref: rb2, sourceSeq: bSeq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 1_000, workExpiry: EXPIRY });
+    await rejects("a redelivery lease supplying a DIFFERENT workExpiry refuses (the horizon is fixed at acceptance, never re-set)",
+      () => leaseWorkItem(ctx, { ref: rb2, sourceSeq: bSeq, attempt: 2, worker: workerB, now: NOW + 10, leaseTtlMs: 1_000, workExpiry: EXPIRY + 1 }), "conflict");
+  }
+
+  // ── the committed outcome is a detached strict-canonical snapshot ──
+  {
+    const rs = ref("req-snap");
+    const sSeq = (await enqueueWorkItem(ctx, rs, enc("ws"))).seq!;
+    await leaseWorkItem(ctx, { ref: rs, sourceSeq: sSeq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    const out = { n: 1, tags: ["a"] };
+    const snapCommit = await commitWorkItem(ctx, { ref: rs, caller: workerA, lease: { sourceSeq: sSeq, attempt: 1, fencingToken: 1 }, outcome: out, now: NOW + 10 });
+    out.n = 999; out.tags.push("MUTATED");
+    const snapFact = await readWorkTerminal(ctx, rs);
+    c("the cached outcome is a DETACHED snapshot (a later caller mutation never reaches the lease or terminal)",
+      snapCommit.won && snapFact?.disposition === "committed"
+      && (snapFact.outcome as { n: number; tags: string[] }).n === 1
+      && (snapFact.outcome as { n: number; tags: string[] }).tags.length === 1);
+  }
+
+  // ── the fresh-epoch resolver is BUDGETED and its answer is validated ──
+  {
+    const rbu = ref("req-budget");
+    const buSeq = (await enqueueWorkItem(ctx, rbu, enc("wbu"))).seq!;
+    await leaseWorkItem(ctx, { ref: rbu, sourceSeq: buSeq, attempt: 1, worker: epWorker(3), now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    await rejects("a HUNG epoch resolver refuses `unavailable` within the owner's budget, never a hung commit",
+      () => commitWorkItem(ctx, { ref: rbu, caller: epWorker(3), lease: { sourceSeq: buSeq, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW + 10, resolveCurrentEpoch: () => new Promise<never>(() => {}), epochResolveBudgetMs: 100 }), "unavailable");
+    await rejects("a resolver returning a NON-INTEGER epoch never authorizes (fail-closed, not coerced)",
+      () => commitWorkItem(ctx, { ref: rbu, caller: epWorker(3), lease: { sourceSeq: buSeq, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW + 10, resolveCurrentEpoch: (() => "3") as unknown as () => number, epochResolveBudgetMs: 100 }), "internal");
+  }
+
+  // ── a garbled cross-variant lease record never authorizes ──
+  {
+    const rg = ref("req-garbled");
+    await kv.put(`lease.manager.builds.u_abc.worker.${UID}.req-garbled.spec`, enc(JSON.stringify({ v: 1, state: "leased", sourceSeq: 1, attempt: 1, worker: workerA, fencingToken: 1, leaseDeadline: NOW + 1_000, workExpiry: EXPIRY, disposition: "committed" })));
+    await rejects("a `leased` record carrying settlement fields is garbled and never authorizes",
+      () => commitWorkItem(ctx, { ref: rg, caller: workerA, lease: { sourceSeq: 1, attempt: 1, fencingToken: 1 }, outcome: {}, now: NOW }), "internal");
+  }
 
   // ── malformed terminal fact does NOT count as settlement ──
   {

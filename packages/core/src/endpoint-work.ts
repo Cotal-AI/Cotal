@@ -34,7 +34,7 @@
 import type { KV } from "@nats-io/kv";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders } from "@nats-io/transport-node";
-import { rawDigest } from "./canonical.js";
+import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epwSubject, epfSubject, assertBoundedOwner, assertLifecycleToken, type EpCaller } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry } from "./endpoint-records.js";
@@ -62,10 +62,11 @@ export interface WorkPoolContext {
   space: string;
 }
 
-/** Bond the resources to one space. */
+/** Bond the resources to one space. The returned context is FROZEN so a caller cannot later
+ *  swap in a foreign-space KV/JS/JSM after construction. */
 export function workPoolContext(kv: KV, js: JetStreamClient, jsm: JetStreamManager, space: string): WorkPoolContext {
   if (typeof space !== "string" || space.length === 0) throw new EpEnvelopeError("failed-precondition", "a work-pool context needs a space");
-  return { kv, js, jsm, space };
+  return Object.freeze({ kv, js, jsm, space });
 }
 
 /** The item's stored subject (`epw.<e>.<pool>.<cOwner>.<cActor>.<cUid>.<id>`). */
@@ -164,7 +165,8 @@ function parseWorker(raw: unknown, key: string): WorkWorker {
     : { kind: "agent", owner: w.owner, actor: w.actor, lifecycleUid: w.lifecycleUid };
 }
 
-function sameWorker(a: WorkWorker, b: WorkWorker): boolean {
+function sameWorker(a: WorkWorker | undefined, b: WorkWorker | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
   return a.kind === b.kind && a.owner === b.owner && a.actor === b.actor && a.lifecycleUid === b.lifecycleUid
     && (a.kind !== "endpoint" || (b.kind === "endpoint" && a.epoch === b.epoch));
 }
@@ -180,7 +182,9 @@ export interface WorkLease {
   sourceSeq: number;
   /** The broker delivery count of the owner's fetch: the ONLY evidence of delivery. */
   attempt: number;
-  worker: WorkWorker;
+  /** Present for `leased` and `settled:committed`; ABSENT for a NEVER-LEASED `settled:expired`
+   *  item (reconciliation settled a dead item that was accepted+enqueued but never leased). */
+  worker?: WorkWorker;
   /** CAS-incremented once per attempt — the §13.8 monotonic fencing token. */
   fencingToken: number;
   /** From the OWNER's own clock, CLAMPED to `workExpiry`; expiry revokes the claim. */
@@ -193,6 +197,10 @@ export interface WorkLease {
   committedTs?: number;
 }
 
+/** Closed per-state/per-disposition validation (§13.4/§13.5): a `leased` lease MUST carry a
+ *  worker + positive attempt/sourceSeq and NO settlement fields; a `settled:committed` MUST
+ *  carry a worker + committedTs (its terminal fact derives from it); a `settled:expired` MAY be
+ *  worker-less (a never-leased dead item). Garbled cross-variant state never authorizes. */
 function parseLease(raw: unknown, key: string): WorkLease {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `lease record ${key} is not an object; garbled mediated lease state never authorizes (SPEC 13.5)`);
@@ -202,11 +210,21 @@ function parseLease(raw: unknown, key: string): WorkLease {
   for (const [name, v] of [["sourceSeq", o.sourceSeq], ["attempt", o.attempt], ["fencingToken", o.fencingToken], ["leaseDeadline", o.leaseDeadline], ["workExpiry", o.workExpiry]] as const)
     if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0)
       throw new EpEnvelopeError("internal", `lease record ${key} field ${name} is not a safe integer; garbled state never authorizes (SPEC 13.5)`);
-  if (o.state === "settled" && o.disposition !== "committed" && o.disposition !== "expired")
+  const committed = o.state === "settled" && o.disposition === "committed";
+  const expired = o.state === "settled" && o.disposition === "expired";
+  if (o.state === "settled" && !committed && !expired)
     throw new EpEnvelopeError("internal", `settled lease record ${key} has no valid disposition; garbled state never authorizes (SPEC 13.5)`);
+  if (o.state === "leased" && (o.disposition !== undefined || o.outcome !== undefined || o.committedTs !== undefined))
+    throw new EpEnvelopeError("internal", `leased lease record ${key} carries settlement fields; garbled cross-variant state never authorizes (SPEC 13.5)`);
+  const needsWorker = o.state === "leased" || committed;
+  if (needsWorker && (o.attempt as number) < 1)
+    throw new EpEnvelopeError("internal", `lease record ${key} is ${o.state}/${String(o.disposition ?? "")} with a zero attempt; garbled state never authorizes (SPEC 13.5)`);
+  if (committed && (typeof o.committedTs !== "number" || !Number.isSafeInteger(o.committedTs) || o.committedTs < 0))
+    throw new EpEnvelopeError("internal", `committed lease record ${key} has no valid committedTs; garbled state never authorizes (SPEC 13.5)`);
   return {
     v: 1, state: o.state, sourceSeq: o.sourceSeq as number, attempt: o.attempt as number,
-    worker: parseWorker(o.worker, key), fencingToken: o.fencingToken as number,
+    ...(needsWorker ? { worker: parseWorker(o.worker, key) } : {}),
+    fencingToken: o.fencingToken as number,
     leaseDeadline: o.leaseDeadline as number, workExpiry: o.workExpiry as number,
     ...(o.state === "settled" ? { disposition: o.disposition as "committed" | "expired", outcome: o.outcome, committedTs: o.committedTs as number | undefined } : {}),
   };
@@ -271,10 +289,17 @@ export async function leaseWorkItem(
       catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
     }
     const stored = parseLease(decodeJson(entry.value, key), key);
-    if (stored.sourceSeq !== args.sourceSeq)
-      throw new EpEnvelopeError("conflict", `the lease for this acceptance identity binds stream sequence ${stored.sourceSeq}, not ${args.sourceSeq}; a request id becomes new work only after workExpiry AND fact retention pass (SPEC 13.8)`);
+    // Settlement DOMINATES every binding check: a never-leased expired settlement carries
+    // sentinel coordinates (sourceSeq 0), so binding refusals on a settled item would mislead.
     if (stored.state === "settled")
       throw new EpEnvelopeError("failed-precondition", `the item is already settled ${stored.disposition}; a committed item can never be leased again — observe the terminal and ack the redelivery without effect (SPEC 13.5/13.6)`);
+    if (stored.sourceSeq !== args.sourceSeq)
+      throw new EpEnvelopeError("conflict", `the lease for this acceptance identity binds stream sequence ${stored.sourceSeq}, not ${args.sourceSeq}; a request id becomes new work only after workExpiry AND fact retention pass (SPEC 13.8)`);
+    // `workExpiry` is IDENTITY-BOUND: it is set once from the AcceptanceFact and every later
+    // lease call for the same execution MUST carry the SAME horizon (a redelivery cannot extend
+    // or shorten the absolute work expiry, SPEC 13.8).
+    if (stored.workExpiry !== args.workExpiry)
+      throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${stored.workExpiry} but this call supplies ${args.workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);
     if (stored.attempt === args.attempt) return stored; // first-wins: the still-current attempt's lease, verbatim
     if (stored.attempt > args.attempt)
       throw new EpEnvelopeError("expired", `attempt ${args.attempt} is superseded: redelivery advanced this item to attempt ${stored.attempt} (SPEC 13.5)`);
@@ -335,8 +360,11 @@ export async function readWorkTerminal(ctx: WorkPoolContext, ref: WorkItemRef): 
 
 /** Build the terminal fact a settled lease derives. */
 function terminalOf(ref: WorkItemRef, lease: WorkLease): WorkTerminalFact {
-  if (lease.disposition === "committed")
-    return { v: 1, disposition: "committed", pool: ref.pool, caller: ref.acceptance, sourceSeq: lease.sourceSeq, attempt: lease.attempt, fencingToken: lease.fencingToken, worker: lease.worker, outcome: lease.outcome, ts: lease.committedTs ?? 0 };
+  if (lease.disposition === "committed") {
+    if (lease.worker === undefined || lease.committedTs === undefined)
+      throw new EpEnvelopeError("internal", `a committed lease for ${ref.acceptance.id} is missing its worker/committedTs; garbled state never authorizes (SPEC 13.5)`);
+    return { v: 1, disposition: "committed", pool: ref.pool, caller: ref.acceptance, sourceSeq: lease.sourceSeq, attempt: lease.attempt, fencingToken: lease.fencingToken, worker: lease.worker, outcome: lease.outcome, ts: lease.committedTs };
+  }
   return { v: 1, disposition: "expired", pool: ref.pool, caller: ref.acceptance, workExpiry: lease.workExpiry, ts: lease.committedTs ?? 0 };
 }
 
@@ -380,6 +408,9 @@ export async function commitWorkItem(
     /** REQUIRED for an endpoint worker: fresh current-epoch resolver (null = retired/unknown
      *  lifecycle). Absent/ignored for an agent worker. */
     resolveCurrentEpoch?: (worker: WorkWorker) => Promise<number | null> | number | null;
+    /** OWNER-CONTROLLED budget on the resolver await (default 5000ms): a stuck lifecycle
+     *  authority is a bounded `unavailable` refusal, never a hung commit. */
+    epochResolveBudgetMs?: number;
   },
 ): Promise<{ won: boolean; fact: WorkTerminalFact }> {
   assertSafeInt(args.now, "now");
@@ -401,31 +432,44 @@ export async function commitWorkItem(
     throw new EpEnvelopeError("conflict", `the item is already settled ${stored.disposition} under a different attempt/worker; this commit is superseded (SPEC 13.5)`);
   }
 
+  // parseLease guarantees a `leased` record carries its worker; narrow for the checks below.
+  const bound = stored.worker;
+  if (bound === undefined)
+    throw new EpEnvelopeError("internal", `leased record ${key} has no worker; garbled state never authorizes (SPEC 13.5)`);
   if (stored.sourceSeq !== args.lease.sourceSeq)
     throw new EpEnvelopeError("expired", `the commit names stream sequence ${args.lease.sourceSeq} but the lease binds ${stored.sourceSeq}; a stale execution binding never settles (SPEC 13.5)`);
   if (stored.attempt !== args.lease.attempt || stored.fencingToken !== args.lease.fencingToken)
     throw new EpEnvelopeError("expired", `stale fencing: the commit carries (attempt ${args.lease.attempt}, token ${args.lease.fencingToken}) but the lease is (attempt ${stored.attempt}, token ${stored.fencingToken}) (SPEC 13.5)`);
-  if (!sameWorker(stored.worker, caller))
-    throw new EpEnvelopeError("permission-denied", `the commit caller is not the lease's bound worker (${stored.worker.owner}.${stored.worker.actor}/${stored.worker.lifecycleUid}); the binding is owner-recorded at assignment (SPEC 13.5)`);
+  if (!sameWorker(bound, caller))
+    throw new EpEnvelopeError("permission-denied", `the commit caller is not the lease's bound worker (${bound.owner}.${bound.actor}/${bound.lifecycleUid}); the binding is owner-recorded at assignment (SPEC 13.5)`);
   // FRESH lifecycle/epoch currency for an endpoint worker (§13.8): a superseded process cannot
   // settle its predecessor's lease.
-  if (stored.worker.kind === "endpoint") {
+  if (bound.kind === "endpoint") {
     if (typeof args.resolveCurrentEpoch !== "function")
       throw new EpEnvelopeError("failed-precondition", `committing an endpoint worker's item requires a fresh-epoch resolver (SPEC 13.8: lifecycle/epoch currency is validated at the commit boundary)`);
-    const current = await args.resolveCurrentEpoch(stored.worker);
+    const budget = args.epochResolveBudgetMs ?? 5_000;
+    if (!Number.isSafeInteger(budget) || budget <= 0)
+      throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(args.epochResolveBudgetMs)}`);
+    const current = await resolveWithBudget(args.resolveCurrentEpoch(bound), budget);
+    if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
+      throw new EpEnvelopeError("internal", `the fresh-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.8)`);
     if (current === null)
       throw new EpEnvelopeError("expired", `the endpoint worker's lifecycle is retired/unknown; a retired worker cannot commit (SPEC 13.8)`);
-    if (current !== stored.worker.epoch)
-      throw new EpEnvelopeError("expired", `the endpoint worker's lease bound epoch ${stored.worker.epoch} but the current process epoch is ${current}; a superseded process cannot settle (SPEC 13.8)`);
+    if (current !== bound.epoch)
+      throw new EpEnvelopeError("expired", `the endpoint worker's lease bound epoch ${bound.epoch} but the current process epoch is ${current}; a superseded process cannot settle (SPEC 13.8)`);
   }
   if (args.now >= stored.workExpiry)
     throw new EpEnvelopeError("expired", `the item's workExpiry (${stored.workExpiry}) has passed at the owner clock (${args.now}); the item is dead, leased or not (SPEC 13.8)`);
   if (args.now >= stored.leaseDeadline)
     throw new EpEnvelopeError("expired", `the lease expired at ${stored.leaseDeadline} (owner clock ${args.now}); expiry revokes the claim AT that deadline (SPEC 13.5)`);
 
+  // Snapshot the outcome to an immutable strict-canonical copy BEFORE the CAS await, so the lease
+  // write and the derived terminal fact can never diverge under a concurrent mutation of the
+  // caller's outcome object (M: mutable-outcome divergence).
+  const outcomeSnapshot: unknown = JSON.parse(canonicalJson(args.outcome === undefined ? null : args.outcome));
   // THE FENCE: advance the lease to settled on its OWN revision. A concurrent redelivery-advance
   // or expiry-settle contends on this exact revision; the loser re-reads and re-decides.
-  const settled: WorkLease = { ...stored, state: "settled", disposition: "committed", outcome: args.outcome, committedTs: args.now };
+  const settled: WorkLease = { ...stored, state: "settled", disposition: "committed", outcome: outcomeSnapshot, committedTs: args.now };
   try {
     await updateRecordEntry(ctx.kv, key, settled, entry.revision);
   } catch (e) {
@@ -438,6 +482,17 @@ export async function commitWorkItem(
     throw new EpEnvelopeError("expired", `a concurrent redelivery advanced the lease to attempt ${now2.attempt}; this commit is superseded (SPEC 13.5)`);
   }
   return publishTerminal(ctx, args.ref, terminalOf(args.ref, settled));
+}
+
+/** Bound the fresh-epoch resolver await: past the budget the commit REFUSES `unavailable`
+ *  (fail-closed, retryable) instead of hanging on a stuck lifecycle authority. */
+async function resolveWithBudget(p: Promise<number | null> | number | null, budgetMs: number): Promise<number | null> {
+  if (!(p instanceof Promise)) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the fresh-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung commit (SPEC 13.8)`)), budgetMs);
+  });
+  try { return await Promise.race([p, deadline]); } finally { clearTimeout(timer); }
 }
 
 async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Uint8Array): Promise<{ won: boolean }> {
@@ -468,8 +523,9 @@ export type WorkReconcileVerdict =
  *      the derived terminal (idempotent) → SETTLED — recovery, never re-enqueued;
  *   3. `now >= workExpiry` → the item is DEAD, leased or not: fence it by CAS-settling the lease
  *      `expired` (racing a live commit on the SAME key; a lost CAS re-reads the winner), then
- *      publish the derived terminal → EXPIRED-SETTLED; with no lease record, the terminal
- *      create-only CAS is itself the arbiter (no commit can race a lease-less item);
+ *      publish the derived terminal → EXPIRED-SETTLED; with no lease record, a worker-less
+ *      `settled:expired` lease is CAS-CREATED on the same key first, so a racing FIRST lease
+ *      contends there instead of assigning dead work behind the expiry;
  *   4. a live pool entry exists (subject-confined DIRECT get) → LIVE;
  *   5. else re-check the terminal (a commit may have landed since step 1), then re-enqueue the
  *      SAME acceptance-derived bytes create-only — the ONLY re-enqueueable state. */
@@ -499,25 +555,33 @@ export async function reconcileWorkItem(
     return { state: pub.fact.disposition === "expired" ? "expired-settled" : "settled", fact: pub.fact };
   }
 
-  // (3) dead item: fence via the lease (if one exists) so a live commit and this expiry contend
-  // on the SAME revision, then derive the expired terminal.
+  // (3) dead item: the LEASE KEY is the arbiter either way. With a lease, CAS-settle it expired
+  // on its revision (a live commit contends on the SAME key); with NO lease, CAS-CREATE a
+  // worker-less settled:expired record create-only, so a racing FIRST lease loses its create and
+  // observes the settlement instead of assigning dead work. Only a settled lease derives the
+  // terminal — the EPF fact never leads the lease.
   if (args.now >= args.workExpiry) {
-    if (lease !== undefined) {
-      const settledExpired: WorkLease = { ...lease, state: "settled", disposition: "expired", committedTs: args.now };
-      try { await updateRecordEntry(ctx.kv, key, settledExpired, leaseEntry!.revision); }
-      catch (e) {
-        if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-        const now2 = parseLease(decodeJson((await ctx.kv.get(key))!.value, key), key);
-        const pub = await publishTerminal(ctx, args.ref, terminalOf(args.ref, now2)); // a commit/expiry raced; publish the winner
+    for (let pass = 0; pass < 2; pass++) {
+      const entry = pass === 0 ? leaseEntry : await ctx.kv.get(key);
+      const cur = entry && entry.operation === "PUT" ? parseLease(decodeJson(entry.value, key), key) : undefined;
+      if (cur?.state === "settled") { // a commit/expiry won; finalize the winner's terminal
+        const pub = await publishTerminal(ctx, args.ref, terminalOf(args.ref, cur));
         return { state: pub.fact.disposition === "expired" ? "expired-settled" : "settled", fact: pub.fact };
+      }
+      const settledExpired: WorkLease = cur !== undefined
+        ? { ...cur, state: "settled", disposition: "expired", committedTs: args.now }
+        : { v: 1, state: "settled", sourceSeq: 0, attempt: 0, fencingToken: 0, leaseDeadline: args.workExpiry, workExpiry: args.workExpiry, disposition: "expired", committedTs: args.now };
+      try {
+        if (cur !== undefined) await updateRecordEntry(ctx.kv, key, settledExpired, entry!.revision);
+        else await createRecordEntry(ctx.kv, key, settledExpired);
+      } catch (e) {
+        if (e instanceof EpEnvelopeError && e.code === "conflict") continue; // a lease/commit raced in on the same key; re-read and re-decide
+        throw e;
       }
       const pub = await publishTerminal(ctx, args.ref, terminalOf(args.ref, settledExpired));
       return { state: "expired-settled", fact: pub.fact };
     }
-    // No lease: the terminal create-only CAS is the sole arbiter.
-    const fact: WorkTerminalFact = { v: 1, disposition: "expired", pool: args.ref.pool, caller: args.ref.acceptance, workExpiry: args.workExpiry, ts: args.now };
-    const pub = await publishTerminal(ctx, args.ref, fact);
-    return { state: pub.fact.disposition === "expired" ? "expired-settled" : "settled", fact: pub.fact };
+    throw new EpEnvelopeError("conflict", `the lease record ${key} moved twice during one reconcile; re-read and re-decide (SPEC 13.8)`);
   }
 
   if (await liveEntryExists(ctx, args.ref)) return { state: "live" };
