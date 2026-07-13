@@ -567,7 +567,7 @@ export async function armCheckpointTimer(
   // different one (distsys 8dcad72 M5). Nothing below reads `msg` again.
   const subject = msg.subject;
   const headers = msg.headers;
-  const data = msg.data;
+  const data = new Uint8Array(msg.data); // COPY, not a reference: a caller-controlled header getter invoked in the scheduling-header scan below could otherwise mutate the live msg.data buffer between here and the decode (a Node Buffer/Uint8Array aliases through `const`). new Uint8Array(...) detaches the bytes at entry (distsys 6e8634d M5 re-open, same class as db85c4f).
   if (typeof subject !== "string" || subject.length === 0)
     throw new EpEnvelopeError("failed-precondition", `a .schedule request carries a subject string (SPEC 13.2)`);
   const budget = opts?.statusBudgetMs ?? 5_000;

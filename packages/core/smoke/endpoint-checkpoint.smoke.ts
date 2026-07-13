@@ -291,6 +291,23 @@ try {
     await rejects("a STUCK status authority is a bounded unavailable refusal, never a hung writer",
       () => armCheckpointTimer(hungCtx, req("cp5", SPACE), { statusBudgetMs: 100 }), "unavailable");
     await rejects("a non-positive statusBudgetMs refuses", () => armCheckpointTimer(wctx, req("cp5", SPACE), { statusBudgetMs: 0 }), "failed-precondition");
+
+    // M5 (distsys 6e8634d re-open): the request BYTES are COPIED at entry, so a header getter
+    // invoked during the scheduling-header scan cannot mutate the body the writer decodes. Mint
+    // cpm5 (gen1), heartbeat to gen2; offer a STALE gen1 body whose header getter rewrites the live
+    // buffer to the live gen2 body. With the entry copy the writer decodes gen1 (stale, armed:false);
+    // a reference (the pre-fix bug) would decode the mutated gen2 body and wrongly arm.
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpm5"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    await heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpm5"), instanceId: IID, epoch: EPOCH, deadline: NOW + 70_000, now: NOW + 100 });
+    await drainAndArm(1);
+    const gen2Body = new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "cpm5", generation: 2, deadline: NOW + 70_000 }));
+    const staleData = new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "cpm5", generation: 1, deadline: NOW + 60_000 }));
+    let getCalls = 0;
+    const mutatingHeaders = { get: (_h: string) => { getCalls++; staleData.set(gen2Body); return undefined; } };
+    const armed = await armCheckpointTimer(wctx, { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cpm5", "schedule"), headers: mutatingHeaders as never, data: staleData });
+    c("a header getter cannot mutate the request body the writer decodes (bytes copied at entry): a stale gen1 request stays stale even after a getter rewrites the live buffer to gen2",
+      armed.armed === false && getCalls > 0);
   }
 
   // ── re-verify 8ea3abe MEDIUM 4: full replay identity (deadline included) + entry snapshots ──
