@@ -175,11 +175,23 @@ export async function readReceipt(jsm: JetStreamManager, space: string, ref: Rec
   return raw === undefined ? undefined : parseReceipt(raw, ref, space);
 }
 
+/** Race the anchor resolution against the verification budget: a stuck registry is a bounded
+ *  `unavailable` refusal, never a hung verification. Races `Promise.resolve(p)` unconditionally
+ *  (a non-native thenable must not bypass the deadline). */
+async function withVerifyBudget<T>(p: Promise<T> | T, budgetMs: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; receipt verification is bounded and fails closed (SPEC 13.10)`)), budgetMs);
+  });
+  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
+}
+
 /** Verify a receipt (§13.10, fail loud): D28 signature over the EXACT RAW artifact against the
  *  FRESH-resolved anchor (role `receipts`, scope covering the attested endpoint, window at the
- *  receipt's `ts`), plus DIGEST RECOMPUTATION for every raw value the verifier holds — supplied
- *  `args` must recompute `argsDigest`, a supplied `result` must recompute `resultDigest` (and a
- *  receipt with no resultDigest cannot attest a result). Returns the parsed receipt. */
+ *  receipt's `ts`, resolved within a bounded budget), plus DIGEST RECOMPUTATION for every raw
+ *  value the verifier holds — supplied `args` must recompute `argsDigest`, a supplied `result`
+ *  must recompute `resultDigest` (and a receipt with no resultDigest cannot attest a result).
+ *  Returns the parsed receipt. */
 export async function verifyReceipt(
   raw: unknown,
   opts: {
@@ -188,10 +200,18 @@ export async function verifyReceipt(
     resolveAnchor: AnchorResolver;
     /** Raw values to recompute against, where held. `args` uses the undefined→null rule. */
     recompute?: { args?: unknown; result?: unknown };
+    /** Budget on the anchor resolution (default 5000ms): a stuck registry is a bounded
+     *  `unavailable`, never a hung verification. */
+    verifyBudgetMs?: number;
   },
 ): Promise<Receipt> {
+  const budget = opts.verifyBudgetMs ?? 5_000;
+  if (!Number.isSafeInteger(budget) || budget <= 0)
+    throw new EpEnvelopeError("failed-precondition", `verifyBudgetMs must be a positive integer; got ${JSON.stringify(opts.verifyBudgetMs)}`);
   const receipt = parseReceipt(raw, opts.ref, opts.space);
-  const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: receipt.signer.keyId, role: "receipts", at: receipt.ts });
+  const anchor = await withVerifyBudget(
+    resolveAnchorForUse(opts.resolveAnchor, { keyId: receipt.signer.keyId, role: "receipts", at: receipt.ts }),
+    budget, `the anchor resolution for receipt signer "${receipt.signer.keyId}"`);
   assertAnchorScopeCovers(anchor, "receipts", receipt.endpoint, "the receipt's attested endpoint");
   verifyArtifactSignature(raw as Record<string, unknown>, anchor);
   if (opts.recompute !== undefined && "args" in opts.recompute) {

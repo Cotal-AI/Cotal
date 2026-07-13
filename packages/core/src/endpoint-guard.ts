@@ -67,19 +67,36 @@ function parseObligation(raw: unknown, i: number): Omit<GuardObligation, "sig"> 
   return o as unknown as GuardObligation;
 }
 
+/** Race an await against the REMAINING guard budget: the whole gate (the guard call AND every
+ *  obligation's anchor resolution) is ONE bounded operation, so a stuck registry after the
+ *  guard answered cannot hang the gate. Timeout is DENY (SPEC 13.6: fail closed). Races
+ *  `Promise.resolve(p)` unconditionally (a non-native thenable must not bypass the deadline). */
+async function withGateBudget<T>(p: Promise<T> | T, remainingMs: number, what: string): Promise<T> {
+  if (remainingMs <= 0)
+    throw new EpEnvelopeError("permission-denied", `${what} found the guard budget already exhausted; the gate is one bounded operation and timeout is DENY (SPEC 13.6: fail closed)`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new EpEnvelopeError("permission-denied", `${what} did not answer within the remaining ${remainingMs}ms guard budget; timeout is DENY (SPEC 13.6: fail closed)`)), remainingMs);
+  });
+  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
+}
+
 /** Verify one obligation against the trust-anchor registry: D28 signature over the EXACT RAW
  *  artifact, `obligations` role, scope covering the GUARDED endpoint, anchor window at `iat`,
- *  obligation window at `now`, space + request binding. Any failure denies (fail closed). */
+ *  obligation window at `now`, space + request binding. Any failure denies (fail closed), and
+ *  the anchor resolution runs within the gate's REMAINING budget. */
 async function verifyObligation(
   raw: unknown, ob: GuardObligation, i: number,
-  opts: { resolveAnchor: AnchorResolver; now: number; space: string; endpoint: string; requestId: string },
+  opts: { resolveAnchor: AnchorResolver; now: number; space: string; endpoint: string; requestId: string; remainingMs: () => number },
 ): Promise<void> {
   if (ob.space !== opts.space) denyClosed(`obligation[${i}] is bound to space ${ob.space}, not ${opts.space}`);
   if (ob.requestId !== opts.requestId) denyClosed(`obligation[${i}] binds requestId ${ob.requestId}, not this request's ${opts.requestId} (an obligation is bound to its goal/request)`);
   if (opts.now < ob.iat || opts.now > ob.exp) denyClosed(`obligation[${i}] is outside its validity window [${ob.iat}, ${ob.exp}] at now ${opts.now}`);
   let anchor;
   try {
-    anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: ob.signer.keyId, role: "obligations", at: ob.iat });
+    anchor = await withGateBudget(
+      resolveAnchorForUse(opts.resolveAnchor, { keyId: ob.signer.keyId, role: "obligations", at: ob.iat }),
+      opts.remainingMs(), `obligation[${i}]'s anchor resolution`);
     assertAnchorScopeCovers(anchor, "obligations", opts.endpoint, `obligation[${i}] for endpoint`);
     verifyArtifactSignature(raw as Record<string, unknown>, anchor);
   } catch (e) {
@@ -152,19 +169,16 @@ export async function runGuardGate(opts: {
   if (!Number.isSafeInteger(opts.now) || opts.now < 0)
     throw new EpEnvelopeError("failed-precondition", `now must be a non-negative safe integer; got ${JSON.stringify(opts.now)}`);
 
+  // ONE total gate budget: the guard call and every obligation verification share this clock,
+  // so a stuck anchor registry AFTER the guard answered is still a bounded DENY.
+  const gateDeadlineAt = Date.now() + opts.deadlineMs;
+  const remainingMs = () => gateDeadlineAt - Date.now();
   let called: { answer: unknown; responder: { id: string; lifecycleUid: string } };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("permission-denied", `the guard did not answer within ${opts.deadlineMs}ms; an unreachable or slow guard is DENY (SPEC 13.6: fail closed)`)), opts.deadlineMs);
-  });
   try {
-    // Promise.resolve unconditionally: a non-native thenable must not bypass the deadline.
-    called = await Promise.race([Promise.resolve(opts.callGuard(opts.guardEndpoint)), deadline]);
+    called = await withGateBudget(opts.callGuard(opts.guardEndpoint), remainingMs(), "the guard");
   } catch (e) {
     if (e instanceof EpEnvelopeError && e.code === "permission-denied") throw e;
     denyClosed(`the guard call failed (${(e as Error)?.message ?? String(e)})`);
-  } finally {
-    clearTimeout(timer);
   }
   if (!isRec(called) || !isRec(called.responder)
     || typeof (called.responder as Record<string, unknown>).id !== "string"
@@ -176,7 +190,7 @@ export async function runGuardGate(opts: {
     throw new EpEnvelopeError("permission-denied", `the guard denied this request${answer.reason !== undefined ? `: ${answer.reason}` : ""} (SPEC 13.6: guard-then-effect)`);
   for (let i = 0; i < answer.obligations.length; i++)
     await verifyObligation(rawObligations[i], answer.obligations[i], i,
-      { resolveAnchor: opts.resolveAnchor, now: opts.now, space: opts.space, endpoint: opts.request.endpoint, requestId: opts.request.id });
+      { resolveAnchor: opts.resolveAnchor, now: opts.now, space: opts.space, endpoint: opts.request.endpoint, requestId: opts.request.id, remainingMs });
   if (answer.decision === "allow") return { decision: "allow", obligations: answer.obligations };
   return { decision: "hold", token: answer.token, holdDeadlineMs: answer.holdDeadlineMs, obligations: answer.obligations, responder: called.responder };
 }

@@ -89,6 +89,10 @@ await rejects("a receipt signed OUTSIDE the anchor's validity window fails",
   () => verifyReceipt(mint({ ts: NOW + 20_000_000 }), { ref, space: SPACE, resolveAnchor }), "permission-denied");
 await rejects("a garbled receipt (unknown field) never attests",
   () => parseReceipt({ ...receipt, rogue: 1 }, ref, SPACE), "internal");
+await rejects("a STUCK anchor registry is a bounded unavailable refusal, never a hung verification",
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor: () => new Promise(() => { /* never settles */ }), verifyBudgetMs: 100 }), "unavailable");
+await rejects("a non-positive verifyBudgetMs refuses",
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, verifyBudgetMs: 0 }), "failed-precondition");
 
 // ── create-only publication: one execution, one receipt, forever ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);

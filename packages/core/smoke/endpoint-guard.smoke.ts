@@ -103,6 +103,12 @@ await rejects("a TAMPERED obligation fails its signature and denies",
   () => gate(answering({ v: 1, decision: "allow", obligations: [{ ...signArtifact(obligationBody(), guardKp), attenuations: [{ maxItems: 999 }] }] })), "permission-denied");
 await rejects("an obligation with NO attenuations is garbled (an obligation that attenuates nothing)",
   () => gate(answering({ v: 1, decision: "allow", obligations: [signArtifact(obligationBody({ attenuations: [] }), guardKp)] })), "permission-denied");
+await rejects("a STUCK anchor registry AFTER the guard answered is a bounded DENY (obligation verification is inside the gate budget)",
+  () => gate(answering({ v: 1, decision: "allow", obligations: [signArtifact(obligationBody(), guardKp)] }),
+    { resolveAnchor: () => new Promise(() => { /* never settles */ }), deadlineMs: 150 }), "permission-denied");
+await rejects("the guard call and obligation verification share ONE gate budget (each alone fits; their sum must not)",
+  () => gate(() => new Promise((res) => setTimeout(() => res({ answer: { v: 1, decision: "allow", obligations: [signArtifact(obligationBody(), guardKp)] }, responder: guardResponder }), 100)),
+    { resolveAnchor: (k: string) => new Promise((res) => setTimeout(() => res(anchors.get(k)), 100)), deadlineMs: 150 }), "permission-denied");
 
 // ── the hold wiring over the checkpoint pause primitive (real broker) ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -158,6 +164,16 @@ try {
   const raced = await expireGuardHold(ctx, { goal: g3, token: "cp-g3", now: NOW + 20 });
   c("an expiry racing a completed goal observes the WINNING terminal (first terminal fact wins uniformly)",
     !raced.won && raced.fact.state === "succeeded" && (await readGoalStatus(ctx, g3))?.value.state === "succeeded");
+
+  // a TARGET-PINNED goal's hold expiry: the deny cause is owner-authored, so no executor is
+  // required at the terminal commit and the target pin cannot strand an expired hold.
+  const g4 = goalOf("g-target");
+  await createGoal(ctx, g4, { ...spec("sha256:h4"), target: { owner: "u_t", actor: "svc", lifecycleUid: "t".repeat(26), mappingRevision: 1 } });
+  await transitionGoal(ctx, g4, "running", { ownerAuthored: true });
+  await holdGuardedGoal(ctx, { goal: g4, hold: { token: "cp-g4", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  const expiredT = await expireGuardHold(ctx, { goal: g4, token: "cp-g4", now: NOW + 1_100 });
+  c("a TARGET-PINNED guard-held goal expires cleanly (deny is owner-authored: no executor at the terminal commit)",
+    expiredT.won && expiredT.fact.state === "failed" && (await readGoalStatus(ctx, g4))?.value.state === "failed");
 
   await nc.close();
 } finally {
