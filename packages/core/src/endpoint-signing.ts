@@ -39,6 +39,12 @@ export interface SignerAnchor {
   publicKey: string;
   /** The principal or reverse-DNS domain the key belongs to. */
   owner: string;
+  /** The LIFECYCLE UID of the owning principal (§13.1: a principal is `(id, lifecycleUid)`,
+   *  so the record identifies its key's principal fully). Absent for a domain-owned key.
+   *  REQUIRED wherever a verifier must bind the key to a specific lifecycle (a child handle's
+   *  issuer, §13.6) — there, an absent binding FAILS CLOSED: owner text alone would let a
+   *  recycled alias re-register a key and issue off its predecessor's artifacts. */
+  ownerLifecycleUid?: string;
   roles: readonly AnchorRole[];
   scope?: Partial<Record<AnchorRole, readonly string[]>>;
   /** Validity window, ms epoch, both inclusive. Rotation registers a successor and closes
@@ -110,6 +116,7 @@ function assertAnchorShape(a: unknown, keyId: string): SignerAnchor {
   if (o.keyId !== keyId) bad(`keyId ${JSON.stringify(o.keyId)} is not the resolved ${keyId}`);
   if (typeof o.publicKey !== "string" || o.publicKey.length === 0) bad("publicKey is not a string");
   if (typeof o.owner !== "string" || o.owner.length === 0) bad("owner is not a string");
+  if (o.ownerLifecycleUid !== undefined && (typeof o.ownerLifecycleUid !== "string" || o.ownerLifecycleUid.length === 0)) bad("ownerLifecycleUid is not a string");
   if (!Array.isArray(o.roles) || !o.roles.every((r) => (ANCHOR_ROLES as readonly string[]).includes(r as string))) bad("roles is not an array of anchor roles");
   if (o.scope !== undefined) {
     if (!isRec(o.scope)) bad("scope is not an object");
