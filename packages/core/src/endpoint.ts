@@ -3183,10 +3183,12 @@ export async function isReachable(
 
 /** What a connect attempt told us about the server — the distinction {@link isReachable} flattens.
  *  `auth-required` means a server answered but rejected these creds (so it IS up); `stale-auth`
- *  means the server is up and the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded
- *  lifetime (the broker's "authentication expired", or a cred that is locally provably expired) —
- *  the D5 credential-death event, whose repair is `doctor auth`, never a registry prune;
- *  `unreachable` means nothing answered (refused / timeout / a stale registry entry). */
+ *  means the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded lifetime, either because
+ *  the broker said "authentication expired" or because the cred is LOCALLY PROVABLY expired (its own
+ *  JWT `exp` is past). The local check is decided without a round-trip, so a slow or failed connect
+ *  never downgrades a dead cred to `unreachable`; the repair is `doctor auth` either way, never a
+ *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
+ *  the cred is not provably dead (refused / timeout / a stale registry entry). */
 export type ProbeResult =
   | { ok: true }
   | { ok: false; reason: "auth-required" }
@@ -3213,19 +3215,21 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
-    if (e instanceof AuthorizationError) {
-      // The broker's denial is generic; local knowledge isn't. A presented cred that is PROVABLY
-      // expired by its own JWT is stale-auth (credential death), not "wrong mesh/creds" — the
-      // repair differs (doctor auth vs re-target), so the classification must too. Unreadable
-      // content stays a plain rejection (no false stale diagnosis from garbage).
-      if (typeof opts.creds === "string") {
-        try {
-          if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
-        } catch { /* not introspectable — keep the wire truth */ }
-      }
-      return { ok: false, reason: "auth-required" };
+    // A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) —
+    // and that is knowable LOCALLY, without the network, so it is decided FIRST, before the error
+    // type. On the wire the broker's rejection and the socket close race: a slow CI/Windows handshake
+    // can surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError,
+    // which used to misclassify a dead cred. Reading the cred removes that timing dependency entirely,
+    // so the classification is deterministic. Unreadable content falls through to the wire truth (no
+    // false stale diagnosis from garbage).
+    if (typeof opts.creds === "string") {
+      try {
+        if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
+      } catch { /* not introspectable — keep the wire truth */ }
     }
+    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
+    // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
+    if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
     return { ok: false, reason: "unreachable" };
   }
 }
