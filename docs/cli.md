@@ -47,7 +47,7 @@ runtimes ship this way.
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
-| Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
+| Messaging & watching | [`channels`](#channels) | Inspect, export, or set the channel registry |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
@@ -362,6 +362,7 @@ ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh 
 
 ```bash
 cotal channels list
+cotal channels export [path | -] [--force]
 cotal channels set <name> [--replay | --no-replay] [--window <n>] [--desc <s>] [--instructions <s>]
 cotal channels default --replay | --no-replay
 ```
@@ -373,12 +374,26 @@ cotal channels default --replay | --no-replay
 | `--window <n>` | — | `set`: replay window size |
 | `--desc <s>` | — | `set`: one-line channel description |
 | `--instructions <s>` | — | `set`: instructions shown to joiners |
+| `--force` | off | `export <path>`: atomically replace an existing path |
 
 Inspects and edits the channel registry: replay policy, description, and joiner instructions. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
 [Channels and permissions](channels-and-permissions.md). On a user-auth mesh, `list` rides your
-own login as is; `set` and `default` edit the registry over a short-lived channel-writer view,
-which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+own login as is, as does `export`; `set` and `default` edit the registry over a short-lived
+channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+
+`export` writes deterministic, two-space JSON in the channel-registry seed shape accepted by
+`cotal up --channels`. With no path or with `-`, stdout contains only the JSON. A path is created
+without overwriting; pass `--force` to atomically replace an existing path.
+
+```bash
+cotal channels export channels.json
+cotal up --channels channels.json
+```
+
+The export contains registry defaults and channel metadata only. It does **not** export ACLs,
+subscriptions or durable membership, or message history. It is not the `channels:` section of a
+`cotal.yaml` mesh manifest, which also declares `subscribe`, `allowSubscribe`, and `allowPublish`.
 
 ## history
 

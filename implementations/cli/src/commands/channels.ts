@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   seedChannelRegistry,
   readChannelRegistry,
@@ -18,17 +21,20 @@ import { c } from "../ui.js";
  * off-registry connection.
  *
  *   cotal channels list
+ *   cotal channels export [path|-] [--force]
  *   cotal channels set <name> [--replay|--no-replay] [--desc <s>] [--instructions <s>]
  *   cotal channels default --replay|--no-replay
  */
 export async function channels(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
-  const values = args.values as { server?: string; space?: string; creds?: string; replay?: boolean; "no-replay"?: boolean; window?: string; desc?: string; instructions?: string };
+  const values = args.values as ChannelsValues;
   // Validate the subcommand BEFORE connecting, so a typo (or a bare `cotal channels`) prints usage,
   // not "no mesh running" — the same validate-first order as `history`.
   const sub = positionals[0];
-  if (sub !== "list" && sub !== "set" && sub !== "default") return usage();
+  if (sub !== "list" && sub !== "export" && sub !== "set" && sub !== "default") return usage();
   if (sub === "set" && !positionals[1]) return usage(); // need a channel name before touching the mesh
+  if (sub !== "export" && values.force) throw new Error("--force is only valid with channels export");
+  const exportPath = sub === "export" ? validateExportArgs(positionals, values) : undefined;
   // Tri-state replay: --replay → true, --no-replay → false, neither → leave unchanged.
   const replay = values["no-replay"] ? false : values.replay ? true : undefined;
   // `list` is read-only → the scoped `operator` cred (channel-registry read, no stream-admin).
@@ -37,9 +43,9 @@ export async function channels(args: ParsedArgs): Promise<void> {
   // USER MODE: `list` rides the caller's OWN agent-view bearer (the registry is world-readable
   // in-space); writes ride a one-shot "channel-writer" VIEW bearer, exchange-gated on ledger
   // scope "admin" (the refusal names the exact re-grant).
-  const profile = sub === "list" ? "operator" : "channel-writer";
+  const profile = sub === "list" || sub === "export" ? "operator" : "channel-writer";
   const conn = await connectOrExit(values, profile); // creds undefined ⇒ open mode
-  const user = conn.bearer && sub !== "list" ? await userViewAuthOrExit(conn, "channel-writer") : undefined;
+  const user = conn.bearer && sub !== "list" && sub !== "export" ? await userViewAuthOrExit(conn, "channel-writer") : undefined;
   const { server, space, creds } = conn;
   const auth = user
     ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds }
@@ -50,6 +56,17 @@ export async function channels(args: ParsedArgs): Promise<void> {
   switch (sub) {
     case "list": {
       printRegistry(await readChannelRegistry({ servers: server, space, ...auth }));
+      return;
+    }
+    case "export": {
+      const path = outputChannelRegistryExport(
+        await readChannelRegistry({ servers: server, space, ...auth }),
+        exportPath,
+        Boolean(values.force),
+      );
+      if (!path) return;
+      console.log(c.green(`✓ exported channel registry for "${space}"`));
+      console.log(c.dim(`  ${path}`));
       return;
     }
     case "set": {
@@ -85,6 +102,81 @@ export async function channels(args: ParsedArgs): Promise<void> {
   }
 }
 
+export interface ChannelsValues {
+  server?: string;
+  space?: string;
+  creds?: string;
+  replay?: boolean;
+  "no-replay"?: boolean;
+  window?: string;
+  desc?: string;
+  instructions?: string;
+  force?: boolean;
+}
+
+/** Validate export-only arguments before connecting so a typo cannot touch the mesh. */
+export function validateExportArgs(positionals: string[], values: ChannelsValues): string | undefined {
+  if (positionals.length > 2) throw new Error("channels export accepts at most one output path");
+  const mutationFlag = ["replay", "no-replay", "window", "desc", "instructions"].find(
+    (flag) => values[flag as keyof ChannelsValues] !== undefined,
+  );
+  if (mutationFlag) throw new Error(`--${mutationFlag} is not valid with channels export`);
+  const path = positionals[1];
+  if (values.force && (path === undefined || path === "-"))
+    throw new Error("--force requires an output path; stdout is never overwritten");
+  return path;
+}
+
+/** Stable JSON in the exact declarative shape accepted by `cotal up --channels`. */
+export function serializeChannelRegistry(registry: ChannelRegistryFile): string {
+  return `${JSON.stringify(canonicalJson(registry), null, 2)}\n`;
+}
+
+/** Write canonical JSON to stdout, or safely create/replace the requested file. */
+export function outputChannelRegistryExport(
+  registry: ChannelRegistryFile,
+  destination: string | undefined,
+  force: boolean,
+): string | undefined {
+  const output = serializeChannelRegistry(registry);
+  if (destination === undefined || destination === "-") {
+    process.stdout.write(output);
+    return undefined;
+  }
+  return writeChannelRegistryExport(destination, output, force);
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value === null || typeof value !== "object") return value;
+  const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return Object.fromEntries(entries.map(([key, item]) => [key, canonicalJson(item)]));
+}
+
+/** Write without following the destination: exclusive create, or atomic entry replacement. */
+export function writeChannelRegistryExport(destination: string, output: string, force: boolean): string {
+  const path = resolve(destination);
+  if (!force) {
+    try {
+      writeFileSync(path, output, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        throw new Error(`${path} already exists - pass --force to overwrite`);
+      throw error;
+    }
+    return path;
+  }
+
+  const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, output, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+  return path;
+}
+
 function printRegistry(reg: ChannelRegistryFile): void {
   const def = reg.defaults?.replay;
   const dw = reg.defaults?.replayWindow;
@@ -107,7 +199,7 @@ function printRegistry(reg: ChannelRegistryFile): void {
 function usage(): void {
   console.error(
     c.red(
-      "usage: cotal channels <list | set <name> [--replay|--no-replay] [--window <dur>] [--desc <s>] [--instructions <s>] | default [--replay|--no-replay] [--window <dur>]> [--space <s>] [--server <url>] [--creds <path>]",
+      "usage: cotal channels <list | export [path|-] [--force] | set <name> [--replay|--no-replay] [--window <dur>] [--desc <s>] [--instructions <s>] | default [--replay|--no-replay] [--window <dur>]> [--space <s>] [--server <url>] [--creds <path>]",
     ),
   );
   process.exit(1);

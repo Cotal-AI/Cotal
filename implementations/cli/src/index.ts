@@ -211,10 +211,10 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "channels",
     group: "Messaging",
-    summary: "inspect/set the channel registry (replay policy, description, instructions)",
+    summary: "inspect, export, or set the channel registry",
     usage:
-      "channels <list | set <name> [--replay|--no-replay] [--desc <s>] [--instructions <s>] | default --replay|--no-replay>",
-    positionals: "<list | set <name> | default>",
+      "channels <list | export [path|-] [--force] | set <name> [--replay|--no-replay] [--desc <s>] [--instructions <s>] | default --replay|--no-replay>",
+    positionals: "<list | export [path|-] | set <name> | default>",
     flags: [
       ...targetFlags,
       { name: "replay", type: "boolean", description: "set/default: replay history to new joiners" },
@@ -222,6 +222,7 @@ const baseCommands: Command[] = [
       { name: "window", type: "string", value: "<n>", description: "set: replay window size" },
       { name: "desc", type: "string", value: "<s>", description: "set: one-line channel description" },
       { name: "instructions", type: "string", value: "<s>", description: "set: instructions shown to joiners" },
+      { name: "force", type: "boolean", description: "export: atomically replace an existing output path" },
     ],
     run: channels,
   },

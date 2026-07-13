@@ -74,6 +74,18 @@ try {
   await seedChannelRegistry({ servers, space, file: { channels: { review: { description: "Critique v2" } } } });
   const reg2 = await readChannelRegistry({ servers, space });
   check("merge-on-write keeps other fields", reg2.channels?.review.description === "Critique v2" && reg2.channels?.review.instructions === "Be specific.");
+  const specialChannels = Object.fromEntries([
+    ["__proto__", { description: "Prototype token" }],
+    ["constructor", { description: "Constructor token" }],
+  ]);
+  await seedChannelRegistry({ servers, space, file: { channels: specialChannels } });
+  const specialReg = await readChannelRegistry({ servers, space });
+  check("registry preserves special channel tokens as own keys",
+    Object.hasOwn(specialReg.channels ?? {}, "__proto__")
+      && specialReg.channels?.__proto__?.description === "Prototype token"
+      && Object.hasOwn(specialReg.channels ?? {}, "constructor")
+      && specialReg.channels?.constructor?.description === "Constructor token");
+  check("registry read keeps the normal object prototype", Object.getPrototypeOf(specialReg.channels) === Object.prototype);
   assert.throws(() => validateChannelConfig({ description: "x".repeat(1000) }), /too long/);
   check("validation rejects oversize", true);
 

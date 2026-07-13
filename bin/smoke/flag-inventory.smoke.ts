@@ -81,7 +81,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   topology: { flags: ["file:string:f"], positionals: true },
   channels: {
-    flags: [...TARGET, "desc:string", "instructions:string", "no-replay:boolean", "replay:boolean", "window:string"],
+    flags: [...TARGET, "desc:string", "force:boolean", "instructions:string", "no-replay:boolean", "replay:boolean", "window:string"],
     positionals: true,
   },
   history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
