@@ -15,11 +15,12 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, headers } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  isReachable, EpEnvelopeError, contractDigest,
+  ownerCommitProof, type OwnerCommitProof,
+  isReachable, EpEnvelopeError, contractDigest, updateRecordEntry,
   createEndpointStreams, openRecordsBucket, epeSubject,
   actionContext, bindGoal, classifyGoalReuse, resolveGoalSubmission, createGoal, readGoalSpec, readGoalStatus,
   transitionGoal, isLegalGoalTransition, projectGoalTerminal,
@@ -77,25 +78,25 @@ try {
   const jsm = await jetstreamManager(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const kv = await openRecordsBucket(nc, SPACE);
-  const ctx: ActionContext = actionContext(kv, js, jsm, SPACE);
+  const ctx: ActionContext = await actionContext(nc, SPACE);
 
   // ── the branded context ──
   await rejects("a hand-assembled context look-alike is refused at every seam (the space bond is constructed, not asserted)",
     () => readGoalStatus({ kv, js, jsm, space: SPACE } as ActionContext, ref("g1")), "failed-precondition");
 
   // ── the goal bind: first-wins per goalId, BEFORE acceptance ──
-  const b1 = await bindGoal(ctx, req, "g1", "sha256:aa");
+  const b1 = await bindGoal(ctx, ref("g1"), "sha256:aa");
   c("the first bind of a goalId wins", b1.bound === true);
-  const b1retry = await bindGoal(ctx, req, "g1", "sha256:aa");
+  const b1retry = await bindGoal(ctx, ref("g1"), "sha256:aa");
   c("a same-fingerprint rebind loses the CAS and reads the recorded bind (the caller's retry)",
     b1retry.bound === false && !b1retry.bound && classifyGoalReuse(b1retry.existing, "sha256:aa") === "cached");
-  const b1forge = await bindGoal(ctx, req, "g1", "sha256:bb");
+  const b1forge = await bindGoal(ctx, ref("g1"), "sha256:bb");
   c("a DIFFERENT-fingerprint bind for the same goalId classifies conflict BEFORE acceptance and effect",
     b1forge.bound === false && !b1forge.bound && classifyGoalReuse(b1forge.existing, "sha256:bb") === "conflict");
 
   // ── orphaned-bind adoption + bind=spec agreement ──
   {
-    await bindGoal(ctx, req, "g-orphan", "sha256:oo");
+    await bindGoal(ctx, ref("g-orphan"), "sha256:oo");
     c("a same-fingerprint resubmission ADOPTS an orphaned bind (crash recovery)", (await resolveGoalSubmission(ctx, req, "g-orphan", "sha256:oo")).kind === "adopted");
     c("a different-fingerprint resubmission against the orphaned bind stays conflict", (await resolveGoalSubmission(ctx, req, "g-orphan", "sha256:xx")).kind === "conflict");
     await createGoal(ctx, ref("g-orphan"), specOf("sha256:oo"));
@@ -128,7 +129,7 @@ try {
   {
     // HIGH 1: a TARGET-PINNED goal's progress transition must prove executor currency.
     const rt = ref("g-fence");
-    await bindGoal(ctx, req, "g-fence", "sha256:fe");
+    await bindGoal(ctx, ref("g-fence"), "sha256:fe");
     await createGoal(ctx, rt, specOf("sha256:fe", { target: TARGET }));
     await rejects("a target-pinned progress transition with NO executor/owner-authored refuses (a superseded epoch cannot commit transitions)",
       () => transitionGoal(ctx, rt, "running"), "failed-precondition");
@@ -142,6 +143,37 @@ try {
       () => transitionGoal(ctx, rt, "waiting", { executor: { lifecycleUid: TARGET.lifecycleUid, epoch: 2 }, resolveCurrentEpoch: () => new Promise<never>(() => {}), epochResolveBudgetMs: 100 }), "unavailable");
     await rejects("an executor supplied for a NON-TARGET transition refuses (wiring confusion)",
       () => transitionGoal(ctx, ref("g1"), "waiting", { executor: { lifecycleUid: UID, epoch: 1 }, resolveCurrentEpoch: () => 1 }), "failed-precondition");
+
+    // The currency check is PAIRED with each CAS attempt: the first resolve answers CURRENT but
+    // its attempt loses the CAS (a same-value revision bump interferes); the retry re-proves and
+    // observes the takeover — a stale first resolve never carries a later attempt.
+    {
+      let calls = 0;
+      const statusKey = `goal.manager.u_abc.worker.${UID}.g-fence.status`;
+      const resolver = async () => {
+        calls++;
+        if (calls === 1) {
+          const cur = await readGoalStatus(ctx, rt);
+          await updateRecordEntry(kv, statusKey, cur!.value, cur!.revision); // same value, new revision: the outer CAS loses; the retry stays legal
+          return 2; // current at the FIRST attempt
+        }
+        return 3; // superseded by the time the retry proves again
+      };
+      await rejects("executor currency is re-proven for EVERY CAS attempt (a takeover between attempts refuses on the retry, never commits on a stale first resolve)",
+        () => transitionGoal(ctx, rt, "waiting", { executor: { lifecycleUid: TARGET.lifecycleUid, epoch: 2 }, resolveCurrentEpoch: resolver }), "expired");
+      c("…and the resolver ran once per attempt (two attempts, two proofs)", calls === 2, calls);
+    }
+    // Owner authority is CONSTRUCTION-BOUND, never a raw flag: only a proof minted from THIS
+    // context authorizes an owner-driven pause of a target-pinned goal.
+    await rejects("a HAND-ASSEMBLED owner proof never authorizes",
+      () => transitionGoal(ctx, rt, "waiting", { owner: { space: SPACE } as OwnerCommitProof }), "permission-denied");
+    {
+      const ctx2 = await actionContext(nc, SPACE);
+      await rejects("an owner proof minted from ANOTHER context never authorizes here",
+        () => transitionGoal(ctx, rt, "waiting", { owner: ownerCommitProof(ctx2) }), "permission-denied");
+    }
+    c("the owner's construction-bound proof pauses a target-pinned goal without executor currency",
+      (await transitionGoal(ctx, rt, "waiting", { owner: ownerCommitProof(ctx) })).state === "waiting");
   }
 
   // ── cancel vs completion at the ONE commit point ──
@@ -157,7 +189,7 @@ try {
   const done = await commitGoalResult(ctx, { ref: ref("g1"), now: NOW + 500, cause: "complete", state: "succeeded", data: { url: "https://x" } });
   c("a completion commit wins the terminal, stamps the PERSISTED fingerprint, projects the winner",
     done.won && done.fact.state === "succeeded" && done.fact.fingerprint === "sha256:aa" && done.status.state === "succeeded");
-  const cancelCommit = await commitGoalResult(ctx, { ref: ref("g1"), now: NOW + 600, cause: "deny" });
+  const cancelCommit = await commitGoalResult(ctx, { ref: ref("g1"), now: NOW + 600, cause: "deny", denial: { kind: "owner", owner: ownerCommitProof(ctx) } });
   c("a losing commit observes the WINNING terminal instead of re-deciding", !cancelCommit.won && cancelCommit.fact.state === "succeeded" && cancelCommit.status.state === "succeeded");
   const term = await rejects("cancel of a TERMINAL goal is failed-precondition with the cached outcome attached",
     () => requestGoalCancel(ctx, { request: req, goalId: "g1", mode: "graceful" }), "failed-precondition") as EpEnvelopeError;
@@ -170,7 +202,7 @@ try {
   // HIGH 2: a raw terminal state is NEVER accepted — the cause derives the state.
   {
     const rr = ref("g-raw");
-    await bindGoal(ctx, req, "g-raw", "sha256:rw");
+    await bindGoal(ctx, ref("g-raw"), "sha256:rw");
     await createGoal(ctx, rr, specOf("sha256:rw"));
     await rejects("a `cancel` cause on a goal that is NOT cancelling refuses (no naked cancelled assertion)",
       () => commitGoalResult(ctx, { ref: rr, now: NOW, cause: "cancel" }), "failed-precondition");
@@ -178,12 +210,19 @@ try {
       () => commitGoalResult(ctx, { ref: rr, now: NOW + 999_999, cause: "readiness" }), "failed-precondition");
     await rejects("a completion with a non-succeeded/failed state refuses (the cause bounds the state)",
       () => commitGoalResult(ctx, { ref: rr, now: NOW, cause: "complete", state: "uncertain" as "succeeded" }), "failed-precondition");
+    // The deny cause is never free: it commits only with its verified authoritative predicate.
+    await rejects("a BARE deny cause refuses (any commit-seam holder could otherwise fail any accepted goal)",
+      () => commitGoalResult(ctx, { ref: rr, now: NOW, cause: "deny" } as never), "failed-precondition");
+    await rejects("a deny naming an UNKNOWN checkpoint refuses (hold-expired is verified against the arbiter, never asserted)",
+      () => commitGoalResult(ctx, { ref: rr, now: NOW, cause: "deny", denial: { kind: "hold-expired", token: "ghost-token" } }), "failed-precondition");
+    await rejects("a deny with a hand-assembled owner proof refuses",
+      () => commitGoalResult(ctx, { ref: rr, now: NOW, cause: "deny", denial: { kind: "owner", owner: { space: SPACE } as OwnerCommitProof } }), "permission-denied");
   }
 
   // ── target-pinned completion currency + the target-pinned READINESS path (MEDIUM 4) ──
   {
     const rt = ref("g-target");
-    await bindGoal(ctx, req, "g-target", "sha256:tt");
+    await bindGoal(ctx, ref("g-target"), "sha256:tt");
     await createGoal(ctx, rt, specOf("sha256:tt", { target: TARGET, readinessDeadlineMs: 30_000 }));
     await rejects("a target-pinned completion WITHOUT executor identity refuses",
       () => commitGoalResult(ctx, { ref: rt, now: NOW, cause: "complete", state: "succeeded" }), "failed-precondition");
@@ -198,7 +237,7 @@ try {
   // ── MEDIUM 1: mid-flight ref mutation cannot split the commit ──
   {
     const rm = ref("g-mut");
-    await bindGoal(ctx, req, "g-mut", "sha256:mu");
+    await bindGoal(ctx, ref("g-mut"), "sha256:mu");
     await createGoal(ctx, rm, specOf("sha256:mu"));
     const mutRef: GoalRef = { endpoint: "manager", caller: { ...caller }, goalId: "g-mut" };
     const pending = commitGoalResult(ctx, { ref: mutRef, now: NOW + 5, cause: "complete", state: "succeeded" });
@@ -214,6 +253,8 @@ try {
     await rejects("a goal spec carrying an UNKNOWN field is garbled (closed schema)", () => readGoalSpec(ctx, ref("g-badspec")), "internal");
     await kv.put(`goal.manager.u_abc.worker.${UID}.g-misattr.spec`, enc(JSON.stringify({ v: 1, goalId: "g-misattr", ...specOf("sha256:ma"), caller: { id: "u_abc.worker", lifecycleUid: "OTHER" } })));
     await rejects("a spec whose caller lifecycle is NOT its subject uid is garbled (identity-bound)", () => readGoalSpec(ctx, ref("g-misattr")), "internal");
+    await kv.put(`goal.manager.u_abc.worker.${UID}.g-misprin.spec`, enc(JSON.stringify({ v: 1, goalId: "g-misprin", ...specOf("sha256:mp"), caller: { id: "u_evil.actor", lifecycleUid: UID } })));
+    await rejects("a spec whose caller id does not name the subject's principal is garbled (identity-bound)", () => readGoalSpec(ctx, ref("g-misprin")), "internal");
     await kv.put(`goal.manager.u_abc.worker.${UID}.g-badstatus.status`, enc(JSON.stringify({ state: "running", checkpoint: { token: "cp", deadlineGeneration: 1 }, observedSpecRevision: 1 })));
     await rejects("a status with a checkpoint outside `waiting` is garbled", () => readGoalStatus(ctx, ref("g-badstatus")), "internal");
   }
@@ -230,14 +271,26 @@ try {
   }
 
   // ── settleGoalUncertain wrapper + the reverse race ──
-  await bindGoal(ctx, req, "g2", "sha256:cc");
+  await bindGoal(ctx, ref("g2"), "sha256:cc");
   await createGoal(ctx, ref("g2"), specOf("sha256:cc", { readinessDeadlineMs: 30_000 }));
   await rejects("settleGoalUncertain BEFORE the persisted deadline refuses", () => settleGoalUncertain(ctx, { ref: ref("g2"), now: NOW + 29_999 }), "failed-precondition");
   c("past the deadline settleGoalUncertain settles `uncertain`", (await settleGoalUncertain(ctx, { ref: ref("g2"), now: NOW + 30_000 })).fact.state === "uncertain");
-  await bindGoal(ctx, req, "g3", "sha256:dd");
+  await bindGoal(ctx, ref("g3"), "sha256:dd");
   await createGoal(ctx, ref("g3"), specOf("sha256:dd", { readinessDeadlineMs: 30_000 }));
   await commitGoalResult(ctx, { ref: ref("g3"), now: NOW + 29_000, cause: "complete", state: "succeeded" });
   c("a success that committed FIRST wins; the due settle observes it", (await settleGoalUncertain(ctx, { ref: ref("g3"), now: NOW + 30_001 })).fact.state === "succeeded");
+
+  // ── the cached outcome completes the SAME authority chain: bind = spec = result ──
+  {
+    const rf = ref("g-ff");
+    await bindGoal(ctx, rf, "sha256:ff");
+    await createGoal(ctx, rf, specOf("sha256:ff"));
+    const forged = { v: 1, goalId: "g-ff", fingerprint: "sha256:FOREIGN", state: "succeeded", outcomeDigest: contractDigest(null), ts: NOW };
+    const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0");
+    await js.publish(goalResultSubject(SPACE, rf), enc(JSON.stringify(forged)), { headers: h });
+    await rejects("a recorded result whose fingerprint disagrees with the accepted spec is NEVER served as the cached outcome",
+      () => resolveGoalSubmission(ctx, req, "g-ff", "sha256:ff"), "internal");
+  }
 
   // ── fail-closed storage reads ──
   await kv.delete(`goal.manager.u_abc.worker.${UID}.g3.status`);

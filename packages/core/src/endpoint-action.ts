@@ -37,17 +37,21 @@
  * space B. Clocks are inputs everywhere (`now`, `acceptedAt`): the owner's clock decides.
  */
 import type { KV } from "@nats-io/kv";
-import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import { headers as natsHeaders } from "@nats-io/transport-node";
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, assertIdToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact } from "./endpoint-journal.js";
+import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 
-/** A trusted, space-bonded action context: the KV + JS + JSM + space are bundled by ONE
- *  constructor and BRANDED, so a hand-assembled structural look-alike (the cross-space mixup the
- *  bond prevents) is rejected at every seam, not just discouraged. */
+/** A trusted, space-bonded action context: the KV + JS + JSM all DERIVE from one binding-layer
+ *  connection and one space by the constructor (never injected independently — a branded bundle
+ *  of split resources would still split accepted state from terminal authority), so a
+ *  composition mixup can never read an accepted spec through one broker and commit its terminal
+ *  through another. BRANDED: a hand-assembled structural look-alike is rejected at every seam,
+ *  not just discouraged. */
 export interface ActionContext {
   kv: KV;
   js: JetStreamClient;
@@ -55,8 +59,13 @@ export interface ActionContext {
   space: string;
 }
 const BRANDED_CONTEXTS = new WeakSet<ActionContext>();
-export function actionContext(kv: KV, js: JetStreamClient, jsm: JetStreamManager, space: string): ActionContext {
+export async function actionContext(nc: NatsConnection, space: string): Promise<ActionContext> {
+  if (nc === null || typeof nc !== "object" || typeof (nc as unknown as { close?: unknown }).close !== "function")
+    throw new EpEnvelopeError("failed-precondition", "an action context is constructed from ONE binding-layer connection; separate resources are never accepted (SPEC 13.4)");
   if (typeof space !== "string" || space.length === 0) throw new EpEnvelopeError("failed-precondition", "an action context needs a space");
+  const js = jetstream(nc);
+  const jsm = await jetstreamManager(nc);
+  const kv = await openRecordsBucket(nc, space);
   const ctx = Object.freeze({ kv, js, jsm, space });
   BRANDED_CONTEXTS.add(ctx);
   return ctx;
@@ -64,6 +73,28 @@ export function actionContext(kv: KV, js: JetStreamClient, jsm: JetStreamManager
 function assertCtx(ctx: ActionContext): void {
   if (!BRANDED_CONTEXTS.has(ctx))
     throw new EpEnvelopeError("failed-precondition", `the action context was not constructed by actionContext(); a hand-assembled resource bundle never authorizes - the space bond is constructed, not asserted (SPEC 13.4)`);
+}
+
+/** A CONSTRUCTION-BOUND owner-authority proof: minted only from the branded context by the
+ *  commit principal itself, and accepted only against THAT context. This replaces a raw
+ *  `ownerAuthored` boolean — a flag any caller could set by typo or confusion — with a value
+ *  that cannot be hand-assembled and cannot leak across contexts: owner authority over a
+ *  target-pinned goal's pause/deny is proven by construction, never asserted (SPEC 13.6). */
+export interface OwnerCommitProof { readonly space: string }
+const OWNER_PROOFS = new WeakMap<OwnerCommitProof, ActionContext>();
+export function ownerCommitProof(ctx: ActionContext): OwnerCommitProof {
+  assertCtx(ctx);
+  const proof: OwnerCommitProof = Object.freeze({ space: ctx.space });
+  OWNER_PROOFS.set(proof, ctx);
+  return proof;
+}
+/** `false` = no proof presented; `true` = a genuine proof minted from THIS context. A proof
+ *  from any other (or hand-assembled) source is a loud refusal, never a silent downgrade. */
+function assertOwnerProof(proof: OwnerCommitProof | undefined, ctx: ActionContext, what: string): boolean {
+  if (proof === undefined) return false;
+  if (OWNER_PROOFS.get(proof) !== ctx)
+    throw new EpEnvelopeError("permission-denied", `${what} presents an owner proof that was not minted from THIS action context (ownerCommitProof); owner authority is construction-bound, never a raw flag (SPEC 13.6)`);
+  return true;
 }
 
 /** A goal's coordinates: the owning endpoint + the caller triple + the client-chosen goalId. */
@@ -150,17 +181,19 @@ function parseBind(raw: unknown, subject: string, goalId: string): GoalBindFact 
 /** Bind a goal to its accepted fingerprint BEFORE acceptance (the canonicalizer's seam): a
  *  create-only CAS per goalId. The winner proceeds; a loser reads the recorded bind and decides
  *  (same fingerprint = retry, different = `conflict` before acceptance and effect). The subject
- *  derives structurally from the broker-authenticated request, never body fields. */
+ *  derives from the goal ref — ONE entry-derived identity (a caller derives it from the
+ *  broker-authenticated request via {@link goalRefOf} exactly once), never body fields. */
 export async function bindGoal(
   ctx: ActionContext,
-  request: ParsedEpRequest,
-  goalId: string,
+  ref: GoalRef,
   fingerprint: string,
 ): Promise<{ bound: true } | { bound: false; existing: GoalBindFact }> {
   assertCtx(ctx);
+  const snap = snapshotRef(ref);
+  const goalId = snap.goalId;
   if (typeof fingerprint !== "string" || fingerprint.length === 0)
     throw new EpEnvelopeError("failed-precondition", "a goal bind needs a non-empty fingerprint (SPEC 13.4)");
-  const subject = epfGoalBindSubject(ctx.space, request, goalId);
+  const subject = epfGoalBindSubject(ctx.space, snap, goalId);
   const fact: GoalBindFact = { v: 1, goalId: assertIdToken(goalId, "goalId"), fingerprint };
   const res = await publishCreateOnly(ctx.js, subject, new TextEncoder().encode(JSON.stringify(fact)));
   if (res.won) return { bound: true };
@@ -202,15 +235,24 @@ export async function resolveGoalSubmission(
   goalId: string,
   fingerprint: string,
 ): Promise<GoalSubmissionVerdict> {
-  const bound = await bindGoal(ctx, request, goalId, fingerprint);
+  // ONE entry-derived identity: the ref derives from the broker-authenticated request EXACTLY
+  // ONCE, BEFORE any await, and the bind, the spec read, and the result read all use this
+  // detached snapshot — a mutable request can never bind caller A and then serve caller B's
+  // cached outcome from the post-await reads.
+  const ref = snapshotRef(goalRefOf(request, goalId));
+  const bound = await bindGoal(ctx, ref, fingerprint);
   if (bound.bound) return { kind: "new" };
   if (bound.existing.fingerprint !== fingerprint) return { kind: "conflict", bind: bound.existing };
-  const ref = goalRefOf(request, goalId);
   const spec = await readGoalSpec(ctx, ref);
   if (spec === undefined) return { kind: "adopted", bind: bound.existing };
   if (spec.value.fingerprint !== bound.existing.fingerprint)
-    throw new EpEnvelopeError("internal", `goal "${goalId}" has a persisted spec fingerprint that disagrees with its bind fact; the authority chain (bind = spec) is broken - never serve a cached outcome over it (SPEC 13.4/13.6)`);
+    throw new EpEnvelopeError("internal", `goal "${ref.goalId}" has a persisted spec fingerprint that disagrees with its bind fact; the authority chain (bind = spec) is broken - never serve a cached outcome over it (SPEC 13.4/13.6)`);
   const result = await readGoalResult(ctx, ref);
+  // The cached outcome must complete the SAME authority chain: bind = spec = result. A result
+  // fact whose fingerprint disagrees with the accepted spec (digest-consistent or not) is a
+  // foreign outcome and is never served as this goal's cached decision.
+  if (result !== undefined && result.fingerprint !== spec.value.fingerprint)
+    throw new EpEnvelopeError("internal", `goal "${ref.goalId}" has a recorded result whose fingerprint disagrees with its accepted spec; a foreign-fingerprint fact is never served as the cached outcome (SPEC 13.4/13.6)`);
   return { kind: "cached", bind: bound.existing, ...(result !== undefined ? { result } : {}) };
 }
 
@@ -269,6 +311,8 @@ function parseSpec(raw: unknown, key: string, ref: GoalRef): GoalSpecValue {
   assertClosedKeys(c, ["id", "lifecycleUid"], `goal spec ${key} caller`);
   if (c.lifecycleUid !== ref.caller.uid)
     throw new EpEnvelopeError("internal", `goal spec ${key} caller lifecycle ${JSON.stringify(c.lifecycleUid)} is not its subject's uid ${ref.caller.uid}; a mis-attributed spec never authorizes (SPEC 13.4)`);
+  if (c.id !== `${ref.caller.owner}.${ref.caller.actor}`)
+    throw new EpEnvelopeError("internal", `goal spec ${key} caller id ${JSON.stringify(c.id)} does not name its subject's principal ${ref.caller.owner}.${ref.caller.actor}; a mis-attributed spec never authorizes (SPEC 13.4)`);
   for (const [n, v] of [["sourceSeq", o.sourceSeq], ["acceptedAt", o.acceptedAt]] as const)
     if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0)
       throw new EpEnvelopeError("internal", `goal spec ${key} field ${n} is not a safe integer; garbled state never authorizes (SPEC 13.4)`);
@@ -429,28 +473,41 @@ export async function transitionGoal(
     executor?: GoalExecutor;
     resolveCurrentEpoch?: (target: { owner: string; actor: string; lifecycleUid: string }) => Promise<number | null> | number | null;
     epochResolveBudgetMs?: number;
-    /** The owner's own commit principal drives this (guard-hold pause); no remote executor. */
-    ownerAuthored?: boolean;
+    /** The owner's own commit principal drives this (guard-hold pause/release): a
+     *  CONSTRUCTION-BOUND {@link ownerCommitProof} from THIS context, never a raw flag. */
+    owner?: OwnerCommitProof;
   } = {},
 ): Promise<GoalStatusValue> {
   assertCtx(ctx);
+  // ENTRY SNAPSHOT (single-read, before the first await): the ref, the executor, the resolver
+  // reference, the owner proof, and the projected fields all detach here — nothing below reads
+  // `opts` again, so a caller mutating it across an await cannot move an authority coordinate
+  // (an ownerAuthored false→true flip mid-read was exactly such a bypass).
   const snap = snapshotRef(ref);
-  const executor = opts.executor !== undefined ? { lifecycleUid: String(opts.executor.lifecycleUid), epoch: opts.executor.epoch } : undefined; // detached at entry
+  const executor = opts.executor !== undefined ? { lifecycleUid: String(opts.executor.lifecycleUid), epoch: opts.executor.epoch } : undefined;
+  const resolveCurrentEpoch = opts.resolveCurrentEpoch;
+  const ownerAuthored = assertOwnerProof(opts.owner, ctx, `the transition of goal "${snap.goalId}"`);
   const budget = opts.epochResolveBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(opts.epochResolveBudgetMs)}`);
-  const fields = opts.fields ?? {};
+  const fieldsIn = opts.fields;
+  const checkpointIn = fieldsIn?.checkpoint;
+  const fields: Partial<Pick<GoalStatusValue, "checkpoint" | "cancelMode">> = {
+    ...(checkpointIn !== undefined ? { checkpoint: { token: String(checkpointIn.token), deadlineGeneration: checkpointIn.deadlineGeneration } } : {}),
+    ...(fieldsIn?.cancelMode !== undefined ? { cancelMode: fieldsIn.cancelMode } : {}),
+  };
   if (GOAL_TERMINAL_STATES.includes(to))
     throw new EpEnvelopeError("failed-precondition", `a goal status never transitions to terminal "${to}" directly; commit the result fact and project it - the journal owns terminals (SPEC 13.6)`);
   const spec = await readGoalSpec(ctx, snap);
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is unknown; a transition projects only an accepted goal (SPEC 13.6)`);
   const isProgress = to === "running" || to === "waiting";
+  let needsCurrency = false;
   if (isProgress && spec.value.target !== undefined) {
-    if (executor === undefined && opts.ownerAuthored !== true)
-      throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is target-pinned; an executor-authored progress transition to "${to}" must prove the executor's fresh currency (or be explicitly owner-authored) - a superseded epoch cannot commit transitions (SPEC 13.6 item 7)`);
-    if (executor !== undefined) await assertExecutorCurrency(spec.value, snap.goalId, executor, opts.resolveCurrentEpoch, budget);
-  } else if (executor !== undefined || opts.resolveCurrentEpoch !== undefined) {
+    if (executor === undefined && !ownerAuthored)
+      throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is target-pinned; an executor-authored progress transition to "${to}" must prove the executor's fresh currency (or present the owner's construction-bound proof) - a superseded epoch cannot commit transitions (SPEC 13.6 item 7)`);
+    needsCurrency = executor !== undefined;
+  } else if (executor !== undefined || resolveCurrentEpoch !== undefined) {
     throw new EpEnvelopeError("failed-precondition", `a transition to "${to}"${spec.value.target === undefined ? " on a non-target goal" : ""} takes no executor/resolver (SPEC 13.6)`);
   }
   for (let pass = 0; pass < 2; pass++) {
@@ -459,6 +516,11 @@ export async function transitionGoal(
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is unknown; a transition projects only an accepted goal (SPEC 13.6)`);
     if (!isLegalGoalTransition(current.value.state, to))
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" cannot transition ${current.value.state} -> ${to} (SPEC 13.6: accepted -> running <-> waiting -> terminal, cancelling between a cancel and its terminal; terminals are immutable)`);
+    // The currency check is PAIRED 1:1 with its CAS attempt, immediately before it: a lost CAS
+    // re-reads the status AND re-proves the executor's epoch, so a takeover landing between
+    // attempts refuses on the retry instead of committing on a stale first resolve (SPEC 13.6
+    // item 7: a superseded epoch cannot commit transitions).
+    if (needsCurrency) await assertExecutorCurrency(spec.value, snap.goalId, executor, resolveCurrentEpoch, budget);
     const next: GoalStatusValue = assertStatusValue({
       state: to,
       ...(to === "waiting" && fields.checkpoint !== undefined ? { checkpoint: fields.checkpoint } : {}),
@@ -569,9 +631,22 @@ async function commitTerminalFact(
   const winner = res.won ? fact : await readGoalResult(ctx, snap);
   if (winner === undefined)
     throw new EpEnvelopeError("internal", `the goal terminal CAS for ${subject} was lost but no winning fact is readable (SPEC 13.4)`);
+  if (winner.fingerprint !== spec.fingerprint)
+    throw new EpEnvelopeError("internal", `the recorded terminal for goal "${snap.goalId}" carries fingerprint ${JSON.stringify(winner.fingerprint)}, not the accepted spec's ${spec.fingerprint}; a foreign-fingerprint winner is never adopted (SPEC 13.4/13.6)`);
   const status = await projectGoalTerminal(ctx, snap);
   return { won: res.won, fact: winner, status };
 }
+
+/** A deny's AUTHORITATIVE PREDICATE (§13.6): a bare `deny` proves nothing, so the commit
+ *  boundary requires and VERIFIES one of:
+ *   - `hold-expired`: the named checkpoint's recorded spec must BIND this exact goal and its
+ *     recorded one-use settlement must be `expired` (the arbiter's own fact — a live or resumed
+ *     hold never denies);
+ *   - `owner`: the owner's construction-bound {@link ownerCommitProof} from THIS context (a
+ *     guard-verdict deny the owner itself is committing). */
+export type GoalDenial =
+  | { kind: "hold-expired"; token: string }
+  | { kind: "owner"; owner: OwnerCommitProof };
 
 /** The closed terminal CAUSE (§13.6): the public commit accepts ONLY these, each with its own
  *  authoritative predicate verified inside the boundary; the terminal state is DERIVED, never a
@@ -579,57 +654,118 @@ async function commitTerminalFact(
  *   - `complete`: the executor's own outcome (`succeeded`|`failed`), proving fresh currency for
  *     a target-pinned goal;
  *   - `cancel`: `cancelled`, requiring the goal to be `cancelling` (a cancel was requested);
- *   - `deny`: `failed`, owner-authored fail-closed (e.g. a guard deny/hold-expiry);
+ *   - `deny`: `failed`, requiring the verified {@link GoalDenial} predicate (a bare deny cause
+ *     is refused — any commit-seam holder could otherwise fail any accepted goal);
  *   - `readiness`: `uncertain`, the OWNER's deadline settlement, requiring `now` past the
  *     persisted acceptance-relative readiness deadline (no executor — a target-pinned goal's
  *     owner deadline is reachable). */
 export type GoalCommitCause =
   | { cause: "complete"; state: "succeeded" | "failed"; data?: unknown; executor?: GoalExecutor; resolveCurrentEpoch?: (target: { owner: string; actor: string; lifecycleUid: string }) => Promise<number | null> | number | null; epochResolveBudgetMs?: number }
   | { cause: "cancel"; data?: unknown }
-  | { cause: "deny"; data?: unknown }
+  | { cause: "deny"; denial: GoalDenial; data?: unknown }
   | { cause: "readiness" };
 
 /** Commit the goal's terminal state at the ONE mediated commit point, BOUND to the persisted
  *  accepted goal and its CAUSE (see {@link GoalCommitCause}). First terminal fact wins uniformly
  *  (completion, cancel, deny, and readiness race here); a loser observes the winner and its
- *  projection converges. */
+ *  projection converges. Every operation input detaches at ENTRY (single-read, before the first
+ *  await): a caller mutating cause/state/data/executor across the spec read changes nothing. */
 export async function commitGoalResult(
   ctx: ActionContext,
   args: { ref: GoalRef; now: number } & GoalCommitCause,
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
   assertCtx(ctx);
+  // ENTRY SNAPSHOT (single-read): ref, clock, cause, and every per-cause field detach BEFORE
+  // the first await; the terminal payload detaches strict-canonical here too.
   const snap = snapshotRef(args.ref);
   const now = assertSafeInt(args.now, "now");
-  const spec = await readGoalSpec(ctx, snap);
-  if (spec === undefined)
-    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; a terminal commits only for an accepted goal (SPEC 13.6)`);
-
-  if (args.cause === "complete") {
-    if (args.state !== "succeeded" && args.state !== "failed")
-      throw new EpEnvelopeError("failed-precondition", `a completion commits "succeeded" or "failed"; got ${JSON.stringify(args.state)} (SPEC 13.6)`);
+  const cause = args.cause;
+  const dataRaw = (args as { data?: unknown }).data;
+  let data: unknown;
+  if (dataRaw !== undefined) {
+    try { data = JSON.parse(canonicalJson(dataRaw)); }
+    catch (e) { throw new EpEnvelopeError("failed-precondition", `the terminal payload is not interchangeable JSON (${(e as Error).message}); a garbled payload never commits (SPEC 13.6)`); }
+  }
+  type CommitPlan =
+    | { cause: "complete"; state: "succeeded" | "failed"; executor?: GoalExecutor; resolver?: (target: { owner: string; actor: string; lifecycleUid: string }) => Promise<number | null> | number | null; budget: number }
+    | { cause: "cancel" }
+    | { cause: "deny"; denial: { kind: "hold-expired"; token: string } | { kind: "owner" } }
+    | { cause: "readiness" };
+  let plan: CommitPlan;
+  if (cause === "complete") {
+    const state = args.state;
+    if (state !== "succeeded" && state !== "failed")
+      throw new EpEnvelopeError("failed-precondition", `a completion commits "succeeded" or "failed"; got ${JSON.stringify(state)} (SPEC 13.6)`);
     const executor = args.executor !== undefined ? { lifecycleUid: String(args.executor.lifecycleUid), epoch: args.executor.epoch } : undefined;
     const budget = args.epochResolveBudgetMs ?? 5_000;
     if (!Number.isSafeInteger(budget) || budget <= 0)
       throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(args.epochResolveBudgetMs)}`);
-    await assertExecutorCurrency(spec.value, snap.goalId, executor, args.resolveCurrentEpoch, budget);
-    return commitTerminalFact(ctx, snap, spec.value, args.state, args.data, now);
+    plan = { cause, state, executor, resolver: args.resolveCurrentEpoch, budget };
+  } else if (cause === "cancel") {
+    plan = { cause };
+  } else if (cause === "deny") {
+    const denial = args.denial as GoalDenial | undefined;
+    const kind = denial === null || typeof denial !== "object" ? undefined : denial.kind;
+    if (kind === "hold-expired") {
+      const token = (denial as { token?: unknown }).token;
+      if (typeof token !== "string" || token.length === 0)
+        throw new EpEnvelopeError("failed-precondition", `a hold-expired denial names its checkpoint token (SPEC 13.6)`);
+      plan = { cause, denial: { kind, token } };
+    } else if (kind === "owner") {
+      // Verified HERE, at entry: a hand-assembled or cross-context proof is a loud refusal.
+      if (!assertOwnerProof((denial as { owner?: OwnerCommitProof }).owner, ctx, `the deny of goal "${snap.goalId}"`))
+        throw new EpEnvelopeError("failed-precondition", `an owner deny presents the owner's construction-bound proof (ownerCommitProof); a bare deny cause proves nothing (SPEC 13.6)`);
+      plan = { cause, denial: { kind } };
+    } else {
+      throw new EpEnvelopeError("failed-precondition", `a deny commits only with its authoritative predicate (a goal-bound EXPIRED hold settlement, or the owner's construction-bound proof); a bare deny cause could fail any accepted goal (SPEC 13.6)`);
+    }
+  } else if (cause === "readiness") {
+    plan = { cause };
+  } else {
+    throw new EpEnvelopeError("failed-precondition", `unknown commit cause ${JSON.stringify(cause)}; the terminal commit accepts only complete|cancel|deny|readiness (SPEC 13.6)`);
   }
-  if (args.cause === "cancel") {
+
+  const spec = await readGoalSpec(ctx, snap);
+  if (spec === undefined)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; a terminal commits only for an accepted goal (SPEC 13.6)`);
+
+  if (plan.cause === "complete") {
+    // Currency immediately before the terminal CAS — the check is paired with the commit it
+    // fences, never a stale earlier read (SPEC 13.6 item 7).
+    await assertExecutorCurrency(spec.value, snap.goalId, plan.executor, plan.resolver, plan.budget);
+    return commitTerminalFact(ctx, snap, spec.value, plan.state, data, now);
+  }
+  if (plan.cause === "cancel") {
     const status = await readGoalStatus(ctx, snap);
     if (status === undefined || status.value.state !== "cancelling")
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not \`cancelling\` (state ${status?.value.state ?? "unknown"}); a cancel terminal follows a requested cancel, never a naked assertion (SPEC 13.6)`);
-    return commitTerminalFact(ctx, snap, spec.value, "cancelled", args.data, now);
+    return commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now);
   }
-  if (args.cause === "deny")
-    return commitTerminalFact(ctx, snap, spec.value, "failed", args.data, now);
-  if (args.cause === "readiness") {
-    if (spec.value.readinessDeadlineMs === undefined)
-      throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" declares no readiness deadline; an unbounded goal is never settled uncertain (SPEC 13.6)`);
-    if (now < spec.value.acceptedAt + spec.value.readinessDeadlineMs)
-      throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not past its readiness deadline (acceptedAt ${spec.value.acceptedAt} + ${spec.value.readinessDeadlineMs}ms > now ${now}); an early uncertain settle would steal a still-possible success (SPEC 13.6)`);
-    return commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now);
+  if (plan.cause === "deny") {
+    if (plan.denial.kind === "hold-expired") {
+      // The predicate is the checkpoint arbiter's OWN recorded state: the spec must bind THIS
+      // goal (a token for goal A never fails unrelated goal B) and the one-use settlement must
+      // be EXPIRED — a live or resumed hold never denies.
+      const cpRef = { endpoint: snap.endpoint, token: plan.denial.token };
+      const cpSpec = await readCheckpointSpec(ctx.kv, cpRef);
+      if (cpSpec === undefined)
+        throw new EpEnvelopeError("failed-precondition", `checkpoint "${plan.denial.token}" is unknown on endpoint "${snap.endpoint}"; a hold-expired denial names a minted checkpoint (SPEC 13.6)`);
+      const g = cpSpec.goal;
+      if (g === undefined || g.goalId !== snap.goalId
+        || g.caller.owner !== snap.caller.owner || g.caller.actor !== snap.caller.actor || g.caller.uid !== snap.caller.uid)
+        throw new EpEnvelopeError("permission-denied", `checkpoint "${plan.denial.token}" does not pause goal "${snap.goalId}" (${snap.caller.owner}.${snap.caller.actor}/${snap.caller.uid}); a hold-expired denial is goal-bound (SPEC 13.6)`);
+      const settle = await readCheckpointSettle(ctx.jsm, ctx.space, cpRef);
+      if (settle === undefined || settle.settle !== "expired")
+        throw new EpEnvelopeError("failed-precondition", `checkpoint "${plan.denial.token}" has no RECORDED expired settlement (${settle === undefined ? "still live" : `settled ${settle.settle}`}); a live or resumed hold never denies (SPEC 13.6)`);
+    }
+    return commitTerminalFact(ctx, snap, spec.value, "failed", data, now);
   }
-  throw new EpEnvelopeError("failed-precondition", `unknown commit cause ${JSON.stringify((args as { cause?: unknown }).cause)}; the terminal commit accepts only complete|cancel|deny|readiness (SPEC 13.6)`);
+  // readiness
+  if (spec.value.readinessDeadlineMs === undefined)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" declares no readiness deadline; an unbounded goal is never settled uncertain (SPEC 13.6)`);
+  if (now < spec.value.acceptedAt + spec.value.readinessDeadlineMs)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not past its readiness deadline (acceptedAt ${spec.value.acceptedAt} + ${spec.value.readinessDeadlineMs}ms > now ${now}); an early uncertain settle would steal a still-possible success (SPEC 13.6)`);
+  return commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now);
 }
 
 // ---- cancel (§13.6 item 4) --------------------------------------------------------------------

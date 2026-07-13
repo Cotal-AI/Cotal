@@ -22,6 +22,7 @@ import {
   createEndpointStreams, openRecordsBucket,
   actionContext, runGuardGate, holdGuardedGoal, releaseGuardHold, expireGuardHold,
   createGoal, readGoalStatus, transitionGoal, commitGoalResult, readCheckpointStatus,
+  ownerCommitProof, resumeCheckpoint,
   type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam, type ActionContext,
 } from "../src/index.js";
 
@@ -134,14 +135,14 @@ try {
   const jsm = await jetstreamManager(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const kv = await openRecordsBucket(nc, SPACE);
-  const ctx: ActionContext = actionContext(kv, js, jsm, SPACE);
+  const ctx: ActionContext = await actionContext(nc, SPACE);
   const INSTANCE = "i".repeat(26);
   const spec = (fingerprint: string) => ({ fingerprint, command: "deploy", caller: { id: "u_abc.worker", lifecycleUid: UID }, sourceSeq: 1, acceptedAt: NOW });
 
   // hold → checkpoint owned by the guard responder + goal waiting
   const g1 = goalOf("g-hold");
   await createGoal(ctx, g1, spec("sha256:h1"));
-  await transitionGoal(ctx, g1, "running", { ownerAuthored: true });
+  await transitionGoal(ctx, g1, "running", { owner: ownerCommitProof(ctx) });
   const held = await holdGuardedGoal(ctx, { goal: g1, hold: { token: "cp-g1", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   c("a HOLD converts the action to waiting carrying the checkpoint coordinate",
     held.state === "waiting" && held.checkpoint?.token === "cp-g1" && held.checkpoint?.deadlineGeneration === 1);
@@ -152,13 +153,20 @@ try {
   const released = await releaseGuardHold(ctx, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 200 });
   c("the guard responder's release resumes the one-use checkpoint and the goal returns to running",
     released.settle.settle === "resumed" && released.status.state === "running");
-  await rejects("a DUPLICATE release refuses (resume is one-use)",
-    () => releaseGuardHold(ctx, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 300 }), "conflict");
+  {
+    // A duplicate release by the SAME presenter is a retry (indistinguishable from crash
+    // recovery) and CONVERGES idempotently: the ONE recorded resumed settlement is observed,
+    // never re-consumed or re-decided — one-use lives in the settlement fact, and any OTHER
+    // presenter still refuses (the foreign-presenter probes below).
+    const dup = await releaseGuardHold(ctx, { goal: g1, token: "cp-g1", presenter: guardResponder, now: NOW + 300 });
+    c("a DUPLICATE release by the SAME presenter converges idempotently on the one recorded settlement",
+      dup.settle.settle === "resumed" && dup.status.state === "running");
+  }
 
   // expiry: an expired hold is DENY → the goal fails closed
   const g2 = goalOf("g-expire");
   await createGoal(ctx, g2, spec("sha256:h2"));
-  await transitionGoal(ctx, g2, "running", { ownerAuthored: true });
+  await transitionGoal(ctx, g2, "running", { owner: ownerCommitProof(ctx) });
   await holdGuardedGoal(ctx, { goal: g2, hold: { token: "cp-g2", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   await rejects("a release AFTER the hold deadline refuses (the resume seam drives EXPIRED; an expired hold never releases)",
     () => releaseGuardHold(ctx, { goal: g2, token: "cp-g2", presenter: guardResponder, now: NOW + 1_000 }), "failed-precondition");
@@ -172,9 +180,9 @@ try {
   // a valid token for goal A must NEVER release/expire an unrelated goal B on the same endpoint:
   // the hold's checkpoint records ONE goal and both seams bind to it before touching state.
   const gA = goalOf("g-bindA"); const gB = goalOf("g-bindB");
-  await createGoal(ctx, gA, spec("sha256:ba")); await transitionGoal(ctx, gA, "running", { ownerAuthored: true });
+  await createGoal(ctx, gA, spec("sha256:ba")); await transitionGoal(ctx, gA, "running", { owner: ownerCommitProof(ctx) });
   await holdGuardedGoal(ctx, { goal: gA, hold: { token: "cp-bindA", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
-  await createGoal(ctx, gB, spec("sha256:bb")); await transitionGoal(ctx, gB, "running", { ownerAuthored: true });
+  await createGoal(ctx, gB, spec("sha256:bb")); await transitionGoal(ctx, gB, "running", { owner: ownerCommitProof(ctx) });
   await holdGuardedGoal(ctx, { goal: gB, hold: { token: "cp-bindB", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   await rejects("a release presenting goal B with goal A's checkpoint token refuses (the token is goal-bound)",
     () => releaseGuardHold(ctx, { goal: gB, token: "cp-bindA", presenter: guardResponder, now: NOW + 100 }), "permission-denied");
@@ -191,7 +199,7 @@ try {
   // the WINNING terminal (goal-bound token, checkpoint already settled by the release, idempotent).
   const g3 = goalOf("g-race");
   await createGoal(ctx, g3, spec("sha256:h3"));
-  await transitionGoal(ctx, g3, "running", { ownerAuthored: true });
+  await transitionGoal(ctx, g3, "running", { owner: ownerCommitProof(ctx) });
   await holdGuardedGoal(ctx, { goal: g3, hold: { token: "cp-g3", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   await releaseGuardHold(ctx, { goal: g3, token: "cp-g3", presenter: guardResponder, now: NOW + 10 });
   await commitGoalResult(ctx, { ref: g3, now: NOW + 20, cause: "complete", state: "succeeded" });
@@ -203,11 +211,39 @@ try {
   // required at the terminal commit and the target pin cannot strand an expired hold.
   const g4 = goalOf("g-target");
   await createGoal(ctx, g4, { ...spec("sha256:h4"), target: { owner: "u_t", actor: "svc", lifecycleUid: "t".repeat(26), mappingRevision: 1 } });
-  await transitionGoal(ctx, g4, "running", { ownerAuthored: true });
+  await transitionGoal(ctx, g4, "running", { owner: ownerCommitProof(ctx) });
   await holdGuardedGoal(ctx, { goal: g4, hold: { token: "cp-g4", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   const expiredT = await expireGuardHold(ctx, { goal: g4, token: "cp-g4", now: NOW + 1_100 });
   c("a TARGET-PINNED guard-held goal expires cleanly (deny is owner-authored: no executor at the terminal commit)",
     expiredT.won && expiredT.fact.state === "failed" && (await readGoalStatus(ctx, g4))?.value.state === "failed");
+
+  // ── crash convergence: the checkpoint settlement is the arbiter, the goal transition its
+  //    derived projection — a release that crashed between the two is finished by the retry. ──
+  const g5 = goalOf("g-crash");
+  await createGoal(ctx, g5, spec("sha256:h5"));
+  await transitionGoal(ctx, g5, "running", { owner: ownerCommitProof(ctx) });
+  await holdGuardedGoal(ctx, { goal: g5, hold: { token: "cp-g5", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  // manufacture the crash window: the one-use resume is consumed, the goal transition never ran
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: "manager", token: "cp-g5" }, presenter: guardResponder, now: NOW + 10 });
+  c("crash manufacture: checkpoint resumed, goal still waiting", (await readGoalStatus(ctx, g5))?.value.state === "waiting");
+  const conv = await releaseGuardHold(ctx, { goal: g5, token: "cp-g5", presenter: guardResponder, now: NOW + 20 });
+  c("a crashed release RETRY CONVERGES: it observes its own recorded resume and finishes the goal to running",
+    conv.settle.settle === "resumed" && conv.status.state === "running");
+  const conv2 = await releaseGuardHold(ctx, { goal: g5, token: "cp-g5", presenter: guardResponder, now: NOW + 30 });
+  c("…and the converged release is IDEMPOTENT (an already-running goal observes, never errors)", conv2.status.state === "running");
+  await rejects("a FOREIGN presenter can never adopt the recorded resume (holder-bound refusal, not convergence)",
+    () => releaseGuardHold(ctx, { goal: g5, token: "cp-g5", presenter: { id: "u_evil", lifecycleUid: "e".repeat(26) }, now: NOW + 40 }), "permission-denied");
+  await rejects("an expiry of a RELEASED hold refuses (a resumed hold never denies) instead of failing the goal",
+    () => expireGuardHold(ctx, { goal: g5, token: "cp-g5", now: NOW + 80_000 }), "failed-precondition");
+  c("…and the released goal stays running", (await readGoalStatus(ctx, g5))?.value.state === "running");
+
+  // ── the commit boundary itself refuses a deny whose hold is still LIVE ──
+  const g6 = goalOf("g-live");
+  await createGoal(ctx, g6, spec("sha256:h6"));
+  await transitionGoal(ctx, g6, "running", { owner: ownerCommitProof(ctx) });
+  await holdGuardedGoal(ctx, { goal: g6, hold: { token: "cp-g6", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  await rejects("a deny naming a LIVE hold refuses at the commit boundary (no recorded expired settlement — a live hold never denies)",
+    () => commitGoalResult(ctx, { ref: g6, now: NOW + 10, cause: "deny", denial: { kind: "hold-expired", token: "cp-g6" } }), "failed-precondition");
 
   await nc.close();
 } finally {

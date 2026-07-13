@@ -48,9 +48,9 @@ export function epfQuarantineSubject(space: string, endpoint: string, sourceSeq:
 }
 /** The per-goal first-wins bind (§13.4 item 3): stops a second id naming one goalId BEFORE
  *  acceptance and effect. Structural provenance as {@link epfDecisionSubject}. */
-export function epfGoalBindSubject(space: string, request: ParsedEpRequest, goalId: string): string {
-  const c = request.caller;
-  return epfSubject(space, request.endpoint, ["goal", c.owner, c.actor, c.uid, goalId, "bind"]);
+export function epfGoalBindSubject(space: string, source: { endpoint: string; caller: { owner: string; actor: string; uid: string } }, goalId: string): string {
+  const c = source.caller;
+  return epfSubject(space, source.endpoint, ["goal", c.owner, c.actor, c.uid, goalId, "bind"]);
 }
 
 /** Default idempotency horizon (§13.4 item 6; space-configurable). The horizon is REALIZED by

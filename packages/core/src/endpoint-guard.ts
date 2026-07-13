@@ -19,8 +19,8 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { canonicalJson } from "./canonical.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, type AnchorResolver } from "./endpoint-signing.js";
-import { mintCheckpoint, resumeCheckpoint, readCheckpointSpec, expireCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
-import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
+import { mintCheckpoint, resumeCheckpoint, readCheckpointSpec, readCheckpointSettle, expireCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
+import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, readGoalResult, ownerCommitProof, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -230,7 +230,8 @@ export async function holdGuardedGoal(
   // The pause is OWNER-authored (the owner mints the checkpoint and records the wait), not a
   // remote executor's progress step, so a target-pinned goal's hold does not require executor
   // currency here — the guard responder, not a superseded executor, is the checkpoint holder.
-  return transitionGoal(ctx, args.goal, "waiting", { fields: { checkpoint: { token: args.hold.token, deadlineGeneration: 1 } }, ownerAuthored: true });
+  // The authority is the CONSTRUCTION-BOUND owner proof from this context, never a raw flag.
+  return transitionGoal(ctx, args.goal, "waiting", { fields: { checkpoint: { token: args.hold.token, deadlineGeneration: 1 } }, owner: ownerCommitProof(ctx) });
 }
 
 /** Bind a hold's checkpoint token to THIS goal (§13.6): read the checkpoint's recorded spec and
@@ -252,20 +253,43 @@ async function bindCheckpointToGoal(ctx: ActionContext, goal: GoalRef, token: st
 /** Release a guard hold: the GUARD (the checkpoint's holder, presenting as itself) resumes the
  *  one-use checkpoint, and the goal leaves `waiting` back to `running`. The token is first bound
  *  to THIS goal (a valid token for another goal never releases it), THEN the resume seam
- *  enforces holder binding, one-use, and the deadline fence — it RETURNS only a won `resumed`
- *  settlement and throws on everything else (a hold past its deadline drives the EXPIRED
- *  settlement there and refuses; an expired hold never releases). */
+ *  enforces holder binding, one-use, and the deadline fence (a hold past its deadline drives
+ *  the EXPIRED settlement there and refuses; an expired hold never releases).
+ *
+ *  CRASH CONVERGENCE (the checkpoint settlement is the arbiter; the goal transition is its
+ *  derived projection): a crash between the one-use resume and the goal transition leaves the
+ *  checkpoint `resumed` and the goal `waiting` — the RETRY's resume loses `conflict`, so it
+ *  OBSERVES the recorded settlement, requires it to be THIS presenter's own `resumed` (a
+ *  foreign or expired settlement rethrows), and finishes the projection idempotently (a goal
+ *  already `running` is the converged state, not an error). */
 export async function releaseGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; token: string; presenter: { id: string; lifecycleUid: string }; now: number },
 ): Promise<{ settle: CheckpointSettleFact; status: GoalStatusValue }> {
+  // Entry snapshot (single-read): the presenter is compared against the recorded settlement on
+  // the convergence path, so it detaches here alongside the coordinates.
+  const presenter = Object.freeze({ id: String(args.presenter.id), lifecycleUid: String(args.presenter.lifecycleUid) });
+  const cpRef = { endpoint: args.goal.endpoint, token: args.token };
   await bindCheckpointToGoal(ctx, args.goal, args.token); // goal-binding BEFORE consuming the one-use resume
-  const settle = await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, {
-    ref: { endpoint: args.goal.endpoint, token: args.token }, presenter: args.presenter, now: args.now,
-  });
+  let settle: CheckpointSettleFact;
+  try {
+    settle = await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: cpRef, presenter, now: args.now });
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+    // The one-use resume is already consumed: converge IFF the recorded settlement is THIS
+    // presenter's own resume (the crashed earlier attempt won); anything else rethrows.
+    const winner = await readCheckpointSettle(ctx.jsm, ctx.space, cpRef);
+    if (winner === undefined || winner.settle !== "resumed"
+      || winner.holder?.id !== presenter.id || winner.holder?.lifecycleUid !== presenter.lifecycleUid) throw e;
+    settle = winner;
+  }
   // The release is OWNER-authored (the guard's holder-bound resume is the authority, verified
-  // by resumeCheckpoint); the goal returns from the owner-driven pause to running.
-  const status = await transitionGoal(ctx, args.goal, "running", { ownerAuthored: true });
+  // by resumeCheckpoint; the proof is construction-bound, never a raw flag); the goal returns
+  // from the owner-driven pause to running — idempotently on the convergence path.
+  const current = await readGoalStatus(ctx, args.goal);
+  const status = current?.value.state === "running"
+    ? current.value
+    : await transitionGoal(ctx, args.goal, "running", { owner: ownerCommitProof(ctx) });
   return { settle, status };
 }
 
@@ -287,11 +311,22 @@ export async function expireGuardHold(
   // Owner-expire the DUE checkpoint so its status settles and its timers stop (idempotent; an
   // already-settled checkpoint returns its winner). The goal terminal is the authority for the
   // caller, but the checkpoint must not be left waiting with a live timer.
-  await expireCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: { endpoint: args.goal.endpoint, token: args.token }, now: args.now });
-  // An expired hold is DENY (owner-authored fail-closed) → the goal commits terminal failed via
-  // the `deny` cause at the shared commit point, where a racing completion/cancel may win first.
+  const settled = await expireCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: { endpoint: args.goal.endpoint, token: args.token }, now: args.now });
+  if (settled.settle === "resumed") {
+    // The hold was lawfully RELEASED before this expiry: a resumed hold never denies. A raced
+    // caller observes the goal's recorded terminal if one exists; a released hold on a
+    // still-live goal is a plain refusal — there is no denial predicate to commit.
+    const fact = await readGoalResult(ctx, args.goal);
+    if (fact !== undefined) return { won: false, fact, status: await projectGoalTerminal(ctx, args.goal) };
+    throw new EpEnvelopeError("failed-precondition", `the guard hold "${args.token}" was RELEASED (resumed at ${settled.ts}), not expired; a resumed hold never denies (SPEC 13.6)`);
+  }
+  // An expired hold is DENY (fail closed) → the goal commits terminal failed via the `deny`
+  // cause at the shared commit point, where a racing completion/cancel may win first. The
+  // denial carries its AUTHORITATIVE PREDICATE: the commit boundary itself re-verifies that
+  // the named checkpoint binds THIS goal and that its recorded one-use settlement is EXPIRED
+  // (the expiry recorded just above) — a bare deny cause proves nothing and is refused there.
   const res = await commitGoalResult(ctx, {
-    ref: args.goal, now: args.now, cause: "deny",
+    ref: args.goal, now: args.now, cause: "deny", denial: { kind: "hold-expired", token: args.token },
     data: { code: "permission-denied", reason: `the guard hold "${args.token}" expired without a release; timeout is deny (SPEC 13.6: fail closed)` },
   });
   return res;
