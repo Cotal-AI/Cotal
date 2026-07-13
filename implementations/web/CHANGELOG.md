@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.11.3
+
+### Patch Changes
+
+- Version alignment: `@cotal-ai/web` joined the workspace's fixed release group, so its version now tracks the rest of the packages. It had lagged at 0.11.1 while the group reached 0.11.3; this republishes it at 0.11.3 to close the gap. No functional changes.
+
 ## 0.11.1
 
 ### Patch Changes
