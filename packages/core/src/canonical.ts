@@ -42,10 +42,19 @@ function hasLoneSurrogate(s: string): boolean {
   return false;
 }
 
-/** Walk a JSON value and throw on any string that is not well-formed UTF-16 (lone
- *  surrogates violate I-JSON; canonicalizing them would mint a digest for text that cannot
- *  interchange). Also rejects `undefined` in arrays/objects and non-finite numbers, which
- *  RFC 8785 cannot represent. */
+/** Walk a JSON value and throw on anything that cannot canonicalize EXACTLY (D28: verification
+ *  and digesting must never run over a normalizing projection):
+ *   - strings that are not well-formed UTF-16 (a lone surrogate violates I-JSON; canonicalizing
+ *     it would mint a digest for text that cannot interchange), in values AND keys;
+ *   - `undefined` anywhere and non-finite numbers (RFC 8785 cannot represent them);
+ *   - NON-PLAIN-DATA graphs. `Object.entries` sees only enumerable string-keyed own data props,
+ *     and the canonicalizer applies `toJSON`, so a symbol-keyed or non-enumerable own property,
+ *     an accessor, or a class/exotic instance (Date → ISO string, Map → `{}`) would be SILENTLY
+ *     projected away or rewritten — the exact field-dropping class D28 forbids (an artifact
+ *     carrying state its signature never covered must refuse, not launder through the
+ *     projection). Objects must be ordinary with a `null`/`Object.prototype` prototype and only
+ *     enumerable string-keyed own DATA properties; arrays must be ordinary `Array.prototype`
+ *     arrays with no holes and no extra own properties. */
 function assertInterchangeable(v: unknown, path: string): void {
   if (v === null) return;
   switch (typeof v) {
@@ -61,12 +70,38 @@ function assertInterchangeable(v: unknown, path: string): void {
       throw new Error(`canonicalJson: undefined at ${path} (strict mode never coerces to null)`);
     case "object": {
       if (Array.isArray(v)) {
-        v.forEach((e, i) => assertInterchangeable(e, `${path}[${i}]`));
+        if (Object.getPrototypeOf(v) !== Array.prototype)
+          throw new Error(`canonicalJson: non-ordinary array at ${path} (a subclassed/exotic array canonicalizes through projections)`);
+        for (const k of Reflect.ownKeys(v)) {
+          if (typeof k !== "string")
+            throw new Error(`canonicalJson: symbol-keyed own property on array at ${path} (invisible to canonicalization — refusing the projection)`);
+          if (k === "length") continue;
+          if (!/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= v.length)
+            throw new Error(`canonicalJson: non-index own property "${k}" on array at ${path} (invisible to canonicalization — refusing the projection)`);
+        }
+        for (let i = 0; i < v.length; i++) {
+          const d = Object.getOwnPropertyDescriptor(v, i);
+          if (d === undefined)
+            throw new Error(`canonicalJson: hole at ${path}[${i}] (a hole would be coerced to null — refusing the projection)`);
+          if (!d.enumerable || d.get !== undefined || d.set !== undefined)
+            throw new Error(`canonicalJson: non-enumerable or accessor element at ${path}[${i}] (refusing the projection)`);
+          assertInterchangeable(v[i], `${path}[${i}]`);
+        }
         return;
       }
-      for (const [k, e] of Object.entries(v as Record<string, unknown>)) {
+      const proto = Object.getPrototypeOf(v);
+      if (proto !== Object.prototype && proto !== null)
+        throw new Error(`canonicalJson: non-plain object at ${path} (a class/exotic instance canonicalizes through projections like toJSON; only plain data objects are interchangeable)`);
+      for (const k of Reflect.ownKeys(v)) {
+        if (typeof k !== "string")
+          throw new Error(`canonicalJson: symbol-keyed own property at ${path} (invisible to canonicalization — refusing the projection)`);
         if (hasLoneSurrogate(k)) throw new Error(`canonicalJson: lone surrogate in key at ${path}.${k}`);
-        assertInterchangeable(e, `${path}.${k}`);
+        const d = Object.getOwnPropertyDescriptor(v, k)!;
+        if (!d.enumerable)
+          throw new Error(`canonicalJson: non-enumerable own property "${k}" at ${path} (invisible to canonicalization — refusing the projection)`);
+        if (d.get !== undefined || d.set !== undefined)
+          throw new Error(`canonicalJson: accessor property "${k}" at ${path} (a getter is code, not data — refusing the projection)`);
+        assertInterchangeable((v as Record<string, unknown>)[k], `${path}.${k}`);
       }
       return;
     }

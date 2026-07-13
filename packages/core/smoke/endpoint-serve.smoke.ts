@@ -27,7 +27,7 @@ import {
   registerServiceInstance, writeServiceStatus, freezeExpectedSet,
   authorizeServeGrant, assertServeGrantAuthorized,
   SERVICE_READY, SERVICE_EXITED,
-  serveEndpoint, GOVERNED_TRAIT_URNS,
+  serveEndpoint,
   compileContract, contractDigest, VOID_SCHEMA,
   parseClusterDocument, verifyClusterManifest, verifyClusterRoot,
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, RECORD_KINDS,
@@ -163,7 +163,7 @@ function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
 }
 /** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
 const reg = (kvArg: KV, args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority }) =>
-  registerServiceInstance(kvArg, { ...args, space: SPACE, barrier: barrierFor(args.spec.endpoint, args.instanceId), readClusterArtifact, governedTraitUrns: GOVERNED_TRAIT_URNS });
+  registerServiceInstance(kvArg, { ...args, space: SPACE, barrier: barrierFor(args.spec.endpoint, args.instanceId), readClusterArtifact });
 
 // ── name authority (broker-free; the authority read is async) ──
 c("a core name under the operator owner admits",

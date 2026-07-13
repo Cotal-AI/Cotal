@@ -34,6 +34,18 @@ const URN = /^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62}){1,15}$/;
 export function isReverseDnsUrn(s: string): boolean {
   return URN.test(s);
 }
+
+/** The pre-effect authorization trait (§13.6 "Guard checkpoint"): the command MUST NOT
+ *  effect until the guard endpoint named by the trait value answered allow. */
+export const TRAIT_GUARDED = "ai.cotal.guarded";
+/** The payment trait (§13.10): the command MUST verify an independently verifiable payment
+ *  proof in the `auth` slot before effect — never a bare "settled" assertion. */
+export const TRAIT_PRICED = "ai.cotal.priced";
+/** This revision governs EXACTLY these two (§13.7); everything else is vocabulary. Defined
+ *  HERE (the cluster layer both the trait verifiers and the registrar depend on) so the
+ *  trusted registration writer can pin the canonical set STRUCTURALLY — a caller-supplied
+ *  governed set was the subset-narrowing escape the panel rejected. */
+export const GOVERNED_TRAIT_URNS: readonly string[] = Object.freeze([TRAIT_GUARDED, TRAIT_PRICED]);
 /** A named capability requirement (§13.7/§13.9: minting maps it to subjects). */
 const CAPABILITY = /^[a-z][a-z0-9._-]{0,63}$/;
 

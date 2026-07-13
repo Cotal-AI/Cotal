@@ -84,12 +84,22 @@ export const LIFECYCLE_HEAD: RecordKindDef = {
 
 /** The endpoint-wide GOVERNANCE HEAD (§13.7 "a self-published descriptor cannot strip, forge,
  *  or downgrade a governed annotation"): `govern.<endpoint>` — ONE atomic unsplit key holding
- *  the endpoint's MONOTONIC (append-only) governed-trait imposition per command. Governance is
- *  a HISTORY-bearing, endpoint-wide property, not a per-instance descriptor state: once an
- *  authority governs (endpoint, command) with a trait, that imposition persists across
- *  instances AND across command removal (a tombstone), until an authorized revocation (the
- *  D18 governance-consent artifact) lifts it. The registrar reads+CAS-extends this head so a
- *  re-registration, a fresh instanceId, and a remove→re-add cannot launder a strip. */
+ *  the endpoint's MONOTONIC (append-only) BINDING governed-trait imposition per command, plus
+ *  the single in-flight registration's PROVISIONAL slot (endpoint-service.ts): the head is the
+ *  endpoint's registration linearization point — every registration CAS-takes the slot under
+ *  its frozen gate, holds it through spec publication, and promotes its impositions to binding
+ *  only after the publish commits. Governance is a HISTORY-bearing, endpoint-wide property, not
+ *  a per-instance descriptor state: once BOUND, an imposition persists across instances AND
+ *  across command removal (a tombstone), until an authorized revocation (the D18
+ *  governance-consent artifact) lifts it — so a re-registration, a fresh instanceId, and a
+ *  remove→re-add cannot launder a strip.
+ *
+ *  NORMATIVE STATUS: `govern` is NOT yet in the frozen SPEC's §13.7 kind table, §13.9 writer
+ *  matrix, or §13.12 records-bucket binding — it is implemented ahead of a pending P0
+ *  reconciliation decision (the spec's governance-continuity requirement implies a durable,
+ *  shared imposition record the frozen text does not name; multiple provisioners must read one
+ *  head, so a process-internal store cannot satisfy it). The amendment is recorded in the
+ *  control-surface STATUS; the operator decides spec changes. */
 export const GOVERN_HEAD: RecordKindDef = {
   kind: "govern",
   qualifiers: [qEndpoint],

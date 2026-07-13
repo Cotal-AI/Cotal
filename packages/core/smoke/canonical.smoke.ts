@@ -38,6 +38,21 @@ throws("lone surrogate in key rejected", () => canonicalJson({ "\uDEAD": 1 }), "
 throws("undefined in array rejected", () => canonicalJson({ a: [1, undefined, 3] }), "undefined");
 throws("NaN rejected", () => canonicalJson({ n: Number.NaN }), "non-finite");
 
+// 5b) Strict PLAIN-DATA graph (D28): state invisible to canonicalization refuses instead of
+// being silently projected (symbol/non-enumerable/accessor props, class/exotic instances whose
+// toJSON rewrites them, subclassed/holey arrays). Only JSON.parse-shaped data canonicalizes.
+throws("symbol-keyed own property rejected", () => { const o: Record<string | symbol, unknown> = { a: 1 }; o[Symbol("s")] = 2; return canonicalJson(o); }, "symbol-keyed");
+throws("non-enumerable own property rejected", () => { const o = { a: 1 }; Object.defineProperty(o, "hidden", { value: 2, enumerable: false }); return canonicalJson(o); }, "non-enumerable");
+throws("accessor property rejected", () => { const o = { a: 1 }; Object.defineProperty(o, "g", { get: () => 2, enumerable: true }); return canonicalJson(o); }, "accessor");
+throws("class instance (Date) rejected", () => canonicalJson({ at: new Date(0) }), "non-plain");
+throws("exotic container (Map) rejected", () => canonicalJson({ m: new Map([["x", 1]]) }), "non-plain");
+throws("own toJSON function rejected (a function is code, not data)", () => canonicalJson({ toJSON: () => ({}) }), "unsupported function");
+throws("subclassed array rejected", () => { class A extends Array {} const a = new A(); a.push(1); return canonicalJson({ a }); }, "non-ordinary array");
+throws("array hole rejected (would coerce to null)", () => { const a = [1]; a.length = 3; return canonicalJson({ a }); }, "hole");
+throws("non-index own property on array rejected", () => { const a = [1] as number[] & { x?: number }; a.x = 2; return canonicalJson({ a }); }, "non-index");
+ok("null-prototype plain object canonicalizes", canonicalJson(Object.assign(Object.create(null), { a: 1 })) === '{"a":1}');
+ok("JSON.parse-shaped data canonicalizes unchanged", canonicalJson(JSON.parse('{"b":[1,2],"a":"x"}')) === '{"a":"x","b":[1,2]}');
+
 // 6) Digest identity: shape, stability, and independence from key insertion order.
 const d1 = contractDigest({ x: 1, y: [true, "z"] });
 const d2 = contractDigest({ y: [true, "z"], x: 1 });

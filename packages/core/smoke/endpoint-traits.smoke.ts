@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { createUser } from "@nats-io/nkeys";
+import type { KV } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
   openRecordsBucket, registerServiceInstance, authorizeServeGrant, serveEndpoint,
@@ -32,7 +33,7 @@ import {
   verifyTraitDefinition, isVerifiedTraitDefinition, traitDefinitionDigest,
   verifyTraitAttachment, isVerifiedTraitAttachment,
   verifyGovernedSurface, assertGovernedSurfaceFor,
-  TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS,
+  TRAIT_GUARDED, TRAIT_PRICED,
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
   type EpGuardVerdict, type EpTraitEnforcement, type EpGovernedSurface,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
@@ -245,6 +246,34 @@ await rejects("a non-finite number anywhere in a signed artifact refuses at the 
     (nf.value as Record<string, unknown>).n = Infinity;
     return verifyTraitAttachment(nf, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
   });
+// The strict path also refuses state INVISIBLE to canonicalization (finding: `Object.entries`
+// sees only enumerable string-keyed own data props and the canonicalizer applies toJSON, so a
+// symbol/non-enumerable property or a class/exotic instance was silently projected away — the
+// artifact rode with state its signature never covered).
+await rejects("an unsigned SYMBOL-keyed property added post-sign refuses (invisible to canonicalization, never silently dropped)",
+  () => {
+    const sy = signArtifact(attBody(), opKp) as Record<string, unknown>;
+    (sy.value as Record<string | symbol, unknown>)[Symbol("unsigned")] = 2;
+    return verifyTraitAttachment(sy, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
+  });
+await rejects("an unsigned NON-ENUMERABLE property added post-sign refuses (invisible to canonicalization)",
+  () => {
+    const ne = signArtifact(attBody(), opKp) as Record<string, unknown>;
+    Object.defineProperty(ne.value as object, "sneak", { value: 2, enumerable: false });
+    return verifyTraitAttachment(ne, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
+  });
+await rejects("a class instance in a signed artifact (Date) refuses instead of canonicalizing through its toJSON projection",
+  () => {
+    const dt = signArtifact(attBody(), opKp) as Record<string, unknown>;
+    (dt.value as Record<string, unknown>).at = new Date(0);
+    return verifyTraitAttachment(dt, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
+  });
+await rejects("an exotic container in a signed artifact (Map) refuses instead of canonicalizing to {}",
+  () => {
+    const mp = signArtifact(attBody(), opKp) as Record<string, unknown>;
+    (mp.value as Record<string, unknown>).m = new Map([["x", 1]]);
+    return verifyTraitAttachment(mp, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
+  });
 
 // ── live broker: registration → serve grant → governed surface → the pre-effect gate ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -273,11 +302,11 @@ try {
       reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
     };
   };
-  // The trusted registrar wires the governed-continuity seam (the store reader + the governed URNs
-  // as DATA); a re-registration that strips a governed trait from a surviving command refuses HERE,
-  // from the registry's own prior spec, never a caller-supplied prior surface.
+  // The trusted registrar wires the content-store reader; the governed set is pinned internally
+  // to the canonical constant (no wiring argument to omit or narrow). A registration that strips
+  // a governed trait refuses HERE, against the endpoint-wide governance head.
   const reg = (spec: ServiceSpec, instanceId: string) =>
-    registerServiceInstance(kv, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(spec.endpoint, instanceId), readClusterArtifact: readArtifact, governedTraitUrns: GOVERNED_TRAIT_URNS });
+    registerServiceInstance(kv, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(spec.endpoint, instanceId), readClusterArtifact: readArtifact });
   const grantFor = (endpoint: string, instanceId: string): Promise<EpServeGrant> =>
     authorizeServeGrant(kv, { space: SPACE, endpoint, instanceId, epoch: 1, holder: { owner: "u_op" }, authority, readProcessEpoch: () => 1, readClusterArtifact: readArtifact });
 
@@ -561,6 +590,124 @@ try {
   const DC_VAULT_FRESH_OK = register(vaultDoc(7, VAULT_CMDS.map((m) => ({ ...m })))); // launch guarded
   await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT_FRESH_OK], protocol: { v: 1 } }, IID2);
   c("a fresh instance that CARRIES the endpoint's governance registers (a second contract-homogeneous instance)", true);
+
+  // PRICED is covered STRUCTURALLY: the registrar pins the canonical GOVERNED_TRAIT_URNS
+  // internally (finding: a caller-supplied governed set could be narrowed to guarded-only,
+  // silently un-tracking priced) — there is no wiring argument left to subset.
+  const VAULT_CMDS_PSTRIP = VAULT_CMDS.map((m) => { const { traits: _t, ...rest } = m; return m.name === "charge" ? rest : { ...m }; });
+  const DC_VAULT_PSTRIP = register(vaultDoc(8, VAULT_CMDS_PSTRIP));
+  await rejects("a PRICED strip refuses exactly like a guarded strip (the governed set is the canonical constant, not a narrowable wiring argument)",
+    () => reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT_PSTRIP], protocol: { v: 1 } }, IID), "permission-denied");
+
+  // ── the governance head is the ENDPOINT-WIDE registration serialization point (panel: the
+  //    cross-instance changed=false reader race and the phantom obligation are duals of ONE
+  //    missing linearization). EVERY registration CAS-takes the head's provisional slot under
+  //    its frozen gate, holds it through spec publication, and PROMOTES to binding only after
+  //    the publish commits. Real broker, real CAS — only the schedule is staged via a thin KV
+  //    wrapper with injectable per-key hooks. ──
+  const hookedKv = (hooks: { beforeWrite?: (key: string) => Promise<void> | void }): KV =>
+    ({
+      get: (k: string) => kv.get(k),
+      create: async (k: string, v: Uint8Array) => { await hooks.beforeWrite?.(k); return kv.create(k, v); },
+      update: async (k: string, v: Uint8Array, r: number) => { await hooks.beforeWrite?.(k); return kv.update(k, v, r); },
+    }) as unknown as KV;
+  const regOn = (kvArg: KV, spec: ServiceSpec, instanceId: string) =>
+    registerServiceInstance(kvArg, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(spec.endpoint, instanceId), readClusterArtifact: readArtifact });
+  const readHead = async (endpoint: string) => {
+    const e = await kv.get(`govern.${endpoint}`);
+    return JSON.parse(new TextDecoder().decode(e!.value)) as { commands: Record<string, string[]>; provisional?: { instanceId: string; generation: number; commands: Record<string, string[]> } };
+  };
+  const W_UNGOV = [{ name: "work", class: "ephemeral", targeted: false, capability: "vault.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest }];
+  const W_GOV = [{ ...W_UNGOV[0], traits: [TRAIT_GUARDED] }];
+  const IID_A = "e".repeat(26), IID_B = "f".repeat(26);
+
+  // distsys's exact schedule, corrected: A (ungoverned, a would-be changed=false "reader") HOLDS
+  // the slot through its publish, so B's governed registration CONFLICTS instead of imposing
+  // mid-flight; B retries after A releases; A's next ungoverned re-registration then refuses
+  // against B's now-binding imposition. No publish slips past a concurrent imposition.
+  const DC_W_UNGOV = register({ urn: "ai.cotal.wpool", revision: 1, attributes: [], events: [], commands: W_UNGOV });
+  const DC_W_GOV = register({ urn: "ai.cotal.wpool", revision: 2, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+  const wSpec = (digest: string): ServiceSpec => ({ endpoint: "wpool", owner: "u_op", clusterDigests: [digest], protocol: { v: 1 } });
+  let bDuringA: unknown;
+  const kvA = hookedKv({ beforeWrite: async (k) => {
+    if (k.startsWith("svc.wpool.") && bDuringA === undefined)
+      bDuringA = await regOn(kv, wSpec(DC_W_GOV), IID_B).then(() => "registered", (e: unknown) => e);
+  } });
+  await regOn(kvA, wSpec(DC_W_UNGOV), IID_A);
+  c("an UNGOVERNED registration takes the endpoint slot: a concurrent GOVERNED registration of another instance conflicts instead of imposing mid-flight (no changed=false reader race)",
+    bDuringA instanceof EpEnvelopeError && bDuringA.code === "conflict", bDuringA);
+  await regOn(kv, wSpec(DC_W_GOV), IID_B); // B retries after A released the slot → imposes guarded
+  await rejects("after the raced imposition lands, the previously-ungoverned instance's next UNGOVERNED re-registration refuses (linearized at the head)",
+    () => regOn(kv, wSpec(DC_W_UNGOV), IID_A), "permission-denied");
+  {
+    const head = await readHead("wpool");
+    c("the settled head BINDS the imposition and holds no provisional slot",
+      head.provisional === undefined && (head.commands["work"] ?? []).includes(TRAIT_GUARDED));
+  }
+
+  // A definite slot-take CAS loss is a loud CONFLICT (finding: the record helpers wrap the
+  // broker's 10071/10164 as an envelope conflict, so a numeric isCasLoss re-check was dead code
+  // and every loss fell to `unavailable`).
+  const DC_W2 = register({ urn: "ai.cotal.wpool2", revision: 1, attributes: [], events: [], commands: W_UNGOV.map((m) => ({ ...m })) });
+  const w2Spec: ServiceSpec = { endpoint: "wpool2", owner: "u_op", clusterDigests: [DC_W2], protocol: { v: 1 } };
+  let bumped = false;
+  const kvBump = hookedKv({ beforeWrite: async (k) => {
+    if (k === "govern.wpool2" && !bumped) { bumped = true; await kv.put(k, new TextEncoder().encode(JSON.stringify({ commands: {} }))); }
+  } });
+  await rejects("a governance slot-take that loses its CAS to a concurrent head write is a loud CONFLICT (definite no-write), never mislabeled unavailable",
+    () => regOn(kvBump, w2Spec, IID_A), "conflict");
+  c("the lost slot-take reopened the instance gate at its original coordinate (definite no-write abort)",
+    gateStates.get(`wpool2/${IID_A}`)!.state === "open");
+  await regOn(kv, w2Spec, IID_A); // the retry re-reads the moved head and completes
+  c("the conflicted registration's plain retry completes against the moved head", true);
+
+  // The phantom dual: a spec publish that FAILS after a GOVERNED slot-take leaves the gate
+  // frozen and the imposition PROVISIONAL — nothing binds for a descriptor that never published;
+  // the endpoint stays fail-closed (foreign registrations conflict on the unreconciled slot)
+  // until the holder's retry or the reconciler resolves it.
+  const DC_W3 = register({ urn: "ai.cotal.wpool3", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
+  const DC_W3_UNGOV = register({ urn: "ai.cotal.wpool3", revision: 2, attributes: [], events: [], commands: W_UNGOV.map((m) => ({ ...m })) });
+  const kvSpecFail = hookedKv({ beforeWrite: (k) => { if (k.startsWith("svc.wpool3.")) throw new Error("staged publish outage"); } });
+  await rejects("a spec publish failure AFTER a governed slot-take aborts `unavailable` and leaves the gate frozen for reconciliation",
+    () => regOn(kvSpecFail, { endpoint: "wpool3", owner: "u_op", clusterDigests: [DC_W3], protocol: { v: 1 } }, IID_A), "unavailable");
+  c("the failed registration's gate is FROZEN, not reopened", gateStates.get(`wpool3/${IID_A}`)!.state === "frozen");
+  {
+    const head = await readHead("wpool3");
+    c("the failed registration's imposition stayed PROVISIONAL: no binding for a descriptor that never published (no phantom obligation)",
+      Object.keys(head.commands).length === 0 && head.provisional?.instanceId === IID_A);
+  }
+  await rejects("a foreign registration on the unreconciled endpoint conflicts (fail-closed and reclaimable, never a permanent phantom imposition)",
+    () => regOn(kv, { endpoint: "wpool3", owner: "u_op", clusterDigests: [DC_W3_UNGOV], protocol: { v: 1 } }, IID_B), "conflict");
+
+  // A committed-but-unacked slot-take self-orphans: its stamp is the generation the abort-reopen
+  // advances PAST, so the holder's own retry replaces it (foreigners keep refusing until then),
+  // and the reclaim does NOT bind the orphan's unpublished imposition.
+  const DC_W4 = register({ urn: "ai.cotal.wpool4", revision: 1, attributes: [], events: [], commands: W_UNGOV.map((m) => ({ ...m })) });
+  const w4Spec: ServiceSpec = { endpoint: "wpool4", owner: "u_op", clusterDigests: [DC_W4], protocol: { v: 1 } };
+  await regOn(kv, w4Spec, IID_A); // gate now open past generation 0
+  {
+    const head = await readHead("wpool4");
+    head.provisional = { instanceId: IID_A, generation: 0, commands: { work: [TRAIT_GUARDED] } }; // manufactured stale-stamp orphan
+    await kv.put("govern.wpool4", new TextEncoder().encode(JSON.stringify(head)));
+  }
+  await rejects("a FOREIGN instance refuses on an orphaned provisional slot (fail-closed until reclaim)",
+    () => regOn(kv, w4Spec, IID_B), "conflict");
+  await regOn(kv, w4Spec, IID_A); // the holder's own retry replaces its stale-generation orphan
+  {
+    const head = await readHead("wpool4");
+    c("the holder's retry reclaims its stale-generation orphan WITHOUT binding the orphan's unpublished imposition",
+      head.provisional === undefined && Object.keys(head.commands).length === 0);
+  }
+
+  // Deleting/purging the head is NEVER a virgin reset: only TRUE ABSENCE is virgin (finding: the
+  // KV client returns DEL/PURGE markers from get() and create() recreates over them, so mapping
+  // non-PUT to "no history" would let whoever can delete the key erase every tombstone).
+  await kv.delete("govern.wpool4");
+  await rejects("a DEL marker on the governance head refuses registration (a deletion never resets governance history)",
+    () => regOn(kv, w4Spec, IID_A), "failed-precondition");
+  await kv.purge("govern.wpool4");
+  await rejects("a PURGE marker on the governance head refuses registration (fail-closed, reconcile the store)",
+    () => regOn(kv, w4Spec, IID_A), "failed-precondition");
 
   await rejects("a governed surface for a SUPERSEDED registration revision refuses at construction (a re-registration demands a fresh verification)",
     async () => serveEndpoint(nc, SPACE, grantV4, ["charge", "both", "free"].map(defFor), { public: true }, { traits: { governed: surfaceV1, guard, verifyPaymentProof } }));

@@ -19,9 +19,9 @@ import {
 import { EpEnvelopeError, type EpClass } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord,
-  createRecordEntry, updateRecordEntry, assertStatusValue, isCasLoss,
+  createRecordEntry, updateRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
-import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
+import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -161,17 +161,17 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
  *  production `barrier` wires to the durable KV CAS (D13/D14); the D4 seam is the typed protocol
  *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
 /** Reconstruct a registered spec's command surface from trusted registry + content-addressed
- *  store state (§13.7): EVERY command name -> the set of `governedUrns` its verified cluster
+ *  store state (§13.7): EVERY command name -> the set of governed URNs its verified cluster
  *  document declares (an empty set for an un-governed command; the full command set is needed so
  *  continuity can tell a STRIPPED-but-surviving command from a REMOVED one). The registrar drives
  *  this, so the OWNER never supplies the prior state that continuity compares against - it is read
- *  from the mediated spec + the digest-verified cluster bytes. `governedUrns` is passed as DATA so
- *  the registry stays generic (it never hardcodes `ai.cotal.*`; the trusted composition root names
- *  the governed set). */
+ *  from the mediated spec + the digest-verified cluster bytes. The governed set is the canonical
+ *  {@link GOVERNED_TRAIT_URNS}, pinned STRUCTURALLY - a caller-supplied set was the
+ *  subset-narrowing escape (pass guarded-only and a priced imposition is never recorded), the
+ *  same class as the required-but-empty policy the panel already rejected. */
 async function readGovernedDeclarations(
   readArtifact: (digest: string) => Promise<unknown> | unknown,
   clusterDigests: readonly string[],
-  governedUrns: readonly string[],
 ): Promise<Map<string, Set<string>>> {
   const out = new Map<string, Set<string>>();
   const read = async (digest: string): Promise<unknown> => {
@@ -185,7 +185,7 @@ async function readGovernedDeclarations(
     const document = verifyClusterRoot(root, await read(root));
     for (const cmd of document.commands) {
       const set = out.get(cmd.name) ?? new Set<string>();
-      for (const t of (cmd.traits ?? [])) if (governedUrns.includes(t)) set.add(t);
+      for (const t of (cmd.traits ?? [])) if (GOVERNED_TRAIT_URNS.includes(t)) set.add(t);
       out.set(cmd.name, set); // present for EVERY command, governed or not
     }
   }
@@ -218,82 +218,113 @@ function assertGovernedDeclarationContinuity(prior: Map<string, Set<string>>, ne
   }
 }
 
-/** The `govern.<endpoint>` value: the endpoint's monotonic governed-trait imposition per command
- *  (sorted URNs for a deterministic canonical form). Absent = no command on this endpoint has
- *  ever been governed. */
+/** The `govern.<endpoint>` value. `commands` is the endpoint's BINDING monotonic governed-trait
+ *  imposition per command (sorted URNs for a deterministic form; tombstones survive command
+ *  removal). `provisional`, when present, is the endpoint-wide REGISTRATION SLOT: the single
+ *  in-flight registration's identity plus the governed declarations it will PROMOTE to binding
+ *  once its spec publish commits. The slot is what makes the head the endpoint's registration
+ *  linearization point (§13.7): EVERY registration - governed and ungoverned alike - must
+ *  CAS-take it under its frozen gate and holds it through spec publication, so no registration
+ *  can decide against one governance state and publish under another (the cross-instance
+ *  `changed:false` reader race), and no imposition becomes binding for a descriptor that never
+ *  published (the phantom-obligation orphan). Absent head = no registration has ever completed
+ *  and nothing is in flight. */
 interface EndpointGovernance {
   commands: Record<string, string[]>;
+  provisional?: { instanceId: string; generation: number; commands: Record<string, string[]> };
 }
 
-function parseEndpointGovernance(raw: unknown, key: string): Map<string, Set<string>> {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || !("commands" in raw))
-    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} is not a { commands } record; garbled mediated governance state never authorizes (SPEC 13.7)`);
-  const commands = (raw as { commands: unknown }).commands;
+interface ParsedEndpointGovernance {
+  commands: Map<string, Set<string>>;
+  provisional: { instanceId: string; generation: number; commands: Map<string, Set<string>> } | null;
+}
+
+function parseGovernanceCommands(commands: unknown, key: string, what: string): Map<string, Set<string>> {
   if (commands === null || typeof commands !== "object" || Array.isArray(commands))
-    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} has a non-object commands map; garbled mediated governance state never authorizes (SPEC 13.7)`);
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} has a non-object ${what} map; garbled mediated governance state never authorizes (SPEC 13.7)`);
   const out = new Map<string, Set<string>>();
   for (const [command, urns] of Object.entries(commands as Record<string, unknown>)) {
     if (!Array.isArray(urns) || !urns.every((u) => typeof u === "string" && u.length > 0))
-      throw new EpEnvelopeError("internal", `the endpoint governance head ${key} maps command "${command}" to a non-string-array; garbled state never authorizes (SPEC 13.7)`);
+      throw new EpEnvelopeError("internal", `the endpoint governance head ${key} maps ${what} command "${command}" to a non-string-array; garbled state never authorizes (SPEC 13.7)`);
     out.set(command, new Set(urns as string[]));
   }
   return out;
 }
 
-/** Read the endpoint-wide governance head fresh under the frozen gate (a KV get, not a fence):
- *  the map of command -> imposed governed URNs, plus the store `revision` the extend-write must
- *  CAS against (`null` = the head does not exist yet). A garbled head fails loud (`internal`),
- *  never an empty-map fail-open. */
-async function readEndpointGovernance(kv: KV, endpoint: string): Promise<{ commands: Map<string, Set<string>>; revision: number | null }> {
-  const key = recordAtomicKey(GOVERN_HEAD, [endpoint]);
-  const entry = await kv.get(key);
-  if (!entry || entry.operation !== "PUT")
-    return { commands: new Map(), revision: null };
-  return { commands: parseEndpointGovernance(decodeJson(entry.value, key), key), revision: entry.revision };
+function parseEndpointGovernance(raw: unknown, key: string): ParsedEndpointGovernance {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || !("commands" in raw))
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} is not a { commands } record; garbled mediated governance state never authorizes (SPEC 13.7)`);
+  const commands = parseGovernanceCommands((raw as { commands: unknown }).commands, key, "binding");
+  const p = (raw as { provisional?: unknown }).provisional;
+  if (p === undefined) return { commands, provisional: null };
+  if (p === null || typeof p !== "object" || Array.isArray(p))
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} has a non-object provisional slot; garbled state never authorizes (SPEC 13.7)`);
+  const slot = p as { instanceId?: unknown; generation?: unknown; commands?: unknown };
+  if (typeof slot.instanceId !== "string" || slot.instanceId.length === 0)
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} provisional slot has no holder instanceId; garbled state never authorizes (SPEC 13.7)`);
+  if (typeof slot.generation !== "number" || !Number.isSafeInteger(slot.generation) || slot.generation < 0)
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} provisional slot has a non-integer generation; garbled state never authorizes (SPEC 13.7)`);
+  return {
+    commands,
+    provisional: { instanceId: slot.instanceId, generation: slot.generation, commands: parseGovernanceCommands(slot.commands, key, "provisional") },
+  };
 }
 
-/** Union the new spec's governed declarations into the endpoint governance (monotonic: a
- *  governed trait is only ever ADDED, never dropped). Returns the merged map and whether it
- *  differs from `prior` (no write when a plain re-registration adds no governance). */
-function mergeEndpointGovernance(prior: Map<string, Set<string>>, next: Map<string, Set<string>>): { merged: Map<string, Set<string>>; changed: boolean } {
+/** Read the endpoint-wide governance head fresh under the frozen gate (a KV get, not a fence -
+ *  the fence is the slot-take CAS that follows): binding impositions + the in-flight provisional
+ *  slot, plus the store `revision` the slot-take must CAS against (`null` = the head does not
+ *  exist yet). Fail-closed on anything but a clean read: a garbled head is `internal`, and a
+ *  DEL/PURGE marker is REFUSED, never treated as a virgin head - the KV client's get() returns
+ *  deletion markers and its create() recreates over them, so mapping non-PUT to "no history"
+ *  would let whoever can delete the key erase every tombstone and register a stripped surface
+ *  against a reset record. Only TRUE ABSENCE is virgin; a deletion marker on a monotonic
+ *  history-bearing authority record is tampering or a storage fault to reconcile, never
+ *  authorization to forget (SPEC 13.7). */
+async function readEndpointGovernance(kv: KV, endpoint: string): Promise<ParsedEndpointGovernance & { revision: number | null }> {
+  const key = recordAtomicKey(GOVERN_HEAD, [endpoint]);
+  const entry = await kv.get(key);
+  if (!entry) return { commands: new Map(), provisional: null, revision: null };
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the endpoint governance head ${key} carries a ${entry.operation} marker; a monotonic history-bearing record is never deleted, so this is tampering or a storage fault - reconcile the head before registering, a deletion never resets governance history (SPEC 13.7)`);
+  return { ...parseEndpointGovernance(decodeJson(entry.value, key), key), revision: entry.revision };
+}
+
+/** Union the new spec's governed declarations into the binding governance (monotonic: a governed
+ *  trait is only ever ADDED, never dropped; un-governed commands are not recorded). This is the
+ *  PROMOTE content - written only after the spec publish commits. */
+function mergeEndpointGovernance(prior: Map<string, Set<string>>, next: Map<string, Set<string>>): Map<string, Set<string>> {
   const merged = new Map<string, Set<string>>();
   for (const [command, urns] of prior) merged.set(command, new Set(urns));
-  let changed = false;
   for (const [command, urns] of next) {
     if (urns.size === 0) continue; // un-governed commands are not recorded (only impositions)
     const into = merged.get(command) ?? new Set<string>();
-    for (const urn of urns) if (!into.has(urn)) { into.add(urn); changed = true; }
+    for (const urn of urns) into.add(urn);
     merged.set(command, into);
   }
-  return { merged, changed };
+  return merged;
 }
 
-function serializeEndpointGovernance(commands: Map<string, Set<string>>): EndpointGovernance {
+function serializeGovernanceCommands(commands: Map<string, Set<string>>): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const [command, urns] of commands) if (urns.size > 0) out[command] = [...urns].sort();
-  return { commands: out };
+  return out;
 }
 
 export async function registerServiceInstance(
   kv: KV,
   args: {
     space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier;
-    /** Governed-continuity policy (§13.7), REQUIRED and closed for this revision — never an
-     *  optional seam a careless (or colluding) registrar can omit, pass empty, or subset to
-     *  narrow the protected set (that would be the `previous:null` escape moved to policy
-     *  wiring). `readClusterArtifact` is the content-store reader; `governedTraitUrns` is the
-     *  canonical governed set (this revision governs exactly guarded+priced) — the trusted
-     *  composition root supplies {@link GOVERNED_TRAIT_URNS}, and the same set MUST feed
-     *  serve-side enforcement, so governance is structural, not a wiring-discipline hope. The
-     *  registrar reads the ENDPOINT-WIDE governance head, refuses a strip, then CAS-extends it. */
+    /** Content-store reader for the spec's cluster digests, REQUIRED (§13.7): governed
+     *  continuity is not an optional seam. It is the ONLY policy input - the governed set
+     *  itself is pinned internally to the canonical {@link GOVERNED_TRAIT_URNS} (the same
+     *  constant feeding serve-side enforcement), never a caller-supplied list: a tunable set
+     *  was the subset-narrowing escape (guarded-only wiring silently un-tracks priced), the
+     *  `previous:null` class one notch smaller. */
     readClusterArtifact: (digest: string) => Promise<unknown> | unknown;
-    governedTraitUrns: readonly string[];
   },
 ): Promise<{ registrationRevision: number }> {
   if (typeof args.readClusterArtifact !== "function")
     throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a content-store reader (readClusterArtifact); governed-continuity is not an optional seam (SPEC 13.7)");
-  if (!Array.isArray(args.governedTraitUrns) || args.governedTraitUrns.length === 0)
-    throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a non-empty governedTraitUrns set (the canonical governed traits, GOVERNED_TRAIT_URNS); an empty/omitted policy is the previous:null strip escape moved to wiring (SPEC 13.7)");
   spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
   assertBoundedOwner(args.registrant.owner, "registrant owner");
@@ -337,6 +368,9 @@ export async function registerServiceInstance(
   //    mismatch is a raced transfer — a loud `conflict`, never a stale-owner registration.
   let current: Awaited<ReturnType<KV["get"]>>;
   const govKey = recordAtomicKey(GOVERN_HEAD, [spec.endpoint]);
+  // Assigned in PHASE 1 on every non-throwing path (the slot-take is PHASE 1's last act).
+  let governSlotRevision!: number;
+  let governPromote!: EndpointGovernance;
   try {
     const authorizedNameRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
     if (authorizedNameRevision !== obs.nameAuthorityRevision)
@@ -348,28 +382,52 @@ export async function registerServiceInstance(
         throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
     }
     // §13.7 ENDPOINT-WIDE governed-continuity, run on EVERY registration (a first registration
-    // included — that is where a fresh-instance strip is caught). Read the endpoint governance
-    // head + the NEW spec's governed declarations from digest-verified bytes, refuse a strip, then
-    // CAS-EXTEND the head with any newly-declared governance. The head is history-bearing and
-    // endpoint-wide, so it is not defeated by a fresh instanceId (no prior per-instance head), a
-    // remove→re-add (the intermediate head carries no governance), or the optional-policy escape
-    // (the policy is required above). All under the frozen gate; a failure here is a DEFINITE
-    // no-spec-write — a governance CAS loss is a raced endpoint registration (`conflict`), any
-    // other error is monotonic + pre-revoke so reopening and an idempotent retry are safe — so it
-    // reopens the ORIGINAL coordinate like the ownership check, never a half-published spec.
+    // included — that is where a fresh-instance strip is caught). The governance head is BOTH the
+    // history-bearing imposition record AND the endpoint's registration linearization point:
+    //  - read it fresh under the frozen gate; refuse if a FOREIGN registration holds its
+    //    provisional slot (`conflict`, re-read and re-decide — per-instance gates do not mutually
+    //    exclude across instances, the slot does);
+    //  - validate the new spec's digest-verified declarations against the BINDING impositions
+    //    (fresh-instance, remove→re-add, and stripped-but-surviving all refuse here);
+    //  - CAS-TAKE the slot — every registration takes it, an ungoverned/`changed:false` one
+    //    included, or a pure head READER could decide against one governance state and publish
+    //    under another (the cross-instance launder). The slot is stamped with this gate's frozen
+    //    `generation`; it is HELD through the spec publish and PROMOTED to binding only after the
+    //    publish commits, so no imposition ever binds for a descriptor that never published (the
+    //    phantom-obligation orphan) and no publish ever slips past a concurrent imposition.
+    // Every failure in this block is a DEFINITE no-spec-write, so the outer catch reopens the
+    // ORIGINAL coordinate: a slot-take CAS loss is a raced endpoint registration (`conflict`);
+    // an AMBIGUOUS slot-take is also safe to reopen because a committed-but-unacked slot is
+    // stamped with the generation this reopen advances PAST — the stale stamp marks it orphaned,
+    // this instance's own retry replaces it, and a foreign registration refuses on it until then
+    // (fail-closed, reclaimed by retry or by the D13 reconciler; predicate: the stamped gate
+    // coordinate is not frozen at that generation).
     const gov = await readEndpointGovernance(kv, spec.endpoint);
-    const next = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests, args.governedTraitUrns);
+    if (gov.provisional) {
+      if (gov.provisional.instanceId !== args.instanceId)
+        throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" (instance "${gov.provisional.instanceId}") holds the governance slot through its spec publication; re-read and re-decide — if its holder aborted pre-publish its stale-generation slot is reclaimed by that instance's retry or by reconciliation (SPEC 13.7/13.8)`);
+      if (gov.provisional.generation >= obs.generation)
+        throw new EpEnvelopeError("internal", `the governance slot for endpoint "${spec.endpoint}" is held by this very instance at generation ${gov.provisional.generation} while its gate is frozen at ${obs.generation}; a live slot under a re-frozen gate cannot exist (every retry freezes at an advanced generation) — reconcile the head before registering (SPEC 13.7)`);
+      // else: this instance's OWN orphan from an aborted earlier attempt (the gate has reopened
+      // past its stamp since) — the slot-take below replaces it.
+    }
+    const next = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests);
     assertGovernedDeclarationContinuity(gov.commands, next);
-    const { merged, changed } = mergeEndpointGovernance(gov.commands, next);
-    if (changed) {
-      try {
-        if (gov.revision === null) await createRecordEntry(kv, govKey, serializeEndpointGovernance(merged));
-        else await updateRecordEntry(kv, govKey, serializeEndpointGovernance(merged), gov.revision);
-      } catch (e) {
-        if (isCasLoss(e))
-          throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" extended its governance head first; re-read and re-decide (SPEC 13.7/13.8)`);
-        throw new EpEnvelopeError("unavailable", `the endpoint governance-head extend for "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens — governance is monotonic so a retry is idempotent (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
-      }
+    governPromote = { commands: serializeGovernanceCommands(mergeEndpointGovernance(gov.commands, next)) };
+    const slotValue: EndpointGovernance = {
+      commands: serializeGovernanceCommands(gov.commands),
+      provisional: { instanceId: args.instanceId, generation: obs.generation, commands: serializeGovernanceCommands(next) },
+    };
+    try {
+      governSlotRevision = gov.revision === null
+        ? await createRecordEntry(kv, govKey, slotValue)
+        : await updateRecordEntry(kv, govKey, slotValue, gov.revision);
+    } catch (e) {
+      // createRecordEntry/updateRecordEntry translate the broker CAS loss (err_code 10071/10164)
+      // into EpEnvelopeError("conflict") — classify on THAT, the numeric code never reaches here.
+      if (e instanceof EpEnvelopeError && e.code === "conflict")
+        throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" took the governance slot first (a definite no-write CAS loss); re-read and re-decide (SPEC 13.7/13.8)`);
+      throw new EpEnvelopeError("unavailable", `the governance slot-take for endpoint "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens — a committed-but-unacked slot self-orphans at the reopened generation and this instance's retry replaces it (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
     }
   } catch (err) {
     await reopenGateAfterAbort(args.barrier, token, successorAt(obs.registrationRevision), err);
@@ -406,6 +464,22 @@ export async function registerServiceInstance(
       : await createRecordEntry(kv, key, spec);
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `the re-registration spec-write outcome is ambiguous (it may have committed); the gate is left frozen for reconciliation, never reopened at the old coordinate (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+  }
+
+  // PHASE 3b — PROMOTE the governance slot to binding, now that the spec publish committed: the
+  // held provisional impositions merge into the binding map and the slot clears. Only HERE does
+  // an imposition become permanent, so a registration that failed in PHASE 2/3 never binds
+  // governance for a descriptor that never published (the phantom-obligation orphan), and the
+  // slot's hold from decision through publish is what serializes every concurrent registration
+  // of this endpoint. Nothing else can have CAS'd the head while we held the slot (a foreign
+  // registration refuses on it), so ANY failure — a lost ack, or a CAS loss to a reconciler that
+  // stole the slot — leaves the gate FROZEN for reconciliation, consistent with PHASE 3: the
+  // spec is published, so reopening without the promote would activate a surface whose
+  // imposition never bound. The promote is idempotent for the reconciler (re-CAS the same merge).
+  try {
+    await updateRecordEntry(kv, govKey, governPromote, governSlotRevision);
+  } catch (err) {
+    throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${newRev} but the governance promote did not complete; the gate is left frozen for reconciliation (the promote is an idempotent re-CAS of the held slot to binding, SPEC 13.7/13.1): ${(err as Error)?.message ?? String(err)}`);
   }
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)

@@ -26,21 +26,19 @@
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { ContractInvalidError, compileContract } from "./schema-profile.js";
-import { verifyClusterManifest, isReverseDnsUrn } from "./endpoint-cluster.js";
+import { verifyClusterManifest, isReverseDnsUrn, TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS } from "./endpoint-cluster.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import {
   resolveAnchorForUse, verifyArtifactSignature, assertAnchorScopeCovers, type AnchorResolver,
 } from "./endpoint-signing.js";
 
-/** The pre-effect authorization trait (§13.6 "Guard checkpoint"): the command MUST NOT
- *  effect until the guard endpoint named by the trait value answered allow. */
-export const TRAIT_GUARDED = "ai.cotal.guarded";
-/** The payment trait (§13.10): the command MUST verify an independently verifiable payment
- *  proof in the `auth` slot before effect — never a bare "settled" assertion. */
-export const TRAIT_PRICED = "ai.cotal.priced";
-/** This revision governs EXACTLY these two (§13.7); everything else is vocabulary. */
-export const GOVERNED_TRAIT_URNS: readonly string[] = Object.freeze([TRAIT_GUARDED, TRAIT_PRICED]);
+// The trait vocabulary constants (TRAIT_GUARDED / TRAIT_PRICED / GOVERNED_TRAIT_URNS) are
+// defined in endpoint-cluster.ts, the layer both this module and the trusted registrar depend
+// on, so the registrar pins the canonical governed set structurally without an import cycle
+// (this module imports endpoint-service for the serve-grant seam). Re-exported here: the trait
+// vocabulary remains part of this module's public surface.
+export { TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS };
 
 /** What a trait definition may attach to (§13.7). */
 export const TRAIT_SELECTORS = ["cluster", "command", "attribute", "event"] as const;

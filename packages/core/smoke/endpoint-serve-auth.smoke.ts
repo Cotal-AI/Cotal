@@ -36,7 +36,7 @@ import type { KV } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError,
   serveEndpoint, compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
-  finalizeServeIssuance, GOVERNED_TRAIT_URNS,
+  finalizeServeIssuance,
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
@@ -82,8 +82,8 @@ const readClusterArtifact = (d: string) => store.get(d);
  *  REQUIRED and closed for this revision, so every registration threads the canonical governed
  *  set + the store reader (these clusters declare no governed traits, so the endpoint governance
  *  head just stays empty). */
-const regSvc = (kvArg: KV, a: Omit<Parameters<typeof registerServiceInstance>[1], "readClusterArtifact" | "governedTraitUrns">) =>
-  registerServiceInstance(kvArg, { ...a, readClusterArtifact, governedTraitUrns: GOVERNED_TRAIT_URNS });
+const regSvc = (kvArg: KV, a: Omit<Parameters<typeof registerServiceInstance>[1], "readClusterArtifact">) =>
+  registerServiceInstance(kvArg, { ...a, readClusterArtifact });
 
 /** In-process KV stub carrying the registration the PROVISIONER authorizes against — the
  *  broker's job in this smoke is enforcing the minted ROWS; the registry read itself is the
@@ -461,7 +461,11 @@ try {
     let seq = 0;
     const flakyKv = {
       get: async (k: string) => backing.get(k),
-      create: async (k: string, v: Uint8Array) => { backing.set(k, { value: v, revision: ++seq, operation: "PUT" }); throw new Error("ack lost after the write committed"); },
+      create: async (k: string, v: Uint8Array) => {
+        backing.set(k, { value: v, revision: ++seq, operation: "PUT" });
+        if (k.startsWith("govern.")) return seq; // the governance slot-take commits cleanly first
+        throw new Error("ack lost after the write committed"); // the SPEC write is the ambiguous one
+      },
       update: async () => { throw new Error("unreached"); },
     } as unknown as KV;
     const auth4: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
