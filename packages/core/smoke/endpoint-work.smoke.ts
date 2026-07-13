@@ -388,6 +388,38 @@ try {
       snapFact.fact.disposition === "committed" && snapFact.fact.ts === NOW + 10);
   }
 
+  // ── re-verify bf0bb24 MEDIUM 2 (distsys): the commit lease tuple is read as ONE coherent
+  //    reference, so a shifting `args.lease` getter cannot splice a composite (1,1,1) from
+  //    three separate reads of three garbage tuples. ──
+  {
+    const rc = ref("req-coherent");
+    const cSeq = (await enqueueWorkItem(ctx, rc, enc("wc"))).seq!;
+    await leaseWorkItem(ctx, { ref: rc, sourceSeq: cSeq, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    let leaseReads = 0;
+    const coherent = {
+      ref: rc, caller: workerA, outcome: { ok: true }, now: NOW + 5,
+      get lease() { return leaseReads++ === 0 ? { sourceSeq: cSeq, attempt: 1, fencingToken: 1 } : { sourceSeq: 99, attempt: 99, fencingToken: 99 }; },
+    };
+    const coherentFact = await commitWorkItem(ctx, coherent as never);
+    c("the commit reads the lease tuple ONCE at entry (a shifting args.lease getter cannot splice a composite tuple across three reads)",
+      coherentFact.fact.disposition === "committed" && leaseReads === 1);
+  }
+
+  // ── re-verify bf0bb24 MEDIUM 1 (distsys): the enqueue CAS-loss identity check compares
+  //    against the DETACHED published bytes, not the caller-owned itemBytes a mutation could
+  //    change during the publish await. ──
+  {
+    const rm = ref("req-cas-mut");
+    await enqueueWorkItem(ctx, rm, enc("BBBB")); // stored body is BBBB
+    const offered = new Uint8Array(enc("AAAA")); // a DIFFERENT body under the same identity
+    await rejects("a CAS-loss whose caller mutates itemBytes to match the stored body AFTER the entry slice still CONFLICTS (the identity check uses the detached published bytes, not the live buffer)",
+      () => {
+        const pr = enqueueWorkItem(ctx, rm, offered); // enqueue runs synchronously through its entry `.slice()` (captures AAAA) before returning
+        offered.set(enc("BBBB")); // now mutate the caller buffer to match the stored body; the detached snapshot is unaffected
+        return pr;
+      }, "conflict");
+  }
+
   // ── a DEL marker on the lease record never resets an authoritative lease ──
   {
     const rDel = ref("req-5");

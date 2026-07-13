@@ -180,7 +180,7 @@ export async function enqueueWorkItem(
     let stored;
     try { stored = await ctx.jsm.direct.getMessage(epwStreamName(ctx.space), { last_by_subj: subject }); }
     catch (ge) { if (isNoMessage(ge)) return { enqueued: false }; throw new EpEnvelopeError("unavailable", `the enqueue CAS lost and the stored item is not readable to verify identity (SPEC 13.6): ${(ge as Error)?.message ?? String(ge)}`); }
-    if (stored !== null && rawDigest(stored.data) !== rawDigest(itemBytes))
+    if (stored !== null && rawDigest(stored.data) !== rawDigest(bytes)) // the DETACHED bytes, the ones actually published — not the caller-owned itemBytes a mutation could have changed during the publish await
       throw new EpEnvelopeError("conflict", `an item with acceptance identity "${ref.acceptance.id}" is already enqueued with DIFFERENT bytes; idempotency is same-subject AND same-bytes — a differing body is a canonicalizer mixup, never silently accepted (SPEC 13.6)`);
     return { enqueued: false };
   }
@@ -517,10 +517,14 @@ export async function commitWorkItem(
   // ref/tuple/outcome/clock/resolver can otherwise split one commit's identity across the lease
   // CAS and the terminal publish (settle item A, publish item B) or move the validated clock.
   const ref = snapshotRef(args.ref);
+  // Read the lease reference ONCE into a local, then validate/copy its fields from that one
+  // reference: a shifting `args.lease` getter must not splice three separately-read fields into
+  // a composite tuple no single input ever carried.
+  const leaseArg = args.lease;
   const tuple = {
-    sourceSeq: assertPositiveInt(args.lease?.sourceSeq, "lease.sourceSeq"),
-    attempt: assertPositiveInt(args.lease?.attempt, "lease.attempt"),
-    fencingToken: assertPositiveInt(args.lease?.fencingToken, "lease.fencingToken"),
+    sourceSeq: assertPositiveInt(leaseArg?.sourceSeq, "lease.sourceSeq"),
+    attempt: assertPositiveInt(leaseArg?.attempt, "lease.attempt"),
+    fencingToken: assertPositiveInt(leaseArg?.fencingToken, "lease.fencingToken"),
   };
   const outcomeSnapshot: unknown = JSON.parse(canonicalJson(args.outcome === undefined ? null : args.outcome));
   const now = assertSafeInt(args.now, "now");
