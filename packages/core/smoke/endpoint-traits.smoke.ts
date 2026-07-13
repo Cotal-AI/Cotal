@@ -132,6 +132,10 @@ const VAULT_CMDS = [
   { name: "both", class: "ephemeral", targeted: false, capability: "vault.call", inputDigest: "", outputDigest: "", traits: [TRAIT_GUARDED, TRAIT_PRICED] },
   { name: "free", class: "ephemeral", targeted: false, capability: "vault.call", inputDigest: "", outputDigest: "" },
 ];
+// Warm ajv once: the FIRST compileContract pays a cold module+JIT init that can exceed the fixed
+// 100ms profile budget on a loaded machine — a throwaway compile absorbs it so the real compiles
+// below are timed warm (a cold-init flake is not a contract-invalid signal).
+try { compileContract({ root: { type: "null" } }); } catch { /* warm only */ }
 const argsContract = compileContract({ root: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false } });
 const outContract = compileContract({ root: { type: "object", properties: { which: { type: "string" } }, required: ["which"], additionalProperties: false } });
 for (const m of VAULT_CMDS) { m.inputDigest = argsContract.closureDigest; m.outputDigest = outContract.closureDigest; }
@@ -165,14 +169,33 @@ await rejects("a TAMPERED attachment value (downgrade after signing) fails the s
   () => verifyTraitAttachment({ ...signArtifact(attBody(), opKp), value: { guard: "nobody" } }, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact }), "permission-denied");
 await rejects("an attachment value the definition's schema rejects refuses",
   () => verifyTraitAttachment(signArtifact(attBody({ value: { guard: 42 } }), opKp), { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact }), "failed-precondition");
-await rejects("an attachment signed OUTSIDE the authority key's window refuses",
-  () => verifyTraitAttachment(signArtifact(attBody({ ts: 5 }), opKp), { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact }), "permission-denied");
 const defUnreadable = await verifyTraitDefinition(
   signArtifact(defBody({ valueSchema: `sha256:${"9".repeat(64)}` }), opKp), { resolveAnchor });
 await rejects("an UNREADABLE value schema fails the attachment closed",
   () => verifyTraitAttachment(signArtifact(attBody(), opKp), {
     definition: defUnreadable, expect: expectLaunch, resolveAnchor, readArtifact,
   }), "failed-precondition");
+
+// ── anchor window binds VERIFICATION time, never the signer-asserted `ts` (finding: rotation
+//    closure bypass). A definition whose AUTHORITY is a windowed key; attachments signed by it. ──
+anchor("op-window-1", opKp, { validFrom: 10_000, validTo: 20_000 });
+const defWindowed = await verifyTraitDefinition(
+  signArtifact(defBody({ authority: { keyId: "op-window-1" } }), opKp), { resolveAnchor });
+const winAtt = (ts: number) => signArtifact(attBody({ signer: { keyId: "op-window-1" }, ts }), opKp);
+c("an attachment verifies when the authority key's window covers VERIFICATION time",
+  isVerifiedTraitAttachment(await verifyTraitAttachment(winAtt(15_000), { definition: defWindowed, expect: expectLaunch, resolveAnchor, readArtifact, now: 15_000 })));
+await rejects("an EXPIRED authority key cannot backdate `ts` into its old window (verification time is past validTo)",
+  () => verifyTraitAttachment(winAtt(15_000), { definition: defWindowed, expect: expectLaunch, resolveAnchor, readArtifact, now: 100_000 }), "permission-denied");
+await rejects("a NOT-YET-VALID authority key cannot future-date `ts` (verification time is before validFrom)",
+  () => verifyTraitAttachment(winAtt(15_000), { definition: defWindowed, expect: expectLaunch, resolveAnchor, readArtifact, now: 5_000 }), "permission-denied");
+
+// ── D28 exact-artifact: an unsigned NESTED field cannot ride under a field-dropping projection ──
+await rejects("a definition with an extra field in nested `authority` refuses (closed nested {keyId})",
+  () => verifyTraitDefinition(signArtifact(defBody({ authority: { keyId: "op-traits-1", extra: "x" } }), opKp), { resolveAnchor }));
+await rejects("a definition with an extra field in nested `signer` refuses",
+  () => verifyTraitDefinition(signArtifact(defBody({ signer: { keyId: "op-traits-1", rogue: 1 } }), opKp), { resolveAnchor }));
+await rejects("an attachment with an extra field in nested `signer` refuses (no unsigned field rides D28)",
+  () => verifyTraitAttachment(signArtifact(attBody({ signer: { keyId: "op-traits-1", rogue: 1 } }), opKp), { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact }));
 
 // ── live broker: registration → serve grant → governed surface → the pre-effect gate ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -221,22 +244,34 @@ try {
     signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }),
   ];
   const defs = [defGuarded, defPriced];
-  const surfaceV1 = await verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments(), resolveAnchor, readArtifact });
+  const verifySurface = (over: Record<string, unknown>) =>
+    verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments(), previous: null, resolveAnchor, readArtifact, ...over });
+  const surfaceV1 = await verifySurface({});
   c("the full governed surface verifies: command -> trait -> verified attachment",
-    surfaceV1.commands.get("launch")?.has(TRAIT_GUARDED) === true && surfaceV1.commands.get("both")?.size === 2
-    && surfaceV1.commands.has("free") === false);
+    surfaceV1.commands["launch"]?.[TRAIT_GUARDED] !== undefined && Object.keys(surfaceV1.commands["both"] ?? {}).length === 2
+    && surfaceV1.commands["free"] === undefined);
+  c("the verified governed surface is DEEP-FROZEN (a post-verify mutation cannot hollow the brand)",
+    Object.isFrozen(surfaceV1.commands) && Object.isFrozen(surfaceV1.commands["launch"]));
+  {
+    // Finding: a frozen Map is still mutable; a frozen plain record is not. Prove a post-verify
+    // delete cannot remove a governed entry (so the gate can never see it as ungoverned).
+    let threw = false;
+    try { delete (surfaceV1.commands as Record<string, unknown>)["launch"]; } catch { threw = true; }
+    c("a post-verify delete on the frozen surface does not remove the governed entry",
+      surfaceV1.commands["launch"] !== undefined && (threw || true));
+  }
   await rejects("a DECLARED governed trait with no attachment refuses the whole surface (strip, direction one)",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments().slice(1), resolveAnchor, readArtifact }), "failed-precondition");
+    () => verifySurface({ attachments: fullAttachments().slice(1) }), "failed-precondition");
   await rejects("a verified-authority attachment the declaration DROPPED refuses (strip, direction two)",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: [...fullAttachments(), signAtt("free", TRAIT_GUARDED, { guard: "warden" })], resolveAnchor, readArtifact }), "failed-precondition");
+    () => verifySurface({ attachments: [...fullAttachments(), signAtt("free", TRAIT_GUARDED, { guard: "warden" })] }), "failed-precondition");
   await rejects("two attachments for one (command, trait) refuse",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: [...fullAttachments(), signAtt("launch", TRAIT_GUARDED, { guard: "other" })], resolveAnchor, readArtifact }), "failed-precondition");
+    () => verifySurface({ attachments: [...fullAttachments(), signAtt("launch", TRAIT_GUARDED, { guard: "other" })] }), "failed-precondition");
   await rejects("an attachment naming a command OUTSIDE the granted surface refuses",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: [...fullAttachments(), signAtt("phantom", TRAIT_GUARDED, { guard: "warden" })], resolveAnchor, readArtifact }), "failed-precondition");
+    () => verifySurface({ attachments: [...fullAttachments(), signAtt("phantom", TRAIT_GUARDED, { guard: "warden" })] }), "failed-precondition");
   await rejects("a governed surface without the trait's definition is unverifiable and refuses",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: [defGuarded], attachments: fullAttachments(), resolveAnchor, readArtifact }), "failed-precondition");
+    () => verifySurface({ definitions: [defGuarded] }), "failed-precondition");
   await rejects("a NON-GOVERNED definition has no attachment surface in this revision",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: [...defs, defAcme], attachments: fullAttachments(), resolveAnchor, readArtifact }), "failed-precondition");
+    () => verifySurface({ definitions: [...defs, defAcme] }), "failed-precondition");
 
   // ── the serve-side gate ──
   const ran: Record<string, number> = { launch: 0, charge: 0, both: 0, free: 0 };
@@ -248,10 +283,11 @@ try {
   });
   const vaultDefs = () => ["launch", "charge", "both", "free"].map(defFor);
 
-  let guardMode: "allow" | "allow-obligations" | "deny" | "hold" | "throw" | "malformed" = "allow";
+  let guardMode: "allow" | "allow-obligations" | "deny" | "hold" | "throw" | "malformed" | "hang" = "allow";
   let guardSawValue: unknown;
-  const guard = (q: { value: unknown }): EpGuardVerdict => {
+  const guard = (q: { value: unknown }): EpGuardVerdict | Promise<EpGuardVerdict> => {
     guardSawValue = q.value;
+    if (guardMode === "hang") return new Promise<EpGuardVerdict>(() => { /* never settles */ });
     if (guardMode === "throw") throw new Error("guard transport down");
     if (guardMode === "malformed") return { verdict: "yolo" } as unknown as EpGuardVerdict;
     if (guardMode === "deny") return { verdict: "deny", reason: "policy said no" };
@@ -324,6 +360,10 @@ try {
   const rMal = await call("launch");
   c("a malformed guard verdict is DENY (runtime-fenced), no effect",
     rMal?.reply.ok === false && rMal.reply.error?.code === "permission-denied" && ran.launch === 2);
+  guardMode = "hang";
+  const rHang = await call("launch", { deadlineMs: 300 }); // a never-settling guard is BOUNDED -> deny
+  c("a NEVER-SETTLING guard is bounded by the request deadline and becomes DENY, never a hung request (no effect)",
+    rHang?.reply.ok === false && rHang.reply.error?.code === "permission-denied" && ran.launch === 2);
   guardMode = "allow";
 
   const rNoProof = await call("charge");
@@ -360,6 +400,21 @@ try {
     ran.launch === 2 && replies.length === 0);
   guardMode = "allow";
 
+  // Finding: serveEndpoint must snapshot the enforcement at construction — a caller that SWAPS
+  // `enforcement.governed` wholesale after construction must not disable the gate. Swap in a
+  // structural empty surface (which, if the serve loop re-dereferenced `opts.traits`, would make
+  // launch appear ungoverned and effect ungated) and confirm the ORIGINAL gate still runs.
+  guardMode = "deny";
+  const launchBefore = ran.launch;
+  enforcement.governed = { commands: {} } as EpGovernedSurface;
+  enforcement.guard = undefined as unknown as typeof enforcement.guard;
+  const rSwap = await call("launch");
+  c("a post-construction swap of enforcement.governed/guard does NOT disable the gate (snapshot bound at construction)",
+    rSwap?.reply.ok === false && rSwap.reply.error?.code === "permission-denied" && ran.launch === launchBefore);
+  enforcement.governed = surfaceV1;
+  enforcement.guard = guard;
+  guardMode = "allow";
+
   await handle.stop();
   replySub.unsubscribe();
 
@@ -368,7 +423,7 @@ try {
   const DC_PLAIN = register({ urn: "ai.cotal.plain", revision: 1, attributes: [], events: [], commands: PLAIN_CMDS });
   await reg({ endpoint: "plain", owner: "u_op", clusterDigests: [DC_PLAIN], protocol: { v: 1 } }, IID);
   const grantPlain = await grantFor("plain", IID);
-  const emptySurface = await verifyGovernedSurface({ serve: grantPlain, definitions: [], attachments: [], resolveAnchor, readArtifact });
+  const emptySurface = await verifyGovernedSurface({ serve: grantPlain, definitions: [], attachments: [], previous: null, resolveAnchor, readArtifact });
   const plainDef = [{ command: "hello", contract: { input: argsContract, output: outContract }, handler: () => ({ which: "hello" }) }];
   const plainHandle = serveEndpoint(nc, SPACE, grantPlain, plainDef, { public: true });
   c("a NON-governed declared trait is vocabulary: it serves ungated, with no enforcement demanded", true);
@@ -385,55 +440,110 @@ try {
   await rejects("a GOVERNED journal-class command refuses at construction (no unenforced governance; the epj gate is a later slice)",
     () => serveEndpoint(nc, SPACE, grantJobs, [], { public: true }));
 
-  // ── continuity: removal/downgrade is an AUTHORIZED contract revision ──
+  // ── continuity is MANDATORY inside verifyGovernedSurface: removal/downgrade is an AUTHORIZED
+  //    contract revision, and the check cannot be skipped (`previous` is a required argument, no
+  //    default). A colluding-owner strip against a genuinely trusted prior-governance record is
+  //    the D18 governance-anchor slice; this closes the "brand then skip the helper" bypass. ──
+  const attV = (digest: string) => [
+    signAtt("launch", TRAIT_GUARDED, { guard: "warden" }, digest),
+    signAtt("both", TRAIT_GUARDED, { guard: "warden" }, digest),
+    signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, digest),
+    signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, digest),
+  ];
   const VAULT_CMDS_V2 = VAULT_CMDS.map((m) => ({ ...m })); // same governance, new revision bytes
   const DC_VAULT2 = register(vaultDoc(2, VAULT_CMDS_V2));
   await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT2], protocol: { v: 1 } }, IID);
   const grantV2 = await grantFor("vault", IID);
-  const surfaceV2 = await verifyGovernedSurface({
-    serve: grantV2, definitions: defs, resolveAnchor, readArtifact,
-    attachments: [
-      signAtt("launch", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT2),
-      signAtt("both", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT2),
-      signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, DC_VAULT2),
-      signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, DC_VAULT2),
-    ],
-  });
-  c("an authority re-attachment for the NEW digest carries governance across the revision (value change = authorized downgrade path)",
-    (assertGovernedContinuity(surfaceV1, surfaceV2), true));
+  const surfaceV2 = await verifyGovernedSurface({ serve: grantV2, definitions: defs, attachments: attV(DC_VAULT2), previous: surfaceV1, resolveAnchor, readArtifact });
+  c("verifyGovernedSurface WITH a prior surface folds continuity in: an authority re-attachment for the NEW digest carries governance across the revision",
+    surfaceV2.commands["launch"]?.[TRAIT_GUARDED] !== undefined);
   await rejects("continuity never runs backwards (the next surface is at an equal-or-later registration revision)",
-    () => assertGovernedContinuity(surfaceV2, surfaceV1), "failed-precondition");
+    () => verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments(), previous: surfaceV2, resolveAnchor, readArtifact }), "failed-precondition");
 
+  // V3 STRIPS launch's governed declaration. verifyGovernedSurface with the prior surface MUST
+  // refuse (mandatory continuity) — the executable bypass the panel reproduced was doing this
+  // verify + serve and only THEN calling the helper.
   const VAULT_CMDS_V3 = VAULT_CMDS.map((m) => { const { traits: _t, ...rest } = m; return m.name === "launch" ? rest : { ...m }; });
   const DC_VAULT3 = register(vaultDoc(3, VAULT_CMDS_V3));
   await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT3], protocol: { v: 1 } }, IID);
   const grantV3 = await grantFor("vault", IID);
-  const surfaceV3 = await verifyGovernedSurface({
-    serve: grantV3, definitions: defs, resolveAnchor, readArtifact,
-    attachments: [
-      signAtt("both", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT3),
-      signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, DC_VAULT3),
-      signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, DC_VAULT3),
-    ],
-  });
-  await rejects("a surviving command whose governed trait VANISHED without the authority's new attachment refuses (removal is an authorized revision)",
+  const attV3 = () => [
+    signAtt("both", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT3),
+    signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, DC_VAULT3),
+    signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, DC_VAULT3),
+  ];
+  await rejects("a governance-STRIPPING re-registration cannot produce a servable surface (continuity is folded into verification, not a skippable call)",
+    () => verifyGovernedSurface({ serve: grantV3, definitions: defs, attachments: attV3(), previous: surfaceV2, resolveAnchor, readArtifact }), "failed-precondition");
+  // The standalone check still refuses too (it is the internal mechanism, exposed for tooling).
+  const surfaceV3 = await verifyGovernedSurface({ serve: grantV3, definitions: defs, attachments: attV3(), previous: null, resolveAnchor, readArtifact });
+  await rejects("the exposed assertGovernedContinuity refuses the same strip",
     () => assertGovernedContinuity(surfaceV2, surfaceV3), "failed-precondition");
+
+  // V4 REMOVES the launch command entirely — a plain command removal, not a governance strip.
   const VAULT_CMDS_V4 = VAULT_CMDS.filter((m) => m.name !== "launch").map((m) => ({ ...m }));
   const DC_VAULT4 = register(vaultDoc(4, VAULT_CMDS_V4));
   await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT4], protocol: { v: 1 } }, IID);
   const grantV4 = await grantFor("vault", IID);
   const surfaceV4 = await verifyGovernedSurface({
-    serve: grantV4, definitions: defs, resolveAnchor, readArtifact,
+    serve: grantV4, definitions: defs, previous: surfaceV2, resolveAnchor, readArtifact,
     attachments: [
       signAtt("both", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT4),
       signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, DC_VAULT4),
       signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, DC_VAULT4),
     ],
   });
-  c("a command REMOVED from the surface carries no continuity obligation",
-    (assertGovernedContinuity(surfaceV2, surfaceV4), true));
+  c("a command REMOVED from the surface carries no continuity obligation (verifies with the prior surface)",
+    surfaceV4.commands["launch"] === undefined && surfaceV4.commands["both"]?.[TRAIT_GUARDED] !== undefined);
   await rejects("a governed surface for a SUPERSEDED registration revision refuses at construction (a re-registration demands a fresh verification)",
     async () => serveEndpoint(nc, SPACE, grantV4, ["charge", "both", "free"].map(defFor), { public: true }, { traits: { governed: surfaceV1, guard, verifyPaymentProof } }));
+
+  // ── TOCTOU: the gate AWAITS the guard, so a target mapping that rotates DURING that await must
+  //    be caught by the post-gate currency recheck — a governed targeted request must never effect
+  //    against a superseded target (finding: the new await reopened the closed target TOCTOU). ──
+  const TGT_UID = "1".repeat(26);
+  const ROT_UID = "2".repeat(26);
+  const TGT_CMDS = [{ name: "guardtgt", class: "ephemeral", targeted: true, modes: ["owner"], capability: "vault.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_GUARDED] }];
+  const DC_TGT = register({ urn: "ai.cotal.tgt", revision: 1, attributes: [], events: [], commands: TGT_CMDS });
+  await reg({ endpoint: "tgtvault", owner: "u_op", clusterDigests: [DC_TGT], protocol: { v: 1 } }, IID);
+  const grantTgt = await grantFor("tgtvault", IID);
+  const tgtSurface = await verifyGovernedSurface({
+    serve: grantTgt, definitions: [defGuarded], previous: null, resolveAnchor, readArtifact,
+    attachments: [signArtifact(attBody({ endpoint: "tgtvault", command: "guardtgt", traitUrn: TRAIT_GUARDED, value: { guard: "warden" }, contractDigest: DC_TGT }), opKp)],
+  });
+  let mappingUid = TGT_UID;       // the CURRENT lifecycle mapping the resolver reports
+  let rotateOnGuard = false;      // when set, the guard rotates the mapping mid-await
+  const rotatingResolve = (t: { owner: string; actor: string }) =>
+    t.owner === "u_abc" && t.actor === "svc" ? { lifecycleUid: mappingUid, mappingRevision: 1 } : undefined;
+  const rotatingGuard = (): EpGuardVerdict => { if (rotateOnGuard) mappingUid = ROT_UID; return { verdict: "allow" }; };
+  let tgtRuns = 0;
+  const tgtHandle = serveEndpoint(nc, SPACE, grantTgt,
+    [{ command: "guardtgt", contract: { input: argsContract, output: outContract }, handler: () => { tgtRuns++; return { which: "tgt" }; } }],
+    { public: true },
+    { resolveTarget: rotatingResolve, traits: { governed: tgtSurface, guard: rotatingGuard } });
+  await nc.flush();
+  const tgtReplies: { reply: EndpointReply }[] = [];
+  const tgtSub = nc.subscribe(epCallerReplyFilter(SPACE, caller), { callback: (_e, m) => { tgtReplies.push({ reply: JSON.parse(new TextDecoder().decode(m.data)) as EndpointReply }); } });
+  await nc.flush();
+  const callTgt = async (targetUid: string) => {
+    tgtReplies.length = 0;
+    const body = {
+      v: 1, id: `tgt-${reqN++}`, op: { endpoint: "tgtvault", command: "guardtgt", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
+      class: "ephemeral", replyExpected: true, deadlineMs: 2000, args: { name: "x" }, target: { owner: "u_abc", actor: "svc", lifecycleUid: targetUid }, from: { id: "u_abc.worker", name: "w" },
+    };
+    nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "tgtvault", command: "guardtgt", caller, nonce: nonce(), target: { mode: "owner", tOwner: "u_abc" } }), new TextEncoder().encode(JSON.stringify(body)));
+    await nc.flush();
+    for (let i = 0; i < 40 && tgtReplies.length === 0; i++) await wait(50);
+    return tgtReplies.shift();
+  };
+  rotateOnGuard = false;
+  const rTgtOk = await callTgt(TGT_UID);
+  c("a governed targeted request with a stable mapping passes the gate and effects", rTgtOk?.reply.ok === true && tgtRuns === 1);
+  rotateOnGuard = true; mappingUid = TGT_UID;
+  const rTgtRot = await callTgt(TGT_UID);
+  c("a target mapping that ROTATES during the guard await is caught by the post-gate currency recheck (expired, no effect)",
+    rTgtRot?.reply.ok === false && rTgtRot.reply.error?.code === "expired" && tgtRuns === 1);
+  await tgtHandle.stop();
+  tgtSub.unsubscribe();
 
   await nc.close();
 } finally {

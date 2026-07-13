@@ -103,6 +103,19 @@ function invalid(what: string): never {
   throw new ContractInvalidError(`trait artifact does not validate: ${what}`);
 }
 
+/** A closed `{ keyId: <non-empty string> }` object, nothing else (§13.10, D28): the nested
+ *  signer/authority shapes are part of the signed artifact, so an UNKNOWN nested field must
+ *  refuse — otherwise it would ride UNSIGNED under a field-dropping projection and the recomputed
+ *  signature would still verify over the clean version. */
+function assertClosedKeyId(v: unknown, what: string): { keyId: string } {
+  if (!isRec(v) || typeof (v as Record<string, unknown>).keyId !== "string" || (v as Record<string, unknown>).keyId === "")
+    invalid(`${what} is not { keyId } (a non-empty string)`);
+  const keys = Object.keys(v as Record<string, unknown>);
+  if (keys.length !== 1 || keys[0] !== "keyId")
+    invalid(`${what} carries fields other than keyId (${keys.sort().join(",")}); a nested object is a CLOSED shape so no unsigned field can ride under it (SPEC 13.10 D28)`);
+  return { keyId: (v as { keyId: string }).keyId };
+}
+
 function parseTraitDefinitionShape(raw: unknown): TraitDefinition {
   const o = isRec(raw) ? raw : invalid("definition is not an object");
   if (o.v !== 1) invalid(`definition v ${JSON.stringify(o.v)} is not 1`);
@@ -116,18 +129,15 @@ function parseTraitDefinitionShape(raw: unknown): TraitDefinition {
     seen.add(s);
   }
   if (typeof o.breakingChanges !== "boolean") invalid("definition breakingChanges is not a boolean");
-  if (!isRec(o.authority) || typeof (o.authority as Record<string, unknown>).keyId !== "string" || (o.authority as Record<string, unknown>).keyId === "")
-    invalid("definition authority is not { keyId } naming the attachment authority");
-  if (!isRec(o.signer) || typeof (o.signer as Record<string, unknown>).keyId !== "string" || (o.signer as Record<string, unknown>).keyId === "")
-    invalid("definition signer is not { keyId }");
+  const authority = assertClosedKeyId(o.authority, "definition authority");
+  const signer = assertClosedKeyId(o.signer, "definition signer");
   if (typeof o.sig !== "string") invalid("definition sig is absent");
   const keys = Object.keys(o).sort().join(",");
   if (keys !== "authority,breakingChanges,selector,sig,signer,urn,v,valueSchema")
     invalid(`definition carries unknown/missing fields (${keys}); the artifact is a closed discriminated schema (SPEC 13.10)`);
   return {
     v: 1, urn: o.urn, valueSchema: o.valueSchema, selector: [...(o.selector as TraitSelector[])],
-    breakingChanges: o.breakingChanges, authority: { keyId: (o.authority as { keyId: string }).keyId },
-    signer: { keyId: (o.signer as { keyId: string }).keyId }, sig: o.sig,
+    breakingChanges: o.breakingChanges, authority, signer, sig: o.sig,
   };
 }
 
@@ -143,10 +153,13 @@ export async function verifyTraitDefinition(
   raw: unknown,
   opts: { resolveAnchor: AnchorResolver; now?: number },
 ): Promise<TraitDefinition> {
-  const def = parseTraitDefinitionShape(raw);
+  const def = parseTraitDefinitionShape(raw); // closed schema incl. closed nested {keyId}
   const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: def.signer.keyId, role: "traits", at: opts.now ?? Date.now() });
   assertAnchorScopeCovers(anchor, "traits", def.urn, "trait definition urn");
-  verifyArtifactSignature(def as unknown as Record<string, unknown>, anchor);
+  // §13.10 D28: verify over the EXACT received artifact (minus sig), never a field-dropping
+  // reconstruction — the closed nested-shape checks above already guarantee raw and the parsed
+  // projection agree, so an unsigned field can neither survive nor change the verified bytes.
+  verifyArtifactSignature(raw as Record<string, unknown>, anchor);
   const frozen = deepFreeze(def);
   VERIFIED_DEFINITIONS.add(frozen);
   return frozen;
@@ -170,8 +183,7 @@ function parseTraitAttachmentShape(raw: unknown): TraitAttachment {
     if (typeof o[f] !== "string" || o[f] === "") invalid(`attachment ${f} is not a non-empty string`);
   if (typeof o.contractDigest !== "string" || !isContractDigest(o.contractDigest)) invalid("attachment contractDigest is not a sha256 closure digest");
   if (!("value" in o) || o.value === undefined) invalid("attachment value is absent (validate against the definition's value schema, even when void)");
-  if (!isRec(o.signer) || typeof (o.signer as Record<string, unknown>).keyId !== "string" || (o.signer as Record<string, unknown>).keyId === "")
-    invalid("attachment signer is not { keyId }");
+  const signer = assertClosedKeyId(o.signer, "attachment signer");
   if (typeof o.ts !== "number" || !Number.isSafeInteger(o.ts) || o.ts <= 0) invalid("attachment ts is not a positive integer timestamp");
   if (typeof o.sig !== "string") invalid("attachment sig is absent");
   const keys = Object.keys(o).sort().join(",");
@@ -180,7 +192,7 @@ function parseTraitAttachmentShape(raw: unknown): TraitAttachment {
   return {
     v: 1, space: o.space as string, endpoint: o.endpoint as string, command: o.command as string,
     contractDigest: o.contractDigest, traitUrn: o.traitUrn as string, value: o.value,
-    signer: { keyId: (o.signer as { keyId: string }).keyId }, ts: o.ts, sig: o.sig,
+    signer, ts: o.ts, sig: o.sig,
   };
 }
 
@@ -192,8 +204,10 @@ function parseTraitAttachmentShape(raw: unknown): TraitAttachment {
  *  - stale digest: `contractDigest` must equal the CURRENT declaring cluster's closure
  *    digest — a prior revision's attachment is revision-bound evidence, never carried over;
  *  - forge: the signer MUST BE the definition's NAMED authority, resolved fresh (role
- *    `traits`, window at the attachment's own `ts`, revocation immediate), its traits-scope
- *    must cover the urn, and the D28 signature must verify;
+ *    `traits`, window checked at VERIFICATION time — never the signer-asserted `ts`, which is
+ *    self-attested and would let an expired predecessor key backdate or a not-yet-valid
+ *    successor future-date past rotation, §13.10 — revocation immediate), its traits-scope
+ *    must cover the urn, and the D28 signature must verify over the exact received bytes;
  *  - downgrade: within a digest the value is signature-bound; a value the schema rejects
  *    fails here, and cross-revision weakening without the authority's new signature is
  *    caught by {@link assertGovernedContinuity};
@@ -208,6 +222,10 @@ export async function verifyTraitAttachment(
     expect: { space: string; endpoint: string; command: string; contractDigest: string };
     resolveAnchor: AnchorResolver;
     readArtifact: TraitArtifactReader;
+    /** Verification time (ms epoch) the anchor window is checked at; defaults to `Date.now()`.
+     *  NEVER the attachment's self-attested `ts` (§13.10: rotation closes a key's window, and a
+     *  signer cannot be trusted to timestamp its own signing act). */
+    now?: number;
   },
 ): Promise<TraitAttachment> {
   if (!isVerifiedTraitDefinition(opts.definition))
@@ -226,9 +244,10 @@ export async function verifyTraitAttachment(
     throw new EpEnvelopeError("failed-precondition", `attachment is bound to contractDigest ${att.contractDigest}, not the current declaring closure ${opts.expect.contractDigest}; a stale revision's attachment is evidence for ITS revision only (SPEC 13.10: replaced only by an authorized contract revision)`);
   if (att.signer.keyId !== def.authority.keyId)
     throw new EpEnvelopeError("permission-denied", `attachment is signed by ${att.signer.keyId}, not the definition's named authority ${def.authority.keyId}; attachment authority is the definition's to name (SPEC 13.7)`);
-  const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: att.signer.keyId, role: "traits", at: att.ts });
+  const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: att.signer.keyId, role: "traits", at: opts.now ?? Date.now() });
   assertAnchorScopeCovers(anchor, "traits", att.traitUrn, "trait attachment urn");
-  verifyArtifactSignature(att as unknown as Record<string, unknown>, anchor);
+  // §13.10 D28: verify over the EXACT received artifact (minus sig), never a reconstruction.
+  verifyArtifactSignature(raw as Record<string, unknown>, anchor);
   // Value-schema validation through the digest-verified two-step read (§13.7): manifest at the
   // closure digest, root at manifest.root, profile-compiled; the compiled closure digest must
   // round-trip to the definition's valueSchema, so no unverified byte enters the validator.
@@ -267,9 +286,15 @@ export function isVerifiedTraitAttachment(att: unknown): att is TraitAttachment 
 
 /** The verified governed surface of ONE serve grant: command → governed traitUrn → its
  *  verified attachment. Opaque to construction — only {@link verifyGovernedSurface} brands
- *  one, and the serve boundary refuses anything unbranded or bound to a different grant. */
+ *  one, and the serve boundary refuses anything unbranded or bound to a different grant.
+ *
+ *  A DEEP-FROZEN plain nested record, never a `Map`: `Object.freeze` does not disable a Map's
+ *  `set`/`delete`/`clear`, so a WeakMap brand over a mutable Map would attest provenance WITHOUT
+ *  integrity — a caller could delete a governed command after verification and the gate would
+ *  then see it as ungoverned and run the handler unguarded. The frozen record is genuinely
+ *  immutable, so the brand means integrity. */
 export interface EpGovernedSurface {
-  commands: ReadonlyMap<string, ReadonlyMap<string, TraitAttachment>>;
+  commands: Readonly<Record<string, Readonly<Record<string, TraitAttachment>>>>;
 }
 
 interface GovernedBond {
@@ -292,13 +317,28 @@ const VERIFIED_GOVERNED = new WeakMap<EpGovernedSurface, GovernedBond>();
  * annotation — equally a strip). Duplicates, unknown commands, non-governed urns, and
  * missing definitions all refuse. Returns the branded surface, bound to exactly this grant's
  * identity coordinates; {@link assertGovernedSurfaceFor} is the serve-side check.
+ *
+ * CONTINUITY IS MANDATORY, not a skippable helper (§13.7: removal/downgrade is an AUTHORIZED
+ * contract revision). `previous` is REQUIRED with no default so the caller cannot silently omit
+ * it: pass the prior branded surface across a re-registration, or `null` to assert a FIRST
+ * governance (no prior). A non-null `previous` runs {@link assertGovernedContinuity} INSIDE
+ * verification, before branding — so a stripping re-registration cannot yield a servable
+ * surface. (The TRUSTED SOURCE of `previous` for a colluding-owner strip — an authority-written
+ * per-endpoint governance record read fresh at authorization, independent of the owner's
+ * descriptor — is the D18 governance-anchor slice; this seam makes the check unskippable, which
+ * closes the "brand then skip the helper" bypass.)
  */
 export async function verifyGovernedSurface(args: {
   serve: EpServeGrant;
   definitions: readonly TraitDefinition[];
   attachments: readonly unknown[];
+  /** REQUIRED continuity decision (no default): the prior branded governed surface across a
+   *  re-registration, or `null` for a first governance. A non-null value is continuity-checked
+   *  before branding — the check is part of producing the artifact, never a separate call. */
+  previous: EpGovernedSurface | null;
   resolveAnchor: AnchorResolver;
   readArtifact: TraitArtifactReader;
+  now?: number;
 }): Promise<EpGovernedSurface> {
   assertServeGrantAuthorized(args.serve);
   const defs = new Map<string, TraitDefinition>();
@@ -311,7 +351,7 @@ export async function verifyGovernedSurface(args: {
       throw new EpEnvelopeError("failed-precondition", `two definitions supplied for "${def.urn}"; a governed trait has one definition per verification (SPEC 13.7)`);
     defs.set(def.urn, def);
   }
-  const commands = new Map<string, Map<string, TraitAttachment>>();
+  const commands: Record<string, Record<string, TraitAttachment>> = {};
   for (const raw of args.attachments) {
     // Route on minimally-read fields; full verification below binds them all over the signature.
     const o = isRec(raw) ? raw : invalid("attachment is not an object");
@@ -332,28 +372,33 @@ export async function verifyGovernedSurface(args: {
       expect: { space: args.serve.space, endpoint: args.serve.endpoint, command, contractDigest: decl.clusterDigest },
       resolveAnchor: args.resolveAnchor,
       readArtifact: args.readArtifact,
+      ...(args.now !== undefined ? { now: args.now } : {}),
     });
-    const per = commands.get(command) ?? new Map<string, TraitAttachment>();
-    if (per.has(urn))
+    const per = commands[command] ?? (commands[command] = {});
+    if (per[urn] !== undefined)
       throw new EpEnvelopeError("failed-precondition", `two attachments supplied for ${command}/${urn}; the governed surface is one attachment per (command, trait) (SPEC 13.7)`);
-    per.set(urn, att);
-    commands.set(command, per);
+    per[urn] = att;
   }
   for (const cmd of args.serve.commands) {
     for (const urn of args.serve.surface[cmd].traits) {
       if (!GOVERNED_TRAIT_URNS.includes(urn)) continue; // vocabulary: unsigned, ungated
-      if (!commands.get(cmd)?.has(urn))
+      if (commands[cmd]?.[urn] === undefined)
         throw new EpEnvelopeError("failed-precondition", `command "${cmd}" declares governed trait "${urn}" with no verified attachment for the current contract digest; missing, unverifiable, or stale governed attachments refuse before effect (SPEC 13.7)`);
     }
   }
-  const surface: EpGovernedSurface = Object.freeze({
-    commands: new Map([...commands.entries()].map(([c, m]) => [c, m as ReadonlyMap<string, TraitAttachment>])),
-  });
+  // Deep-frozen: the attachments are already frozen; this locks the nested records too, so the
+  // brand below attests an object no caller can mutate after verification (finding: a frozen Map
+  // is still mutable; a frozen plain record is not).
+  const surface: EpGovernedSurface = deepFreeze({ commands });
   VERIFIED_GOVERNED.set(surface, {
     space: args.serve.space, endpoint: args.serve.endpoint, instanceId: args.serve.instanceId,
     epoch: args.serve.epoch, registrationRevision: args.serve.registrationRevision,
     grantCommands: new Set(args.serve.commands),
   });
+  // MANDATORY continuity, folded into artifact production (§13.7): a non-null prior surface is
+  // checked before this surface is returned, so a governance-reducing re-registration cannot
+  // hand back a servable surface. `null` explicitly asserts a first governance.
+  if (args.previous !== null) assertGovernedContinuity(args.previous, surface);
   return surface;
 }
 
@@ -390,16 +435,39 @@ export function assertGovernedContinuity(previous: EpGovernedSurface, next: EpGo
     throw new EpEnvelopeError("failed-precondition", `continuity across different identities (${prev.space}/${prev.endpoint} -> ${nxt.space}/${nxt.endpoint}) is meaningless; compare revisions of ONE endpoint (SPEC 13.7)`);
   if (nxt.registrationRevision < prev.registrationRevision)
     throw new EpEnvelopeError("failed-precondition", `continuity runs forward: the next surface's registration revision ${nxt.registrationRevision} is below the previous ${prev.registrationRevision} (SPEC 13.7)`);
-  for (const [cmd, traits] of previous.commands) {
+  for (const [cmd, traits] of Object.entries(previous.commands)) {
     if (!nxt.grantCommands.has(cmd)) continue; // the command itself was removed from the surface
-    for (const urn of traits.keys()) {
-      if (!next.commands.get(cmd)?.has(urn))
+    for (const urn of Object.keys(traits)) {
+      if (next.commands[cmd]?.[urn] === undefined)
         throw new EpEnvelopeError("failed-precondition", `governed trait "${urn}" on command "${cmd}" was removed or downgraded without an authorized contract revision: the authority signed no attachment for the new contract digest (SPEC 13.7: removal or downgrade is an authorized contract revision)`);
     }
   }
 }
 
 // ---- the pre-effect enforcement gate (§13.9 trait seam) ------------------------------------------
+
+/** The reference guard/proof seam deadline (§13.8: reference default call deadline 15s;
+ *  overridable, never removable) when the request carries no tighter budget. A governed gate
+ *  MUST be bounded — a never-settling seam is timeout→deny, never a hung request. */
+export const REFERENCE_GOVERNED_SEAM_DEADLINE_MS = 15_000;
+
+/** Race a fail-closed seam against its deadline: a never-settling guard/proof becomes DENY
+ *  (`permission-denied`) at the bound, so it can never hold the request or `serveEndpoint.stop()`
+ *  open (§13.6: timeout or unreachable is deny). The seam's own throw is re-raised for the
+ *  caller to map; only the timeout is synthesized here. */
+async function raceSeam<T>(work: Promise<T> | T, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(work),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new EpEnvelopeError("permission-denied", `${what} did not answer within the ${ms}ms bound; timeout is deny (SPEC 13.6: fail closed, never a hung request)`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /** A guard's answer (§13.6 "Guard checkpoint"): `allow | deny | hold`, plus optional signed
  *  obligations on allow (attenuations the endpoint MUST apply; monotonic — surfaced to the
@@ -458,6 +526,8 @@ export interface EpTraitEnforcement {
  *    action composite owns hold);
  *  - priced: absent `auth` slot, seam absent, seam throw, non-boolean or false answer =
  *    `permission-denied`; a proof is verified, never assumed.
+ * Both seams are BOUNDED ({@link raceSeam}) by `deadlineMs` (the request budget, or the §13.8
+ * reference default): a never-settling extension becomes deny at the bound, never a hung request.
  * Returns the guard's obligations for the handler context. Receipt emission for priced
  * commands is the §13.10 receipts slice (D9), not gated here.
  */
@@ -468,20 +538,25 @@ export async function assertGovernedPreEffect(args: {
   caller: EpCaller;
   requestId: string;
   auth?: string;
+  /** The seam bound (ms); defaults to {@link REFERENCE_GOVERNED_SEAM_DEADLINE_MS}. */
+  deadlineMs?: number;
 }): Promise<{ obligations?: readonly unknown[] }> {
-  const governed = args.enforcement.governed.commands.get(args.command);
+  const governed = args.enforcement.governed.commands[args.command];
   if (governed === undefined) return {};
+  const seamMs = args.deadlineMs !== undefined && Number.isSafeInteger(args.deadlineMs) && args.deadlineMs > 0
+    ? args.deadlineMs : REFERENCE_GOVERNED_SEAM_DEADLINE_MS;
   let obligations: readonly unknown[] | undefined;
 
-  const guarded = governed.get(TRAIT_GUARDED);
+  const guarded = governed[TRAIT_GUARDED];
   if (guarded !== undefined) {
     const guard = args.enforcement.guard;
     if (guard === undefined)
       throw new EpEnvelopeError("permission-denied", `command "${args.command}" is guarded and this instance wired no guard seam; an unreachable guard is deny (SPEC 13.6: fail closed)`);
     let verdict: EpGuardVerdict;
     try {
-      verdict = await guard({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, value: guarded.value });
+      verdict = await raceSeam(guard({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, value: guarded.value }), seamMs, `the guard for "${args.command}"`);
     } catch (e) {
+      if (e instanceof EpEnvelopeError) throw e; // the bound's deny, already fail-closed
       throw new EpEnvelopeError("permission-denied", `the guard call failed (${(e as Error)?.message ?? String(e)}); timeout or unreachable guard is deny (SPEC 13.6: fail closed)`);
     }
     // Runtime-fence the seam's answer (an untrusted caller-supplied boundary): anything that
@@ -499,7 +574,7 @@ export async function assertGovernedPreEffect(args: {
     }
   }
 
-  const priced = governed.get(TRAIT_PRICED);
+  const priced = governed[TRAIT_PRICED];
   if (priced !== undefined) {
     if (args.auth === undefined)
       throw new EpEnvelopeError("permission-denied", `command "${args.command}" is priced and the request carries no auth-slot payment proof; a priced command verifies an independently verifiable proof before effect, never a bare assertion (SPEC 13.10)`);
@@ -508,8 +583,9 @@ export async function assertGovernedPreEffect(args: {
       throw new EpEnvelopeError("permission-denied", `command "${args.command}" is priced and this instance wired no proof verifier; an unverifiable proof never effects (SPEC 13.10: fail closed)`);
     let ok: boolean;
     try {
-      ok = await verify({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, proof: args.auth, value: priced.value });
+      ok = await raceSeam(verify({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, proof: args.auth, value: priced.value }), seamMs, `the payment-proof verifier for "${args.command}"`);
     } catch (e) {
+      if (e instanceof EpEnvelopeError) throw e; // the bound's deny, already fail-closed
       throw new EpEnvelopeError("permission-denied", `the payment-proof verifier failed (${(e as Error)?.message ?? String(e)}); verification fails closed (SPEC 13.10)`);
     }
     if (typeof ok !== "boolean")

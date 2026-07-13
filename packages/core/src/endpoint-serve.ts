@@ -330,18 +330,24 @@ export function serveEndpoint(
   // governed surface (branded, bound to exactly THIS grant) plus each trait's hook; an
   // enforcement bundle on an ungoverned surface is a misconfiguration and refuses loudly.
   const governedDefs = defs.filter((d) => d.governed);
+  // Capture a CONSTRUCTION-LOCAL enforcement snapshot the dispatch closure binds, so a caller
+  // that mutates or swaps `opts.traits` (or its `.governed`) AFTER construction cannot change
+  // what the gate enforces — the construction-time validation below is then both necessary AND
+  // sufficient (the surface itself is deep-frozen, this closes the whole-object-swap vector).
+  let enforcement: EpTraitEnforcement | undefined;
   if (opts.traits === undefined) {
     if (governedDefs.length > 0)
       throw new Error(`command(s) ${governedDefs.map((d) => `"${d.command}"`).join(", ")} declare governed traits and no trait enforcement is wired (opts.traits); missing or unverifiable governed attachments refuse before effect, so construction refuses (SPEC 13.7: fail closed)`);
   } else {
     if (governedDefs.length === 0)
       throw new Error("opts.traits is wired but no granted command declares a governed trait; an extraneous enforcement bundle is a misconfiguration, refused loudly rather than silently ignored (SPEC 13.7)");
-    assertGovernedSurfaceFor(opts.traits.governed, serve);
+    enforcement = { governed: opts.traits.governed, guard: opts.traits.guard, verifyPaymentProof: opts.traits.verifyPaymentProof };
+    assertGovernedSurfaceFor(enforcement.governed, serve);
     for (const d of governedDefs) {
-      const per = opts.traits.governed.commands.get(d.command);
-      if (per?.has(TRAIT_GUARDED) && opts.traits.guard === undefined)
+      const per = enforcement.governed.commands[d.command];
+      if (per?.[TRAIT_GUARDED] !== undefined && enforcement.guard === undefined)
         throw new Error(`command "${d.command}" is guarded and no guard seam is wired; an unreachable guard is deny, so construction refuses rather than denying every request (SPEC 13.6)`);
-      if (per?.has(TRAIT_PRICED) && opts.traits.verifyPaymentProof === undefined)
+      if (per?.[TRAIT_PRICED] !== undefined && enforcement.verifyPaymentProof === undefined)
         throw new Error(`command "${d.command}" is priced and no proof verifier is wired; an unverifiable proof never effects, so construction refuses (SPEC 13.10)`);
     }
   }
@@ -390,19 +396,29 @@ export function serveEndpoint(
       // the handler.
       if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
         await assertTargetCurrent(env, opts.resolveTarget);
-      // §13.7/§13.9 governed pre-effect gate, immediately before the handler, for calls AND
-      // casts (casts have effects too): guard-then-priced, every anomalous answer refuses.
-      // Construction refused a governed def without opts.traits, so the assertion is total.
+      // §13.7/§13.9 governed pre-effect gate, for calls AND casts (casts have effects too):
+      // guard-then-priced, every anomalous answer refuses, both seams bounded. Construction
+      // refused a governed def without enforcement, so the snapshot is present and total here.
       let obligations: readonly unknown[] | undefined;
-      if (def.governed)
+      if (def.governed) {
         ({ obligations } = await assertGovernedPreEffect({
-          enforcement: opts.traits!,
+          enforcement: enforcement!,
           endpoint: identity.endpoint,
           command: def.command,
           caller: parsed.caller,
           requestId: env.id,
           ...(env.auth !== undefined ? { auth: env.auth } : {}),
+          ...(env.deadlineMs !== undefined ? { deadlineMs: env.deadlineMs } : {}),
         }));
+        // §13.2/§13.3 TOCTOU: the gate AWAITED guard/proof, so a target mapping or child/ledger
+        // grant can have rotated since the last currency read — re-resolve currency and re-run
+        // the dynamic authorization immediately before effect (the same discipline :387-392
+        // follows for the child/ledger await; the gate is a further await after it). A one-use
+        // priced proof MAY be consumed before this refusal fires: fail-closed, no effect occurs,
+        // and the caller retries with a fresh request id and proof.
+        await assertTargetCurrent(env, opts.resolveTarget);
+        await assertTargetModeAuthorized(env, parsed, opts);
+      }
       const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
       if (!env.replyExpected) {
         await def.handler(ctx);
