@@ -700,6 +700,49 @@ export async function readCheckpointSettle(jsm: JetStreamManager, space_: string
   return raw === undefined ? undefined : parseSettle(raw, subject, ref);
 }
 
+/** Read the checkpoint's recorded SPEC (`undefined` = unknown token; fail-closed on a deletion
+ *  marker). The spec records WHAT the checkpoint pauses (its optional `goal` binding) and WHO
+ *  may resume (`holder`) — a caller that must confirm a token pauses THIS goal reads it here. */
+export async function readCheckpointSpec(kv: KV, ref: CheckpointRef): Promise<CheckpointSpecValue | undefined> {
+  const key = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(ref));
+  const entry = await kv.get(key);
+  if (!entry) return undefined;
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the checkpoint spec ${key} carries a ${entry.operation} marker; a deletion never erases a pause - reconcile the store (SPEC 13.6)`);
+  return parseCpSpec(JSON.parse(new TextDecoder().decode(entry.value)), ref, key);
+}
+
+/** OWNER-forced expiry (§13.6): the pause's owner settles a DUE checkpoint `expired` without a
+ *  broker fire — used when the owner already knows the hold deadline passed (a guard-hold
+ *  expiry). Idempotent and fail-closed: an already-settled checkpoint returns its recorded
+ *  settlement (the owner observes the winner); a still-live checkpoint (`now < deadline`)
+ *  REFUSES (only a due checkpoint expires); a stale-generation CAS loss re-reads the winner.
+ *  Never resets a settled checkpoint and never fabricates a settlement. */
+export async function expireCheckpoint(
+  kv: KV,
+  js: JetStreamClient,
+  jsm: JetStreamManager,
+  space_: string,
+  args: { ref: CheckpointRef; now: number },
+): Promise<CheckpointSettleFact> {
+  const ref = snapshotCpRef(args.ref);
+  const now = assertOwnerClock(args.now);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const already = await settledOrConverge(kv, js, jsm, space_, ref);
+    if (already !== undefined) return already; // already settled (resumed or expired) — observe the winner
+    const status = await readCheckpointStatus(kv, ref);
+    if (status === undefined)
+      throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is unknown; an owner expiry settles only a minted checkpoint (SPEC 13.6)`);
+    if (status.value.state !== "waiting") continue; // settled between the two reads — the loop surfaces it
+    if (now < status.value.deadline)
+      throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is not yet due (deadline ${status.value.deadline}, now ${now}); only a DUE checkpoint is owner-expired (SPEC 13.6)`);
+    const settled = await settleCheckpoint(kv, js, jsm, space_, { ref, settle: "expired", now, statusEntry: status });
+    if (settled.outcome === "stale") continue; // a heartbeat advanced the generation — retry once
+    return settled.fact!;
+  }
+  throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" status moved twice during owner expiry; re-read and re-decide (SPEC 13.6)`);
+}
+
 /** Settle the checkpoint by CAS-ing the STATUS record (the arbiter) on the exact revision the
  *  caller validated, THEN deriving the one-use fact. The status CAS is the shared coordinate: a
  *  concurrent heartbeat (which CAS-advances the same revision) or a competing settle contends

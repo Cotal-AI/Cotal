@@ -109,6 +109,17 @@ await rejects("a STUCK anchor registry AFTER the guard answered is a bounded DEN
 await rejects("the guard call and obligation verification share ONE gate budget (each alone fits; their sum must not)",
   () => gate(() => new Promise((res) => setTimeout(() => res({ answer: { v: 1, decision: "allow", obligations: [signArtifact(obligationBody(), guardKp)] }, responder: guardResponder }), 100)),
     { resolveAnchor: (k: string) => new Promise((res) => setTimeout(() => res(anchors.get(k)), 100)), deadlineMs: 150 }), "permission-denied");
+{
+  // TOCTOU: a caller mutating the obligation DURING the awaited anchor resolution cannot split
+  // what was parsed/scoped from what the signature verifies — the answer is snapshotted at entry.
+  const ob = signArtifact(obligationBody(), guardKp) as Record<string, unknown>;
+  const answer = { v: 1, decision: "allow", obligations: [ob] };
+  const res = await gate(() => Promise.resolve({ answer, responder: guardResponder }), {
+    resolveAnchor: (k: string) => new Promise<SignerAnchor | undefined>((r) => { ob.attenuations = [{ maxItems: 999 }]; setTimeout(() => r(anchors.get(k)), 20); }),
+  });
+  c("a mid-verification obligation mutation does NOT change the verified verdict (the guard answer is snapshotted at entry)",
+    res.decision === "allow" && res.obligations.length === 1 && (res.obligations[0].attenuations[0] as { maxItems: number }).maxItems === 5);
+}
 
 // ── the hold wiring over the checkpoint pause primitive (real broker) ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -155,14 +166,37 @@ try {
   c("an expired hold commits the goal terminal FAILED (timeout is deny, fail closed)",
     expired.won && expired.fact.state === "failed" && (expired.fact.data as { code: string }).code === "permission-denied");
   c("…and the goal's projection follows", (await readGoalStatus(ctx, g2))?.value.state === "failed");
+  c("…and the CHECKPOINT itself is settled expired (owner-expired, no orphaned timer left waiting)",
+    (await readCheckpointStatus(kv, { endpoint: "manager", token: "cp-g2" }))?.value.state === "expired");
 
-  // expiry racing a completion: the commit point decides; the expiry observes the winner
+  // a valid token for goal A must NEVER release/expire an unrelated goal B on the same endpoint:
+  // the hold's checkpoint records ONE goal and both seams bind to it before touching state.
+  const gA = goalOf("g-bindA"); const gB = goalOf("g-bindB");
+  await createGoal(ctx, gA, spec("sha256:ba")); await transitionGoal(ctx, gA, "running", { ownerAuthored: true });
+  await holdGuardedGoal(ctx, { goal: gA, hold: { token: "cp-bindA", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  await createGoal(ctx, gB, spec("sha256:bb")); await transitionGoal(ctx, gB, "running", { ownerAuthored: true });
+  await holdGuardedGoal(ctx, { goal: gB, hold: { token: "cp-bindB", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  await rejects("a release presenting goal B with goal A's checkpoint token refuses (the token is goal-bound)",
+    () => releaseGuardHold(ctx, { goal: gB, token: "cp-bindA", presenter: guardResponder, now: NOW + 100 }), "permission-denied");
+  await rejects("an expiry presenting goal B with goal A's token refuses (an arbitrary token never terminal-fails an unrelated goal)",
+    () => expireGuardHold(ctx, { goal: gB, token: "cp-bindA", now: NOW + 100 }), "permission-denied");
+  c("goal B is UNTOUCHED by the cross-goal attempts (still waiting on its own hold)",
+    (await readGoalStatus(ctx, gB))?.value.state === "waiting");
+  const relB = await releaseGuardHold(ctx, { goal: gB, token: "cp-bindB", presenter: guardResponder, now: NOW + 200 });
+  c("goal B's OWN token still releases it (the binding blocks only the cross-goal case)", relB.status.state === "running");
+  await rejects("an expiry with an UNKNOWN token refuses (no minted checkpoint pauses the goal)",
+    () => expireGuardHold(ctx, { goal: gA, token: "cp-nonexistent", now: NOW + 100 }), "failed-precondition");
+
+  // expiry racing a completion: a stale hold-expiry after the goal already terminalized observes
+  // the WINNING terminal (goal-bound token, checkpoint already settled by the release, idempotent).
   const g3 = goalOf("g-race");
   await createGoal(ctx, g3, spec("sha256:h3"));
   await transitionGoal(ctx, g3, "running", { ownerAuthored: true });
-  await commitGoalResult(ctx, { ref: g3, now: NOW + 10, cause: "complete", state: "succeeded" });
-  const raced = await expireGuardHold(ctx, { goal: g3, token: "cp-g3", now: NOW + 20 });
-  c("an expiry racing a completed goal observes the WINNING terminal (first terminal fact wins uniformly)",
+  await holdGuardedGoal(ctx, { goal: g3, hold: { token: "cp-g3", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+  await releaseGuardHold(ctx, { goal: g3, token: "cp-g3", presenter: guardResponder, now: NOW + 10 });
+  await commitGoalResult(ctx, { ref: g3, now: NOW + 20, cause: "complete", state: "succeeded" });
+  const raced = await expireGuardHold(ctx, { goal: g3, token: "cp-g3", now: NOW + 1_100 });
+  c("a stale hold-expiry after the goal already completed observes the WINNING terminal (first terminal fact wins uniformly)",
     !raced.won && raced.fact.state === "succeeded" && (await readGoalStatus(ctx, g3))?.value.state === "succeeded");
 
   // a TARGET-PINNED goal's hold expiry: the deny cause is owner-authored, so no executor is

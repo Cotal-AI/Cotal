@@ -16,9 +16,10 @@
  * ALLOW or HOLD is a refusal.
  */
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { canonicalJson } from "./canonical.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, type AnchorResolver } from "./endpoint-signing.js";
-import { mintCheckpoint, resumeCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
+import { mintCheckpoint, resumeCheckpoint, readCheckpointSpec, expireCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
 import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -184,15 +185,23 @@ export async function runGuardGate(opts: {
     || typeof (called.responder as Record<string, unknown>).id !== "string"
     || typeof (called.responder as Record<string, unknown>).lifecycleUid !== "string")
     denyClosed("the guard call seam returned no authenticated responder identity");
+  // SNAPSHOT the seam's answer and responder to DETACHED values at entry, BEFORE the parse and
+  // the anchor awaits: the obligation signatures verify over EXACTLY these bytes, so a caller
+  // that mutates the raw answer/obligations/responder during the awaited anchor resolution can
+  // never split what was parsed/scoped from what the signature verifies (D28 consuming boundary).
+  let answerSnapshot: unknown;
+  try { answerSnapshot = JSON.parse(canonicalJson(called.answer)); } // throws on non-interchangeable I-JSON; the detached tree is unreachable to the caller
+  catch (e) { return denyClosed(`the guard answer is not interchangeable JSON (${(e as Error).message})`); }
+  const responder = Object.freeze({ id: called.responder.id, lifecycleUid: called.responder.lifecycleUid });
 
-  const { answer, rawObligations } = parseGuardAnswer(called.answer);
+  const { answer, rawObligations } = parseGuardAnswer(answerSnapshot);
   if (answer.decision === "deny")
     throw new EpEnvelopeError("permission-denied", `the guard denied this request${answer.reason !== undefined ? `: ${answer.reason}` : ""} (SPEC 13.6: guard-then-effect)`);
   for (let i = 0; i < answer.obligations.length; i++)
     await verifyObligation(rawObligations[i], answer.obligations[i], i,
       { resolveAnchor: opts.resolveAnchor, now: opts.now, space: opts.space, endpoint: opts.request.endpoint, requestId: opts.request.id, remainingMs });
   if (answer.decision === "allow") return { decision: "allow", obligations: answer.obligations };
-  return { decision: "hold", token: answer.token, holdDeadlineMs: answer.holdDeadlineMs, obligations: answer.obligations, responder: called.responder };
+  return { decision: "hold", token: answer.token, holdDeadlineMs: answer.holdDeadlineMs, obligations: answer.obligations, responder };
 }
 
 /** Convert a HELD action to `waiting` on a checkpoint OWNED BY THE GUARD DECISION (§13.6): the
@@ -224,8 +233,25 @@ export async function holdGuardedGoal(
   return transitionGoal(ctx, args.goal, "waiting", { fields: { checkpoint: { token: args.hold.token, deadlineGeneration: 1 } }, ownerAuthored: true });
 }
 
+/** Bind a hold's checkpoint token to THIS goal (§13.6): read the checkpoint's recorded spec and
+ *  require its `goal` to be the exact goal being released/expired — a checkpoint pauses ONE
+ *  recorded goal (holdGuardedGoal mints it with that binding), so a valid token for goal A must
+ *  never drive a transition on unrelated goal B. Fail-closed: an unknown token, a spec with no
+ *  goal binding, or a mismatched caller/goalId all refuse before any state is touched. */
+async function bindCheckpointToGoal(ctx: ActionContext, goal: GoalRef, token: string): Promise<void> {
+  const spec = await readCheckpointSpec(ctx.kv, { endpoint: goal.endpoint, token });
+  if (spec === undefined)
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${token}" is unknown on endpoint "${goal.endpoint}"; a guard hold names a minted checkpoint (SPEC 13.6)`);
+  const g = spec.goal;
+  if (g === undefined)
+    throw new EpEnvelopeError("permission-denied", `checkpoint "${token}" records no goal binding; it does not pause goal "${goal.goalId}" and cannot drive its transition (SPEC 13.6)`);
+  if (g.goalId !== goal.goalId || g.caller.owner !== goal.caller.owner || g.caller.actor !== goal.caller.actor || g.caller.uid !== goal.caller.uid)
+    throw new EpEnvelopeError("permission-denied", `checkpoint "${token}" pauses goal "${g.goalId}" (${g.caller.owner}.${g.caller.actor}/${g.caller.uid}), not the presented goal "${goal.goalId}"; a hold's token is goal-bound, never a free release of any goal on the endpoint (SPEC 13.6)`);
+}
+
 /** Release a guard hold: the GUARD (the checkpoint's holder, presenting as itself) resumes the
- *  one-use checkpoint, and the goal leaves `waiting` back to `running`. The resume seam
+ *  one-use checkpoint, and the goal leaves `waiting` back to `running`. The token is first bound
+ *  to THIS goal (a valid token for another goal never releases it), THEN the resume seam
  *  enforces holder binding, one-use, and the deadline fence — it RETURNS only a won `resumed`
  *  settlement and throws on everything else (a hold past its deadline drives the EXPIRED
  *  settlement there and refuses; an expired hold never releases). */
@@ -233,6 +259,7 @@ export async function releaseGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; token: string; presenter: { id: string; lifecycleUid: string }; now: number },
 ): Promise<{ settle: CheckpointSettleFact; status: GoalStatusValue }> {
+  await bindCheckpointToGoal(ctx, args.goal, args.token); // goal-binding BEFORE consuming the one-use resume
   const settle = await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, {
     ref: { endpoint: args.goal.endpoint, token: args.token }, presenter: args.presenter, now: args.now,
   });
@@ -242,18 +269,25 @@ export async function releaseGuardHold(
   return { settle, status };
 }
 
-/** Settle an EXPIRED guard hold onto the goal: an expired hold is DENY (fail closed), so the
- *  goal commits terminal `failed` (permission-denied) at the shared commit point — where a
- *  racing completion or cancel may lawfully have won first (the caller observes the winner;
- *  the projection converges either way). Idempotent: an already-terminal goal returns its
- *  winner. */
+/** Settle an EXPIRED guard hold onto the goal: an expired hold is DENY (fail closed). The token
+ *  is first bound to THIS goal (an arbitrary token never terminal-fails an unrelated goal), then
+ *  the CHECKPOINT is owner-expired (settling its status and stopping its timers, so no orphaned
+ *  schedule lingers until the checkpoint's own deadline), and finally the goal commits terminal
+ *  `failed` (permission-denied) at the shared commit point — where a racing completion or cancel
+ *  may lawfully have won first (the caller observes the winner; the projection converges either
+ *  way). Idempotent: an already-terminal goal returns its winner. */
 export async function expireGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; token: string; now: number },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
+  await bindCheckpointToGoal(ctx, args.goal, args.token); // goal-binding BEFORE terminalizing anything
   const status = await readGoalStatus(ctx, args.goal);
   if (status === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${args.goal.goalId}" is unknown; an expiry settles only an accepted goal (SPEC 13.6)`);
+  // Owner-expire the DUE checkpoint so its status settles and its timers stop (idempotent; an
+  // already-settled checkpoint returns its winner). The goal terminal is the authority for the
+  // caller, but the checkpoint must not be left waiting with a live timer.
+  await expireCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: { endpoint: args.goal.endpoint, token: args.token }, now: args.now });
   // An expired hold is DENY (owner-authored fail-closed) → the goal commits terminal failed via
   // the `deny` cause at the shared commit point, where a racing completion/cancel may win first.
   const res = await commitGoalResult(ctx, {

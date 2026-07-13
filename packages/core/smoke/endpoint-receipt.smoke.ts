@@ -93,6 +93,17 @@ await rejects("a STUCK anchor registry is a bounded unavailable refusal, never a
   () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor: () => new Promise(() => { /* never settles */ }), verifyBudgetMs: 100 }), "unavailable");
 await rejects("a non-positive verifyBudgetMs refuses",
   () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, verifyBudgetMs: 0 }), "failed-precondition");
+{
+  // TOCTOU: a caller mutating the receipt DURING the awaited anchor resolution cannot split the
+  // parsed value from what the D28 signature verifies — the raw is snapshotted at entry.
+  const r = { ...mint() } as Record<string, unknown>;
+  const verified = await verifyReceipt(r, {
+    ref, space: SPACE,
+    resolveAnchor: (kid: string) => new Promise<SignerAnchor | undefined>((res) => { r.argsDigest = "sha256:tampered"; setTimeout(() => res(anchors.get(kid)), 20); }),
+  });
+  c("a mid-verification receipt mutation does NOT break verification (the raw artifact is snapshotted at entry)",
+    verified.requestId === "req-1" && verified.sourceSeq === 42);
+}
 
 // ── create-only publication: one execution, one receipt, forever ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);

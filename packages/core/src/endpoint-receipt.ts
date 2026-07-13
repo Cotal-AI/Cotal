@@ -208,12 +208,19 @@ export async function verifyReceipt(
   const budget = opts.verifyBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `verifyBudgetMs must be a positive integer; got ${JSON.stringify(opts.verifyBudgetMs)}`);
-  const receipt = parseReceipt(raw, opts.ref, opts.space);
+  // SNAPSHOT the raw artifact to a DETACHED value at entry, BEFORE the anchor await: the parse,
+  // the scope check, and the D28 signature all read EXACTLY these bytes, so a caller mutating
+  // the raw receipt during the awaited anchor resolution can never split what was parsed from
+  // what the signature verifies (D28 consuming boundary).
+  let rawSnapshot: unknown;
+  try { rawSnapshot = JSON.parse(canonicalJson(raw)); } // throws on non-interchangeable I-JSON; the detached tree is unreachable to the caller
+  catch (e) { throw new EpEnvelopeError("internal", `the receipt is not interchangeable JSON (${(e as Error).message}); garbled state never verifies (SPEC 13.10)`); }
+  const receipt = parseReceipt(rawSnapshot, opts.ref, opts.space);
   const anchor = await withVerifyBudget(
     resolveAnchorForUse(opts.resolveAnchor, { keyId: receipt.signer.keyId, role: "receipts", at: receipt.ts }),
     budget, `the anchor resolution for receipt signer "${receipt.signer.keyId}"`);
   assertAnchorScopeCovers(anchor, "receipts", receipt.endpoint, "the receipt's attested endpoint");
-  verifyArtifactSignature(raw as Record<string, unknown>, anchor);
+  verifyArtifactSignature(rawSnapshot as Record<string, unknown>, anchor); // the DETACHED snapshot the parse read, not the live caller-owned raw
   if (opts.recompute !== undefined && "args" in opts.recompute) {
     const d = contractDigest(opts.recompute.args === undefined ? null : opts.recompute.args);
     if (d !== receipt.argsDigest)
