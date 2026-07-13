@@ -35,18 +35,25 @@ import { epfSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, signArtifact, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
 
-/** A trusted, space-bonded receipt-store context: JS + JSM DERIVE from one binding-layer
- *  connection and one space by the constructor (never injected independently), so a lost
- *  publish CAS can never validate its "recorded winner" through a different broker than the
- *  one it published to. Every store seam takes this context. */
+/** A trusted, space-bonded receipt-store context: an OPAQUE token carrying only the space. Its
+ *  JS + JSM resources DERIVE from one binding-layer connection by the constructor and are held
+ *  in a module-private WeakMap keyed by this token, NEVER as reachable properties (distsys
+ *  c50817d MEDIUM): a caller holding the context cannot rebind its broker to split the publish
+ *  from the lost-CAS winner read. Every store seam takes this context. */
 export interface ReceiptStoreContext {
-  js: JetStreamClient;
-  jsm: JetStreamManager;
-  space: string;
+  readonly space: string;
 }
 
-/** Bond the resources to one space by CONSTRUCTION (frozen + branded, same discipline as the
- *  work-pool context): a hand-assembled structural look-alike is rejected at every seam. */
+interface ReceiptResources { js: JetStreamClient; jsm: JetStreamManager; }
+
+/** The resources live here, unreachable from the context token itself. A structural look-alike
+ *  never appears in this map, so it never authorizes; and `ctx.js`/`ctx.jsm` do not exist to be
+ *  reassigned after construction. */
+const RECEIPT_RESOURCES = new WeakMap<ReceiptStoreContext, ReceiptResources>();
+
+/** Bond the resources to one space by CONSTRUCTION (frozen token + WeakMap-private resources,
+ *  same discipline as the other store contexts): a hand-assembled structural look-alike is
+ *  rejected at every seam, and the broker cannot be rebound out from under a live operation. */
 export async function receiptStoreContext(nc: NatsConnection, space: string): Promise<ReceiptStoreContext> {
   if (nc === null || typeof nc !== "object" || typeof (nc as unknown as { close?: unknown }).close !== "function")
     throw new EpEnvelopeError("failed-precondition", "a receipt-store context is constructed from ONE binding-layer connection; separate resources are never accepted (SPEC 13.4)");
@@ -54,16 +61,18 @@ export async function receiptStoreContext(nc: NatsConnection, space: string): Pr
     throw new EpEnvelopeError("failed-precondition", "a receipt-store context needs a space");
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
-  const ctx = Object.freeze({ js, jsm, space });
-  BRANDED_RECEIPT_CONTEXTS.add(ctx);
+  const ctx: ReceiptStoreContext = Object.freeze({ space });
+  RECEIPT_RESOURCES.set(ctx, { js, jsm });
   return ctx;
 }
 
-const BRANDED_RECEIPT_CONTEXTS = new WeakSet<ReceiptStoreContext>();
-
-function assertCtx(ctx: ReceiptStoreContext): void {
-  if (!BRANDED_RECEIPT_CONTEXTS.has(ctx))
+/** The brand check AND the resource fetch, in one: a context not minted by receiptStoreContext()
+ *  is absent from the map and never authorizes. */
+function resources(ctx: ReceiptStoreContext): ReceiptResources {
+  const r = ctx === null || typeof ctx !== "object" ? undefined : RECEIPT_RESOURCES.get(ctx);
+  if (r === undefined)
     throw new EpEnvelopeError("failed-precondition", `the receipt-store context was not constructed by receiptStoreContext(); a hand-assembled resource bundle never authorizes - the space bond is constructed, not asserted (SPEC 13.4)`);
+  return r;
 }
 
 /** One receipt's coordinates: the accepted execution's identity (§13.2). The subject caller is
@@ -172,8 +181,13 @@ export function mintReceipt(
  *  artifact's caller EVIDENCE must name the subject's caller triple — a receipt whose body
  *  names a different principal than its execution-scoped subject is forged attribution. */
 export function parseReceipt(raw: unknown, ref: ReceiptRef, space: string): Receipt {
-  if (!isRec(raw)) garbled("the receipt is not an object");
-  const o = raw as Record<string, unknown>;
+  // Detach to a plain tree at ENTRY (distsys c50817d MEDIUM): the exported parser validates and
+  // RETURNS this snapshot, never the caller's live view. A caller getter/Proxy therefore cannot
+  // pass a check with one value and then answer a different one when a later field (or the
+  // returned `parsed.caller.id`) is read - the snapshot has no live accessors left.
+  const snap = snapshotRawReceipt(raw);
+  if (!isRec(snap)) garbled("the receipt is not an object");
+  const o = snap as Record<string, unknown>;
   const allowed = new Set(["v", "requestId", "sourceSeq", "space", "endpoint", "command", "instance", "caller", "schemaDigests", "argsDigest", "outcome", "resultDigest", "ts", "signer", "sig"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) garbled(`the receipt carries the unknown field "${k}" (closed schema)`);
   if (o.v !== 1) garbled("the receipt version is not 1");
@@ -217,7 +231,7 @@ export async function publishReceipt(
   ref: ReceiptRef,
   receipt: Receipt,
 ): Promise<{ won: boolean; receipt: Receipt }> {
-  assertCtx(ctx);
+  const { js } = resources(ctx);
   const refSnap = snapshotReceiptRef(ref);
   let candidate: Receipt;
   try { candidate = JSON.parse(canonicalJson(receipt)) as Receipt; } // detached; the caller's live object is never read again
@@ -227,7 +241,7 @@ export async function publishReceipt(
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", "0");
   try {
-    await ctx.js.publish(subject, new TextEncoder().encode(canonicalJson(candidate)), { headers: h });
+    await js.publish(subject, new TextEncoder().encode(canonicalJson(candidate)), { headers: h });
     return { won: true, receipt: candidate };
   } catch (e) {
     const code = (e as { code?: unknown })?.code;
@@ -243,10 +257,10 @@ export async function publishReceipt(
 
 /** Read the execution's recorded receipt (`undefined` = none emitted yet), identity-bound. */
 export async function readReceipt(ctx: ReceiptStoreContext, ref: ReceiptRef): Promise<Receipt | undefined> {
-  assertCtx(ctx);
+  const { jsm } = resources(ctx);
   const refSnap = snapshotReceiptRef(ref);
   const subject = receiptSubject(ctx.space, refSnap);
-  const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
+  const raw = await readLastFact(jsm, epfStreamName(ctx.space), subject);
   return raw === undefined ? undefined : parseReceipt(raw, refSnap, ctx.space);
 }
 
@@ -319,14 +333,19 @@ export async function verifyReceipt(
   const rec = opts.recompute;
   if (rec === null || typeof rec !== "object" || Array.isArray(rec) || !("args" in rec))
     throw new EpEnvelopeError("failed-precondition", `receipt verification is signature PLUS digest recomputation (SPEC 13.10, unconditional); the raw args evidence is mandatory - a reader without evidence uses verifyReceiptSignature, the explicitly weaker authenticity read`);
-  const argsEvidence = rec.args;
-  const hasResult = "result" in rec;
-  const resultEvidence = hasResult ? rec.result : undefined;
+  const argsEvidence = rec.args; // the ONLY read of rec.args
   let argsProof: string;
+  let hasResult = false;
   let resultProof: string | undefined;
   try {
+    // Digest args IMMEDIATELY after its single read, BEFORE touching `rec` again (distsys c50817d
+    // HIGH): a `result` getter or Proxy has-trap must not run between the args read and its
+    // digest, or it could mutate the args object to match a foreign receipt. The evidence is
+    // single-read AND single-digest, not read-then-later-digest. Only once argsProof is a fixed
+    // scalar do we consult `rec` for the result evidence.
     argsProof = contractDigest(argsEvidence === undefined ? null : argsEvidence);
-    resultProof = hasResult ? contractDigest(resultEvidence) : undefined;
+    hasResult = "result" in rec;
+    resultProof = hasResult ? contractDigest(rec.result) : undefined;
   } catch (e) {
     throw new EpEnvelopeError("failed-precondition", `the presented evidence does not digest (${(e as Error).message}); evidence that cannot digest cannot verify (SPEC 13.10)`);
   }

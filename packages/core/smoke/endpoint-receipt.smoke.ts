@@ -135,6 +135,34 @@ await rejects("a non-positive verifyBudgetMs refuses",
     (await verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: shifty })).outcome.ok === true && argsReads === 1);
 }
 {
+  // HIGH (distsys c50817d): args is DIGESTED before any other property access on the recompute
+  // object. A `result` getter that mutates the args object AFTER its read (but before its digest,
+  // in the pre-fix ordering) cannot make foreign evidence verify. Here args starts {replicas:999}
+  // and the result getter mutates it in place to {replicas:3} == ARGS, what `receipt` attests.
+  const mutableArgs = { image: "app:1", replicas: 999 };
+  const mutatingEvidence = { args: mutableArgs, get result() { mutableArgs.replicas = 3; return RESULT; } };
+  await rejects("a result-getter mutating the args object after its read cannot make foreign evidence verify (args is digested before any other rec access)",
+    () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: mutatingEvidence }), "permission-denied");
+}
+{
+  // MEDIUM (distsys c50817d): parseReceipt detaches its input at ENTRY, so a caller's live
+  // getter/Proxy can never survive on the returned receipt. (a) An accessor-bearing receipt is
+  // refused outright — canonicalization rejects a getter as code-not-data, so it can never split
+  // the checked principal from a later-read one. (b) The returned value is a fresh copy: mutating
+  // the source object after parse never changes it (pre-fix the parser returned the live object).
+  const shiftyCaller = {
+    ...receipt,
+    get caller() { return { id: "u_evil.actor", lifecycleUid: UID }; },
+  };
+  await rejects("a receipt carrying an accessor property is refused (a getter is code, not data — never parsed, never split)",
+    () => parseReceipt(shiftyCaller as unknown as Record<string, unknown>, ref, SPACE), "internal");
+  const src = { ...receipt } as Record<string, unknown>;
+  const parsed = parseReceipt(src, ref, SPACE);
+  src.requestId = "req-EVIL";
+  c("parseReceipt returns a detached snapshot: mutating the source after parse never changes the returned receipt",
+    parsed.requestId === "req-1");
+}
+{
   // The explicitly WEAKER signature-only read: authenticity + coordinates, no digest claims.
   const authentic = await verifyReceiptSignature(receipt, { ref, space: SPACE, resolveAnchor });
   c("verifyReceiptSignature proves authenticity WITHOUT evidence (the deliberately weaker, separately named read)",
@@ -156,8 +184,10 @@ try {
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
   const ctx = await receiptStoreContext(nc, SPACE);
 
-  await rejects("a hand-assembled context never authorizes (the space bond is constructed, not asserted)",
-    () => publishReceipt({ js: ctx.js, jsm: ctx.jsm, space: SPACE } as ReceiptStoreContext, ref, receipt), "failed-precondition");
+  await rejects("a hand-assembled context never authorizes (the space bond is constructed, not asserted; resources live in a module-private WeakMap, not on the token)",
+    () => publishReceipt({ space: SPACE } as ReceiptStoreContext, ref, receipt), "failed-precondition");
+  c("the context token exposes NO js/jsm to rebind (resources are WeakMap-private)",
+    (ctx as unknown as Record<string, unknown>).js === undefined && (ctx as unknown as Record<string, unknown>).jsm === undefined);
   c("no receipt reads undefined", (await readReceipt(ctx, ref)) === undefined);
   const pub = await publishReceipt(ctx, ref, receipt);
   c("the first publication wins its create-only CAS", pub.won);
