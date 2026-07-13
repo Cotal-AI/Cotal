@@ -106,8 +106,9 @@ export interface GoalRef {
 
 /** Snapshot a caller-supplied ref to a validated DETACHED copy at seam entry, BEFORE the first
  *  await: a shared mutable ref can otherwise split one operation's identity across its reads,
- *  its CAS, and its terminal publish. */
-function snapshotRef(ref: GoalRef): GoalRef {
+ *  its CAS, and its terminal publish. Exported for the guard seams, which detach the goal they
+ *  bind, resume, and project against the same discipline. */
+export function snapshotRef(ref: GoalRef): GoalRef {
   const c = ref?.caller;
   if (ref === null || typeof ref !== "object" || typeof ref.endpoint !== "string"
     || c === null || typeof c !== "object" || typeof c.owner !== "string" || typeof c.actor !== "string" || typeof c.uid !== "string")

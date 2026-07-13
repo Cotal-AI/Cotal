@@ -20,7 +20,7 @@ import { canonicalJson } from "./canonical.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, type AnchorResolver } from "./endpoint-signing.js";
 import { mintCheckpoint, resumeCheckpoint, readCheckpointSpec, readCheckpointSettle, expireCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
-import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, readGoalResult, ownerCommitProof, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
+import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, readGoalResult, ownerCommitProof, snapshotRef, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -266,11 +266,15 @@ export async function releaseGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; token: string; presenter: { id: string; lifecycleUid: string }; now: number },
 ): Promise<{ settle: CheckpointSettleFact; status: GoalStatusValue }> {
-  // Entry snapshot (single-read): the presenter is compared against the recorded settlement on
-  // the convergence path, so it detaches here alongside the coordinates.
+  // Entry snapshots (single-read): the presenter is compared against the recorded settlement on
+  // the convergence path, and the FULL goal detaches ONCE here (MEDIUM) so bind, resume, and the
+  // projection all read this snapshot - a goal mutated across the resume await can never validate
+  // goal A's checkpoint and then project goal B.
   const presenter = Object.freeze({ id: String(args.presenter.id), lifecycleUid: String(args.presenter.lifecycleUid) });
-  const cpRef = { endpoint: args.goal.endpoint, token: args.token };
-  await bindCheckpointToGoal(ctx, args.goal, args.token); // goal-binding BEFORE consuming the one-use resume
+  const goal = snapshotRef(args.goal);
+  const token = String(args.token);
+  const cpRef = { endpoint: goal.endpoint, token };
+  await bindCheckpointToGoal(ctx, goal, token); // goal-binding BEFORE consuming the one-use resume
   let settle: CheckpointSettleFact;
   try {
     settle = await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: cpRef, presenter, now: args.now });
@@ -283,13 +287,18 @@ export async function releaseGuardHold(
       || winner.holder?.id !== presenter.id || winner.holder?.lifecycleUid !== presenter.lifecycleUid) throw e;
     settle = winner;
   }
-  // The release is OWNER-authored (the guard's holder-bound resume is the authority, verified
-  // by resumeCheckpoint; the proof is construction-bound, never a raw flag); the goal returns
-  // from the owner-driven pause to running — idempotently on the convergence path.
-  const current = await readGoalStatus(ctx, args.goal);
-  const status = current?.value.state === "running"
-    ? current.value
-    : await transitionGoal(ctx, args.goal, "running", { owner: ownerCommitProof(ctx) });
+  // The goal returns from its owner-driven pause to running (the guard's holder-bound resume is
+  // the authority, verified by resumeCheckpoint; the proof is construction-bound), but ONLY if it
+  // is currently waiting on THIS hold's checkpoint (HIGH 1): a stale or replayed release of an OLD
+  // (already-resumed) hold must never move a goal that is now waiting on a DIFFERENT, live hold. An
+  // already-running goal is the converged crash state (idempotent); a goal waiting on another token
+  // (or terminal/unknown) refuses.
+  const current = await readGoalStatus(ctx, goal);
+  if (current?.value.state === "running") return { settle, status: current.value };
+  const waitingToken = current?.value.state === "waiting" ? current.value.checkpoint?.token : undefined;
+  if (waitingToken !== token)
+    throw new EpEnvelopeError("failed-precondition", `goal "${goal.goalId}" is not waiting on checkpoint "${token}" (${current === undefined ? "unknown goal" : current.value.state === "waiting" ? `it waits on "${String(waitingToken)}"` : `it is ${current.value.state}`}); a release of an old hold never moves a goal paused on a newer one (SPEC 13.6)`);
+  const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
   return { settle, status };
 }
 
@@ -304,21 +313,29 @@ export async function expireGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; token: string; now: number },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  await bindCheckpointToGoal(ctx, args.goal, args.token); // goal-binding BEFORE terminalizing anything
-  const status = await readGoalStatus(ctx, args.goal);
+  const goal = snapshotRef(args.goal); // detach the full goal ONCE (same discipline as release)
+  const token = String(args.token);
+  await bindCheckpointToGoal(ctx, goal, token); // goal-binding BEFORE terminalizing anything
+  const status = await readGoalStatus(ctx, goal);
   if (status === undefined)
-    throw new EpEnvelopeError("failed-precondition", `goal "${args.goal.goalId}" is unknown; an expiry settles only an accepted goal (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `goal "${goal.goalId}" is unknown; an expiry settles only an accepted goal (SPEC 13.6)`);
   // Owner-expire the DUE checkpoint so its status settles and its timers stop (idempotent; an
   // already-settled checkpoint returns its winner). The goal terminal is the authority for the
   // caller, but the checkpoint must not be left waiting with a live timer.
-  const settled = await expireCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: { endpoint: args.goal.endpoint, token: args.token }, now: args.now });
+  const settled = await expireCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: { endpoint: goal.endpoint, token }, now: args.now });
   if (settled.settle === "resumed") {
     // The hold was lawfully RELEASED before this expiry: a resumed hold never denies. A raced
-    // caller observes the goal's recorded terminal if one exists; a released hold on a
-    // still-live goal is a plain refusal — there is no denial predicate to commit.
-    const fact = await readGoalResult(ctx, args.goal);
-    if (fact !== undefined) return { won: false, fact, status: await projectGoalTerminal(ctx, args.goal) };
-    throw new EpEnvelopeError("failed-precondition", `the guard hold "${args.token}" was RELEASED (resumed at ${settled.ts}), not expired; a resumed hold never denies (SPEC 13.6)`);
+    // caller observes the goal's recorded terminal if one exists. If the release resumed the
+    // checkpoint but CRASHED before projecting the goal, the goal is still waiting on THIS token -
+    // FINISH that projection here (goal -> running) so it never hangs waiting forever (HIGH 4: a
+    // plain refusal is not crash recovery), then refuse (there is no terminal to return, and a
+    // resumed hold never denies). Idempotent: an already-running/re-held goal is not re-projected.
+    const fact = await readGoalResult(ctx, goal);
+    if (fact !== undefined) return { won: false, fact, status: await projectGoalTerminal(ctx, goal) };
+    const cur = await readGoalStatus(ctx, goal);
+    if (cur?.value.state === "waiting" && cur.value.checkpoint?.token === token)
+      await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+    throw new EpEnvelopeError("failed-precondition", `the guard hold "${token}" was RELEASED (resumed at ${settled.ts}), not expired; the goal projection is converged to running and a resumed hold never denies (SPEC 13.6)`);
   }
   // An expired hold is DENY (fail closed) → the goal commits terminal failed via the `deny`
   // cause at the shared commit point, where a racing completion/cancel may win first. The
@@ -326,8 +343,8 @@ export async function expireGuardHold(
   // the named checkpoint binds THIS goal and that its recorded one-use settlement is EXPIRED
   // (the expiry recorded just above) — a bare deny cause proves nothing and is refused there.
   const res = await commitGoalResult(ctx, {
-    ref: args.goal, now: args.now, cause: "deny", denial: { kind: "hold-expired", token: args.token },
-    data: { code: "permission-denied", reason: `the guard hold "${args.token}" expired without a release; timeout is deny (SPEC 13.6: fail closed)` },
+    ref: goal, now: args.now, cause: "deny", denial: { kind: "hold-expired", token },
+    data: { code: "permission-denied", reason: `the guard hold "${token}" expired without a release; timeout is deny (SPEC 13.6: fail closed)` },
   });
   return res;
 }

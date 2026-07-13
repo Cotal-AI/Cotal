@@ -195,6 +195,38 @@ try {
   await rejects("an expiry with an UNKNOWN token refuses (no minted checkpoint pauses the goal)",
     () => expireGuardHold(ctx, { goal: gA, token: "cp-nonexistent", now: NOW + 100 }), "failed-precondition");
 
+  // ── re-verify 5aab089 (distsys): H1 stale-release token match, H4 resumed-expiry crash converge ──
+  {
+    // HIGH 1: a stale/replayed release of an OLD (already-resumed) hold must NOT move a goal that
+    // is now waiting on a DIFFERENT, live hold. Hold on cp-h1a, release (goal running), hold AGAIN
+    // on cp-h1b (goal waiting on cp-h1b); a replayed release(cp-h1a) must refuse and leave it alone.
+    const gH = goalOf("g-h1");
+    await createGoal(ctx, gH, spec("sha256:gh1"));
+    await transitionGoal(ctx, gH, "running", { owner: ownerCommitProof(ctx) });
+    await holdGuardedGoal(ctx, { goal: gH, hold: { token: "cp-h1a", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    await releaseGuardHold(ctx, { goal: gH, token: "cp-h1a", presenter: guardResponder, now: NOW + 100 });
+    await holdGuardedGoal(ctx, { goal: gH, hold: { token: "cp-h1b", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW + 200 });
+    await rejects("a replayed release of the OLD (resumed) hold refuses when the goal now waits on a NEWER hold",
+      () => releaseGuardHold(ctx, { goal: gH, token: "cp-h1a", presenter: guardResponder, now: NOW + 300 }), "failed-precondition");
+    c("…and the goal is UNTOUCHED (still waiting on the newer hold, never wrongly moved to running)",
+      (await readGoalStatus(ctx, gH))?.value.state === "waiting" && (await readGoalStatus(ctx, gH))?.value.checkpoint?.token === "cp-h1b");
+
+    // HIGH 4: a release that RESUMED the checkpoint but crashed before projecting the goal must be
+    // FINISHED by a later expiry, never left waiting forever. Simulate the crash by resuming the
+    // checkpoint directly (no goal projection); the expiry then converges goal → running and refuses.
+    const gC = goalOf("g-h4");
+    await createGoal(ctx, gC, spec("sha256:gh4"));
+    await transitionGoal(ctx, gC, "running", { owner: ownerCommitProof(ctx) });
+    await holdGuardedGoal(ctx, { goal: gC, hold: { token: "cp-h4", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: "manager", token: "cp-h4" }, presenter: guardResponder, now: NOW + 100 });
+    c("precondition: the checkpoint is resumed but the goal still hangs waiting (the release crash window)",
+      (await readGoalStatus(ctx, gC))?.value.state === "waiting");
+    await rejects("an expiry over a RESUMED-but-unprojected hold refuses (a resumed hold never denies)",
+      () => expireGuardHold(ctx, { goal: gC, token: "cp-h4", now: NOW + 200 }), "failed-precondition");
+    c("…but it FINISHED the crashed projection: the goal is converged to running, no longer hung",
+      (await readGoalStatus(ctx, gC))?.value.state === "running");
+  }
+
   // expiry racing a completion: a stale hold-expiry after the goal already terminalized observes
   // the WINNING terminal (goal-bound token, checkpoint already settled by the release, idempotent).
   const g3 = goalOf("g-race");
