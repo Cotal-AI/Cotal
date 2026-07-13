@@ -80,8 +80,21 @@ function invalid(what: string): never { throw new EpEnvelopeError("contract-inva
 /** The §13.6 default validity ceilings (space-configurable): live ≤ 24h, sturdy default 30d. */
 export const HANDLE_MAX_LIVE_TTL_MS = 24 * 60 * 60 * 1000;
 export const HANDLE_MAX_STURDY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-/** Verification bound: the longest presentable attenuation chain. */
+/** Verification bounds (fail loud past each; a bound reached is a refusal, never a truncation). */
 export const HANDLE_MAX_CHAIN_LENGTH = 16;
+export const HANDLE_MAX_BYTES = 64 * 1024;
+export const HANDLE_MAX_GRANTS = 64;
+export const HANDLE_MAX_COMMANDS_PER_GRANT = 64;
+export const HANDLE_MAX_READS_PER_GRANT = 64;
+
+/** Bounded canonical token grammars (§13.6 consuming boundary): id/space/keyId are bounded
+ *  opaque tokens; the holder principal id is `owner` or `owner.actor` reverse-form. A garbled
+ *  token is a CATALOG error (`contract-invalid`), never a raw validator throw. */
+const HANDLE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+function assertHandleToken(v: unknown, what: string): string {
+  if (typeof v !== "string" || !HANDLE_TOKEN.test(v)) invalid(`${what} is not a bounded canonical token (1..128 of [A-Za-z0-9._:-], leading alnum)`);
+  return v as string;
+}
 
 function parseGrantCommand(raw: unknown): HandleGrantCommand {
   if (!isRec(raw)) invalid("a grant command is not an object");
@@ -141,12 +154,14 @@ function parseGrant(raw: unknown): HandleGrant {
   for (const k of Object.keys(o)) if (!["endpoint", "instanceId", "commands", "reads"].includes(k)) invalid(`a grant entry carries the unknown field "${k}"`);
   if (typeof o.endpoint !== "string") invalid("a grant entry has no string endpoint");
   endpointToken(o.endpoint);
-  if (o.instanceId !== undefined) assertLifecycleToken(o.instanceId as string, "grant instanceId");
+  if (o.instanceId !== undefined) { try { assertLifecycleToken(o.instanceId as string, "grant instanceId"); } catch (e) { invalid((e as Error).message); } }
   if (!Array.isArray(o.commands) || o.commands.length === 0) invalid(`grant entry for "${o.endpoint}" has no commands`);
+  if (o.commands.length > HANDLE_MAX_COMMANDS_PER_GRANT) invalid(`grant entry for "${o.endpoint}" exceeds ${HANDLE_MAX_COMMANDS_PER_GRANT} commands (bounded, never truncated)`);
   const commands = o.commands.map(parseGrantCommand);
   let reads: string[] | undefined;
   if (o.reads !== undefined) {
     if (!Array.isArray(o.reads)) invalid(`grant entry for "${o.endpoint}" has a non-array reads`);
+    if (o.reads.length > HANDLE_MAX_READS_PER_GRANT) invalid(`grant entry for "${o.endpoint}" exceeds ${HANDLE_MAX_READS_PER_GRANT} read subtrees (bounded)`);
     reads = o.reads.map((r) => assertReadSubtree(r, o.endpoint as string));
   }
   return { endpoint: o.endpoint, ...(o.instanceId !== undefined ? { instanceId: o.instanceId as string } : {}), commands, ...(reads !== undefined ? { reads } : {}) };
@@ -163,13 +178,22 @@ export function parseHandle(raw: unknown): CapabilityHandle {
   const allowed = new Set(["v", "id", "space", "issuer", "holder", "grants", "iat", "nbf", "exp", "parentDigest", "sturdy", "epoch", "sig"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) invalid(`the handle carries the unknown field "${k}" (closed envelope)`);
   if (o.v !== 1) invalid("the handle version is not 1");
-  if (typeof o.id !== "string" || o.id.length === 0) invalid("the handle has no id");
-  if (typeof o.space !== "string" || o.space.length === 0) invalid("the handle has no space");
-  if (!isRec(o.issuer) || typeof (o.issuer as Record<string, unknown>).keyId !== "string") invalid("the handle issuer has no keyId");
-  if (!isRec(o.holder) || typeof (o.holder as Record<string, unknown>).id !== "string" || typeof (o.holder as Record<string, unknown>).lifecycleUid !== "string")
-    invalid("the handle holder is not a {id, lifecycleUid}");
+  assertHandleToken(o.id, "the handle id");
+  assertHandleToken(o.space, "the handle space");
+  if (!isRec(o.issuer)) invalid("the handle issuer is not an object");
+  for (const k of Object.keys(o.issuer)) if (k !== "keyId") invalid(`the handle issuer carries the unknown field "${k}" (closed schema)`);
+  assertHandleToken((o.issuer as Record<string, unknown>).keyId, "the handle issuer keyId");
+  if (!isRec(o.holder)) invalid("the handle holder is not an object");
+  for (const k of Object.keys(o.holder)) if (k !== "id" && k !== "lifecycleUid") invalid(`the handle holder carries the unknown field "${k}" (closed schema)`);
+  assertHandleToken((o.holder as Record<string, unknown>).id, "the handle holder id");
+  assertHandleToken((o.holder as Record<string, unknown>).lifecycleUid, "the handle holder lifecycleUid");
   if (!Array.isArray(o.grants) || o.grants.length === 0) invalid("the handle has no grants");
-  const grants = o.grants.map(parseGrant);
+  if (o.grants.length > HANDLE_MAX_GRANTS) invalid(`the handle exceeds ${HANDLE_MAX_GRANTS} grant entries (bounded, never truncated)`);
+  // Any token-validator throw inside a grant becomes a CATALOG contract-invalid error (§13.6:
+  // the consuming boundary never surfaces a raw validator throw).
+  let grants: HandleGrant[];
+  try { grants = o.grants.map(parseGrant); }
+  catch (e) { if (e instanceof EpEnvelopeError) throw e; invalid(`a grant entry has an invalid token: ${(e as Error).message}`); }
   for (const f of ["iat", "exp"]) if (typeof o[f] !== "number" || !Number.isSafeInteger(o[f]) || (o[f] as number) < 0) invalid(`the handle ${f} is not a non-negative safe integer`);
   if (o.nbf !== undefined && (typeof o.nbf !== "number" || !Number.isSafeInteger(o.nbf) || o.nbf < 0)) invalid("the handle nbf is not a non-negative safe integer");
   if ((o.exp as number) <= (o.iat as number)) invalid("the handle exp is not after iat");
@@ -198,13 +222,22 @@ export function handleDigest(handle: CapabilityHandle): string {
 
 // ---- the normative compiler (§13.6: grant entry → the subjects an equivalent mint receives) --
 
+/** The command's contract dimensions the compiler needs but cannot derive from the grant
+ *  entry alone (§13.6: "per the command's contract"): whether a NO-TARGET command compiles to
+ *  the untargeted form or the `.self` form, and whether the command submits via the journal.
+ *  The compiler is transport-thin and never guesses either. */
+export interface CommandContract {
+  noTargetForm: "untargeted" | "self";
+  journal: boolean;
+}
+export type CommandContractSeam = (endpoint: string, command: string) => CommandContract;
+
 /** Compile ONE grant command to the {@link EpTarget} the equivalent minted capability carries
- *  (never wider): a no-target command → no target; an owner-domain command → its authz mode
- *  pinning `targetOwner`; an actor-pinned command → `handle`-mode with the verified triple.
- *  Every present signed component is consumed (a component the target cannot express was
- *  already refused as schema-invalid at parse). */
-function compileTarget(cmd: HandleGrantCommand): EpTarget | undefined {
-  if (cmd.targetOwner === undefined) return undefined; // no-target → untargeted/self per the command's contract
+ *  (never wider): a no-target command → the untargeted form or `.self` PER ITS CONTRACT; an
+ *  owner-domain command → its authz mode pinning `targetOwner`; an actor-pinned command →
+ *  `handle`-mode with the verified triple. Every present signed component is consumed. */
+function compileTarget(cmd: HandleGrantCommand, contract: CommandContract): EpTarget | undefined {
+  if (cmd.targetOwner === undefined) return contract.noTargetForm === "self" ? { mode: "self" } : undefined;
   if (cmd.targetActor !== undefined && cmd.targetLifecycleUid !== undefined)
     return { mode: "handle", tOwner: cmd.targetOwner, tActor: cmd.targetActor, tUid: cmd.targetLifecycleUid };
   return { mode: (cmd.authz ?? "owner") as "owner" | "child" | "ledger", tOwner: cmd.targetOwner };
@@ -225,29 +258,29 @@ export interface CompiledHandleGrants {
  *   - `routes` is set EXPLICITLY: an instance entry compiles to the exact `ep.inst` rails
  *     ONLY (`routes: []` — an instance pin never also grants the class rail); a class entry
  *     compiles to `routes: ["one"]` (scatter `all` is not expressible in a handle);
- *   - `journal` is set from the command's contract class via the REQUIRED `isJournalCommand`
- *     seam (the compiler is transport-thin and never guesses a class);
+ *   - a NO-TARGET command's untargeted-vs-`.self` form and the `journal` rail come from the
+ *     REQUIRED command-contract seam (the compiler never guesses either);
  *   - `reads` are returned alongside, never dropped. */
 export function compileHandleGrants(
   handle: CapabilityHandle,
-  opts: { isJournalCommand: (endpoint: string, command: string) => boolean },
+  opts: { commandContract: CommandContractSeam },
 ): CompiledHandleGrants {
-  if (typeof opts?.isJournalCommand !== "function")
-    throw new EpEnvelopeError("failed-precondition", "compiling handle grants requires the command-class seam (isJournalCommand); the compiler never guesses whether a command submits via the journal (SPEC 13.6/13.9)");
+  if (typeof opts?.commandContract !== "function")
+    throw new EpEnvelopeError("failed-precondition", "compiling handle grants requires the command-contract seam; the compiler never guesses a command's no-target form or journal class (SPEC 13.6/13.9)");
   const caps: EpCapability[] = [];
   const reads: string[] = [];
   for (const g of handle.grants) {
     for (const cmd of g.commands) {
-      const journal = opts.isJournalCommand(g.endpoint, cmd.name);
-      if (typeof journal !== "boolean")
-        throw new EpEnvelopeError("internal", `the command-class seam returned ${JSON.stringify(journal)} for ${g.endpoint}.${cmd.name}; a non-boolean class never compiles (SPEC 13.6)`);
-      const target = compileTarget(cmd);
+      const contract = opts.commandContract(g.endpoint, cmd.name);
+      if (!contract || (contract.noTargetForm !== "untargeted" && contract.noTargetForm !== "self") || typeof contract.journal !== "boolean")
+        throw new EpEnvelopeError("internal", `the command-contract seam returned a malformed contract for ${g.endpoint}.${cmd.name}; a garbled contract never compiles (SPEC 13.6)`);
+      const target = compileTarget(cmd, contract);
       caps.push({
         endpoint: g.endpoint, command: cmd.name,
         routes: g.instanceId !== undefined ? [] : ["one"],
         ...(g.instanceId !== undefined ? { instanceId: g.instanceId } : {}),
         ...(target !== undefined ? { target } : {}),
-        ...(journal ? { journal: true } : {}),
+        ...(contract.journal ? { journal: true } : {}),
       });
     }
     for (const r of g.reads ?? []) if (!reads.includes(r)) reads.push(r);
@@ -410,8 +443,8 @@ export async function verifyHandleChain(
     space: string;
     presenter: { id: string; lifecycleUid: string; epoch?: number };
     readRevocation: HandleRevocationReader;
-    /** The command-class seam the compiled bundle needs ({@link compileHandleGrants}). */
-    isJournalCommand: (endpoint: string, command: string) => boolean;
+    /** The command-contract seam the compiled bundle needs ({@link compileHandleGrants}). */
+    commandContract: CommandContractSeam;
     /** REQUIRED when the chain contains a LIVE non-leaf link: the link holder's CURRENT
      *  process epoch from trusted authority (null = retired/unknown). */
     resolveHolderEpoch?: (holder: { id: string; lifecycleUid: string }) => Promise<number | null> | number | null;
@@ -429,7 +462,16 @@ export async function verifyHandleChain(
   const budget = opts.verifyBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `verifyBudgetMs must be a positive integer; got ${JSON.stringify(opts.verifyBudgetMs)}`);
-  const raws = chain.map((r) => { if (!isRec(r)) invalid("a chain element is not an object"); return r; });
+  // Snapshot each RAW artifact to a detached, byte-bounded, deep-frozen copy at entry (D28: the
+  // signature and digest identity are checked over EXACTLY this snapshot; the parsed projection
+  // derives from the same bytes, so a projection/default can never be the signed value, and a
+  // mid-flight mutation of the caller's object cannot split verification from projection).
+  const raws = chain.map((r) => {
+    if (!isRec(r)) invalid("a chain element is not an object");
+    const bytes = new TextEncoder().encode(canonicalJson(r)); // throws on non-interchangeable I-JSON
+    if (bytes.length > HANDLE_MAX_BYTES) invalid(`a chain artifact is ${bytes.length} bytes, over the ${HANDLE_MAX_BYTES} bound (bounded verification)`);
+    return Object.freeze(JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>);
+  });
   const handles = raws.map(parseHandle);
   const leaf = handles[0];
 
@@ -519,7 +561,7 @@ export async function verifyHandleChain(
     }
   }
 
-  return { leaf, compiled: compileHandleGrants(leaf, { isJournalCommand: opts.isJournalCommand }) };
+  return { leaf, compiled: compileHandleGrants(leaf, { commandContract: opts.commandContract }) };
 }
 
 /** Serialize a handle to its canonical bytes (the wire/store form). Throws if the artifact is

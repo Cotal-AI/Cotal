@@ -15,6 +15,7 @@ import {
   EpEnvelopeError, signArtifact,
   parseHandle, handleDigest, compileHandleGrants, assertHandleContainedIn, verifyHandleChain,
   serializeHandle, HANDLE_MAX_LIVE_TTL_MS, HANDLE_MAX_STURDY_TTL_MS, HANDLE_MAX_CHAIN_LENGTH,
+  HANDLE_MAX_GRANTS, HANDLE_MAX_BYTES,
   type SignerAnchor, type AnchorResolver, type CapabilityHandle, type HandleRevocationReader,
 } from "../src/index.js";
 
@@ -60,8 +61,8 @@ anchor("root-1", rootKp, "u_iss", [ROOT_CEILING]);
 anchor("holder-1", holderKp, "u_holder.app", [HOLDER_CEILING], { ownerLifecycleUid: holderP.lifecycleUid });
 const resolveAnchor: AnchorResolver = (keyId) => anchors.get(keyId);
 const noRevocation: HandleRevocationReader = () => false;
-const notJournal = (): boolean => false;
-const baseOpts = { resolveAnchor, space: SPACE, readRevocation: noRevocation, isJournalCommand: notJournal };
+const contract = (): { noTargetForm: "untargeted"; journal: boolean } => ({ noTargetForm: "untargeted", journal: false });
+const baseOpts = { resolveAnchor, space: SPACE, readRevocation: noRevocation, commandContract: contract };
 
 // A ROOT handle held by u_holder.app, signed by the root issuer key.
 const rootBody = (over: Partial<CapabilityHandle> = {}): Record<string, unknown> => ({
@@ -95,7 +96,7 @@ throws("a wildcard read scope is schema-invalid (reads are literal subtrees; the
 
 // ── the normative compiler: reads + explicit routes + journal seam ──
 {
-  const compiled = compileHandleGrants(rootHandle, { isJournalCommand: notJournal });
+  const compiled = compileHandleGrants(rootHandle, { commandContract: contract });
   const deploy = compiled.caps.find((k) => k.command === "deploy");
   const status = compiled.caps.find((k) => k.command === "status");
   c("an owner-domain command compiles to its authz mode pinning targetOwner",
@@ -107,27 +108,30 @@ throws("a wildcard read scope is schema-invalid (reads are literal subtrees; the
 }
 {
   const triple = parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "attach", targetOwner: "u_t", targetActor: "svc", targetLifecycleUid: "t".repeat(26) }] }] }), rootKp));
-  const cap = compileHandleGrants(triple, { isJournalCommand: notJournal }).caps[0];
+  const cap = compileHandleGrants(triple, { commandContract: contract }).caps[0];
   c("an actor-pinned triple compiles to handle-mode carrying the verified triple",
     cap.target?.mode === "handle" && (cap.target as { tUid: string }).tUid === "t".repeat(26));
 }
 {
   const inst = parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", instanceId: "i".repeat(26), commands: [{ name: "status" }] }] }), rootKp));
-  const cap = compileHandleGrants(inst, { isJournalCommand: notJournal }).caps[0];
+  const cap = compileHandleGrants(inst, { commandContract: contract }).caps[0];
   c("an instance entry compiles pinning the instanceId with routes [] (the exact ep.inst rails ONLY, never also the class rail)",
     cap.instanceId === "i".repeat(26) && Array.isArray(cap.routes) && cap.routes.length === 0);
 }
 {
   const withReads = parseHandle(signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "status" }], reads: ["goal.u_a.b.c"] }] }), rootKp));
-  const compiled = compileHandleGrants(withReads, { isJournalCommand: notJournal });
+  const compiled = compileHandleGrants(withReads, { commandContract: contract });
   c("signed read subtrees are COMPILED (consumed, never silently dropped)",
     compiled.reads.length === 1 && compiled.reads[0] === "goal.u_a.b.c");
-  const journal = compileHandleGrants(withReads, { isJournalCommand: () => true });
-  c("a journal-class command (per the REQUIRED class seam) compiles with journal: true", journal.caps[0].journal === true);
-  throws("compiling without the command-class seam refuses (the compiler never guesses a class)",
+  const journal = compileHandleGrants(withReads, { commandContract: () => ({ noTargetForm: "untargeted", journal: true }) });
+  c("a journal-class command (per the REQUIRED contract seam) compiles with journal: true", journal.caps[0].journal === true);
+  const selfForm = compileHandleGrants(withReads, { commandContract: () => ({ noTargetForm: "self", journal: false }) });
+  c("a no-target command whose CONTRACT says `self` compiles to self mode (the compiler never guesses the form)",
+    selfForm.caps[0].target?.mode === "self");
+  throws("compiling without the command-contract seam refuses (the compiler never guesses a no-target form or class)",
     () => compileHandleGrants(withReads, undefined as never), "failed-precondition");
-  throws("a class seam answering non-boolean never compiles",
-    () => compileHandleGrants(withReads, { isJournalCommand: (() => "yes") as unknown as () => boolean }), "internal");
+  throws("a contract seam answering a garbled contract never compiles",
+    () => compileHandleGrants(withReads, { commandContract: (() => ({ noTargetForm: "nope", journal: "x" })) as unknown as typeof contract }), "internal");
 }
 
 // ── containment: a child ⊆ its parent ──
@@ -280,6 +284,18 @@ await rejects("a chain longer than the verification bound refuses",
   () => verifyHandleChain(new Array(HANDLE_MAX_CHAIN_LENGTH + 1).fill({}), { ...baseOpts, now: NOW, presenter: holderP }), "permission-denied");
 await rejects("a HUNG revocation reader refuses `unavailable` within the verify budget, never a hung verification",
   () => verifyHandleChain([rootHandle], { ...baseOpts, now: NOW, presenter: holderP, readRevocation: (() => ({ then() { /* never settles */ } })) as unknown as HandleRevocationReader, verifyBudgetMs: 100 }), "unavailable");
+
+// ── bounded canonical grammars + verification bounds (MEDIUM restatement) ──
+throws("a handle id that is not a bounded canonical token is a catalog contract-invalid error",
+  () => parseHandle(signArtifact(rootBody({ id: "bad id!" }) as Record<string, unknown>, rootKp)), "contract-invalid");
+throws("a handle holder id that is not a bounded token is a catalog error (not a raw validator throw)",
+  () => parseHandle(signArtifact(rootBody({ holder: { id: "no spaces", lifecycleUid: "h".repeat(26) } }) as Record<string, unknown>, rootKp)), "contract-invalid");
+throws("an over-1KB oversized id/token is rejected (bounded canonical grammar)",
+  () => parseHandle(signArtifact(rootBody({ id: "x".repeat(200) }) as Record<string, unknown>, rootKp)), "contract-invalid");
+throws("a handle exceeding the grant-count bound is refused (bounded, never truncated)",
+  () => parseHandle(signArtifact(rootBody({ grants: new Array(HANDLE_MAX_GRANTS + 1).fill({ endpoint: "manager", commands: [{ name: "status" }] }) }) as Record<string, unknown>, rootKp)), "contract-invalid");
+await rejects("a chain artifact over the byte bound refuses (bounded verification)",
+  () => verifyHandleChain([signArtifact(rootBody({ grants: [{ endpoint: "manager", commands: [{ name: "status" }], reads: [`goal.${"z".repeat(HANDLE_MAX_BYTES)}`] }] }), rootKp)], { ...baseOpts, now: NOW, presenter: holderP }), "contract-invalid");
 
 // ── serialization is strict I-JSON ──
 c("a handle serializes to canonical bytes", serializeHandle(rootHandle).length > 0);
