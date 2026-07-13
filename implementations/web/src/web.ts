@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { closeSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -31,6 +31,9 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  `*.localhost`; plain http://127.0.0.1:7799 always does.) */
 export const WEB_PORT = 7799;
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
+const DETACHED_READY_TIMEOUT_MS = 30_000;
+const DETACHED_STOP_TIMEOUT_MS = 3_000;
+const DETACHED_ROOT_ENV = "COTAL_WEB_DETACHED_ROOT";
 export const webProcess: LocalProcess = {
   kind: "local-process",
   name: "web",
@@ -94,7 +97,7 @@ const PAGE: Record<string, { path: string; type: string }> = {
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
  *  and a live message stream — no manager required. Bound to loopback. */
 export async function web(args: ParsedArgs): Promise<void> {
-  const values = args.values as { space?: string; server?: string; port?: string; "no-open"?: boolean; creds?: string };
+  const values = args.values as { space?: string; server?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
@@ -109,10 +112,18 @@ export async function web(args: ParsedArgs): Promise<void> {
   // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
-  const { conn, user } = await (async () => {
-    const conn = await connectOrExit(values, "admin");
-    return { conn, user: conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined };
-  })();
+  const conn = await connectOrExit(values, "admin");
+  const detachedRoot = process.env[DETACHED_ROOT_ENV];
+  if (detachedRoot && conn.root !== detachedRoot)
+    throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
+  const port = values.port ? Number(values.port) : WEB_PORT;
+  if (values.detach) {
+    if (!conn.root)
+      throw new Error("`cotal web --detach` requires a recorded mesh root; start or register the mesh with `cotal up` first");
+    await launchDetachedWeb(args.raw, conn.root, conn.space, conn.server, port, Boolean(values["no-open"]));
+    return;
+  }
+  const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
   const { server, space } = conn;
   const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space }) : undefined;
   if (pidPath) {
@@ -120,7 +131,6 @@ export async function web(args: ParsedArgs): Promise<void> {
     process.once("exit", () => releasePid(pidPath));
   }
   const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
-  const port = values.port ? Number(values.port) : WEB_PORT;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -190,7 +200,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       req.on("close", () => clients.delete(res));
       return;
     }
-    if (path === "/api/meta") return json(res, { space });
+    if (path === "/api/meta") return json(res, { space, pid: process.pid });
     if (path === "/api/roster") return json(res, ep.getRoster());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
@@ -276,7 +286,7 @@ export async function web(args: ParsedArgs): Promise<void> {
 
   await new Promise<void>((ready) => httpServer.listen(port, "127.0.0.1", ready));
   // Branded URL only when on the default port; a custom --port keeps the plain loopback address.
-  const url = port === WEB_PORT ? WEB_URL : `http://127.0.0.1:${port}/`;
+  const url = webUrl(port);
   console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
   console.log(c.dim("  god-view - DMs + anycast visible"));
   console.log(`  ${c.cyan(url)}  ${c.dim("(Ctrl-C to stop)")}`);
@@ -297,6 +307,149 @@ export async function web(args: ParsedArgs): Promise<void> {
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
   await new Promise<void>(() => {});
+}
+
+/** Launch the dashboard through this exact Cotal entrypoint, then report success only after the
+ * spawned PID proves it owns both the mesh pidfile and the HTTP listener. */
+async function launchDetachedWeb(
+  raw: readonly string[],
+  root: string,
+  space: string,
+  server: string,
+  port: number,
+  noOpen: boolean,
+): Promise<void> {
+  const context = { root, space };
+  const pidPath = localProcessPath(webProcess.pidFile, context);
+  const logPath = localProcessPath("web.log", context);
+  const logFd = openSync(logPath, "a", 0o600);
+  const logOffset = fstatSync(logFd).size;
+  const childArgs = detachedArgs(raw, space, server);
+  let child: ChildProcess;
+  try {
+    child = spawn(process.execPath, [...process.execArgv, process.argv[1], "web", ...childArgs], {
+      cwd: root,
+      detached: true,
+      env: { ...process.env, [DETACHED_ROOT_ENV]: root },
+      stdio: ["ignore", logFd, logFd],
+    });
+  } finally {
+    closeSync(logFd);
+  }
+  child.unref();
+
+  const url = webUrl(port);
+  try {
+    await waitForDetachedWeb(child, { pidPath, url: `http://127.0.0.1:${port}/`, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+  } catch (e) {
+    let cleanupError: Error | undefined;
+    try { await terminateDetachedWeb(child, pidPath); }
+    catch (err) { cleanupError = err as Error; }
+    const tail = appendedLogTail(logPath, logOffset);
+    throw new Error(`${(e as Error).message}${cleanupError ? `; ${cleanupError.message}` : ""} - see ${logPath}${tail ? `\n${tail}` : ""}`);
+  }
+
+  console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
+  console.log(c.dim(`  log: ${logPath}`));
+  console.log(c.dim("  stop: cotal down web"));
+  if (!noOpen) openBrowser(url);
+}
+
+export function detachedArgs(raw: readonly string[], space: string, server: string): string[] {
+  const kept: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const arg = raw[i];
+    if (arg === "--detach" || arg === "--no-open") continue;
+    if (arg === "--space" || arg === "--server") {
+      i++;
+      continue;
+    }
+    if (arg.startsWith("--space=") || arg.startsWith("--server=")) continue;
+    kept.push(arg);
+  }
+  return [...kept, "--space", space, "--server", server, "--no-open"];
+}
+
+export async function waitForDetachedWeb(
+  child: ChildProcess,
+  opts: { pidPath: string; url: string; space: string; timeoutMs: number },
+): Promise<void> {
+  let spawnError: Error | undefined;
+  const spawnErrorPromise = new Promise<Error>((resolve) => child.once("error", (e) => {
+    spawnError = e;
+    resolve(e);
+  }));
+  const pid = child.pid;
+  if (!pid) {
+    const error = await Promise.race([spawnErrorPromise, sleep(100).then(() => undefined)]);
+    throw new Error(`web dashboard failed to start${error ? `: ${error.message}` : " (no process id)"}`);
+  }
+  const deadline = Date.now() + opts.timeoutMs;
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
+    if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid))
+      throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
+    if (pidFileOwned(opts.pidPath, pid)) {
+      const meta = await fetch(`${opts.url}api/meta`, { signal: AbortSignal.timeout(500) })
+        .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
+        .catch(() => undefined);
+      if (meta?.space === opts.space && meta.pid === pid) {
+        if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid))
+          throw new Error(`web dashboard exited during readiness (pid ${pid})`);
+        return;
+      }
+    }
+    await sleep(100);
+  }
+  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})`);
+}
+
+export async function terminateDetachedWeb(child: ChildProcess, pidPath: string): Promise<void> {
+  const pid = child.pid;
+  if (!pid) return;
+  if (pidAlive(pid)) {
+    try { child.kill("SIGTERM"); } catch { /* verify below */ }
+    if (!(await waitForDeath(child, pid, DETACHED_STOP_TIMEOUT_MS))) {
+      try { child.kill("SIGKILL"); } catch { /* verify below */ }
+      if (!(await waitForDeath(child, pid, DETACHED_STOP_TIMEOUT_MS)))
+        throw new Error(`failed to terminate detached web dashboard (pid ${pid}); ${pidPath} was preserved`);
+    }
+  }
+  if (pidFileOwned(pidPath, pid)) rmSync(pidPath, { force: true });
+}
+
+function pidFileOwned(path: string, pid: number): boolean {
+  try { return readFileSync(path, "utf8").trim() === String(pid); }
+  catch { return false; }
+}
+
+async function waitForDeath(child: ChildProcess, pid: number, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid)) return true;
+  await Promise.race([
+    new Promise<void>((resolve) => child.once("exit", () => resolve())),
+    sleep(timeoutMs),
+  ]);
+  return child.exitCode !== null || child.signalCode !== null || !pidAlive(pid);
+}
+
+export function appendedLogTail(path: string, offset: number): string {
+  try {
+    const size = statSync(path).size;
+    if (size <= offset) return "";
+    const start = Math.max(offset, size - 4096);
+    const bytes = Buffer.alloc(size - start);
+    const fd = openSync(path, "r");
+    try { readSync(fd, bytes, 0, bytes.length, start); } finally { closeSync(fd); }
+    return bytes.toString("utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function webUrl(port: number): string {
+  return port === WEB_PORT ? WEB_URL : `http://127.0.0.1:${port}/`;
 }
 
 function json(res: ServerResponse, data: unknown): void {
