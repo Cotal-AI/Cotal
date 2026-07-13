@@ -36,7 +36,7 @@ import type { KV } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError,
   serveEndpoint, compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
-  finalizeServeIssuance,
+  finalizeServeIssuance, GOVERNED_TRAIT_URNS,
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
@@ -78,6 +78,12 @@ const DOC_ROOT = contractDigest(DOC);
 const DC = contractDigest({ v: 1, root: DOC_ROOT, members: [] });
 const store = new Map<string, unknown>([[DC, { v: 1, root: DOC_ROOT, members: [] }], [DOC_ROOT, DOC]]);
 const readClusterArtifact = (d: string) => store.get(d);
+/** register-with-required-governance-policy: the registrar's governed-continuity policy is
+ *  REQUIRED and closed for this revision, so every registration threads the canonical governed
+ *  set + the store reader (these clusters declare no governed traits, so the endpoint governance
+ *  head just stays empty). */
+const regSvc = (kvArg: KV, a: Omit<Parameters<typeof registerServiceInstance>[1], "readClusterArtifact" | "governedTraitUrns">) =>
+  registerServiceInstance(kvArg, { ...a, readClusterArtifact, governedTraitUrns: GOVERNED_TRAIT_URNS });
 
 /** In-process KV stub carrying the registration the PROVISIONER authorizes against — the
  *  broker's job in this smoke is enforcing the minted ROWS; the registry read itself is the
@@ -215,7 +221,7 @@ try {
   const svcSpec = { endpoint: "manager", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
   // The provisioner-created gate (§13.1) the registration barrier writes behind: open, pre-registration.
   const regGate = makeGate({ endpoint: "manager", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: NAR });
-  const reg = await registerServiceInstance(kv, { space, spec: svcSpec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: regGate.barrier });
+  const reg = await regSvc(kv, { space, spec: svcSpec, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: regGate.barrier });
   c("registration ran the barrier: it froze+reopened the gate at the new registrationRevision",
     regGate.coord().state === "open" && regGate.coord().registrationRevision === reg.registrationRevision && regGate.coord().generation === 1);
   const serveGrant = await authorizeServeGrant(kv, {
@@ -367,11 +373,11 @@ try {
     const authority2: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
     const spec2 = { endpoint: "reg2", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg2", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
-    const r1 = await registerServiceInstance(kv2, { space, spec: spec2, instanceId: IID, registrant: { owner: "u_op" }, authority: authority2, barrier: g.barrier });
+    const r1 = await regSvc(kv2, { space, spec: spec2, instanceId: IID, registrant: { owner: "u_op" }, authority: authority2, barrier: g.barrier });
     const grant2 = await authorizeServeGrant(kv2, { space, endpoint: "reg2", instanceId: IID, epoch: EPOCH, holder: { owner: "u_op" }, authority: authority2, readProcessEpoch: () => EPOCH, readClusterArtifact });
     await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: grant2, serveIssuance: g.seam });
     c("a serve credential minted against the current registration is ACTIVE on the gate", g.active() === 1 && g.revoked() === 0);
-    const r2 = await registerServiceInstance(kv2, { space, spec: spec2, instanceId: IID, registrant: { owner: "u_op" }, authority: authority2, barrier: g.barrier });
+    const r2 = await regSvc(kv2, { space, spec: spec2, instanceId: IID, registrant: { owner: "u_op" }, authority: authority2, barrier: g.barrier });
     c("re-registration through the REAL writer revoked + VERIFIED-evicted the superseded credential and advanced the gate",
       g.active() === 0 && g.revoked() === 1 && g.evicted.includes("u_op.mgr") && g.coord().registrationRevision === r2.registrationRevision && r2.registrationRevision > r1.registrationRevision);
     await rejects("STALE-SURFACE probe closed: a mint from the pre-re-registration artifact now refuses (registrationRevision advanced)",
@@ -386,34 +392,34 @@ try {
     const spec3 = { endpoint: "reg3", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const nullBarrier: EpIssuanceBarrier = { observe: () => null, freeze: () => { throw new Error("unreached"); }, enumerate: () => [], revoke: () => {}, evict: () => { throw new Error("unreached"); }, reopen: () => { throw new Error("unreached"); } };
     await rejects("registration against a MISSING gate refuses failed-precondition (the provisioner creates the gate)",
-      () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: nullBarrier }), "failed-precondition");
+      () => regSvc(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: nullBarrier }), "failed-precondition");
     const gfrozen = makeGate({ endpoint: "reg3", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
     gfrozen.freezeNow();
     await rejects("registration against a FROZEN gate refuses conflict (another barrier holds the key)",
-      () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gfrozen.barrier }), "conflict");
+      () => regSvc(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gfrozen.barrier }), "conflict");
     const gretired = makeGate({ endpoint: "reg3", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
     gretired.retire();
     await rejects("registration against a RETIRED gate refuses failed-precondition (permanently closed, a re-read cannot help)",
-      () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gretired.barrier }), "failed-precondition");
+      () => regSvc(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gretired.barrier }), "failed-precondition");
     const glost = makeGate({ endpoint: "reg3", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
     const lostBarrier: EpIssuanceBarrier = { ...glost.barrier, freeze: () => null };
     await rejects("registration whose freeze LOSES the CAS refuses conflict (a concurrent barrier won the key)",
-      () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: lostBarrier }), "conflict");
+      () => regSvc(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: lostBarrier }), "conflict");
     // cross-space registration refusal (mirror the mint-side crossSpace probe): the `(space, endpoint,
     // instanceId)` gate-identity check is not mint-only - a gate constructed for ANOTHER space refuses a
     // registration too, so a composition mixup can't drive a space-A registration through a space-B gate.
     const gCrossSpace = makeGate({ space: "otherspace", endpoint: "reg3", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
     await rejects("registration against a gate for ANOTHER space refuses internal (full (space, endpoint, instance) identity, §13.1)",
-      () => registerServiceInstance(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gCrossSpace.barrier }), "internal");
+      () => regSvc(kv3, { space, spec: spec3, instanceId: IID, registrant: { owner: "u_op" }, authority: auth3, barrier: gCrossSpace.barrier }), "internal");
     // abort path: a re-registration that fails ownership stability AFTER the freeze must reopen.
     const authAcme: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_acme", revision: 0 }) };
     const specAcme = { endpoint: "com.acme.reg", owner: "u_acme", clusterDigests: [DC], protocol: { v: 1 as const } };
     const gabort = makeGate({ endpoint: "com.acme.reg", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
-    await registerServiceInstance(kv3, { space, spec: specAcme, instanceId: IID, registrant: { owner: "u_acme" }, authority: authAcme, barrier: gabort.barrier });
+    await regSvc(kv3, { space, spec: specAcme, instanceId: IID, registrant: { owner: "u_acme" }, authority: authAcme, barrier: gabort.barrier });
     const openCoord = gabort.coord();
     const authEvil: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_evil", revision: 0 }) };
     await rejects("a re-registration changing ownership is rejected AFTER the freeze (ownership stability)",
-      () => registerServiceInstance(kv3, { space, spec: { ...specAcme, owner: "u_evil" }, instanceId: IID, registrant: { owner: "u_evil" }, authority: authEvil, barrier: gabort.barrier }), "permission-denied");
+      () => regSvc(kv3, { space, spec: { ...specAcme, owner: "u_evil" }, instanceId: IID, registrant: { owner: "u_evil" }, authority: authEvil, barrier: gabort.barrier }), "permission-denied");
     const afterAbort = gabort.coord();
     c("the aborted registration restored the gate to OPEN at the ORIGINAL coordinate (freeze happened, reopen-on-abort ran, revision advanced)",
       afterAbort.state === "open" && afterAbort.registrationRevision === openCoord.registrationRevision
@@ -462,7 +468,7 @@ try {
     const spec4 = { endpoint: "reg4", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg4", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
     await rejects("an AMBIGUOUS spec-write (committed then ack lost) is unavailable, never a definite no-write",
-      () => registerServiceInstance(flakyKv, { space, spec: spec4, instanceId: IID, registrant: { owner: "u_op" }, authority: auth4, barrier: g.barrier }), "unavailable");
+      () => regSvc(flakyKv, { space, spec: spec4, instanceId: IID, registrant: { owner: "u_op" }, authority: auth4, barrier: g.barrier }), "unavailable");
     c("…and the gate is left FROZEN for reconciliation (never reopened at the old coordinate → no stale-surface release)", g.coord().state === "frozen");
   }
   // VERIFIED EVICTION is fail-closed: a re-registration whose cluster-wide eviction cannot be
@@ -472,13 +478,13 @@ try {
     const auth5: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
     const spec5 = { endpoint: "reg5", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg5", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
-    await registerServiceInstance(kv5, { space, spec: spec5, instanceId: IID, registrant: { owner: "u_op" }, authority: auth5, barrier: g.barrier });
+    await regSvc(kv5, { space, spec: spec5, instanceId: IID, registrant: { owner: "u_op" }, authority: auth5, barrier: g.barrier });
     const grant5 = await authorizeServeGrant(kv5, { space, endpoint: "reg5", instanceId: IID, epoch: EPOCH, holder: { owner: "u_op" }, authority: auth5, readProcessEpoch: () => EPOCH, readClusterArtifact });
     await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: grant5, serveIssuance: g.seam });
     const rrBefore = g.coord().registrationRevision;
     g.setEvictOk(false); // cluster-wide eviction cannot be verified gone
     await rejects("re-registration whose VERIFIED EVICTION fails leaves the gate frozen, no new spec (fail-closed, §13.1)",
-      () => registerServiceInstance(kv5, { space, spec: spec5, instanceId: IID, registrant: { owner: "u_op" }, authority: auth5, barrier: g.barrier }), "unavailable");
+      () => regSvc(kv5, { space, spec: spec5, instanceId: IID, registrant: { owner: "u_op" }, authority: auth5, barrier: g.barrier }), "unavailable");
     c("…and the gate stayed FROZEN at the OLD registrationRevision (old authority is never published-over)",
       g.coord().state === "frozen" && g.coord().registrationRevision === rrBefore);
   }
@@ -492,7 +498,7 @@ try {
     const spec7 = { endpoint: "reg7", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg7", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 4 }); // a completed transfer left the gate at 4
     await rejects("registration refuses when the frozen gate's nameAuthorityRevision drifted past the authority's (a transfer raced the registration writer)",
-      () => registerServiceInstance(kv7, { space, spec: spec7, instanceId: IID, registrant: { owner: "u_op" }, authority: auth7, barrier: g.barrier }), "conflict");
+      () => regSvc(kv7, { space, spec: spec7, instanceId: IID, registrant: { owner: "u_op" }, authority: auth7, barrier: g.barrier }), "conflict");
     c("…and the racy registration wrote nothing: the gate reopened at its ORIGINAL coordinate",
       g.coord().state === "open" && g.coord().nameAuthorityRevision === 4 && g.coord().registrationRevision === 0);
   }
@@ -504,12 +510,12 @@ try {
     const auth8: ServiceNameAuthority = { authorize: (_n, o) => ({ authorized: o === "u_op", revision: 0 }) };
     const spec8 = { endpoint: "reg8", owner: "u_op", clusterDigests: [DC], protocol: { v: 1 as const } };
     const g = makeGate({ endpoint: "reg8", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: 0 });
-    await registerServiceInstance(kv8, { space, spec: spec8, instanceId: IID, registrant: { owner: "u_op" }, authority: auth8, barrier: g.barrier });
+    await regSvc(kv8, { space, spec: spec8, instanceId: IID, registrant: { owner: "u_op" }, authority: auth8, barrier: g.barrier });
     const grant8 = await authorizeServeGrant(kv8, { space, endpoint: "reg8", instanceId: IID, epoch: EPOCH, holder: { owner: "u_op" }, authority: auth8, readProcessEpoch: () => EPOCH, readClusterArtifact });
     await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: grant8, serveIssuance: g.seam }); // active row: u_op.mgr
     const co = g.coord();
     g.seam.stage({ credentialId: "sha256:" + "b".repeat(64), credentialKey: newIdentity().id, holderPrincipal: "u_op.old", endpoint: "reg8", lifecycleUid: IID, sourceChain: ["root"], state: "revoked", generation: co.generation, processEpoch: EPOCH, registrationRevision: co.registrationRevision, nameAuthorityRevision: 0 }); // already-revoked leftover
-    await registerServiceInstance(kv8, { space, spec: spec8, instanceId: IID, registrant: { owner: "u_op" }, authority: auth8, barrier: g.barrier });
+    await regSvc(kv8, { space, spec: spec8, instanceId: IID, registrant: { owner: "u_op" }, authority: auth8, barrier: g.barrier });
     c("re-registration verified-evicts the distinct principals of the FULL family, including an ALREADY-revoked row's principal (a partial-barrier leftover)",
       g.evicted.includes("u_op.mgr") && g.evicted.includes("u_op.old"));
   }

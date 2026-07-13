@@ -82,6 +82,22 @@ export const LIFECYCLE_HEAD: RecordKindDef = {
   mediation: "mediated",
 };
 
+/** The endpoint-wide GOVERNANCE HEAD (§13.7 "a self-published descriptor cannot strip, forge,
+ *  or downgrade a governed annotation"): `govern.<endpoint>` — ONE atomic unsplit key holding
+ *  the endpoint's MONOTONIC (append-only) governed-trait imposition per command. Governance is
+ *  a HISTORY-bearing, endpoint-wide property, not a per-instance descriptor state: once an
+ *  authority governs (endpoint, command) with a trait, that imposition persists across
+ *  instances AND across command removal (a tombstone), until an authorized revocation (the
+ *  D18 governance-consent artifact) lifts it. The registrar reads+CAS-extends this head so a
+ *  re-registration, a fresh instanceId, and a remove→re-add cannot launder a strip. */
+export const GOVERN_HEAD: RecordKindDef = {
+  kind: "govern",
+  qualifiers: [qEndpoint],
+  split: false,
+  writers: { spec: "provisioner-registration", status: "provisioner-registration" },
+  mediation: "mediated",
+};
+
 /** The §13.7 core kinds, pinned. Keys: `<kind>.<qualifiers…>` then `.spec`/`.status`. */
 export const RECORD_KINDS: Record<string, RecordKindDef> = {
   svc: {
@@ -147,7 +163,7 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
 };
 
 const registry = new Map<string, RecordKindDef[]>();
-for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD]) {
+for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, GOVERN_HEAD]) {
   const list = registry.get(def.kind) ?? [];
   list.push(def);
   registry.set(def.kind, list);

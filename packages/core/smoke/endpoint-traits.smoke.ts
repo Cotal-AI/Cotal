@@ -229,6 +229,22 @@ await rejects("an artifact that does not JSON-serialize refuses at the entry sna
     cyc.sig = "A".repeat(86);
     return verifyTraitAttachment(cyc, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
   });
+// The snapshot is the STRICT RFC 8785 / I-JSON path, NOT `JSON.stringify` (finding: a lenient
+// stringify SILENTLY DROPS an unsigned `undefined` property and coerces non-finite, so the
+// snapshot would verify a NORMALIZED artifact and launder D28). An `undefined` property added
+// AFTER signing refuses against the exact raw AND at the snapshot; the strict path never drops it.
+{
+  const undefRaw = signArtifact(attBody(), opKp) as Record<string, unknown>;
+  (undefRaw.value as Record<string, unknown>).unsignedExtra = undefined; // JSON.stringify would drop this and pass the clean value
+  await rejects("an unsigned `undefined` property added post-sign refuses at the STRICT snapshot (a lenient stringify would drop it and launder the signature)",
+    () => verifyTraitAttachment(undefRaw, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact }));
+}
+await rejects("a non-finite number anywhere in a signed artifact refuses at the strict snapshot (never coerced to null)",
+  () => {
+    const nf = signArtifact(attBody(), opKp) as Record<string, unknown>;
+    (nf.value as Record<string, unknown>).n = Infinity;
+    return verifyTraitAttachment(nf, { definition: defGuarded, expect: expectLaunch, resolveAnchor, readArtifact });
+  });
 
 // ── live broker: registration → serve grant → governed surface → the pre-effect gate ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -522,6 +538,30 @@ try {
   });
   c("removing the whole command (not stripping its trait) re-registers and verifies",
     surfaceV4.commands["launch"] === undefined && surfaceV4.commands["both"]?.[TRAIT_GUARDED] !== undefined);
+
+  // REMOVE->RE-ADD LAUNDER (panel HIGH-2b): V4 removed launch; re-adding it UNGATED must still
+  // refuse. A per-instance head compare would pass (V4's head has no launch governance to carry),
+  // but the ENDPOINT-WIDE governance head keeps launch's imposition as a TOMBSTONE, so the
+  // two-step launder is caught. Re-adding it GUARDED (carrying the imposition) registers cleanly.
+  const DC_VAULT5 = register(vaultDoc(5, VAULT_CMDS_V3)); // launch re-added, ungated
+  await rejects("REMOVE->RE-ADD launder: re-adding a removed command UNGATED refuses (endpoint governance tombstone, not the per-instance head)",
+    () => reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT5], protocol: { v: 1 } }, IID), "permission-denied");
+  const DC_VAULT6 = register(vaultDoc(6, VAULT_CMDS.map((m) => ({ ...m })))); // launch re-added, guarded
+  await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT6], protocol: { v: 1 } }, IID);
+  c("re-adding a removed command WITH its governance (carrying the imposition) registers cleanly", true);
+
+  // FRESH-INSTANCE STRIP (panel HIGH-2a): a DIFFERENT instanceId of the SAME endpoint declaring
+  // launch UNGATED has no prior per-instance head of its own, so a per-instance compare would skip
+  // the check entirely; the endpoint-wide governance head refuses it. Governance cannot disappear
+  // by choosing a fresh instance id.
+  const IID2 = "d".repeat(26);
+  const DC_VAULT_FRESH = register(vaultDoc(7, VAULT_CMDS_V3)); // launch ungated
+  await rejects("FRESH-INSTANCE strip: a new instanceId of the same endpoint declaring launch UNGATED refuses (endpoint-wide governance, no per-instance head to skip)",
+    () => reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT_FRESH], protocol: { v: 1 } }, IID2), "permission-denied");
+  const DC_VAULT_FRESH_OK = register(vaultDoc(7, VAULT_CMDS.map((m) => ({ ...m })))); // launch guarded
+  await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT_FRESH_OK], protocol: { v: 1 } }, IID2);
+  c("a fresh instance that CARRIES the endpoint's governance registers (a second contract-homogeneous instance)", true);
+
   await rejects("a governed surface for a SUPERSEDED registration revision refuses at construction (a re-registration demands a fresh verification)",
     async () => serveEndpoint(nc, SPACE, grantV4, ["charge", "both", "free"].map(defFor), { public: true }, { traits: { governed: surfaceV1, guard, verifyPaymentProof } }));
 

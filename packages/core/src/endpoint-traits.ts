@@ -23,7 +23,7 @@
  * Non-governed traits are unsigned vocabulary: declared in the cluster document, carried
  * in describe, never gated here.
  */
-import { contractDigest, isContractDigest } from "./canonical.js";
+import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { ContractInvalidError, compileContract } from "./schema-profile.js";
 import { verifyClusterManifest, isReverseDnsUrn } from "./endpoint-cluster.js";
@@ -104,20 +104,28 @@ function invalid(what: string): never {
   throw new ContractInvalidError(`trait artifact does not validate: ${what}`);
 }
 
-/** Deep-copy a received artifact into a PRIVATE, deep-frozen JSON snapshot BEFORE any await:
- *  the parse, the signature, the value-schema validation, and the brand must all attest the
- *  SAME bytes. A parsed artifact that aliases caller-reachable objects (`att.value` ←
- *  `raw.value`) can otherwise be mutated DURING the awaited anchor/schema reads AFTER the
- *  signature verified — branding a value nobody signed (finding: signed "warden", branded
- *  "evil"). The JSON round-trip yields plain JSON data only, which `deepFreeze` genuinely
- *  locks (a frozen Date/Map keeps internal mutability), and matches the wire semantics the
- *  D28 canonical form covers; an artifact that does not JSON-serialize refuses. */
+/** Deep-copy a received artifact into a PRIVATE, deep-frozen snapshot BEFORE any await: the
+ *  parse, the signature, the value-schema validation, and the brand must all attest the SAME
+ *  bytes. A parsed artifact that aliases caller-reachable objects (`att.value` ← `raw.value`)
+ *  can otherwise be mutated DURING the awaited anchor/schema reads AFTER the signature verified
+ *  — branding a value nobody signed (finding: signed "warden", branded "evil").
+ *
+ *  The snapshot is built through the STRICT RFC 8785 / I-JSON canonical path
+ *  ({@link canonicalJson}), NOT `JSON.stringify`: `JSON.stringify` is a LENIENT projection that
+ *  silently DROPS `undefined`/function/symbol object properties and coerces non-finite numbers
+ *  to `null`, so snapshotting through it would verify the signature over a NORMALIZED artifact
+ *  rather than the exact received bytes — the same D28 field-dropping class the 2c6d071 fold
+ *  closed for nested `{keyId}` (finding: an unsigned `value.unsignedExtra: undefined` that
+ *  refuses against the exact raw would ride once `JSON.stringify` drops it). `canonicalJson`
+ *  THROWS on any non-interchangeable value (undefined anywhere, non-finite number, lone
+ *  surrogate), so a non-I-JSON artifact REFUSES here instead of being normalized; and the
+ *  snapshot's canonical form is byte-identical to what {@link verifyArtifactSignature} checks. */
 function snapshotArtifact(raw: unknown, what: string): Record<string, unknown> {
   let copy: unknown;
   try {
-    copy = JSON.parse(JSON.stringify(raw));
+    copy = JSON.parse(canonicalJson(raw));
   } catch (e) {
-    invalid(`${what} does not JSON-serialize (${(e as Error)?.message ?? String(e)}); a signed artifact is plain JSON data (SPEC 13.10)`);
+    invalid(`${what} is not strict interchangeable JSON (${(e as Error)?.message ?? String(e)}); a signed artifact must canonicalize exactly, never through a value-dropping projection (SPEC 13.10 D28)`);
   }
   if (!isRec(copy)) invalid(`${what} is not an object`);
   return deepFreeze(copy);

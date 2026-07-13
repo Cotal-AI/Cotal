@@ -18,8 +18,8 @@ import {
 } from "./endpoint-subjects.js";
 import { EpEnvelopeError, type EpClass } from "./endpoint-envelope.js";
 import {
-  RECORD_KINDS, recordSpecKey, recordStatusKey, readRecord,
-  createRecordEntry, updateRecordEntry, assertStatusValue,
+  RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord,
+  createRecordEntry, updateRecordEntry, assertStatusValue, isCasLoss,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 
@@ -193,38 +193,107 @@ async function readGovernedDeclarations(
 }
 
 /** Governed-continuity at the mediated registration write (§13.7: removal/downgrade is an
- *  AUTHORIZED contract revision). A SURVIVING command (present in both revisions) may not DROP a
- *  governed trait it declared: a self-published descriptor cannot strip an authority-imposed
- *  annotation. A command REMOVED entirely (absent from the new command set), a NEW command, and
- *  an ADDED trait are all fine. This is the trusted, unforgeable strip defense - the prior
- *  declarations come from the registry, not a caller argument. (The narrower "authority AUTHORIZES
- *  stopping governance on a surviving command" path needs the authority's own consent artifact,
- *  the D18 governance record; until then a trait can be removed only by removing its command,
- *  fail-closed.) */
+ *  AUTHORIZED contract revision). For every command the NEW spec DECLARES, its governed-trait
+ *  set must be a SUPERSET of the endpoint's recorded governance for that command: a
+ *  self-published descriptor cannot strip an authority-imposed annotation. A command the new
+ *  spec does NOT declare (removed) keeps its recorded governance as a TOMBSTONE (so a later
+ *  re-add ungoverned still refuses) but does not itself refuse here; a NEW command and an ADDED
+ *  trait are fine.
+ *
+ *  `prior` is the ENDPOINT-WIDE governance head ({@link readEndpointGovernance}), NOT a single
+ *  instance's prior spec: a per-instance head compare is defeated by three launder paths a
+ *  history-bearing endpoint record closes — a FRESH instanceId (no prior head of its own), a
+ *  REMOVE→RE-ADD across two revisions (the intermediate head carries no governance), and the
+ *  optional-policy omission. (The "authority AUTHORIZES stopping governance" path needs the
+ *  authority's own consent artifact, the D18 governance-consent record; until then a governed
+ *  trait can be lifted by no owner-driven path at all, fail-closed.) */
 function assertGovernedDeclarationContinuity(prior: Map<string, Set<string>>, next: Map<string, Set<string>>): void {
   for (const [command, priorTraits] of prior) {
     if (priorTraits.size === 0) continue; // was un-governed - nothing to carry forward
     const nextTraits = next.get(command);
-    if (nextTraits === undefined) continue; // the command itself was removed - not a governance strip
+    if (nextTraits === undefined) continue; // the command is not declared by the new spec (removed) - tombstone persists, not a strip
     for (const urn of priorTraits)
       if (!nextTraits.has(urn))
-        throw new EpEnvelopeError("permission-denied", `re-registration drops governed trait "${urn}" from surviving command "${command}"; a self-published descriptor cannot strip an authority-imposed annotation - remove the command, or land an authority-authorized revision (SPEC 13.7)`);
+        throw new EpEnvelopeError("permission-denied", `registration drops governed trait "${urn}" from command "${command}", which the endpoint's governance record still imposes; a self-published descriptor cannot strip an authority-imposed annotation via re-registration, a fresh instance, or a remove-then-re-add - land an authority-authorized revision (SPEC 13.7)`);
   }
+}
+
+/** The `govern.<endpoint>` value: the endpoint's monotonic governed-trait imposition per command
+ *  (sorted URNs for a deterministic canonical form). Absent = no command on this endpoint has
+ *  ever been governed. */
+interface EndpointGovernance {
+  commands: Record<string, string[]>;
+}
+
+function parseEndpointGovernance(raw: unknown, key: string): Map<string, Set<string>> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || !("commands" in raw))
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} is not a { commands } record; garbled mediated governance state never authorizes (SPEC 13.7)`);
+  const commands = (raw as { commands: unknown }).commands;
+  if (commands === null || typeof commands !== "object" || Array.isArray(commands))
+    throw new EpEnvelopeError("internal", `the endpoint governance head ${key} has a non-object commands map; garbled mediated governance state never authorizes (SPEC 13.7)`);
+  const out = new Map<string, Set<string>>();
+  for (const [command, urns] of Object.entries(commands as Record<string, unknown>)) {
+    if (!Array.isArray(urns) || !urns.every((u) => typeof u === "string" && u.length > 0))
+      throw new EpEnvelopeError("internal", `the endpoint governance head ${key} maps command "${command}" to a non-string-array; garbled state never authorizes (SPEC 13.7)`);
+    out.set(command, new Set(urns as string[]));
+  }
+  return out;
+}
+
+/** Read the endpoint-wide governance head fresh under the frozen gate (a KV get, not a fence):
+ *  the map of command -> imposed governed URNs, plus the store `revision` the extend-write must
+ *  CAS against (`null` = the head does not exist yet). A garbled head fails loud (`internal`),
+ *  never an empty-map fail-open. */
+async function readEndpointGovernance(kv: KV, endpoint: string): Promise<{ commands: Map<string, Set<string>>; revision: number | null }> {
+  const key = recordAtomicKey(GOVERN_HEAD, [endpoint]);
+  const entry = await kv.get(key);
+  if (!entry || entry.operation !== "PUT")
+    return { commands: new Map(), revision: null };
+  return { commands: parseEndpointGovernance(decodeJson(entry.value, key), key), revision: entry.revision };
+}
+
+/** Union the new spec's governed declarations into the endpoint governance (monotonic: a
+ *  governed trait is only ever ADDED, never dropped). Returns the merged map and whether it
+ *  differs from `prior` (no write when a plain re-registration adds no governance). */
+function mergeEndpointGovernance(prior: Map<string, Set<string>>, next: Map<string, Set<string>>): { merged: Map<string, Set<string>>; changed: boolean } {
+  const merged = new Map<string, Set<string>>();
+  for (const [command, urns] of prior) merged.set(command, new Set(urns));
+  let changed = false;
+  for (const [command, urns] of next) {
+    if (urns.size === 0) continue; // un-governed commands are not recorded (only impositions)
+    const into = merged.get(command) ?? new Set<string>();
+    for (const urn of urns) if (!into.has(urn)) { into.add(urn); changed = true; }
+    merged.set(command, into);
+  }
+  return { merged, changed };
+}
+
+function serializeEndpointGovernance(commands: Map<string, Set<string>>): EndpointGovernance {
+  const out: Record<string, string[]> = {};
+  for (const [command, urns] of commands) if (urns.size > 0) out[command] = [...urns].sort();
+  return { commands: out };
 }
 
 export async function registerServiceInstance(
   kv: KV,
   args: {
     space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier;
-    /** Governed-continuity seam (§13.7), wired by the trusted registrar: the content-store reader
-     *  and the governed trait URNs. When both are present, a re-registration that STRIPS a governed
-     *  trait from a surviving command refuses (the prior declarations are read from the mediated
-     *  registry, never a caller argument, so the strip defense is unforgeable). Omitted on the first
-     *  registration path / non-governed registries. */
-    readClusterArtifact?: (digest: string) => Promise<unknown> | unknown;
-    governedTraitUrns?: readonly string[];
+    /** Governed-continuity policy (§13.7), REQUIRED and closed for this revision — never an
+     *  optional seam a careless (or colluding) registrar can omit, pass empty, or subset to
+     *  narrow the protected set (that would be the `previous:null` escape moved to policy
+     *  wiring). `readClusterArtifact` is the content-store reader; `governedTraitUrns` is the
+     *  canonical governed set (this revision governs exactly guarded+priced) — the trusted
+     *  composition root supplies {@link GOVERNED_TRAIT_URNS}, and the same set MUST feed
+     *  serve-side enforcement, so governance is structural, not a wiring-discipline hope. The
+     *  registrar reads the ENDPOINT-WIDE governance head, refuses a strip, then CAS-extends it. */
+    readClusterArtifact: (digest: string) => Promise<unknown> | unknown;
+    governedTraitUrns: readonly string[];
   },
 ): Promise<{ registrationRevision: number }> {
+  if (typeof args.readClusterArtifact !== "function")
+    throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a content-store reader (readClusterArtifact); governed-continuity is not an optional seam (SPEC 13.7)");
+  if (!Array.isArray(args.governedTraitUrns) || args.governedTraitUrns.length === 0)
+    throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a non-empty governedTraitUrns set (the canonical governed traits, GOVERNED_TRAIT_URNS); an empty/omitted policy is the previous:null strip escape moved to wiring (SPEC 13.7)");
   spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
   assertBoundedOwner(args.registrant.owner, "registrant owner");
@@ -267,6 +336,7 @@ export async function registerServiceInstance(
   //    freeze this same gate (it can't) or would leave the gate at a different coordinate, so a
   //    mismatch is a raced transfer — a loud `conflict`, never a stale-owner registration.
   let current: Awaited<ReturnType<KV["get"]>>;
+  const govKey = recordAtomicKey(GOVERN_HEAD, [spec.endpoint]);
   try {
     const authorizedNameRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
     if (authorizedNameRevision !== obs.nameAuthorityRevision)
@@ -276,16 +346,29 @@ export async function registerServiceInstance(
       const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
       if (stored.owner !== spec.owner)
         throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
-      // §13.7 governed-continuity, under the frozen gate against the TRUSTED prior spec (this
-      // read-only phase reopens the gate on any failure). A re-registration cannot strip an
-      // authority-governed trait from a surviving command; the prior state is the registry's, not
-      // the owner's. A DEFINITE no-write, so it aborts cleanly like the ownership check above.
-      if (args.readClusterArtifact && args.governedTraitUrns && args.governedTraitUrns.length > 0) {
-        const prior = await readGovernedDeclarations(args.readClusterArtifact, stored.clusterDigests, args.governedTraitUrns);
-        if ([...prior.values()].some((s) => s.size > 0)) { // prior had governance to carry forward
-          const next = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests, args.governedTraitUrns);
-          assertGovernedDeclarationContinuity(prior, next);
-        }
+    }
+    // §13.7 ENDPOINT-WIDE governed-continuity, run on EVERY registration (a first registration
+    // included — that is where a fresh-instance strip is caught). Read the endpoint governance
+    // head + the NEW spec's governed declarations from digest-verified bytes, refuse a strip, then
+    // CAS-EXTEND the head with any newly-declared governance. The head is history-bearing and
+    // endpoint-wide, so it is not defeated by a fresh instanceId (no prior per-instance head), a
+    // remove→re-add (the intermediate head carries no governance), or the optional-policy escape
+    // (the policy is required above). All under the frozen gate; a failure here is a DEFINITE
+    // no-spec-write — a governance CAS loss is a raced endpoint registration (`conflict`), any
+    // other error is monotonic + pre-revoke so reopening and an idempotent retry are safe — so it
+    // reopens the ORIGINAL coordinate like the ownership check, never a half-published spec.
+    const gov = await readEndpointGovernance(kv, spec.endpoint);
+    const next = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests, args.governedTraitUrns);
+    assertGovernedDeclarationContinuity(gov.commands, next);
+    const { merged, changed } = mergeEndpointGovernance(gov.commands, next);
+    if (changed) {
+      try {
+        if (gov.revision === null) await createRecordEntry(kv, govKey, serializeEndpointGovernance(merged));
+        else await updateRecordEntry(kv, govKey, serializeEndpointGovernance(merged), gov.revision);
+      } catch (e) {
+        if (isCasLoss(e))
+          throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" extended its governance head first; re-read and re-decide (SPEC 13.7/13.8)`);
+        throw new EpEnvelopeError("unavailable", `the endpoint governance-head extend for "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens — governance is monotonic so a retry is idempotent (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
       }
     }
   } catch (err) {

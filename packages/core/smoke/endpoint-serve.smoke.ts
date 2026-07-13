@@ -27,7 +27,7 @@ import {
   registerServiceInstance, writeServiceStatus, freezeExpectedSet,
   authorizeServeGrant, assertServeGrantAuthorized,
   SERVICE_READY, SERVICE_EXITED,
-  serveEndpoint,
+  serveEndpoint, GOVERNED_TRAIT_URNS,
   compileContract, contractDigest, VOID_SCHEMA,
   parseClusterDocument, verifyClusterManifest, verifyClusterRoot,
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, RECORD_KINDS,
@@ -163,7 +163,7 @@ function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
 }
 /** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
 const reg = (kvArg: KV, args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority }) =>
-  registerServiceInstance(kvArg, { ...args, space: SPACE, barrier: barrierFor(args.spec.endpoint, args.instanceId) });
+  registerServiceInstance(kvArg, { ...args, space: SPACE, barrier: barrierFor(args.spec.endpoint, args.instanceId), readClusterArtifact, governedTraitUrns: GOVERNED_TRAIT_URNS });
 
 // ── name authority (broker-free; the authority read is async) ──
 c("a core name under the operator owner admits",
@@ -340,13 +340,18 @@ try {
   await rejects("TAMPERED root bytes (same digest key, invented 'stop') fail verification LOUD, never authorize",
     () => authorizeA(), "internal");
   store.set(rootMain, DOC_MAIN);
-  // A registered instance whose manifest VERIFIES but whose root artifact is absent: fail closed.
+  // A registered instance whose manifest VERIFIES but whose root artifact is absent AT SERVE
+  // AUTHORIZATION: fail closed. Registration reads the clusters for its §13.7 governance check, so
+  // the root must be present to register (the ghost command is un-governed, so nothing is recorded)
+  // — then the root is removed to model a store that lost it before the serve grant is authorized.
   const orphanDoc = { urn: "ai.cotal.orphan", revision: 1, attributes: [], events: [], commands: [cmd("ghost")] };
   const orphanRoot = contractDigest(orphanDoc);
   const orphanManifest = { v: 1, root: orphanRoot, members: [] as string[] };
   const orphanClosure = contractDigest(orphanManifest);
-  store.set(orphanClosure, orphanManifest); // manifest present, root deliberately NOT stored
+  store.set(orphanClosure, orphanManifest);
+  store.set(orphanRoot, orphanDoc); // readable at registration
   await reg(kv, { spec: { endpoint: "mgrorphan", owner: "u_op", clusterDigests: [orphanClosure], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  store.delete(orphanRoot); // the store loses the root before the serve grant is authorized
   await rejects("a manifest whose ROOT artifact is unreadable refuses (fail closed)",
     () => authorizeServeGrant(kv, { space: SPACE, endpoint: "mgrorphan", instanceId: IID_A, epoch: 1, holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact }), "failed-precondition");
   // An unreadable MANIFEST at the registered closure digest: fail closed.
