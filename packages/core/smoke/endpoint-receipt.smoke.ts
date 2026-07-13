@@ -1,10 +1,13 @@
 /**
  * v0.4 §13.10 RECEIPT smoke — the signed request→outcome binding: mint (digests computed from
- * the raw evidence), closed identity-bound parsing, create-only publication on the caller- and
- * execution-scoped subject (one execution, one receipt, forever — a different receipt on the
- * subject is a loud conflict), and verification (exact-raw D28 signature via the `receipts`
- * anchor role + endpoint scope + window, digest recomputation against presented args/result,
- * request-mismatch fails loud).
+ * the raw evidence), closed identity-bound parsing (caller evidence must name the subject's
+ * caller triple), create-only publication on the caller- and execution-scoped subject through
+ * the space-bonded store context (one execution, one receipt, forever — a different receipt on
+ * the subject is a loud conflict, and the published candidate is a detached entry snapshot),
+ * and UNCONDITIONAL verification (exact-raw D28 signature via the `receipts` anchor role +
+ * endpoint scope + window, PLUS mandatory digest recomputation from evidence read once at
+ * entry and compared before the anchor await; the explicitly weaker signature-only read is
+ * its own named operation).
  *
  * Run: pnpm smoke:ep-receipt   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -13,14 +16,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { createUser } from "@nats-io/nkeys";
 import {
   isReachable, EpEnvelopeError, contractDigest,
   createEndpointStreams,
-  mintReceipt, parseReceipt, publishReceipt, readReceipt, verifyReceipt, receiptSubject,
-  type EpCaller, type ReceiptRef, type Receipt, type SignerAnchor, type AnchorResolver,
+  mintReceipt, parseReceipt, publishReceipt, readReceipt, verifyReceipt, verifyReceiptSignature,
+  receiptSubject, receiptStoreContext,
+  type EpCaller, type ReceiptRef, type Receipt, type ReceiptStoreContext, type SignerAnchor, type AnchorResolver,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -45,6 +49,7 @@ const resolveAnchor: AnchorResolver = (keyId) => anchors.get(keyId);
 
 const ARGS = { image: "app:1", replicas: 3 };
 const RESULT = { deployed: true };
+const EVIDENCE = { args: ARGS, result: RESULT };
 const SCHEMAS = { input: contractDigest({ in: 1 }), output: contractDigest({ out: 1 }) };
 const mint = (over: Record<string, unknown> = {}): Receipt => mintReceipt({
   ref, space: SPACE, command: "deploy",
@@ -63,49 +68,82 @@ c("the receipt subject is caller- and execution-scoped",
 c("parse binds the receipt to its subject coordinates", parseReceipt(receipt as unknown as Record<string, unknown>, ref, SPACE).requestId === "req-1");
 await rejects("a receipt read under FOREIGN coordinates is rejected (request-mismatched receipts fail loud)",
   () => parseReceipt(receipt as unknown as Record<string, unknown>, { ...ref, requestId: "req-OTHER" }, SPACE), "internal");
+await rejects("a receipt whose CALLER EVIDENCE does not name its subject's caller triple never attests (forged attribution)",
+  () => parseReceipt(mint({ caller: { id: "u_evil.actor", lifecycleUid: UID } }) as unknown as Record<string, unknown>, ref, SPACE), "internal");
 {
-  const verified = await verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: { args: ARGS, result: RESULT } });
+  const verified = await verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE });
   c("a genuine receipt verifies: exact-raw signature + full digest recomputation", verified.outcome.ok === true);
 }
+// §13.10 is UNCONDITIONAL: signature PLUS digest recomputation. Evidence is mandatory.
+await rejects("verification WITHOUT evidence refuses (signature + digest recomputation are both mandatory, SPEC 13.10)",
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor } as unknown as Parameters<typeof verifyReceipt>[1]), "failed-precondition");
+await rejects("a receipt attesting a result REQUIRES the result evidence (verification recomputes every digest carried)",
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: { args: ARGS } }), "failed-precondition");
 await rejects("a receipt whose argsDigest does not recompute from the presented args fails loud",
-  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: { args: { image: "app:1", replicas: 999 } } }), "permission-denied");
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: { args: { image: "app:1", replicas: 999 }, result: RESULT } }), "permission-denied");
 await rejects("a receipt whose resultDigest does not recompute from the presented result fails loud",
-  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: { result: { deployed: false } }, }), "permission-denied");
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: { args: ARGS, result: { deployed: false } } }), "permission-denied");
 {
   const noResult = mint({ result: undefined });
   await rejects("a receipt with NO resultDigest cannot attest a presented result",
-    () => verifyReceipt(noResult, { ref, space: SPACE, resolveAnchor, recompute: { result: RESULT } }), "permission-denied");
+    () => verifyReceipt(noResult, { ref, space: SPACE, resolveAnchor, recompute: { args: ARGS, result: RESULT } }), "permission-denied");
 }
 {
   const tampered = { ...receipt, outcome: { ok: false } };
   await rejects("a TAMPERED receipt (outcome flipped after signing) fails its signature",
-    () => verifyReceipt(tampered, { ref, space: SPACE, resolveAnchor }), "permission-denied");
+    () => verifyReceipt(tampered, { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE }), "permission-denied");
 }
 await rejects("a receipt signed by a key whose `receipts` scope does not cover the endpoint fails",
-  () => verifyReceipt(mint({ signer: { keyId: "narrow-1" } }), { ref, space: SPACE, resolveAnchor }), "permission-denied");
+  () => verifyReceipt(mint({ signer: { keyId: "narrow-1" } }), { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE }), "permission-denied");
 await rejects("a receipt naming an UNKNOWN signing key fails closed",
-  () => verifyReceipt(mint({ signer: { keyId: "ghost" } }), { ref, space: SPACE, resolveAnchor }), "permission-denied");
+  () => verifyReceipt(mint({ signer: { keyId: "ghost" } }), { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE }), "permission-denied");
 await rejects("a receipt signed OUTSIDE the anchor's validity window fails",
-  () => verifyReceipt(mint({ ts: NOW + 20_000_000 }), { ref, space: SPACE, resolveAnchor }), "permission-denied");
+  () => verifyReceipt(mint({ ts: NOW + 20_000_000 }), { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE }), "permission-denied");
 await rejects("a garbled receipt (unknown field) never attests",
   () => parseReceipt({ ...receipt, rogue: 1 }, ref, SPACE), "internal");
 await rejects("a STUCK anchor registry is a bounded unavailable refusal, never a hung verification",
-  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor: () => new Promise(() => { /* never settles */ }), verifyBudgetMs: 100 }), "unavailable");
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor: () => new Promise(() => { /* never settles */ }), recompute: EVIDENCE, verifyBudgetMs: 100 }), "unavailable");
 await rejects("a non-positive verifyBudgetMs refuses",
-  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, verifyBudgetMs: 0 }), "failed-precondition");
+  () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE, verifyBudgetMs: 0 }), "failed-precondition");
 {
-  // TOCTOU: a caller mutating the receipt DURING the awaited anchor resolution cannot split the
-  // parsed value from what the D28 signature verifies — the raw is snapshotted at entry.
+  // TOCTOU (artifact half): a caller mutating the receipt DURING the awaited anchor resolution
+  // cannot split the parsed value from what the D28 signature verifies — the raw is
+  // snapshotted at entry.
   const r = { ...mint() } as Record<string, unknown>;
   const verified = await verifyReceipt(r, {
-    ref, space: SPACE,
+    ref, space: SPACE, recompute: EVIDENCE,
     resolveAnchor: (kid: string) => new Promise<SignerAnchor | undefined>((res) => { r.argsDigest = "sha256:tampered"; setTimeout(() => res(anchors.get(kid)), 20); }),
   });
   c("a mid-verification receipt mutation does NOT break verification (the raw artifact is snapshotted at entry)",
     verified.requestId === "req-1" && verified.sourceSeq === 42);
 }
+{
+  // TOCTOU (proof half): the presented evidence is read ONCE and digested at ENTRY, and the
+  // comparison runs BEFORE the anchor await — wrong-at-entry proof values refuse even if the
+  // caller would "fix" them during the anchor resolution (which is never reached).
+  let resolverCalled = false;
+  const evidence = { args: { image: "app:1", replicas: 999 }, result: RESULT };
+  await rejects("wrong-at-entry proof values refuse BEFORE the anchor is ever consulted (digests are entry-time detached scalars)",
+    () => verifyReceipt(receipt, {
+      ref, space: SPACE, recompute: evidence,
+      resolveAnchor: (kid: string) => { resolverCalled = true; evidence.args = ARGS; return anchors.get(kid); },
+    }), "permission-denied");
+  c("…and the anchor resolver was never invoked (digest recomputation precedes it)", !resolverCalled);
+  let argsReads = 0;
+  const shifty = { get args() { return argsReads++ === 0 ? ARGS : { evil: 1 }; }, result: RESULT };
+  c("a shifting evidence getter binds exactly the FIRST-read value (single-read at entry)",
+    (await verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: shifty })).outcome.ok === true && argsReads === 1);
+}
+{
+  // The explicitly WEAKER signature-only read: authenticity + coordinates, no digest claims.
+  const authentic = await verifyReceiptSignature(receipt, { ref, space: SPACE, resolveAnchor });
+  c("verifyReceiptSignature proves authenticity WITHOUT evidence (the deliberately weaker, separately named read)",
+    authentic.requestId === "req-1");
+  await rejects("…and a tampered receipt still fails its signature there",
+    () => verifyReceiptSignature({ ...receipt, outcome: { ok: false } }, { ref, space: SPACE, resolveAnchor }), "permission-denied");
+}
 
-// ── create-only publication: one execution, one receipt, forever ──
+// ── create-only publication through the space-bonded context: one execution, one receipt ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-eprcpt-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -114,22 +152,37 @@ try {
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(`nats://127.0.0.1:${PORT}`); if (!up) await wait(100); }
   if (!up) throw new Error("broker did not come up");
   const nc = await connect({ servers: `nats://127.0.0.1:${PORT}` });
-  const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
+  const ctx = await receiptStoreContext(nc, SPACE);
 
-  c("no receipt reads undefined", (await readReceipt(jsm, SPACE, ref)) === undefined);
-  const pub = await publishReceipt(js, jsm, SPACE, ref, receipt);
+  await rejects("a hand-assembled context never authorizes (the space bond is constructed, not asserted)",
+    () => publishReceipt({ js: ctx.js, jsm: ctx.jsm, space: SPACE } as ReceiptStoreContext, ref, receipt), "failed-precondition");
+  c("no receipt reads undefined", (await readReceipt(ctx, ref)) === undefined);
+  const pub = await publishReceipt(ctx, ref, receipt);
   c("the first publication wins its create-only CAS", pub.won);
-  const dup = await publishReceipt(js, jsm, SPACE, ref, receipt);
+  const dup = await publishReceipt(ctx, ref, receipt);
   c("an IDENTICAL republish loses harmlessly and returns the recorded receipt (idempotent emit)", !dup.won && dup.receipt.sig === receipt.sig);
   await rejects("a DIFFERENT receipt for the same execution is a loud conflict (one execution, one receipt, forever)",
-    () => publishReceipt(js, jsm, SPACE, ref, mint({ ts: NOW + 5 })), "conflict");
+    () => publishReceipt(ctx, ref, mint({ ts: NOW + 5 })), "conflict");
   await rejects("publishing a receipt under coordinates it does not name refuses before writing",
-    () => publishReceipt(js, jsm, SPACE, { ...ref, requestId: "req-2" }, receipt), "internal");
-  const back = await readReceipt(jsm, SPACE, ref);
+    () => publishReceipt(ctx, { ...ref, requestId: "req-2" }, receipt), "internal");
+  const back = await readReceipt(ctx, ref);
   c("the recorded receipt reads back identity-bound and re-verifies",
-    back !== undefined && (await verifyReceipt(back, { ref, space: SPACE, resolveAnchor, recompute: { args: ARGS, result: RESULT } })).ts === NOW);
+    back !== undefined && (await verifyReceipt(back, { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE })).ts === NOW);
+
+  {
+    // The published candidate is a DETACHED entry snapshot: mutating the live receipt object
+    // across the publish await changes neither what is stored nor what is returned.
+    const ref2: ReceiptRef = { endpoint: "manager", caller, requestId: "req-2", sourceSeq: 43 };
+    const live = { ...mint({ ref: ref2 }) } as Record<string, unknown>;
+    const publishing = publishReceipt(ctx, ref2, live as unknown as Receipt);
+    live.outcome = { ok: false }; // mutate while the publish awaits — after the entry snapshot
+    const pub2 = await publishing;
+    const stored = await readReceipt(ctx, ref2);
+    c("a mid-publish mutation of the live receipt changes NOTHING (candidate snapshot published, compared, returned)",
+      pub2.won && pub2.receipt.outcome.ok === true && stored?.outcome.ok === true);
+  }
 
   await nc.close();
 } finally {
