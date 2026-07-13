@@ -225,6 +225,13 @@ try {
     epw.retention === "workqueue" && epw.allow_direct === true);
   const epc = await cfg(epcStreamName(SPACE));
   c("EPC has no age eviction (artifacts are permanent)", epc.allow_direct === true && epc.max_age === 0);
+  c("EPC permanence is broker-enforced (deny_delete + deny_purge: a digest subject can never be emptied and re-created)",
+    epc.deny_delete === true && epc.deny_purge === true);
+  {
+    let purged = false;
+    try { await jsm.streams.purge(epcStreamName(SPACE)); purged = true; } catch { /* refused by the broker — the probe's expectation */ }
+    c("a purge against EPC is refused BY THE BROKER (permanence is not configured-by-omission)", !purged);
+  }
   c("records KV serves Direct Get", (await cfg(`KV_${recordsBucket(SPACE)}`)).allow_direct === true);
   const auth = await cfg(`KV_${epAuthBucket(SPACE)}`);
   c("auth KV is leader-served ONLY (allow_direct=false; fences need read-your-writes)", auth.allow_direct === false);
