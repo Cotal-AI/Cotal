@@ -160,6 +160,144 @@ try {
     check("rotation: prev-window id X (live) is dropped without an ack", lc.n === 0, { lc }); // catches a spurious ack on the no-op live path
   }
 
+  // ── Exact completion survives overflow: absent confirmed ids become handled, but overflow alone
+  //    does not. A later durable copy must be committed without double-surfacing. ──
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "exact_agent" });
+    a2.on("error", () => {});
+    a2.ep.emit("message", msg("surfaced-overflow"), mkDelivery(false, { n: 0 }), meta);
+    for (let i = 0; i < 200; i++) a2.ep.emit("message", msg(`fill-${i}`), mkDelivery(false, { n: 0 }), meta);
+    check("exact completion setup overflow-evicts the surfaced id", !a2.peekInbox().some((i) => i.id === "surfaced-overflow"));
+    a2.drainInboxIds(["surfaced-overflow"]);
+    const late = { n: 0 };
+    a2.ep.emit("message", msg("surfaced-overflow"), mkDelivery(true, late), meta);
+    check("exact completion marks an absent requested id handled", !a2.peekInbox().some((i) => i.id === "surfaced-overflow"));
+    check("late durable copy of the absent confirmed id is committed", late.n === 1, late);
+  }
+
+  // ── Receive-time quiet classification survives overflow and classification-cap exhaustion.
+  //    Once the bounded evicted map fills, unknown ambient fails closed to pull-only for the session. ──
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "quiet_overflow_agent", quiet: ["ch"] });
+    a2.on("error", () => {});
+    a2.ep.emit("message", msg("quiet-original"), mkDelivery(false, { n: 0 }), meta);
+    // Keep overflowing quiet ambient past the 4096 evicted-classification cap.
+    for (let i = 0; i < 4300; i++) a2.ep.emit("message", msg(`quiet-fill-${i}`), mkDelivery(false, { n: 0 }), meta);
+    await a2.setChannelMode("ch", "normal");
+    const late = { n: 0 };
+    a2.ep.emit("message", msg("quiet-original"), mkDelivery(true, late), meta);
+    check("classification-cap exhaustion never reclassifies a late quiet copy as automatic", !a2.peekInbox("automatic").some((i) => i.id === "quiet-original"));
+    check("classification-cap exhaustion fails closed to pull-only", a2.peekInbox("pull-only").some((i) => i.id === "quiet-original"));
+
+    await a2.setChannelMode("ch", "muted");
+    a2.ep.emit("message", msg("unsafe-muted"), mkDelivery(true, { n: 0 }), meta);
+    check("muted hard-drop still wins under fail-closed classification", !a2.peekInbox().some((i) => i.id === "unsafe-muted"));
+
+    await a2.setChannelMode("ch", "normal");
+    (a2 as unknown as { _attention: string })._attention = "focus";
+    a2.ep.emit("message", msg("unsafe-focus"), mkDelivery(true, { n: 0 }), meta);
+    check("normal focus ack-drop still wins under fail-closed classification", !a2.peekInbox().some((i) => i.id === "unsafe-focus"));
+
+    await a2.setChannelMode("ch", "quiet");
+    const mention = { ...msg("unsafe-quiet-mention"), mentions: ["otto"] };
+    a2.ep.emit("message", mention, mkDelivery(true, { n: 0 }), meta);
+    check("a quiet @mention remains automatic under fail-closed classification", a2.peekInbox("automatic").some((i) => i.id === "unsafe-quiet-mention"));
+  }
+
+  // ── Receive-time hard drops survive the live→durable transition after modes change. ──
+  {
+    const muted = new MeshAgent({ ...cfg, id: "muted_transition", muted: ["ch"] });
+    muted.on("error", () => {});
+    muted.ep.emit("message", msg("muted-live"), mkDelivery(false, { n: 0 }), meta);
+    await muted.setChannelMode("ch", "normal");
+    const durable = { n: 0 };
+    muted.ep.emit("message", msg("muted-live"), mkDelivery(true, durable), meta);
+    check("live muted drop stays dropped after muted→normal before durable copy", muted.inboxCount() === 0 && durable.n === 1);
+
+    const focused = new MeshAgent({ ...cfg, id: "focus_transition" });
+    focused.on("error", () => {});
+    (focused as unknown as { _attention: string })._attention = "focus";
+    focused.ep.emit("message", msg("focus-live"), mkDelivery(false, { n: 0 }), meta);
+    (focused as unknown as { _attention: string })._attention = "open";
+    const focusDurable = { n: 0 };
+    focused.ep.emit("message", msg("focus-live"), mkDelivery(true, focusDurable), meta);
+    check("live focus drop stays dropped after focus→open before durable copy", focused.inboxCount() === 0 && focusDurable.n === 1);
+  }
+
+  // ── A handled quiet id cannot become automatic after both ordinary handled windows rotate.
+  //    Protected-disposition capacity degrades to session-long classificationUnsafe first. ──
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "handled_quiet_rotation", quiet: ["ch"] });
+    a2.on("error", () => {});
+    a2.ep.emit("message", msg("handled-quiet-original"), mkDelivery(false, { n: 0 }), meta);
+    a2.drainInbox(undefined, "pull-only");
+    for (let i = 0; i < 8500; i++) {
+      a2.ep.emit("message", msg(`handled-quiet-${i}`), mkDelivery(false, { n: 0 }), meta);
+      a2.drainInbox(undefined, "pull-only");
+    }
+    await a2.setChannelMode("ch", "normal");
+    a2.ep.emit("message", msg("handled-quiet-original"), mkDelivery(true, { n: 0 }), meta);
+    check("handled-window rotation never turns a late quiet copy automatic", !a2.peekInbox("automatic").some((i) => i.id === "handled-quiet-original"));
+    check("handled-disposition exhaustion fails closed to pull-only", a2.peekInbox("pull-only").some((i) => i.id === "handled-quiet-original"));
+  }
+
+  // ── Pull-only capacity cannot activate the independent hard-drop fail-closed state. ──
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "mixed_protected_caps", muted: ["ch"] });
+    a2.on("error", () => {});
+    a2.ep.emit("message", msg("one-hard-drop"), mkDelivery(false, { n: 0 }), meta);
+    await a2.setChannelMode("ch", "quiet");
+    for (let i = 0; i < 4100; i++) {
+      a2.ep.emit("message", msg(`mixed-pull-${i}`), mkDelivery(false, { n: 0 }), meta);
+      a2.drainInbox(undefined, "pull-only");
+    }
+    await a2.setChannelMode("ch", "normal");
+    a2.ep.emit("message", { ...msg("mixed-mention"), mentions: ["otto"] }, mkDelivery(false, { n: 0 }), meta);
+    check("pull-only cap exhaustion does not activate hard-drop unsafe", a2.peekInbox("automatic").some((i) => i.id === "mixed-mention"));
+    const droppedDurable = { n: 0 };
+    a2.ep.emit("message", msg("one-hard-drop"), mkDelivery(true, droppedDurable), meta);
+    check("the independent hard-drop disposition remains protected", droppedDurable.n === 1 && !a2.peekInbox().some((i) => i.id === "one-hard-drop"));
+  }
+
+  // ── Traffic retained while the asynchronous focus watermark is captured cannot also be recalled. ──
+  for (const quiet of [false, true]) {
+    const a2 = new MeshAgent({ ...cfg, id: `focus_transition_${quiet}`, quiet: quiet ? ["ch"] : [] });
+    a2.on("error", () => {});
+    (a2 as unknown as { _connected: boolean })._connected = true;
+    let release!: (sequence: number) => void;
+    const frontier = new Promise<number>((resolve) => { release = resolve; });
+    (a2.ep as unknown as { chatFrontier(): Promise<number> }).chatFrontier = () => frontier;
+    (a2.ep as unknown as { setAttention(mode: string): Promise<void> }).setAttention = async () => {};
+    const focusing = a2.setAttention("focus");
+    await Promise.resolve();
+    const id = quiet ? "focus-transition-quiet" : "focus-transition-normal";
+    a2.ep.emit("message", msg(id), mkDelivery(false, { n: 0 }), meta);
+    release(0);
+    await focusing;
+    (a2.ep as unknown as { joinedChannels(): string[] }).joinedChannels = () => ["ch"];
+    (a2.ep as unknown as { recallChannel(channel: string, since: number): Promise<{ messages: CotalMessage[]; dropped: boolean }> }).recallChannel =
+      async () => ({ messages: [msg(id)], dropped: false });
+    const recall = await a2.recallAmbient();
+    check(`focus-entry ${quiet ? "quiet" : "normal"} buffer is excluded from recall`, !recall.items.some((i) => i.id === id));
+    check(`focus-entry ${quiet ? "quiet" : "normal"} item remains in its receive-time lane`, a2.peekInbox(quiet ? "pull-only" : "automatic").some((i) => i.id === id));
+  }
+
+  // ── Focus-exclusion overflow fails closed per channel while unrelated normal recall continues. ──
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "focus_exclusion_cap", quiet: ["ch"] });
+    a2.on("error", () => {});
+    (a2 as unknown as { _attention: string; focusSince: number })._attention = "focus";
+    (a2 as unknown as { _attention: string; focusSince: number }).focusSince = 0;
+    for (let i = 0; i < 4100; i++) a2.ep.emit("message", msg(`focus-excluded-${i}`), mkDelivery(false, { n: 0 }), meta);
+    (a2.ep as unknown as { joinedChannels(): string[] }).joinedChannels = () => ["ch", "other"];
+    (a2.ep as unknown as { recallChannel(channel: string, since: number): Promise<{ messages: CotalMessage[]; dropped: boolean }> }).recallChannel =
+      async (channel) => ({ messages: channel === "other" ? [{ ...msg("other-normal"), channel: "other" }] : [], dropped: false });
+    const recall = await a2.recallAmbient();
+    check("focus-exclusion cap reports the affected channel fail-closed", recall.droppedChannels.includes("ch"));
+    check("focus-exclusion cap does not block unrelated normal recall", recall.items.some((i) => i.id === "other-normal"));
+    check("focus-exclusion cap never recalls excluded quiet traffic", !recall.items.some((i) => i.id.startsWith("focus-excluded-")));
+  }
+
   // ── Pending durable-leave SURFACING (ux/security): a channel in refused-sub durable cleanup can have
   //    NO traffic and no registry entry, so endpoint.listChannels() omits it. cotal_channels must STILL
   //    show it as `durableUnclosed`, never ordinary absence — MeshAgent.listChannels() unions it in. ──

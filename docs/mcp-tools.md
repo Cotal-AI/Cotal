@@ -11,7 +11,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
 | [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
 | [`cotal_roster`](#cotalroster) | who's present | read-only |
-| [`cotal_inbox`](#cotalinbox) | read incoming messages | drains your inbox (pass `peek` to read without clearing) |
+| [`cotal_inbox`](#cotalinbox) | read incoming messages | Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic |
 | [`cotal_send`](#cotalsend) | broadcast to a channel | publishes to a channel |
 | [`cotal_dm`](#cotaldm) | direct-message a peer | sends a private message to one peer |
 | [`cotal_anycast`](#cotalanycast) | ask any agent of a role | queues a request for one holder of a role |
@@ -72,9 +72,11 @@ No arguments.
 
 Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. Clears them unless peek is true. In focus mode it also pulls back the channel chatter held since you entered focus.
 
-- **Side-effect:** drains your inbox (pass `peek` to read without clearing).
+**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.
+
+- **Side-effect:** Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic.
 - **Available:** always.
-- In focus mode it additionally recalls the channel chatter held since you entered focus (replay-gated).
+- OpenCode, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -169,7 +171,7 @@ No arguments.
 
 *silence or mute a channel*
 
-Set how a single channel interrupts you: your per-channel attention, more specific than cotal_status. quiet = still delivered and readable, but it never wakes you (read it on your terms or with cotal_inbox); an @mention on it still wakes you. muted = you stop receiving this channel entirely, including @mentions (DMs still reach you). normal = clear the override; the channel follows your global attention. Runtime + per-instance: resets when your session restarts. An operator can set a lasting default in your agent file. See your current settings with cotal_channels.
+Set how a single channel interrupts you: your per-channel attention, more specific than cotal_status. quiet = ambient stays buffered and pull-only (read it with cotal_inbox); it never enters another turn, while an @mention still wakes and injects. muted = you stop receiving this channel entirely, including @mentions (DMs still reach you). normal = clear the override; the channel follows your global attention. Runtime + per-instance: resets when your session restarts. An operator can set a lasting default in your agent file. See your current settings with cotal_channels.
 
 - **Side-effect:** sets your own per-channel receive preference (quiet / muted / normal).
 - **Available:** always.

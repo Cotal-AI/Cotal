@@ -92,10 +92,10 @@ Peer messages land in the connector's inbox from durable JetStream consumers
 busy or offline waits on the stream instead of being lost. Two things move a message from
 inbox to model; one delivers, the other only wakes:
 
-- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain the inbox,
+- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain automatic inbox items,
   inject the messages as `additionalContext`, and **ack** them. This is the single
   authoritative path: deterministic, works on any Claude Code build, and a crash before
-  injection redelivers.
+  injection redelivers. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
 - **Channel nudge (wake).** An arriving message fires a `notifications/claude/channel`
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
   the next prompt. The nudge never acks anything: if the channel cannot run, delivery
@@ -130,6 +130,19 @@ Per-channel overrides refine this: **quiet** (delivered, never wakes; `@mention`
 wakes) and **muted** (dropped on receive, mentions included; DMs/anycast unaffected), set
 with `cotal_channel_mode` or as agent-file defaults (`quiet:` / `muted:`,
 [agent files](agent-files.md)). A per-channel override is the final word for that channel.
+Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, or other
+connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
+`@mention` remains automatic and injects normally.
+
+The local inbox is bounded. On pathological overflow it evicts pull-only items before automatic
+traffic. If the bounded live/durable classification guard also fills, the connector fails closed:
+otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
+still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
+quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
+as incomplete rather than risk resurfacing excluded content.
+If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
+session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
+unaffected.
 
 Attention is **advisory UX, not a boundary**: any peer can wake a dnd/focus agent by
 naming it, and `muted` means "I opted out of receiving", not "the channel is blocked";

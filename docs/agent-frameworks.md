@@ -29,10 +29,9 @@ Reliability uses three distinct points:
    terminal assistant boundary proves acceptance for the exact context instead.
 
 Only provider-confirmed IDs become eligible for acknowledgement, and only at a terminal agent
-boundary. The Pi-local ledger re-reads `MeshAgent.peekInbox()`, verifies an exact front prefix, and
-calls `drainInbox(n)` only for a positive exact count. Missing older IDs may have been evicted by the
-bounded inbox; out-of-order IDs are tombstoned and discarded only when they later reach the front.
-This keeps acknowledgement correct without adding a shared connector-core API.
+boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds()`, which removes
+only exact matches even when quiet ambient is physically interleaved or older IDs were overflow-
+evicted. Missing confirmed IDs are marked handled and tombstoned so late copies cannot resurface.
 
 Pi emits `agent_end` to extensions without exposing whether it will retry. Error, abort, unknown
 reasons, and zero/missing-output `length` therefore
@@ -57,7 +56,8 @@ then binds the replacement runtime on its next `session_start`. Only `session_sh
   authenticated control server and Pi's active `ctx.shutdown()`.
 - Peer traffic bypasses Pi's human `input` transformations, but provider, tool, permission, and
   sandbox hooks remain on the normal agent path.
-- `cotal_inbox` is read-only in Pi because the driver owns acknowledgement.
+- `cotal_inbox` destructively pulls quiet ambient while the driver retains ownership of automatic
+  traffic; normal focus recall shown alongside it remains read-only.
 - Pi resume, variants, MCP sharing, and raw launch options fail loudly until implemented.
 
 ## Install

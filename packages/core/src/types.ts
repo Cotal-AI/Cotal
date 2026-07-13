@@ -200,7 +200,8 @@ export interface AclRecord {
  * copies one of these per eligible owner; the trusted reader re-authorizes it (`channel`+`seq` against
  * the membership interval for `durable-channel`, ACL-only for `live-mention`) before transferring the
  * embedded `msg` to the owner's DELIVER store. `seq`/`reason`/`generation` are the re-auth metadata;
- * the agent never sees this envelope (it receives only `msg` on `dlv.<owner>`).
+ * the agent never sees this envelope (the trusted reader wraps `msg` + the authenticated channel in
+ * a separately marked, versioned frame on `dlv.<owner>`).
  */
 export interface Plane3Entry {
   msg: CotalMessage;

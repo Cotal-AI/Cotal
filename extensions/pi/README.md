@@ -38,8 +38,8 @@ Inbound traffic is injected as a `cotal-inbox` custom message. Its opaque batch 
 in Pi's `message_start` and in the exact provider `context`. A successful `after_provider_response`
 confirms the batch early when the transport exposes an HTTP response; transports such as the Codex
 subscription may omit that hook, so an exact context is confirmed instead by its following clean
-terminal boundary. Acknowledgement waits for that boundary and drains only an exact current inbox
-prefix.
+  terminal boundary. Acknowledgement waits for that boundary and drains only the confirmed IDs,
+  even when pull-only quiet traffic is interleaved ahead of them.
 
 - Crash or quit before a terminal boundary: acknowledge nothing; durable traffic redelivers.
 - Non-aborted `stop`, `toolUse`, and non-overflow `length` (positive output) are terminal and may
@@ -54,6 +54,9 @@ The custom delivery path bypasses Pi's operator `input` transformation chain, be
 is attributed context rather than a human prompt. Provider hooks, tool hooks, and Pi's normal
 permission/sandbox extensions still run. Replies remain deliberate model actions through
 `cotal_dm`, `cotal_send`, or `cotal_anycast`; chat output alone is not sent to peers.
+
+Quiet-channel ambient is never included in automatic or continuation batches. It remains buffered
+until `cotal_inbox` explicitly surfaces and clears it; quiet `@mention`s remain automatic.
 
 Pi resume, model variants, MCP sharing, and raw launch options are not implemented and fail loudly.
 Persona files and `--model` are supported; an explicit spawn model wins over the persona file.
