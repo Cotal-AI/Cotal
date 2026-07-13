@@ -162,21 +162,54 @@ export async function mintCheckpoint(
   return { specRevision };
 }
 
-/** Heartbeat/extend: CAS-advance the deadline generation IN STATUS FIRST, then replace the
- *  timer (a new `.schedule` at the new generation — the mediated writer's same-subject
- *  `.armed` publish is the server rollup; the 2.14 atomic stop-plus-publish is NOT assumed at
- *  the 2.12 floor). The order is load-bearing: a crash after the CAS and before the emission
- *  leaves a stale-generation timer whose fire NO-OPS at the handler, and the reconciler
- *  re-emits the current generation — never a fire acting on a superseded deadline. */
+/** The AUTHORITATIVE liveness gate for the pause primitive: is this checkpoint still open? The
+ *  ONE-USE settle FACT is the truth (its create-only CAS is the single settlement), NOT the
+ *  status projection — a projection can lag or be lost after the fact wins (the acknowledged
+ *  crash window between {@link settleCheckpoint}'s CAS and its status update). So heartbeat,
+ *  reconcile, and resume all gate on the fact, and this helper CONVERGES a lagging `waiting`
+ *  status to the fact's disposition when it finds one, so the projection is repaired at every
+ *  liveness touch instead of leaking timers forever against an already-settled checkpoint.
+ *  Returns the settled fact iff the checkpoint is settled (the caller then refuses/converges);
+ *  `undefined` iff genuinely still waiting. */
+async function settledOrConverge(
+  kv: KV, jsm: JetStreamManager, space: string, ref: CheckpointRef,
+): Promise<CheckpointSettleFact | undefined> {
+  const settled = await readCheckpointSettle(jsm, space, ref);
+  if (settled === undefined) return undefined;
+  const status = await readCheckpointStatus(kv, ref);
+  if (status !== undefined && status.value.state === "waiting") {
+    // Repair the lagging projection to match the fact (idempotent: a CAS loss means a
+    // concurrent converge already landed — the fact stays the truth either way).
+    const next: CheckpointStatusValue = assertStatusValue({
+      state: settled.settle, deadlineGeneration: status.value.deadlineGeneration,
+      deadline: status.value.deadline, observedSpecRevision: status.value.observedSpecRevision,
+    });
+    try { await updateRecordEntry(kv, recordStatusKey(RECORD_KINDS.cp, cpQualifiers(ref)), next, status.revision); }
+    catch (e) { if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e; }
+  }
+  return settled;
+}
+
+/** Heartbeat/extend: gate on the SETTLE FACT first (a settled checkpoint refuses and its
+ *  lagging status is converged), then CAS-advance the deadline generation IN STATUS FIRST, then
+ *  replace the timer (a new `.schedule` at the new generation — the mediated writer's
+ *  same-subject `.armed` publish is the server rollup; the 2.14 atomic stop-plus-publish is NOT
+ *  assumed at the 2.12 floor). The generation order is load-bearing: a crash after the CAS and
+ *  before the emission leaves a stale-generation timer whose fire NO-OPS at the handler, and the
+ *  reconciler re-emits the current generation — never a fire acting on a superseded deadline. */
 export async function heartbeatCheckpoint(
   kv: KV,
   js: JetStreamClient,
+  jsm: JetStreamManager,
   space: string,
   args: { ref: CheckpointRef; instanceId: string; epoch: number; deadline: number; now: number },
 ): Promise<CheckpointStatusValue> {
   const current = await readCheckpointStatus(kv, args.ref);
   if (current === undefined)
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is unknown; a heartbeat extends only a minted checkpoint (SPEC 13.6)`);
+  const settled = await settledOrConverge(kv, jsm, space, args.ref);
+  if (settled !== undefined)
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is settled ${settled.settle} (the one-use settle fact is the truth, not the status projection); a settled checkpoint never extends and its lagging status is converged (SPEC 13.6)`);
   if (current.value.state !== "waiting")
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is ${current.value.state}; only a waiting checkpoint extends (SPEC 13.6)`);
   if (!Number.isSafeInteger(args.deadline) || args.deadline <= args.now)
@@ -298,14 +331,20 @@ export async function resumeCheckpoint(
   if (spec.holder !== undefined
     && (spec.holder.id !== args.presenter.id || spec.holder.lifecycleUid !== args.presenter.lifecycleUid))
     throw new EpEnvelopeError("permission-denied", `resume of checkpoint "${args.ref.token}" is holder-bound to ${spec.holder.id}/${spec.holder.lifecycleUid}; the presenter ${args.presenter.id}/${args.presenter.lifecycleUid} is not the holder (SPEC 13.10)`);
+  // Gate on the SETTLE FACT (a lagging waiting status is converged): if the checkpoint already
+  // settled, resume refuses on the fact, never on a stale projection. (The settleCheckpoint CAS
+  // below is a second, atomic fence — but reading the fact first gives the precise refusal and
+  // repairs the projection.)
+  const already = await settledOrConverge(kv, jsm, space_, args.ref);
+  if (already !== undefined)
+    throw new EpEnvelopeError(already.settle === "resumed" ? "conflict" : "failed-precondition",
+      `checkpoint "${args.ref.token}" is already settled ${already.settle} at ${already.ts}; resume authorization is one-use and expiry fails closed (SPEC 13.6)`);
   const status = await readCheckpointStatus(kv, args.ref);
   if (status === undefined)
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" has no status; reconcile the store (SPEC 13.6)`);
-  if (status.value.state !== "waiting") {
-    const recorded = await readCheckpointSettle(jsm, space_, args.ref);
+  if (status.value.state !== "waiting")
     throw new EpEnvelopeError(status.value.state === "resumed" ? "conflict" : "failed-precondition",
-      `checkpoint "${args.ref.token}" is already ${status.value.state}; resume authorization is one-use and expiry fails closed (SPEC 13.6)${recorded ? ` - settled ${recorded.settle} at ${recorded.ts}` : ""}`);
-  }
+      `checkpoint "${args.ref.token}" is already ${status.value.state}; resume authorization is one-use and expiry fails closed (SPEC 13.6)`);
   const settled = await settleCheckpoint(kv, js, jsm, space_, {
     ref: args.ref, settle: "resumed", generation: status.value.deadlineGeneration, now: args.now, statusEntry: status,
     holder: args.presenter,
@@ -372,18 +411,23 @@ async function settleCheckpoint(
   return { won: true, fact };
 }
 
-/** The durable reconciler's re-emission (§13.6): for every `waiting` status the endpoint
- *  owns, re-emit the `.schedule` request at the CURRENT generation. Idempotent at the writer
- *  (same-generation re-arm is a rollup no-op), so over-emission is harmless and a missing
- *  schedule is repaired without observing whether one exists. */
+/** The durable reconciler's re-emission (§13.6): for every genuinely-`waiting` checkpoint the
+ *  endpoint owns, re-emit the `.schedule` request at the CURRENT generation. Idempotent at the
+ *  writer (same-generation re-arm is a rollup no-op), so over-emission is harmless and a missing
+ *  schedule is repaired without observing whether one exists. GATED ON THE SETTLE FACT, not the
+ *  status projection: an already-settled checkpoint whose status still lags `waiting` (the
+ *  crash window) is converged and NOT re-armed — without this gate the reconciler would re-emit
+ *  schedules forever for a settled checkpoint (the C1 timer leak). */
 export async function reconcileCheckpointSchedule(
   kv: KV,
   js: JetStreamClient,
+  jsm: JetStreamManager,
   space_: string,
   args: { ref: CheckpointRef; instanceId: string; epoch: number },
 ): Promise<{ reEmitted: boolean; generation?: number }> {
   const status = await readCheckpointStatus(kv, args.ref);
   if (status === undefined || status.value.state !== "waiting") return { reEmitted: false };
+  if ((await settledOrConverge(kv, jsm, space_, args.ref)) !== undefined) return { reEmitted: false };
   await emitScheduleRequest(js, space_, {
     endpoint: args.ref.endpoint, instanceId: args.instanceId, epoch: args.epoch,
     token: args.ref.token, generation: status.value.deadlineGeneration, deadline: status.value.deadline,

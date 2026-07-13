@@ -88,7 +88,7 @@ try {
   c("the writer arms the minted request (generation 1, target derived from the subject)", armed1.length === 1 && armed1[0].generation === 1);
 
   // ── heartbeat: status generation FIRST, then the replacement schedule ──
-  const hb = await heartbeatCheckpoint(kv, js, SPACE, { ref: ref("cp1"), instanceId: IID, epoch: EPOCH, deadline: NOW + 2_600, now: NOW + 200 });
+  const hb = await heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp1"), instanceId: IID, epoch: EPOCH, deadline: NOW + 2_600, now: NOW + 200 });
   c("the heartbeat CAS-advances the deadline generation and the deadline", hb.deadlineGeneration === 2 && hb.deadline === NOW + 2_600);
   const armed2 = await drainAndArm(1);
   c("the writer arms the replacement (generation 2; same-subject rollup replaces gen1's schedule)", armed2.length === 1 && armed2[0].generation === 2);
@@ -132,12 +132,12 @@ try {
   await rejects("a resume of an UNKNOWN token refuses",
     () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp-none"), presenter: holderA, now: NOW }), "failed-precondition");
   await rejects("a heartbeat on a settled checkpoint refuses (only waiting extends)",
-    () => heartbeatCheckpoint(kv, js, SPACE, { ref: ref("cp2"), instanceId: IID, epoch: EPOCH, deadline: NOW + 90_000, now: NOW + 400 }), "failed-precondition");
+    () => heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp2"), instanceId: IID, epoch: EPOCH, deadline: NOW + 90_000, now: NOW + 400 }), "failed-precondition");
 
   // ── the reconciler: re-emit at the current generation; over-emission is harmless ──
   await mintCheckpoint(kv, js, SPACE, { ref: ref("cp3"), instanceId: IID, epoch: EPOCH, deadline: NOW + 60_000, now: NOW });
   await drainAndArm(1);
-  const rec = await reconcileCheckpointSchedule(kv, js, SPACE, { ref: ref("cp3"), instanceId: IID, epoch: EPOCH });
+  const rec = await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cp3"), instanceId: IID, epoch: EPOCH });
   c("the reconciler re-emits the CURRENT generation for a waiting checkpoint", rec.reEmitted === true && rec.generation === 1);
   const armedRec = await drainAndArm(1);
   c("the re-emission arms idempotently (same generation, rollup no-op)", armedRec.length === 1 && armedRec[0].generation === 1);
@@ -146,7 +146,27 @@ try {
     const count = (await jsm.streams.info(eptStreamName(SPACE), { subjects_filter: armedSubj })).state.subjects?.[armedSubj];
     c("still exactly one armed schedule for the reconciled token", count === 1);
   }
-  c("the reconciler leaves settled checkpoints alone", (await reconcileCheckpointSchedule(kv, js, SPACE, { ref: ref("cp2"), instanceId: IID, epoch: EPOCH })).reEmitted === false);
+  c("the reconciler leaves settled checkpoints alone", (await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cp2"), instanceId: IID, epoch: EPOCH })).reEmitted === false);
+
+  // ── C1: heartbeat/reconcile gate on the FACT, not the projection. Manufacture the acknowledged
+  //    crash window — a settled fact with a LAGGING `waiting` status — and prove the liveness
+  //    gates refuse + CONVERGE, instead of extending/re-arming an already-settled checkpoint. ──
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp4"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+  await drainAndArm(1);
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp4"), presenter: holderA, now: NOW + 100 }); // settles resumed + projects
+  // Force the lag: rewind the status projection back to `waiting` while the settle fact stands.
+  await kv.put("cp.manager.cp4.status", new TextEncoder().encode(JSON.stringify({ state: "waiting", deadlineGeneration: 1, deadline: NOW + 60_000, observedSpecRevision: 0 })));
+  const cp4Before = await readCheckpointStatus(kv, ref("cp4"));
+  c("the manufactured lag is in place (status waiting, fact settled)",
+    cp4Before?.value.state === "waiting" && (await readCheckpointSettle(jsm, SPACE, ref("cp4")))?.settle === "resumed");
+  await rejects("a heartbeat on a settled-but-status-lagging checkpoint REFUSES on the fact (no more timer extension)",
+    () => heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp4"), instanceId: IID, epoch: EPOCH, deadline: NOW + 120_000, now: NOW + 200 }), "failed-precondition");
+  c("…and the heartbeat CONVERGED the lagging status to the fact (resumed)", (await readCheckpointStatus(kv, ref("cp4")))?.value.state === "resumed");
+  // rewind again and prove the reconciler converges + does not re-arm
+  await kv.put("cp.manager.cp4.status", new TextEncoder().encode(JSON.stringify({ state: "waiting", deadlineGeneration: 1, deadline: NOW + 60_000, observedSpecRevision: 0 })));
+  const recSettled = await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cp4"), instanceId: IID, epoch: EPOCH });
+  c("the reconciler does NOT re-arm a settled-but-status-lagging checkpoint (the C1 timer leak is closed)", recSettled.reEmitted === false);
+  c("…and the reconciler CONVERGED the lagging status", (await readCheckpointStatus(kv, ref("cp4")))?.value.state === "resumed");
 
   // ── fail-closed storage read ──
   await kv.delete("cp.manager.cp3.status");
