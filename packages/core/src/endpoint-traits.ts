@@ -13,8 +13,9 @@
  * self-published descriptor cannot strip, forge, or downgrade a governed annotation
  * (the annotation's authority is the attachment, bound to the cluster document's complete
  * closure digest, never the descriptor's own bytes). Removal or downgrade is an authorized
- * contract revision: the authority signs (or declines to sign) the NEW digest's attachment
- * set, which {@link assertGovernedContinuity} enforces across re-registrations.
+ * contract revision, enforced at the trusted registration write (registerServiceInstance's
+ * governed-continuity seam) against the registry's prior spec, so a surviving command cannot
+ * drop a governed trait.
  *
  * Core owns exactly the fail-closed verification interfaces (§13.9 trait seam): the guard
  * call and priced-proof hooks are SEAMS — policy engines, token formats, and payment rails
@@ -209,8 +210,8 @@ function parseTraitAttachmentShape(raw: unknown): TraitAttachment {
  *    successor future-date past rotation, §13.10 — revocation immediate), its traits-scope
  *    must cover the urn, and the D28 signature must verify over the exact received bytes;
  *  - downgrade: within a digest the value is signature-bound; a value the schema rejects
- *    fails here, and cross-revision weakening without the authority's new signature is
- *    caught by {@link assertGovernedContinuity};
+ *    fails here, and cross-revision weakening is caught at the trusted registration write
+ *    (registerServiceInstance's governed-continuity seam), not from a caller-supplied prior;
  *  - selector: the definition must admit a `command` target.
  * The `value` is validated against the definition's `valueSchema` bundle, read and compiled
  * through the SAME digest-verified path serve authorization uses.
@@ -318,24 +319,18 @@ const VERIFIED_GOVERNED = new WeakMap<EpGovernedSurface, GovernedBond>();
  * missing definitions all refuse. Returns the branded surface, bound to exactly this grant's
  * identity coordinates; {@link assertGovernedSurfaceFor} is the serve-side check.
  *
- * CONTINUITY IS MANDATORY, not a skippable helper (§13.7: removal/downgrade is an AUTHORIZED
- * contract revision). `previous` is REQUIRED with no default so the caller cannot silently omit
- * it: pass the prior branded surface across a re-registration, or `null` to assert a FIRST
- * governance (no prior). A non-null `previous` runs {@link assertGovernedContinuity} INSIDE
- * verification, before branding — so a stripping re-registration cannot yield a servable
- * surface. (The TRUSTED SOURCE of `previous` for a colluding-owner strip — an authority-written
- * per-endpoint governance record read fresh at authorization, independent of the owner's
- * descriptor — is the D18 governance-anchor slice; this seam makes the check unskippable, which
- * closes the "brand then skip the helper" bypass.)
+ * This verifies the CURRENT surface's declaration<->attachment coherence (both strip directions
+ * WITHIN a revision). Cross-REVISION governed-continuity (a re-registration may not strip an
+ * authority-imposed trait from a surviving command, §13.7) is enforced at the TRUSTED registration
+ * write ({@link registerServiceInstance}'s governed-continuity seam) against the registry's prior
+ * spec — NOT here, and NOT from a caller-supplied prior surface, which the owner could forge by
+ * claiming "first governance". {@link assertGovernedContinuity} remains exported as the
+ * same-comparison helper for tooling and defense-in-depth.
  */
 export async function verifyGovernedSurface(args: {
   serve: EpServeGrant;
   definitions: readonly TraitDefinition[];
   attachments: readonly unknown[];
-  /** REQUIRED continuity decision (no default): the prior branded governed surface across a
-   *  re-registration, or `null` for a first governance. A non-null value is continuity-checked
-   *  before branding — the check is part of producing the artifact, never a separate call. */
-  previous: EpGovernedSurface | null;
   resolveAnchor: AnchorResolver;
   readArtifact: TraitArtifactReader;
   now?: number;
@@ -395,10 +390,6 @@ export async function verifyGovernedSurface(args: {
     epoch: args.serve.epoch, registrationRevision: args.serve.registrationRevision,
     grantCommands: new Set(args.serve.commands),
   });
-  // MANDATORY continuity, folded into artifact production (§13.7): a non-null prior surface is
-  // checked before this surface is returned, so a governance-reducing re-registration cannot
-  // hand back a servable surface. `null` explicitly asserts a first governance.
-  if (args.previous !== null) assertGovernedContinuity(args.previous, surface);
   return surface;
 }
 
@@ -415,34 +406,12 @@ export function assertGovernedSurfaceFor(surface: EpGovernedSurface, serve: EpSe
     throw new Error(`the governed surface was verified for ${bond.endpoint}/${bond.instanceId}@${bond.epoch} rev ${bond.registrationRevision}, not this grant (${serve.endpoint}/${serve.instanceId}@${serve.epoch} rev ${serve.registrationRevision}); a re-registration demands a fresh verification (SPEC 13.7)`);
 }
 
-/**
- * The §13.7 downgrade/removal revision check, across a re-registration: removal or downgrade
- * of a governed annotation is an AUTHORIZED contract revision, and the authorization is the
- * authority's own signature over the NEW digest's attachment. For every (command, trait)
- * governed in the PREVIOUS surface: a command absent from the new registered surface is a
- * plain removal of the command; a surviving command must carry a verified attachment for the
- * same trait at the new digest (its value may differ — the authority signed the new state,
- * which IS the authorized downgrade path) — else the revision stripped governance without
- * the authority and refuses. Both surfaces must be branded verifications of the SAME
- * endpoint, the next at an equal-or-later registration revision.
- */
-export function assertGovernedContinuity(previous: EpGovernedSurface, next: EpGovernedSurface): void {
-  const prev = VERIFIED_GOVERNED.get(previous);
-  const nxt = VERIFIED_GOVERNED.get(next);
-  if (prev === undefined || nxt === undefined)
-    throw new EpEnvelopeError("failed-precondition", "continuity takes two verified governed surfaces (verifyGovernedSurface); an unverified side proves nothing (SPEC 13.7)");
-  if (prev.space !== nxt.space || prev.endpoint !== nxt.endpoint)
-    throw new EpEnvelopeError("failed-precondition", `continuity across different identities (${prev.space}/${prev.endpoint} -> ${nxt.space}/${nxt.endpoint}) is meaningless; compare revisions of ONE endpoint (SPEC 13.7)`);
-  if (nxt.registrationRevision < prev.registrationRevision)
-    throw new EpEnvelopeError("failed-precondition", `continuity runs forward: the next surface's registration revision ${nxt.registrationRevision} is below the previous ${prev.registrationRevision} (SPEC 13.7)`);
-  for (const [cmd, traits] of Object.entries(previous.commands)) {
-    if (!nxt.grantCommands.has(cmd)) continue; // the command itself was removed from the surface
-    for (const urn of Object.keys(traits)) {
-      if (next.commands[cmd]?.[urn] === undefined)
-        throw new EpEnvelopeError("failed-precondition", `governed trait "${urn}" on command "${cmd}" was removed or downgraded without an authorized contract revision: the authority signed no attachment for the new contract digest (SPEC 13.7: removal or downgrade is an authorized contract revision)`);
-    }
-  }
-}
+// §13.7 downgrade/removal continuity — "removal or downgrade is an AUTHORIZED contract
+// revision" — is enforced at the TRUSTED registration write (registerServiceInstance's
+// governed-continuity seam), against the registry's own prior spec. It is deliberately NOT a
+// serve-side check over two caller-supplied branded surfaces: the owner controls the descriptor,
+// so a caller-supplied "previous" (or a claimed first-governance) is forgeable, whereas the prior
+// registered spec is not. See registerServiceInstance.
 
 // ---- the pre-effect enforcement gate (§13.9 trait seam) ------------------------------------------
 

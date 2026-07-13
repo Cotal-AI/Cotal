@@ -160,9 +160,70 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
  *  created by the provisioner at instance mint (D13); a missing gate is `failed-precondition`. The
  *  production `barrier` wires to the durable KV CAS (D13/D14); the D4 seam is the typed protocol
  *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
+/** Reconstruct a registered spec's command surface from trusted registry + content-addressed
+ *  store state (§13.7): EVERY command name -> the set of `governedUrns` its verified cluster
+ *  document declares (an empty set for an un-governed command; the full command set is needed so
+ *  continuity can tell a STRIPPED-but-surviving command from a REMOVED one). The registrar drives
+ *  this, so the OWNER never supplies the prior state that continuity compares against - it is read
+ *  from the mediated spec + the digest-verified cluster bytes. `governedUrns` is passed as DATA so
+ *  the registry stays generic (it never hardcodes `ai.cotal.*`; the trusted composition root names
+ *  the governed set). */
+async function readGovernedDeclarations(
+  readArtifact: (digest: string) => Promise<unknown> | unknown,
+  clusterDigests: readonly string[],
+  governedUrns: readonly string[],
+): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  const read = async (digest: string): Promise<unknown> => {
+    const raw = await readArtifact(digest);
+    if (raw === undefined)
+      throw new EpEnvelopeError("failed-precondition", `governed-continuity: cluster artifact ${digest} is not readable; an unverifiable prior/next surface cannot authorize a governance change (SPEC 13.7)`);
+    return raw;
+  };
+  for (const closureDigest of clusterDigests) {
+    const { root } = verifyClusterManifest(closureDigest, await read(closureDigest));
+    const document = verifyClusterRoot(root, await read(root));
+    for (const cmd of document.commands) {
+      const set = out.get(cmd.name) ?? new Set<string>();
+      for (const t of (cmd.traits ?? [])) if (governedUrns.includes(t)) set.add(t);
+      out.set(cmd.name, set); // present for EVERY command, governed or not
+    }
+  }
+  return out;
+}
+
+/** Governed-continuity at the mediated registration write (§13.7: removal/downgrade is an
+ *  AUTHORIZED contract revision). A SURVIVING command (present in both revisions) may not DROP a
+ *  governed trait it declared: a self-published descriptor cannot strip an authority-imposed
+ *  annotation. A command REMOVED entirely (absent from the new command set), a NEW command, and
+ *  an ADDED trait are all fine. This is the trusted, unforgeable strip defense - the prior
+ *  declarations come from the registry, not a caller argument. (The narrower "authority AUTHORIZES
+ *  stopping governance on a surviving command" path needs the authority's own consent artifact,
+ *  the D18 governance record; until then a trait can be removed only by removing its command,
+ *  fail-closed.) */
+function assertGovernedDeclarationContinuity(prior: Map<string, Set<string>>, next: Map<string, Set<string>>): void {
+  for (const [command, priorTraits] of prior) {
+    if (priorTraits.size === 0) continue; // was un-governed - nothing to carry forward
+    const nextTraits = next.get(command);
+    if (nextTraits === undefined) continue; // the command itself was removed - not a governance strip
+    for (const urn of priorTraits)
+      if (!nextTraits.has(urn))
+        throw new EpEnvelopeError("permission-denied", `re-registration drops governed trait "${urn}" from surviving command "${command}"; a self-published descriptor cannot strip an authority-imposed annotation - remove the command, or land an authority-authorized revision (SPEC 13.7)`);
+  }
+}
+
 export async function registerServiceInstance(
   kv: KV,
-  args: { space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier },
+  args: {
+    space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier;
+    /** Governed-continuity seam (§13.7), wired by the trusted registrar: the content-store reader
+     *  and the governed trait URNs. When both are present, a re-registration that STRIPS a governed
+     *  trait from a surviving command refuses (the prior declarations are read from the mediated
+     *  registry, never a caller argument, so the strip defense is unforgeable). Omitted on the first
+     *  registration path / non-governed registries. */
+    readClusterArtifact?: (digest: string) => Promise<unknown> | unknown;
+    governedTraitUrns?: readonly string[];
+  },
 ): Promise<{ registrationRevision: number }> {
   spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
@@ -215,6 +276,17 @@ export async function registerServiceInstance(
       const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
       if (stored.owner !== spec.owner)
         throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
+      // §13.7 governed-continuity, under the frozen gate against the TRUSTED prior spec (this
+      // read-only phase reopens the gate on any failure). A re-registration cannot strip an
+      // authority-governed trait from a surviving command; the prior state is the registry's, not
+      // the owner's. A DEFINITE no-write, so it aborts cleanly like the ownership check above.
+      if (args.readClusterArtifact && args.governedTraitUrns && args.governedTraitUrns.length > 0) {
+        const prior = await readGovernedDeclarations(args.readClusterArtifact, stored.clusterDigests, args.governedTraitUrns);
+        if ([...prior.values()].some((s) => s.size > 0)) { // prior had governance to carry forward
+          const next = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests, args.governedTraitUrns);
+          assertGovernedDeclarationContinuity(prior, next);
+        }
+      }
     }
   } catch (err) {
     await reopenGateAfterAbort(args.barrier, token, successorAt(obs.registrationRevision), err);

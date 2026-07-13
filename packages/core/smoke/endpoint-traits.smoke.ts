@@ -31,8 +31,8 @@ import {
   signArtifact, signatureInput,
   verifyTraitDefinition, isVerifiedTraitDefinition, traitDefinitionDigest,
   verifyTraitAttachment, isVerifiedTraitAttachment,
-  verifyGovernedSurface, assertGovernedSurfaceFor, assertGovernedContinuity,
-  TRAIT_GUARDED, TRAIT_PRICED,
+  verifyGovernedSurface, assertGovernedSurfaceFor,
+  TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS,
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
   type EpGuardVerdict, type EpTraitEnforcement, type EpGovernedSurface,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
@@ -224,8 +224,11 @@ try {
       reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
     };
   };
+  // The trusted registrar wires the governed-continuity seam (the store reader + the governed URNs
+  // as DATA); a re-registration that strips a governed trait from a surviving command refuses HERE,
+  // from the registry's own prior spec, never a caller-supplied prior surface.
   const reg = (spec: ServiceSpec, instanceId: string) =>
-    registerServiceInstance(kv, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(spec.endpoint, instanceId) });
+    registerServiceInstance(kv, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(spec.endpoint, instanceId), readClusterArtifact: readArtifact, governedTraitUrns: GOVERNED_TRAIT_URNS });
   const grantFor = (endpoint: string, instanceId: string): Promise<EpServeGrant> =>
     authorizeServeGrant(kv, { space: SPACE, endpoint, instanceId, epoch: 1, holder: { owner: "u_op" }, authority, readProcessEpoch: () => 1, readClusterArtifact: readArtifact });
 
@@ -245,7 +248,7 @@ try {
   ];
   const defs = [defGuarded, defPriced];
   const verifySurface = (over: Record<string, unknown>) =>
-    verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments(), previous: null, resolveAnchor, readArtifact, ...over });
+    verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments(), resolveAnchor, readArtifact, ...over });
   const surfaceV1 = await verifySurface({});
   c("the full governed surface verifies: command -> trait -> verified attachment",
     surfaceV1.commands["launch"]?.[TRAIT_GUARDED] !== undefined && Object.keys(surfaceV1.commands["both"] ?? {}).length === 2
@@ -423,7 +426,7 @@ try {
   const DC_PLAIN = register({ urn: "ai.cotal.plain", revision: 1, attributes: [], events: [], commands: PLAIN_CMDS });
   await reg({ endpoint: "plain", owner: "u_op", clusterDigests: [DC_PLAIN], protocol: { v: 1 } }, IID);
   const grantPlain = await grantFor("plain", IID);
-  const emptySurface = await verifyGovernedSurface({ serve: grantPlain, definitions: [], attachments: [], previous: null, resolveAnchor, readArtifact });
+  const emptySurface = await verifyGovernedSurface({ serve: grantPlain, definitions: [], attachments: [], resolveAnchor, readArtifact });
   const plainDef = [{ command: "hello", contract: { input: argsContract, output: outContract }, handler: () => ({ which: "hello" }) }];
   const plainHandle = serveEndpoint(nc, SPACE, grantPlain, plainDef, { public: true });
   c("a NON-governed declared trait is vocabulary: it serves ungated, with no enforcement demanded", true);
@@ -440,59 +443,51 @@ try {
   await rejects("a GOVERNED journal-class command refuses at construction (no unenforced governance; the epj gate is a later slice)",
     () => serveEndpoint(nc, SPACE, grantJobs, [], { public: true }));
 
-  // ── continuity is MANDATORY inside verifyGovernedSurface: removal/downgrade is an AUTHORIZED
-  //    contract revision, and the check cannot be skipped (`previous` is a required argument, no
-  //    default). A colluding-owner strip against a genuinely trusted prior-governance record is
-  //    the D18 governance-anchor slice; this closes the "brand then skip the helper" bypass. ──
+  // ── governed-continuity is enforced at the TRUSTED registration write (§13.7), against the
+  //    registry's OWN prior spec — NOT a caller-supplied prior surface (which the owner could
+  //    forge by claiming "first governance"). A re-registration that strips a governed trait from
+  //    a surviving command refuses at reg(), with no `null` escape. ──
   const attV = (digest: string) => [
     signAtt("launch", TRAIT_GUARDED, { guard: "warden" }, digest),
     signAtt("both", TRAIT_GUARDED, { guard: "warden" }, digest),
     signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, digest),
     signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, digest),
   ];
-  const VAULT_CMDS_V2 = VAULT_CMDS.map((m) => ({ ...m })); // same governance, new revision bytes
-  const DC_VAULT2 = register(vaultDoc(2, VAULT_CMDS_V2));
+  // V2: same governance, new revision bytes -> re-registers cleanly (no strip), re-attaches, serves.
+  const DC_VAULT2 = register(vaultDoc(2, VAULT_CMDS.map((m) => ({ ...m }))));
   await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT2], protocol: { v: 1 } }, IID);
   const grantV2 = await grantFor("vault", IID);
-  const surfaceV2 = await verifyGovernedSurface({ serve: grantV2, definitions: defs, attachments: attV(DC_VAULT2), previous: surfaceV1, resolveAnchor, readArtifact });
-  c("verifyGovernedSurface WITH a prior surface folds continuity in: an authority re-attachment for the NEW digest carries governance across the revision",
+  const surfaceV2 = await verifyGovernedSurface({ serve: grantV2, definitions: defs, attachments: attV(DC_VAULT2), resolveAnchor, readArtifact });
+  c("a re-registration that KEEPS governance (re-attaches at the new digest) registers and verifies",
     surfaceV2.commands["launch"]?.[TRAIT_GUARDED] !== undefined);
-  await rejects("continuity never runs backwards (the next surface is at an equal-or-later registration revision)",
-    () => verifyGovernedSurface({ serve: grantV1, definitions: defs, attachments: fullAttachments(), previous: surfaceV2, resolveAnchor, readArtifact }), "failed-precondition");
 
-  // V3 STRIPS launch's governed declaration. verifyGovernedSurface with the prior surface MUST
-  // refuse (mandatory continuity) — the executable bypass the panel reproduced was doing this
-  // verify + serve and only THEN calling the helper.
+  // V3 STRIPS launch's guarded declaration but keeps the command. The re-registration itself
+  // refuses at the trusted registrar (the FORGE the panel reproduced: previously an owner could
+  // brand a stripped surface with previous:null and serve it; now the prior state is the registry's).
   const VAULT_CMDS_V3 = VAULT_CMDS.map((m) => { const { traits: _t, ...rest } = m; return m.name === "launch" ? rest : { ...m }; });
   const DC_VAULT3 = register(vaultDoc(3, VAULT_CMDS_V3));
-  await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT3], protocol: { v: 1 } }, IID);
-  const grantV3 = await grantFor("vault", IID);
-  const attV3 = () => [
-    signAtt("both", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT3),
-    signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, DC_VAULT3),
-    signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, DC_VAULT3),
-  ];
-  await rejects("a governance-STRIPPING re-registration cannot produce a servable surface (continuity is folded into verification, not a skippable call)",
-    () => verifyGovernedSurface({ serve: grantV3, definitions: defs, attachments: attV3(), previous: surfaceV2, resolveAnchor, readArtifact }), "failed-precondition");
-  // The standalone check still refuses too (it is the internal mechanism, exposed for tooling).
-  const surfaceV3 = await verifyGovernedSurface({ serve: grantV3, definitions: defs, attachments: attV3(), previous: null, resolveAnchor, readArtifact });
-  await rejects("the exposed assertGovernedContinuity refuses the same strip",
-    () => assertGovernedContinuity(surfaceV2, surfaceV3), "failed-precondition");
+  await rejects("a governance-STRIPPING re-registration refuses at the TRUSTED registrar (prior spec is the registry's, not a caller argument - no null escape)",
+    () => reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT3], protocol: { v: 1 } }, IID), "permission-denied");
+  // A DOWNGRADE (drop ONE of two governed traits from a surviving command) is likewise refused.
+  const VAULT_CMDS_V3b = VAULT_CMDS.map((m) => (m.name === "both" ? { ...m, traits: [TRAIT_GUARDED] } : { ...m })); // both loses priced
+  const DC_VAULT3b = register(vaultDoc(3, VAULT_CMDS_V3b));
+  await rejects("a governance DOWNGRADE (surviving command loses one of two governed traits) refuses at the registrar",
+    () => reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT3b], protocol: { v: 1 } }, IID), "permission-denied");
 
-  // V4 REMOVES the launch command entirely — a plain command removal, not a governance strip.
+  // V4 REMOVES the launch command entirely (not a strip) -> re-registers cleanly.
   const VAULT_CMDS_V4 = VAULT_CMDS.filter((m) => m.name !== "launch").map((m) => ({ ...m }));
   const DC_VAULT4 = register(vaultDoc(4, VAULT_CMDS_V4));
   await reg({ endpoint: "vault", owner: "u_op", clusterDigests: [DC_VAULT4], protocol: { v: 1 } }, IID);
   const grantV4 = await grantFor("vault", IID);
   const surfaceV4 = await verifyGovernedSurface({
-    serve: grantV4, definitions: defs, previous: surfaceV2, resolveAnchor, readArtifact,
+    serve: grantV4, definitions: defs, resolveAnchor, readArtifact,
     attachments: [
       signAtt("both", TRAIT_GUARDED, { guard: "warden" }, DC_VAULT4),
       signAtt("charge", TRAIT_PRICED, { currency: "usd", amount: 6 }, DC_VAULT4),
       signAtt("both", TRAIT_PRICED, { currency: "usd", amount: 9 }, DC_VAULT4),
     ],
   });
-  c("a command REMOVED from the surface carries no continuity obligation (verifies with the prior surface)",
+  c("removing the whole command (not stripping its trait) re-registers and verifies",
     surfaceV4.commands["launch"] === undefined && surfaceV4.commands["both"]?.[TRAIT_GUARDED] !== undefined);
   await rejects("a governed surface for a SUPERSEDED registration revision refuses at construction (a re-registration demands a fresh verification)",
     async () => serveEndpoint(nc, SPACE, grantV4, ["charge", "both", "free"].map(defFor), { public: true }, { traits: { governed: surfaceV1, guard, verifyPaymentProof } }));
@@ -507,7 +502,7 @@ try {
   await reg({ endpoint: "tgtvault", owner: "u_op", clusterDigests: [DC_TGT], protocol: { v: 1 } }, IID);
   const grantTgt = await grantFor("tgtvault", IID);
   const tgtSurface = await verifyGovernedSurface({
-    serve: grantTgt, definitions: [defGuarded], previous: null, resolveAnchor, readArtifact,
+    serve: grantTgt, definitions: [defGuarded], resolveAnchor, readArtifact,
     attachments: [signArtifact(attBody({ endpoint: "tgtvault", command: "guardtgt", traitUrn: TRAIT_GUARDED, value: { guard: "warden" }, contractDigest: DC_TGT }), opKp)],
   });
   let mappingUid = TGT_UID;       // the CURRENT lifecycle mapping the resolver reports
