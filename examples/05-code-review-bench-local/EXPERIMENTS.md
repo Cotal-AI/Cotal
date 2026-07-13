@@ -18,7 +18,9 @@ positive, so the benchmark rewards matching what humans chose to comment on, not
 | bug-hunter+keeper duo + full files | .356 | .500 | .416 | AIM at the golden skew = +both (stable n=2) |
 | + sweeper (3rd reviewer for minor-but-real) | .33-.36 | .54-.57 | .41-.44 (n=6) | +5-10 goldens every run, noisy precision |
 | swarm x3 runs, majority (>=2/3) vote | .367 | .537 | .436 | frontier shift: highest multi-reviewer P |
-| swarm x3 runs, UNANIMOUS (3/3) findings | .45-.46 | .463 | **.457-.463** | best; confirmed on 2 independent trios |
+| swarm x3 runs, UNANIMOUS (3/3) findings | .45-.46 | .463 | .457-.463 | confirmed on 2 independent trios |
+| swarm x6 runs, 4-of-6 vote | .407 | .544 | .465 | more runs = finer dial, more recall kept |
+| swarm x6 runs, 5-of-6 vote | .455 | .478 | **.466** | best overall |
 
 Same-judge comparison against the leaderboard tools' own published findings: cubic-v2 .579,
 qodo-extended-v2 .563, **ours .457-.463**, Cursor Bugbot .445, greptile-v4 .415, Claude Code .375,
@@ -37,6 +39,22 @@ CodeRabbit .352, Copilot .346, Gemini .325.
    findings by underlying issue, keep those found in >=k runs. Unanimity (3/3) bought +.10
    precision for -.07 recall. Findings that reproduce across resamples are disproportionately the
    ones humans flagged. This is Cursor Bugbot's documented core mechanism, and it transfers.
+   With 6 runs the support curve is: k=2 F1 .387 (80 TP, our recall ceiling), k=3 .434, k=4 .465,
+   k=5 .466 (peak), k=6 .442 (over-filtered). More runs give a finer dial; 4-of-6 and 5-of-6 both
+   beat 3-of-3.
+
+## The scorer null (the campaign's sharpest negative)
+
+We then built the leaders' documented filter design: a reflect pass scoring every cross-run
+cluster 0-10 against the patch with an impact rubric, trigger-feasibility steps, and the support
+count as context (`src/score.ts`), expecting to recover recall by keeping high-scoring
+low-support findings. It does not discriminate AT ALL: keep score>=7 alone gives P .278 (base
+rate), and every (support OR score) hybrid scores BELOW its pure-support base because the added
+high-score singletons are almost all false positives. Combined with the five dead post-hoc
+filters and two dead verify passes, the conclusion is now overdetermined for this benchmark:
+NO content-based judgment separates "golden" from "plausible but uncommented"; the ONLY signal
+that does is behavioral - whether independent runs reproduce the finding. Filter on
+reproducibility, not on content.
 
 ## The graveyard (all tested to a verdict, most twice)
 

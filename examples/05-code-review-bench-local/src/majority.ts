@@ -11,10 +11,12 @@ import { spawn } from "node:child_process";
 
 const [outPath, minSupportArg, ...inputs] = process.argv.slice(2);
 if (!outPath || !minSupportArg || inputs.length < 2) {
-  console.error("Usage: tsx src/majority.ts <out> <minSupport> <candidates.json:toolKey> x N");
+  console.error("Usage: tsx src/majority.ts <out> <minSupport|k1,k2,k3> <candidates.json:toolKey> x N");
+  console.error("With a comma list, one clustering pass emits <out base>-s<k>.json per threshold.");
   process.exit(2);
 }
-const minSupport = Number(minSupportArg);
+const supports = minSupportArg.split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0);
+const minSupport = supports[0];
 const dedupModel = process.env.COTAL_BENCH_PERSONA_MODEL || "openai/gpt-5.5";
 const timeoutMs = Number(process.env.COTAL_BENCH_REVIEW_TIMEOUT_MS || 600_000);
 const outTool = process.env.COTAL_BENCH_TOOL || "cotal-majority";
@@ -46,7 +48,11 @@ async function main() {
     keys.push(key);
   }
   const prUrls = Object.keys(runs[0]);
-  const merged: Record<string, Record<string, Cand[]>> = {};
+  // One merged map per requested support threshold; single clustering pass feeds all of them.
+  const mergedByK: Record<number, Record<string, Record<string, Cand[]>>> = {};
+  supports.forEach((k) => { mergedByK[k] = {}; });
+  const merged = mergedByK[minSupport];
+  const clusterDump: Record<string, Array<{ support: number; text: string; path?: string | null; line?: number | null; severity?: string }>> = {};
   let total = 0;
   let kept = 0;
   for (const url of prUrls) {
@@ -71,25 +77,38 @@ async function main() {
       groups = all.map((_, i) => [i]);
     }
     const seen = new Set<number>();
-    const keptCands: Cand[] = [];
+    const keptByK: Record<number, Cand[]> = {};
+    supports.forEach((k) => { keptByK[k] = []; });
+    clusterDump[url] = [];
     for (const group of groups) {
       const members = group.filter((i) => i >= 0 && i < all.length && !seen.has(i));
       if (!members.length) continue;
       members.forEach((i) => seen.add(i));
       const support = new Set(members.map((i) => all[i].run)).size;
-      if (support >= minSupport) {
-        const rep = members.map((i) => all[i]).sort((a, b) => (b.line !== null && b.line !== undefined ? 1 : 0) - (a.line !== null && a.line !== undefined ? 1 : 0))[0];
-        keptCands.push({ text: rep.text, path: rep.path, line: rep.line, severity: rep.severity });
+      const rep = members.map((i) => all[i]).sort((a, b) => (b.line !== null && b.line !== undefined ? 1 : 0) - (a.line !== null && a.line !== undefined ? 1 : 0))[0];
+      clusterDump[url].push({ support, text: rep.text, path: rep.path, line: rep.line, severity: rep.severity });
+      for (const k of supports) {
+        if (support >= k) keptByK[k].push({ text: rep.text, path: rep.path, line: rep.line, severity: rep.severity });
       }
     }
     // Unplaced indexes (model gaps) are singletons -> below any minSupport>=2, dropped by design.
-    kept += keptCands.length;
-    merged[url] = { [outTool]: keptCands };
-    console.log(`${url}: ${all.length} -> ${keptCands.length} (support>=${minSupport})`);
+    kept += keptByK[minSupport].length;
+    for (const k of supports) mergedByK[k][url] = { [outTool]: keptByK[k] };
+    console.log(`${url}: ${all.length} -> ${supports.map((k) => `s${k}:${keptByK[k].length}`).join(" ")}`);
   }
   await mkdir(path.dirname(outPath), { recursive: true });
-  await writeFile(outPath, JSON.stringify(merged, null, 2));
-  console.log(`TOTAL: ${total} findings -> ${kept} majority candidates. Wrote ${outPath}`);
+  if (supports.length === 1) {
+    await writeFile(outPath, JSON.stringify(merged, null, 2));
+  } else {
+    const base = outPath.replace(/\.json$/, "");
+    for (const k of supports) {
+      await writeFile(`${base}-s${k}.json`, JSON.stringify(mergedByK[k], null, 2));
+      console.log(`wrote ${base}-s${k}.json (${Object.values(mergedByK[k]).reduce((n, pr) => n + Object.values(pr)[0].length, 0)} candidates)`);
+    }
+  }
+  // Cluster dump for downstream scorers (rank-and-threshold instead of hard voting).
+  await writeFile(outPath.replace(/\.json$/, "") + "-clusters.json", JSON.stringify(clusterDump, null, 2));
+  console.log(`TOTAL: ${total} findings -> ${kept} majority candidates (at support>=${minSupport}). Wrote ${outPath}`);
 }
 
 main().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exit(1); });
