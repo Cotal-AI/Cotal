@@ -427,20 +427,34 @@ export function assertIssuerScopeCoversHandle(anchor: SignerAnchor, handle: Capa
  *  `true`, `undefined`, or an unreadable status all FAIL CLOSED as revoked. */
 export type HandleRevocationReader = (issuerKeyId: string, id: string) => Promise<boolean> | boolean;
 
-/** Race an await against the REMAINING verification budget: a stuck registry/revocation
- *  authority is a bounded `unavailable` refusal, never a hung verification. The caller passes
- *  the remaining milliseconds of ONE total walk budget (never a per-await reset: sixteen links
- *  each burning a full fresh budget would multiply the ceiling); an exhausted budget refuses
- *  immediately. Races `Promise.resolve(p)` unconditionally (a non-native thenable must not
- *  bypass the deadline). */
-async function withVerifyBudget<T>(p: Promise<T> | T, remainingMs: number, what: string): Promise<T> {
+/** Race an authority read against the REMAINING verification budget: a stuck registry/revocation
+ *  authority is a bounded `unavailable` refusal, never a hung verification. The caller passes the
+ *  remaining milliseconds of ONE total walk budget (never a per-await reset: sixteen links each
+ *  burning a full fresh budget would multiply the ceiling); an exhausted budget refuses
+ *  IMMEDIATELY, WITHOUT invoking the authority seam (the work is a THUNK, checked against the
+ *  budget before it is started). Races `Promise.resolve(p)` unconditionally (a non-native
+ *  thenable must not bypass the deadline), and NORMALIZES any lookup failure (a raw seam
+ *  rejection) to a catalog `unavailable`, so retry classification is deterministic.
+ *
+ *  Deferred (a shared-seam API change, tracked separately): on timeout the underlying in-flight
+ *  read is not aborted (the {@link AnchorResolver} seam shared with signing/receipt/guard takes
+ *  no AbortSignal). The verification still fails closed and bounds the CALLER; the residual is
+ *  orphaned backend work, a resource concern, not an authorization one. */
+async function withVerifyBudget<T>(work: () => Promise<T> | T, remainingMs: number, what: string): Promise<T> {
   if (remainingMs <= 0)
-    throw new EpEnvelopeError("unavailable", `${what} found the verification budget already exhausted; the whole chain walk is ONE bounded operation and fails closed (SPEC 13.10)`);
+    throw new EpEnvelopeError("unavailable", `${what} found the verification budget already exhausted; the whole chain walk is ONE bounded operation and fails closed WITHOUT starting the read (SPEC 13.10)`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within the remaining ${remainingMs}ms verification budget; verification is bounded and fails closed (SPEC 13.10)`)), remainingMs);
   });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
+  try {
+    return await Promise.race([Promise.resolve(work()), deadline]); // work() invoked ONLY after the budget check
+  } catch (e) {
+    if (e instanceof EpEnvelopeError) throw e;
+    throw new EpEnvelopeError("unavailable", `${what} failed: ${(e as Error)?.message ?? String(e)}; a lookup failure is a bounded unavailable, never a raw error (SPEC 13.10)`);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Verify a presented handle CHAIN inline (§13.6): the leaf plus every `parentDigest`-linked
@@ -492,10 +506,28 @@ export async function verifyHandleChain(
   const budget = opts.verifyBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `verifyBudgetMs must be a positive integer; got ${JSON.stringify(opts.verifyBudgetMs)}`);
-  // ONE total walk budget: every await races the REMAINING time on this clock, so sixteen
-  // links cannot each burn a fresh full budget (bounded as one operation, SPEC 13.10).
-  const verifyDeadlineAt = Date.now() + budget;
-  const remainingBudget = () => verifyDeadlineAt - Date.now();
+  // Snapshot the FULL authority context into detached, frozen locals at entry, BEFORE the first
+  // await: a caller mutating opts.readRevocation / resolveAnchor / resolveHolderEpoch (or any
+  // scalar/presenter field) between links would otherwise swap the authority a single
+  // verification decides against. Every consuming read below uses ONLY these locals.
+  if (!isRec(opts.presenter) || typeof opts.presenter.id !== "string" || typeof opts.presenter.lifecycleUid !== "string")
+    throw new EpEnvelopeError("failed-precondition", "the presenter must carry a string id and lifecycleUid");
+  const A = Object.freeze({
+    now: opts.now,
+    space: opts.space,
+    presenter: Object.freeze({ id: opts.presenter.id, lifecycleUid: opts.presenter.lifecycleUid, epoch: opts.presenter.epoch }),
+    maxSturdyTtlMs: opts.maxSturdyTtlMs ?? HANDLE_MAX_STURDY_TTL_MS,
+    maxLiveTtlMs: opts.maxLiveTtlMs ?? HANDLE_MAX_LIVE_TTL_MS,
+    resolveHolderEpoch: opts.resolveHolderEpoch,
+    resolveAnchor: opts.resolveAnchor,
+    readRevocation: opts.readRevocation,
+    commandContract: opts.commandContract,
+  });
+  // ONE total walk budget on a MONOTONIC clock: every read races the REMAINING time, so sixteen
+  // links cannot each burn a fresh full budget (bounded as one operation, SPEC 13.10), and a
+  // wall-clock adjustment cannot extend the budget backward or exhaust it forward.
+  const startedAt = performance.now();
+  const remainingBudget = () => budget - (performance.now() - startedAt);
   // Snapshot each RAW artifact to a detached, byte-bounded, deep-frozen copy at entry (D28: the
   // signature and digest identity are checked over EXACTLY this snapshot; the parsed projection
   // derives from the same bytes, so a projection/default can never be the signed value, and a
@@ -526,8 +558,8 @@ export async function verifyHandleChain(
   }
 
   // Leaf holder binding (the presenter IS the leaf's holder).
-  if (leaf.holder.id !== opts.presenter.id || leaf.holder.lifecycleUid !== opts.presenter.lifecycleUid)
-    throw new EpEnvelopeError("permission-denied", `handle "${leaf.id}" is holder-bound to ${leaf.holder.id}/${leaf.holder.lifecycleUid}; the presenter ${opts.presenter.id}/${opts.presenter.lifecycleUid} is not the holder — a recycled alias cannot present its predecessor's handles (SPEC 13.6)`);
+  if (leaf.holder.id !== A.presenter.id || leaf.holder.lifecycleUid !== A.presenter.lifecycleUid)
+    throw new EpEnvelopeError("permission-denied", `handle "${leaf.id}" is holder-bound to ${leaf.holder.id}/${leaf.holder.lifecycleUid}; the presenter ${A.presenter.id}/${A.presenter.lifecycleUid} is not the holder — a recycled alias cannot present its predecessor's handles (SPEC 13.6)`);
 
   // Walk every link: currency, containment, issuer authority, signature, revocation.
   for (let i = 0; i < handles.length; i++) {
@@ -535,28 +567,29 @@ export async function verifyHandleChain(
     const parent = handles[i + 1];
 
     // Per-link currency (§13.6: expiry/ceilings fail closed on EVERY link, not only the leaf).
-    if (h.space !== opts.space)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" is bound to space ${h.space}, not ${opts.space} (SPEC 13.6)`);
+    if (h.space !== A.space)
+      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" is bound to space ${h.space}, not ${A.space} (SPEC 13.6)`);
     const nbf = h.nbf ?? h.iat;
-    if (opts.now < nbf || opts.now > h.exp)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" is outside its validity window [${nbf}, ${h.exp}] at now ${opts.now} (SPEC 13.6: expiry fails closed on every link)`);
-    if (h.iat > opts.now)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" claims a FUTURE signing time (iat ${h.iat} > now ${opts.now}); a forward-dated artifact never verifies (SPEC 13.10)`);
-    const ttlCeiling = h.sturdy ? (opts.maxSturdyTtlMs ?? HANDLE_MAX_STURDY_TTL_MS) : (opts.maxLiveTtlMs ?? HANDLE_MAX_LIVE_TTL_MS);
+    if (A.now < nbf || A.now > h.exp)
+      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" is outside its validity window [${nbf}, ${h.exp}] at now ${A.now} (SPEC 13.6: expiry fails closed on every link)`);
+    if (h.iat > A.now)
+      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" claims a FUTURE signing time (iat ${h.iat} > now ${A.now}); a forward-dated artifact never verifies (SPEC 13.10)`);
+    const ttlCeiling = h.sturdy ? A.maxSturdyTtlMs : A.maxLiveTtlMs;
     if (h.exp - Math.min(h.iat, nbf) > ttlCeiling)
       throw new EpEnvelopeError("permission-denied", `handle "${h.id}" validity span ${h.exp - Math.min(h.iat, nbf)}ms exceeds the ${h.sturdy ? "sturdy" : "live"} ceiling ${ttlCeiling}ms (SPEC 13.6)`);
-    if (h.exp > opts.now + ttlCeiling)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" remains valid ${h.exp - opts.now}ms past now, beyond the clock-anchored ${h.sturdy ? "sturdy" : "live"} ceiling ${ttlCeiling}ms; a dated-in-the-future artifact cannot outlive its ceiling (SPEC 13.6)`);
+    if (h.exp > A.now + ttlCeiling)
+      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" remains valid ${h.exp - A.now}ms past now, beyond the clock-anchored ${h.sturdy ? "sturdy" : "live"} ceiling ${ttlCeiling}ms; a dated-in-the-future artifact cannot outlive its ceiling (SPEC 13.6)`);
     if (!h.sturdy) {
       if (i === 0) {
-        if (h.epoch !== opts.presenter.epoch)
-          throw new EpEnvelopeError("permission-denied", `live handle "${h.id}" binds process epoch ${h.epoch}; the presenter epoch is ${opts.presenter.epoch} (live authority dies on restart, SPEC 13.1/13.6)`);
+        if (h.epoch !== A.presenter.epoch)
+          throw new EpEnvelopeError("permission-denied", `live handle "${h.id}" binds process epoch ${h.epoch}; the presenter epoch is ${A.presenter.epoch} (live authority dies on restart, SPEC 13.1/13.6)`);
       } else {
         // A LIVE ANCESTOR binds ITS holder's process epoch: fresh-check it (a restarted
         // intermediate kills every descendant, exactly like a revoked sturdy ancestor).
-        if (typeof opts.resolveHolderEpoch !== "function")
+        if (typeof A.resolveHolderEpoch !== "function")
           throw new EpEnvelopeError("failed-precondition", `the chain contains a LIVE ancestor ("${h.id}") but no resolveHolderEpoch seam was supplied; a live link's epoch currency is never assumed (SPEC 13.6)`);
-        const current = await withVerifyBudget(opts.resolveHolderEpoch(h.holder), remainingBudget(), `the holder-epoch resolver for "${h.id}"`);
+        const resolveHolderEpoch = A.resolveHolderEpoch;
+        const current = await withVerifyBudget(() => resolveHolderEpoch(h.holder), remainingBudget(), `the holder-epoch resolver for "${h.id}"`);
         if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
           throw new EpEnvelopeError("internal", `the holder-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.6)`);
         if (current === null || current !== h.epoch)
@@ -567,7 +600,7 @@ export async function verifyHandleChain(
     if (parent !== undefined) assertHandleContainedIn(h, parent);
 
     const anchor = await withVerifyBudget(
-      resolveAnchorForUse(opts.resolveAnchor, { keyId: h.issuer.keyId, role: "handles", at: opts.now }),
+      () => resolveAnchorForUse(A.resolveAnchor, { keyId: h.issuer.keyId, role: "handles", at: A.now }),
       remainingBudget(), `the anchor-registry read for ${h.issuer.keyId}`);
     // The issuer of a CHILD is the PARENT's holder — bound by LIFECYCLE, not owner text: a
     // recycled alias (same id, new lifecycleUid) re-registering a key must never issue off its
@@ -589,13 +622,14 @@ export async function verifyHandleChain(
     verifyArtifactSignature(raws[i], anchor);
 
     if (h.sturdy) {
-      const revoked = await withVerifyBudget(opts.readRevocation(h.issuer.keyId, h.id), remainingBudget(), `the revocation read for "${h.id}"`);
+      const readRevocation = A.readRevocation;
+      const revoked = await withVerifyBudget(() => readRevocation(h.issuer.keyId, h.id), remainingBudget(), `the revocation read for "${h.id}"`);
       if (revoked !== false)
         throw new EpEnvelopeError("permission-denied", `a sturdy link in the chain is not provably unrevoked (handle "${h.id}", issuer ${h.issuer.keyId}, status ${JSON.stringify(revoked)}); ONLY a literal false is "not revoked" — an unreadable/undefined status fails closed, and every sturdy link is checked, not only the leaf (SPEC 13.6)`);
     }
   }
 
-  return { leaf, compiled: compileHandleGrants(leaf, { commandContract: opts.commandContract }) };
+  return { leaf, compiled: compileHandleGrants(leaf, { commandContract: A.commandContract }) };
 }
 
 /** Serialize a handle to its canonical bytes (the wire/store form). Throws if the artifact is

@@ -303,6 +303,23 @@ await rejects("the verify budget is ONE total clock across the whole walk (a per
     resolveAnchor: (keyId) => new Promise<SignerAnchor | undefined>((res) => setTimeout(() => res(anchors.get(keyId)), 160)),
     verifyBudgetMs: 250, // each single anchor read (160ms) fits the budget; their SUM must not
   }), "unavailable");
+// re-verify dc1f524 MEDIUM 1 (distsys): the authority context is snapshotted at ENTRY — a caller
+// mutating opts.readRevocation while an authority read is in flight cannot swap the authority the
+// same verification decides against.
+await rejects("mutating opts.readRevocation mid-verification does NOT swap the authority (the context is frozen at entry)",
+  (() => {
+    const mutOpts: Record<string, unknown> = {
+      ...baseOpts, now: NOW, presenter: childHolder,
+      readRevocation: (kid: string) => kid === "root-1", // root revoked → this chain MUST be rejected
+      // the first anchor read is delayed; during it, flip readRevocation to "nothing revoked"
+      resolveAnchor: (keyId: string) => new Promise<SignerAnchor | undefined>((res) => { mutOpts.readRevocation = () => false; setTimeout(() => res(anchors.get(keyId)), 40); }),
+    };
+    return () => verifyHandleChain([childHandle, rootHandle], mutOpts as never);
+  })(), "permission-denied");
+// re-verify dc1f524 MEDIUM 3 (distsys): a THROWN authority read is normalized to a catalog
+// `unavailable`, never a raw Error, so retry classification is deterministic.
+await rejects("a revocation reader that THROWS is normalized to a bounded unavailable (not a raw error)",
+  () => verifyHandleChain([rootHandle], { ...baseOpts, now: NOW, presenter: holderP, readRevocation: () => { throw new Error("registry exploded"); } }), "unavailable");
 
 // ── bounded canonical grammars + verification bounds (MEDIUM restatement) ──
 throws("a handle id that is not a bounded canonical token is a catalog contract-invalid error",
