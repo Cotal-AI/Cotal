@@ -164,7 +164,7 @@ export async function enqueueWorkItem(
   const ref = snapshotRef(itemRef);
   if (!(itemBytes instanceof Uint8Array))
     throw new EpEnvelopeError("failed-precondition", `itemBytes must be a Uint8Array (the acceptance-derived stored bytes, SPEC 13.6)`);
-  const bytes = itemBytes.slice(); // detached at entry: the published body and the CAS-loss identity check read the SAME bytes
+  const bytes = new Uint8Array(itemBytes); // real copy detached at entry: the published body and the CAS-loss identity check read the SAME bytes. NOT .slice() — a Node Buffer (Buffer extends Uint8Array, so it passes the guard above) .slice()s to an ALIASING view, which a caller mutating itemBytes during the publish await would still corrupt; new Uint8Array(...) always copies into a fresh ArrayBuffer.
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", "0");
   const subject = workItemSubject(ctx.space, ref);
@@ -674,7 +674,7 @@ export async function reconcileWorkItem(
   const workExpiry = assertSafeInt(args.workExpiry, "workExpiry");
   if (!(args.itemBytes instanceof Uint8Array))
     throw new EpEnvelopeError("failed-precondition", `itemBytes must be a Uint8Array (the acceptance-derived stored bytes, SPEC 13.6)`);
-  const itemBytes = args.itemBytes.slice();
+  const itemBytes = new Uint8Array(args.itemBytes); // real copy (NOT .slice(): a Node Buffer aliases through .slice(), defeating the detachment; new Uint8Array(...) always copies)
   const key = leaseKeyOf(ref);
   // A DEL/PURGE marker on the lease is REFUSED before any classification (same fail-closed rule
   // as lease/commit): reconciling over a deletion could recreate authoritative state.

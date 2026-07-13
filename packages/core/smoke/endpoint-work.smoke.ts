@@ -420,6 +420,23 @@ try {
       }, "conflict");
   }
 
+  // ── the SAME detachment must hold when itemBytes is a Node Buffer. A Buffer passes the
+  //    `instanceof Uint8Array` guard (Buffer extends Uint8Array), but Buffer.prototype.slice()
+  //    returns an ALIASING view — so the old `.slice()` detach was a no-op for Buffers and a
+  //    caller mutation would corrupt the "detached" published bytes. `new Uint8Array(buf)` copies
+  //    into a fresh ArrayBuffer regardless, so the conflict still fires. ──
+  {
+    const rmb = ref("req-cas-mut-buf");
+    await enqueueWorkItem(ctx, rmb, enc("BBBB")); // stored body is BBBB
+    const bufOffered = Buffer.from(enc("AAAA")); // a Node Buffer holding a DIFFERENT body
+    await rejects("a CAS-loss whose caller mutates a Node BUFFER itemBytes to match the stored body AFTER entry still CONFLICTS (new Uint8Array copies; Buffer.slice would have aliased)",
+      () => {
+        const pr = enqueueWorkItem(ctx, rmb, bufOffered); // captures AAAA into a fresh copy synchronously
+        bufOffered.set(enc("BBBB")); // mutate the caller Buffer in place; a real copy is unaffected, an aliasing slice would flip to BBBB and lose the conflict
+        return pr;
+      }, "conflict");
+  }
+
   // ── a DEL marker on the lease record never resets an authoritative lease ──
   {
     const rDel = ref("req-5");
