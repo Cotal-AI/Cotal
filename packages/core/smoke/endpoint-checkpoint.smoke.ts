@@ -22,7 +22,7 @@ import {
   timerWriterDurable, timerWriterConsumerConfig,
   mintCheckpoint, heartbeatCheckpoint, readCheckpointStatus, readCheckpointSettle,
   armCheckpointTimer, handleCheckpointFire, resumeCheckpoint, reconcileCheckpointSchedule,
-  checkpointStatusResolver, checkpointSettleSubject, epfStreamName,
+  timerWriterContext, checkpointSettleSubject, epfStreamName,
   type CheckpointRef,
 } from "../src/index.js";
 
@@ -59,11 +59,11 @@ try {
   await jsm.consumers.add(eptReqStreamName(SPACE), timerWriterConsumerConfig(SPACE, { ackWaitMs: 5_000 }));
   const writerC = await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
   // The smoke's timer-writer loop: fetch each .schedule request and arm it via the writer seam.
-  const resolveStatus = checkpointStatusResolver(kv);
+  const wctx = timerWriterContext(kv, js, SPACE);
   const drainAndArm = async (expect: number) => {
     const armed: { generation?: number }[] = [];
     for await (const m of await writerC.fetch({ max_messages: expect, expires: 2000 })) {
-      const r = await armCheckpointTimer(js, { subject: m.subject, headers: m.headers, data: m.data }, resolveStatus);
+      const r = await armCheckpointTimer(wctx, { subject: m.subject, headers: m.headers, data: m.data });
       if (r.armed) armed.push({ generation: r.generation });
       m.ack();
     }
@@ -85,10 +85,10 @@ try {
     () => {
       const h = headers();
       h.set("Nats-Schedule-Target", eptSubject(SPACE, "manager", IID, EPOCH, "victim", "fire"));
-      return armCheckpointTimer(js, { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cp1", "schedule"), headers: h, data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "cp1", generation: 1, deadline: NOW + 1_200 })) }, resolveStatus);
+      return armCheckpointTimer(wctx, { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cp1", "schedule"), headers: h, data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "cp1", generation: 1, deadline: NOW + 1_200 })) });
     }, "permission-denied");
   await rejects("a .schedule body whose timerId DISAGREES with the authenticated subject token refuses (subject wins)",
-    () => armCheckpointTimer(js, { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cp1", "schedule"), data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "other", generation: 1, deadline: NOW + 1_200 })) }, resolveStatus), "failed-precondition");
+    () => armCheckpointTimer(wctx, { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cp1", "schedule"), data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "other", generation: 1, deadline: NOW + 1_200 })) }), "failed-precondition");
   const armed1 = await drainAndArm(1);
   c("the writer arms the minted request (generation 1, target derived from the subject)", armed1.length === 1 && armed1[0].generation === 1);
 
@@ -165,6 +165,14 @@ try {
   await jsm.streams.purge(epfStreamName(SPACE), { filter: checkpointSettleSubject(SPACE, ref("cp4")) }); // manufacture: settled status, missing fact
   c("the manufactured crash window is in place (status settled, EPF fact purged)",
     (await readCheckpointStatus(kv, ref("cp4")))?.value.state === "resumed" && (await readCheckpointSettle(jsm, SPACE, ref("cp4"))) === undefined);
+  // The DURABLE RECONCILER alone must repair the window (no heartbeat first: a heartbeat
+  // reconstructing the fact would mask a reconciler that skips settled states).
+  {
+    const repair = await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cp4"), instanceId: IID, epoch: EPOCH });
+    c("the durable reconciler ITSELF repairs the settled-status/missing-fact crash window (and does not re-arm)",
+      repair.reEmitted === false && (await readCheckpointSettle(jsm, SPACE, ref("cp4")))?.settle === "resumed");
+  }
+  await jsm.streams.purge(epfStreamName(SPACE), { filter: checkpointSettleSubject(SPACE, ref("cp4")) }); // re-manufacture for the heartbeat path
   await rejects("a heartbeat on the settled checkpoint REFUSES (status is the arbiter) and RE-PUBLISHES the derived fact",
     () => heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp4"), instanceId: IID, epoch: EPOCH, deadline: NOW + 120_000, now: NOW + 200 }), "failed-precondition");
   c("…and the derived one-use fact was reconstructed from the settled status", (await readCheckpointSettle(jsm, SPACE, ref("cp4")))?.settle === "resumed");
@@ -179,10 +187,10 @@ try {
   await drainAndArm(1);
   {
     const staleReq = { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cp5", "schedule"), data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "cp5", generation: 1, deadline: NOW + 60_000 })) };
-    const r = await armCheckpointTimer(js, staleReq, resolveStatus);
+    const r = await armCheckpointTimer(wctx, staleReq);
     c("a delayed STALE-generation .schedule request is DISCARDED, not armed (no rollback of the live deadline)", r.armed === false && r.reason === "stale");
     const unknownReq = { subject: eptSubject(SPACE, "manager", IID, EPOCH, "cp-ghost", "schedule"), data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: "cp-ghost", generation: 1, deadline: NOW + 60_000 })) };
-    c("a .schedule request for an UNKNOWN checkpoint is discarded", (await armCheckpointTimer(js, unknownReq, resolveStatus)).armed === false);
+    c("a .schedule request for an UNKNOWN checkpoint is discarded", (await armCheckpointTimer(wctx, unknownReq)).armed === false);
   }
 
   // ── HIGH 3: the deadline is a live fence. A heartbeat at/after the deadline refuses (a due
@@ -195,6 +203,76 @@ try {
   await rejects("a resume AT/AFTER the deadline (no fire yet) fails CLOSED — it drives EXPIRED, never resumed",
     () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp6"), presenter: holderA, now: NOW + 5_000 }), "failed-precondition");
   c("…and the deadline-passed resume settled the checkpoint EXPIRED (fail closed)", (await readCheckpointStatus(kv, ref("cp6")))?.value.state === "expired");
+
+  // ── re-verify 8ea3abe HIGH 2: a DEL status marker is a deletion, never absence — a re-mint
+  //    over it would re-open the one-use checkpoint (KV create can recreate after DEL). ──
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp7"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+  await drainAndArm(1);
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp7"), presenter: holderA, now: NOW + 100 });
+  await kv.delete("cp.manager.cp7.status");
+  await rejects("a re-mint over a DEL status marker REFUSES (a deleted one-use checkpoint is never resurrected; the same holder cannot resume twice)",
+    () => mintCheckpoint(kv, js, SPACE, { ref: ref("cp7"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW + 200 }), "failed-precondition");
+
+  // ── re-verify 8ea3abe MEDIUM 1: a lost fact CAS requires a winner CANONICALLY EQUAL to the
+  //    status arbiter — a pre-placed contradicting fact is a loud internal, never adopted. ──
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp8"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+  await drainAndArm(1);
+  {
+    const forged = { v: 1, token: "cp8", settle: "expired", generation: 1, ts: NOW + 50 };
+    const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0");
+    await js.publish(checkpointSettleSubject(SPACE, ref("cp8")), new TextEncoder().encode(JSON.stringify(forged)), { headers: h });
+  }
+  await rejects("a pre-placed CONTRADICTING settle fact makes the winning resume throw internal (the arbiter is the status; a contradicting winner is never adopted or returned as authorization)",
+    () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cp8"), presenter: holderA, now: NOW + 100 }), "internal");
+
+  // ── re-verify 8ea3abe MEDIUM 2: closed schemas + exact per-state/per-settle variants ──
+  const putStatus = async (token: string, v: Record<string, unknown>) => { await kv.put(`cp.manager.${token}.status`, new TextEncoder().encode(JSON.stringify(v))); };
+  await putStatus("cpx1", { state: "waiting", deadlineGeneration: 1, deadline: NOW + 1_000, observedSpecRevision: 1, extra: true });
+  await rejects("a status carrying an UNKNOWN field refuses (closed schema)", () => readCheckpointStatus(kv, ref("cpx1")), "internal");
+  await putStatus("cpx2", { state: "waiting", deadlineGeneration: 1, deadline: NOW + 1_000, observedSpecRevision: 1, settledTs: NOW });
+  await rejects("a WAITING status carrying settled coordinates refuses (cross-variant)", () => readCheckpointStatus(kv, ref("cpx2")), "internal");
+  await putStatus("cpx3", { state: "resumed", deadlineGeneration: 1, deadline: NOW + 1_000, observedSpecRevision: 1, settledGeneration: 1, settledTs: NOW });
+  await rejects("a RESUMED status without its settled holder refuses (no defaulted attribution)", () => readCheckpointStatus(kv, ref("cpx3")), "internal");
+  await putStatus("cpx4", { state: "expired", deadlineGeneration: 1, deadline: NOW + 1_000, observedSpecRevision: 1, settledGeneration: 1, settledTs: NOW, settledHolder: holderA });
+  await rejects("an EXPIRED status carrying a holder refuses (an expiry has no resuming principal)", () => readCheckpointStatus(kv, ref("cpx4")), "internal");
+  {
+    const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0");
+    await js.publish(checkpointSettleSubject(SPACE, ref("cpx5")), new TextEncoder().encode(JSON.stringify({ v: 1, token: "cpx5", settle: "expired", generation: 1, holder: holderA, ts: NOW })), { headers: h });
+    await rejects("an EXPIRED settle fact carrying a holder refuses (per-settle variant)", () => readCheckpointSettle(jsm, SPACE, ref("cpx5")), "internal");
+  }
+
+  // ── re-verify 8ea3abe MEDIUM 3: the timer writer is resource-attested and bounded ──
+  {
+    const req = (tok: string, sp: string) => ({ subject: eptSubject(sp, "manager", IID, EPOCH, tok, "schedule"), data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: tok, generation: 1, deadline: NOW + 60_000 })) });
+    await rejects("a HAND-ASSEMBLED timer-writer context refuses (the brand attests construction)",
+      () => armCheckpointTimer({ kv, js, space: SPACE } as never, req("cp5", SPACE)), "permission-denied");
+    await rejects("a CROSS-SPACE .schedule request refuses (the writer's status authority answers for one space)",
+      () => armCheckpointTimer(wctx, req("cp5", "otherspace")), "permission-denied");
+    const hangingKv = { get: () => new Promise(() => { /* never settles */ }) } as never;
+    const hungCtx = timerWriterContext(hangingKv, js, SPACE);
+    await rejects("a STUCK status authority is a bounded unavailable refusal, never a hung writer",
+      () => armCheckpointTimer(hungCtx, req("cp5", SPACE), { statusBudgetMs: 100 }), "unavailable");
+    await rejects("a non-positive statusBudgetMs refuses", () => armCheckpointTimer(wctx, req("cp5", SPACE), { statusBudgetMs: 0 }), "failed-precondition");
+  }
+
+  // ── re-verify 8ea3abe MEDIUM 4: full replay identity (deadline included) + entry snapshots ──
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp9"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+  await drainAndArm(1);
+  await mintCheckpoint(kv, js, SPACE, { ref: ref("cp9"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW + 100 });
+  c("an IDENTICAL mint replay is idempotent (same spec, same deadline)", (await readCheckpointStatus(kv, ref("cp9")))?.value.deadlineGeneration === 1);
+  await drainAndArm(1); // the replay re-emits the current schedule (repairs the mint-crash window)
+  await rejects("a mint replay with a DIFFERENT deadline is a loud conflict (the deadline is part of the mint identity)",
+    () => mintCheckpoint(kv, js, SPACE, { ref: ref("cp9"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 70_000, now: NOW + 200 }), "conflict");
+  {
+    // Entry snapshot: a ref whose getter answers differently on each read is detached ONCE at
+    // entry; every internal read sees the entry-time coordinate.
+    let reads = 0;
+    const shifty = { endpoint: "manager", get token() { return reads++ === 0 ? "cp10" : "cp-evil"; } } as CheckpointRef;
+    await mintCheckpoint(kv, js, SPACE, { ref: shifty, instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    c("a seam detaches its ref at ENTRY: the shifting ref minted exactly the entry-time token",
+      (await readCheckpointStatus(kv, ref("cp10"))) !== undefined && (await readCheckpointStatus(kv, ref("cp-evil"))) === undefined);
+  }
 
   // ── fail-closed storage read ──
   await kv.delete("cp.manager.cp3.status");

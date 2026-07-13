@@ -65,17 +65,89 @@ export interface CheckpointSpecValue {
   mintedAt: number;
 }
 
+/** Closed-schema guard: an unknown field in a persisted record (or a smuggled extra on an
+ *  input) is refused, never carried along. */
+function closedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string, code: "internal" | "failed-precondition"): void {
+  for (const k of Object.keys(o))
+    if (!allowed.includes(k))
+      throw new EpEnvelopeError(code, `${what} carries the unknown field "${k}"; checkpoint schemas are closed (SPEC 13.6)`);
+}
+
 function isHolder(v: unknown): v is { id: string; lifecycleUid: string } {
-  return v !== null && typeof v === "object" && typeof (v as { id?: unknown }).id === "string" && typeof (v as { lifecycleUid?: unknown }).lifecycleUid === "string";
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  return Object.keys(o).length === 2
+    && typeof o.id === "string" && o.id.length > 0
+    && typeof o.lifecycleUid === "string" && o.lifecycleUid.length > 0;
+}
+
+/** Detach a caller-supplied holder/presenter to a frozen exact copy at seam entry: a live
+ *  object mutated across an await must never move an authority coordinate mid-seam. Every
+ *  property is READ EXACTLY ONCE (a getter answering differently between a validation read and
+ *  a copy read must not split what was checked from what is used). */
+function snapshotHolder(v: unknown, what: string): { id: string; lifecycleUid: string } {
+  if (v === null || typeof v !== "object" || Array.isArray(v) || Object.keys(v).length !== 2)
+    throw new EpEnvelopeError("failed-precondition", `${what} must be a closed {id, lifecycleUid} pair of nonempty strings (SPEC 13.6/13.10)`);
+  const id = (v as Record<string, unknown>).id;
+  const lifecycleUid = (v as Record<string, unknown>).lifecycleUid;
+  if (typeof id !== "string" || id.length === 0 || typeof lifecycleUid !== "string" || lifecycleUid.length === 0)
+    throw new EpEnvelopeError("failed-precondition", `${what} must be a closed {id, lifecycleUid} pair of nonempty strings (SPEC 13.6/13.10)`);
+  return Object.freeze({ id, lifecycleUid });
+}
+
+/** Detach a caller-supplied ref to a frozen exact copy at seam entry (single-read). */
+function snapshotCpRef(ref: CheckpointRef): CheckpointRef {
+  if (ref === null || typeof ref !== "object")
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint ref must carry a nonempty endpoint and token (SPEC 13.6)`);
+  const endpoint = (ref as unknown as Record<string, unknown>).endpoint;
+  const token = (ref as unknown as Record<string, unknown>).token;
+  if (typeof endpoint !== "string" || endpoint.length === 0 || typeof token !== "string" || token.length === 0)
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint ref must carry a nonempty endpoint and token (SPEC 13.6)`);
+  return Object.freeze({ endpoint, token });
+}
+
+/** Detach + validate a caller-supplied goal binding at seam entry (closed shapes, single-read). */
+function snapshotGoal(v: unknown): { caller: EpCaller; goalId: string } {
+  if (v === null || typeof v !== "object" || Array.isArray(v))
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint goal binding must be a {caller, goalId} object (SPEC 13.6)`);
+  const o = v as Record<string, unknown>;
+  closedKeys(o, ["caller", "goalId"], "a checkpoint goal binding", "failed-precondition");
+  const goalId = o.goalId;
+  const rawCaller = o.caller;
+  if (rawCaller === null || typeof rawCaller !== "object" || Array.isArray(rawCaller) || Object.keys(rawCaller).length !== 3)
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint goal binding must carry a closed caller {owner, actor, uid} and a nonempty goalId (SPEC 13.6)`);
+  const owner = (rawCaller as Record<string, unknown>).owner;
+  const actor = (rawCaller as Record<string, unknown>).actor;
+  const uid = (rawCaller as Record<string, unknown>).uid;
+  if (typeof owner !== "string" || owner.length === 0
+    || typeof actor !== "string" || actor.length === 0
+    || typeof uid !== "string" || uid.length === 0
+    || typeof goalId !== "string" || goalId.length === 0)
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint goal binding must carry a closed caller {owner, actor, uid} and a nonempty goalId (SPEC 13.6)`);
+  return Object.freeze({ caller: Object.freeze({ owner, actor, uid }), goalId });
 }
 
 function parseCpSpec(raw: unknown, ref: CheckpointRef, key: string): CheckpointSpecValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint spec ${key} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  if (o.v !== 1 || o.token !== ref.token || !isHolder(o.holder) || typeof o.mintedAt !== "number" || !Number.isSafeInteger(o.mintedAt))
+  closedKeys(o, ["v", "token", "goal", "holder", "mintedAt"], `checkpoint spec ${key}`, "internal");
+  if (o.v !== 1 || o.token !== ref.token || !isHolder(o.holder)
+    || typeof o.mintedAt !== "number" || !Number.isSafeInteger(o.mintedAt) || o.mintedAt < 0)
     throw new EpEnvelopeError("internal", `checkpoint spec ${key} is malformed or its token disagrees with its subject (SPEC 13.6); garbled state never authorizes`);
-  return o as unknown as CheckpointSpecValue;
+  let goal: { caller: EpCaller; goalId: string } | undefined;
+  if (o.goal !== undefined) {
+    try { goal = snapshotGoal(o.goal); } catch {
+      throw new EpEnvelopeError("internal", `checkpoint spec ${key} carries a malformed goal binding; garbled state never authorizes (SPEC 13.6)`);
+    }
+  }
+  // Picked construction: the returned value carries exactly the schema fields, byte-derived.
+  return {
+    v: 1, token: o.token as string,
+    ...(goal !== undefined ? { goal } : {}),
+    holder: { id: (o.holder as { id: string }).id, lifecycleUid: (o.holder as { lifecycleUid: string }).lifecycleUid },
+    mintedAt: o.mintedAt,
+  };
 }
 
 function assertOwnerClock(now: unknown): number {
@@ -116,27 +188,50 @@ function parseSettle(raw: unknown, subject: string, ref: CheckpointRef): Checkpo
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint settle fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
+  closedKeys(o, ["v", "token", "settle", "generation", "holder", "ts"], `checkpoint settle fact on ${subject}`, "internal");
   if (o.v !== 1 || o.token !== ref.token || (o.settle !== "resumed" && o.settle !== "expired")
     || typeof o.generation !== "number" || !Number.isSafeInteger(o.generation) || o.generation < 1
-    || typeof o.ts !== "number" || !Number.isSafeInteger(o.ts)
-    || (o.holder !== undefined && !isHolder(o.holder)))
+    || typeof o.ts !== "number" || !Number.isSafeInteger(o.ts) || o.ts < 0)
     throw new EpEnvelopeError("internal", `checkpoint settle fact on ${subject} is malformed or its token disagrees with its subject (SPEC 13.6); garbled state never authorizes`);
-  return raw as CheckpointSettleFact;
+  // Per-settle variant: a RESUMED fact carries the resuming holder; an EXPIRED fact never does
+  // (an expiry has no resuming principal; a holder on it would forge resume attribution).
+  if (o.settle === "resumed" ? !isHolder(o.holder) : o.holder !== undefined)
+    throw new EpEnvelopeError("internal", `checkpoint settle fact on ${subject} violates its ${String(o.settle)} variant (resumed requires the holder; expired forbids one) (SPEC 13.6)`);
+  return {
+    v: 1, token: o.token as string, settle: o.settle,
+    generation: o.generation,
+    ...(o.holder !== undefined ? { holder: { id: (o.holder as { id: string }).id, lifecycleUid: (o.holder as { lifecycleUid: string }).lifecycleUid } } : {}),
+    ts: o.ts,
+  };
 }
 
 function parseCpStatus(raw: unknown, key: string): CheckpointStatusValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint status ${key} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
+  closedKeys(o, ["state", "deadlineGeneration", "deadline", "observedSpecRevision", "settledGeneration", "settledHolder", "settledTs"], `checkpoint status ${key}`, "internal");
   if ((o.state !== "waiting" && o.state !== "resumed" && o.state !== "expired")
     || typeof o.deadlineGeneration !== "number" || !Number.isSafeInteger(o.deadlineGeneration) || o.deadlineGeneration < 1
-    || typeof o.deadline !== "number" || !Number.isSafeInteger(o.deadline)
-    || typeof o.observedSpecRevision !== "number"
-    || (o.settledGeneration !== undefined && (typeof o.settledGeneration !== "number" || !Number.isSafeInteger(o.settledGeneration) || o.settledGeneration < 1))
-    || (o.settledTs !== undefined && (typeof o.settledTs !== "number" || !Number.isSafeInteger(o.settledTs)))
-    || (o.settledHolder !== undefined && !isHolder(o.settledHolder)))
+    || typeof o.deadline !== "number" || !Number.isSafeInteger(o.deadline) || o.deadline < 0
+    || typeof o.observedSpecRevision !== "number" || !Number.isSafeInteger(o.observedSpecRevision) || o.observedSpecRevision < 1)
     throw new EpEnvelopeError("internal", `checkpoint status ${key} is malformed; garbled state never authorizes (SPEC 13.6)`);
-  return o as CheckpointStatusValue;
+  // Per-state variants: WAITING carries no settlement coordinates; a settled state carries its
+  // full settlement (generation + ts, and the holder exactly when RESUMED). A cross-variant
+  // record is garbled, never papered over with defaults.
+  const settledShape =
+    typeof o.settledGeneration === "number" && Number.isSafeInteger(o.settledGeneration) && o.settledGeneration >= 1
+    && typeof o.settledTs === "number" && Number.isSafeInteger(o.settledTs) && o.settledTs >= 0;
+  if (o.state === "waiting"
+    ? (o.settledGeneration !== undefined || o.settledHolder !== undefined || o.settledTs !== undefined)
+    : (!settledShape || (o.state === "resumed" ? !isHolder(o.settledHolder) : o.settledHolder !== undefined)))
+    throw new EpEnvelopeError("internal", `checkpoint status ${key} violates its ${String(o.state)} variant (settled coordinates are exact, never defaulted) (SPEC 13.6)`);
+  return {
+    state: o.state, deadlineGeneration: o.deadlineGeneration, deadline: o.deadline,
+    observedSpecRevision: o.observedSpecRevision,
+    ...(o.settledGeneration !== undefined ? { settledGeneration: o.settledGeneration as number } : {}),
+    ...(o.settledHolder !== undefined ? { settledHolder: { id: (o.settledHolder as { id: string }).id, lifecycleUid: (o.settledHolder as { lifecycleUid: string }).lifecycleUid } } : {}),
+    ...(o.settledTs !== undefined ? { settledTs: o.settledTs as number } : {}),
+  };
 }
 
 /** Read the checkpoint's current status (`undefined` = unknown token). Fail-closed on DEL. */
@@ -181,19 +276,24 @@ export async function mintCheckpoint(
     deadline: number; now: number;
   },
 ): Promise<{ specRevision: number }> {
-  assertIdToken(args.ref.token, "checkpoint token");
+  // Snapshot the FULL mint input to detached locals at entry: nothing below reads args again.
+  const ref = snapshotCpRef(args.ref);
+  assertIdToken(ref.token, "checkpoint token");
+  const holder = snapshotHolder(args.holder, "a checkpoint holder (resume is holder-bound, never a bearer token)");
+  const goal = args.goal !== undefined ? snapshotGoal(args.goal) : undefined;
+  const instanceId = args.instanceId;
+  const epoch = args.epoch;
+  const deadline = args.deadline;
   const now = assertOwnerClock(args.now);
-  if (!isHolder(args.holder))
-    throw new EpEnvelopeError("failed-precondition", `a checkpoint requires a holder {id, lifecycleUid}: resume is holder-bound, never a bearer token (SPEC 13.6/13.10)`);
-  if (!Number.isSafeInteger(args.deadline) || args.deadline <= now)
-    throw new EpEnvelopeError("failed-precondition", `a checkpoint deadline is mandatory and must be in the owner's future (deadline ${args.deadline}, now ${now}); deadlines are the §13.6 contract, never optional`);
+  if (!Number.isSafeInteger(deadline) || deadline <= now)
+    throw new EpEnvelopeError("failed-precondition", `a checkpoint deadline is mandatory and must be in the owner's future (deadline ${deadline}, now ${now}); deadlines are the §13.6 contract, never optional`);
   const spec: CheckpointSpecValue = {
-    v: 1, token: args.ref.token,
-    ...(args.goal !== undefined ? { goal: args.goal } : {}),
-    holder: args.holder, mintedAt: now,
+    v: 1, token: ref.token,
+    ...(goal !== undefined ? { goal } : {}),
+    holder, mintedAt: now,
   };
-  const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(args.ref));
-  const statusKey = recordStatusKey(RECORD_KINDS.cp, cpQualifiers(args.ref));
+  const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(ref));
+  const statusKey = recordStatusKey(RECORD_KINDS.cp, cpQualifiers(ref));
   // Idempotent-if-identical (the mint is a two-key composite; a crash between spec and status, or
   // a retry, must not strand a spec-only token): create the spec; on a conflict re-read it and
   // require an IDENTICAL spec (a differing spec under the same token is a loud conflict), then
@@ -205,33 +305,80 @@ export async function mintCheckpoint(
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
     const existing = await kv.get(specKey);
     if (!existing || existing.operation !== "PUT")
-      throw new EpEnvelopeError("conflict", `checkpoint "${args.ref.token}" spec is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
-    const prior = parseCpSpec(JSON.parse(new TextDecoder().decode(existing.value)), args.ref, specKey);
-    if (prior.holder.id !== spec.holder.id || prior.holder.lifecycleUid !== spec.holder.lifecycleUid || JSON.stringify(prior.goal) !== JSON.stringify(spec.goal))
-      throw new EpEnvelopeError("conflict", `checkpoint "${args.ref.token}" already exists with a DIFFERENT spec (holder/goal); a token is minted once (SPEC 13.6)`);
+      throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" spec is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
+    const prior = parseCpSpec(JSON.parse(new TextDecoder().decode(existing.value)), ref, specKey);
+    if (prior.holder.id !== holder.id || prior.holder.lifecycleUid !== holder.lifecycleUid
+      || (prior.goal === undefined) !== (goal === undefined)
+      || (goal !== undefined && prior.goal !== undefined && (prior.goal.goalId !== goal.goalId
+        || prior.goal.caller.owner !== goal.caller.owner || prior.goal.caller.actor !== goal.caller.actor || prior.goal.caller.uid !== goal.caller.uid)))
+      throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" already exists with a DIFFERENT spec (holder/goal); a token is minted once (SPEC 13.6)`);
     specRevision = existing.revision;
   }
+  // A DEL/PURGE marker on the status is a DELETION of one-use settlement state, never absence:
+  // KV create can recreate after DEL, which would re-open a settled one-use checkpoint and let
+  // the same holder resume twice. Refuse every non-PUT marker (the same fail-closed rule as
+  // readCheckpointStatus).
   const existingStatus = await kv.get(statusKey);
-  if (!existingStatus || existingStatus.operation !== "PUT") {
+  if (existingStatus && existingStatus.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" status carries a ${existingStatus.operation} marker; a deletion never erases a pause and a mint never resurrects one - reconcile the store (SPEC 13.6)`);
+  let statusValue: CheckpointStatusValue;
+  if (!existingStatus) {
+    const initial: CheckpointStatusValue = assertStatusValue({ state: "waiting", deadlineGeneration: 1, deadline, observedSpecRevision: specRevision });
     try {
-      await createRecordEntry(kv, statusKey, assertStatusValue({ state: "waiting", deadlineGeneration: 1, deadline: args.deadline, observedSpecRevision: specRevision }));
-    } catch (e) { if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e; /* a concurrent mint created it */ }
+      await createRecordEntry(kv, statusKey, initial);
+      statusValue = initial;
+    } catch (e) {
+      if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+      // A concurrent mint won the status create: re-read and PROVE the winner (parse + the
+      // replay rules below), never assume it.
+      const won = await kv.get(statusKey);
+      if (!won || won.operation !== "PUT")
+        throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" status is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
+      statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(won.value)), statusKey);
+    }
+  } else {
+    statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(existingStatus.value)), statusKey);
   }
-  await emitScheduleRequest(js, space, { endpoint: args.ref.endpoint, instanceId: args.instanceId, epoch: args.epoch, token: args.ref.token, generation: 1, deadline: args.deadline });
+  // Replay identity covers the DEADLINE too: a still-initial (generation-1 waiting) status must
+  // carry exactly the requested deadline (a differing deadline is a different mint intent). A
+  // SETTLED status is never reset and arms nothing. A heartbeat-advanced waiting status is the
+  // same live checkpoint; the schedule re-emits at the CURRENT authoritative coordinates, never
+  // the caller's, so a replayed mint can repair the mint-crash window without rolling back.
+  if (statusValue.state !== "waiting") return { specRevision };
+  if (statusValue.deadlineGeneration === 1 && statusValue.deadline !== deadline)
+    throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" already exists with deadline ${statusValue.deadline}; a replayed mint with a different deadline (${deadline}) is a different intent (SPEC 13.6)`);
+  await emitScheduleRequest(js, space, { endpoint: ref.endpoint, instanceId, epoch, token: ref.token, generation: statusValue.deadlineGeneration, deadline: statusValue.deadline });
   return { specRevision };
 }
 
 /** Reconstruct the one-use `epf.<e>.cp.<token>` fact from a SETTLED status (the status is the
- *  arbiter; the fact is its derived durable copy). */
+ *  arbiter; the fact is its derived durable copy). A waiting status derives nothing, and the
+ *  settled coordinates are EXACT (parseCpStatus enforces the per-state variant) - a missing
+ *  coordinate is garbled state, never papered over with a default. */
 function deriveSettleFact(ref: CheckpointRef, s: CheckpointStatusValue): CheckpointSettleFact {
+  if (s.state === "waiting" || s.settledGeneration === undefined || s.settledTs === undefined
+    || (s.state === "resumed") !== (s.settledHolder !== undefined))
+    throw new EpEnvelopeError("internal", `checkpoint "${ref.token}" status does not carry a full ${s.state} settlement; garbled state never authorizes (SPEC 13.6)`);
   return {
     v: 1, token: ref.token, settle: s.state === "expired" ? "expired" : "resumed",
-    generation: s.settledGeneration ?? s.deadlineGeneration,
-    ...(s.settledHolder !== undefined ? { holder: s.settledHolder } : {}), ts: s.settledTs ?? 0,
+    generation: s.settledGeneration,
+    ...(s.settledHolder !== undefined ? { holder: { id: s.settledHolder.id, lifecycleUid: s.settledHolder.lifecycleUid } } : {}),
+    ts: s.settledTs,
   };
 }
 
-/** Publish a settled status's derived one-use fact (create-only; idempotent). */
+/** Canonical settle-fact equality (field-exact, holder included). */
+function settleFactsEqual(a: CheckpointSettleFact, b: CheckpointSettleFact): boolean {
+  return a.token === b.token && a.settle === b.settle && a.generation === b.generation && a.ts === b.ts
+    && (a.holder === undefined) === (b.holder === undefined)
+    && (a.holder === undefined || b.holder === undefined
+      || (a.holder.id === b.holder.id && a.holder.lifecycleUid === b.holder.lifecycleUid));
+}
+
+/** Publish a settled status's derived one-use fact (create-only; idempotent). On a lost CAS the
+ *  recorded winner must be READABLE and CANONICALLY EQUAL to the status-derived fact - the
+ *  status is the arbiter, so a contradicting or missing winner is a loud `internal`, never
+ *  adopted and never fabricated. */
 async function ensureSettleFact(kv: KV, js: JetStreamClient, jsm: JetStreamManager, space: string, ref: CheckpointRef, s: CheckpointStatusValue): Promise<CheckpointSettleFact> {
   const fact = deriveSettleFact(ref, s);
   const subject = checkpointSettleSubject(space, ref);
@@ -243,7 +390,11 @@ async function ensureSettleFact(kv: KV, js: JetStreamClient, jsm: JetStreamManag
     const code = (e as { code?: unknown })?.code;
     if (code !== 10071 && code !== 10164) throw e;
     const winner = await readCheckpointSettle(jsm, space, ref);
-    return winner ?? fact; // the fact already exists (byte-consistent, derived from the same status)
+    if (winner === undefined)
+      throw new EpEnvelopeError("internal", `checkpoint "${ref.token}" settle-fact CAS lost but no winner is readable; reconcile the store (SPEC 13.6)`);
+    if (!settleFactsEqual(winner, fact))
+      throw new EpEnvelopeError("internal", `checkpoint "${ref.token}" recorded settle fact (${winner.settle} generation ${winner.generation} ts ${winner.ts}) contradicts the status arbiter (${fact.settle} generation ${fact.generation} ts ${fact.ts}); a contradicting winner is never adopted (SPEC 13.6)`);
+    return winner;
   }
 }
 
@@ -273,36 +424,41 @@ export async function heartbeatCheckpoint(
   space: string,
   args: { ref: CheckpointRef; instanceId: string; epoch: number; deadline: number; now: number },
 ): Promise<CheckpointStatusValue> {
+  // Snapshot the FULL operation input to detached locals at entry; nothing below reads args again.
+  const ref = snapshotCpRef(args.ref);
+  const instanceId = args.instanceId;
+  const epoch = args.epoch;
+  const deadline = args.deadline;
   const now = assertOwnerClock(args.now);
-  const current = await readCheckpointStatus(kv, args.ref);
+  const current = await readCheckpointStatus(kv, ref);
   if (current === undefined)
-    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is unknown; a heartbeat extends only a minted checkpoint (SPEC 13.6)`);
-  const settled = await settledOrConverge(kv, js, jsm, space, args.ref);
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is unknown; a heartbeat extends only a minted checkpoint (SPEC 13.6)`);
+  const settled = await settledOrConverge(kv, js, jsm, space, ref);
   if (settled !== undefined)
-    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is settled ${settled.settle}; a settled checkpoint never extends (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is settled ${settled.settle}; a settled checkpoint never extends (SPEC 13.6)`);
   if (current.value.state !== "waiting")
-    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is ${current.value.state}; only a waiting checkpoint extends (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is ${current.value.state}; only a waiting checkpoint extends (SPEC 13.6)`);
   // DEADLINE FENCE: a checkpoint at/after its current authoritative deadline is DUE — it must
   // expire, not be revived. A heartbeat only extends a still-live checkpoint (SPEC 13.6).
   if (now >= current.value.deadline)
-    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is at/after its deadline ${current.value.deadline} (now ${now}); a due checkpoint expires and cannot be extended (SPEC 13.6)`);
-  if (!Number.isSafeInteger(args.deadline) || args.deadline <= now)
-    throw new EpEnvelopeError("failed-precondition", `the extended deadline must be in the owner's future (deadline ${args.deadline}, now ${now})`);
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is at/after its deadline ${current.value.deadline} (now ${now}); a due checkpoint expires and cannot be extended (SPEC 13.6)`);
+  if (!Number.isSafeInteger(deadline) || deadline <= now)
+    throw new EpEnvelopeError("failed-precondition", `the extended deadline must be in the owner's future (deadline ${deadline}, now ${now})`);
   if (current.value.deadlineGeneration + 1 > Number.MAX_SAFE_INTEGER)
-    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" generation would overflow; reconcile the store (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" generation would overflow; reconcile the store (SPEC 13.6)`);
   const next: CheckpointStatusValue = assertStatusValue({
-    state: "waiting", deadlineGeneration: current.value.deadlineGeneration + 1, deadline: args.deadline,
+    state: "waiting", deadlineGeneration: current.value.deadlineGeneration + 1, deadline,
     observedSpecRevision: current.value.observedSpecRevision,
   });
   // The status CAS is the shared coordinate: a concurrent settle CAS-ing the SAME revision loses,
   // so this heartbeat and any fire/resume settlement serialize on the status revision.
   try {
-    await updateRecordEntry(kv, recordStatusKey(RECORD_KINDS.cp, cpQualifiers(args.ref)), next, current.revision);
+    await updateRecordEntry(kv, recordStatusKey(RECORD_KINDS.cp, cpQualifiers(ref)), next, current.revision);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    throw new EpEnvelopeError("conflict", `checkpoint "${args.ref.token}" was settled or heartbeat concurrently; re-read and re-decide (SPEC 13.6)`);
+    throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" was settled or heartbeat concurrently; re-read and re-decide (SPEC 13.6)`);
   }
-  await emitScheduleRequest(js, space, { endpoint: args.ref.endpoint, instanceId: args.instanceId, epoch: args.epoch, token: args.ref.token, generation: next.deadlineGeneration, deadline: args.deadline });
+  await emitScheduleRequest(js, space, { endpoint: ref.endpoint, instanceId, epoch, token: ref.token, generation: next.deadlineGeneration, deadline });
   return next;
 }
 
@@ -317,40 +473,74 @@ const SCHEDULING_HEADERS = ["Nats-Schedule", "Nats-Schedule-Target", "Nats-Sched
 /** The largest ms-epoch the broker's `@at <ISO>` schedule can represent (JS Date's ISO range). */
 const MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 
-/** The timer writer's FRESH-CHECK seam (§13.9): read the checkpoint's CURRENT authoritative
- *  `(deadlineGeneration, deadline)` from the records KV. The writer arms ONLY a request whose
- *  generation+deadline match the current status; a delayed/redelivered stale-generation request
- *  is DISCARDED, never armed (otherwise a same-subject rollup could roll `.armed` back to a
- *  superseded generation and silently lose the live deadline). */
-export type CheckpointStatusResolver = (ref: CheckpointRef) => Promise<{ deadlineGeneration: number; deadline: number; state: "waiting" | "resumed" | "expired" } | undefined> | { deadlineGeneration: number; deadline: number; state: "waiting" | "resumed" | "expired" } | undefined;
+/** The timer writer's RESOURCE-ATTESTED context: the records KV (its fresh-check status
+ *  authority), the JetStream client (its `.armed` publish rail), and the ONE space both serve,
+ *  bound together as one opaque frozen value. The brand (a module-private WeakSet) makes a
+ *  hand-assembled look-alike refusable, so the writer can never fresh-check a space-A request
+ *  against a space-B status authority with the same token. */
+export interface TimerWriterContext {
+  readonly kv: KV;
+  readonly js: JetStreamClient;
+  readonly space: string;
+}
 
-/** A ready-made resolver over a records KV. */
-export function checkpointStatusResolver(kv: KV): CheckpointStatusResolver {
-  return async (ref) => {
-    const s = await readCheckpointStatus(kv, ref);
-    return s === undefined ? undefined : { deadlineGeneration: s.value.deadlineGeneration, deadline: s.value.deadline, state: s.value.state };
-  };
+const BRANDED_TIMER_CONTEXTS = new WeakSet<object>();
+
+export function timerWriterContext(kv: KV, js: JetStreamClient, space: string): TimerWriterContext {
+  if (kv === null || typeof kv !== "object" || typeof (kv as { get?: unknown }).get !== "function")
+    throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a records KV (SPEC 13.2)`);
+  if (js === null || typeof js !== "object" || typeof (js as { publish?: unknown }).publish !== "function")
+    throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a JetStream client (SPEC 13.2)`);
+  if (typeof space !== "string" || space.length === 0)
+    throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a nonempty space (SPEC 13.2)`);
+  const ctx: TimerWriterContext = Object.freeze({ kv, js, space });
+  BRANDED_TIMER_CONTEXTS.add(ctx);
+  return ctx;
+}
+
+function assertTimerCtx(ctx: TimerWriterContext): void {
+  if (ctx === null || typeof ctx !== "object" || !BRANDED_TIMER_CONTEXTS.has(ctx))
+    throw new EpEnvelopeError("permission-denied", `the timer-writer context was not constructed by timerWriterContext(); a hand-assembled context never attests its resources (SPEC 13.2)`);
+}
+
+/** Race the fresh-check against the writer's budget: a stuck status authority is a bounded
+ *  `unavailable` refusal, never a hung writer. Races `Promise.resolve(p)` unconditionally so a
+ *  non-native thenable cannot bypass the deadline. */
+async function withStatusBudget<T>(p: Promise<T> | T, budgetMs: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; the timer writer is bounded and fails closed (SPEC 13.2)`)), budgetMs);
+  });
+  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
 }
 
 /** The TIMER WRITER: turn one authenticated `.schedule` request into the authoritative `.armed`
  *  publish. The armed/fire subjects derive from the REQUEST SUBJECT's own tokens (never body
  *  fields); the body must agree with the subject's timerId; any scheduling header on the request
- *  is a loud refusal. The writer FRESH-CHECKS the authoritative `(generation, deadline)` via
- *  `resolveStatus` and arms ONLY the current generation — a stale/delayed request is DISCARDED
- *  (`{ armed: false }`), so a rollup can never roll `.armed` back to a superseded deadline. A
- *  current request re-derives the same `.armed`; the server rollup makes it an idempotent no-op
- *  replacement (what the reconciler's over-emission rests on). */
+ *  is a loud refusal; a request whose subject space is not the context's space is refused (the
+ *  writer's status authority answers for ONE space). The writer FRESH-CHECKS the authoritative
+ *  `(generation, deadline)` from the context's records KV within a bounded budget and arms ONLY
+ *  the current generation — a stale/delayed request is DISCARDED (`{ armed: false }`), so a
+ *  rollup can never roll `.armed` back to a superseded deadline. A current request re-derives
+ *  the same `.armed`; the server rollup makes it an idempotent no-op replacement (what the
+ *  reconciler's over-emission rests on). */
 export async function armCheckpointTimer(
-  js: JetStreamClient,
+  ctx: TimerWriterContext,
   msg: { subject: string; headers?: MsgHdrs; data: Uint8Array },
-  resolveStatus: CheckpointStatusResolver,
+  opts?: { statusBudgetMs?: number },
 ): Promise<{ armed: boolean; armedSubject?: string; fireSubject?: string; generation?: number; reason?: "stale" | "settled" | "unknown" }> {
+  assertTimerCtx(ctx);
+  const budget = opts?.statusBudgetMs ?? 5_000;
+  if (!Number.isSafeInteger(budget) || budget <= 0)
+    throw new EpEnvelopeError("failed-precondition", `statusBudgetMs must be a positive integer; got ${JSON.stringify(opts?.statusBudgetMs)}`);
   for (const h of SCHEDULING_HEADERS)
     if (msg.headers?.get(h))
       throw new EpEnvelopeError("permission-denied", `the .schedule request on ${msg.subject} carries the scheduling header ${h}; a request's headers are inert bytes and the writer rejects them - only the writer's own .armed publish schedules (SPEC 13.2, ADR-51)`);
   const parsed = parseEpSubject(msg.subject);
   if (parsed === null || parsed.plane !== "timer" || parsed.phase !== "schedule")
     throw new EpEnvelopeError("failed-precondition", `${msg.subject} is not a .schedule request subject; the writer arms nothing else (SPEC 13.2)`);
+  if (space(msg.subject) !== ctx.space)
+    throw new EpEnvelopeError("permission-denied", `the .schedule request on ${msg.subject} is for space "${space(msg.subject)}" but this writer serves "${ctx.space}"; a cross-space fresh-check would answer with the wrong authority (SPEC 13.2)`);
   let body: unknown;
   try { body = JSON.parse(new TextDecoder().decode(msg.data)); } catch (e) {
     throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${msg.subject} does not decode as JSON: ${(e as Error).message}`);
@@ -360,18 +550,22 @@ export async function armCheckpointTimer(
     || typeof o.generation !== "number" || !Number.isSafeInteger(o.generation) || o.generation < 1
     || typeof o.deadline !== "number" || !Number.isSafeInteger(o.deadline) || o.deadline < 0 || o.deadline > MAX_SCHEDULE_MS)
     throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${msg.subject} is malformed, its body timerId disagrees with the authenticated subject token, or its deadline is out of the scheduler's date range (SPEC 13.2)`);
-  // FRESH-CHECK: arm only the current generation/deadline; discard a stale or settled request.
-  const current = await resolveStatus({ endpoint: parsed.endpoint, token: parsed.timerId });
+  // FRESH-CHECK (bounded): arm only the current generation/deadline from the context's own
+  // records KV; discard a stale or settled request.
+  const current = await withStatusBudget(
+    readCheckpointStatus(ctx.kv, { endpoint: parsed.endpoint, token: parsed.timerId }),
+    budget, `the status fresh-check for ${msg.subject}`,
+  );
   if (current === undefined) return { armed: false, reason: "unknown" };
-  if (current.state !== "waiting") return { armed: false, reason: "settled" };
-  if (current.deadlineGeneration !== o.generation || current.deadline !== o.deadline)
+  if (current.value.state !== "waiting") return { armed: false, reason: "settled" };
+  if (current.value.deadlineGeneration !== o.generation || current.value.deadline !== o.deadline)
     return { armed: false, reason: "stale" }; // a heartbeat superseded this request; arming it would roll back the live deadline
-  const armedSubject = eptSubject(space(msg.subject), parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "armed");
-  const fireSubject = eptSubject(space(msg.subject), parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "fire");
+  const armedSubject = eptSubject(ctx.space, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "armed");
+  const fireSubject = eptSubject(ctx.space, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "fire");
   const h = natsHeaders();
   h.set("Nats-Schedule", `@at ${new Date(o.deadline as number).toISOString()}`);
   h.set("Nats-Schedule-Target", fireSubject);
-  await js.publish(armedSubject, new TextEncoder().encode(JSON.stringify({ v: 1, timerId: parsed.timerId, generation: o.generation, deadline: o.deadline })), { headers: h });
+  await ctx.js.publish(armedSubject, new TextEncoder().encode(JSON.stringify({ v: 1, timerId: parsed.timerId, generation: o.generation, deadline: o.deadline })), { headers: h });
   return { armed: true, armedSubject, fireSubject, generation: o.generation as number };
 }
 
@@ -409,31 +603,40 @@ export async function handleCheckpointFire(
     now: number;
   },
 ): Promise<CheckpointFireVerdict> {
+  // Snapshot the FULL operation input to detached locals at entry (subject, header, and body
+  // bytes are read exactly once, before any await); nothing below reads args again.
+  const ref = snapshotCpRef(args.ref);
+  const instanceId = args.instanceId;
+  const epoch = args.epoch;
   const now = assertOwnerClock(args.now);
-  const parsed = parseEpSubject(args.msg.subject);
+  const subject = args.msg.subject;
+  const schedulerHeader = args.msg.headers?.get("Nats-Scheduler");
+  const dataBytes = args.msg.data;
+  const parsed = parseEpSubject(subject);
   // Bind the FULL resource coordinate (endpoint + instance + epoch + token), not just the token:
   // a valid broker fire for another instance/endpoint sharing this token cannot settle this ref.
   if (parsed === null || parsed.plane !== "timer" || parsed.phase !== "fire"
-    || parsed.endpoint !== args.ref.endpoint || parsed.instanceId !== args.instanceId
-    || parsed.epoch !== args.epoch || parsed.timerId !== args.ref.token)
+    || parsed.endpoint !== ref.endpoint || parsed.instanceId !== instanceId
+    || parsed.epoch !== epoch || parsed.timerId !== ref.token)
     return { acted: false, reason: "forged-origin" };
   const expectedArmed = eptSubject(space_, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "armed");
-  if (args.msg.headers?.get("Nats-Scheduler") !== expectedArmed)
+  if (schedulerHeader !== expectedArmed)
     return { acted: false, reason: "forged-origin" }; // only the broker's scheduler stamps this header with the schedule's own subject
   let body: Record<string, unknown>;
-  try { body = JSON.parse(new TextDecoder().decode(args.msg.data)) as Record<string, unknown>; } catch { return { acted: false, reason: "forged-origin" }; }
-  const settledAlready = await settledOrConverge(kv, js, jsm, space_, args.ref);
+  try { body = JSON.parse(new TextDecoder().decode(dataBytes)) as Record<string, unknown>; } catch { return { acted: false, reason: "forged-origin" }; }
+  const generation = body.generation;
+  const settledAlready = await settledOrConverge(kv, js, jsm, space_, ref);
   if (settledAlready !== undefined) return { acted: false, reason: "not-waiting" };
-  const status = await readCheckpointStatus(kv, args.ref);
+  const status = await readCheckpointStatus(kv, ref);
   if (status === undefined || status.value.state !== "waiting") return { acted: false, reason: "not-waiting" };
-  if (body.generation !== status.value.deadlineGeneration) return { acted: false, reason: "stale-generation" };
+  if (generation !== status.value.deadlineGeneration) return { acted: false, reason: "stale-generation" };
   if (now < status.value.deadline) {
     // A genuine broker fire under owner-behind clock skew: re-emit the CURRENT generation's
     // schedule so the deadline is not silently lost (over-emission is idempotent at the writer).
-    await emitScheduleRequest(js, space_, { endpoint: args.ref.endpoint, instanceId: args.instanceId, epoch: args.epoch, token: args.ref.token, generation: status.value.deadlineGeneration, deadline: status.value.deadline });
+    await emitScheduleRequest(js, space_, { endpoint: ref.endpoint, instanceId, epoch, token: ref.token, generation: status.value.deadlineGeneration, deadline: status.value.deadline });
     return { acted: false, reason: "re-armed" };
   }
-  const settled = await settleCheckpoint(kv, js, jsm, space_, { ref: args.ref, settle: "expired", now, statusEntry: status });
+  const settled = await settleCheckpoint(kv, js, jsm, space_, { ref, settle: "expired", now, statusEntry: status });
   if (settled.outcome === "stale") return { acted: false, reason: "stale-generation" }; // a heartbeat advanced the generation on the shared status revision
   return { acted: true, settle: settled.fact!, won: settled.outcome === "won" };
 }
@@ -450,41 +653,44 @@ export async function resumeCheckpoint(
   space_: string,
   args: { ref: CheckpointRef; presenter: { id: string; lifecycleUid: string }; now: number },
 ): Promise<CheckpointSettleFact> {
+  // Snapshot the FULL operation input to detached locals at entry; nothing below reads args again.
+  const ref = snapshotCpRef(args.ref);
+  const presenter = snapshotHolder(args.presenter, "a resume presenter");
   const now = assertOwnerClock(args.now);
-  const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(args.ref));
+  const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(ref));
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT")
-    throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" is unknown (or its spec carries a deletion marker); resume presents only a minted token (SPEC 13.6)`);
-  const spec = parseCpSpec(JSON.parse(new TextDecoder().decode(specEntry.value)), args.ref, specKey);
-  if (spec.holder.id !== args.presenter.id || spec.holder.lifecycleUid !== args.presenter.lifecycleUid)
-    throw new EpEnvelopeError("permission-denied", `resume of checkpoint "${args.ref.token}" is holder-bound to ${spec.holder.id}/${spec.holder.lifecycleUid}; the presenter ${args.presenter.id}/${args.presenter.lifecycleUid} is not the holder (SPEC 13.10)`);
+    throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is unknown (or its spec carries a deletion marker); resume presents only a minted token (SPEC 13.6)`);
+  const spec = parseCpSpec(JSON.parse(new TextDecoder().decode(specEntry.value)), ref, specKey);
+  if (spec.holder.id !== presenter.id || spec.holder.lifecycleUid !== presenter.lifecycleUid)
+    throw new EpEnvelopeError("permission-denied", `resume of checkpoint "${ref.token}" is holder-bound to ${spec.holder.id}/${spec.holder.lifecycleUid}; the presenter ${presenter.id}/${presenter.lifecycleUid} is not the holder (SPEC 13.10)`);
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const already = await settledOrConverge(kv, js, jsm, space_, args.ref);
+    const already = await settledOrConverge(kv, js, jsm, space_, ref);
     if (already !== undefined)
       throw new EpEnvelopeError(already.settle === "resumed" ? "conflict" : "failed-precondition",
-        `checkpoint "${args.ref.token}" is already settled ${already.settle} at ${already.ts}; resume authorization is one-use and expiry fails closed (SPEC 13.6)`);
-    const status = await readCheckpointStatus(kv, args.ref);
+        `checkpoint "${ref.token}" is already settled ${already.settle} at ${already.ts}; resume authorization is one-use and expiry fails closed (SPEC 13.6)`);
+    const status = await readCheckpointStatus(kv, ref);
     if (status === undefined)
-      throw new EpEnvelopeError("failed-precondition", `checkpoint "${args.ref.token}" has no status; reconcile the store (SPEC 13.6)`);
+      throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" has no status; reconcile the store (SPEC 13.6)`);
     if (status.value.state !== "waiting")
       continue; // settled between the two reads — the loop's settledOrConverge will surface it
     // DEADLINE FENCE: at/after the authoritative deadline, resume MUST NOT win — expiry fails
     // closed, so drive the EXPIRED settlement (the caller sees failed-precondition below).
     const settle: "resumed" | "expired" = now >= status.value.deadline ? "expired" : "resumed";
     const settled = await settleCheckpoint(kv, js, jsm, space_, {
-      ref: args.ref, settle, now, statusEntry: status,
-      ...(settle === "resumed" ? { holder: args.presenter } : {}),
+      ref, settle, now, statusEntry: status,
+      ...(settle === "resumed" ? { holder: presenter } : {}),
     });
     if (settled.outcome === "stale") continue; // a heartbeat advanced the generation — retry once
     if (settled.outcome === "won" && settle === "resumed") return settled.fact!;
     const winner = settled.fact!;
     throw new EpEnvelopeError(winner.settle === "resumed" ? "conflict" : "failed-precondition",
       winner.settle === "resumed"
-        ? `checkpoint "${args.ref.token}" was already resumed at ${winner.ts}; resume authorization is one-use (SPEC 13.6)`
-        : `checkpoint "${args.ref.token}" expired at ${winner.ts}${settle === "expired" ? " (resume after deadline fails closed)" : " before this resume"}; expiry fails the checkpoint closed (SPEC 13.6)`);
+        ? `checkpoint "${ref.token}" was already resumed at ${winner.ts}; resume authorization is one-use (SPEC 13.6)`
+        : `checkpoint "${ref.token}" expired at ${winner.ts}${settle === "expired" ? " (resume after deadline fails closed)" : " before this resume"}; expiry fails the checkpoint closed (SPEC 13.6)`);
   }
-  throw new EpEnvelopeError("conflict", `checkpoint "${args.ref.token}" status moved twice during resume; re-read and re-decide (SPEC 13.6)`);
+  throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" status moved twice during resume; re-read and re-decide (SPEC 13.6)`);
 }
 
 /** Read the recorded settlement (`undefined` = still waiting). */
@@ -550,12 +756,19 @@ export async function reconcileCheckpointSchedule(
   space_: string,
   args: { ref: CheckpointRef; instanceId: string; epoch: number },
 ): Promise<{ reEmitted: boolean; generation?: number }> {
-  const status = await readCheckpointStatus(kv, args.ref);
-  if (status === undefined || status.value.state !== "waiting") return { reEmitted: false };
-  if ((await settledOrConverge(kv, js, jsm, space_, args.ref)) !== undefined) return { reEmitted: false };
+  const ref = snapshotCpRef(args.ref);
+  const instanceId = args.instanceId;
+  const epoch = args.epoch;
+  const status = await readCheckpointStatus(kv, ref);
+  if (status === undefined) return { reEmitted: false };
+  // The settled gate is settledOrConverge for EVERY state, not a bare status early-return: a
+  // SETTLED status whose derived fact is missing (the crash window between the status CAS and
+  // the fact publish) is exactly what the durable reconciler must repair - converge ensures the
+  // fact exists before this seam declares nothing to do.
+  if ((await settledOrConverge(kv, js, jsm, space_, ref)) !== undefined) return { reEmitted: false };
   await emitScheduleRequest(js, space_, {
-    endpoint: args.ref.endpoint, instanceId: args.instanceId, epoch: args.epoch,
-    token: args.ref.token, generation: status.value.deadlineGeneration, deadline: status.value.deadline,
+    endpoint: ref.endpoint, instanceId, epoch,
+    token: ref.token, generation: status.value.deadlineGeneration, deadline: status.value.deadline,
   });
   return { reEmitted: true, generation: status.value.deadlineGeneration };
 }
