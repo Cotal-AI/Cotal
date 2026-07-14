@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable, loadAgentFile,
-  setupSpaceStreams, seedChannelRegistry, provisionAgent, CotalEndpoint,
+  setupSpaceStreams, seedChannelRegistry, provisionAgent, mintLifecycleUid, CotalEndpoint,
   CONTROL_SELF_SERVICE, channelInAllow, chatStream, chatSubject, chatHistDurable, DEV_OWNER,
   type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
 } from "../src/index.js";
@@ -86,6 +86,7 @@ try {
   // The privileged provisioner + mediated-join controller (what the manager is in prod). It knows
   // each agent's allowSubscribe — keyed by id, exactly as ManagedAgent does — and validates joins.
   const allowById = new Map<string, string[]>();
+  const uidById = new Map<string, string>(); // each agent's lifecycle uid (SPEC §13.1), keyed by principal dot-form
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   mgr.on("error", (e) => console.log("mgr err:", e.message));
   await mgr.start();
@@ -116,10 +117,10 @@ try {
     const ch = typeof req.args?.channel === "string" ? req.args.channel : "";
     if (req.op === "durableJoin") {
       if (!channelInAllow(allow, ch)) return { ok: false, error: `"${ch}" outside allowSubscribe` };
-      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
+      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, uidById.get(req.from.id)!) };
     }
     if (req.op === "durableLeave") {
-      await dlv.durableLeaveFor(req.from.id, ch, typeof req.args?.generation === "number" ? req.args.generation : undefined);
+      await dlv.durableLeaveFor(req.from.id, ch, uidById.get(req.from.id)!, typeof req.args?.generation === "number" ? req.args.generation : undefined);
       return { ok: true, data: { channel: ch } };
     }
     return { ok: false, error: `unsupported op ${req.op}` };
@@ -135,12 +136,14 @@ try {
   const mk = async (name: string, fm: string) => {
     const def = agentFile(name, fm);
     const ident = newIdentity();
+    const uid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
     const allowSubscribe = def.allowSubscribe ?? def.subscribe ?? ["general"];
     // Dev/static principal: owner=DEV_OWNER ("local"), actor=the nkey. req.from.id / the Plane-3 aclFor
-    // key are the principal DOT-FORM `local.<nkey>` under the owner+actor grammar, so key the ACL map by it.
+    // key are the principal DOT-FORM `local.<nkey>` under the owner+actor grammar, so key the maps by it.
     allowById.set(`${DEV_OWNER}.${ident.id}`, allowSubscribe);
-    const creds = await provisionAgent(mgr, auth, ident, { subscribe: def.subscribe, allowSubscribe, allowPublish: def.allowPublish });
-    return { name, ident, creds, def };
+    uidById.set(`${DEV_OWNER}.${ident.id}`, uid);
+    const creds = await provisionAgent(mgr, auth, ident, { subscribe: def.subscribe, allowSubscribe, allowPublish: def.allowPublish, lifecycleUid: uid });
+    return { name, ident, creds, def, uid };
   };
   // (0) the loader rejects channel names the wire layer would rewrite — pins the file boundary too.
   console.log("[0] agent-file alias rejection");
@@ -153,10 +156,10 @@ try {
   const carol = await mk("carol", "subscribe: [general]"); // no allowPublish ⇒ default-deny
 
   type Got = { channel?: string; text: string; historical: boolean };
-  const mkEp = (a: { name: string; ident: { id: string }; creds: string }) => {
+  const mkEp = (a: { name: string; ident: { id: string }; creds: string; uid: string }) => {
     const errors: string[] = [];
     const got: Got[] = [];
-    const ep = new CotalEndpoint({ space, servers: SERVERS, creds: a.creds, card: { name: a.name, kind: "agent", id: a.ident.id }, channels: ["general"] });
+    const ep = new CotalEndpoint({ space, servers: SERVERS, creds: a.creds, card: { name: a.name, kind: "agent", id: a.ident.id }, channels: ["general"], lifecycleUid: a.uid });
     ep.on("error", (e: Error) => errors.push(e.message));
     ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => { got.push({ channel: m.channel, text: textOf(m), historical: meta?.historical ?? false }); d.ack(); });
     return { ep, errors, got };
@@ -219,8 +222,8 @@ try {
   const bobNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(bob.creds)), inboxPrefix: `_INBOX_${bob.ident.id}`, maxReconnectAttempts: 0 });
   let rawDenied = false;
   try {
-    const subj = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, bob.ident.id)}.${chatSubject(space, "*", "*", "ops")}`;
-    const m = await bobNc.request(subj, enc(JSON.stringify({ stream_name: chatStream(space), config: { name: chatHistDurable(DEV_OWNER, bob.ident.id), filter_subject: chatSubject(space, "*", "*", "ops"), ack_policy: "none", deliver_policy: "all" }, action: "create" })), { timeout: 1500 });
+    const subj = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, bob.ident.id, bob.uid)}.${chatSubject(space, "*", "*", "ops")}`;
+    const m = await bobNc.request(subj, enc(JSON.stringify({ stream_name: chatStream(space), config: { name: chatHistDurable(DEV_OWNER, bob.ident.id, bob.uid), filter_subject: chatSubject(space, "*", "*", "ops"), ack_policy: "none", deliver_policy: "all" }, action: "create" })), { timeout: 1500 });
     const r = m.json<any>();
     rawDenied = !!r?.error; // if it somehow responded, only an error reply counts as denied
   } catch { rawDenied = true; } // permission violation / no responder

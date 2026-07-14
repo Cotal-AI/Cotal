@@ -90,7 +90,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, CONTROL_PRIVILEGED, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel,
+  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
 } = await import("@cotal-ai/core");
 const { decodeJwt } = await import("jose");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
@@ -124,6 +124,8 @@ function launchEnv(): Record<string, string> {
 }
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 
+const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> =>
+  Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -479,7 +481,7 @@ try {
   // manager's owner-domain authorization.
   console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
   const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
-    const g = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [] });
+    const g = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [] , lifecycleUid: mintLifecycleUid() });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -516,7 +518,7 @@ try {
   check("cross-owner attach with ledger admin passes (fresh ledger read)", adminAttach.ok === true, adminAttach);
   // Narrow the auditor back to [spawn] (upsert) — the SAME live connection loses cross-owner reach
   // on its very next op: the ledger read is fresh, no reconnect or bearer refresh involved.
-  await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
+  await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [] , lifecycleUid: mintLifecycleUid() });
   const narrowedAttach: ControlReply = await auditor.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "alpha" } });
   check("narrowing the auditor's scope bites its NEXT op on the same live connection", narrowedAttach.ok === false && /another owner/.test(narrowedAttach.error ?? ""), narrowedAttach);
 
@@ -541,7 +543,7 @@ try {
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
-  const vg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [] });
+  const vg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [] , lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${svc.cap}` },
@@ -572,7 +574,10 @@ try {
   await godEye.start();
   ctlEps.push(godEye);
   const tapped: string[] = [];
-  godEye.tap((subject: string) => { tapped.push(subject); }, { subject: spaceWildcard(SPACE) });
+  // The admin view's sub is the ENUMERATED messaging plane (chat/inst/svc — never the space-wide
+  // `>`, which would plain-subscribe every v0.4 endpoint rail), so the tap pins the DM subtree it
+  // asserts on; a space-wide tap would be a silent sub violation and see nothing.
+  godEye.tap((subject: string) => { tapped.push(subject); }, { subject: `cotal.${SPACE}.inst.>` });
   await wait(300); // let the tap subscription settle
   await opsmate.unicast(`${OWNER}.alpha`, "psst — a DM between two other principals");
   let sawDm = false;
@@ -580,7 +585,7 @@ try {
   check("the admin-view tap sees a DM between two OTHER principals (the god view)", sawDm, tapped.slice(-3));
   // channel-purger view: publish two chat messages on a scratch channel, purge them via clearChannel
   // over a one-shot purger-view bearer (the standalone user-mode connect path).
-  const wg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"] });
+  const wg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"] , lifecycleUid: mintLifecycleUid() });
   const wx = await agentExchange("writer", wg.actorToken, OWNER);
   const writer = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: wx.body.token!, sentinelCreds: wg.sentinelCreds,
@@ -631,6 +636,49 @@ try {
   const channelsAfter = await godEye.listChannels();
   check("the god-view endpoint outlives its first ≤20s bearer (source re-mint + reconnect)", Array.isArray(channelsAfter), channelsAfter?.length);
   check("the bearer source re-minted at least once (fresh ledger check per refresh)", viewMints >= 2, { viewMints });
+
+  // ---------- P. stale-bearer lifecycle crossover (D15 Track A #9) ----------
+  console.log("P) a predecessor lifecycle's still-unexpired bearer is DENIED after a same-alias re-grant");
+  {
+    // Lifecycle A: grant + exchange -> a valid bearer BOUND to A's row uid.
+    const gA = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "phoenix", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+    const exA = await agentExchange("phoenix", gA.actorToken, OWNER);
+    check("P: lifecycle A's exchange mints a bearer", exA.status === 200 && typeof exA.body.token === "string", exA);
+    // Same-alias RE-GRANT rotates the row to lifecycle B (fresh uid + fresh secret) - the respawn shape.
+    const gB = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "phoenix", scope: [], allowSubscribe: ["general"], allowPublish: [], lifecycleUid: mintLifecycleUid() });
+    // A's captured actorToken is dead (tokenHash rotated) - the OLD guarantee, still holding:
+    const exStale = await agentExchange("phoenix", gA.actorToken, OWNER);
+    check("P: lifecycle A's captured actorToken is denied at exchange after the re-grant", exStale.status === 401, exStale.status);
+    // THE CROSSOVER GATE: A's still-unexpired BEARER must be refused at CONNECT - without the
+    // lifecycle claim + equality check, the callout would mint it B's exact broker authority.
+    const staleEp = new CotalEndpoint({
+      space: SPACE, servers: SERVER, bearer: exA.body.token!, sentinelCreds: gA.sentinelCreds,
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: { name: "phoenix", owner: OWNER, actor: "phoenix", kind: "endpoint" },
+    });
+    staleEp.on("error", () => {});
+    let staleDenied = false;
+    try {
+      await withTimeout(staleEp.start(), 8000, "stale-bearer connect neither authed nor refused in 8s");
+    } catch { staleDenied = true; }
+    try { await staleEp.stop(); } catch { /* never started */ }
+    check("P: lifecycle A's still-unexpired BEARER is refused at connect (never minted B's authority)", staleDenied);
+    // And the CURRENT lifecycle's own chain still works end-to-end (fresh secret -> bearer -> connect).
+    const exB = await agentExchange("phoenix", gB.actorToken, OWNER);
+    check("P: lifecycle B's exchange mints a bearer", exB.status === 200 && typeof exB.body.token === "string", exB);
+    const liveEp = new CotalEndpoint({
+      space: SPACE, servers: SERVER, bearer: exB.body.token!, sentinelCreds: gB.sentinelCreds,
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: { name: "phoenix", owner: OWNER, actor: "phoenix", kind: "endpoint" },
+    });
+    liveEp.on("error", () => {});
+    let liveOk = true;
+    try { await withTimeout(liveEp.start(), 8000, "current-bearer connect did not settle in 8s"); }
+    catch { liveOk = false; }
+    check("P: the CURRENT lifecycle's bearer connects (the equality gate blocks only stale incarnations)", liveOk);
+    try { await liveEp.stop(); } catch { /* already down */ }
+    await cotalAuthProvider.revokeAgent({ dir, owner: OWNER, actor: "phoenix" }).catch(() => {});
+  }
 
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");

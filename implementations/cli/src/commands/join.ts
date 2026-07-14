@@ -8,6 +8,7 @@ import {
   AmbiguousPeerError,
   DEFAULT_SERVER,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   provisionAgent,
   type Delivery,
@@ -57,6 +58,9 @@ export async function join(args: ParsedArgs): Promise<void> {
     creds: values.creds ? readFileSync(values.creds, "utf8") : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
+  // The join session's lifecycle UID (SPEC 13.1): minted with the self-provisioned footprint in auth
+  // mode (below), or fresh per session for open/explicit-creds joins at the endpoint construction.
+  let lifecycleUid: string | undefined;
 
   let space: string;
   let server: string;
@@ -96,6 +100,10 @@ export async function join(args: ParsedArgs): Promise<void> {
     await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
     if (target.auth) {
       const identity = newIdentity();
+      // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
+      // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
+      // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
+      lifecycleUid = mintLifecycleUid();
       const prov = new CotalEndpoint({
         space,
         servers: server,
@@ -120,6 +128,7 @@ export async function join(args: ParsedArgs): Promise<void> {
           allowPublish: [channel],
           role: values.role,
           durableMembership: false,
+          lifecycleUid,
         });
         await prov.stop();
       } catch (e) {
@@ -135,6 +144,8 @@ export async function join(args: ParsedArgs): Promise<void> {
     space,
     servers: server,
     ...auth,
+    // A bare open-mode join mints its own per-session lifecycle; the auth path minted one above.
+    lifecycleUid: lifecycleUid ?? mintLifecycleUid(),
     channels: [channel],
     card: {
       name,

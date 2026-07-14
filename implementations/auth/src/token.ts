@@ -19,7 +19,7 @@
  */
 import { decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertValidOwnerToken } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "@cotal-ai/core";
 
 /** Current normative token-shape version. Bump only with a SPEC change; validators reject
  *  anything else (older = downgrade, newer = from-the-future misconfig). */
@@ -61,6 +61,10 @@ export interface UserTokenActor {
   scope?: string[];
   /** The spawning principal (`<owner>.<actor>` dot-form), when this agent was spawned by another. */
   parent?: string;
+  /** The ledger row's lifecycle UID this bearer was minted against (SPEC 13.1). The callout's
+   *  connect authorization requires exact equality with the CURRENT row; a bearer minted for a
+   *  retired incarnation is refused, never resolved to the successor. */
+  lifecycleUid?: string;
   /** Exchange-authorized elevated view ({@link USER_TOKEN_VIEWS}); absent = agent profile. */
   view?: UserTokenView;
 }
@@ -162,6 +166,14 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     throw new Error(
       `user token: act.view "${String(act.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - unknown views fail closed`,
     );
+  // Lifecycle claim (SPEC 13.1): grammar-asserted when present. Presence/absence POLICY lives at the
+  // connect boundary (ledgerAuthorizeConnect requires it on non-view bearers); the validator only
+  // guarantees a present claim is well-formed, so no garbled uid reaches an equality check.
+  if (act.lifecycleUid !== undefined) {
+    if (typeof act.lifecycleUid !== "string")
+      throw new Error("user token: act.lifecycleUid must be a string token when present");
+    assertLifecycleToken(act.lifecycleUid, "user token act.lifecycleUid");
+  }
 
   const scope = payload.scope === undefined ? [] : payload.scope;
   if (!(Array.isArray(scope) && scope.every((s) => typeof s === "string")))
@@ -171,7 +183,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, view: act.view },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, view: act.view },
     ver: USER_TOKEN_VER,
     exp: payload.exp,
   };

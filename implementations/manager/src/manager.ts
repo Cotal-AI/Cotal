@@ -15,6 +15,7 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
+  mintLifecycleUid,
   mkSecretDir,
   newIdentity,
   parsePrincipalKey,
@@ -170,6 +171,11 @@ interface ManagedAgent {
   /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
    *  the owner+actor principal dot-form (user mode). */
   id: string;
+  /** This incarnation's lifecycle UID (SPEC §13.1), minted once per spawn: the uid its
+   *  lifecycle-keyed broker footprint (`dm_…-<uid>`/`dlv_…-<uid>`/ACL row) carries and the ONLY
+   *  incarnation its teardown credential may name — a replayed teardown cannot reach a same-name
+   *  successor (its uid differs). */
+  lifecycleUid: string;
   /** Private nkey seed, kept so a later step can mint matching creds for this id. Static auth
    *  only — a user-mode agent has no static identity (its credential is its bearer). */
   seed?: string;
@@ -598,6 +604,10 @@ export class Manager {
       role?: string;
       capabilities?: string[];
       label: string;
+      /** The incarnation's lifecycle UID: recorded on the ledger row (the callout mints the agent's
+       *  lifecycle-keyed grants from it) AND used for the provisioned durables/ACL row, so the
+       *  credential names and the broker footprint can never diverge. */
+      lifecycleUid: string;
     },
   ): Promise<{ owner: string; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
     const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
@@ -637,11 +647,13 @@ export class Manager {
         role: opts.role,
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
+        lifecycleUid: opts.lifecycleUid,
       });
-      // Durables + ACL row, principal-keyed — the same onboarding as static agents minus the mint
-      // (a user agent's credential is its bearer, minted by the callout per connect).
+      // Durables + ACL row, LIFECYCLE-keyed (SPEC 13.1) — the same onboarding as static agents minus
+      // the mint (a user agent's credential is its bearer, minted by the callout per connect from the
+      // ledger row's recorded lifecycleUid — the same value provisioned here).
       await this.withProvisioner((prov) =>
-        provisionAgentDurables(prov, { owner, actor: name }, {
+        provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
           subscribe: opts.subscribe,
           allowSubscribe: opts.allowSubscribe,
           role: opts.role,
@@ -678,7 +690,7 @@ export class Manager {
       rmSync(tokenPath, { force: true });
       rmSync(sentinelPath, { force: true });
       rmSync(healthPath, { force: true });
-      await this.deprovision({ id: principalKey(owner, name).key, name, userOwner: owner }).catch((err) =>
+      await this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner }).catch((err) =>
         console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
       return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
     }
@@ -713,7 +725,7 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; userOwner?: string }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string }): Promise<void> {
     if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
     // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
@@ -745,13 +757,18 @@ export class Manager {
    *  {@link deprovision} because everything before it (creds/secret shred + ledger revoke) completes
    *  in the synchronous prefix of the detached call — this is the only part of the teardown that can
    *  still be in flight once the freed name is reused. */
-  private async deprovisionBroker(a: { id: string; name: string }): Promise<void> {
-    const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
+  private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
+    // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
+    // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
+    // against a same-name successor's footprint (its names embed a different uid).
+    const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", {
+      deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid },
+    });
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
     await withTimeout(
-      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, creds }),
+      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, creds }),
       DEPROVISION_TIMEOUT_MS,
       `deprovision ${a.name} (${a.id}): broker teardown timed out`,
     );
@@ -1117,11 +1134,15 @@ export class Manager {
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
     // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
     // static durable teardown (the freelance found this window leaking the managed grant + files).
-    let provisioned: { id: string; name: string; userOwner?: string } | undefined;
+    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
       const identity = newIdentity();
+      // The incarnation's lifecycle UID (SPEC 13.1), minted ONCE per spawn: every lifecycle-keyed
+      // broker resource (dm_/dlv_/chathist_ durables, ACL row, memberships) and the teardown
+      // credential carry it, so a same-name successor's footprint is name-disjoint by construction.
+      const lifecycleUid = mintLifecycleUid();
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
@@ -1138,6 +1159,7 @@ export class Manager {
           role,
           capabilities,
           label: ref,
+          lifecycleUid,
         });
         if ("error" in prep) {
           this.reserved.delete(name);
@@ -1145,7 +1167,7 @@ export class Manager {
         }
         userLaunch = prep.launch;
         userOwner = prep.owner;
-        provisioned = { id: principalKey(prep.owner, name).key, name, userOwner: prep.owner };
+        provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner };
       } else if (this.auth) {
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
@@ -1158,12 +1180,13 @@ export class Manager {
             allowPublish,
             role,
             capabilities,
+            lifecycleUid,
           }),
         );
         credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
         mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
         writeSecretFile(credsPath, creds);
-        provisioned = { id: identity.id, name }; // footprint now exists — the finally rolls it back if the spawn throws
+        provisioned = { id: identity.id, name, lifecycleUid }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
@@ -1186,6 +1209,10 @@ export class Manager {
         id: userLaunch ? undefined : identity.id,
         creds: credsPath,
         userAuth: userLaunch,
+        // The incarnation's lifecycle UID: the agent endpoint binds its lifecycle-keyed dm/dlv/
+        // chathist durables by this exact value (its creds pin the same names, so a mismatch fails
+        // at the broker, never silently).
+        lifecycleUid,
         servers: this.servers,
         configPath,
         model,
@@ -1217,6 +1244,7 @@ export class Manager {
         role,
         agent,
         id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
+        lifecycleUid,
         ...(userLaunch ? { userOwner } : { seed: identity.seed }),
         spawner: spawner ?? this.ep.ref().id,
         startedAt: Date.now(),

@@ -14,6 +14,7 @@ import {
   newIdentity,
   parseShareSelection,
   principalKey,
+  mintLifecycleUid,
   provisionAgent,
   provisionAgentDurables,
   registry,
@@ -387,6 +388,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Open mode (no `.cotal/auth`): unchanged — the session connects without creds.
   let id: string | undefined;
   let credsPath: string | undefined;
+  // The incarnation's lifecycle UID (SPEC 13.1), minted once per spawn: the launched endpoint binds
+  // its lifecycle-keyed dm/dlv/chathist durables by it (auth modes pin the same names in the cred;
+  // open mode still needs it for the durable names). A foreground spawn is one lifecycle.
+  const lifecycleUid = mintLifecycleUid();
   let userAuth: LaunchOpts["userAuth"];
   let userCleanup: (() => Promise<void>) | undefined;
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
@@ -407,6 +412,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       allowPublish,
       role,
       capabilities: def.capabilities,
+      lifecycleUid,
     }));
   } else if (auth) {
     const identity = newIdentity();
@@ -435,6 +441,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       role,
       capabilities: def.capabilities,
       durableMembership: false,
+      lifecycleUid,
     });
     await prov.stop();
     credsPath = join(authDir(target.root), "creds", `${name}.creds`);
@@ -463,8 +470,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     rmSync(credsPath, { force: true });
     console.error(`  ↩ rolled back creds for ${name} (${why})`);
     try {
-      const dc = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: id });
-      await deprovisionAgent({ servers: server, space, targetId: id, creds: dc });
+      const dc = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: id, lifecycleUid } });
+      await deprovisionAgent({ servers: server, space, targetId: id, lifecycleUid, creds: dc });
     } catch (e) {
       console.error(`! rollback: broker teardown for ${name} failed: ${(e as Error).message}`);
     }
@@ -485,6 +492,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       id,
       creds: credsPath,
       userAuth,
+      lifecycleUid,
       servers: server,
       configPath: path,
       // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
@@ -556,7 +564,7 @@ async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[] },
+  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void> }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -595,6 +603,7 @@ async function provisionUserForeground(
       role: opts.role,
       parent: `${owner}.cli`,
       label: ref,
+      lifecycleUid: opts.lifecycleUid,
     });
     const prov = new CotalEndpoint({
       space,
@@ -612,7 +621,7 @@ async function provisionUserForeground(
     try {
       // Live-only, like static foreground spawn: no ACL row → no durable backstop (that requires a
       // managing daemon; use `cotal spawn --detach` / `cotal up` for one).
-      await provisionAgentDurables(prov, { owner, actor: name }, {
+      await provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
         subscribe: opts.subscribe,
         allowSubscribe: opts.allowSubscribe,
         role: opts.role,
@@ -663,8 +672,8 @@ async function provisionUserForeground(
     rmSync(sentinelPath, { force: true });
     rmSync(healthPath, { force: true });
     const targetId = principalKey(owner, name).key;
-    await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: targetId })
-      .then((creds) => deprovisionAgent({ servers: server, space, targetId, creds }))
+    await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
+      .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds }))
       .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
     return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
   }

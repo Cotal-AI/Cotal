@@ -90,10 +90,13 @@ const ISS = "https://auth.cotal.test";
 const ledgerDir = mkdtempSync(join(tmpdir(), "cotal-evictlive-ledger-"));
 const ownerU = deriveOwnerToken(SECRET, "idp-subject-victim");
 const ACL = { allowSubscribe: ["general"], allowPublish: ["general"] };
-grantActor(ledgerDir, { owner: ownerU, actor: "victim", scope: [], ...ACL });
+const victimRow = grantActor(ledgerDir, { owner: ownerU, actor: "victim", scope: [], ...ACL });
 
 const issuer = createUserTokenIssuer({ issuer: ISS, key: await generateSigningKey() });
-const bearerP = await issuer.issue({ owner: ownerU, space, actor: "victim", scope: [], ttlSec: 300 });
+// Lifecycle-bind the bearer to the row's uid (SPEC 13.1): a bearer minted directly (bypassing the
+// service exchange) must still carry the row's lifecycleUid, or the callout's connect equality check
+// refuses it as a stale/pre-cut bearer.
+const bearerP = await issuer.issue({ owner: ownerU, space, actor: "victim", scope: [], lifecycleUid: victimRow.lifecycleUid, ttlSec: 300 });
 
 let calloutNc: NatsConnection | undefined, observerNc: NatsConnection | undefined,
   evictorNc: NatsConnection | undefined, ncP: NatsConnection | undefined;

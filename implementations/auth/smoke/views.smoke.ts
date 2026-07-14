@@ -24,8 +24,9 @@ import {
   CONTROL_PRIVILEGED,
   chatStream,
   controlServiceSubject,
-  spacePrefix,
-} from "@cotal-ai/core";
+  spacePrefix, mintLifecycleUid } from "@cotal-ai/core";
+// One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
+const smokeUid = mintLifecycleUid();
 import {
   USER_TOKEN_VIEWS,
   VIEW_REQUIRED_SCOPE,
@@ -126,7 +127,7 @@ const tok = (view: UserTokenView | undefined, caps: string[]): ValidatedUserToke
 let aclConsulted = 0;
 const forView = calloutPermissions((t) => {
   aclConsulted++;
-  return { allowSubscribe: ["general"], allowPublish: ["general"] };
+  return { allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid };
 });
 type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
 {

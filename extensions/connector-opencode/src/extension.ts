@@ -144,6 +144,7 @@ export const opencodeConnector: Connector = {
     };
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
+    if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the plugin's transcript mirror (parity with Claude)

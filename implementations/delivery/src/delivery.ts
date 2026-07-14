@@ -141,7 +141,7 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
   // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
   // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
   // rw connection via this hook.
-  await ep.startPlane3((owner) => ep.aclForOwner(owner), {
+  await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
     reloadMembershipCreds: async () =>
       membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses

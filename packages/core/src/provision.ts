@@ -57,6 +57,8 @@ import {
   membersBucket,
   aclBucket,
   aclKey,
+  assertLifecycleToken,
+  type DeprovisionTarget,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -380,12 +382,14 @@ export interface MintOpts {
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
   shard?: number;
   shards?: number;
-  /** The departed agent's id whose id-keyed footprint a `deprovisioner` cred may tear down. REQUIRED
-   *  for that profile (it throws without one): the grants are pinned to exactly this target's `dm_<id>`
-   *  / `dlv_<id>` durables + ACL row, so a leaked deprovisioner cred can delete ONE dead agent's
-   *  footprint and nothing else — never a peer's, never the role-shared `svc_<role>`. Ignored by every
-   *  other profile. */
-  deprovisionTarget?: string;
+  /** The departed LIFECYCLE whose footprint a `deprovisioner` cred may tear down: the target's
+   *  principal PLUS the exact lifecycle uid being retired (SPEC §13.1). REQUIRED for that profile (it
+   *  throws without one): the grants are pinned to exactly this incarnation's
+   *  `dm_<o>-<a>-<uid>`/`dlv_<o>-<a>-<uid>` durables + `<o>.<a>.<uid>` ACL row, so a leaked or
+   *  REPLAYED deprovisioner cred can delete ONE retired incarnation's footprint and nothing else —
+   *  never a peer's, never the role-shared `svc_<role>`, and structurally never a same-alias
+   *  successor's (its names carry a different uid). Ignored by every other profile. */
+  deprovisionTarget?: DeprovisionTarget;
   /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
    *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
    *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
@@ -438,18 +442,23 @@ export interface ProvisionOpts extends MintOpts {
  *  opens). It pre-creates the agent's own mailboxes and records its read ACL; it does NOT host Plane-3
  *  delivery (that is the server-side delivery daemon). */
 export interface DurableProvisioner {
-  provisionDmInbox(owner: string, actor: string): Promise<void>;
-  /** Pre-create the agent's bind-only Plane-3 DELIVER durable (`dlv_<owner>-<actor>`, filtered to
-   *  `dlv.<owner>.<actor>`) so it can BIND its per-member durable handoff without holding CONSUMER.CREATE
-   *  on the DLV stream. */
-  provisionDlvInbox(owner: string, actor: string): Promise<void>;
-  /** Record the agent's read ACL (`allowSubscribe`) in the durable ACL registry, keyed by the agent's
-   *  owner+actor principal dot-form — the same act as baking it into the JWT, persisted so the
-   *  **server-side delivery daemon** can re-authorize the agent's durable entries and validate its
-   *  runtime durable-joins (it holds no in-memory ledger). Replaces the old manager-written boot
+  /** Pre-create the lifecycle's bind-only DM durable (`dm_<owner>-<actor>-<uid>`). The implementation
+   *  captures the DM stream's ACTIVATION FRONTIER (its `last_seq` at first creation) and starts
+   *  delivery at frontier+1 (SPEC :467) — a same-alias successor inherits no predecessor DMs.
+   *  Idempotent PER LIFECYCLE: a re-provision of the same uid keeps the existing durable (and so the
+   *  ORIGINAL frontier — the activation moment does not move on manager restart). */
+  provisionDmInbox(owner: string, actor: string, lifecycleUid: string): Promise<void>;
+  /** Pre-create the lifecycle's bind-only Plane-3 DELIVER durable (`dlv_<owner>-<actor>-<uid>`,
+   *  filtered to the lifecycle-scoped `dlv.<owner>.<actor>.<uid>`) so it can BIND its per-member
+   *  durable handoff without holding CONSUMER.CREATE on the DLV stream. */
+  provisionDlvInbox(owner: string, actor: string, lifecycleUid: string): Promise<void>;
+  /** Record the lifecycle's read ACL (`allowSubscribe`) in the durable ACL registry, keyed
+   *  `<owner>.<actor>.<lifecycleUid>` (SPEC §13.1) — the same act as baking it into the JWT, persisted
+   *  so the **server-side delivery daemon** can re-authorize the agent's durable entries and validate
+   *  its runtime durable-joins (it holds no in-memory ledger). Replaces the old manager-written boot
    *  membership: boot durable membership is now the agent SELF-JOINING its durable channels via the
    *  daemon's `ctl.delivery` op at connect. */
-  commitAcl(principal: string, allowSubscribe: string[]): Promise<void>;
+  commitAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
   provisionTaskQueue(role: string): Promise<void>;
 }
 
@@ -461,6 +470,10 @@ export interface MintPrincipal {
   owner: string;
   actor: string;
   connId: string;
+  /** The incarnation's lifecycle UID (SPEC §13.1). REQUIRED for the `agent` profile — its
+   *  dm/dlv/chathist grants are lifecycle-keyed EXACT names, so a credential cannot name another
+   *  incarnation's resources. Other profiles ignore it. */
+  lifecycleUid?: string;
 }
 
 /** Resolve a {@link MintPrincipal} for the STATIC/dev mint path from an {@link Identity} + optional
@@ -468,11 +481,16 @@ export interface MintPrincipal {
  *  id, so the agent's lane is `local.<id>`. The connection nkey is always the identity's id here (the
  *  creds bind to it). User mode does NOT flow through here — the callout mints directly with the
  *  server-derived owner + ledger actor. */
-function principalOf(identity: Identity, principal?: { owner: string; actor: string }): MintPrincipal {
+function principalOf(
+  identity: Identity,
+  principal?: { owner: string; actor: string },
+  lifecycleUid?: string,
+): MintPrincipal {
   return {
     owner: principal?.owner ?? DEV_OWNER,
     actor: principal?.actor ?? identity.id,
     connId: identity.id,
+    ...(lifecycleUid !== undefined ? { lifecycleUid } : {}),
   };
 }
 
@@ -488,7 +506,14 @@ export async function provisionAgent(
   identity: Identity,
   opts: ProvisionOpts = {},
 ): Promise<string> {
-  const allowSubscribe = await provisionAgentDurables(provisioner, principalOf(identity, opts.principal), opts);
+  if (!opts.lifecycleUid)
+    throw new Error("provisionAgent: a lifecycleUid is required - the agent's broker footprint is lifecycle-keyed (SPEC 13.1); mint one with mintLifecycleUid() and persist it with the agent");
+  const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
+  const allowSubscribe = await provisionAgentDurables(
+    provisioner,
+    { owner: pr.owner, actor: pr.actor, lifecycleUid: opts.lifecycleUid },
+    opts,
+  );
   return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
 }
 
@@ -499,9 +524,10 @@ export async function provisionAgent(
  *  Returns the resolved read ACL so both callers scope from the same computed set. */
 export async function provisionAgentDurables(
   provisioner: DurableProvisioner,
-  pr: { owner: string; actor: string },
+  pr: { owner: string; actor: string; lifecycleUid: string },
   opts: ProvisionOpts = {},
 ): Promise<string[]> {
+  const uid = assertLifecycleToken(pr.lifecycleUid); // hard cut: every provisioned footprint is lifecycle-keyed (SPEC 13.1)
   const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
   // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
@@ -514,16 +540,16 @@ export async function provisionAgentDurables(
       throw new Error(
         `provisionAgent: subscribe "${ch}" is not within allowSubscribe [${allowSubscribe.join(", ")}]`,
       );
-  await provisioner.provisionDmInbox(pr.owner, pr.actor);
-  await provisioner.provisionDlvInbox(pr.owner, pr.actor);
+  await provisioner.provisionDmInbox(pr.owner, pr.actor, uid);
+  await provisioner.provisionDlvInbox(pr.owner, pr.actor, uid);
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
   // server-side delivery daemon can re-authorize this agent's durable entries + validate its runtime
   // durable-joins — it holds no in-memory ledger. The agent SELF-JOINS its durable boot channels via the
   // daemon at connect (no manager-written boot membership). `durableMembership:false` (a live-only
   // launcher, e.g. direct `cotal spawn` with no daemon) opts out of the ACL row → the daemon never
   // authorizes a durable backstop for it, so it stays live-only.
-  // ACL is keyed by the agent's owner+actor principal dot-form (per-agent read authority).
-  if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, allowSubscribe);
+  // ACL is keyed by the lifecycle-scoped dot-form <owner>.<actor>.<uid> (per-incarnation read authority).
+  if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
   if (opts.role) await provisioner.provisionTaskQueue(opts.role);
   return allowSubscribe;
 }
@@ -543,7 +569,7 @@ export async function mintCreds(
   opts: MintOpts = {},
 ): Promise<string> {
   const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
-  const pr = principalOf(identity, opts.principal);
+  const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
   // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor
   // refuses "endpoint-serve" (so a direct caller can never obtain unfenced serve rows), and only
   // this fenced path calls the row builder.
@@ -631,7 +657,7 @@ export function permissionsFor(
     // full principal dot-form for user-mode agents, or a bare static/dev actor id (keyed under
     // DEV_OWNER) — see {@link deprovisionTargetPrincipal}.
     if (!opts.deprovisionTarget)
-      throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget (the departed agent's actor id)");
+      throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget ({principal, lifecycleUid} of the departed incarnation)");
     return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
@@ -734,8 +760,11 @@ export function permissionsFor(
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);
   const manager = opts.manager ?? CONTROL_PRIVILEGED;
-  const chatHistD = chatHistDurable(pr.owner, pr.actor), dmD = dmDurable(pr.owner, pr.actor);
-  const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor); // Plane-3 per-member delivery (bind-only)
+  if (!pr.lifecycleUid)
+    throw new Error("permissionsFor(agent): a lifecycleUid is required - the agent's dm/dlv/chathist grants are lifecycle-keyed exact names (SPEC 13.1)");
+  const uid = assertLifecycleToken(pr.lifecycleUid);
+  const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
+  const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
   const svcD = opts.role ? taskDurable(opts.role) : undefined;
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
@@ -1314,21 +1343,24 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
  *  the absent ACL) if fired while T is still alive. It CANNOT read T's bodies, impersonate T, reach any peer, or
  *  delete a stream — and it is ephemeral (one per-exit teardown, minted then dropped). Contained and
  *  recoverable (re-provision T). */
-function deprovisionerPermissions(space: string, pr: MintPrincipal, targetActor: string): Record<string, unknown> {
+function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionTarget: DeprovisionTarget): Record<string, unknown> {
   const DM = dmStream(space), DLV = dlvStream(space);
-  const t = deprovisionTargetPrincipal(targetActor);
+  const t = deprovisionTargetPrincipal(deprovisionTarget);
   const target = principalKey(t.owner, t.actor);
   return {
     pub: {
       allow: [
         "$JS.API.INFO", // jetstreamManager bootstrap
-        // Delete the target's two bind-only durables BY EXACT NAME — no `.>`, no cross-agent reach.
-        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(t.owner, t.actor)}`,
-        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(t.owner, t.actor)}`,
-        // Purge the target's read-ACL row (own-target key only — the reader then treats it as an unknown
-        // owner). `kvm.open` binds the pre-created bucket; the purge rides `$KV.<aclBucket>.<key>`.
+        // Delete the target LIFECYCLE's two bind-only durables BY EXACT NAME — no `.>`, no cross-agent
+        // reach, and no reach into a same-alias successor: its names carry a different uid, so a
+        // replayed teardown is broker-DENIED there (SPEC 13.1 / Appendix "deprovisioner").
+        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(t.owner, t.actor, t.lifecycleUid)}`,
+        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(t.owner, t.actor, t.lifecycleUid)}`,
+        // Purge the target lifecycle's read-ACL row (own-target exact key only — the reader then treats
+        // it as an unknown owner). `kvm.open` binds the pre-created bucket; the purge rides
+        // `$KV.<aclBucket>.<key>`.
         `$JS.API.STREAM.INFO.KV_${aclBucket(space)}`,
-        `$KV.${aclBucket(space)}.${aclKey(target.key)}`,
+        `$KV.${aclBucket(space)}.${aclKey(target.key, t.lifecycleUid)}`,
       ],
     },
     // Replies only: the CONSUMER.DELETE PubAcks + KV purge ack land on the per-connection inbox. NO chat/DM/ctl
@@ -1387,9 +1419,11 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys.
     `$JS.API.STREAM.INFO.${DKV}`, `$JS.API.STREAM.MSG.GET.${DKV}`,
     `$KV.${deliveryBucket(space)}.lease.*`,
-    // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY principal — the
-    // owner+actor slots widen to `.*.*` (dinbox/dlv are per-agent now).
-    `${p}.dinbox.*.*`, `${p}.dlv.*.*`,
+    // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY lifecycle — the
+    // identity slots widen to `.*.*.*` (owner+actor+lifecycleUid: dinbox/dlv are per-LIFECYCLE now,
+    // SPEC 13.1; NATS subject arity is exact, so the old two-token form is broker-denied on every
+    // three-token write).
+    `${p}.dinbox.*.*.*`, `${p}.dlv.*.*.*`,
     // ctl.delivery control REPLIES ONLY (requests arrive on the sub below; the daemon only ever
     // m.respond()s to a requester's reply subject `ctl.delivery.<owner>.<actor>.reply.<n>`). Scoped to
     // the `.reply.>` leaf so the daemon can't publish to the request subjects themselves — tighter than a

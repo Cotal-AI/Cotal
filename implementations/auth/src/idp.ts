@@ -52,6 +52,9 @@ export interface ActorGrant {
   scope?: string[];
   /** The spawning principal (`<owner>.<actor>` dot-form), when the ledger records one. */
   parent?: string;
+  /** The row's lifecycle UID (SPEC 13.1) — stamped into the bearer so a predecessor incarnation's
+   *  still-unexpired bearer can never be minted the successor's broker authority at connect. */
+  lifecycleUid?: string;
 }
 
 export interface CreateIdpBridgeOpts {
@@ -171,6 +174,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         actor: req.actor,
         scope: grant.scope,
         parent: grant.parent,
+        lifecycleUid: grant.lifecycleUid,
         view: req.view,
         ttlSec,
       });

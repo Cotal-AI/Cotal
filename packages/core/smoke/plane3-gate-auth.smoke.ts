@@ -24,9 +24,11 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
+  DEV_OWNER,
   type Delivery,
 } from "../src/index.js";
 
@@ -71,6 +73,14 @@ try {
   });
   mgr.on("error", (e: Error) => console.error("  ! mgr", e.message));
   await mgr.start();
+  // The provisioner cred (`mgr`) can onboard but CANNOT publish chat (least-privilege split, PR 1.5).
+  // Posts ride a separate `operator` cred (like plane3-auth's poster); the daemon's fan-out reads CHAT.
+  const poster = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "operator"),
+    card: { name: "poster", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false,
+  });
+  poster.on("error", (e: Error) => console.error("  ! poster", e.message));
+  await poster.start();
   // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
   // manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
   // The manager stays provisioner + publisher; only the HOST endpoint moves here. The
@@ -86,13 +96,17 @@ try {
   await dlv.start();
 
   const aId = newIdentity();
-  const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"] });
-  await dlv.startPlane3((id) => (id === aId.id ? ["general", "review"] : undefined));
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
+  // Dev/static principal: owner=DEV_OWNER ("local"), actor=the nkey. The reader re-auths against the
+  // member PRINCIPAL dot-form (`local.<nkey>`), and durableJoinFor keys the members registry by it.
+  const aPrincipal = `${DEV_OWNER}.${aId.id}`;
+  const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"], lifecycleUid: uidA });
+  await dlv.startPlane3((owner) => (owner === aPrincipal ? ["general", "review"] : undefined));
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
     card: { id: aId.id, name: "alice", kind: "agent" },
-    channels: ["general"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["general"], lifecycleUid: uidA, heartbeatMs: 500, ttlMs: 2000,
   });
   const got: string[] = [];
   a.on("error", () => {});
@@ -104,11 +118,11 @@ try {
   // Pile traffic onto a DIFFERENT channel so the stream-global seq is far ahead of review's frontier,
   // then durable-join review (which has no traffic in the activation window). A per-subject eviction
   // check returns durable:true; the buggy global-seq check would false-positive eviction → durable:false.
-  for (let i = 0; i < 40; i++) await mgr.multicast(`noise-${i}`, { channel: "general" });
+  for (let i = 0; i < 40; i++) await poster.multicast(`noise-${i}`, { channel: "general" });
   await wait(200);
-  const rj = await dlv.durableJoinFor(aId.id, "review");
+  const rj = await dlv.durableJoinFor(aPrincipal, "review", uidA);
   check("busy multi-channel space: durable join is NOT falsely degraded (durable:true)", rj.durable === true, rj);
-  await mgr.multicast("after-busy-join", { channel: "review" });
+  await poster.multicast("after-busy-join", { channel: "review" });
   check("busy-join member receives the post via the backstop", await until(() => got.includes("after-busy-join")), got);
 
   // ───────────── (1) MANAGER-RECONNECT: the backstop survives a broker restart ─────────────
@@ -120,7 +134,7 @@ try {
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { back = true; break; } await wait(200); }
   if (!back) throw new Error("broker did not restart");
   await wait(3500); // dlv + agent reconnect; the delivery host re-arms fan-out + reader (armPlane3 in connectAndBind)
-  await mgr.multicast("after-broker-restart", { channel: "review" });
+  await poster.multicast("after-broker-restart", { channel: "review" });
   check(
     "durable backstop SURVIVES a broker restart — post still reaches the member (Plane-3 re-armed)",
     await until(() => got.includes("after-broker-restart"), 12000),
@@ -129,6 +143,7 @@ try {
 
   await a.stop();
   await dlv.stop();
+  await poster.stop();
   await mgr.stop();
   console.log(`\nPLANE-3 GATE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {

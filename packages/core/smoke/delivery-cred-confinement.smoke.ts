@@ -24,6 +24,7 @@ import {
   isReachable,
   createSpaceAuth,
   mintCreds,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -169,6 +170,7 @@ try {
   const d = newIdentity();
   const dCreds = await mintCreds(auth, d, "delivery");
   const owner = newIdentity().id; // some arbitrary owner the daemon writes for
+  const ownerUid = mintLifecycleUid(); // its lifecycle uid — dinbox/dlv subjects are lifecycle-keyed (SPEC §13.1)
 
   // Seed a lease key with the DELIVERY cred — the delivery daemon owns `lease.*` in this bucket. (The
   // scoped manager cred no longer holds a blanket `$KV.>` and so cannot write the delivery lease; only
@@ -184,8 +186,8 @@ try {
   check("delivery: native subscribe chat.> is DENIED", (await trySubscribe(dCreds, d.id, `${spacePrefix(space)}.chat.>`)) === "denied");
   check("delivery: post to a chat channel (spoof a peer) is DENIED", (await publishAllowed(dCreds, d.id, chatSubject(space, DEV_OWNER, d.id, "general"))) === "denied");
 
-  check("delivery: write dinbox.<owner> (fan-out target) is allowed", (await publishAllowed(dCreds, d.id, dinboxSubject(space, DEV_OWNER, owner))) === "allowed");
-  check("delivery: write dlv.<owner> (post-auth handoff) is allowed", (await publishAllowed(dCreds, d.id, dlvSubject(space, DEV_OWNER, owner))) === "allowed");
+  check("delivery: write dinbox.<owner> (fan-out target) is allowed", (await publishAllowed(dCreds, d.id, dinboxSubject(space, DEV_OWNER, owner, ownerUid))) === "allowed");
+  check("delivery: write dlv.<owner> (post-auth handoff) is allowed", (await publishAllowed(dCreds, d.id, dlvSubject(space, DEV_OWNER, owner, ownerUid))) === "allowed");
   check("delivery: write its own lease key is allowed", (await kvWriteAllowed(dCreds, d.id, deliveryBucket(space), leaseKey(0))) === "allowed");
   check("delivery: write a NON-lease delivery key is DENIED", (await kvWriteAllowed(dCreds, d.id, deliveryBucket(space), "other")) === "denied");
   check("delivery: write members KV (membership authority) is allowed", (await kvWriteAllowed(dCreds, d.id, membersBucket(space), `review/${owner}`)) === "allowed");
@@ -200,7 +202,7 @@ try {
   const { provisionAgent } = await import("../src/index.js");
   const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const a = newIdentity();
-  const aCreds = await provisionAgent(noop, auth, a, { subscribe: ["general"], allowSubscribe: ["general"] });
+  const aCreds = await provisionAgent(noop, auth, a, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: mintLifecycleUid() });
 
   check("agent: native subscribe dinbox.> is DENIED (regression)", (await trySubscribe(aCreds, a.id, `${spacePrefix(space)}.dinbox.>`)) === "denied");
   check("agent: READ the delivery lease bucket is allowed (Component 6 health)", (await tryKvGet(aCreds, a.id, deliveryBucket(space), leaseKey(0))) === "allowed");

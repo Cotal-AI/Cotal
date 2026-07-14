@@ -261,6 +261,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
             actor,
             scope: grant.scope,
             parent: grant.parent,
+            // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
+            // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
+            // still-unexpired bearer dies at the alias's respawn instead of minting the
+            // successor's broker authority.
+            lifecycleUid: grant.lifecycleUid,
             ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
           });
           const { exp } = decodeJwt(token);

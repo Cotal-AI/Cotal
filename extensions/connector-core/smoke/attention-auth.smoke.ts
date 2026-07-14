@@ -22,6 +22,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -82,9 +83,11 @@ try {
 
   const ottoId = newIdentity();
   const pubbyId = newIdentity();
+  const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1) — provision + creds + MeshAgent endpoint
+  const pubbyUid = mintLifecycleUid();
   const chACL = { subscribe: ["open-ch", "quiet-ch"], allowSubscribe: ["open-ch", "quiet-ch"], allowPublish: ["open-ch", "quiet-ch"] };
-  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist" });
-  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL });
+  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist", lifecycleUid: ottoUid });
+  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, lifecycleUid: pubbyUid });
 
   const cfg: AgentConfig = {
     space,
@@ -98,6 +101,7 @@ try {
     kind: "agent",
     tls: false,
     id: ottoId.id,
+    lifecycleUid: ottoUid,
   };
 
   const agent = new MeshAgent(cfg);
@@ -114,6 +118,7 @@ try {
     creds: pubbyCreds,
     card: { name: "Pubby", kind: "agent", id: pubbyId.id },
     channels: ["open-ch", "quiet-ch"],
+    lifecycleUid: pubbyUid,
   });
   pub.on("error", () => {});
 

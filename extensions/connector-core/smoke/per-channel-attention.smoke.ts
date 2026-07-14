@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { CotalEndpoint, isReachable, seedChannelRegistry, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
@@ -51,6 +51,7 @@ const cfg: AgentConfig = {
   kind: "agent",
   tls: false,
   id: "otto_agent",
+  lifecycleUid: mintLifecycleUid(),
 };
 
 const agent = new MeshAgent(cfg);
@@ -65,7 +66,7 @@ const reset = () => {
   mentionWake = [];
 };
 
-const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["normal-ch", "quiet-ch", "muted-ch"] });
+const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["normal-ch", "quiet-ch", "muted-ch"], lifecycleUid: mintLifecycleUid() });
 pub.on("error", () => {});
 
 try {

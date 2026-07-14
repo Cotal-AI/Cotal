@@ -22,6 +22,7 @@ import {
   isReachable,
   createSpaceAuth,
   mintCreds,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -92,7 +93,7 @@ try {
 
   // Spawn-capable agent: may call BOTH the privileged and self tiers.
   const capId = newIdentity();
-  const capCreds = await mintCreds(auth, capId, "agent", { allowSubscribe: ["general"], capabilities: ["spawn"] });
+  const capCreds = await mintCreds(auth, capId, "agent", { allowSubscribe: ["general"], capabilities: ["spawn"], lifecycleUid: mintLifecycleUid() });
   const cap = agent(capCreds, capId.id, "cap");
   cap.on("error", (e: Error) => console.error("  [cap]", e.message));
   await cap.start();
@@ -105,7 +106,7 @@ try {
   // Plain agent: self tier only. The privileged request is denied at PUBLISH (no spawn capability) — the
   // request promise rejects rather than hanging on a missing reply sub.
   const plainId = newIdentity();
-  const plainCreds = await mintCreds(auth, plainId, "agent", { allowSubscribe: ["general"] });
+  const plainCreds = await mintCreds(auth, plainId, "agent", { allowSubscribe: ["general"], lifecycleUid: mintLifecycleUid() });
   const plain = agent(plainCreds, plainId.id, "plain");
   // EXPECTED: the privileged-tier probe below subscribes `ctl.manager.<plain>.reply.…`, which a
   // non-spawn agent lacks — the broker denies it (the whole point), surfacing as an async endpoint error.

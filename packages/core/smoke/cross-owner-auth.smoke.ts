@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
-  isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
+  isReachable, createSpaceAuth, mintCreds, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams,
   chatSubject, unicastSubject, unicastRecvFilter, anycastSubject, dinboxSubject, dlvSubject,
   controlServiceSubject, CONTROL_SELF_SERVICE, CONTROL_DELIVERY, membershipBucket,
   principalKey, presenceBucket, spacePrefix,
@@ -73,12 +73,14 @@ try {
   // Streams (so ALLOWED $KV/chat land as real PubAcks, not no-responders) via a provisioner cred.
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
-  // Three agents. A2 is A1's SIBLING (same owner, different actor); B1 is a DIFFERENT owner.
+  // Three agents. A2 is A1's SIBLING (same owner, different actor); B1 is a DIFFERENT owner. Each is a
+  // distinct lifecycle (SPEC §13.1): agent creds are lifecycle-keyed, so each mint carries its own uid.
   const idA1 = newIdentity(), idA2 = newIdentity(), idB1 = newIdentity();
+  const uidA1 = mintLifecycleUid(), uidA2 = mintLifecycleUid(), uidB1 = mintLifecycleUid();
   const grants = { allowSubscribe: ["general"], allowPublish: ["general"] } as const;
-  const a1 = await mintCreds(auth, idA1, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora1" } });
-  await mintCreds(auth, idA2, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora2" } });
-  await mintCreds(auth, idB1, "agent", { ...grants, principal: { owner: OWNER_B, actor: "actorb1" } });
+  const a1 = await mintCreds(auth, idA1, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora1" }, lifecycleUid: uidA1 });
+  await mintCreds(auth, idA2, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora2" }, lifecycleUid: uidA2 });
+  await mintCreds(auth, idB1, "agent", { ...grants, principal: { owner: OWNER_B, actor: "actorb1" }, lifecycleUid: uidB1 });
   const pk = (o: string, a: string) => principalKey(o, a).key;
 
   console.log("A1 = (u_aaa…, actora1). Publish deny matrix:");
@@ -102,17 +104,17 @@ try {
   check("call OWN ctl.self AS SELF ALLOWED", await tryPublish(a1, controlServiceSubject(space, CONTROL_SELF_SERVICE, OWNER_A, "actora1"), idA1.id) === "allowed");
   check("FORGE ctl.self as the SIBLING (A2) DENIED", await tryPublish(a1, controlServiceSubject(space, CONTROL_SELF_SERVICE, OWNER_A, "actora2"), idA1.id) === "denied");
   check("FORGE ctl.delivery as the OTHER OWNER (B1) DENIED", await tryPublish(a1, controlServiceSubject(space, CONTROL_DELIVERY, OWNER_B, "actorb1"), idA1.id) === "denied");
-  check("FORGE-WRITE the SIBLING's dinbox (DM pre-auth fan-out) DENIED", await tryPublish(a1, dinboxSubject(space, OWNER_A, "actora2"), idA1.id) === "denied");
-  check("FORGE-WRITE the OTHER OWNER's dlv (post-auth handoff) DENIED", await tryPublish(a1, dlvSubject(space, OWNER_B, "actorb1"), idA1.id) === "denied");
+  check("FORGE-WRITE the SIBLING's dinbox (DM pre-auth fan-out) DENIED", await tryPublish(a1, dinboxSubject(space, OWNER_A, "actora2", uidA2), idA1.id) === "denied");
+  check("FORGE-WRITE the OTHER OWNER's dlv (post-auth handoff) DENIED", await tryPublish(a1, dlvSubject(space, OWNER_B, "actorb1", uidB1), idA1.id) === "denied");
   check("FORGE-WRITE a membership-feed key (broker-owned) DENIED", await tryPublish(a1, `$KV.${membershipBucket(space)}.${pk(OWNER_A, "actora2")}`, idA1.id) === "denied");
 
   console.log("A1 subscribe deny matrix (read boundary):");
   check("read #general (own ACL) ALLOWED", await trySubscribe(a1, idA1.id, chatSubject(space, "*", "*", "general")) === "allowed");
   check("native-tap the OTHER OWNER's DM lane (inst.u_bbb.actorb1.>) DENIED", await trySubscribe(a1, idA1.id, unicastRecvFilter(space, OWNER_B, "actorb1")) === "denied");
   check("native-tap the SIBLING's DM lane (inst.u_aaa.actora2.>) DENIED", await trySubscribe(a1, idA1.id, unicastRecvFilter(space, OWNER_A, "actora2")) === "denied");
-  check("read the OTHER OWNER's dinbox (pre-auth fan-out) DENIED", await trySubscribe(a1, idA1.id, dinboxSubject(space, OWNER_B, "actorb1")) === "denied");
-  check("read the OTHER OWNER's dlv (post-auth handoff) DENIED", await trySubscribe(a1, idA1.id, dlvSubject(space, OWNER_B, "actorb1")) === "denied");
-  check("read the SIBLING's dlv DENIED", await trySubscribe(a1, idA1.id, dlvSubject(space, OWNER_A, "actora2")) === "denied");
+  check("read the OTHER OWNER's dinbox (pre-auth fan-out) DENIED", await trySubscribe(a1, idA1.id, dinboxSubject(space, OWNER_B, "actorb1", uidB1)) === "denied");
+  check("read the OTHER OWNER's dlv (post-auth handoff) DENIED", await trySubscribe(a1, idA1.id, dlvSubject(space, OWNER_B, "actorb1", uidB1)) === "denied");
+  check("read the SIBLING's dlv DENIED", await trySubscribe(a1, idA1.id, dlvSubject(space, OWNER_A, "actora2", uidA2)) === "denied");
   check("native-tap the whole chat firehose (chat.>) DENIED", await trySubscribe(a1, idA1.id, `${spacePrefix(space)}.chat.>`) === "denied");
 
   console.log(`\nCROSS-OWNER SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

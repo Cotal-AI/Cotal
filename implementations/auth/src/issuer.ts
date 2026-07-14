@@ -92,6 +92,10 @@ export interface IssueClaims {
   scope?: string[];
   /** At most one spawner audit link, `<owner>.<actor>` dot-form. */
   parent?: string;
+  /** The ledger row's lifecycle UID (SPEC 13.1) — lifecycle-BINDS the bearer: the callout requires
+   *  exact equality with the CURRENT row at connect, so a predecessor incarnation's still-unexpired
+   *  bearer can never mint the successor's broker authority. Stamped whenever the row carries one. */
+  lifecycleUid?: string;
   /** Exchange-authorized elevated view (already ledger-checked upstream; the issuer only stamps —
    *  and re-asserts the closed enum, mint ↔ validate inverse). */
   view?: UserTokenView;
@@ -162,7 +166,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
-      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.view ? { view: claims.view } : {}) },
+      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.view ? { view: claims.view } : {}) },
     })
       .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
       .setSubject(claims.owner)

@@ -20,6 +20,10 @@ export interface AgentConfig {
   id?: string;
   /** Minted creds file content (auth mode); the endpoint authenticates with it. */
   creds?: string;
+  /** The incarnation's lifecycle UID (SPEC §13.1) from the launcher (`COTAL_LIFECYCLE_UID`): the
+   *  endpoint binds its lifecycle-keyed dm/dlv/chathist durables by it — the same exact names its
+   *  credential pins, so a mismatch fails at the broker, never silently. */
+  lifecycleUid?: string;
   /** USER-MODE launch (a spawned agent on a user-auth mesh): the agent's owner+actor principal,
    *  the sentinel creds content it presents alongside its bearers, and the argv it EXECS for a
    *  fresh bearer (initial connect + every refresh — the exchange protocol stays behind that
@@ -175,6 +179,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   return {
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: env.COTAL_ID?.trim() || undefined,
+    lifecycleUid: env.COTAL_LIFECYCLE_UID?.trim() || undefined,
     creds: credsPath ? readFileSync(credsPath, "utf8") : undefined,
     userAuth,
     name,

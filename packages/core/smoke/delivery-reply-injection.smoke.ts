@@ -22,6 +22,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -75,13 +76,13 @@ try {
   });
   daemon.on("error", () => {}); // expected: it emits an error when it rejects the forged reply
   await daemon.start();
-  await daemon.startPlane3((owner) => daemon!.aclForOwner(owner));
+  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
 
   // Two ordinary agents — attacker + victim. provisionAgent grants each ctl.delivery.<id> pub + reply sub.
   const attacker = newIdentity();
-  const aCreds = await provisionAgent(noop, auth, attacker, { subscribe: ["general"], allowSubscribe: ["general"] });
+  const aCreds = await provisionAgent(noop, auth, attacker, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: mintLifecycleUid() });
   const victim = newIdentity();
-  const vCreds = await provisionAgent(noop, auth, victim, { subscribe: ["general"], allowSubscribe: ["general"] });
+  const vCreds = await provisionAgent(noop, auth, victim, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: mintLifecycleUid() });
 
   // Victim listens on its OWN reply subtree.
   const vnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(vCreds)), inboxPrefix: `_INBOX_${victim.id}`, maxReconnectAttempts: 0 });

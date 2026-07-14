@@ -22,6 +22,7 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -74,7 +75,7 @@ try {
 
   // --- alice: a SILENT live subscriber, subs split across TWO connections (union test) ---
   const alice = newIdentity();
-  const aliceCreds = await provisionAgent(noop, auth, alice, { subscribe: ["general"], allowSubscribe: ["general", "review.>", "logs"] });
+  const aliceCreds = await provisionAgent(noop, auth, alice, { subscribe: ["general"], allowSubscribe: ["general", "review.>", "logs"], lifecycleUid: mintLifecycleUid() });
   const a1 = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(aliceCreds)), name: "cotal:alice" });
   conns.push(a1);
   a1.subscribe(chatSubject(space, "*", "*", "general"));
@@ -93,7 +94,7 @@ try {
   const seedNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(await mintCreds(auth, seedId, "delivery"))), inboxPrefix: `_INBOX_${seedId.id}` });
   conns.push(seedNc);
   const members = await openMembersRegistry(seedNc, space);
-  const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
+  const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, lifecycleUid: mintLifecycleUid(), state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
   await commitMember(members, rec("deploys", pkey(bob.id)));
   await commitMember(members, rec("general", pkey(alice.id))); // alice is ALSO a durable member of #general (live ∪ durable union)
 
@@ -125,7 +126,7 @@ try {
   // chat.*.> sub MUST surface as a `>` reader (the source-of-truth goal); it must NOT be dropped as if it
   // were a god-tap (review-general/socrates: shape-based exclusion wrongly erased exactly these). ---
   const dave = newIdentity();
-  const daveCreds = await provisionAgent(noop, auth, dave, { subscribe: ["general"], allowSubscribe: [">"] });
+  const daveCreds = await provisionAgent(noop, auth, dave, { subscribe: ["general"], allowSubscribe: [">"], lifecycleUid: mintLifecycleUid() });
   const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:dave" });
   conns.push(dnc);
   dnc.subscribe(chatSubject(space, "*", "*", ">")); // chat.*.> — reads everything

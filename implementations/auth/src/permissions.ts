@@ -15,7 +15,7 @@ import type { ValidatedUserToken } from "./token.js";
  *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 export type AclResolver = (
   t: ValidatedUserToken,
-) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role">;
+) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid">;
 
 /**
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
@@ -62,6 +62,13 @@ export function calloutPermissions(
       );
     }
     const acl = resolveAcl(t);
-    return permissionsFor("agent", t.space, principal, { ...acl, capabilities: caps });
+    // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
+    // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
+    return permissionsFor(
+      "agent",
+      t.space,
+      { ...principal, ...(acl.lifecycleUid !== undefined ? { lifecycleUid: acl.lifecycleUid } : {}) },
+      { ...acl, capabilities: caps },
+    );
   };
 }

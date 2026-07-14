@@ -30,6 +30,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -92,17 +93,29 @@ try {
   });
   pub.on("error", (e: Error) => console.error("  ! pub", e.message));
   await pub.start();
+  // The provisioner cred (`pub`) onboards agents but CANNOT publish chat (least-privilege split, PR 1.5).
+  // Posts ride a separate `operator` cred (`poster`), like the sibling self-serve-join-auth's poster.
+  const posterIdent = newIdentity();
+  const posterCreds = await mintCreds(auth, posterIdent, "operator");
+  const poster = new CotalEndpoint({
+    space, servers: SERVERS, creds: posterCreds,
+    card: { id: posterIdent.id, name: "poster", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false, heartbeatMs: 300, ttlMs: 1500,
+  });
+  poster.on("error", (e: Error) => console.error("  ! poster", e.message));
+  await poster.start();
 
   // Agent A — boots on "general" (durable), read ACL covers three disjoint subtrees for self-serve joins.
   const aId = newIdentity();
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
   const aCreds = await provisionAgent(pub, auth, aId, {
     subscribe: ["general"],
     allowSubscribe: ["general", "rev.>", "team.>", "ops.>"],
+    lifecycleUid: uidA,
   });
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
     card: { id: aId.id, name: "alice", kind: "agent" },
-    channels: ["general"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["general"], lifecycleUid: uidA, heartbeatMs: 500, ttlMs: 2000,
   });
   const got: string[] = [];
   const kinds = new Map<string, MessageMeta["kind"]>();
@@ -120,21 +133,22 @@ try {
   const r2 = await a.joinChannel("rev.api");
   check("manager-free joinChannel(rev.api) is core-sub only (durable:false)", r2.joined === true && r2.durable === false, r2);
   {
-    // A raw authed conn publishes straight onto the chat subject (what the core-sub listens on).
-    const raw = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(mgrCreds)) });
+    // A raw authed conn (the OPERATOR poster — only it may publish chat) publishes straight onto the chat
+    // subject (what the core-sub listens on).
+    const raw = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(posterCreds)), inboxPrefix: `_INBOX_${posterIdent.id}` });
     const rjs = jetstream(raw);
-    // (a) forged payload `to: <alice>` with a VALID from=pub: must deliver, classified kind=channel by subject.
+    // (a) forged payload `to: <alice>` with a VALID from=poster: must deliver, classified kind=channel by subject.
     const forged: CotalMessage = {
-      id: randomUUID(), ts: Date.now(), space, from: pub.ref(), channel: "rev.api",
+      id: randomUUID(), ts: Date.now(), space, from: poster.ref(), channel: "rev.api",
       to: aId.id, parts: [{ kind: "text", text: "forged-to-probe" }],
     };
-    await rjs.publish(chatSubject(space, pub.card.owner!, pub.card.actor!, "rev.api"), JSON.stringify(forged), { msgID: forged.id });
+    await rjs.publish(chatSubject(space, poster.card.owner!, poster.card.actor!, "rev.api"), JSON.stringify(forged), { msgID: forged.id });
     // (b) spoof: payload from.id ≠ subject sender token → core-sub must DROP (no delivery).
     const spoofed: CotalMessage = {
-      id: randomUUID(), ts: Date.now(), space, from: { ...pub.ref(), id: `imposter-${randomUUID().slice(0, 6)}` },
+      id: randomUUID(), ts: Date.now(), space, from: { ...poster.ref(), id: `imposter-${randomUUID().slice(0, 6)}` },
       channel: "rev.api", parts: [{ kind: "text", text: "spoofed-from-probe" }],
     };
-    await rjs.publish(chatSubject(space, pub.card.owner!, pub.card.actor!, "rev.api"), JSON.stringify(spoofed), { msgID: spoofed.id });
+    await rjs.publish(chatSubject(space, poster.card.owner!, poster.card.actor!, "rev.api"), JSON.stringify(spoofed), { msgID: spoofed.id });
     await raw.close();
   }
   // Catches a callback that reads payload.to (would be kind="dm") instead of classifying by the chat.* subject.
@@ -152,7 +166,7 @@ try {
   got.length = 0;
   const rj = await a.joinChannel("rev.api");
   check("re-join after leave succeeds (joinSeq re-armed)", rj.joined === true && rj.durable === false, rj);
-  await pub.multicast("rejoined-live", { channel: "rev.api" });
+  await poster.multicast("rejoined-live", { channel: "rev.api" });
   check("re-joined channel delivers again, exactly once",
     await until(() => got.filter((g) => g === "#rev.api:rejoined-live").length === 1)
       && got.filter((g) => g === "#rev.api:rejoined-live").length === 1, got);
@@ -162,8 +176,8 @@ try {
   got.length = 0;
   const rw = await a.joinChannel("team.>");
   check("manager-free joinChannel(team.>) wildcard succeeds (durable:false)", rw.joined === true && rw.durable === false, rw);
-  await pub.multicast("team-sec", { channel: "team.security" });
-  await pub.multicast("team-deep", { channel: "team.deep.x" });
+  await poster.multicast("team-sec", { channel: "team.security" });
+  await poster.multicast("team-deep", { channel: "team.deep.x" });
   check("wildcard core-sub delivers both subtree channels under sub.allow",
     await until(() => got.includes("#team.security:team-sec") && got.includes("#team.deep.x:team-deep")), got);
   // Catches a wildcard core-sub that is wrongly coverage-dropped or double-delivered under auth.
@@ -173,15 +187,16 @@ try {
 
   // ───────────────── #4B — auth-mode WILDCARD backfill: the minted chathist create-grant admits chat.*.rev.> ─────────────────
   // Pre-seed retained history on two subtree levels, THEN boot a fresh agent on the wildcard with replay on.
-  await pub.multicast("bk-1", { channel: "rev.bk1" });
-  await pub.multicast("bk-2", { channel: "rev.deep.bk2" });
+  await poster.multicast("bk-1", { channel: "rev.bk1" });
+  await poster.multicast("bk-2", { channel: "rev.deep.bk2" });
   await wait(400);
   const cId = newIdentity();
-  const cCreds = await provisionAgent(pub, auth, cId, { subscribe: ["rev.>"], allowSubscribe: ["rev.>"] });
+  const uidC = mintLifecycleUid(); // carol's one lifecycle uid (SPEC §13.1)
+  const cCreds = await provisionAgent(pub, auth, cId, { subscribe: ["rev.>"], allowSubscribe: ["rev.>"], lifecycleUid: uidC });
   const c = new CotalEndpoint({
     space, servers: SERVERS, creds: cCreds,
     card: { id: cId.id, name: "carol", kind: "agent" },
-    channels: ["rev.>"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["rev.>"], lifecycleUid: uidC, heartbeatMs: 500, ttlMs: 2000,
   });
   const gotC: { text: string; historical: boolean }[] = [];
   c.on("message", (m, d: Delivery, meta?: MessageMeta) => { gotC.push({ text: textOf(m), historical: meta?.historical ?? false }); d.ack(); });
@@ -195,11 +210,12 @@ try {
 
   // ───────────────── #7A — fully-open ['>'] ACL: any channel, no enumeration; no widening past chat.* ─────────────────
   const bId = newIdentity();
-  const bCreds = await provisionAgent(pub, auth, bId, { subscribe: ["genb"], allowSubscribe: [">"] });
+  const uidB = mintLifecycleUid(); // bob's one lifecycle uid (SPEC §13.1)
+  const bCreds = await provisionAgent(pub, auth, bId, { subscribe: ["genb"], allowSubscribe: [">"], lifecycleUid: uidB });
   const b = new CotalEndpoint({
     space, servers: SERVERS, creds: bCreds,
     card: { id: bId.id, name: "bob", kind: "agent" },
-    channels: ["genb"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["genb"], lifecycleUid: uidB, heartbeatMs: 500, ttlMs: 2000,
   });
   const gotB: string[] = [];
   b.on("message", (m, d: Delivery) => { gotB.push(`#${m.channel}:${textOf(m)}`); d.ack(); });
@@ -209,8 +225,8 @@ try {
   const ja = await b.joinChannel("alpha");
   const jz = await b.joinChannel("zeta"); // two UNRELATED channels, neither enumerated in b.subscribe
   check("open-ACL agent self-joins arbitrary unrelated channels (no enumeration)", ja.joined === true && jz.joined === true, { ja, jz });
-  await pub.multicast("to-alpha", { channel: "alpha" });
-  await pub.multicast("to-zeta", { channel: "zeta" });
+  await poster.multicast("to-alpha", { channel: "alpha" });
+  await poster.multicast("to-zeta", { channel: "zeta" });
   check("open-ACL agent receives both arbitrary channels live",
     await until(() => gotB.includes("#alpha:to-alpha") && gotB.includes("#zeta:to-zeta")), gotB);
   // The open chat grant is chat.*.> — it must NOT widen to the whole space. Subscribe to the firehose is denied.
@@ -242,8 +258,8 @@ try {
   if (!back) throw new Error("broker did not restart");
   await wait(3000); // reconnect + rebind + core-sub reconciliation
   got.length = 0;
-  await pub.multicast("c1-after", { channel: "ops.c1" });
-  await pub.multicast("c2-after", { channel: "ops.c2" });
+  await poster.multicast("c1-after", { channel: "ops.c1" });
+  await poster.multicast("c2-after", { channel: "ops.c2" });
   // Catches an additive reconcile that reopens only ONE joined core-sub channel after reconnect.
   check("ALL manager-free core-subs reopen after a broker restart (multi-channel)",
     await until(() => got.includes("#ops.c1:c1-after") && got.includes("#ops.c2:c2-after")), got);
@@ -252,7 +268,7 @@ try {
   got.length = 0;
   const od = await a.joinChannel("ops.c3");
   check("on-demand join of a fresh channel succeeds AFTER reconnect", od.joined === true, od);
-  await pub.multicast("c3-ondemand", { channel: "ops.c3" });
+  await poster.multicast("c3-ondemand", { channel: "ops.c3" });
   check("the post-reconnect on-demand join delivers", await until(() => got.includes("#ops.c3:c3-ondemand")), got);
 
   // (C) A Plane-3 durable join (durable:true) survives a broker restart — the manager re-arms its
@@ -270,12 +286,12 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
-  await dlv.startPlane3((id) => (id === `${DEV_OWNER}.${aId.id}` ? aclC : undefined));
+  await dlv.startPlane3((owner) => (owner === `${DEV_OWNER}.${aId.id}` ? aclC : undefined));
   pub.serveControl(CONTROL_SELF_SERVICE, async (req) => {
     const ch = typeof (req.args as { channel?: unknown })?.channel === "string" ? (req.args as { channel: string }).channel : "";
-    if (req.op === "durableJoin") return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
+    if (req.op === "durableJoin") return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, uidA) };
     if (req.op === "durableLeave") {
-      await dlv.durableLeaveFor(req.from.id, ch, typeof (req.args as { generation?: unknown })?.generation === "number" ? (req.args as { generation: number }).generation : undefined);
+      await dlv.durableLeaveFor(req.from.id, ch, uidA, typeof (req.args as { generation?: unknown })?.generation === "number" ? (req.args as { generation: number }).generation : undefined);
       return { ok: true };
     }
     return { ok: false, error: `unknown op ${req.op}` };
@@ -291,7 +307,7 @@ try {
   if (!back2) throw new Error("broker did not restart (2)");
   await wait(3500); // mgr + agent reconnect; mgr re-arms fan-out + reader
   got.length = 0;
-  await pub.multicast("dual-after-restart", { channel: "ops.dual" });
+  await poster.multicast("dual-after-restart", { channel: "ops.dual" });
   // The durable backstop survives the restart (the agent's id-dedup collapses the dual-path live+durable
   // copies; here at the raw endpoint we just assert the post still arrives).
   check("durable join survives a broker restart — post still reaches the member",
@@ -299,6 +315,7 @@ try {
 
   await a.stop();
   await dlv.stop();
+  await poster.stop();
   await pub.stop();
 } catch (e) {
   fail++;

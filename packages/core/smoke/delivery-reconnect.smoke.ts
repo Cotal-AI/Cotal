@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -42,11 +42,12 @@ try {
 
   daemon = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {}); await daemon.start();
-  await daemon.startPlane3((owner) => daemon!.aclForOwner(owner));
+  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
 
   const aId = newIdentity();
-  const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review", "ops"], subscribe: ["review"] });
-  agent = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice", kind: "agent" } });
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
+  const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review", "ops"], subscribe: ["review"], lifecycleUid: uidA });
+  agent = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], consume: false, lifecycleUid: uidA, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice", kind: "agent" } });
   agent.on("error", () => {}); await agent.start();
 
   // Pre-reconnect: the responder works + the daemon holds a (ready) lease (so the deliveryKv reopen is
@@ -68,7 +69,7 @@ try {
   try { postJoin = await agent.durableJoinChannel("ops"); } catch (e) { console.log(`    (post-reconnect join threw: ${(e as Error).message})`); }
   check("durableJoin works after reconnect (responder + aclKv + membersKv re-bound)", postJoin?.durable === true);
 
-  const members = await daemon.ownerMemberships(principalKey(DEV_OWNER, aId.id).key);
+  const members = await daemon.ownerMemberships(principalKey(DEV_OWNER, aId.id).key, uidA);
   check("listMemberships works after reconnect (membersKv reopened)", members.some((m) => m.channel === "review") && members.some((m) => m.channel === "ops"));
 
   let leftOk = false;

@@ -75,7 +75,12 @@ async function inspect<T>(fn: (jsm: Awaited<ReturnType<typeof jetstreamManager>>
 const consumerExists = (stream: string, name: string) =>
   inspect(async (jsm) => { try { await jsm.consumers.info(stream, name); return true; } catch { return false; } });
 const localPrincipal = (id: string) => principalKey(DEV_OWNER, id).key;
-const aclPresent = (id: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id))) !== undefined);
+// Every lifecycle-keyed broker resource (dm_/dlv_ durables, ACL row) carries the incarnation's uid
+// (SPEC §13.1). The Manager mints it internally per spawn and records it on the ManagedAgent — read it
+// there to predict the exact names. Capture it BEFORE a despawn/stop clears the agent from the map.
+const uidOf = (name: string): string =>
+  (mgr as unknown as { agents: Map<string, { lifecycleUid?: string }> }).agents.get(name)?.lifecycleUid ?? "";
+const aclPresent = (id: string, uid: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id), uid)) !== undefined);
 const credsFile = (name: string) => join(authDir(workspaceRoot), "creds", `${name}.creds`);
 /** Poll until `f()` matches `want`, up to `ms`. */
 async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promise<boolean> {
@@ -84,11 +89,11 @@ async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promi
   return (await f()) === want;
 }
 /** Does the whole local-principal footprint exist? (dm_local- + dlv_local- + acl + creds file) */
-async function footprint(id: string, name: string): Promise<{ dm: boolean; dlv: boolean; acl: boolean; creds: boolean }> {
+async function footprint(id: string, uid: string, name: string): Promise<{ dm: boolean; dlv: boolean; acl: boolean; creds: boolean }> {
   return {
-    dm: await consumerExists(DM, dmDurable(DEV_OWNER, id)),
-    dlv: await consumerExists(DLV, dlvDurable(DEV_OWNER, id)),
-    acl: await aclPresent(id),
+    dm: await consumerExists(DM, dmDurable(DEV_OWNER, id, uid)),
+    dlv: await consumerExists(DLV, dlvDurable(DEV_OWNER, id, uid)),
+    acl: await aclPresent(id, uid),
     creds: existsSync(credsFile(name)),
   };
 }
@@ -130,7 +135,8 @@ try {
   const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot });
   check("startAgent reports started (agent joined the mesh)", r1.ok === true, r1);
   const id1 = (r1.data as { id?: string } | undefined)?.id ?? "";
-  const fp1 = await footprint(id1, "w1");
+  const uid1 = uidOf("w1"); // capture the manager-minted uid while w1 is still managed (despawn clears it)
+  const fp1 = await footprint(id1, uid1, "w1");
   check("footprint exists after start — dm_ durable", fp1.dm, fp1);
   check("footprint exists after start — dlv_ durable", fp1.dlv, fp1);
   check("footprint exists after start — read-ACL row", fp1.acl, fp1);
@@ -140,9 +146,9 @@ try {
   console.log("2. despawn → footprint deprovisioned:");
   const callerId = (mgr as unknown as { ep: { ref: () => { id: string } } }).ep.ref().id;
   (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, admin: boolean) => unknown }).opStop({ name: "w1", graceful: false }, callerId, true);
-  check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1)), false), await footprint(id1, "w1"));
-  check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1)), false));
-  check("read-ACL row gone after despawn", await until(() => aclPresent(id1), false));
+  check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1, uid1)), false), await footprint(id1, uid1, "w1"));
+  check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)), false));
+  check("read-ACL row gone after despawn", await until(() => aclPresent(id1, uid1), false));
   check("creds file gone after despawn", await until(async () => existsSync(credsFile("w1")), false));
 
   // 3 — FAILED launch: process exits on arrival → {ok:false} + footprint rolled back.
@@ -163,8 +169,9 @@ try {
   check("startAgent reports {ok:false}", r3b.ok === false, r3b);
   check("failure names it 'uncertain'", /uncertain/i.test((r3b as { error?: string }).error ?? ""), (r3b as { error?: string }).error);
   const idleId = (mgr as unknown as { agents: Map<string, { id: string; agent: string }> }).agents.get("idle1")?.id ?? "";
-  check("uncertain agent is KEPT (still managed, not despawned)", idleId !== "" && (await footprint(idleId, "idle1")).creds, [...(mgr as unknown as { agents: Map<string, unknown> }).agents.keys()]);
-  check("uncertain agent NOT deprovisioned (footprint intact)", (await footprint(idleId, "idle1")).dm, await footprint(idleId, "idle1"));
+  const uidIdle = uidOf("idle1");
+  check("uncertain agent is KEPT (still managed, not despawned)", idleId !== "" && (await footprint(idleId, uidIdle, "idle1")).creds, [...(mgr as unknown as { agents: Map<string, unknown> }).agents.keys()]);
+  check("uncertain agent NOT deprovisioned (footprint intact)", (await footprint(idleId, uidIdle, "idle1")).dm, await footprint(idleId, uidIdle, "idle1"));
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000; // restore for w2 below
 
   // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
@@ -172,9 +179,10 @@ try {
   const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot });
   check("second agent started", r4.ok === true, r4);
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
-  check("w2 footprint exists before stop", (await footprint(id2, "w2")).dm, await footprint(id2, "w2"));
+  const uid2 = uidOf("w2"); // capture before stop() clears the managed set
+  check("w2 footprint exists before stop", (await footprint(id2, uid2, "w2")).dm, await footprint(id2, uid2, "w2"));
   await mgr.stop(); // awaits teardownManagedAgents → deprovision
-  const fp2 = await footprint(id2, "w2");
+  const fp2 = await footprint(id2, uid2, "w2");
   check("w2 dm_ durable gone after stop()", !fp2.dm, fp2);
   check("w2 dlv_ durable gone after stop()", !fp2.dlv, fp2);
   check("w2 read-ACL row gone after stop()", !fp2.acl, fp2);

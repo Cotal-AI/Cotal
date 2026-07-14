@@ -78,6 +78,10 @@ export interface AuthProvider extends Extension {
     /** The spawning principal (`<owner>.<actor>` dot-form) — the grant's audit link. */
     parent?: string;
     label?: string;
+    /** The incarnation's lifecycle UID (SPEC §13.1). Recorded on the ledger row so the auth
+     *  callout mints this agent's lifecycle-keyed grants (`dm_…-<uid>`/`dlv_…-<uid>`/
+     *  `chathist_…-<uid>`) from the SAME value its provisioned broker footprint carries. */
+    lifecycleUid: string;
   }): Promise<{ actorToken: string; sentinelCreds: string }>;
   /** Revoke an agent grant. False when there was nothing to revoke. New exchanges and new
    *  connects die immediately (both boundaries read the ledger fresh); an already-live

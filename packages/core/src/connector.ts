@@ -19,6 +19,10 @@ export interface LaunchOpts {
    *  argv) — like {@link creds}, host-local pointers, opaque to core. Mutually exclusive with
    *  `creds`/`id` (the principal IS the identity; connectors throw on a conflicting combination). */
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  /** The incarnation's lifecycle UID (SPEC §13.1), minted by the launcher at spawn. The connector
+   *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
+   *  dm/dlv/chathist durables — the same exact names its credential pins. */
+  lifecycleUid?: string;
   servers?: string;
   /** The agent's resolved access policy — the SAME read/post set the manager mints the agent's
    *  creds from. The connector forwards it (`COTAL_SUBSCRIBE` / `COTAL_ALLOW_SUBSCRIBE` /

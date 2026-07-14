@@ -15,7 +15,12 @@
  * colliding token parses to `null`, never to a confused identity. A subject matching no defined
  * shape returns `null` and MUST NOT be handled.
  */
-import { ROOT, spacePrefix, assertValidOwnerToken } from "./subjects.js";
+import { ROOT, spacePrefix, assertValidOwnerToken, assertLifecycleToken } from "./subjects.js";
+
+// One grammar bounds both `lifecycleUid` and `instanceId` (§13.1) — the definition lives in
+// subjects.ts (the messaging plane lifecycle-keys resource names with it); re-exported here so the
+// endpoint rails keep their import surface.
+export { assertLifecycleToken, mintLifecycleUid } from "./subjects.js";
 
 /** The v0.4 wire version this surface targets. Advertised (§6 `protocolVersion`) only at the
  *  §13.11 cutover — a change signal, not negotiation; nothing pre-cut should flip the card. */
@@ -30,7 +35,6 @@ export const RESERVED_COMMANDS = ["describe", "cancel"] as const;
 const ENDPOINT_LABEL = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const COMMAND = /^[a-z0-9-]{1,32}$/;
 const NONCE = /^[A-Za-z0-9_-]{22,64}$/;
-const LIFECYCLE = /^[a-z0-9]{26,32}$/; // one grammar for lifecycleUid AND instanceId (§13.1/§13.2)
 const ID = /^[A-Za-z0-9_-]{1,64}$/; // <id>, <goalId>, <timerId>, <token>, <sessionId>
 const GRANT_ID = /^[a-z0-9]{1,32}$/; // <gid>: separator-free, so multi-soft-component durable names stay injective (§13.9)
 const DIGEST_HEX = /^[a-f0-9]{64}$/;
@@ -67,13 +71,6 @@ export function assertCommandToken(command: string): string {
 export function assertNonce(nonce: string): string {
   if (!NONCE.test(nonce)) throw new Error(`nonce is not a valid nonce token ([A-Za-z0-9_-]{22,64}; >=128 bits of CSPRNG entropy)`);
   return nonce;
-}
-
-/** One grammar bounds both `lifecycleUid` and `instanceId` (§13.1) — deliberately shared so the
- *  bound cannot drift from the definition. */
-export function assertLifecycleToken(v: string, what = "lifecycleUid"): string {
-  if (!LIFECYCLE.test(v)) throw new Error(`${what} "${v}" is not a valid lifecycle token ([a-z0-9]{26,32})`);
-  return v;
 }
 
 export function assertIdToken(v: string, what = "id"): string {

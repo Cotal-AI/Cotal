@@ -28,6 +28,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -121,8 +122,10 @@ try {
   const acl = { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] };
   const ottoId = newIdentity();
   const watchId = newIdentity();
-  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...acl, role: "worker" });
-  const watchCreds = await provisionAgent(mgr, auth, watchId, { ...acl, role: "watcher" });
+  const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1) — provision + launch env + child endpoint
+  const watchUid = mintLifecycleUid();
+  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...acl, role: "worker", lifecycleUid: ottoUid });
+  const watchCreds = await provisionAgent(mgr, auth, watchId, { ...acl, role: "watcher", lifecycleUid: watchUid });
 
   // The watcher endpoint observes Otto's presence (the proof of a clean leave).
   watcher = new CotalEndpoint({
@@ -131,6 +134,7 @@ try {
     creds: watchCreds,
     card: { id: watchId.id, name: "watch", role: "watcher", kind: "agent" },
     channels: ["general"],
+    lifecycleUid: watchUid,
     heartbeatMs: 500,
     ttlMs: 30_000,
   });
@@ -147,6 +151,7 @@ try {
     name: "Otto",
     role: "worker",
     id: ottoId.id,
+    lifecycleUid: ottoUid,
     creds: credsFile,
     servers: SERVERS,
     subscribe: ["general"],

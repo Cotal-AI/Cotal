@@ -24,6 +24,11 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// ACL rows are lifecycle-keyed `<owner>.<actor>.<uid>` (SPEC §13.1) — one uid per simulated agent.
+const U1 = "owner1aaaaaaaaaaaaaaaaaaaaa"; // 26 chars, [a-z0-9]
+const UG = "garbledbbbbbbbbbbbbbbbbbbbb";
+const UW = "wedgedcccccccccccccccccccc";
+
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-aclcas-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -36,22 +41,22 @@ try {
   const kv = await openAclRegistry(nc, "aclcas", { create: true });
 
   // ── the ordinary paths still hold ──
-  const created = await commitAcl(kv, "local.owner1", ["general"]);
-  c("fresh create", created.revision === 1 && (await readAcl(kv, "local.owner1"))?.record.allowSubscribe[0] === "general");
-  const updated = await commitAcl(kv, "local.owner1", ["general", "review"]);
-  c("update bumps revision", updated.revision === 2 && (await readAcl(kv, "local.owner1"))?.record.revision === 2);
-  await deleteAcl(kv, "local.owner1");
-  c("delete purges", (await readAcl(kv, "local.owner1")) === undefined);
-  const recreated = await commitAcl(kv, "local.owner1", ["general"]);
+  const created = await commitAcl(kv, "local.owner1", U1, ["general"]);
+  c("fresh create", created.revision === 1 && (await readAcl(kv, "local.owner1", U1))?.record.allowSubscribe[0] === "general");
+  const updated = await commitAcl(kv, "local.owner1", U1, ["general", "review"]);
+  c("update bumps revision", updated.revision === 2 && (await readAcl(kv, "local.owner1", U1))?.record.revision === 2);
+  await deleteAcl(kv, "local.owner1", U1);
+  c("delete purges", (await readAcl(kv, "local.owner1", U1)) === undefined);
+  const recreated = await commitAcl(kv, "local.owner1", U1, ["general"]);
   c("recreate after purge", recreated.revision === 1);
 
   // ── the garbled-row wedge (regression; red before the CAS-overwrite fix) ──
-  await kv.put(aclKey("local.garbled"), new TextEncoder().encode("this-is-not-json"));
-  c("garbled row reads as DEFER (undefined)", (await readAcl(kv, "local.garbled")) === undefined);
-  const healed = await commitAcl(kv, "local.garbled", ["general"]);
+  await kv.put(aclKey("local.garbled", UG), new TextEncoder().encode("this-is-not-json"));
+  c("garbled row reads as DEFER (undefined)", (await readAcl(kv, "local.garbled", UG)) === undefined);
+  const healed = await commitAcl(kv, "local.garbled", UG, ["general"]);
   c("commitAcl OVERWRITES the garbled row instead of wedging",
-    healed.revision === 1 && (await readAcl(kv, "local.garbled"))?.record.allowSubscribe[0] === "general");
-  const healedAgain = await commitAcl(kv, "local.garbled", ["general", "review"]);
+    healed.revision === 1 && (await readAcl(kv, "local.garbled", UG))?.record.allowSubscribe[0] === "general");
+  const healedAgain = await commitAcl(kv, "local.garbled", UG, ["general", "review"]);
   c("subsequent update proceeds normally", healedAgain.revision === 2);
 
   // ── exhausted retries carry the underlying cause (fake KV; every write path fails) ──
@@ -62,7 +67,7 @@ try {
     update: async () => { throw boom; },
   } as unknown as KV;
   try {
-    await commitAcl(fakeKv, "local.wedged", ["general"]);
+    await commitAcl(fakeKv, "local.wedged", UW, ["general"]);
     c("exhausted retries throw", false);
   } catch (e) {
     const err = e as Error;

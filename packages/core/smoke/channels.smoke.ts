@@ -18,7 +18,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
 import {
   CotalEndpoint, seedChannelRegistry, readChannelRegistry, effectiveReplay, effectiveDeliveryClass,
-  ensureDefaultDeliveryClass, validateChannelConfig,
+  ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid,
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 
@@ -44,7 +44,7 @@ const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.te
 interface Rec { channel?: string; text: string; historical: boolean; kind?: MessageMeta["kind"] }
 function recorder(name: string, id: string, channels: string[]) {
   const got: Rec[] = [];
-  const ep = new CotalEndpoint({ space, servers, card: { name, kind: "agent", id }, channels });
+  const ep = new CotalEndpoint({ space, servers, card: { name, kind: "agent", id }, channels, lifecycleUid: mintLifecycleUid() });
   ep.on("error", () => {});
   ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
     got.push({ channel: m.channel, text: textOf(m), historical: meta?.historical ?? false, kind: meta?.kind });
@@ -87,7 +87,7 @@ try {
     && (await readChannelRegistry({ servers, space: dcSpace })).defaults?.deliveryClass === "durable");
 
   // ---- replay on join ----
-  const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["log", "chat", "general", "incident"] });
+  const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["log", "chat", "general", "incident"], lifecycleUid: mintLifecycleUid() });
   A.on("error", () => {});
   await A.start();
   await sleep(300);

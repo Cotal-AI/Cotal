@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, CotalEndpoint,
-  CONTROL_SELF_SERVICE, channelInAllow,
+  CONTROL_SELF_SERVICE, channelInAllow, principalKey, DEV_OWNER, mintLifecycleUid,
   type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
 } from "../src/index.js";
 
@@ -70,17 +70,21 @@ await poster.start();
 // The supervisor serves the mediated join/leave op (what the manager does in prod): it
 // validates the requested set ⊆ the agent's allowSubscribe, then moves its bind-only chat filter.
 const allowSub = ["log", "general", "incident"];
+// One lifecycle uid for the single simulated agent (SPEC §13.1): its provision, creds, endpoint, and
+// every durable-name prediction share it. A same-alias respawn would mint a fresh one.
+const UID = mintLifecycleUid();
 sup.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
   const args = req.args ?? {};
   const ch = typeof args.channel === "string" ? args.channel : "";
   // Stage 4: a runtime durable join/leave goes to Plane-3 (durableJoin/durableLeave). Validate ⊆
-  // allowSubscribe (what the manager op does), then write membership with the privileged endpoint.
+  // allowSubscribe (what the manager op does), then write membership with the privileged endpoint —
+  // membership rows are lifecycle-keyed (SPEC §13.1), so the join/leave carry the incarnation's uid.
   if (req.op === "durableJoin") {
     if (!channelInAllow(allowSub, ch)) return { ok: false, error: `"${ch}" outside allowSubscribe` };
-    return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
+    return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, UID) };
   }
   if (req.op === "durableLeave") {
-    await dlv.durableLeaveFor(req.from.id, ch, typeof args.generation === "number" ? args.generation : undefined);
+    await dlv.durableLeaveFor(req.from.id, ch, UID, typeof args.generation === "number" ? args.generation : undefined);
     return { ok: true, data: { channel: ch } };
   }
   return { ok: false, error: `unsupported op ${req.op}` };
@@ -93,13 +97,15 @@ await sleep(300);
 // scoped agent — the whole point: it holds ONLY the minted "agent" grants. It subscribes to
 // log+general at boot; incident is permitted (allowSubscribe) but not joined yet.
 const ident = newIdentity();
-const agentCreds = await provisionAgent(mgr, auth, ident, { subscribe: ["log", "general"], allowSubscribe: allowSub });
+const agentCreds = await provisionAgent(mgr, auth, ident, { subscribe: ["log", "general"], allowSubscribe: allowSub, lifecycleUid: UID });
 // Host Plane-3 (fan-out + trusted reader) so the runtime durable join above resolves to a real
-// backstop. The reader re-authorizes against the agent's current ACL (its allowSubscribe).
-await dlv.startPlane3((id) => (id === ident.id ? allowSub : undefined));
+// backstop. The reader re-authorizes against the agent's current ACL (its allowSubscribe), keyed on
+// the member's principal dot-form (`local.<id>` in the dev default).
+const agentPrincipal = principalKey(DEV_OWNER, ident.id).key;
+await dlv.startPlane3((owner) => (owner === agentPrincipal ? allowSub : undefined));
 const errors: string[] = [];
 const got: { channel?: string; text: string; historical: boolean }[] = [];
-const agent = new CotalEndpoint({ space, servers: server, creds: agentCreds, card: { name: "ag1", kind: "agent", id: ident.id }, channels: ["log", "general"] });
+const agent = new CotalEndpoint({ space, servers: server, creds: agentCreds, card: { name: "ag1", kind: "agent", id: ident.id }, channels: ["log", "general"], lifecycleUid: UID });
 agent.on("error", (e: Error) => errors.push(e.message));
 agent.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => { got.push({ channel: m.channel, text: textOf(m), historical: meta?.historical ?? false }); d.ack(); });
 await agent.start();

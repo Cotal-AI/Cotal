@@ -17,8 +17,9 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import { SignJWT, generateKeyPair } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, chatSubject, type CotalMessage,
-} from "@cotal-ai/core";
+  setupSpaceStreams, principalKey, chatSubject, type CotalMessage, mintLifecycleUid } from "@cotal-ai/core";
+// One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
+const smokeUid = mintLifecycleUid();
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -75,7 +76,7 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => {},
-    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"] })),
+    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid })),
     log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
   });
 
