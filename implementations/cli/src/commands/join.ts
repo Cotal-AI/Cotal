@@ -59,12 +59,28 @@ export async function join(args: ParsedArgs): Promise<void> {
     creds: values.creds ? readFileSync(values.creds, "utf8") : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
-  // The join session's lifecycle UID (SPEC 13.1): minted with the self-provisioned footprint in auth
-  // mode (below), PAIRED via --lifecycle-uid/COTAL_LIFECYCLE_UID for an explicit --creds join (the
-  // credential's durable grants name exact lifecycle-keyed resources, so the uid minted alongside
-  // it is the only one the broker will bind), and left absent for open/token joins (the endpoint
-  // self-mints its per-session identity at construction). NEVER invented for a credential.
-  let lifecycleUid: string | undefined = values["lifecycle-uid"] ?? (process.env.COTAL_LIFECYCLE_UID?.trim() || undefined);
+  // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
+  // COTAL_LIFECYCLE_UID) is scoped STRICTLY to an explicit --creds join: that credential's durable
+  // grants name exact lifecycle-keyed resources, so the uid minted alongside it is the only one the
+  // broker will bind, and it is REQUIRED (never invented). Every OTHER path leaves it undefined so
+  // the endpoint self-mints a fresh per-session identity at construction: an open/token/link/bare
+  // join must NOT inherit an ambient shell's COTAL_LIFECYCLE_UID (that would reuse another
+  // incarnation's uid). Auth-mode self-provision (below) mints its own.
+  const flagUid = values["lifecycle-uid"];
+  const envUid = process.env.COTAL_LIFECYCLE_UID?.trim() || undefined;
+  // An EXPLICIT --lifecycle-uid without --creds is a misuse (refuse loudly). An AMBIENT
+  // COTAL_LIFECYCLE_UID without --creds is just a shell leaking a spawned agent's env - silently
+  // IGNORE it (an open/token/link/bare join never inherits another incarnation's uid; it
+  // self-mints). Only WITH --creds is either read, as the launcher's pairing.
+  if (flagUid !== undefined && !values.creds) {
+    console.error(
+      c.red(`✗ --lifecycle-uid applies only to an explicit `) +
+        c.bold("--creds") +
+        c.red(` join - an open/token/link/bare join self-mints a fresh per-session lifecycle. Drop the flag, or pass --creds.`),
+    );
+    process.exit(1);
+  }
+  let lifecycleUid: string | undefined = values.creds ? (flagUid ?? envUid) : undefined;
   if (lifecycleUid !== undefined) {
     try {
       assertLifecycleToken(lifecycleUid);

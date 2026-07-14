@@ -708,6 +708,27 @@ export class CotalEndpoint extends EventEmitter {
       await this.startConsumers();
     }
 
+    // The register-only broker proof: a consuming agent proved its lifecycle by binding a
+    // durable above, but an authed AGENT that only REGISTERS presence (consume:false) has bound
+    // nothing yet, so a wrong-but-valid uid would grammar-pass requireLifecycleUid and then
+    // advertise a ghost that can receive nothing. Prove the incarnation at the broker FIRST — an
+    // exact info on this agent's own pre-provisioned dm_<owner>-<actor>-<uid> durable (the
+    // manager/self-provision minted it under the SAME uid). A wrong uid names a durable that
+    // does not exist, so the info throws and presence never publishes. Only for `kind: "agent"`
+    // (a peer on the roster); pure `kind: "endpoint"` infra (manager, delivery, feedback intake)
+    // holds no dm_ durable and stays exempt.
+    if (this.doRegister && !this.doConsume && this.authed && this.card.kind === "agent") {
+      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
+      const uid = this.requireLifecycleUid("an authed presence-registering agent");
+      try {
+        await jsm.consumers.info(dmStream(this.space), dmDurable(this.owner, this.actor, uid));
+      } catch (e) {
+        throw new Error(
+          `lifecycle proof failed for ${this.card.id} (uid ${uid}): its dm_ durable is not present at the broker, so this incarnation's uid does not match its provisioned resources - refusing to publish presence (SPEC 13.1 fail-before-presence): ${(e as Error)?.message ?? String(e)}`,
+        );
+      }
+    }
+
     if (this.doRegister) {
       await this.publishPresence();
       this.heartbeatTimer = setInterval(() => {

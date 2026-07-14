@@ -30,14 +30,17 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const root = fileURLToPath(new URL("../../../", import.meta.url)); // implementations/cli/smoke → repo root
 // The subprocess calls the SRC join command via the fixture entry (never built dist, so the gate
-// can't green on a stale build). argv: <credsPath> [lifecycleUid]; env overrides ride through.
+// can't green on a stale build). argv: <mode> [uid]; JPAIR_CREDS names the creds file; a probe
+// env override rides through (an EMPTY COTAL_LIFECYCLE_UID baseline so a leaked ambient one can't
+// taint the open/token probes).
 const entry = fileURLToPath(new URL("./join-src-entry.fixture.ts", import.meta.url));
-const run = (args: string[], env: Record<string, string> = {}): Promise<{ code: number; stderr: string }> =>
+const credsPath0 = () => credsPath;
+const run = (mode: string, uid = "", env: Record<string, string> = {}): Promise<{ code: number; stderr: string }> =>
   new Promise((resolve) => {
     execFile(
       process.execPath,
-      ["--import", "tsx", entry, ...args],
-      { cwd: root, env: { ...process.env, COTAL_LIFECYCLE_UID: "", ...env }, timeout: 30_000 },
+      ["--import", "tsx", entry, mode, uid],
+      { cwd: root, env: { ...process.env, COTAL_LIFECYCLE_UID: "", JPAIR_CREDS: credsPath0(), ...env }, timeout: 30_000 },
       (err, _stdout, stderr) => resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stderr }),
     );
   });
@@ -48,22 +51,38 @@ writeFileSync(credsPath, "-----BEGIN NATS USER JWT-----\nplaceholder\n------END 
 
 try {
   {
-    const r = await run([credsPath]);
+    const r = await run("creds-none");
     check("--creds with NO paired uid exits 1", r.code === 1, r);
     check("…with the one-sentence pairing refusal (never invents)", /lifecycle-paired/.test(r.stderr), r.stderr);
   }
   {
-    const r = await run([credsPath, "NOT!A!UID"]);
+    const r = await run("creds-flag", "NOT!A!UID");
     check("--creds with a malformed uid exits 1 on the token grammar", r.code === 1 && /lifecycle/i.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
   {
-    const r = await run([credsPath, mintLifecycleUid()]);
+    const r = await run("creds-flag", mintLifecycleUid());
     check("--creds with a paired uid passes the gate (dies later at preflight, not the refusal)",
       r.code === 1 && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
   {
-    const r = await run([credsPath], { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
-    check("COTAL_LIFECYCLE_UID env pairs too (the launcher seam)", r.code === 1 && !/lifecycle-paired/.test(r.stderr), r.stderr);
+    const r = await run("creds-envonly", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
+    check("COTAL_LIFECYCLE_UID env pairs WITH --creds (the launcher seam)", r.code === 1 && !/lifecycle-paired/.test(r.stderr), r.stderr);
+  }
+  // Ambient-uid scope (residual: open/token must NEVER inherit an ambient uid).
+  {
+    const r = await run("token-flag", mintLifecycleUid());
+    check("--lifecycle-uid WITHOUT --creds is refused (flag misuse, applies only to --creds)",
+      r.code === 1 && /applies only to an explicit/.test(r.stderr), r.stderr);
+  }
+  {
+    const r = await run("token-env", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
+    check("a --token join IGNORES an ambient COTAL_LIFECYCLE_UID (self-mints, proceeds past the gate)",
+      r.code === 1 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
+  }
+  {
+    const r = await run("open-env", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
+    check("an OPEN join IGNORES an ambient COTAL_LIFECYCLE_UID (self-mints, proceeds past the gate)",
+      r.code === 1 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

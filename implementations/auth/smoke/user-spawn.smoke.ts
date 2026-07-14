@@ -158,7 +158,7 @@ const CHILD = [
   "const sentinel=fs.readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8');",
   "function bearer(){return new Promise((res,rej)=>{cp.execFile(argv[0],argv.slice(1),{maxBuffer:1<<20,timeout:30000},(e,so,se)=>{if(e)return rej(new Error(((se||'').toString().trim())||e.message));const t=(so||'').toString().trim();t?res(t):rej(new Error('empty bearer'));});});}",
   "import(pathToFileURL(process.env.CORE_DIST).href).then(async(m)=>{",
-  "const ep=new m.CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer:bearer,sentinelCreds:sentinel,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{name:process.env.COTAL_NAME,owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,kind:'agent'}});",
+  "const ep=new m.CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer:bearer,sentinelCreds:sentinel,lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{name:process.env.COTAL_NAME,owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,kind:'agent'}});",
   "ep.on('error',()=>{});await ep.start();",
   "setInterval(()=>{},1000);",
   "}).catch((e)=>{console.error(e&&e.message||String(e));process.exit(1);});",
@@ -178,6 +178,9 @@ const e2eCon: Connector = {
       COTAL_SPACE: o.space,
       COTAL_NAME: o.name,
       COTAL_SERVERS: o.servers ?? "",
+      // The manager mints one lifecycle uid per spawn; the register-only agent child binds by it
+      // (an authed presence-registering agent proves its lifecycle before presence, SPEC 13.1).
+      ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
     },
   }),
 };

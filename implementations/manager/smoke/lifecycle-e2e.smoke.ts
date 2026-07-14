@@ -62,7 +62,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-life-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk (loadSpaceAuth)
-for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
@@ -122,11 +122,17 @@ const noUidCon: Connector = { kind: "connector", name: "e2e-nouid", requires: ["
 const wrongUidCon: Connector = { kind: "connector", name: "e2e-wronguid", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
   command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_E2E_CONSUME: "1" },
 }) };
+// The REGISTER-ONLY wrong-uid shape (consume:false): the broker proof is not a consumer bind but
+// the fail-before-presence dm_ durable proof, so a lied uid must still die with no roster ghost.
+const wrongUidRegCon: Connector = { kind: "connector", name: "e2e-wronguid-reg", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
+  command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid() },
+}) };
 registry.register(stubCon);
 registry.register(dieCon);
 registry.register(idleCon);
 registry.register(noUidCon);
 registry.register(wrongUidCon);
+registry.register(wrongUidRegCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 
@@ -212,8 +218,10 @@ try {
     check("a launch whose connector DROPS the launcher uid never reports started", rNo.ok === false, rNo);
     const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot });
     check("a consuming launch that LIES a different uid never reports started (bind denied)", rWrong.ok === false, rWrong);
+    const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot });
+    check("a REGISTER-ONLY (consume:false) launch that lies a uid never reports started (dm_ proof denied)", rWrongReg.ok === false, rWrongReg);
     const added = (await presenceKeys()).filter((k) => !before.has(k));
-    check("NEITHER failed launch left a presence ghost (fail BEFORE presence)", added.length === 0, added);
+    check("NONE of the failed launches left a presence ghost (fail BEFORE presence, consume or register-only)", added.length === 0, added);
   }
 
   // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
