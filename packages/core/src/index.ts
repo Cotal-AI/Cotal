@@ -16,6 +16,7 @@ export * from "./endpoint-checkpoint.js";
 export * from "./endpoint-contract-store.js";
 export * from "./endpoint-guard.js";
 export * from "./endpoint-handle.js";
+export * from "./endpoint-session.js";
 export * from "./endpoint-receipt.js";
 export * from "./endpoint-signing.js";
 export * from "./endpoint-traits.js";
