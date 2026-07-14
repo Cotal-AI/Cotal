@@ -57,7 +57,6 @@ function ownChannelEcho(mesh: MeshAgent, item: InboxItem): boolean {
 function wakeable(mesh: MeshAgent, item: InboxItem): boolean {
   if (ownChannelEcho(mesh, item)) return false;
   if (item.kind !== "channel" || item.mentionsMe) return true;
-  if (mesh.channelMode(item.channel) === "quiet") return false;
   return mesh.attention === "open";
 }
 
@@ -273,10 +272,10 @@ export class PiDriver {
     if (!this.host || !this.context || this._state === "held" || this._state === "shuttingDown") return;
     if (this.batches.some((batch) => !batch.confirmed)) return;
 
-    this.inbox.discardTombstonedFront();
-    this.inbox.discardFront((item) => ownChannelEcho(this.mesh, item));
+    this.inbox.discardTombstoned();
+    this.inbox.discardMatching((item) => ownChannelEcho(this.mesh, item));
     const reserved = new Set(this.batches.flatMap((batch) => batch.ids));
-    const available = this.inbox.peek().filter((item) => !reserved.has(item.id));
+    const available = this.inbox.peek("automatic").filter((item) => !reserved.has(item.id));
     if (!force && this.nudges.length === 0 && !available.some((item) => wakeable(this.mesh, item))) {
       if (this.batches.length === 0) this.publishIdleWhenSettled(this.context);
       return;
@@ -287,7 +286,7 @@ export class PiDriver {
     if (this.nudges.length > 0) {
       content = this.nudges.splice(0).join("\n");
     } else {
-      const items = this.inbox.select(reserved, (item) => ownChannelEcho(this.mesh, item), BATCH_LIMIT);
+      const items = this.inbox.select(reserved, BATCH_LIMIT);
       if (items.length === 0) return;
       ids = items.map((item) => item.id);
       content = formatInjection(items);
@@ -326,10 +325,6 @@ export class PiDriver {
     const committed = this.inbox.commitConfirmed(ids);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
-    if (committed.error) {
-      this.hold(committed.error);
-      return;
-    }
     if (this.batches.length > 0) {
       this.hold("Pi ended before confirming a queued Cotal steer");
       return;

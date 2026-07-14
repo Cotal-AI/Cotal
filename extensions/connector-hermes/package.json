@@ -22,7 +22,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx smoke/tool-parity.smoke.ts",
+    "test": "tsx smoke/tool-parity.smoke.ts && tsx smoke/bridge-quiet.smoke.ts",
     "build": "tsc -p tsconfig.json && pnpm run bundle",
     "bundle": "esbuild src/standalone.ts --bundle --platform=node --format=cjs --target=node20 --outfile=plugin/cotal/_sidecar/standalone.cjs",
     "prepublishOnly": "pnpm run build"

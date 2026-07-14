@@ -8,8 +8,8 @@
  * Flow (no model, no `opencode` binary — just the plugin closure + a real mesh):
  *   1. a live channel message drives a turn (prompt_async #1)  — baseline push works;
  *   2. that turn completes (session.idle);
- *   3. quiet channel traffic is buffered while idle and injected into the next native chat.message;
- *   4. if that native turn errors, the injected batch is NOT acked and can be injected again;
+ *   3. quiet channel traffic remains pull-only across native prompts and is consumed by cotal_inbox;
+ *   4. repeated cotal_inbox pulls do not repeat the quiet item;
  *   5. a directed DM that auto-drives and errors is retried after a bounded delay;
  *   6. a HUMAN turn still clears busy, then a second normal channel message MUST drive a turn
  *      (prompt_async #2) — the original wedge fix still holds;
@@ -139,26 +139,46 @@ try {
   // (2) complete the connector's turn (acks it, returns the session to idle).
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
-  // (3) quiet channel traffic is buffered while idle. It should not drive prompt_async by itself,
-  //     but it should ride the next native prompt at OpenCode's real pre-model hook point.
+  // (3) quiet channel traffic is buffered while idle. It neither drives prompt_async nor hitchhikes
+  //     on a native human prompt.
   await pub.multicast("quiet buffered", { channel: "quiet" });
   await sleep(500);
   check("quiet channel traffic does not drive prompt_async", prompts.length === 1, prompts);
   const nativePrompt = { parts: [{ type: "text", text: "human native prompt" }] };
   await chatMessage(hooks)({ sessionID: SID }, nativePrompt);
-  check("buffered peer traffic injects into the next native prompt", nativePrompt.parts[0]?.text?.includes("quiet buffered") === true, nativePrompt);
+  check("quiet traffic does not inject into the next native prompt", nativePrompt.parts[0]?.text === "human native prompt", nativePrompt);
 
-  // (4) a failed native/model turn must not ack the injected Cotal batch. It should remain in the
-  //     inbox and be injectable again on a later native prompt, instead of being lost on error.
+  // A native/model failure still must not turn quiet traffic into an automatic retry payload.
   await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
   await fire(hooks, { type: "session.error", properties: { sessionID: SID } });
   check("failed native turn does not retry-drive prompt_async immediately", prompts.length === 1, prompts);
   const retryPrompt = { parts: [{ type: "text", text: "retry native prompt" }] };
   await chatMessage(hooks)({ sessionID: SID }, retryPrompt);
-  check("failed native turn leaves peer traffic available for retry", retryPrompt.parts[0]?.text?.includes("quiet buffered") === true, retryPrompt);
+  check("quiet traffic does not hitchhike on a retry prompt", retryPrompt.parts[0]?.text === "retry native prompt", retryPrompt);
 
   // (5) finish the retried native turn; the injected batch is acked on this successful boundary.
   await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+
+  // (4) cotal_inbox is the explicit destructive pull for quiet ambient. Automatic traffic remains
+  //     connector-owned, and a second pull does not repeat the cleared quiet item.
+  const inboxExecute = (hooks.tool as Record<string, { execute: (...args: any[]) => Promise<string> }>).cotal_inbox!.execute;
+  const pulled = await inboxExecute({}, {});
+  check("cotal_inbox surfaces and clears quiet traffic", pulled.includes("quiet buffered"), pulled);
+  const pulledAgain = await inboxExecute({}, {});
+  check("a repeated cotal_inbox pull does not repeat cleared quiet traffic", !pulledAgain.includes("quiet buffered"), pulledAgain);
+
+  // Receive-time automatic classification survives a later normal→quiet toggle while the item is
+  // held behind a busy turn. The idle boundary must still drive it.
+  const modeExecute = (hooks.tool as Record<string, { execute: (...args: any[]) => Promise<string> }>).cotal_channel_mode!.execute;
+  await modeExecute({ channel: "quiet", mode: "normal" }, {});
+  await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
+  await pub.multicast("automatic before quiet toggle", { channel: "quiet" });
+  await sleep(200);
+  await modeExecute({ channel: "quiet", mode: "quiet" }, {});
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+  await waitForPrompts(2);
+  check("normal→quiet does not strand an already-automatic item", prompts.length === 2 && promptText(prompts[1]).includes("automatic before quiet toggle"), prompts);
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // A directed DM auto-drives an unattended prompt_async. If that turn errors, the pending inbox id
@@ -168,13 +188,13 @@ try {
   const ottoId = pub.getRoster().find((p) => p.card.name === "Otto")?.card.id;
   if (!ottoId) throw new Error("turn-wedge: Otto not in roster for the directed-DM step");
   await pub.unicast(ottoId, "retry dm");
-  await waitForPrompts(2);
-  check("a directed DM auto-drives prompt_async", prompts.length === 2 && promptText(prompts[1]).includes("retry dm"), prompts);
+  await waitForPrompts(3);
+  check("a directed DM auto-drives prompt_async", prompts.length === 3 && promptText(prompts[2]).includes("retry dm"), prompts);
   await fire(hooks, { type: "session.error", properties: { sessionID: SID } });
   await sleep(200);
-  check("directed error retry is not immediate", prompts.length === 2, prompts);
-  await waitForPrompts(3);
-  check("directed DM retries after session.error", prompts.length === 3 && promptText(prompts[2]).includes("retry dm"), prompts);
+  check("directed error retry is not immediate", prompts.length === 3, prompts);
+  await waitForPrompts(4);
+  check("directed DM retries after session.error", prompts.length === 4 && promptText(prompts[3]).includes("retry dm"), prompts);
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // A HUMAN turn with no Cotal batch still must clear busy (the original wedge trigger).
@@ -182,10 +202,10 @@ try {
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // (6) a second channel message MUST still drive a turn. Pre-fix: `busy` is stuck true, so the
-  //     incoming message is buffered and this never fires — waitForPrompts times out at length 3.
+  //     incoming message is buffered and this never fires.
   await pub.multicast("still there?", { channel: "team" });
-  await waitForPrompts(4);
-  check("a channel message STILL drives after a human turn (no busy wedge)", prompts.length === 4, prompts);
+  await waitForPrompts(5);
+  check("a channel message STILL drives after a human turn (no busy wedge)", prompts.length === 5, prompts);
 
   // (7) Explicit user Stop/Cancel is not a model/provider failure. Real OpenCode aborts can arrive as
   //     MessageAbortedError without a preceding TUI command event, so that error itself must dismiss/ack
@@ -198,12 +218,12 @@ try {
     },
   });
   await sleep(1_200);
-  check("explicit user interrupt does not retry-drive cancelled peer traffic", prompts.length === 4, prompts);
+  check("explicit user interrupt does not retry-drive cancelled peer traffic", prompts.length === 5, prompts);
   await pub.multicast("after cancel", { channel: "team" });
-  await waitForPrompts(5);
+  await waitForPrompts(6);
   check(
     "new peer traffic still drives after interrupt without replaying the cancelled batch",
-    prompts.length === 5 && promptText(prompts[4]).includes("after cancel") && !promptText(prompts[4]).includes("still there?"),
+    prompts.length === 6 && promptText(prompts[5]).includes("after cancel") && !promptText(prompts[5]).includes("still there?"),
     prompts,
   );
 

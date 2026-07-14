@@ -234,11 +234,20 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
-      async run(agent, _config, { peek }: { peek?: boolean }) {
-        const live = peek ? agent.peekInbox() : agent.drainInbox();
+      async run(agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) {
+        const inboxScope = scope ?? "all";
+        const live = peek ? agent.peekInbox(inboxScope) : agent.drainInbox(undefined, inboxScope);
+        const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
-          if (!live.length) return ok("Inbox empty — no new messages.");
-          const head = `${live.length} message${live.length === 1 ? "" : "s"}${peek ? " (peek — not cleared)" : ""}:`;
+          if (!live.length)
+            return ok(
+              scope
+                ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+                : "Inbox empty — no new messages.",
+            );
+          const head = scope
+            ? `${live.length} pull-only message${live.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
+            : `${live.length} message${live.length === 1 ? "" : "s"}${peek ? " (peek — not cleared)" : ""}:`;
           return ok(`${head}\n${live.map(fmtItem).join("\n")}`);
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
@@ -247,17 +256,23 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const recall = await agent.recallAmbient();
         const all = [...live, ...recall.items];
         if (!all.length && !recall.droppedChannels.length)
-          return ok("Inbox empty — no new messages, and no channel chatter since you entered focus.");
+          return ok(
+            scope
+              ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+              : "Inbox empty — no new messages, and no channel chatter since you entered focus.",
+          );
         const parts: string[] = [];
         if (all.length) {
-          const head = `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek — live buffer not cleared)" : ""} — focus mode, channel items are recall since you focused:`;
+          const head = scope
+            ? `${all.length} message${all.length === 1 ? "" : "s"} — buffered pull-only items were cleared; normal focus channel items are read-only recall and may appear again:`
+            : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek — live buffer not cleared)" : ""} — focus mode, channel items are recall since you focused:`;
           parts.push(`${head}\n${all.map(fmtItem).join("\n")}`);
         }
         if (recall.droppedChannels.length)
           parts.push(
-            `⚠ Some earlier chatter may have aged out of the channel buffer on ${recall.droppedChannels
+            `⚠ Some earlier chatter could not be recalled completely on ${recall.droppedChannels
               .map((c) => `#${c}`)
-              .join(", ")} (per-channel history is capped).`,
+              .join(", ")} (retention or local safety bounds were reached).`,
           );
         return ok(parts.join("\n\n"));
       },
@@ -417,7 +432,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       title: "Cotal: silence or mute a channel",
       description:
         "Set how a single channel interrupts you: your per-channel attention, more specific than cotal_status. " +
-        "quiet = still delivered and readable, but it never wakes you (read it on your terms or with cotal_inbox); an @mention on it still wakes you. " +
+        "quiet = ambient stays buffered and pull-only (read it with cotal_inbox); it never enters another turn, while an @mention still wakes and injects. " +
         "muted = you stop receiving this channel entirely, including @mentions (DMs still reach you). " +
         "normal = clear the override; the channel follows your global attention. " +
         "Runtime + per-instance: resets when your session restarts. An operator can set a lasting default in your agent file. See your current settings with cotal_channels.",

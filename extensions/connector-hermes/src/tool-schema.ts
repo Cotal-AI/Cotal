@@ -22,19 +22,15 @@ export interface HermesToolDescriptor {
 
 const EMPTY_PARAMS: Record<string, unknown> = { type: "object", properties: {}, required: [] };
 
-/** cotal_inbox is read-only under a driven connector: this connector surfaces each batch into a
- *  turn and acks on completion, so the agent's inbox tool must PEEK, never drain (a drain would
- *  race the connector's ack). Mirror the OpenCode connector's read-only framing. */
-const READONLY_INBOX_DESCRIPTION =
-  "Show the peer messages currently waiting for you (incl. focus-mode recall). You don't normally " +
-  "need this — peer messages are delivered into your turns automatically; use it to re-check " +
-  "what's pending mid-task. Read-only: it never consumes them.";
+const PULL_INBOX_DESCRIPTION =
+  "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic " +
+  "stays queued; in focus mode, normal channel recall is also shown read-only.";
 
 /** Build the Hermes tool descriptors for a given agent config (rendered from the shared specs). */
 export function hermesToolDescriptors(config: AgentConfig): HermesToolDescriptor[] {
   return cotalToolSpecs(config, "hermes").map((spec) => {
     if (spec.name === "cotal_inbox") {
-      return { name: spec.name, description: READONLY_INBOX_DESCRIPTION, parameters: EMPTY_PARAMS };
+      return { name: spec.name, description: PULL_INBOX_DESCRIPTION, parameters: EMPTY_PARAMS };
     }
     const parameters = spec.schema
       ? (z.toJSONSchema(z.object(spec.schema)) as Record<string, unknown>)
