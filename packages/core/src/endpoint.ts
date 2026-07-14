@@ -687,19 +687,32 @@ export class CotalEndpoint extends EventEmitter {
       if (watchChannels) await this.startChannelWatch();
     }
 
-    if (this.doRegister) {
-      await this.publishPresence();
-      this.heartbeatTimer = setInterval(() => {
-        this.publishPresence().catch((e) => this.emit("error", e as Error));
-      }, this.heartbeatMs);
-    }
+    // FAIL BEFORE PRESENCE (SPEC 13.1): an AUTHED endpoint that will register on the roster or
+    // bind lifecycle-keyed consumers must hold its launcher-supplied lifecycle uid BEFORE anything
+    // makes it visible - a missing uid must never leave a roster ghost that could not bind (false
+    // readiness). Non-registering, non-consuming infra endpoints (a provisioner window, the
+    // delivery daemon, one-shot CLI probes) bind no lifecycle-keyed names and stay outside the
+    // rule; open/token mode self-minted at construction, so this only ever throws for a
+    // mis-launched AUTH endpoint.
+    if (this.authed && (this.doConsume || this.doRegister))
+      this.requireLifecycleUid(this.doConsume ? "an authed consuming endpoint" : "an authed presence-registering endpoint");
 
+    // Consumers bind BEFORE presence publishes: the durable bind is the broker's proof that this
+    // incarnation's lifecycle-keyed names match its minted grants, so a wrong-uid launch dies
+    // with NO presence ghost instead of advertising an agent that can never receive.
     if (this.doConsume) {
       this.jsm = await jetstreamManager(this.nc);
       // Open mode: lazily create the streams on the first endpoint. Auth mode: they are
       // pre-created at `cotal up` and STREAM.CREATE is denied to agents, so skip.
       if (!this.authed) await this.ensureStreams();
       await this.startConsumers();
+    }
+
+    if (this.doRegister) {
+      await this.publishPresence();
+      this.heartbeatTimer = setInterval(() => {
+        this.publishPresence().catch((e) => this.emit("error", e as Error));
+      }, this.heartbeatMs);
     }
 
     // Re-arm Plane-3 (delivery-daemon-hosted fan-out + trusted reader + ctl.delivery) on every (re)connect — no-op unless this

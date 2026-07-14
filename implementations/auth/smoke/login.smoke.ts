@@ -16,6 +16,7 @@ import type { AddressInfo } from "node:net";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mintLifecycleUid } from "@cotal-ai/core";
 import { jwtVerify } from "jose";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -144,7 +145,7 @@ const idpJwt = await fetchIdpJwt(base, session.token);
   const bridge = createIdpBridge({
     idp: { issuer: origin, audience: origin, key: pinnedJwksResolver(`${base}/jwks`) },
     space: SPACE, spaceSecret: SECRET, issuer,
-    authorizeActor: () => ({ scope: ["chat"] }),
+    authorizeActor: () => ({ scope: ["chat"], lifecycleUid: mintLifecycleUid() }),
   });
   const { token, owner } = await bridge.exchange(idpJwt, { actor: "agent_1" });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE });

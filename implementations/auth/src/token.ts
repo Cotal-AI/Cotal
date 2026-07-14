@@ -167,8 +167,9 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
       `user token: act.view "${String(act.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - unknown views fail closed`,
     );
   // Lifecycle claim (SPEC 13.1): grammar-asserted when present. Presence/absence POLICY lives at the
-  // connect boundary (ledgerAuthorizeConnect requires it on non-view bearers); the validator only
-  // guarantees a present claim is well-formed, so no garbled uid reaches an equality check.
+  // connect boundary (ledgerAuthorizeConnect requires it on EVERY bearer, views included) and the
+  // mint boundary (the idp bridge and the agent exchange stamp it from the grant row); the validator
+  // only guarantees a present claim is well-formed, so no garbled uid reaches an equality check.
   if (act.lifecycleUid !== undefined) {
     if (typeof act.lifecycleUid !== "string")
       throw new Error("user token: act.lifecycleUid must be a string token when present");

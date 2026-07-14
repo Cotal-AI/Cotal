@@ -78,19 +78,40 @@ export async function readAclForAlias(
   kv: KV,
   principal: string,
 ): Promise<{ record: AclRecord; revision: number; lifecycleUid: string } | undefined> {
-  // Count LIVE rows, not keys: each candidate key is resolved through readAcl (which filters
-  // DEL/PURGE markers and garbled values) BEFORE it counts toward ambiguity. The pinned
-  // @nats-io/kv keys() already skips DEL/PURGE markers, so today this is belt-and-suspenders —
-  // but the refusal invariant is ">=2 LIVE rows", and counting raw iterator keys would let a
-  // client-version drift (a keys() that surfaces markers) fail-closed the NORMAL
-  // deprovision-then-respawn path, taxing the happy path with the ambiguity refusal.
-  //
   // HONESTY (SPEC 13.1 residual, panel-locked): "at most one live lifecycle per alias" is
   // fail-loud + exact-name teardown, NOT a broker occupancy CAS (reservation lands with P2).
   // A FAILED detached teardown leaves the predecessor's row live; a same-alias successor then
   // hits AmbiguousAclAlias on every durable-join and stays LIVE-ONLY until an operator re-runs
   // the exact-uid deprovision (or a future D30/D33 reconciler, which does not exist yet). The
   // fail direction is deliberate: refuse beats silently inheriting a predecessor's ACL.
+  const first = await enumerateLiveAclRows(kv, principal);
+  if (first.length > 1) throw new AmbiguousAclAlias(principal, first.map((l) => l.lifecycleUid).sort());
+  // POST-SCAN RE-VERIFY (panel bar, TOCTOU close): `kv.keys()` is a point-in-time snapshot
+  // bounded by the stream sequence at consumer-create, so a successor row COMMITTED AFTER that
+  // snapshot is invisible to the first pass — a genuinely dual-live alias would resolve as the
+  // lone (possibly predecessor) row instead of refusing. Enumerate a SECOND time and act on the
+  // fresh pass: a row that appeared makes the alias ambiguous (refuse), a row that vanished
+  // makes it absent (defer). Two live rows in EITHER pass refuse. Bounded at two passes — an
+  // alias replaced BETWEEN the passes (disjoint singles) also refuses, and the caller's retry
+  // resolves against the settled state; anything stronger is the P2 occupancy reservation.
+  const second = await enumerateLiveAclRows(kv, principal);
+  if (second.length > 1) throw new AmbiguousAclAlias(principal, second.map((l) => l.lifecycleUid).sort());
+  if (second.length === 0) return undefined;
+  if (first.length === 1 && first[0].lifecycleUid !== second[0].lifecycleUid)
+    throw new AmbiguousAclAlias(principal, [first[0].lifecycleUid, second[0].lifecycleUid].sort());
+  return { record: second[0].record, revision: second[0].revision, lifecycleUid: second[0].lifecycleUid };
+}
+
+/** One live-row enumeration pass for {@link readAclForAlias}: LIVE rows, not keys — each candidate
+ *  key is resolved through {@link readAcl} (which filters DEL/PURGE markers and garbled values)
+ *  BEFORE it counts toward ambiguity. The pinned @nats-io/kv keys() already skips DEL/PURGE
+ *  markers, so the re-read is belt-and-suspenders — but the refusal invariant is ">=2 LIVE rows",
+ *  and counting raw iterator keys would let a client-version drift (a keys() that surfaces
+ *  markers) fail-closed the NORMAL deprovision-then-respawn path. */
+async function enumerateLiveAclRows(
+  kv: KV,
+  principal: string,
+): Promise<{ lifecycleUid: string; record: AclRecord; revision: number }[]> {
   const live: { lifecycleUid: string; record: AclRecord; revision: number }[] = [];
   for await (const key of await kv.keys(aclAliasFilter(principal))) {
     const parsed = parseLifecycleSubjectKey(key);
@@ -98,9 +119,7 @@ export async function readAclForAlias(
     const row = await readAcl(kv, principal, parsed.lifecycleUid);
     if (row !== undefined) live.push({ lifecycleUid: parsed.lifecycleUid, ...row });
   }
-  if (live.length === 0) return undefined;
-  if (live.length > 1) throw new AmbiguousAclAlias(principal, live.map((l) => l.lifecycleUid).sort());
-  return { record: live[0].record, revision: live[0].revision, lifecycleUid: live[0].lifecycleUid };
+  return live;
 }
 
 /**

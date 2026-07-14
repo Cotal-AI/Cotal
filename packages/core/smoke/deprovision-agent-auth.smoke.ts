@@ -250,6 +250,41 @@ try {
     const resolved = await readAclForAlias(kv, localPrincipal(agent.id));
     check("DUAL-LIVE: purging the orphan restores alias resolution to the single LIVE row (uidB)",
       resolved?.lifecycleUid === uidB, resolved);
+
+    // CREATE-AFTER-SNAPSHOT PROBE (the panel's post-scan TOCTOU gate): a successor row committed
+    // AFTER the first enumeration's point-in-time key snapshot is invisible to that pass — a
+    // single-pass resolver would return the lone scanned row (the predecessor) instead of
+    // refusing. Interpose on the KV surface readAclForAlias uses (keys + get) and commit a twin
+    // row exactly when the SECOND enumeration begins, so pass 1 sees [B] and pass 2 sees [B, D]:
+    // the post-scan re-verify must surface AmbiguousAclAlias. Under the single-pass code this
+    // wrapper never fires (one keys() call) and the probe FAILS by resolving B — the
+    // distinguishing shape for the temp-revert proof.
+    {
+      const uidD = mintLifecycleUid();
+      let keysCalls = 0;
+      const racedKv = {
+        keys: async (filter?: string) => {
+          keysCalls++;
+          if (keysCalls === 2) await commitAclRow(kv, localPrincipal(agent.id), uidD, ["general"]);
+          return kv.keys(filter);
+        },
+        get: (k: string) => kv.get(k),
+      } as unknown as typeof kv;
+      let refusedRace = false, otherRace: unknown, leaked: string | undefined;
+      try {
+        const r = await readAclForAlias(racedKv, localPrincipal(agent.id));
+        leaked = r?.lifecycleUid;
+      } catch (e) {
+        if (e instanceof AmbiguousAclAlias) refusedRace = true; else otherRace = e;
+      }
+      check("POST-SCAN: a successor row created after the first scan's snapshot REFUSES (AmbiguousAclAlias), never resolves the lone predecessor",
+        refusedRace, otherRace ?? { leaked, keysCalls });
+      const { deleteAcl: deleteAclRow } = await import("../src/acls.js");
+      await deleteAclRow(kv, localPrincipal(agent.id), uidD);
+      const settled = await readAclForAlias(kv, localPrincipal(agent.id));
+      check("POST-SCAN: once the race settles (twin removed) the alias resolves to the single live row again",
+        settled?.lifecycleUid === uidB, settled);
+    }
   }
   await insp.drain().catch(() => {});
 

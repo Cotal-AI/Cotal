@@ -301,6 +301,11 @@ export class Manager {
       servers: this.servers,
       channels: [],
       creds,
+      // The supervisor registers on the roster, and an authed presence-registering endpoint is
+      // lifecycle-keyed (SPEC 13.1, fail-before-presence). The manager process is the top of its
+      // own launch chain (the operator command IS its launcher), so it mints its incarnation's
+      // uid here - one per supervisor process, never reused across restarts.
+      lifecycleUid: mintLifecycleUid(),
       // The supervisor serves control + watches presence; it never consumes chat/dm/task
       // (no message handler). consume:false avoids binding consumers it doesn't use — and
       // under auth avoids trying to bind its own DM/task durables that nothing pre-created.

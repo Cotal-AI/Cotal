@@ -9,6 +9,7 @@ import {
   DEFAULT_SERVER,
   mintCreds,
   mintLifecycleUid,
+  assertLifecycleToken,
   newIdentity,
   provisionAgent,
   type Delivery,
@@ -45,7 +46,7 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
 }
 
 export async function join(args: ParsedArgs): Promise<void> {
-  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; tls?: boolean };
+  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean };
 
   // A join link carries server + auth + space; explicit flags still override it.
   const link = values.link ? parseJoinLink(values.link) : undefined;
@@ -59,8 +60,28 @@ export async function join(args: ParsedArgs): Promise<void> {
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1): minted with the self-provisioned footprint in auth
-  // mode (below), or fresh per session for open/explicit-creds joins at the endpoint construction.
-  let lifecycleUid: string | undefined;
+  // mode (below), PAIRED via --lifecycle-uid/COTAL_LIFECYCLE_UID for an explicit --creds join (the
+  // credential's durable grants name exact lifecycle-keyed resources, so the uid minted alongside
+  // it is the only one the broker will bind), and left absent for open/token joins (the endpoint
+  // self-mints its per-session identity at construction). NEVER invented for a credential.
+  let lifecycleUid: string | undefined = values["lifecycle-uid"] ?? (process.env.COTAL_LIFECYCLE_UID?.trim() || undefined);
+  if (lifecycleUid !== undefined) {
+    try {
+      assertLifecycleToken(lifecycleUid);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
+  if (values.creds && lifecycleUid === undefined) {
+    console.error(
+      c.red(`✗ --creds is lifecycle-paired (SPEC 13.1): pass `) +
+        c.bold("--lifecycle-uid <uid>") +
+        c.red(` (or set COTAL_LIFECYCLE_UID) with the uid minted alongside this credential at provision time. `) +
+        c.red(`The credential's durable grants name exact lifecycle-keyed resources; a made-up uid would name durables it cannot bind.`),
+    );
+    process.exit(1);
+  }
 
   let space: string;
   let server: string;
@@ -103,7 +124,8 @@ export async function join(args: ParsedArgs): Promise<void> {
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
       // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
       // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
-      lifecycleUid = mintLifecycleUid();
+      // A launcher-supplied uid (flag/env, resolved above) wins; the session mints only when bare.
+      lifecycleUid ??= mintLifecycleUid();
       const prov = new CotalEndpoint({
         space,
         servers: server,
@@ -144,8 +166,9 @@ export async function join(args: ParsedArgs): Promise<void> {
     space,
     servers: server,
     ...auth,
-    // A bare open-mode join mints its own per-session lifecycle; the auth path minted one above.
-    lifecycleUid: lifecycleUid ?? mintLifecycleUid(),
+    // Absent for a bare open/token join: the endpoint self-mints its per-session lifecycle at
+    // construction. Set for auth joins: self-provisioned above, or --creds-paired (never invented).
+    lifecycleUid,
     channels: [channel],
     card: {
       name,

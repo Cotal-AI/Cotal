@@ -45,13 +45,20 @@ export function calloutPermissions(
     const principal: MintPrincipal = { owner: t.owner, actor: t.act.actor, connId };
     if (t.act.view !== undefined) {
       // ELEVATED VIEW: the exchange already ledger-authorized it, and `ledgerAuthorizeConnect`
-      // fresh-read the row again this connect (act.scope ⊆ current row enforced there) — here is
+      // fresh-read the row again this connect (act.scope ⊆ current row AND the bearer's lifecycle
+      // claim === the row's CURRENT uid — no view carve-out: a predecessor incarnation's still-live
+      // view bearer dies at the alias's re-grant instead of minting the elevated profile). Here is
       // the LAST defense-in-depth re-assert: the bearer's own capability list must carry the
       // view's required scope, or nothing is minted. View names ARE profile names (a closed enum,
       // never a client-chosen profile passthrough); channel ACLs don't apply to these profiles.
       const need = VIEW_REQUIRED_SCOPE[t.act.view];
       if (!caps.includes(need))
         throw new Error(`callout permissions: view "${t.act.view}" without capability "${need}" in act.scope - refusing to mint`);
+      // Same-depth lifecycle re-assert as the agent arm's resolver: a claimless VIEW bearer mints
+      // nothing here even in a composition that skipped the connect gate (the equality itself
+      // lives at ledgerAuthorizeConnect, which holds the ledger; this arm holds only the claim).
+      if (t.act.lifecycleUid === undefined)
+        throw new Error("callout permissions: view bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
       return permissionsFor(
         t.act.view,
         t.space,

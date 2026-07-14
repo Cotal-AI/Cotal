@@ -16,6 +16,7 @@
  */
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mintLifecycleUid } from "@cotal-ai/core";
 import { SignJWT, decodeJwt, decodeProtectedHeader, exportJWK, generateKeyPair } from "jose";
 import type { CryptoKey, JWK } from "jose";
 import { betterAuth } from "better-auth";
@@ -96,6 +97,7 @@ check("BA /token returns a JWT for the session", tokenRes.status === 200 && type
 const cotalKey = await generateSigningKey();
 const cotalIssuer = createUserTokenIssuer({ issuer: "https://auth.cotal.test", key: cotalKey });
 const hookCalls: Array<{ owner: string; actor: string }> = [];
+const hookUid = mintLifecycleUid();
 const bridge = createIdpBridge({
   idp: { issuer: origin, audience: origin, key: pinnedJwksResolver(`${origin}/api/auth/jwks`) },
   space: SPACE,
@@ -104,7 +106,8 @@ const bridge = createIdpBridge({
   authorizeActor: (owner, actor) => {
     hookCalls.push({ owner, actor });
     if (actor === "denied_agent") throw new Error("ledger: actor not authorized for this owner");
-    return { scope: ["chat"], parent: `${owner}.spawner_1` };
+    // Grants are lifecycle-bound from v0.4: the bridge refuses a uid-less grant at mint.
+    return { scope: ["chat"], parent: `${owner}.spawner_1`, lifecycleUid: hookUid };
   },
 });
 
@@ -163,14 +166,28 @@ const synth = createIdpBridge({
   space: SPACE,
   spaceSecret: SECRET,
   issuer: cotalIssuer,
-  authorizeActor: () => ({}),
+  authorizeActor: () => ({ lifecycleUid: mintLifecycleUid() }),
 });
 
 check("synthetic happy path exchanges (control for the rejects below)",
   (await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, JSON.stringify([IDP_ISS, "human-42"])));
-check("an empty grant object mints a scopeless bearer (explicit allow, no scope)",
+check("a scopeless grant mints a scopeless bearer (explicit allow, no scope)",
   (await validateUserToken((await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).token,
     { key: cotalIssuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE })).scope.length === 0);
+{
+  // Grants are lifecycle-bound from v0.4 (SPEC 13.1): a uid-less grant cannot mint a bearer of
+  // ANY shape - the connect gate would refuse it anyway, so the bridge fails at the earlier
+  // boundary with the re-grant instruction.
+  const uidless = createIdpBridge({
+    idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey },
+    space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer,
+    authorizeActor: () => ({}),
+  });
+  let refused = false;
+  try { await uidless.exchange(await mintIdp(baseIdp), { actor: "agent_1" }); }
+  catch (e) { refused = String(e).includes("no lifecycleUid"); }
+  check("a grant without a lifecycleUid refuses at mint (bearers are lifecycle-bound)", refused);
+}
 
 // The minted Cotal bearer must NOT outlive the IdP proof it rests on: request the max TTL against a
 // near-expiry IdP JWT and assert the bearer exp is capped to the IdP's remaining life (~30s), not now+900.

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, type ParsedArgs } from "@cotal-ai/core";
 
 /** Minimal ANSI helpers — local to the delivery daemon so it never imports the CLI. */
 const c = {
@@ -100,6 +100,9 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
     servers: natsServer,
     creds,
     channels: [channel],
+    // Registers on the roster (deliberately visible infra), so under auth it is lifecycle-keyed
+    // (SPEC 13.1, fail-before-presence); the intake command is its own launcher and mints here.
+    lifecycleUid: mintLifecycleUid(),
     consume: false,
     watchPresence: false,
     card: {

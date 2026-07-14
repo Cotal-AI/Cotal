@@ -159,6 +159,15 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
               `cotal actor grant ${req.actor} --owner ${owner} --scope ${[...(grant.scope ?? []), need].join(",")}  (the upsert replaces the scope list; the operator can confirm with \`cotal actor list\`)`,
           );
       }
+      // Lifecycle-BIND every human bearer at the MINT boundary (SPEC 13.1), views included: the
+      // grant row's uid rides act.lifecycleUid and the callout requires exact equality with the
+      // CURRENT row at every connect, so a predecessor's still-unexpired bearer (agent OR
+      // elevated view) dies at the alias's re-grant. A grant without a uid is a pre-cut row and
+      // cannot mint - minting claimless would only defer the same refusal to every connect.
+      if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
+        throw new Error(
+          `idp bridge: the grant for actor "${req.actor}" carries no lifecycleUid - re-grant it (bearers are lifecycle-bound from v0.4)`,
+        );
       // Cap the minted bearer's lifetime to the IdP proof's REMAINING life: the Cotal bearer must not
       // outlive the session proof it rests on. Otherwise a near-expired (or stolen just-before-expiry)
       // IdP JWT would exchange for a full MAX_TOKEN_TTL_SEC bearer, widening authority past the upstream

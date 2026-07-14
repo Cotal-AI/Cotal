@@ -12,8 +12,12 @@
  *      scope refuses to mint (defense in depth); the deployer view's control grant is the
  *      PRIVILEGED tier, never admin;
  *   D. the bridge (synthetic EdDSA IdP): a view exchange is authorized against the FRESH ledger
- *      grant — under-scoped refuses naming the re-grant, granted mints `act.view`, unknown views
- *      refuse.
+ *      grant — under-scoped refuses naming the re-grant, granted mints `act.view` lifecycle-BOUND
+ *      to the grant row's uid, unknown views refuse, and a uid-less grant cannot mint at all;
+ *   E. the connect boundary (`ledgerAuthorizeConnect`, real ledger dir): a VIEW bearer rides the
+ *      same lifecycle-equality gate as every other bearer — claimless refuses, and a predecessor
+ *      incarnation's still-live view bearer is DENIED after the alias's re-grant rotates the row
+ *      (the elevated stale-lifecycle crossover, security HIGH).
  *
  * Run: pnpm smoke:views
  */
@@ -69,9 +73,9 @@ console.log("A. issuer ↔ validator view inverse");
 const signing = await generateSigningKey();
 const issuer = createUserTokenIssuer({ issuer: "https://views.test", key: signing });
 for (const view of USER_TOKEN_VIEWS) {
-  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: [VIEW_REQUIRED_SCOPE[view]], view });
+  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: [VIEW_REQUIRED_SCOPE[view]], view, lifecycleUid: smokeUid });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
-  check(`view "${view}" round-trips mint → validate`, v.act.view === view, v.act);
+  check(`view "${view}" round-trips mint → validate (lifecycle claim intact)`, v.act.view === view && v.act.lifecycleUid === smokeUid, v.act);
 }
 {
   const plain = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["spawn"] });
@@ -116,11 +120,13 @@ for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer"))
 // ---------- C. the callout profile switch ----------
 console.log("C. callout profile switch");
 const CONN = "ibx" + "c".repeat(32);
-const tok = (view: UserTokenView | undefined, caps: string[]): ValidatedUserToken => ({
+// `uid: null` (an explicit sentinel, not undefined - a default parameter would silently refill it)
+// builds the CLAIMLESS bearer shape for the refusal probes.
+const tok = (view: UserTokenView | undefined, caps: string[], uid: string | null = smokeUid): ValidatedUserToken => ({
   owner: OWNER,
   space: SPACE,
   scope: caps,
-  act: { owner: OWNER, actor: "cli", scope: caps, ...(view ? { view } : {}) },
+  act: { owner: OWNER, actor: "cli", scope: caps, ...(uid !== null ? { lifecycleUid: uid } : {}), ...(view ? { view } : {}) },
   ver: 1,
   exp: Math.floor(Date.now() / 1000) + 60,
 });
@@ -173,6 +179,17 @@ for (const [view, caps] of [
     check(`view "${view}" without its required scope refuses to mint`, String(e).includes("without capability"));
   }
 }
+{
+  // The view arm's same-depth lifecycle re-assert (the agent arm's resolver refuses claimless;
+  // the elevated arm must too): a CLAIMLESS view bearer mints NOTHING, even in a composition
+  // that never ran the connect gate.
+  try {
+    forView(tok("admin", ["spawn", "admin"], null), CONN);
+    check("a CLAIMLESS view bearer refuses to mint the elevated profile", false);
+  } catch (e) {
+    check("a CLAIMLESS view bearer refuses to mint the elevated profile", String(e).includes("no lifecycle claim"));
+  }
+}
 
 // ---------- D. the bridge authorizes views against the fresh grant ----------
 console.log("D. bridge view authorization (synthetic EdDSA IdP)");
@@ -191,13 +208,35 @@ const idpToken = async (sub: string) => {
 };
 const SECRET = "s".repeat(32);
 let grantScope: string[] = ["spawn", "role:default"];
+const grantUid = mintLifecycleUid();
 const bridge = createIdpBridge({
   space: SPACE,
   spaceSecret: SECRET,
   issuer,
   idp: { issuer: IDP_ISS, audience: IDP_ISS, key: idpKeys.publicKey as CryptoKey },
-  authorizeActor: () => ({ scope: grantScope }),
+  authorizeActor: () => ({ scope: grantScope, lifecycleUid: grantUid }),
 });
+{
+  // The MINT boundary refuses a uid-less grant (a pre-cut row cannot mint a bearer of ANY shape,
+  // view or plain — the connect gate would refuse it anyway; fail at the earlier boundary).
+  const uidless = createIdpBridge({
+    space: SPACE,
+    spaceSecret: SECRET,
+    issuer,
+    idp: { issuer: IDP_ISS, audience: IDP_ISS, key: idpKeys.publicKey as CryptoKey },
+    authorizeActor: () => ({ scope: ["spawn", "admin"] }),
+  });
+  await rejects(
+    "a grant row without a lifecycleUid cannot mint (view exchange)",
+    async () => uidless.exchange(await idpToken("u1"), { actor: "cli", view: "admin" }),
+    "no lifecycleUid",
+  );
+  await rejects(
+    "a grant row without a lifecycleUid cannot mint (plain exchange)",
+    async () => uidless.exchange(await idpToken("u1"), { actor: "cli" }),
+    "no lifecycleUid",
+  );
+}
 await rejects(
   'an under-scoped admin-view exchange refuses, naming scope "admin" + the ADD re-grant',
   async () => bridge.exchange(await idpToken("u1"), { actor: "cli", view: "admin" }),
@@ -218,6 +257,59 @@ await rejects(
   const claims = decodeJwt(adm.token);
   check("an admin-scoped admin-view exchange mints act.view", (claims.act as { view?: string }).view === "admin");
   check("…bound to the derived owner", claims.sub === deriveOwnerForIdpSubject(SECRET, IDP_ISS, "u1"));
+  check(
+    "…and lifecycle-BOUND to the grant row's uid (views carry the claim like every bearer)",
+    (claims.act as { lifecycleUid?: string }).lifecycleUid === grantUid,
+    claims.act,
+  );
+}
+
+// ---------- E. the connect boundary: views ride the SAME lifecycle-equality gate ----------
+console.log("E. connect-boundary lifecycle equality for views (real ledger dir)");
+{
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: pathJoin } = await import("node:path");
+  const { grantActor, ledgerAuthorizeConnect } = await import("../src/ledger.js");
+  const dir = mkdtempSync(pathJoin(tmpdir(), "views-lc-"));
+  try {
+    const authorize = ledgerAuthorizeConnect(dir);
+    // Incarnation A: grant the interactive row, mint an ADMIN VIEW bearer stamped with A's uid
+    // (exactly what the bridge mints), and validate it — the connect gate must PASS it.
+    const rowA = grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
+    const bearerA = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["spawn", "admin"], view: "admin", lifecycleUid: rowA.lifecycleUid });
+    const vA = await validateUserToken(bearerA, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
+    let okA = true;
+    try { authorize(vA); } catch { okA = false; }
+    check("incarnation A's admin-view bearer connects while A IS the current row", okA);
+    // Re-grant (upsert) rotates the row's lifecycle uid to incarnation B. A's STILL-UNEXPIRED
+    // view bearer must now be DENIED at connect — the elevated stale-lifecycle crossover: row
+    // existence + scope alone would mint A's bearer the full admin profile under B.
+    const rowB = grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
+    check("the re-grant rotated the row's lifecycle uid", rowB.lifecycleUid !== rowA.lifecycleUid, { a: rowA.lifecycleUid, b: rowB.lifecycleUid });
+    await rejects(
+      "incarnation A's still-live ADMIN-VIEW bearer is DENIED after the re-grant (no view carve-out)",
+      () => authorize(vA),
+      "not the actor's current incarnation",
+    );
+    // And a CLAIMLESS view bearer (hand-signed shape - the bridge can no longer mint one) is
+    // refused outright: no missing-claim fallback on the elevated path either.
+    const claimless = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["spawn", "admin"], view: "admin" });
+    const vClaimless = await validateUserToken(claimless, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
+    await rejects(
+      "a CLAIMLESS admin-view bearer is refused at connect (no missing-claim fallback)",
+      () => authorize(vClaimless),
+      "no lifecycle claim",
+    );
+    // The fresh incarnation's own bearer still connects (the gate denies staleness, not views).
+    const bearerB = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["spawn", "admin"], view: "admin", lifecycleUid: rowB.lifecycleUid });
+    const vB = await validateUserToken(bearerB, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
+    let okB = true;
+    try { authorize(vB); } catch { okB = false; }
+    check("incarnation B's own admin-view bearer connects (the gate denies STALENESS, not views)", okB);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nviews smoke: ${pass} passed, ${fail} failed`);

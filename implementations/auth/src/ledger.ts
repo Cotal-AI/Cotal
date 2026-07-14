@@ -400,7 +400,13 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
         `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`)`,
       );
     }
-    return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}), ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}) };
+    // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the
+    // row's current uid, so the connect boundary's exact-equality gate has a claim to check. A
+    // row without one is a pre-cut grant and cannot mint (re-grant rotates one in); minting a
+    // claimless bearer here would only defer the same refusal to every connect it attempts.
+    if (!row.lifecycleUid)
+      throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - re-grant it (bearers are lifecycle-bound from v0.4)`);
+    return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}), lifecycleUid: row.lifecycleUid };
   };
 }
 
@@ -416,17 +422,19 @@ export function ledgerAuthorizeConnect(dir: string): (t: ValidatedUserToken) => 
     for (const s of t.act.scope ?? [])
       if (!granted.has(s))
         throw new Error(`bearer scope "${s}" exceeds the actor's current grant - re-login to mint a fresh bearer`);
-    // LIFECYCLE EQUALITY (SPEC 13.1, non-view bearers): the bearer must name the CURRENT row's
-    // lifecycle uid EXACTLY. Row existence + scope alone would let a predecessor incarnation's
-    // still-unexpired bearer connect after a same-alias respawn and be minted the SUCCESSOR's
-    // lifecycle-keyed broker authority (the resolver reads the current row). No missing-claim
-    // fallback: a claimless non-view bearer is a pre-cut or forged shape and is refused.
-    if (t.act.view === undefined) {
-      if (t.act.lifecycleUid === undefined)
-        throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
-      if (t.act.lifecycleUid !== row.lifecycleUid)
-        throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - the alias was respawned; re-exchange for a fresh bearer`);
-    }
+    // LIFECYCLE EQUALITY (SPEC 13.1, EVERY bearer - no view carve-out): the bearer must name the
+    // CURRENT row's lifecycle uid EXACTLY. Row existence + scope alone would let a predecessor
+    // incarnation's still-unexpired bearer connect after a same-alias respawn/re-grant and be
+    // minted the SUCCESSOR's authority - for a non-view bearer that is the agent's exact
+    // lifecycle-keyed broker grants (the resolver reads the current row); for a VIEW bearer it is
+    // worse: the full ELEVATED profile (admin/purger/deployer), which never touches the resolver.
+    // SPEC "every minted connection also carries its lifecycle UID" + "re-authorized against the
+    // live grant ledger at every connect" covers views too. No missing-claim fallback: a
+    // claimless bearer of either shape is a pre-cut or forged shape and is refused.
+    if (t.act.lifecycleUid === undefined)
+      throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
+    if (t.act.lifecycleUid !== row.lifecycleUid)
+      throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - the alias was respawned; re-exchange for a fresh bearer`);
   };
 }
 

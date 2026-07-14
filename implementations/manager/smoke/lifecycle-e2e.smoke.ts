@@ -11,6 +11,8 @@
  *      and its just-minted footprint is rolled back (deprovisioned), not orphaned.
  *  3b. UNCERTAIN — a process that runs but never joins presence is reported {ok:false} "uncertain" and is
  *      KEPT (not deprovisioned — it may still be booting), distinct from both started and failed.
+ *  3c. FAIL BEFORE PRESENCE — a launch missing the launcher uid, or lying a different one while
+ *      consuming, dies with NO roster ghost (SPEC 13.1 fail-before-presence).
  *   4. SHUTDOWN teardown — Manager.stop() deprovisions every still-managed agent's footprint.
  *
  * Run: pnpm smoke:lifecycle-e2e   (needs nats-server + node on PATH)
@@ -27,6 +29,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
   openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable, DEV_OWNER, principalKey,
+  mintLifecycleUid, presenceBucket,
 } from "@cotal-ai/core";
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
@@ -59,7 +62,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-life-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk (loadSpaceAuth)
-for (const n of ["w1", "w2", "bad1", "idle1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
@@ -99,16 +102,31 @@ async function footprint(id: string, uid: string, name: string): Promise<{ dm: b
 }
 
 // A connector that launches the real stub agent (joins presence) or a die-on-arrival process.
+// COTAL_LIFECYCLE_UID rides exactly as every stock connector forwards it (LaunchOpts → env).
 const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVERS), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+  ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 const stubCon: Connector = { kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 const dieCon: Connector = { kind: "connector", name: "e2e-die", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: ["-e", "process.exit(3)"], env: envFor(o) }) };
 // Runs but never connects/joins presence — exercises the UNCERTAIN outcome (no exit, no mesh join).
 const idleCon: Connector = { kind: "connector", name: "e2e-idle", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: ["-e", "setInterval(()=>{}, 1e9)"], env: envFor(o) }) };
+// The BROKEN-LAUNCHER shapes (residual #6, fail-before-presence): one DROPS the launcher uid off
+// the env (the pre-D15 connector shape), one LIES a different uid while consuming (the stub then
+// tries to bind lifecycle-keyed durables the credential/provisioner never named).
+const noUidCon: Connector = { kind: "connector", name: "e2e-nouid", requires: ["node"], buildLaunch: (o): LaunchSpec => {
+  const env = envFor(o);
+  delete env.COTAL_LIFECYCLE_UID;
+  return { command: "node", args: [STUB], env };
+} };
+const wrongUidCon: Connector = { kind: "connector", name: "e2e-wronguid", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
+  command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_E2E_CONSUME: "1" },
+}) };
 registry.register(stubCon);
 registry.register(dieCon);
 registry.register(idleCon);
+registry.register(noUidCon);
+registry.register(wrongUidCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 
@@ -173,6 +191,30 @@ try {
   check("uncertain agent is KEPT (still managed, not despawned)", idleId !== "" && (await footprint(idleId, uidIdle, "idle1")).creds, [...(mgr as unknown as { agents: Map<string, unknown> }).agents.keys()]);
   check("uncertain agent NOT deprovisioned (footprint intact)", (await footprint(idleId, uidIdle, "idle1")).dm, await footprint(idleId, uidIdle, "idle1"));
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000; // restore for w2 below
+
+  // 3c — FAIL BEFORE PRESENCE (SPEC 13.1, residual #6): an authed launch whose connector DROPS
+  // the launcher uid (a broken launcher, the pre-cut shape) or LIES a different one while
+  // consuming (the broker denies the lifecycle-keyed durable bind) must die with NO presence
+  // ghost — the roster never advertises an agent that could not prove its lifecycle. Assert by
+  // presence-key set difference: no key appears during either failed launch.
+  console.log("3c. missing/wrong launcher uid → fail BEFORE presence (no roster ghost):");
+  {
+    // Enumerate the presence bucket's keys via its backing stream's per-subject counts (no KV
+    // client needed): every present key is a `$KV.<bucket>.<key>` subject with messages.
+    const presenceKeys = (): Promise<string[]> =>
+      inspect(async (jsm) => {
+        const b = presenceBucket(space);
+        const info = await jsm.streams.info(`KV_${b}`, { subjects_filter: `$KV.${b}.>` });
+        return Object.keys(info.state.subjects ?? {});
+      });
+    const before = new Set(await presenceKeys());
+    const rNo = await mgr.startAgent({ name: "nouid1", agent: "e2e-nouid", cwd: repoRoot });
+    check("a launch whose connector DROPS the launcher uid never reports started", rNo.ok === false, rNo);
+    const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot });
+    check("a consuming launch that LIES a different uid never reports started (bind denied)", rWrong.ok === false, rWrong);
+    const added = (await presenceKeys()).filter((k) => !before.has(k));
+    check("NEITHER failed launch left a presence ghost (fail BEFORE presence)", added.length === 0, added);
+  }
 
   // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
   console.log("4. manager stop() → still-managed footprint torn down:");
