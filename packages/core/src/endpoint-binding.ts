@@ -183,10 +183,11 @@ export async function createEndpointStreams(
   // EPC — content-addressed contract artifacts: one immutable message per digest subject,
   // create-only mediated publication, NO age eviction (artifacts are permanent). allow_direct:
   // the subject-scoped last-by-subject read IS the fetch path. Permanence is BROKER-ENFORCED,
-  // not just configured-by-omission: deny_delete/deny_purge make message deletion structurally
-  // impossible even for a stream-API-holding principal, so a digest subject can never be
-  // emptied and re-created (verify-on-read already pins WHAT the subject can hold; these flags
-  // pin THAT it holds it — the §13.7 "permanent" claim as a broker property).
+  // not just configured-by-omission: deny_delete/deny_purge reject the message-delete and purge
+  // APIs even from a stream-API-holding principal, so a digest subject cannot be emptied and
+  // re-created through them. Per §13.12 the flags alone are NOT the whole claim: permanence is
+  // their COMBINATION with the retention floor (no age eviction, no teardown), verify-on-read
+  // pinning WHAT a subject carries, and stream management held by no profile.
   await jsm.streams.add({
     name: epcStreamName(space),
     subjects: [`${p}.epc.>`],
