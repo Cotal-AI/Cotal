@@ -32,7 +32,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
-import { epfStreamName, readLastFact } from "./endpoint-journal.js";
+import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, signArtifact, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
 
 /** A trusted, space-bonded receipt-store context: an OPAQUE token carrying only the space. Its
@@ -150,8 +150,12 @@ export function mintReceipt(
     /** The accepted submission's raw args (digested here; `undefined` digests as null). */
     args: unknown;
     outcome: { ok: boolean; code?: string };
-    /** The raw result, when one exists (digested here). */
+    /** The raw result, when one exists (digested here). MUTUALLY EXCLUSIVE with `resultDigest`. */
     result?: unknown;
+    /** A pre-committed result digest, taken VERBATIM (the fact-derived path binds the terminal's
+     *  OWN `outcomeDigest`, never re-digesting a substitute payload). Mutually exclusive with
+     *  `result`. */
+    resultDigest?: string;
     ts: number;
     signer: { keyId: string };
   },
@@ -163,17 +167,110 @@ export function mintReceipt(
     throw new EpEnvelopeError("failed-precondition", `a receipt requires the described contract's input/output schema digests (SPEC 13.10)`);
   if (typeof args.outcome?.ok !== "boolean" || (args.outcome.code !== undefined && typeof args.outcome.code !== "string"))
     throw new EpEnvelopeError("failed-precondition", `a receipt outcome is { ok: boolean, code?: string }; got ${JSON.stringify(args.outcome)}`);
+  if (args.result !== undefined && args.resultDigest !== undefined)
+    throw new EpEnvelopeError("failed-precondition", `a receipt takes a raw result OR a pre-committed resultDigest, never both (a single source of the result digest, SPEC 13.10)`);
+  if (args.resultDigest !== undefined && !isContractDigest(args.resultDigest))
+    throw new EpEnvelopeError("failed-precondition", `a receipt resultDigest is a sha256 digest; got ${JSON.stringify(args.resultDigest)}`);
+  const resultDigest = args.resultDigest !== undefined ? args.resultDigest
+    : args.result !== undefined ? contractDigest(args.result) : undefined;
   const body: Omit<Receipt, "sig"> = {
     v: 1, requestId: args.ref.requestId, sourceSeq: args.ref.sourceSeq, space: args.space,
     endpoint: args.ref.endpoint, command: args.command, instance: args.instance, caller: args.caller,
     schemaDigests: { input: args.schemaDigests.input, output: args.schemaDigests.output },
     argsDigest: contractDigest(args.args === undefined ? null : args.args),
     outcome: { ok: args.outcome.ok, ...(args.outcome.code !== undefined ? { code: args.outcome.code } : {}) },
-    ...(args.result !== undefined ? { resultDigest: contractDigest(args.result) } : {}),
+    ...(resultDigest !== undefined ? { resultDigest } : {}),
     ts: args.ts, signer: { keyId: args.signer.keyId },
   };
   receiptSubject(args.space, args.ref); // validates the subject coordinates before signing
   return signArtifact(body as unknown as Record<string, unknown>, keyPair) as unknown as Receipt;
+}
+
+/** A receipt's OUTCOME, derived from the authoritative committed terminal (never a caller's free
+ *  claim): `ok` + optional catalog `code`, and the terminal's own `resultDigest` (already the
+ *  digest the terminal fact committed — a receipt re-attests it, it never re-digests a different
+ *  payload). {@link receiptOutcomeOfGoal} maps an action goal's terminal state onto this shape. */
+export interface ReceiptOutcome {
+  ok: boolean;
+  code?: string;
+  resultDigest?: string;
+}
+
+/** Map an action goal's committed terminal (`state` + its `outcomeDigest`) onto the receipt
+ *  outcome: only `succeeded` is `ok`; every other terminal state IS its own catalog code, so a
+ *  receipt's `outcome.code` can never disagree with the committed goal state. The digest is the
+ *  terminal fact's OWN `outcomeDigest` (the receipt attests the committed value, never re-digests
+ *  a substitute). Kept generic (state + digest, not the GoalResultFact type) so the receipt
+ *  module stays free of an action-composite dependency. */
+export function receiptOutcomeOfGoal(state: string, outcomeDigest: string): ReceiptOutcome {
+  const OK_STATES = new Set(["succeeded"]);
+  const CODE_STATES = new Set(["failed", "cancelled", "expired", "uncertain"]);
+  if (!OK_STATES.has(state) && !CODE_STATES.has(state))
+    throw new EpEnvelopeError("internal", `goal terminal state ${JSON.stringify(state)} is not a §13.6 outcome; a receipt never attests an unknown terminal (SPEC 13.10)`);
+  if (!isContractDigest(outcomeDigest))
+    throw new EpEnvelopeError("internal", `a goal terminal's outcomeDigest is a sha256 digest; got ${JSON.stringify(outcomeDigest)} (SPEC 13.10)`);
+  return { ok: state === "succeeded", ...(state === "succeeded" ? {} : { code: state }), resultDigest: outcomeDigest };
+}
+
+/** Build and sign a receipt whose EVERY attestation field is DERIVED from the two authoritative
+ *  facts, never a caller's free parameter (distsys CF-1: an emitted receipt can no longer attest
+ *  an outcome or identity that disagrees with the committed record). Identity (requestId,
+ *  sourceSeq, caller, endpoint, command, schema digests, argsDigest) comes from the ACCEPTANCE
+ *  fact; the outcome (ok/code/resultDigest) comes from the committed TERMINAL. The only inputs
+ *  the caller supplies are the executing-instance EVIDENCE, the wall clock, the signer id, and
+ *  the key. A receipt minted here is reconstructable from the two facts, so a crash between
+ *  effect and emission is repaired by re-minting from the same facts (idempotent publish). */
+export function mintReceiptFromFacts(
+  args: {
+    acceptance: AcceptanceFact;
+    /** The caller triple from the acceptance's BROKER-AUTHENTICATED decision subject (§13.2):
+     *  the authoritative owner/actor/uid, cross-checked against the fact body here so a receipt
+     *  can never be subjected to a caller its acceptance body does not name. */
+    caller: EpCaller;
+    space: string;
+    /** The committed terminal outcome (from the authoritative terminal fact, via
+     *  {@link receiptOutcomeOfGoal} for goals, or a journaled command's own committed result). */
+    terminal: ReceiptOutcome;
+    /** The executing instance, recorded as EVIDENCE (never redemption authority). */
+    instance: { id: string; instanceId: string; epoch: number };
+    ts: number;
+    signer: { keyId: string };
+  },
+  keyPair: { sign(input: Uint8Array): Uint8Array },
+): Receipt {
+  const a = args.acceptance;
+  if (a === null || typeof a !== "object" || a.decision !== "accepted")
+    throw new EpEnvelopeError("internal", `a receipt is minted from an ACCEPTED submission's acceptance fact; got ${JSON.stringify((a as { decision?: unknown })?.decision)} (SPEC 13.10)`);
+  const op = (a.request as { op?: { endpoint?: unknown; command?: unknown; inputDigest?: unknown; outputDigest?: unknown } })?.op;
+  if (op === undefined || typeof op.endpoint !== "string" || typeof op.command !== "string")
+    throw new EpEnvelopeError("internal", `the acceptance fact for "${a.id}" carries no invocation binding; a receipt derives its endpoint/command from the accepted request, never a free param (SPEC 13.10)`);
+  // The acceptance records the pinned contract digests twice (its `contractDigests` and the
+  // embedded request's op digests); they MUST agree, else the acceptance is internally garbled
+  // and a receipt built from either could disagree with the other.
+  if (a.contractDigests.input !== op.inputDigest || a.contractDigests.output !== op.outputDigest)
+    throw new EpEnvelopeError("internal", `the acceptance fact for "${a.id}" disagrees with its own embedded request on the pinned contract digests; a garbled acceptance never mints a receipt (SPEC 13.10)`);
+  // BIND the authoritative caller triple (from the acceptance subject) to the fact body's caller
+  // evidence: id = "owner.actor" and uid = lifecycleUid, else the receipt subject and its body
+  // would name different principals (forged attribution, the same class parseReceipt closes on read).
+  if (`${args.caller.owner}.${args.caller.actor}` !== a.caller.id || args.caller.uid !== a.caller.lifecycleUid)
+    throw new EpEnvelopeError("internal", `the acceptance subject caller ${args.caller.owner}.${args.caller.actor}/${args.caller.uid} disagrees with the fact body caller ${a.caller.id}/${a.caller.lifecycleUid}; a receipt never attests split attribution (SPEC 13.10)`);
+  if (typeof args.terminal?.ok !== "boolean"
+    || (args.terminal.code !== undefined && typeof args.terminal.code !== "string")
+    || (args.terminal.resultDigest !== undefined && !isContractDigest(args.terminal.resultDigest)))
+    throw new EpEnvelopeError("internal", `a receipt terminal is { ok, code?, resultDigest? } derived from the committed terminal; got ${JSON.stringify(args.terminal)} (SPEC 13.10)`);
+  return mintReceipt({
+    ref: { endpoint: op.endpoint, caller: args.caller, requestId: a.id, sourceSeq: a.sourceSeq },
+    space: args.space,
+    command: op.command,
+    instance: args.instance,
+    caller: a.caller,
+    schemaDigests: a.contractDigests,
+    args: (a.request as { args?: unknown }).args,
+    outcome: { ok: args.terminal.ok, ...(args.terminal.code !== undefined ? { code: args.terminal.code } : {}) },
+    ...(args.terminal.resultDigest !== undefined ? { resultDigest: args.terminal.resultDigest } : {}),
+    ts: args.ts,
+    signer: args.signer,
+  }, keyPair);
 }
 
 /** Closed shape validation, IDENTITY-BOUND to the ref/subject it was read for (§13.4/§13.10):

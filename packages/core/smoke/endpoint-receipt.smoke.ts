@@ -22,7 +22,7 @@ import { createUser } from "@nats-io/nkeys";
 import {
   isReachable, EpEnvelopeError, contractDigest,
   createEndpointStreams,
-  mintReceipt, parseReceipt, publishReceipt, readReceipt, verifyReceipt, verifyReceiptSignature,
+  mintReceipt, mintReceiptFromFacts, receiptOutcomeOfGoal, parseReceipt, publishReceipt, readReceipt, verifyReceipt, verifyReceiptSignature,
   receiptSubject, receiptStoreContext,
   type EpCaller, type ReceiptRef, type Receipt, type ReceiptStoreContext, type SignerAnchor, type AnchorResolver,
 } from "../src/index.js";
@@ -105,6 +105,56 @@ await rejects("a STUCK anchor registry is a bounded unavailable refusal, never a
   () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor: () => new Promise(() => { /* never settles */ }), recompute: EVIDENCE, verifyBudgetMs: 100 }), "unavailable");
 await rejects("a non-positive verifyBudgetMs refuses",
   () => verifyReceipt(receipt, { ref, space: SPACE, resolveAnchor, recompute: EVIDENCE, verifyBudgetMs: 0 }), "failed-precondition");
+
+// ── CF-1: a receipt minted FROM THE FACTS derives every attestation field from the acceptance
+//    fact + the committed terminal, never a free param — so it cannot attest an outcome or
+//    identity that disagrees with the committed record. ──
+{
+  const OUT_DIGEST = contractDigest(RESULT);
+  const acc = {
+    v: 1, id: "req-1", decision: "accepted", fingerprint: "sha256:" + "a".repeat(64),
+    request: { v: 1, id: "req-1", op: { endpoint: "manager", command: "deploy", inputDigest: SCHEMAS.input, outputDigest: SCHEMAS.output }, class: "journal", replyExpected: true, args: ARGS, from: { id: "u_abc.worker", name: "w" } },
+    caller: { id: "u_abc.worker", lifecycleUid: UID },
+    contractDigests: SCHEMAS, authzDecision: { revision: 1, epoch: 1 }, route: "effects",
+    sourceSeq: 42, ts: NOW,
+  } as unknown as Parameters<typeof mintReceiptFromFacts>[0]["acceptance"];
+  const instance = { id: "u_mgr.manager", instanceId: "i".repeat(26), epoch: 2 };
+  const fromFacts = (over: Record<string, unknown> = {}): Receipt => mintReceiptFromFacts({
+    acceptance: acc, caller, space: SPACE, terminal: receiptOutcomeOfGoal("succeeded", OUT_DIGEST),
+    instance, ts: NOW, signer: { keyId: "rcpt-1" }, ...over,
+  } as Parameters<typeof mintReceiptFromFacts>[0], kp);
+
+  const rf = fromFacts();
+  c("mintReceiptFromFacts derives identity from the ACCEPTANCE: requestId, sourceSeq, endpoint, command, schemas, argsDigest",
+    rf.requestId === "req-1" && rf.sourceSeq === 42 && rf.endpoint === "manager" && rf.command === "deploy"
+    && rf.schemaDigests.input === SCHEMAS.input && rf.argsDigest === contractDigest(ARGS));
+  c("…and its OUTCOME from the committed terminal (a succeeded goal → ok, its outcomeDigest re-attested, never re-digested)",
+    rf.outcome.ok === true && rf.outcome.code === undefined && rf.resultDigest === OUT_DIGEST);
+  c("…and it verifies against the acceptance's own args + the terminal's own result (the receipt agrees with both facts)",
+    (await verifyReceipt(rf, { ref, space: SPACE, resolveAnchor, recompute: { args: ARGS, result: RESULT } })).outcome.ok === true);
+
+  // The outcome comes from the TERMINAL: a failed goal attests failed with its state as the code.
+  const failed = mintReceiptFromFacts({ acceptance: acc, caller, space: SPACE, terminal: receiptOutcomeOfGoal("failed", OUT_DIGEST), instance, ts: NOW, signer: { keyId: "rcpt-1" } }, kp);
+  c("a receipt from a FAILED terminal attests { ok: false, code: 'failed' } (the outcome is the committed state, not a caller claim)",
+    failed.outcome.ok === false && failed.outcome.code === "failed");
+
+  // Fail-closed on every disagreement the binding exists to catch:
+  await rejects("a caller triple that disagrees with the acceptance body's caller never mints (no split attribution)",
+    () => fromFacts({ caller: { owner: "u_evil", actor: "worker", uid: UID } }), "internal");
+  await rejects("a NON-accepted fact (a rejection) never mints a receipt",
+    () => mintReceiptFromFacts({ acceptance: { ...acc, decision: "rejected" } as never, caller, space: SPACE, terminal: receiptOutcomeOfGoal("succeeded", OUT_DIGEST), instance, ts: NOW, signer: { keyId: "rcpt-1" } }, kp), "internal");
+  await rejects("an acceptance whose contractDigests disagree with its own embedded request op digests is garbled, never minted",
+    () => mintReceiptFromFacts({ acceptance: { ...acc, contractDigests: { input: contractDigest({ x: 9 }), output: SCHEMAS.output } } as never, caller, space: SPACE, terminal: receiptOutcomeOfGoal("succeeded", OUT_DIGEST), instance, ts: NOW, signer: { keyId: "rcpt-1" } }, kp), "internal");
+  await rejects("an UNKNOWN goal terminal state never attests (only the §13.6 outcome states map)",
+    () => receiptOutcomeOfGoal("bogus", OUT_DIGEST), "internal");
+  await rejects("mintReceipt refuses a raw result AND a pre-committed resultDigest together (one source of the result digest)",
+    () => mintReceipt({ ref, space: SPACE, command: "deploy", instance, caller: { id: "u_abc.worker", lifecycleUid: UID }, schemaDigests: SCHEMAS, args: ARGS, outcome: { ok: true }, result: RESULT, resultDigest: OUT_DIGEST, ts: NOW, signer: { keyId: "rcpt-1" } } as Parameters<typeof mintReceipt>[0], kp), "failed-precondition");
+  // Convergence: with the facts agreeing with the raw evidence, the fact-derived path and the
+  // raw-evidence path produce the BYTE-IDENTICAL receipt (same canonical body → same signature),
+  // so a fact-derived re-mint after a crash is idempotent against a raw-path emission.
+  c("the fact-derived path and the raw-evidence path converge on the identical signed receipt (idempotent re-mint)",
+    rf.sig === receipt.sig);
+}
 {
   // TOCTOU (artifact half): a caller mutating the receipt DURING the awaited anchor resolution
   // cannot split the parsed value from what the D28 signature verifies — the raw is
