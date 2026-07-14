@@ -170,15 +170,18 @@ export async function createEndpointStreams(
     allow_msg_schedules: true,
     max_age: nanos(opts.timerMaxAgeMs ?? EP_TIMER_MAX_AGE_MS),
   });
-  // EPW — work pools, one item per subject. allow_direct serves the subject-confined
-  // reconciliation probe: an acked item leaves the WorkQueue, an in-flight one remains
-  // readable, which is exactly the §13.6 predicate.
+  // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
+  // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
+  // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
+  // STREAM.MSG.GET (SPEC 13.6:1797-1799), never a follower-servable Direct Get whose stale miss
+  // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
+  // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
   await jsm.streams.add({
     name: epwStreamName(space),
     subjects: [`${p}.epw.>`],
     retention: RetentionPolicy.Workqueue,
     storage: StorageType.File,
-    allow_direct: true,
+    allow_direct: false,
   });
   // EPC — content-addressed contract artifacts: one immutable message per digest subject,
   // create-only mediated publication, NO age eviction (artifacts are permanent). allow_direct:

@@ -178,7 +178,10 @@ export async function enqueueWorkItem(
     // bytes match; a consumed-and-gone entry (no message) is a settled/in-flight item the caller
     // reconciles, not a mismatch.
     let stored;
-    try { stored = await ctx.jsm.direct.getMessage(epwStreamName(ctx.space), { last_by_subj: subject }); }
+    // LEADER-SERVED STREAM.MSG.GET, never a follower Direct Get (SPEC 13.6:1797-1799): this read
+    // gates the enqueue decision (a stale follower miss would re-arm settled work), so it is a
+    // fencing read and must go to the stream leader that just rejected the CAS — read-your-writes.
+    try { stored = await ctx.jsm.streams.getMessage(epwStreamName(ctx.space), { last_by_subj: subject }); }
     catch (ge) { if (isNoMessage(ge)) return { enqueued: false }; throw new EpEnvelopeError("unavailable", `the enqueue CAS lost and the stored item is not readable to verify identity (SPEC 13.6): ${(ge as Error)?.message ?? String(ge)}`); }
     if (stored !== null && rawDigest(stored.data) !== rawDigest(bytes)) // the DETACHED bytes, the ones actually published — not the caller-owned itemBytes a mutation could have changed during the publish await
       throw new EpEnvelopeError("conflict", `an item with acceptance identity "${ref.acceptance.id}" is already enqueued with DIFFERENT bytes; idempotency is same-subject AND same-bytes — a differing body is a canonicalizer mixup, never silently accepted (SPEC 13.6)`);
@@ -647,7 +650,8 @@ export type WorkReconcileVerdict =
  *      publish the derived terminal → EXPIRED-SETTLED; with no lease record, a worker-less
  *      `settled:expired` lease is CAS-CREATED on the same key first, so a racing FIRST lease
  *      contends there instead of assigning dead work behind the expiry;
- *   4. a live pool entry exists (subject-confined DIRECT get) → LIVE;
+ *   4. a live pool entry exists (subject-confined LEADER-SERVED STREAM.MSG.GET, §13.6:1797-1799 —
+ *      a fencing read whose stale follower miss would re-arm settled work) → LIVE;
  *   5. else re-check the terminal (a commit may have landed since step 1), then re-enqueue the
  *      SAME acceptance-derived bytes create-only — the ONLY re-enqueueable state.
  *  Fail-closed preconditions: a DEL/PURGE marker on the lease REFUSES before any classification
@@ -745,13 +749,15 @@ export async function reconcileWorkItem(
   return { state: "re-enqueued", seq: re.seq! };
 }
 
-/** The §13.6 liveness read: the subject-confined DIRECT last-by-subject probe on the item's own
- *  subject (an acked item has LEFT the WorkQueue; an in-flight one remains readable). ONLY the
- *  broker's no-message result is absence; every other failure is `unavailable`, never fabricated
- *  as "no live entry" (which would drive an incorrect re-enqueue). */
+/** The §13.6 liveness read: the subject-confined LEADER-SERVED last-by-subject probe on the
+ *  item's own subject (an acked item has LEFT the WorkQueue; an in-flight one remains readable).
+ *  STREAM.MSG.GET, never a follower Direct Get (SPEC 13.6:1797-1799): the result gates the
+ *  re-enqueue decision, so a stale follower miss would re-arm settled work. ONLY the broker's
+ *  no-message result is absence; every other failure is `unavailable`, never fabricated as "no
+ *  live entry" (which would drive an incorrect re-enqueue). */
 async function liveEntryExists(ctx: WorkPoolContext, ref: WorkItemRef): Promise<boolean> {
   try {
-    return (await ctx.jsm.direct.getMessage(epwStreamName(ctx.space), { last_by_subj: workItemSubject(ctx.space, ref) })) !== null;
+    return (await ctx.jsm.streams.getMessage(epwStreamName(ctx.space), { last_by_subj: workItemSubject(ctx.space, ref) })) !== null;
   } catch (e) {
     if (isNoMessage(e)) return false;
     throw new EpEnvelopeError("unavailable", `the reconciliation liveness probe failed (a failed observation is never absence, SPEC 13.6): ${(e as Error)?.message ?? String(e)}`);

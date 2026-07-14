@@ -76,6 +76,18 @@ try {
   const r1 = ref("req-1");
   const e1 = await enqueueWorkItem(ctx, r1, enc("w1"));
   c("the first enqueue of an item wins its create-only CAS", e1.enqueued && typeof e1.seq === "number");
+
+  // ── the reconciliation read is STRUCTURALLY leader-served (SPEC 13.6:1797-1799) ──
+  // EPW is bound allow_direct:false, so a follower-servable Direct Get is REFUSED by the broker
+  // (a single node cannot exhibit replication lag, so this structural forbiddance IS the proof:
+  // the reconciliation probe CANNOT accidentally take the follower path whose stale miss re-arms
+  // settled work). The leader-served STREAM.MSG.GET the reconciler actually uses works fine.
+  await rejects("a follower Direct Get on EPW is refused (allow_direct:false forbids the stale-read path)",
+    () => jsm.direct.getMessage(epwStreamName(SPACE), { last_by_subj: workItemSubject(SPACE, r1) }));
+  {
+    const leader = await jsm.streams.getMessage(epwStreamName(SPACE), { last_by_subj: workItemSubject(SPACE, r1) });
+    c("the leader-served STREAM.MSG.GET reconciliation read returns the live item", leader !== null && leader.subject === workItemSubject(SPACE, r1));
+  }
   const e1dup = await enqueueWorkItem(ctx, r1, enc("w1"));
   c("a duplicate enqueue with IDENTICAL bytes loses harmlessly (idempotent bridge, §13.6)", !e1dup.enqueued);
   await rejects("a duplicate enqueue with DIFFERENT bytes under the same identity fails loud (canonicalizer mixup, never silently accepted)",

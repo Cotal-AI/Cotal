@@ -221,8 +221,8 @@ try {
   const ept = await cfg(eptStreamName(SPACE));
   c("EPT has message schedules ENABLED", ept.allow_msg_schedules === true);
   const epw = await cfg(epwStreamName(SPACE));
-  c("EPW is a WorkQueue with Direct Get (the reconciliation probe)",
-    epw.retention === "workqueue" && epw.allow_direct === true);
+  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC 13.6:1797-1799)",
+    epw.retention === "workqueue" && epw.allow_direct === false);
   const epc = await cfg(epcStreamName(SPACE));
   c("EPC has no age eviction (artifacts are permanent)", epc.allow_direct === true && epc.max_age === 0);
   c("EPC permanence is broker-enforced (deny_delete + deny_purge: a digest subject can never be emptied and re-created)",
@@ -303,8 +303,10 @@ try {
 
   // Live: EPW reconciliation predicate + redelivery. A short ack_wait makes redelivery
   // observable: an acked item leaves the WorkQueue; a DELIVERED-but-unacked item stays
-  // direct-readable AND is redelivered to the owner after ack_wait (the §13.6 predicate is about
-  // in-flight work, not merely pending storage — the panel's redelivery note).
+  // LEADER-readable (STREAM.MSG.GET, never Direct Get — EPW is allow_direct:false so the fencing
+  // probe cannot take the stale follower path) AND is redelivered to the owner after ack_wait
+  // (the §13.6 predicate is about in-flight work, not merely pending storage — the panel's
+  // redelivery note).
   await jsm.consumers.add(epwStreamName(SPACE), poolConsumerConfig(SPACE, "manager", "builds", { ackWaitMs: 1500 }));
   const item1 = epwSubject(SPACE, "manager", "builds", { ...caller, id: "req-1" });
   const item2 = epwSubject(SPACE, "manager", "builds", { ...caller, id: "req-2" });
@@ -318,12 +320,18 @@ try {
   c("the pool consumer delivers work items in order", acked === item1 && inflightSubj === item2);
   await wait(300); // let the ack commit (WorkQueue removal)
   let ackedGone = false;
-  try { ackedGone = (await jsm.direct.getMessage(epwStreamName(SPACE), { last_by_subj: item1 })) === null; }
-  catch { ackedGone = true; }
-  c("an ACKED item has LEFT the WorkQueue (direct probe finds nothing)", ackedGone);
-  const inflight = await jsm.direct.getMessage(epwStreamName(SPACE), { last_by_subj: item2 });
-  c("a DELIVERED-but-unacked item REMAINS direct-readable (the §13.6 reconciliation predicate)",
+  try { ackedGone = (await jsm.streams.getMessage(epwStreamName(SPACE), { last_by_subj: item1 })) === null; }
+  catch (e) { ackedGone = (e as { code?: unknown })?.code === 10037; } // no message found = gone
+  c("an ACKED item has LEFT the WorkQueue (leader-served probe finds nothing)", ackedGone);
+  const inflight = await jsm.streams.getMessage(epwStreamName(SPACE), { last_by_subj: item2 });
+  c("a DELIVERED-but-unacked item REMAINS leader-readable (the §13.6 reconciliation predicate, STREAM.MSG.GET)",
     inflight !== null && inflightDeliveries === 1);
+  // The follower path is STRUCTURALLY forbidden: a Direct Get on EPW is refused (allow_direct:false),
+  // so no reconciler can accidentally take the stale-read path the predicate must never use.
+  let directRefused = false;
+  try { await jsm.direct.getMessage(epwStreamName(SPACE), { last_by_subj: item2 }); }
+  catch { directRefused = true; }
+  c("a Direct Get on EPW is refused (allow_direct:false forbids the fencing probe's stale-read path)", directRefused);
   // Cross ack_wait: the same in-flight item redelivers to the owner (delivery count advances).
   await wait(1600);
   let redeliverySubj: string | undefined, redeliveryCount = 0;
