@@ -57,6 +57,9 @@ export interface ServiceStatus {
 /** The convergence states the SPEC keys on (§13.6 item 6). */
 export const SERVICE_READY = "ready";
 export const SERVICE_EXITED = "exited";
+/** Restart-intensity escalation (§13.6 virtual endpoints): the instance stops restarting and
+ *  the lifecycle retires terminally; readers treat it as permanently not-startable. */
+export const SERVICE_ESCALATED = "escalated";
 
 const STATE_TOKEN = /^[a-z][a-z0-9-]{0,31}$/;
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -529,7 +532,11 @@ function decodeJson(value: Uint8Array, key: string): unknown {
  *      the superseded N still equals the stored epoch (§13.9);
  *   3. a below-stored epoch is `conflict` (§13.9), distinct from the mapping fence.
  *  `readProcessEpoch` is the trusted mapping-reader seam (leader-served, §13.9; the D13
- *  lifecycle registry provides the production reader). The racing CAS loss is a loud `conflict`. */
+ *  lifecycle registry provides the production reader). The racing CAS loss is a loud `conflict`.
+ *  `expectedStatusRevision` pins the CAS to the CALLER's observed status revision (0 = observed
+ *  ABSENT) for read-modify-write callers whose new value derives from the stored one (the §13.6
+ *  restart-intensity history): without the pin, this function's own fresh internal read would
+ *  let two concurrent derivations silently merge-lose each other's contribution. */
 export async function writeServiceStatus(
   kv: KV,
   args: {
@@ -538,6 +545,7 @@ export async function writeServiceStatus(
     epoch: number;
     status: ServiceStatus;
     readProcessEpoch: () => Promise<number> | number;
+    expectedStatusRevision?: number;
   },
 ): Promise<number> {
   const status = parseServiceStatus(args.status);
@@ -558,6 +566,13 @@ export async function writeServiceStatus(
     throw new EpEnvelopeError("expired", `status write from epoch ${args.epoch} is not the authoritative mapping's current processEpoch ${current}; stored-status monotonicity alone is insufficient during takeover (SPEC 13.9)`);
   const key = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
   const stored = await kv.get(key);
+  if (args.expectedStatusRevision !== undefined) {
+    if (!Number.isSafeInteger(args.expectedStatusRevision) || args.expectedStatusRevision < 0)
+      throw new EpEnvelopeError("internal", `expectedStatusRevision ${String(args.expectedStatusRevision)} is not an unsigned integer`);
+    const current = stored && stored.operation === "PUT" ? stored.revision : 0;
+    if (current !== args.expectedStatusRevision)
+      throw new EpEnvelopeError("conflict", `the status for "${args.endpoint}/${args.instanceId}" moved (observed revision ${args.expectedStatusRevision}, stored ${current}); a derived write against a moved base would merge-lose the concurrent write, re-read and re-derive (SPEC 13.6)`);
+  }
   if (stored && stored.operation === "PUT") {
     const recorded = parseServiceStatus(decodeJson(stored.value, key));
     if (args.epoch < recorded.epoch)

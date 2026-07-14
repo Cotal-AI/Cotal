@@ -390,6 +390,13 @@ export function poolConsumerConfig(
     filter_subject: `${spacePrefix(space)}.epw.${endpointToken(endpoint)}.${assertPoolToken(pool)}.>`,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
+    // UNLIMITED delivery, pinned EXPLICITLY (not left to the server default): the §13.6 virtual
+    // admission fence counts pool occupancy as num_pending + num_ack_pending, and a message that
+    // exhausts a FINITE max_deliver stays stored but leaves both counters, silently falsifying
+    // the count. MaxDeliver is editable post-create, so the occupancy reader ALSO fails closed
+    // on any reported value other than -1 (readPoolOccupancy); this pin makes intent explicit
+    // and the drift check enforceable.
+    max_deliver: -1,
   });
 }
 

@@ -1793,7 +1793,18 @@ ingress path is the ordinary submission plane (`epj` is durable and needs no liv
 subscriber), and the canonicalizer, which for a virtual endpoint runs wherever its
 activator/owning authority runs, checks pool admission BEFORE deciding (an over-capacity
 submission is rejected `resource-exhausted` as its durable decision fact, never accepted and
-stranded), then accepts and enqueues the work into the endpoint's `epw` pool. Acceptance and
+stranded), then accepts and enqueues the work into the endpoint's `epw` pool. Admission
+occupancy is the pool consumer's `num_pending + num_ack_pending`, read fresh from the exact
+per-pool consumer INFO after reconciling the canonicalizer's own outstanding acceptances
+against the predicate below (a repaired item is inside the count new work competes under);
+the read fails closed (an unreadable consumer is `unavailable`, never an empty pool), and the
+sum is honest only while the pool consumer's delivery ceiling is unlimited
+(`max_deliver = -1`, pinned at creation AND re-checked at every read, because a message that
+exhausts a finite ceiling stays stored but leaves both counters and MaxDeliver is editable
+after creation). The virtual endpoint's canonicalizer durable serializes admission
+(`max_ack_pending = 1`): one submission is in the count-decide-enqueue path at a time, so two
+submissions cannot both observe the same free slot; pool-worker execution concurrency is an
+independent knob, already inside the count via `num_ack_pending`. Acceptance and
 enqueue span two streams with no atomic bridge, so the enqueue is **idempotent, keyed by the
 acceptance identity, and reconciled against a decidable predicate**: the pool subject carries
 the acceptance identity and the enqueue is a create (expected-last-sequence-for-subject 0),
@@ -1810,10 +1821,20 @@ accepted decisions. An ephemeral
 call to a virtual endpoint with no live instance is an honest `unavailable`; nothing
 silently buffers it. An **activator** (holder of its activation capability) watches the pool
 and starts an instance; single-writer per identity is fenced by instance-record CAS +
-epoch. Passivation drains, updates status, exits; durable reminders ride the timer plane.
+epoch. The exact consumer INFO the activator watches is a request/reply snapshot with no
+broker wakeup, so watching is bounded polling with backoff to a finite maximum interval, and
+an INFO failure is loud, never a silent skipped poll; the activator's broker authority is
+exactly that INFO read plus its mediated, target-bound start seam (no pool consume/ack, no
+stream read, no consumer create/update/delete). Passivation drains, updates status, exits;
+durable reminders ride the timer plane.
 Supervision is restart-intensity escalation: more than `maxRestarts` (default 3) within
 `restartWindow` (default 60s) escalates; the instance stops restarting, status records
-`escalated`, the lifecycle retires terminally (§13.1), and the failure is loud.
+`escalated`, the lifecycle retires terminally (§13.1), and the failure is loud. The restart
+history is DURABLE on the instance's own status record and each note is a revision-pinned
+CAS: a supervisor restart cannot amnesty the count, two concurrent notes cannot merge-lose a
+restart, and an `escalated` status refuses further notes. The escalation commits before the
+lifecycle retirement runs, and a retirement failure leaves the escalation standing (it
+retries; nothing un-escalates).
 
 ### 13.7 Contracts and discovery
 
@@ -2450,7 +2471,7 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | `EPT_REQ_<space>` stream | `cotal.<space>.ept.*.*.*.*.schedule` (instance schedule REQUESTS, §13.2) | Limits; message schedules **DISABLED**; client-set scheduling headers are inert bytes here; retention ≥ writer recovery lag |
 | `EPR_<space>` stream | `cotal.<space>.epr.>` (record-write ingress, §13.2) | Limits; epoch-pinned publish grants (§13.9); consumed only by the record writer; retention ≥ writer recovery lag |
 | `EPT_<space>` stream | `cotal.<space>.ept.*.*.*.*.armed` + `….fire` (authoritative schedules + fires, §13.2) | `AllowMsgSchedules`; only the timer writer publishes `.armed` (§13.9); each schedule targets its sibling `.fire` subject (ADR-51 forbids target = publish subject); retention ≥ max deadline + margin |
-| `EPW_<space>` stream | `cotal.<space>.epw.>` (work pools; one item per subject, §13.2) | WorkQueue; provisioner-pre-created non-overlapping exact-filter per-pool consumers (§13.9); **`allow_direct=false`**: EPW has NO non-fencing subject-confined reader (pool workers drain the WorkQueue via `CONSUMER.MSG.NEXT`, never a subject read), and its ONLY subject read is the reconciliation probe, which is FENCING and MUST be leader-served `STREAM.MSG.GET` (§13.9 read service; an acked item leaves the WorkQueue, an in-flight one remains readable, which is exactly the §13.6 predicate, and a stale follower miss would re-arm settled work). Disabling Direct Get on EPW makes that leader-served requirement STRUCTURAL: no reader (including future virtual-endpoint activation reconciliation, §13.6) can take the follower path even by mistake. This differs from EPF, which keeps `allow_direct=true` because it DOES have non-fencing subject readers (the §13.9 last-by-subject fact reads); EPF's fencing CAS-winner read opts into the leader by caller choice |
+| `EPW_<space>` stream | `cotal.<space>.epw.>` (work pools; one item per subject, §13.2) | WorkQueue; provisioner-pre-created non-overlapping exact-filter per-pool consumers (§13.9) with **`max_deliver=-1` pinned** (a finite delivery ceiling strands exhausted items outside `num_pending`/`num_ack_pending` and falsifies the §13.6 admission occupancy; the occupancy reader re-checks the pin at every read because MaxDeliver is editable post-create); **`allow_direct=false`**: EPW has NO non-fencing subject-confined reader (pool workers drain the WorkQueue via `CONSUMER.MSG.NEXT`, never a subject read), and its ONLY subject read is the reconciliation probe, which is FENCING and MUST be leader-served `STREAM.MSG.GET` (§13.9 read service; an acked item leaves the WorkQueue, an in-flight one remains readable, which is exactly the §13.6 predicate, and a stale follower miss would re-arm settled work). Disabling Direct Get on EPW makes that leader-served requirement STRUCTURAL: no reader (including virtual-endpoint activation reconciliation, §13.6) can take the follower path even by mistake. This differs from EPF, which keeps `allow_direct=true` because it DOES have non-fencing subject readers (the §13.9 last-by-subject fact reads); EPF's fencing CAS-winner read opts into the leader by caller choice |
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`, `govern`) | per-key CAS; `.spec`/`.status`-split keys EXCEPT the two unsplit atomic heads `lifecycle.<owner>.<actor>` and `govern.<endpoint>` (§13.1/§13.7/§13.9); `allow_direct=true`, but both heads and every fencing read are leader-served `STREAM.MSG.GET` (§13.9 read service) |
 | `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY; no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states. **No bucket-wide age retention:** `gate.`, `srcgate.`, and `session.` authority keys persist until their lifecycle/handle/session is explicitly terminal (an age-evicted `open` gate would silently reopen minting, or drop a `frozen`/`retired` fence); only `cred.`/`bysrc.` rows carry a per-key TTL bounded by the credential TTL (NATS per-key message TTL, ≥ 2.12), never a bucket MaxAge |
