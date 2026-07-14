@@ -27,6 +27,7 @@ import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js"
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { ContractInvalidError, compileContract } from "./schema-profile.js";
 import { verifyClusterManifest, isReverseDnsUrn, TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS } from "./endpoint-cluster.js";
+import { runGuardGate, type GuardCallSeam, type GuardObligation } from "./endpoint-guard.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import {
@@ -483,26 +484,19 @@ async function raceSeam<T>(work: Promise<T> | T, ms: number, what: string): Prom
   }
 }
 
-/** A guard's answer (§13.6 "Guard checkpoint"): `allow | deny | hold`, plus optional signed
- *  obligations on allow (attenuations the endpoint MUST apply; monotonic — surfaced to the
- *  handler, whose policy engine applies them behind the seam). */
-export type EpGuardVerdict =
-  | { verdict: "allow"; obligations?: readonly unknown[] }
-  | { verdict: "deny"; reason?: string }
-  | { verdict: "hold" };
-
-/** The guard-call SEAM (§13.9): production composes a class call (`epCall` on the `one`
- *  rail) to the guard endpoint the trait VALUE names, bounded by its own deadline; a test
- *  supplies a fake. However it is wired: a throw, a timeout, or an unreachable guard is
- *  DENY (§13.6, fail closed) — the gate never interprets a seam failure as allow. */
-export type EpGuardCall = (q: {
-  endpoint: string;
-  command: string;
-  caller: EpCaller;
-  requestId: string;
-  /** The verified attachment's value — it names the guard endpoint (§13.6). */
-  value: unknown;
-}) => Promise<EpGuardVerdict> | EpGuardVerdict;
+/** The GUARD wiring (§13.6/§13.9): the raw class-call seam to the guard endpoint plus the
+ *  trust-anchor resolver its OBLIGATION VERIFICATION requires. There is ONE guard gate,
+ *  {@link import("./endpoint-guard.js").runGuardGate} — this bundle is what the serve boundary
+ *  hands it. The seam returns the guard's RAW answer plus the broker-authenticated responder
+ *  (derived from the reply subject by the transport layer, never from the body); the gate owns
+ *  ALL parsing and verification, so a transport wiring can never surface an unverified
+ *  obligation to a handler. `now` is the verification clock for obligation/anchor windows
+ *  (default `Date.now()`, injectable like every other verification-time clock here). */
+export interface EpGuardWiring {
+  call: GuardCallSeam;
+  resolveAnchor: AnchorResolver;
+  now?: () => number;
+}
 
 /** The priced-proof SEAM (§13.9): verify the `auth`-slot payment proof — an INDEPENDENTLY
  *  verifiable artifact, never a bare "settled" assertion (§13.10). The verifier owns the
@@ -525,7 +519,7 @@ export type EpPricedProofVerify = (q: {
  *  not at first request). */
 export interface EpTraitEnforcement {
   governed: EpGovernedSurface;
-  guard?: EpGuardCall;
+  guard?: EpGuardWiring;
   verifyPaymentProof?: EpPricedProofVerify;
 }
 
@@ -534,16 +528,19 @@ export interface EpTraitEnforcement {
  * validation, target currency, and mode authorization, immediately BEFORE the handler — for
  * calls and casts alike (casts have effects too). Guard FIRST, then priced (deliberate: a
  * guard deny must never burn a one-use payment proof). Every anomalous answer refuses:
- *  - guarded: seam absent, seam throw, or malformed verdict = DENY (`permission-denied`);
- *    `deny` = `permission-denied`; `hold` = `failed-precondition` (hold converts an ACTION
- *    to waiting on a guard-owned checkpoint, §13.6 — the ephemeral rail cannot wait, the
- *    action composite owns hold);
+ *  - guarded: THE gate is {@link runGuardGate} — the guard's raw answer is parsed CLOSED and
+ *    every obligation is VERIFIED (D28 signature, anchor role/scope, validity window,
+ *    space + request binding) before it can reach a handler; wiring absent, seam throw,
+ *    timeout, garbled answer, or an unverifiable obligation = DENY (`permission-denied`);
+ *    `deny` = `permission-denied`; `hold` = `failed-precondition` on THIS rail (hold converts
+ *    an ACTION to waiting on a guard-owned checkpoint, §13.6 — the ephemeral rail cannot
+ *    wait; the action composite's own gate, `gateGoalExecution`, routes hold);
  *  - priced: absent `auth` slot, seam absent, seam throw, non-boolean or false answer =
  *    `permission-denied`; a proof is verified, never assumed.
- * Both seams are BOUNDED ({@link raceSeam}) by `deadlineMs` (the request budget, or the §13.8
- * reference default): a never-settling extension becomes deny at the bound, never a hung request.
- * Returns the guard's obligations for the handler context. Receipt emission for priced
- * commands is the §13.10 receipts slice (D9), not gated here.
+ * Both gates are BOUNDED by `deadlineMs` (the request budget, or the §13.8 reference
+ * default): a never-settling extension becomes deny at the bound, never a hung request.
+ * Returns the guard's VERIFIED obligations for the handler context. Receipt emission for
+ * priced commands is the §13.10 receipts slice (D9), not gated here.
  */
 export async function assertGovernedPreEffect(args: {
   enforcement: EpTraitEnforcement;
@@ -551,41 +548,42 @@ export async function assertGovernedPreEffect(args: {
   command: string;
   caller: EpCaller;
   requestId: string;
+  /** The space the request is served in — guard obligations are space-bound (§13.6). */
+  space: string;
   auth?: string;
   /** The seam bound (ms); defaults to {@link REFERENCE_GOVERNED_SEAM_DEADLINE_MS}. */
   deadlineMs?: number;
-}): Promise<{ obligations?: readonly unknown[] }> {
+}): Promise<{ obligations?: readonly GuardObligation[] }> {
   const governed = args.enforcement.governed.commands[args.command];
   if (governed === undefined) return {};
   const seamMs = args.deadlineMs !== undefined && Number.isSafeInteger(args.deadlineMs) && args.deadlineMs > 0
     ? args.deadlineMs : REFERENCE_GOVERNED_SEAM_DEADLINE_MS;
-  let obligations: readonly unknown[] | undefined;
+  let obligations: readonly GuardObligation[] | undefined;
 
   const guarded = governed[TRAIT_GUARDED];
   if (guarded !== undefined) {
     const guard = args.enforcement.guard;
     if (guard === undefined)
       throw new EpEnvelopeError("permission-denied", `command "${args.command}" is guarded and this instance wired no guard seam; an unreachable guard is deny (SPEC 13.6: fail closed)`);
-    let verdict: EpGuardVerdict;
-    try {
-      verdict = await raceSeam(guard({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, value: guarded.value }), seamMs, `the guard for "${args.command}"`);
-    } catch (e) {
-      if (e instanceof EpEnvelopeError) throw e; // the bound's deny, already fail-closed
-      throw new EpEnvelopeError("permission-denied", `the guard call failed (${(e as Error)?.message ?? String(e)}); timeout or unreachable guard is deny (SPEC 13.6: fail closed)`);
-    }
-    // Runtime-fence the seam's answer (an untrusted caller-supplied boundary): anything that
-    // is not an explicit allow/deny/hold verdict is DENY, never fall-through.
-    if (!isRec(verdict) || (verdict.verdict !== "allow" && verdict.verdict !== "deny" && verdict.verdict !== "hold"))
-      throw new EpEnvelopeError("permission-denied", `the guard returned a malformed verdict; anything but an explicit allow is deny (SPEC 13.6: fail closed)`);
-    if (verdict.verdict === "deny")
-      throw new EpEnvelopeError("permission-denied", `the guard denied "${args.command}"${verdict.reason ? `: ${verdict.reason}` : ""} (SPEC 13.6: guard-then-effect)`);
-    if (verdict.verdict === "hold")
-      throw new EpEnvelopeError("failed-precondition", `the guard held "${args.command}": hold converts an action to waiting on a guard-owned checkpoint (SPEC 13.6), and the ephemeral rail cannot wait — the action composite owns hold; refusing pre-effect`);
-    if (verdict.obligations !== undefined) {
-      if (!Array.isArray(verdict.obligations))
-        throw new EpEnvelopeError("permission-denied", "the guard's obligations are not an array; a malformed allow is deny (SPEC 13.6: fail closed)");
-      obligations = verdict.obligations;
-    }
+    // The VERIFIED trait value names the guard endpoint; an unroutable guard is deny.
+    const guardEndpoint = isRec(guarded.value) ? (guarded.value as Record<string, unknown>).guard : undefined;
+    if (typeof guardEndpoint !== "string" || guardEndpoint.length === 0)
+      throw new EpEnvelopeError("permission-denied", `command "${args.command}" carries a guarded trait whose value names no guard endpoint; an unroutable guard is deny (SPEC 13.6: fail closed)`);
+    // ONE gate: runGuardGate owns the call, the closed parse, and the D28 obligation
+    // verification. It throws permission-denied on deny/timeout/garble/unverifiable
+    // obligation (fail closed); its only returns are a VERIFIED allow or a VERIFIED hold.
+    const verdict = await runGuardGate({
+      guardEndpoint,
+      request: { endpoint: args.endpoint, command: args.command, id: args.requestId, caller: args.caller },
+      callGuard: guard.call,
+      deadlineMs: seamMs,
+      now: guard.now !== undefined ? guard.now() : Date.now(),
+      space: args.space,
+      resolveAnchor: guard.resolveAnchor,
+    });
+    if (verdict.decision === "hold")
+      throw new EpEnvelopeError("failed-precondition", `the guard held "${args.command}": hold converts an ACTION to waiting on a guard-owned checkpoint (SPEC 13.6), and the ephemeral rail cannot wait — submit the work as an action, whose gate (gateGoalExecution) routes hold; refusing pre-effect`);
+    obligations = verdict.obligations;
   }
 
   const priced = governed[TRAIT_PRICED];

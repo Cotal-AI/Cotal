@@ -9,11 +9,14 @@
  * garbled answer, or an invalid obligation is DENY (fail closed). Ordering is
  * guard-then-effect; side-effecting guards own their own reconciliation.
  *
- * This module is the WIRING between the D6 governed-trait verification (which yields the guard
- * endpoint), the class-call verb (injected as a seam so the wiring stays transport-thin), the
- * awaitable checkpoint (the §13.6 pause primitive the hold reuses), and the action's status
- * projection. The gate never guesses: every path that is not a well-formed, obligation-valid
- * ALLOW or HOLD is a refusal.
+ * This module is THE guard gate. There is exactly one: {@link runGuardGate} owns the guard
+ * call, the closed answer parse, and the D28 obligation verification, and BOTH production
+ * rails run through it — the ephemeral serve rail via `assertGovernedPreEffect` (which
+ * refuses hold, since an ephemeral request cannot wait) and the action composite via
+ * {@link gateGoalExecution} (which ROUTES hold into the checkpoint pause and a guard deny
+ * into the shared terminal commit). {@link reconcileGuardHold} is the durable backstop that
+ * converges a settled hold whose projection crashed mid-flight. The gate never guesses:
+ * every path that is not a well-formed, obligation-valid ALLOW or HOLD is a refusal.
  */
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { canonicalJson } from "./canonical.js";
@@ -136,8 +139,18 @@ function parseGuardAnswer(raw: unknown): { answer: GuardAnswer; rawObligations: 
 
 /** The injected class-call seam: invoke the guard endpoint's decision command and return its
  *  raw answer body PLUS the broker-authenticated responder identity (derived from the reply
- *  subject by the caller's transport layer, never from the body). */
-export type GuardCallSeam = (guardEndpoint: string) => Promise<{ answer: unknown; responder: { id: string; lifecycleUid: string } }>;
+ *  subject by the caller's transport layer, never from the body). The seam receives the
+ *  guarded request's coordinates so the guard knows WHAT it is deciding; the GATE owns all
+ *  parsing and verification of the answer, so no wiring can surface an unverified obligation. */
+export type GuardCallSeam = (q: {
+  /** The guard endpoint the VERIFIED trait value names. */
+  guardEndpoint: string;
+  /** The guarded request's broker-authenticated coordinates. */
+  endpoint: string;
+  command?: string;
+  requestId: string;
+  caller: EpCaller;
+}) => Promise<{ answer: unknown; responder: { id: string; lifecycleUid: string } }>;
 
 /** The gate's verdict for the effecting handler. */
 export type GuardVerdict =
@@ -155,7 +168,7 @@ export async function runGuardGate(opts: {
    *  attachment verification is the caller's step; this seam trusts its output only). */
   guardEndpoint: string;
   /** The guarded request's coordinates (broker-authenticated at the serve boundary). */
-  request: { endpoint: string; id: string; caller: EpCaller };
+  request: { endpoint: string; command?: string; id: string; caller: EpCaller };
   callGuard: GuardCallSeam;
   /** The guard budget: past it the gate DENIES (never hangs, never allows). */
   deadlineMs: number;
@@ -176,7 +189,13 @@ export async function runGuardGate(opts: {
   const remainingMs = () => gateDeadlineAt - Date.now();
   let called: { answer: unknown; responder: { id: string; lifecycleUid: string } };
   try {
-    called = await withGateBudget(opts.callGuard(opts.guardEndpoint), remainingMs(), "the guard");
+    called = await withGateBudget(opts.callGuard({
+      guardEndpoint: opts.guardEndpoint,
+      endpoint: opts.request.endpoint,
+      ...(opts.request.command !== undefined ? { command: opts.request.command } : {}),
+      requestId: opts.request.id,
+      caller: opts.request.caller,
+    }), remainingMs(), "the guard");
   } catch (e) {
     if (e instanceof EpEnvelopeError && e.code === "permission-denied") throw e;
     denyClosed(`the guard call failed (${(e as Error)?.message ?? String(e)})`);
@@ -202,6 +221,102 @@ export async function runGuardGate(opts: {
       { resolveAnchor: opts.resolveAnchor, now: opts.now, space: opts.space, endpoint: opts.request.endpoint, requestId: opts.request.id, remainingMs });
   if (answer.decision === "allow") return { decision: "allow", obligations: answer.obligations };
   return { decision: "hold", token: answer.token, holdDeadlineMs: answer.holdDeadlineMs, obligations: answer.obligations, responder };
+}
+
+/** The ACTION composite's guard gate (§13.6): run by the OWNING instance for a guarded goal
+ *  BEFORE any execution effect — the counterpart of the ephemeral rail's
+ *  `assertGovernedPreEffect`, with hold ROUTED instead of refused. {@link runGuardGate} does
+ *  the calling, parsing, and obligation verification; this seam projects the verdict onto the
+ *  goal:
+ *   - ALLOW: the goal transitions accepted → running under the owner's construction-bound
+ *     proof (this projection is the owner's admission to execute) and the VERIFIED
+ *     obligations return for the executor, which MUST apply them;
+ *   - HOLD: {@link holdGuardedGoal} mints the guard-holder-bound checkpoint and projects
+ *     `waiting`;
+ *   - DENY (or ANY fail-closed gate refusal: timeout, garble, unverifiable obligation): the
+ *     goal commits terminal `failed` at the shared commit point under the OWNER's
+ *     construction-bound proof — the owner runs this gate, so the deny predicate is the
+ *     owner's own refusal to execute, carrying the gate's reason in the terminal payload.
+ *  Obligations bind to the GOAL id (§13.10: bound to its goal/request, reusable within it). */
+export async function gateGoalExecution(
+  ctx: ActionContext,
+  args: {
+    goal: GoalRef;
+    /** The guard endpoint named by the goal's VERIFIED `ai.cotal.guarded` trait value. */
+    guardEndpoint: string;
+    callGuard: GuardCallSeam;
+    resolveAnchor: AnchorResolver;
+    deadlineMs: number;
+    now: number;
+    /** The OWNING instance arming a hold's timer (its identity/epoch subject, §13.12). */
+    instanceId: string;
+    epoch: number;
+  },
+): Promise<
+  | { outcome: "running"; obligations: GuardObligation[]; status: GoalStatusValue }
+  | { outcome: "waiting"; hold: { token: string; holdDeadlineMs: number }; status: GoalStatusValue }
+  | { outcome: "denied"; won: boolean; fact: GoalResultFact; status: GoalStatusValue }
+> {
+  const goal = snapshotRef(args.goal);
+  let verdict: GuardVerdict;
+  try {
+    verdict = await runGuardGate({
+      guardEndpoint: args.guardEndpoint,
+      request: { endpoint: goal.endpoint, id: goal.goalId, caller: goal.caller },
+      callGuard: args.callGuard,
+      deadlineMs: args.deadlineMs,
+      now: args.now,
+      space: ctx.space,
+      resolveAnchor: args.resolveAnchor,
+    });
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError && e.code === "permission-denied")) throw e; // wiring errors propagate; only the gate's fail-closed deny terminalizes
+    const res = await commitGoalResult(ctx, {
+      ref: goal, now: args.now, cause: "deny", denial: { kind: "owner", owner: ownerCommitProof(ctx) },
+      data: { code: "permission-denied", reason: (e as Error).message },
+    });
+    return { outcome: "denied", won: res.won, fact: res.fact, status: res.status };
+  }
+  if (verdict.decision === "hold") {
+    const status = await holdGuardedGoal(ctx, {
+      goal, hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs, responder: verdict.responder },
+      instanceId: args.instanceId, epoch: args.epoch, now: args.now,
+    });
+    return { outcome: "waiting", hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs }, status };
+  }
+  const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+  return { outcome: "running", obligations: verdict.obligations, status };
+}
+
+/** The durable HOLD reconciler (§13.6): converge a goal whose guard-hold checkpoint SETTLED
+ *  while the goal projection lags (a release or expiry crashed mid-flight, or the timer fire
+ *  settled the checkpoint and the owner's projection is still owed). For a goal `waiting` on
+ *  checkpoint T whose spec binds THIS goal:
+ *   - settle RESUMED: finish the projection to `running` (idempotent);
+ *   - settle EXPIRED: drive the terminal deny via {@link expireGuardHold} (idempotent);
+ *   - still live: nothing to do — the timer plane owns the deadline.
+ *  A goal not waiting, or waiting on a token whose checkpoint does not bind it, is left
+ *  untouched: this reconciler converges exactly the holds this module minted. */
+export async function reconcileGuardHold(
+  ctx: ActionContext,
+  args: { goal: GoalRef; now: number },
+): Promise<{ converged: "running" | "denied" | "none" }> {
+  const goal = snapshotRef(args.goal);
+  const status = await readGoalStatus(ctx, goal);
+  if (status === undefined || status.value.state !== "waiting" || status.value.checkpoint === undefined)
+    return { converged: "none" };
+  const token = status.value.checkpoint.token;
+  try { await bindCheckpointToGoal(ctx, goal, token); } catch { return { converged: "none" }; } // a foreign/unknown token's wait is not this reconciler's to converge
+  const settle = await readCheckpointSettle(ctx.jsm, ctx.space, { endpoint: goal.endpoint, token });
+  if (settle === undefined) return { converged: "none" };
+  if (settle.settle === "resumed") {
+    const cur = await readGoalStatus(ctx, goal);
+    if (cur?.value.state === "waiting" && cur.value.checkpoint?.token === token)
+      await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+    return { converged: "running" };
+  }
+  await expireGuardHold(ctx, { goal, token, now: args.now });
+  return { converged: "denied" };
 }
 
 /** Convert a HELD action to `waiting` on a checkpoint OWNED BY THE GUARD DECISION (§13.6): the

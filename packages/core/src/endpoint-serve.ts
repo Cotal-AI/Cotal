@@ -34,6 +34,7 @@ import {
   GOVERNED_TRAIT_URNS, TRAIT_GUARDED, TRAIT_PRICED,
   assertGovernedSurfaceFor, assertGovernedPreEffect, type EpTraitEnforcement,
 } from "./endpoint-traits.js";
+import type { GuardObligation } from "./endpoint-guard.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -47,13 +48,15 @@ export interface EpServeIdentity {
 
 /** What a handler sees: the broker-authenticated SUBJECT shape (route, caller, target) beside
  *  the validated body — provenance never comes from the body (§13.2/§13.3). `obligations` is
- *  present exactly when a guard allowed WITH signed attenuations (§13.6): the endpoint MUST
- *  apply them (monotonic); the applying policy engine is an extension behind the seam. */
+ *  present exactly when a guard allowed WITH signed attenuations (§13.6), and every entry is
+ *  VERIFIED by the gate (D28 signature, anchor role/scope, window, space + request binding)
+ *  before it reaches a handler: the endpoint MUST apply them (monotonic); the applying policy
+ *  engine is an extension behind the seam. */
 export interface EpServeContext {
   identity: EpServeIdentity;
   subject: ParsedEpRequest;
   request: EndpointRequest;
-  obligations?: readonly unknown[];
+  obligations?: readonly GuardObligation[];
 }
 
 /** One served command: its handler plus the COMPILED §13.7 contracts (schema-profile
@@ -399,7 +402,7 @@ export function serveEndpoint(
       // §13.7/§13.9 governed pre-effect gate, for calls AND casts (casts have effects too):
       // guard-then-priced, every anomalous answer refuses, both seams bounded. Construction
       // refused a governed def without enforcement, so the snapshot is present and total here.
-      let obligations: readonly unknown[] | undefined;
+      let obligations: readonly GuardObligation[] | undefined;
       if (def.governed) {
         ({ obligations } = await assertGovernedPreEffect({
           enforcement: enforcement!,
@@ -407,6 +410,7 @@ export function serveEndpoint(
           command: def.command,
           caller: parsed.caller,
           requestId: env.id,
+          space,
           ...(env.auth !== undefined ? { auth: env.auth } : {}),
           ...(env.deadlineMs !== undefined ? { deadlineMs: env.deadlineMs } : {}),
         }));

@@ -21,8 +21,9 @@ import {
   isReachable, EpEnvelopeError, signArtifact,
   createEndpointStreams, openRecordsBucket,
   actionContext, runGuardGate, holdGuardedGoal, releaseGuardHold, expireGuardHold,
+  gateGoalExecution, reconcileGuardHold,
   createGoal, readGoalStatus, transitionGoal, commitGoalResult, readCheckpointStatus,
-  ownerCommitProof, resumeCheckpoint,
+  ownerCommitProof, resumeCheckpoint, expireCheckpoint, readCheckpointSpec,
   type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam, type ActionContext,
 } from "../src/index.js";
 
@@ -276,6 +277,74 @@ try {
   await holdGuardedGoal(ctx, { goal: g6, hold: { token: "cp-g6", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
   await rejects("a deny naming a LIVE hold refuses at the commit boundary (no recorded expired settlement — a live hold never denies)",
     () => commitGoalResult(ctx, { ref: g6, now: NOW + 10, cause: "deny", denial: { kind: "hold-expired", token: "cp-g6" } }), "failed-precondition");
+
+  // ── OPTION A: the ACTION composite's own gate (gateGoalExecution) — hold ROUTED, deny
+  //    terminalized, allow admits with VERIFIED obligations. H5+H6: every guard path is
+  //    reachable end-to-end through PRODUCTION exports, exercised here on a real broker. ──
+  {
+    const ga = goalOf("g-gate-allow");
+    await createGoal(ctx, ga, spec("sha256:ga"));
+    const allowSeam: GuardCallSeam = (q) => Promise.resolve({
+      answer: { v: 1, decision: "allow", obligations: [signArtifact(obligationBody({ requestId: q.requestId }), guardKp)] },
+      responder: guardResponder,
+    });
+    const ra = await gateGoalExecution(ctx, { goal: ga, guardEndpoint: "approvals", callGuard: allowSeam, resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    c("gateGoalExecution ALLOW admits the goal to running with VERIFIED goal-bound obligations for the executor",
+      ra.outcome === "running" && ra.status.state === "running"
+      && (ra.obligations[0].attenuations[0] as { maxItems: number }).maxItems === 5
+      && ra.obligations[0].requestId === "g-gate-allow");
+
+    const gh = goalOf("g-gate-hold");
+    await createGoal(ctx, gh, spec("sha256:gh"));
+    const rh = await gateGoalExecution(ctx, { goal: gh, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "hold", token: "cp-gate-h", holdDeadlineMs: 60_000 }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    const heldStatus = await readGoalStatus(ctx, gh);
+    const heldSpec = await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-gate-h" });
+    c("gateGoalExecution HOLD routes into the checkpoint pause: goal waiting on the minted checkpoint whose HOLDER is the guard's authenticated responder (H5: production-reachable)",
+      rh.outcome === "waiting" && heldStatus?.value.state === "waiting" && heldStatus.value.checkpoint?.token === "cp-gate-h"
+      && heldSpec?.holder.id === guardResponder.id && heldSpec.holder.lifecycleUid === guardResponder.lifecycleUid);
+
+    const gd = goalOf("g-gate-deny");
+    await createGoal(ctx, gd, spec("sha256:gd"));
+    const rd = await gateGoalExecution(ctx, { goal: gd, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "deny", reason: "policy said no" }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    c("gateGoalExecution DENY terminal-fails the goal at the shared commit point, carrying the gate's reason",
+      rd.outcome === "denied" && rd.won === true && rd.fact.state === "failed" && rd.status.state === "failed"
+      && String((rd.fact.data as { reason?: string })?.reason ?? "").includes("policy said no"));
+
+    const gf = goalOf("g-gate-forged");
+    await createGoal(ctx, gf, spec("sha256:gf"));
+    const rf = await gateGoalExecution(ctx, { goal: gf, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "allow", obligations: [{ ...obligationBody({ requestId: "g-gate-forged" }), sig: "Zm9yZ2Vk" }] }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    c("gateGoalExecution with an UNVERIFIABLE obligation is fail-closed: the goal terminal-fails, the executor never starts",
+      rf.outcome === "denied" && rf.fact.state === "failed");
+  }
+
+  // ── OPTION A: the durable hold reconciler — release/expiry convergence reachable from a
+  //    durable scan, not only from a live guard call. ──
+  {
+    const gr = goalOf("g-rec-resumed");
+    await createGoal(ctx, gr, spec("sha256:gr"));
+    await holdGuardedGoal(ctx, { goal: gr, hold: { token: "cp-rec-r", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, SPACE, { ref: { endpoint: "manager", token: "cp-rec-r" }, presenter: guardResponder, now: NOW + 10 }); // the release's resume landed; the goal projection "crashed"
+    const rr = await reconcileGuardHold(ctx, { goal: gr, now: NOW + 20 });
+    c("reconcileGuardHold converges a RESUMED hold's crashed projection to running",
+      rr.converged === "running" && (await readGoalStatus(ctx, gr))?.value.state === "running");
+
+    const ge = goalOf("g-rec-expired");
+    await createGoal(ctx, ge, spec("sha256:ge"));
+    await holdGuardedGoal(ctx, { goal: ge, hold: { token: "cp-rec-e", holdDeadlineMs: 1_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    await expireCheckpoint(ctx.kv, ctx.js, ctx.jsm, SPACE, { ref: { endpoint: "manager", token: "cp-rec-e" }, now: NOW + 2_000 }); // the fire settled the checkpoint; the goal projection is owed
+    const re = await reconcileGuardHold(ctx, { goal: ge, now: NOW + 2_010 });
+    c("reconcileGuardHold converges an EXPIRED hold to the terminal deny",
+      re.converged === "denied" && (await readGoalStatus(ctx, ge))?.value.state === "failed");
+
+    const gl = goalOf("g-rec-live");
+    await createGoal(ctx, gl, spec("sha256:gl"));
+    await holdGuardedGoal(ctx, { goal: gl, hold: { token: "cp-rec-l", holdDeadlineMs: 60_000, responder: guardResponder }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    c("reconcileGuardHold leaves a LIVE hold untouched (the timer plane owns the deadline)",
+      (await reconcileGuardHold(ctx, { goal: gl, now: NOW + 10 })).converged === "none"
+      && (await readGoalStatus(ctx, gl))?.value.state === "waiting");
+    c("reconcileGuardHold leaves a non-waiting goal untouched",
+      (await reconcileGuardHold(ctx, { goal: gr, now: NOW + 30 })).converged === "none");
+  }
 
   await nc.close();
 } finally {

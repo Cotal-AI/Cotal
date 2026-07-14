@@ -8,7 +8,7 @@
  * verified two-step read; strip/substitute/forge/stale-digest/downgrade all refuse), the
  * whole-surface coverage check (BOTH strip directions), the §13.7 downgrade/removal revision
  * check across re-registrations, and the fail-closed pre-effect gate in serveEndpoint:
- * guarded (allow/deny/hold/throw/malformed; obligations surfaced), priced (proof in the auth
+ * guarded (allow/deny/hold/throw/malformed; obligations VERIFIED then surfaced), priced (proof in the auth
  * slot verified before effect, one-use replay refused, a guard deny never burns a proof),
  * construction refusals (governed command without enforcement, extraneous enforcement,
  * missing hooks, foreign-grant surface, governed journal command), and cast silence.
@@ -35,7 +35,7 @@ import {
   verifyGovernedSurface, assertGovernedSurfaceFor,
   TRAIT_GUARDED, TRAIT_PRICED,
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
-  type EpGuardVerdict, type EpTraitEnforcement, type EpGovernedSurface,
+  type GuardCallSeam, type EpTraitEnforcement, type EpGovernedSurface,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
   type EpCommandDef, type EpServeGrant, type EpIssuanceBarrier, type EpServeContext,
 } from "../src/index.js";
@@ -72,6 +72,7 @@ anchor("acme-traits-1", acmeKp, { owner: "com.acme", scope: { traits: ["com.acme
 anchor("op-noscope-1", opKp, { scope: undefined });
 anchor("op-norole-1", opKp, { roles: ["receipts"], scope: { receipts: ["vault"] } });
 anchor("op-revoked-1", opKp, { revoked: true });
+anchor("op-obl-1", opKp, { roles: ["obligations"], scope: { obligations: ["vault", "tgtvault"] } });
 const resolveAnchor: AnchorResolver = (keyId) => anchors.get(keyId);
 
 // ── contract-store: value schemas + cluster documents, each a manifest+root pair (§13.7) ──
@@ -364,18 +365,31 @@ try {
   });
   const vaultDefs = () => ["launch", "charge", "both", "free"].map(defFor);
 
-  let guardMode: "allow" | "allow-obligations" | "deny" | "hold" | "throw" | "malformed" | "hang" = "allow";
-  let guardSawValue: unknown;
-  const guard = (q: { value: unknown }): EpGuardVerdict | Promise<EpGuardVerdict> => {
-    guardSawValue = q.value;
-    if (guardMode === "hang") return new Promise<EpGuardVerdict>(() => { /* never settles */ });
+  let guardMode: "allow" | "allow-obligations" | "allow-forged-obligation" | "allow-foreign-obligation" | "deny" | "hold" | "throw" | "malformed" | "hang" = "allow";
+  let guardSawEndpoint: unknown;
+  const guardResponder = { id: "u_op.warden", lifecycleUid: "g".repeat(26) };
+  const obligationFor = (requestId: string, over: Record<string, unknown> = {}) => signArtifact({
+    v: 1, space: SPACE, requestId, signer: { keyId: "op-obl-1" },
+    attenuations: [{ attenuate: "read-only" }], iat: NOW - 1_000, exp: NOW + 60_000, ...over,
+  }, opKp);
+  // The guard endpoint's RAW answer seam: THE gate (runGuardGate) owns the closed parse and
+  // the D28 obligation verification, so this fake returns wire-shaped answers, never
+  // pre-parsed verdicts - there is nothing a wiring can hand a handler unverified.
+  const guardCall: GuardCallSeam = (q) => {
+    guardSawEndpoint = q.guardEndpoint;
+    if (guardMode === "hang") return new Promise(() => { /* never settles */ });
     if (guardMode === "throw") throw new Error("guard transport down");
-    if (guardMode === "malformed") return { verdict: "yolo" } as unknown as EpGuardVerdict;
-    if (guardMode === "deny") return { verdict: "deny", reason: "policy said no" };
-    if (guardMode === "hold") return { verdict: "hold" };
-    if (guardMode === "allow-obligations") return { verdict: "allow", obligations: [{ attenuate: "read-only" }] };
-    return { verdict: "allow" };
+    const answer =
+      guardMode === "malformed" ? { v: 1, decision: "yolo" }
+      : guardMode === "deny" ? { v: 1, decision: "deny", reason: "policy said no" }
+      : guardMode === "hold" ? { v: 1, decision: "hold", token: "h".repeat(26), holdDeadlineMs: 60_000 }
+      : guardMode === "allow-obligations" ? { v: 1, decision: "allow", obligations: [obligationFor(q.requestId)] }
+      : guardMode === "allow-forged-obligation" ? { v: 1, decision: "allow", obligations: [{ ...obligationFor(q.requestId), sig: "Zm9yZ2VkLXNpZw" }] }
+      : guardMode === "allow-foreign-obligation" ? { v: 1, decision: "allow", obligations: [obligationFor("req-SOMEONE-ELSE")] }
+      : { v: 1, decision: "allow" };
+    return Promise.resolve({ answer, responder: guardResponder });
   };
+  const guard = { call: guardCall, resolveAnchor, now: () => NOW };
   const usedProofs = new Set<string>();
   let verifierCalls = 0;
   const verifyPaymentProof = (q: { proof: string; requestId: string }): boolean => {
@@ -419,12 +433,21 @@ try {
   const rFree = await call("free");
   c("an ungoverned command serves with no gate consulted", rFree?.reply.ok === true && ran.free === 1 && verifierCalls === 0);
   const rAllow = await call("launch");
-  c("guard ALLOW effects (guard-then-effect), and the hook received the attachment's value",
-    rAllow?.reply.ok === true && ran.launch === 1 && (guardSawValue as { guard: string }).guard === "warden");
+  c("guard ALLOW effects (guard-then-effect), and the seam received the guard ENDPOINT the verified value named",
+    rAllow?.reply.ok === true && ran.launch === 1 && guardSawEndpoint === "warden");
   guardMode = "allow-obligations";
   const rOb = await call("launch");
-  c("guard obligations surface on the handler context (the endpoint MUST apply them)",
-    rOb?.reply.ok === true && Array.isArray(seenObligations) && (seenObligations[0] as { attenuate: string }).attenuate === "read-only");
+  c("guard obligations surface on the handler context VERIFIED (D28 signature, role obligations, scope, window, request binding), and the endpoint MUST apply them",
+    rOb?.reply.ok === true && Array.isArray(seenObligations)
+    && ((seenObligations[0] as { attenuations: { attenuate: string }[] }).attenuations[0]).attenuate === "read-only");
+  guardMode = "allow-forged-obligation";
+  const rForged = await call("launch");
+  c("an allow whose obligation FAILS signature verification is DENY at the gate: no effect and the handler NEVER receives an unverified obligation (H6: the pre-rework passthrough surfaced exactly this)",
+    rForged?.reply.ok === false && rForged.reply.error?.code === "permission-denied" && ran.launch === 2);
+  guardMode = "allow-foreign-obligation";
+  const rForeign = await call("launch");
+  c("an allow whose obligation binds ANOTHER request id is DENY (an obligation is bound to its goal/request)",
+    rForeign?.reply.ok === false && rForeign.reply.error?.code === "permission-denied" && ran.launch === 2);
   guardMode = "deny";
   const rDeny = await call("launch");
   c("guard DENY refuses permission-denied with no effect",
@@ -730,7 +753,8 @@ try {
   let rotateOnGuard = false;      // when set, the guard rotates the mapping mid-await
   const rotatingResolve = (t: { owner: string; actor: string }) =>
     t.owner === "u_abc" && t.actor === "svc" ? { lifecycleUid: mappingUid, mappingRevision: 1 } : undefined;
-  const rotatingGuard = (): EpGuardVerdict => { if (rotateOnGuard) mappingUid = ROT_UID; return { verdict: "allow" }; };
+  const rotatingGuardCall: GuardCallSeam = () => { if (rotateOnGuard) mappingUid = ROT_UID; return Promise.resolve({ answer: { v: 1, decision: "allow" }, responder: guardResponder }); };
+  const rotatingGuard = { call: rotatingGuardCall, resolveAnchor, now: () => NOW };
   let tgtRuns = 0;
   const tgtHandle = serveEndpoint(nc, SPACE, grantTgt,
     [{ command: "guardtgt", contract: { input: argsContract, output: outContract }, handler: () => { tgtRuns++; return { which: "tgt" }; } }],
@@ -788,7 +812,7 @@ try {
   const ctorHandle = serveEndpoint(nc, SPACE, grantCtor,
     [{ command: "constructor", contract: { input: argsContract, output: outContract }, handler: () => { ctorRuns++; return { which: "ctor" }; } }],
     { public: true },
-    { traits: { governed: ctorSurface, guard: () => (ctorDeny ? { verdict: "deny", reason: "no" } : { verdict: "allow" }) } });
+    { traits: { governed: ctorSurface, guard: { call: (() => Promise.resolve({ answer: ctorDeny ? { v: 1, decision: "deny", reason: "no" } : { v: 1, decision: "allow" }, responder: guardResponder })) as GuardCallSeam, resolveAnchor, now: () => NOW } } });
   await nc.flush();
   const ctorReplies: { reply: EndpointReply }[] = [];
   const ctorSub = nc.subscribe(epCallerReplyFilter(SPACE, caller), { callback: (_e, m) => { ctorReplies.push({ reply: JSON.parse(new TextDecoder().decode(m.data)) as EndpointReply }); } });
@@ -846,7 +870,7 @@ try {
         if (rotateOnPostGateAuth && chSeamCalls === 2) { await wait(50); chMappingUid = CH_ROT; }
         return true;
       },
-      traits: { governed: chSurface, guard: () => ({ verdict: "allow" }) },
+      traits: { governed: chSurface, guard: { call: (() => Promise.resolve({ answer: { v: 1, decision: "allow" }, responder: guardResponder })) as GuardCallSeam, resolveAnchor, now: () => NOW } },
     });
   await nc.flush();
   const chReplies: { reply: EndpointReply }[] = [];
