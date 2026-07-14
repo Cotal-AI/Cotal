@@ -67,6 +67,12 @@ export interface CheckpointSpecValue {
   v: 1;
   token: string;
   goal?: { caller: EpCaller; goalId: string };
+  /** The guard's VERIFIED signed obligations, persisted at mint so they SURVIVE the pause
+   *  (§13.6/§13.10: obligations are MUST-apply and reusable within their goal — a hold that
+   *  verified them and then dropped them would release the executor with zero attenuations).
+   *  Present iff the hold carried a non-empty set; release/reconcile return exactly this
+   *  recorded set, signatures intact. Only meaningful with a `goal` binding. */
+  obligations?: CheckpointObligation[];
   holder: { id: string; lifecycleUid: string };
   mintedAt: number;
   /** The initial (generation-1) deadline, recorded in the IMMUTABLE spec (distsys 8dcad72 M3):
@@ -139,11 +145,47 @@ function snapshotGoal(v: unknown): { caller: EpCaller; goalId: string } {
   return Object.freeze({ caller: Object.freeze({ owner, actor, uid }), goalId });
 }
 
+/** The persisted shape of one guard obligation (structurally identical to the guard module's
+ *  GuardObligation; typed here to keep this module free of a runtime guard dependency). */
+export interface CheckpointObligation {
+  v: 1;
+  space: string;
+  requestId: string;
+  signer: { keyId: string };
+  attenuations: unknown[];
+  iat: number;
+  exp: number;
+  sig: string;
+}
+
+/** Validate + DETACH one persisted/incoming obligation (closed schema; the signed artifact's
+ *  bytes are carried verbatim — this seam stores and returns them, it never re-verifies: the
+ *  gate verified at HOLD time and the mediated record is the custody chain). */
+function snapshotObligation(v: unknown, what: string, code: "internal" | "failed-precondition"): CheckpointObligation {
+  if (v === null || typeof v !== "object" || Array.isArray(v))
+    throw new EpEnvelopeError(code, `${what} is not an object; obligation schemas are closed (SPEC 13.6/13.10)`);
+  const o = v as Record<string, unknown>;
+  closedKeys(o, ["v", "space", "requestId", "signer", "attenuations", "iat", "exp", "sig"], what, code);
+  const signer = o.signer as Record<string, unknown> | null;
+  if (o.v !== 1 || typeof o.space !== "string" || o.space.length === 0
+    || typeof o.requestId !== "string" || o.requestId.length === 0
+    || signer === null || typeof signer !== "object" || Array.isArray(signer) || Object.keys(signer).length !== 1 || typeof signer.keyId !== "string" || signer.keyId.length === 0
+    || !Array.isArray(o.attenuations) || o.attenuations.length === 0
+    || typeof o.iat !== "number" || !Number.isSafeInteger(o.iat)
+    || typeof o.exp !== "number" || !Number.isSafeInteger(o.exp)
+    || typeof o.sig !== "string" || o.sig.length === 0)
+    throw new EpEnvelopeError(code, `${what} is malformed; a garbled obligation never rides a hold (SPEC 13.6/13.10)`);
+  return JSON.parse(JSON.stringify({
+    v: 1, space: o.space, requestId: o.requestId, signer: { keyId: signer.keyId },
+    attenuations: o.attenuations, iat: o.iat, exp: o.exp, sig: o.sig,
+  })) as CheckpointObligation;
+}
+
 function parseCpSpec(raw: unknown, ref: CheckpointRef, key: string): CheckpointSpecValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint spec ${key} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  closedKeys(o, ["v", "token", "goal", "holder", "mintedAt", "initialDeadline"], `checkpoint spec ${key}`, "internal");
+  closedKeys(o, ["v", "token", "goal", "obligations", "holder", "mintedAt", "initialDeadline"], `checkpoint spec ${key}`, "internal");
   if (o.v !== 1 || o.token !== ref.token || !isHolder(o.holder)
     || typeof o.mintedAt !== "number" || !Number.isSafeInteger(o.mintedAt) || o.mintedAt < 0
     || typeof o.initialDeadline !== "number" || !Number.isSafeInteger(o.initialDeadline) || o.initialDeadline < 0)
@@ -154,10 +196,17 @@ function parseCpSpec(raw: unknown, ref: CheckpointRef, key: string): CheckpointS
       throw new EpEnvelopeError("internal", `checkpoint spec ${key} carries a malformed goal binding; garbled state never authorizes (SPEC 13.6)`);
     }
   }
+  let obligations: CheckpointObligation[] | undefined;
+  if (o.obligations !== undefined) {
+    if (!Array.isArray(o.obligations) || o.obligations.length === 0 || goal === undefined)
+      throw new EpEnvelopeError("internal", `checkpoint spec ${key} carries a malformed obligations set (obligations ride a goal-bound hold as a non-empty array); garbled state never authorizes (SPEC 13.6/13.10)`);
+    obligations = o.obligations.map((e, i) => snapshotObligation(e, `checkpoint spec ${key} obligations[${i}]`, "internal"));
+  }
   // Picked construction: the returned value carries exactly the schema fields, byte-derived.
   return {
     v: 1, token: o.token as string,
     ...(goal !== undefined ? { goal } : {}),
+    ...(obligations !== undefined ? { obligations } : {}),
     holder: { id: (o.holder as { id: string }).id, lifecycleUid: (o.holder as { lifecycleUid: string }).lifecycleUid },
     mintedAt: o.mintedAt, initialDeadline: o.initialDeadline,
   };
@@ -290,6 +339,9 @@ export async function mintCheckpoint(
   args: {
     ref: CheckpointRef; instanceId: string; epoch: number;
     goal?: { caller: EpCaller; goalId: string };
+    /** The guard's VERIFIED obligations to persist across the pause (goal-bound holds only);
+     *  an empty array is treated as absent. */
+    obligations?: CheckpointObligation[];
     /** MANDATORY (§13.6/§13.10): resume is holder-bound; an omitted holder = a bearer token. */
     holder: { id: string; lifecycleUid: string };
     deadline: number; now: number;
@@ -300,6 +352,12 @@ export async function mintCheckpoint(
   assertIdToken(ref.token, "checkpoint token");
   const holder = snapshotHolder(args.holder, "a checkpoint holder (resume is holder-bound, never a bearer token)");
   const goal = args.goal !== undefined ? snapshotGoal(args.goal) : undefined;
+  let obligations: CheckpointObligation[] | undefined;
+  if (args.obligations !== undefined && args.obligations.length > 0) {
+    if (goal === undefined)
+      throw new EpEnvelopeError("failed-precondition", "checkpoint obligations ride a goal-bound hold; a goal-less checkpoint carries none (SPEC 13.6/13.10)");
+    obligations = args.obligations.map((e, i) => snapshotObligation(e, `checkpoint mint obligations[${i}]`, "failed-precondition"));
+  }
   const instanceId = args.instanceId;
   const epoch = args.epoch;
   const deadline = args.deadline;
@@ -311,6 +369,7 @@ export async function mintCheckpoint(
   const spec: CheckpointSpecValue = {
     v: 1, token: ref.token,
     ...(goal !== undefined ? { goal } : {}),
+    ...(obligations !== undefined ? { obligations } : {}),
     holder, mintedAt: now, initialDeadline: deadline,
   };
   const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(ref));

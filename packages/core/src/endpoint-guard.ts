@@ -254,7 +254,7 @@ export async function gateGoalExecution(
   },
 ): Promise<
   | { outcome: "running"; obligations: GuardObligation[]; status: GoalStatusValue }
-  | { outcome: "waiting"; hold: { token: string; holdDeadlineMs: number }; status: GoalStatusValue }
+  | { outcome: "waiting"; hold: { token: string; holdDeadlineMs: number }; obligations: GuardObligation[]; status: GoalStatusValue }
   | { outcome: "denied"; won: boolean; fact: GoalResultFact; status: GoalStatusValue }
 > {
   const goal = snapshotRef(args.goal);
@@ -278,11 +278,14 @@ export async function gateGoalExecution(
     return { outcome: "denied", won: res.won, fact: res.fact, status: res.status };
   }
   if (verdict.decision === "hold") {
+    // The VERIFIED obligations ride the hold's durable record (§13.6/§13.10: MUST-apply,
+    // reusable within the goal) — verified-then-dropped would release the executor with zero
+    // attenuations after the pause.
     const status = await holdGuardedGoal(ctx, {
-      goal, hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs, responder: verdict.responder },
+      goal, hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs, responder: verdict.responder, obligations: verdict.obligations },
       instanceId: args.instanceId, epoch: args.epoch, now: args.now,
     });
-    return { outcome: "waiting", hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs }, status };
+    return { outcome: "waiting", hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs }, obligations: verdict.obligations, status };
   }
   const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
   return { outcome: "running", obligations: verdict.obligations, status };
@@ -296,24 +299,30 @@ export async function gateGoalExecution(
  *   - settle EXPIRED: drive the terminal deny via {@link expireGuardHold} (idempotent);
  *   - still live: nothing to do — the timer plane owns the deadline.
  *  A goal not waiting, or waiting on a token whose checkpoint does not bind it, is left
- *  untouched: this reconciler converges exactly the holds this module minted. */
+ *  untouched: this reconciler converges exactly the holds this module minted. (The
+ *  mint-then-no-wait partial state is recovered by RETRYING the gate — the mint is
+ *  idempotent-if-identical and the transition completes; a dedicated repair arm was
+ *  panel-adjudicated as insurance ahead of composition and deliberately not built.)
+ *  A converged `running` carries the hold's RECORDED verified obligations (§13.6/§13.10:
+ *  MUST-apply, reusable within the goal — the pause never launders them away). */
 export async function reconcileGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; now: number },
-): Promise<{ converged: "running" | "denied" | "none" }> {
+): Promise<{ converged: "running" | "denied" | "none"; obligations?: GuardObligation[] }> {
   const goal = snapshotRef(args.goal);
   const status = await readGoalStatus(ctx, goal);
   if (status === undefined || status.value.state !== "waiting" || status.value.checkpoint === undefined)
     return { converged: "none" };
   const token = status.value.checkpoint.token;
-  try { await bindCheckpointToGoal(ctx, goal, token); } catch { return { converged: "none" }; } // a foreign/unknown token's wait is not this reconciler's to converge
+  let obligations: GuardObligation[];
+  try { ({ obligations } = await bindCheckpointToGoal(ctx, goal, token)); } catch { return { converged: "none" }; } // a foreign/unknown token's wait is not this reconciler's to converge
   const settle = await readCheckpointSettle(ctx.jsm, ctx.space, { endpoint: goal.endpoint, token });
   if (settle === undefined) return { converged: "none" };
   if (settle.settle === "resumed") {
     const cur = await readGoalStatus(ctx, goal);
     if (cur?.value.state === "waiting" && cur.value.checkpoint?.token === token)
       await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
-    return { converged: "running" };
+    return { converged: "running", obligations };
   }
   await expireGuardHold(ctx, { goal, token, now: args.now });
   return { converged: "denied" };
@@ -328,7 +337,7 @@ export async function holdGuardedGoal(
   ctx: ActionContext,
   args: {
     goal: GoalRef;
-    hold: { token: string; holdDeadlineMs: number; responder: { id: string; lifecycleUid: string } };
+    hold: { token: string; holdDeadlineMs: number; responder: { id: string; lifecycleUid: string }; obligations?: GuardObligation[] };
     /** The OWNING instance arming the hold's timer (its identity/epoch subject, §13.12). */
     instanceId: string;
     epoch: number;
@@ -339,6 +348,7 @@ export async function holdGuardedGoal(
     ref: { endpoint: args.goal.endpoint, token: args.hold.token },
     instanceId: args.instanceId, epoch: args.epoch,
     goal: { caller: args.goal.caller, goalId: args.goal.goalId },
+    ...(args.hold.obligations !== undefined && args.hold.obligations.length > 0 ? { obligations: args.hold.obligations } : {}),
     holder: args.hold.responder,
     deadline: args.now + args.hold.holdDeadlineMs, now: args.now,
   });
@@ -354,7 +364,7 @@ export async function holdGuardedGoal(
  *  recorded goal (holdGuardedGoal mints it with that binding), so a valid token for goal A must
  *  never drive a transition on unrelated goal B. Fail-closed: an unknown token, a spec with no
  *  goal binding, or a mismatched caller/goalId all refuse before any state is touched. */
-async function bindCheckpointToGoal(ctx: ActionContext, goal: GoalRef, token: string): Promise<void> {
+async function bindCheckpointToGoal(ctx: ActionContext, goal: GoalRef, token: string): Promise<{ obligations: GuardObligation[] }> {
   const spec = await readCheckpointSpec(ctx.kv, { endpoint: goal.endpoint, token });
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${token}" is unknown on endpoint "${goal.endpoint}"; a guard hold names a minted checkpoint (SPEC 13.6)`);
@@ -363,6 +373,9 @@ async function bindCheckpointToGoal(ctx: ActionContext, goal: GoalRef, token: st
     throw new EpEnvelopeError("permission-denied", `checkpoint "${token}" records no goal binding; it does not pause goal "${goal.goalId}" and cannot drive its transition (SPEC 13.6)`);
   if (g.goalId !== goal.goalId || g.caller.owner !== goal.caller.owner || g.caller.actor !== goal.caller.actor || g.caller.uid !== goal.caller.uid)
     throw new EpEnvelopeError("permission-denied", `checkpoint "${token}" pauses goal "${g.goalId}" (${g.caller.owner}.${g.caller.actor}/${g.caller.uid}), not the presented goal "${goal.goalId}"; a hold's token is goal-bound, never a free release of any goal on the endpoint (SPEC 13.6)`);
+  // The hold's RECORDED verified obligations (persisted at mint; §13.6/§13.10 MUST-apply,
+  // reusable within the goal): release/reconcile return exactly this set, signatures intact.
+  return { obligations: (spec.obligations ?? []) as GuardObligation[] };
 }
 
 /** Release a guard hold: the GUARD (the checkpoint's holder, presenting as itself) resumes the
@@ -380,7 +393,7 @@ async function bindCheckpointToGoal(ctx: ActionContext, goal: GoalRef, token: st
 export async function releaseGuardHold(
   ctx: ActionContext,
   args: { goal: GoalRef; token: string; presenter: { id: string; lifecycleUid: string }; now: number },
-): Promise<{ settle: CheckpointSettleFact; status: GoalStatusValue }> {
+): Promise<{ settle: CheckpointSettleFact; status: GoalStatusValue; obligations: GuardObligation[] }> {
   // Entry snapshots (single-read): the presenter is compared against the recorded settlement on
   // the convergence path, and the FULL goal detaches ONCE here (MEDIUM) so bind, resume, and the
   // projection all read this snapshot - a goal mutated across the resume await can never validate
@@ -389,7 +402,7 @@ export async function releaseGuardHold(
   const goal = snapshotRef(args.goal);
   const token = String(args.token);
   const cpRef = { endpoint: goal.endpoint, token };
-  await bindCheckpointToGoal(ctx, goal, token); // goal-binding BEFORE consuming the one-use resume
+  const { obligations } = await bindCheckpointToGoal(ctx, goal, token); // goal-binding BEFORE consuming the one-use resume
   let settle: CheckpointSettleFact;
   try {
     settle = await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, ctx.space, { ref: cpRef, presenter, now: args.now });
@@ -409,12 +422,12 @@ export async function releaseGuardHold(
   // already-running goal is the converged crash state (idempotent); a goal waiting on another token
   // (or terminal/unknown) refuses.
   const current = await readGoalStatus(ctx, goal);
-  if (current?.value.state === "running") return { settle, status: current.value };
+  if (current?.value.state === "running") return { settle, status: current.value, obligations };
   const waitingToken = current?.value.state === "waiting" ? current.value.checkpoint?.token : undefined;
   if (waitingToken !== token)
     throw new EpEnvelopeError("failed-precondition", `goal "${goal.goalId}" is not waiting on checkpoint "${token}" (${current === undefined ? "unknown goal" : current.value.state === "waiting" ? `it waits on "${String(waitingToken)}"` : `it is ${current.value.state}`}); a release of an old hold never moves a goal paused on a newer one (SPEC 13.6)`);
   const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
-  return { settle, status };
+  return { settle, status, obligations };
 }
 
 /** Settle an EXPIRED guard hold onto the goal: an expired hold is DENY (fail closed). The token

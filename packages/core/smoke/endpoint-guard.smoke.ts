@@ -303,6 +303,26 @@ try {
       rh.outcome === "waiting" && heldStatus?.value.state === "waiting" && heldStatus.value.checkpoint?.token === "cp-gate-h"
       && heldSpec?.holder.id === guardResponder.id && heldSpec.holder.lifecycleUid === guardResponder.lifecycleUid);
 
+    // HIGH 1 (distsys, fact-confirmed): a HOLD's VERIFIED obligations must SURVIVE the pause
+    // (SPEC :1628-1630 MUST-apply, :2311 reusable within the goal) - persisted on the hold's
+    // immutable record at mint, returned identically from release and reconcile.
+    const go = goalOf("g-gate-obl");
+    await createGoal(ctx, go, spec("sha256:go"));
+    const holdOblSeam: GuardCallSeam = (q) => Promise.resolve({
+      answer: { v: 1, decision: "hold", token: "cp-gate-obl", holdDeadlineMs: 60_000, obligations: [signArtifact(obligationBody({ requestId: q.requestId }), guardKp)] },
+      responder: guardResponder,
+    });
+    const rho = await gateGoalExecution(ctx, { goal: go, guardEndpoint: "approvals", callGuard: holdOblSeam, resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    const oblSpec = await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-gate-obl" });
+    c("a HOLD's VERIFIED obligations are PERSISTED on the hold's immutable record and surfaced on the waiting outcome",
+      rho.outcome === "waiting" && (rho as { obligations: { requestId: string }[] }).obligations[0]?.requestId === "g-gate-obl"
+      && oblSpec?.obligations?.length === 1 && oblSpec.obligations[0].requestId === "g-gate-obl");
+    const relObl = await releaseGuardHold(ctx, { goal: go, token: "cp-gate-obl", presenter: guardResponder, now: NOW + 50 });
+    c("release returns EXACTLY the recorded set, signature-intact (the executor resumes with the guard's attenuations, never zero)",
+      relObl.status.state === "running" && relObl.obligations.length === 1
+      && relObl.obligations[0].sig === (rho as { obligations: { sig: string }[] }).obligations[0].sig
+      && relObl.obligations[0].requestId === "g-gate-obl");
+
     const gd = goalOf("g-gate-deny");
     await createGoal(ctx, gd, spec("sha256:gd"));
     const rd = await gateGoalExecution(ctx, { goal: gd, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "deny", reason: "policy said no" }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
@@ -327,6 +347,15 @@ try {
     const rr = await reconcileGuardHold(ctx, { goal: gr, now: NOW + 20 });
     c("reconcileGuardHold converges a RESUMED hold's crashed projection to running",
       rr.converged === "running" && (await readGoalStatus(ctx, gr))?.value.state === "running");
+
+    const gro = goalOf("g-rec-obl");
+    await createGoal(ctx, gro, spec("sha256:gro"));
+    const recObl = signArtifact(obligationBody({ requestId: "g-rec-obl" }), guardKp) as unknown as Parameters<typeof holdGuardedGoal>[1]["hold"]["obligations"];
+    await holdGuardedGoal(ctx, { goal: gro, hold: { token: "cp-rec-obl", holdDeadlineMs: 60_000, responder: guardResponder, obligations: [recObl].flat() as never }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, SPACE, { ref: { endpoint: "manager", token: "cp-rec-obl" }, presenter: guardResponder, now: NOW + 10 });
+    const rro = await reconcileGuardHold(ctx, { goal: gro, now: NOW + 20 });
+    c("the reconciler's crashed-release convergence carries the hold's RECORDED obligations (a crash never launders the attenuations away)",
+      rro.converged === "running" && rro.obligations?.length === 1 && (rro.obligations[0] as { requestId: string }).requestId === "g-rec-obl");
 
     const ge = goalOf("g-rec-expired");
     await createGoal(ctx, ge, spec("sha256:ge"));
