@@ -23,9 +23,29 @@ import { canonicalJson } from "./canonical.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, type AnchorResolver } from "./endpoint-signing.js";
 import { mintCheckpoint, resumeCheckpoint, readCheckpointSpec, readCheckpointSettle, expireCheckpoint, type CheckpointSettleFact } from "./endpoint-checkpoint.js";
-import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalStatus, readGoalResult, ownerCommitProof, snapshotRef, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
+import { transitionGoal, commitGoalResult, projectGoalTerminal, readGoalSpec, readGoalStatus, readGoalResult, ownerCommitProof, claimGuardClearanceMint, snapshotRef, type ActionContext, type GoalRef, type GoalStatusValue, type GoalResultFact } from "./endpoint-action.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** THIS module is THE gate, so it claims the one-shot clearance mint at load: a guarded goal's
+ *  edge into `running` opens only with a clearance minted here - by the gate's own allow,
+ *  release, and reconcile arms, each of which verified the guard's answer or its recorded
+ *  settlement first. No other module can claim the mint (the second claim throws). */
+const mintGuardClearance = claimGuardClearanceMint();
+
+/** The gate-VERIFIED obligation sets, branded so the durable HOLD ingress can require that its
+ *  obligations came from {@link runGuardGate}'s verification (signature, anchor role/scope,
+ *  windows, request binding) and not from a structurally shaped fake: {@link holdGuardedGoal}
+ *  is a public composition seam, and an unverified set persisted there would return through
+ *  release/reconcile under the same trusted type as a verified one. Entries are DEEP-FROZEN at
+ *  verification, so a branded obligation cannot be mutated away from the bytes its signature
+ *  verified over. */
+const VERIFIED_OBLIGATIONS = new WeakSet<GuardObligation>();
+function deepFreeze(v: unknown): void {
+  if (v === null || typeof v !== "object") return;
+  for (const k of Object.keys(v as Record<string, unknown>)) deepFreeze((v as Record<string, unknown>)[k]);
+  Object.freeze(v);
+}
 
 /** A signed guard OBLIGATION (§13.6/§13.10): attenuations the effecting endpoint MUST apply,
  *  bound to its goal/request id, reusable within it. Verified against the anchor registry
@@ -200,14 +220,17 @@ export async function runGuardGate(opts: {
     if (e instanceof EpEnvelopeError && e.code === "permission-denied") throw e;
     denyClosed(`the guard call failed (${(e as Error)?.message ?? String(e)})`);
   }
-  if (!isRec(called) || !isRec(called.responder))
-    denyClosed("the guard call seam returned no authenticated responder identity");
-  // SINGLE-READ the responder identity BEFORE any touch of the answer (security H3): serializing
-  // the answer runs caller getters, which could mutate `called.responder` between a type-check
-  // and a later read - so each property is read EXACTLY ONCE, validated as the read local, and
-  // frozen before `called.answer` is ever evaluated.
-  const responderId = (called.responder as Record<string, unknown>).id;
-  const responderUid = (called.responder as Record<string, unknown>).lifecycleUid;
+  if (!isRec(called)) denyClosed("the guard call seam returned no authenticated responder identity");
+  // SINGLE-READ the responder BEFORE any touch of the answer (security H3, both vectors): the
+  // `responder` PROPERTY itself is read exactly once into a local - an accessor on the seam
+  // result could otherwise answer the type-check with the authenticated identity and the
+  // capture with an attacker's - and the scalars are then read only from that one object,
+  // validated as read locals, and frozen before `called.answer` (whose serialization runs
+  // caller getters) is ever evaluated.
+  const rawResponder = called.responder;
+  if (!isRec(rawResponder)) denyClosed("the guard call seam returned no authenticated responder identity");
+  const responderId = rawResponder.id;
+  const responderUid = rawResponder.lifecycleUid;
   if (typeof responderId !== "string" || responderId.length === 0 || typeof responderUid !== "string" || responderUid.length === 0)
     denyClosed("the guard call seam returned no authenticated responder identity");
   const responder = Object.freeze({ id: responderId, lifecycleUid: responderUid });
@@ -225,6 +248,10 @@ export async function runGuardGate(opts: {
   for (let i = 0; i < answer.obligations.length; i++)
     await verifyObligation(rawObligations[i], answer.obligations[i], i,
       { resolveAnchor: opts.resolveAnchor, now: opts.now, space: opts.space, endpoint: opts.request.endpoint, requestId: opts.request.id, remainingMs });
+  // Brand + deep-freeze the VERIFIED set: from here on these exact objects (and only they)
+  // prove "verified by THIS gate" at the durable HOLD ingress, and cannot be mutated away
+  // from the bytes their signatures verified over.
+  for (const ob of answer.obligations) { deepFreeze(ob); VERIFIED_OBLIGATIONS.add(ob); }
   if (answer.decision === "allow") return { decision: "allow", obligations: answer.obligations };
   return { decision: "hold", token: answer.token, holdDeadlineMs: answer.holdDeadlineMs, obligations: answer.obligations, responder };
 }
@@ -264,6 +291,16 @@ export async function gateGoalExecution(
   | { outcome: "denied"; won: boolean; fact: GoalResultFact; status: GoalStatusValue }
 > {
   const goal = snapshotRef(args.goal);
+  // The gate runs only on a goal whose ACCEPTED record binds THIS guard (SPEC 13.6/13.7): the
+  // record's binding is what transitionGoal enforces on the edge into running, so a goal with
+  // no recorded binding would pass the gate here yet stay publicly transitionable - an
+  // unrecorded guard is unenforceable, and a mismatched one gates against the wrong authority.
+  // Both are wiring defects, refused loudly before the guard is consulted.
+  const gateSpec = await readGoalSpec(ctx, goal);
+  if (gateSpec === undefined)
+    throw new EpEnvelopeError("failed-precondition", `goal "${goal.goalId}" is unknown; the gate runs on an accepted goal (SPEC 13.6)`);
+  if (gateSpec.value.guard !== args.guardEndpoint)
+    throw new EpEnvelopeError("failed-precondition", `goal "${goal.goalId}"'s accepted record ${gateSpec.value.guard === undefined ? "binds no guard" : `binds guard ${JSON.stringify(gateSpec.value.guard)}`} but the gate was asked to consult ${JSON.stringify(args.guardEndpoint)}; an unrecorded or mismatched guard binding is unenforceable and never gates (SPEC 13.6/13.7)`);
   let verdict: GuardVerdict;
   try {
     verdict = await runGuardGate({
@@ -293,7 +330,7 @@ export async function gateGoalExecution(
     });
     return { outcome: "waiting", hold: { token: verdict.token, holdDeadlineMs: verdict.holdDeadlineMs }, obligations: verdict.obligations, status };
   }
-  const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+  const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx), clearance: mintGuardClearance(ctx, goal.goalId) });
   return { outcome: "running", obligations: verdict.obligations, status };
 }
 
@@ -327,7 +364,7 @@ export async function reconcileGuardHold(
   if (settle.settle === "resumed") {
     const cur = await readGoalStatus(ctx, goal);
     if (cur?.value.state === "waiting" && cur.value.checkpoint?.token === token)
-      await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+      await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx), clearance: mintGuardClearance(ctx, goal.goalId) });
     return { converged: "running", obligations };
   }
   await expireGuardHold(ctx, { goal, token, now: args.now });
@@ -350,6 +387,14 @@ export async function holdGuardedGoal(
     now: number;
   },
 ): Promise<GoalStatusValue> {
+  // The durable ingress admits ONLY gate-verified obligations (freelance HIGH): this is a
+  // public composition seam, and the store carries the persisted set as custody WITHOUT
+  // re-verifying (the gate verified at HOLD time) - so a structurally shaped set that never
+  // passed runGuardGate's verification must refuse HERE, or release/reconcile would later
+  // return it under the same trusted type as a verified one.
+  for (const [i, ob] of (args.hold.obligations ?? []).entries())
+    if (!VERIFIED_OBLIGATIONS.has(ob))
+      throw new EpEnvelopeError("permission-denied", `hold obligation[${i}] was not verified by THIS gate; obligations enter a hold only through runGuardGate's verification (signature, anchor role/scope, window, request binding) - a structurally shaped set never authorizes (SPEC 13.6/13.10)`);
   await mintCheckpoint(ctx.kv, ctx.js, ctx.space, {
     ref: { endpoint: args.goal.endpoint, token: args.hold.token },
     instanceId: args.instanceId, epoch: args.epoch,
@@ -432,7 +477,7 @@ export async function releaseGuardHold(
   const waitingToken = current?.value.state === "waiting" ? current.value.checkpoint?.token : undefined;
   if (waitingToken !== token)
     throw new EpEnvelopeError("failed-precondition", `goal "${goal.goalId}" is not waiting on checkpoint "${token}" (${current === undefined ? "unknown goal" : current.value.state === "waiting" ? `it waits on "${String(waitingToken)}"` : `it is ${current.value.state}`}); a release of an old hold never moves a goal paused on a newer one (SPEC 13.6)`);
-  const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+  const status = await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx), clearance: mintGuardClearance(ctx, goal.goalId) });
   return { settle, status, obligations };
 }
 
@@ -468,7 +513,7 @@ export async function expireGuardHold(
     if (fact !== undefined) return { won: false, fact, status: await projectGoalTerminal(ctx, goal) };
     const cur = await readGoalStatus(ctx, goal);
     if (cur?.value.state === "waiting" && cur.value.checkpoint?.token === token)
-      await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx) });
+      await transitionGoal(ctx, goal, "running", { owner: ownerCommitProof(ctx), clearance: mintGuardClearance(ctx, goal.goalId) });
     throw new EpEnvelopeError("failed-precondition", `the guard hold "${token}" was RELEASED (resumed at ${settled.ts}), not expired; the goal projection is converged to running and a resumed hold never denies (SPEC 13.6)`);
   }
   // An expired hold is DENY (fail closed) → the goal commits terminal failed via the `deny`

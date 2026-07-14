@@ -26,7 +26,7 @@ import {
   isReachable, EpEnvelopeError,
   createEndpointStreams, openRecordsBucket, eptSubject, eptReqStreamName, eptStreamName,
   timerWriterDurable, timerWriterConsumerConfig,
-  mintCheckpoint, heartbeatCheckpoint, readCheckpointStatus, readCheckpointSettle,
+  mintCheckpoint, heartbeatCheckpoint, readCheckpointStatus, readCheckpointSettle, readCheckpointSpec,
   armCheckpointTimer, handleCheckpointFire, resumeCheckpoint, reconcileCheckpointSchedule,
   timerWriterContext, checkpointSettleSubject, epfStreamName,
   type CheckpointRef,
@@ -431,6 +431,26 @@ try {
   await drainAndArm(1); // the replay re-emits the current schedule (repairs the mint-crash window)
   await rejects("a mint replay with a DIFFERENT deadline is a loud conflict (the deadline is part of the mint identity)",
     () => mintCheckpoint(kv, js, SPACE, { ref: ref("cp9"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 70_000, now: NOW + 200 }), "conflict");
+
+  // ── distsys M1 / freelance HIGH: the OBLIGATIONS are part of the mint identity — a retry that
+  //    changes the set (absent→present, or set A→set B) is a DIFFERENT intent, never a silent
+  //    adopt that swaps/drops verified attenuations. ──
+  {
+    const gbind = { caller: { owner: "u_abc", actor: "worker", uid: "u".repeat(26) }, goalId: "g".repeat(26) };
+    const obl = (rid: string) => [{ v: 1, space: SPACE, requestId: rid, signer: { keyId: "guard-1" }, attenuations: [{ maxItems: 5 }], iat: NOW - 1_000, exp: NOW + 60_000, sig: "c2ln" }];
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpo1"), instanceId: IID, epoch: EPOCH, holder: holderA, goal: gbind, obligations: obl("r-a") as never, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpo1"), instanceId: IID, epoch: EPOCH, holder: holderA, goal: gbind, obligations: obl("r-a") as never, deadline: NOW + 60_000, now: NOW + 50 });
+    c("an IDENTICAL obligation-bearing mint replay is idempotent (same set, adopted)",
+      (await readCheckpointSpec(kv, ref("cpo1")))?.obligations?.[0]?.requestId === "r-a");
+    await drainAndArm(1);
+    await rejects("a mint replay with a DIFFERENT obligation set is a loud conflict (obligations are part of the mint identity; a swap never silently adopts)",
+      () => mintCheckpoint(kv, js, SPACE, { ref: ref("cpo1"), instanceId: IID, epoch: EPOCH, holder: holderA, goal: gbind, obligations: obl("r-b") as never, deadline: NOW + 60_000, now: NOW + 100 }), "conflict");
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpo2"), instanceId: IID, epoch: EPOCH, holder: holderA, goal: gbind, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    await rejects("a mint retry ADDING obligations where the first had none is a loud conflict (absent→present drops nothing silently)",
+      () => mintCheckpoint(kv, js, SPACE, { ref: ref("cpo2"), instanceId: IID, epoch: EPOCH, holder: holderA, goal: gbind, obligations: obl("r-a") as never, deadline: NOW + 60_000, now: NOW + 100 }), "conflict");
+  }
   {
     // Entry snapshot: a ref whose getter answers differently on each read is detached ONCE at
     // entry; every internal read sees the entry-time coordinate.

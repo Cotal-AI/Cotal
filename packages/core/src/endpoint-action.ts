@@ -47,7 +47,7 @@ import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } fr
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
   mintReceiptFromFacts, receiptOutcomeOfGoal, publishReceipt, readReceipt,
-  assertReceiptAttestsSameFacts, assertReceiptStoreContext,
+  assertReceiptAttestsSameFacts, assertReceiptStoreContext, assertReceiptStoreConnection,
   type Receipt, type ReceiptStoreContext,
 } from "./endpoint-receipt.js";
 
@@ -64,6 +64,11 @@ export interface ActionContext {
   space: string;
 }
 const BRANDED_CONTEXTS = new WeakSet<ActionContext>();
+/** The context's source connection, held privately for the §13.4 one-connection bond: emission
+ *  wiring proves its receipt store derives from EXACTLY this connection, so a same-space store
+ *  on a different broker (which passes any string-space compare) can never splice receipts
+ *  across brokers. */
+const ACTION_CONNECTIONS = new WeakMap<ActionContext, NatsConnection>();
 export async function actionContext(nc: NatsConnection, space: string): Promise<ActionContext> {
   if (nc === null || typeof nc !== "object" || typeof (nc as unknown as { close?: unknown }).close !== "function")
     throw new EpEnvelopeError("failed-precondition", "an action context is constructed from ONE binding-layer connection; separate resources are never accepted (SPEC 13.4)");
@@ -73,6 +78,7 @@ export async function actionContext(nc: NatsConnection, space: string): Promise<
   const kv = await openRecordsBucket(nc, space);
   const ctx = Object.freeze({ kv, js, jsm, space });
   BRANDED_CONTEXTS.add(ctx);
+  ACTION_CONNECTIONS.set(ctx, nc);
   return ctx;
 }
 function assertCtx(ctx: ActionContext): void {
@@ -100,6 +106,36 @@ function assertOwnerProof(proof: OwnerCommitProof | undefined, ctx: ActionContex
   if (OWNER_PROOFS.get(proof) !== ctx)
     throw new EpEnvelopeError("permission-denied", `${what} presents an owner proof that was not minted from THIS action context (ownerCommitProof); owner authority is construction-bound, never a raw flag (SPEC 13.6)`);
   return true;
+}
+
+/** A GATE-MINTED clearance: the only key that opens a GUARDED goal's edge into `running`
+ *  (SPEC 13.6: a guarded command MUST NOT effect until the guard answered allow, and `running`
+ *  IS effecting). The mint lives behind a ONE-SHOT claim that THE guard gate module takes at
+ *  load, so no other holder of an action context can mint gate passage - an owner proof
+ *  deliberately does NOT satisfy this edge (any context holder mints owner proofs; only the
+ *  gate, whose allow/release/reconcile arms verified the guard's answer, mints clearance). */
+export interface GuardClearance { readonly goalId: string }
+const GUARD_CLEARANCES = new WeakMap<GuardClearance, ActionContext>();
+let clearanceMintClaimed = false;
+/** ONE-SHOT handoff of the clearance mint to THE gate (endpoint-guard claims it at module
+ *  load; the package always loads it). Every later call is a loud refusal: there is exactly
+ *  one gate, so a second claimant is by definition not it (SPEC 13.6). */
+export function claimGuardClearanceMint(): (ctx: ActionContext, goalId: string) => GuardClearance {
+  if (clearanceMintClaimed)
+    throw new EpEnvelopeError("permission-denied", "the guard-clearance mint is already claimed by THE gate; a guarded goal's edge into running opens only through it (SPEC 13.6)");
+  clearanceMintClaimed = true;
+  return (ctx, goalId) => {
+    assertCtx(ctx);
+    const clearance: GuardClearance = Object.freeze({ goalId: assertIdToken(goalId, "goalId") });
+    GUARD_CLEARANCES.set(clearance, ctx);
+    return clearance;
+  };
+}
+/** Verify a presented clearance against THIS context and THIS goal. A clearance is never
+ *  ignored: presenting an invalid one is a loud refusal even where none was required. */
+function assertGuardClearance(clearance: GuardClearance, ctx: ActionContext, goalId: string, what: string): void {
+  if (GUARD_CLEARANCES.get(clearance) !== ctx || clearance.goalId !== goalId)
+    throw new EpEnvelopeError("permission-denied", `${what} presents a guard clearance that was not minted by THE gate from THIS context for THIS goal; gate passage is construction-bound, never asserted (SPEC 13.6)`);
 }
 
 /** A goal's coordinates: the owning endpoint + the caller triple + the client-chosen goalId. */
@@ -299,6 +335,12 @@ export interface GoalSpecValue {
    *  (EPJ) is age-evicted, so receipt reconstruction after a crash reads the acceptance THROUGH
    *  this address and proves the chain (id + sourceSeq + fingerprint) before minting (§13.10). */
   requestId: string;
+  /** The guard endpoint named by the command's VERIFIED `ai.cotal.guarded` trait value,
+   *  recorded at acceptance. Its PRESENCE is what {@link transitionGoal} enforces: a guarded
+   *  goal's edge into `running` opens only with THE gate's {@link GuardClearance} - an
+   *  unrecorded guard binding is unenforceable, so the acceptance path MUST record it
+   *  (SPEC 13.6/13.7). */
+  guard?: string;
   sourceSeq: number;
   acceptedAt: number;
   readinessDeadlineMs?: number;
@@ -311,7 +353,9 @@ function parseSpec(raw: unknown, key: string, ref: GoalRef): GoalSpecValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal spec ${key} is not an object; garbled mediated record state never authorizes (SPEC 13.4)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "requestId", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
+  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "requestId", "guard", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
+  if (o.guard !== undefined && (typeof o.guard !== "string" || o.guard.length === 0))
+    throw new EpEnvelopeError("internal", `goal spec ${key} carries a malformed guard binding; garbled state never authorizes (SPEC 13.4/13.6)`);
   if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0 || typeof o.command !== "string")
     throw new EpEnvelopeError("internal", `goal spec ${key} is malformed; garbled state never authorizes (SPEC 13.4)`);
   try { assertIdToken(o.requestId as string, "requestId"); }
@@ -511,17 +555,26 @@ export async function transitionGoal(
     /** The owner's own commit principal drives this (guard-hold pause/release): a
      *  CONSTRUCTION-BOUND {@link ownerCommitProof} from THIS context, never a raw flag. */
     owner?: OwnerCommitProof;
+    /** THE gate's construction-bound {@link GuardClearance} - REQUIRED on a GUARDED goal's
+     *  edge into `running` (SPEC 13.6 MUST-NOT-effect-until-allow; an owner proof does NOT
+     *  satisfy this edge, since any context holder mints owner proofs). */
+    clearance?: GuardClearance;
   } = {},
 ): Promise<GoalStatusValue> {
   assertCtx(ctx);
   // ENTRY SNAPSHOT (single-read, before the first await): the ref, the executor, the resolver
-  // reference, the owner proof, and the projected fields all detach here — nothing below reads
-  // `opts` again, so a caller mutating it across an await cannot move an authority coordinate
-  // (an ownerAuthored false→true flip mid-read was exactly such a bypass).
+  // reference, the owner proof, the gate clearance, and the projected fields all detach here —
+  // nothing below reads `opts` again, so a caller mutating it across an await cannot move an
+  // authority coordinate (an ownerAuthored false→true flip mid-read was exactly such a bypass).
   const snap = snapshotRef(ref);
   const executor = opts.executor !== undefined ? { lifecycleUid: String(opts.executor.lifecycleUid), epoch: opts.executor.epoch } : undefined;
   const resolveCurrentEpoch = opts.resolveCurrentEpoch;
   const ownerAuthored = assertOwnerProof(opts.owner, ctx, `the transition of goal "${snap.goalId}"`);
+  const clearance = opts.clearance;
+  // A presented clearance is NEVER ignored: verify it against THIS context and THIS goal up
+  // front (a hand-assembled or foreign proof is a loud refusal on every edge, not only the
+  // guarded one). Whether one is REQUIRED is decided below against the accepted spec.
+  if (clearance !== undefined) assertGuardClearance(clearance, ctx, snap.goalId, `the transition of goal "${snap.goalId}"`);
   const budget = opts.epochResolveBudgetMs ?? 5_000;
   if (!Number.isSafeInteger(budget) || budget <= 0)
     throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(opts.epochResolveBudgetMs)}`);
@@ -536,6 +589,13 @@ export async function transitionGoal(
   const spec = await readGoalSpec(ctx, snap);
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is unknown; a transition projects only an accepted goal (SPEC 13.6)`);
+  // THE structural guard fence (SPEC 13.6: a guarded command MUST NOT effect until the guard
+  // answered allow; `running` IS effecting): a goal whose ACCEPTED record binds a guard opens
+  // its edge into `running` only with THE gate's clearance. This closes BOTH public bypasses -
+  // the unpinned edge (no proof at all) and the pinned+owner edge (any context holder mints
+  // owner proofs; the gate's own allow/release/reconcile arms are the only clearance minters).
+  if (to === "running" && spec.value.guard !== undefined && clearance === undefined)
+    throw new EpEnvelopeError("permission-denied", `goal "${snap.goalId}" is guarded by "${spec.value.guard}" and MUST NOT effect until that guard answered allow; only THE gate's clearance opens its edge into running - an owner proof or executor currency alone never does (SPEC 13.6)`);
   const isProgress = to === "running" || to === "waiting";
   let needsCurrency = false;
   if (isProgress && spec.value.target !== undefined) {
@@ -678,8 +738,10 @@ async function commitTerminalFact(
 // ---- receipt emission (§13.10, D9 part 2) -----------------------------------------------------
 
 /** What receipt emission needs beyond the action context: the receipt store bonded to the SAME
- *  space, the executing instance recorded as EVIDENCE (never redemption authority), and the
- *  receipts-scoped signer + key. */
+ *  space AND the same connection, the EMITTING instance recorded as EVIDENCE (who produced this
+ *  attestation - after a crash the reconciling instance records ITSELF here, so this is never
+ *  proof of who EXECUTED the goal, and never redemption authority; the executed outcome's
+ *  authority is the committed terminal fact alone), and the receipts-scoped signer + key. */
 export interface ReceiptEmissionWiring {
   store: ReceiptStoreContext;
   instance: { id: string; instanceId: string; epoch: number };
@@ -694,8 +756,11 @@ export interface ReceiptEmissionWiring {
 export type ReceiptEmissionResult = { outcome: "emitted" | "converged"; receipt: Receipt };
 
 /** Validate emission wiring at seam ENTRY (fail loud BEFORE any commit or publish happens
- *  against it): the store must be BRANDED (minted by receiptStoreContext) and bonded to THIS
- *  context's space — a cross-space store would publish receipts into a foreign space's stream. */
+ *  against it): the store must be BRANDED (minted by receiptStoreContext), bonded to THIS
+ *  context's space — a cross-space store would publish receipts into a foreign space's stream —
+ *  and derived from THIS context's own connection (security CF-2 HIGH: a same-space store on a
+ *  DIFFERENT broker passes the string compare and splices receipts across brokers; §13.4 "JS +
+ *  JSM derive from ONE connection" makes the bond connection identity, never a name). */
 function assertEmissionWiring(ctx: ActionContext, wiring: ReceiptEmissionWiring): void {
   if (wiring === null || typeof wiring !== "object"
     || typeof (wiring.keyPair as { sign?: unknown } | undefined)?.sign !== "function"
@@ -704,6 +769,7 @@ function assertEmissionWiring(ctx: ActionContext, wiring: ReceiptEmissionWiring)
   assertReceiptStoreContext(wiring.store);
   if (wiring.store.space !== ctx.space)
     throw new EpEnvelopeError("failed-precondition", `the receipt store is bonded to space ${JSON.stringify(wiring.store.space)}, not this action context's ${JSON.stringify(ctx.space)}; a cross-space emission never publishes (SPEC 13.4)`);
+  assertReceiptStoreConnection(wiring.store, ACTION_CONNECTIONS.get(ctx));
 }
 
 /** The SHARED emission core (§13.10), MODULE-PRIVATE (engineer/security HIGH: `spec` and
@@ -744,6 +810,13 @@ async function emitReceiptForTerminal(
   const op = (decision.request as { op?: { command?: unknown } }).op;
   if (op?.command !== spec.command)
     throw new EpEnvelopeError("internal", `the acceptance at ${subject} carries command ${JSON.stringify(op?.command)}, not the accepted goal's ${JSON.stringify(spec.command)}; a foreign acceptance never mints this goal's receipt (SPEC 13.10)`);
+  // The chain proves the acceptance names THIS goal (security CF-2 HIGH): createGoal accepts a
+  // caller-supplied fingerprint, so goal B planted with goal A's fingerprint/requestId/sourceSeq
+  // passes every check above - but A's acceptance embeds `goalId: A`, and the fingerprint binds
+  // it, so the embedded request's goalId is the discriminator a plant cannot forge.
+  const reqGoalId = (decision.request as { goalId?: unknown }).goalId;
+  if (reqGoalId !== snap.goalId)
+    throw new EpEnvelopeError("internal", `the acceptance at ${subject} names goal ${JSON.stringify(reqGoalId)}, not "${snap.goalId}"; an acceptance whose accepted request does not name THIS goal never mints its receipt - a planted fingerprint cannot borrow a foreign acceptance (SPEC 13.10)`);
   const candidate = mintReceiptFromFacts({
     acceptance: decision, caller: snap.caller, space: ctx.space,
     terminal: receiptOutcomeOfGoal(fact.state, fact.outcomeDigest),

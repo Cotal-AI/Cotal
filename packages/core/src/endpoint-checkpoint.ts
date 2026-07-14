@@ -38,6 +38,7 @@ import type { KV } from "@nats-io/kv";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { canonicalJson } from "./canonical.js";
 import { epfSubject, eptSubject, parseEpSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
@@ -395,8 +396,13 @@ export async function mintCheckpoint(
       || prior.initialDeadline !== deadline
       || (prior.goal === undefined) !== (goal === undefined)
       || (goal !== undefined && prior.goal !== undefined && (prior.goal.goalId !== goal.goalId
-        || prior.goal.caller.owner !== goal.caller.owner || prior.goal.caller.actor !== goal.caller.actor || prior.goal.caller.uid !== goal.caller.uid)))
-      throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" already exists with a DIFFERENT spec (holder/goal/deadline); a token is minted once (SPEC 13.6)`);
+        || prior.goal.caller.owner !== goal.caller.owner || prior.goal.caller.actor !== goal.caller.actor || prior.goal.caller.uid !== goal.caller.uid))
+      // The OBLIGATIONS are part of the mint's identity (distsys M1 / freelance HIGH): a retry
+      // presenting a different verified set - including absent-vs-present in either direction -
+      // is a DIFFERENT intent, and adopting the recorded spec here would silently swap or drop
+      // attenuations the gate verified (SPEC 13.6/13.10: MUST-apply).
+      || canonicalJson(prior.obligations ?? null) !== canonicalJson(obligations ?? null))
+      throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" already exists with a DIFFERENT spec (holder/goal/deadline/obligations); a token is minted once (SPEC 13.6)`);
     specRevision = existing.revision;
     // The spec's immutable initialDeadline is now the authority for the generation-1 status: a
     // retry that reached here supplied the SAME deadline (the conflict check above), so creating

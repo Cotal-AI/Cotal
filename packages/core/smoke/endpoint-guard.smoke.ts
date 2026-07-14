@@ -23,7 +23,7 @@ import {
   actionContext, runGuardGate, holdGuardedGoal, releaseGuardHold, expireGuardHold,
   gateGoalExecution, reconcileGuardHold,
   createGoal, readGoalStatus, transitionGoal, commitGoalResult, readCheckpointStatus,
-  ownerCommitProof, resumeCheckpoint, expireCheckpoint, readCheckpointSpec,
+  ownerCommitProof, claimGuardClearanceMint, resumeCheckpoint, expireCheckpoint, readCheckpointSpec,
   type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam, type ActionContext,
 } from "../src/index.js";
 
@@ -139,6 +139,9 @@ try {
   const ctx: ActionContext = await actionContext(nc, SPACE);
   const INSTANCE = "i".repeat(26);
   const spec = (fingerprint: string) => ({ fingerprint, command: "deploy", caller: { id: "u_abc.worker", lifecycleUid: UID }, requestId: "req-guard", sourceSeq: 1, acceptedAt: NOW });
+  // A GUARDED record: the accepted spec binds the guard endpoint, so transitionGoal enforces
+  // the gate's clearance on its edge into running (the gate goals below all use this).
+  const gspec = (fingerprint: string) => ({ ...spec(fingerprint), guard: "approvals" });
 
   // hold → checkpoint owned by the guard responder + goal waiting
   const g1 = goalOf("g-hold");
@@ -283,7 +286,7 @@ try {
   //    reachable end-to-end through PRODUCTION exports, exercised here on a real broker. ──
   {
     const ga = goalOf("g-gate-allow");
-    await createGoal(ctx, ga, spec("sha256:ga"));
+    await createGoal(ctx, ga, gspec("sha256:ga"));
     const allowSeam: GuardCallSeam = (q) => Promise.resolve({
       answer: { v: 1, decision: "allow", obligations: [signArtifact(obligationBody({ requestId: q.requestId }), guardKp)] },
       responder: guardResponder,
@@ -295,7 +298,7 @@ try {
       && ra.obligations[0].requestId === "g-gate-allow");
 
     const gh = goalOf("g-gate-hold");
-    await createGoal(ctx, gh, spec("sha256:gh"));
+    await createGoal(ctx, gh, gspec("sha256:gh"));
     const rh = await gateGoalExecution(ctx, { goal: gh, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "hold", token: "cp-gate-h", holdDeadlineMs: 60_000 }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
     const heldStatus = await readGoalStatus(ctx, gh);
     const heldSpec = await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-gate-h" });
@@ -307,7 +310,7 @@ try {
     // (SPEC :1628-1630 MUST-apply, :2311 reusable within the goal) - persisted on the hold's
     // immutable record at mint, returned identically from release and reconcile.
     const go = goalOf("g-gate-obl");
-    await createGoal(ctx, go, spec("sha256:go"));
+    await createGoal(ctx, go, gspec("sha256:go"));
     const holdOblSeam: GuardCallSeam = (q) => Promise.resolve({
       answer: { v: 1, decision: "hold", token: "cp-gate-obl", holdDeadlineMs: 60_000, obligations: [signArtifact(obligationBody({ requestId: q.requestId }), guardKp)] },
       responder: guardResponder,
@@ -324,14 +327,14 @@ try {
       && relObl.obligations[0].requestId === "g-gate-obl");
 
     const gd = goalOf("g-gate-deny");
-    await createGoal(ctx, gd, spec("sha256:gd"));
+    await createGoal(ctx, gd, gspec("sha256:gd"));
     const rd = await gateGoalExecution(ctx, { goal: gd, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "deny", reason: "policy said no" }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
     c("gateGoalExecution DENY terminal-fails the goal at the shared commit point, carrying the gate's reason",
       rd.outcome === "denied" && rd.won === true && rd.fact.state === "failed" && rd.status.state === "failed"
       && String((rd.fact.data as { reason?: string })?.reason ?? "").includes("policy said no"));
 
     const gf = goalOf("g-gate-forged");
-    await createGoal(ctx, gf, spec("sha256:gf"));
+    await createGoal(ctx, gf, gspec("sha256:gf"));
     const rf = await gateGoalExecution(ctx, { goal: gf, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "allow", obligations: [{ ...obligationBody({ requestId: "g-gate-forged" }), sig: "Zm9yZ2Vk" }] }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
     c("gateGoalExecution with an UNVERIFIABLE obligation is fail-closed: the goal terminal-fails, the executor never starts",
       rf.outcome === "denied" && rf.fact.state === "failed");
@@ -340,7 +343,7 @@ try {
     // move the recorded presenter (the responder identity is single-read + frozen BEFORE the
     // answer is ever evaluated).
     const gm = goalOf("g-gate-mutate");
-    await createGoal(ctx, gm, spec("sha256:gm"));
+    await createGoal(ctx, gm, gspec("sha256:gm"));
     const mutSeam: GuardCallSeam = () => {
       const responder = { id: guardResponder.id, lifecycleUid: guardResponder.lifecycleUid };
       // A Proxy answer whose get trap (code, run during canonicalJson serialization) mutates the
@@ -353,6 +356,58 @@ try {
     const mutSpec = await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-gate-mut" });
     c("a hostile Proxy answer whose get-trap mutates the responder MID-SERIALIZE cannot move the recorded holder (responder single-read before the answer is touched)",
       rm.outcome === "waiting" && mutSpec?.holder.id === guardResponder.id && mutSpec.holder.id !== "u_evil.warden");
+
+    // Security H3 residual: a responder ACCESSOR on the seam RESULT that answers the type-check
+    // with the authenticated identity and every later read with an attacker - the `responder`
+    // property itself must be read exactly once.
+    const gacc = goalOf("g-gate-accessor");
+    await createGoal(ctx, gacc, gspec("sha256:gacc"));
+    const accSeam: GuardCallSeam = () => {
+      let reads = 0;
+      const result = { answer: { v: 1, decision: "hold", token: "cp-gate-acc", holdDeadlineMs: 60_000 } } as unknown as { answer: unknown; responder: { id: string; lifecycleUid: string } };
+      Object.defineProperty(result, "responder", {
+        enumerable: true,
+        get() { reads++; return reads === 1 ? guardResponder : { id: "u_evil.bad", lifecycleUid: "e".repeat(26) }; },
+      });
+      return Promise.resolve(result);
+    };
+    const racc = await gateGoalExecution(ctx, { goal: gacc, guardEndpoint: "approvals", callGuard: accSeam, resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    const accSpec = await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-gate-acc" });
+    c("a responder ACCESSOR answering the type-check authentically and later reads as an attacker cannot move the recorded holder (the responder PROPERTY is read exactly once)",
+      racc.outcome === "waiting" && accSpec?.holder.id === guardResponder.id && accSpec.holder.id !== "u_evil.bad");
+
+    // STRUCTURAL H5 (critic/fact/economy/distsys converged): a GUARDED record's edge into
+    // running opens ONLY with THE gate's clearance - the exported transitionGoal is no longer
+    // a bypass, on EITHER edge (unpinned: no proof needed before; pinned: any context holder
+    // mints owner proofs, the exact mechanism the gate itself uses).
+    const gb = goalOf("g-bypass");
+    await createGoal(ctx, gb, gspec("sha256:gb"));
+    await rejects("a GUARDED goal REFUSES the public running-transition with NO proof (the unpinned bypass edge)",
+      () => transitionGoal(ctx, gb, "running"), "permission-denied");
+    await rejects("…and with an OWNER PROOF alone (the mechanism the gate itself uses; owner proofs are mintable by any context holder and never open the guarded edge)",
+      () => transitionGoal(ctx, gb, "running", { owner: ownerCommitProof(ctx) }), "permission-denied");
+    const gbp = goalOf("g-bypass-pinned");
+    await createGoal(ctx, gbp, { ...gspec("sha256:gbp"), target: { owner: "u_tgt", actor: "runner", lifecycleUid: "t".repeat(26), mappingRevision: 1 } });
+    await rejects("a TARGET-PINNED guarded goal REFUSES the pinned+ownerAuthored edge (the critic's primary bypass surface)",
+      () => transitionGoal(ctx, gbp, "running", { owner: ownerCommitProof(ctx) }), "permission-denied");
+    await rejects("a HAND-ASSEMBLED clearance never opens the guarded edge (gate passage is construction-bound, never asserted)",
+      () => transitionGoal(ctx, gb, "running", { owner: ownerCommitProof(ctx), clearance: { goalId: "g-bypass" } as never }), "permission-denied");
+    await rejects("the clearance mint is ONE-SHOT: THE gate claimed it at module load, so a second claimant is refused and can never mint gate passage",
+      () => { claimGuardClearanceMint(); }, "permission-denied");
+    c("…and the guarded goal never moved (still accepted after every bypass attempt)",
+      (await readGoalStatus(ctx, gb))?.value.state === "accepted" && (await readGoalStatus(ctx, gbp))?.value.state === "accepted");
+
+    // Freelance HIGH: the durable HOLD ingress requires GATE-VERIFIED obligations - a validly
+    // SIGNED set that never passed runGuardGate's verification (the store persists custody
+    // bytes without re-verifying, so an ungated set would return through release under the same
+    // trusted type as a verified one). holdGuardedGoal is a public composition seam.
+    const gfo = goalOf("g-forged-obl");
+    await createGoal(ctx, gfo, gspec("sha256:gfo"));
+    const signedButUngated = signArtifact(obligationBody({ requestId: "g-forged-obl" }), guardKp) as unknown as Parameters<typeof holdGuardedGoal>[1]["hold"]["obligations"];
+    await rejects("the durable HOLD ingress REFUSES a validly-signed obligation that never passed THE gate's verification (a structurally shaped set never enters a hold)",
+      () => holdGuardedGoal(ctx, { goal: gfo, hold: { token: "cp-forged", holdDeadlineMs: 60_000, responder: guardResponder, obligations: [signedButUngated].flat() as never }, instanceId: INSTANCE, epoch: 1, now: NOW }), "permission-denied");
+    c("…and the refused hold minted no checkpoint (the ingress refuses BEFORE any state is written)",
+      (await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-forged" })) === undefined);
   }
 
   // ── OPTION A: the durable hold reconciler — release/expiry convergence reachable from a
@@ -367,9 +422,14 @@ try {
       rr.converged === "running" && (await readGoalStatus(ctx, gr))?.value.state === "running");
 
     const gro = goalOf("g-rec-obl");
-    await createGoal(ctx, gro, spec("sha256:gro"));
-    const recObl = signArtifact(obligationBody({ requestId: "g-rec-obl" }), guardKp) as unknown as Parameters<typeof holdGuardedGoal>[1]["hold"]["obligations"];
-    await holdGuardedGoal(ctx, { goal: gro, hold: { token: "cp-rec-obl", holdDeadlineMs: 60_000, responder: guardResponder, obligations: [recObl].flat() as never }, instanceId: INSTANCE, epoch: 1, now: NOW });
+    await createGoal(ctx, gro, gspec("sha256:gro"));
+    // Route through THE gate so the obligation is gate-verified + branded (holdGuardedGoal now
+    // refuses an ungated set); then crash the projection and reconcile.
+    const groSeam: GuardCallSeam = (q) => Promise.resolve({
+      answer: { v: 1, decision: "hold", token: "cp-rec-obl", holdDeadlineMs: 60_000, obligations: [signArtifact(obligationBody({ requestId: q.requestId }), guardKp)] },
+      responder: guardResponder,
+    });
+    await gateGoalExecution(ctx, { goal: gro, guardEndpoint: "approvals", callGuard: groSeam, resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
     await resumeCheckpoint(ctx.kv, ctx.js, ctx.jsm, SPACE, { ref: { endpoint: "manager", token: "cp-rec-obl" }, presenter: guardResponder, now: NOW + 10 });
     const rro = await reconcileGuardHold(ctx, { goal: gro, now: NOW + 20 });
     c("the reconciler's crashed-release convergence carries the hold's RECORDED obligations (a crash never launders the attenuations away)",

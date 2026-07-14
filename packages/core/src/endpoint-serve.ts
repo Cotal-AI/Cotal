@@ -344,7 +344,20 @@ export function serveEndpoint(
   } else {
     if (governedDefs.length === 0)
       throw new Error("opts.traits is wired but no granted command declares a governed trait; an extraneous enforcement bundle is a misconfiguration, refused loudly rather than silently ignored (SPEC 13.7)");
-    enforcement = { governed: opts.traits.governed, guard: opts.traits.guard, verifyPaymentProof: opts.traits.verifyPaymentProof };
+    // The guard WIRING is snapshot per-field at construction (engineer MEDIUM: the bundle was
+    // copied by reference, so a caller swapping `guard.call` after construction would change
+    // what the gate enforces at dispatch): single-read the three fields, validate them as
+    // functions HERE (never at first request), and freeze a detached bundle. Invoking the
+    // captured `now` per request is intentional - only the function REFERENCES are fixed.
+    const guardIn = opts.traits.guard;
+    let guard: typeof opts.traits.guard;
+    if (guardIn !== undefined) {
+      const call = guardIn.call, resolveAnchor = guardIn.resolveAnchor, now = guardIn.now;
+      if (typeof call !== "function" || typeof resolveAnchor !== "function" || (now !== undefined && typeof now !== "function"))
+        throw new Error("opts.traits.guard must wire `call` and `resolveAnchor` functions (plus an optional `now` clock); a garbled guard seam refuses at construction, never as a first-request surprise (SPEC 13.6)");
+      guard = Object.freeze({ call, resolveAnchor, ...(now !== undefined ? { now } : {}) });
+    }
+    enforcement = { governed: opts.traits.governed, guard, verifyPaymentProof: opts.traits.verifyPaymentProof };
     assertGovernedSurfaceFor(enforcement.governed, serve);
     for (const d of governedDefs) {
       const per = enforcement.governed.commands[d.command];

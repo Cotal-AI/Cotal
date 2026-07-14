@@ -428,6 +428,17 @@ try {
     await rejects("an acceptance that is NOT the one this goal was created from never mints (the chain proves id + sourceSeq + fingerprint, not merely SOME fact on the subject)",
       () => reconcileReceiptEmission(ctx, wiring, { ref: r6, now: NOW + 10 }), "internal");
 
+    // CF-2 HIGH 2 (security/critic/fact): createGoal takes a caller-supplied fingerprint, so a
+    // goal PLANTED with another goal's fingerprint + requestId + sourceSeq + command passes every
+    // chain field EXCEPT the acceptance's embedded request.goalId - which the fingerprint binds
+    // and a plant cannot forge. req-rcpt1's acceptance embeds goalId "g-rcpt1"; a goal named
+    // "g-plant" carrying it must never borrow that receipt.
+    const rplant = ref("g-plant");
+    await createGoal(ctx, rplant, specOf(FP1, { requestId: "req-rcpt1", sourceSeq: s1 }));
+    await commitGoalResult(ctx, { ref: rplant, now: NOW + 5, cause: "complete", state: "succeeded" });
+    await rejects("a goal PLANTED with a foreign goal's fingerprint/requestId/sourceSeq never mints its receipt (the acceptance's embedded goalId is the discriminator a plant cannot forge)",
+      () => reconcileReceiptEmission(ctx, wiring, { ref: rplant, now: NOW + 10 }), "internal");
+
     const r7 = ref("g-rcpt7");
     const s7 = await acceptFixture("req-rcpt7", "g-rcpt7", FP7);
     await createGoal(ctx, r7, specOf(FP7, { requestId: "req-rcpt7", sourceSeq: s7 }));
@@ -438,6 +449,17 @@ try {
       (await readGoalResult(ctx, r7)) === undefined);
     await rejects("a HAND-ASSEMBLED store context never authorizes emission (the store brand is constructed, not asserted)",
       () => commitGoalResult(ctx, { ref: r7, now: NOW, cause: "complete", state: "succeeded", receipts: { ...wiring, store: { space: SPACE } as ReceiptStoreContext } }), "failed-precondition");
+    // CF-2 HIGH 3 (security/fact): the store must derive from THIS context's OWN connection - a
+    // SAME-SPACE store on a DIFFERENT connection (a fortiori a different broker) passes the
+    // string-space compare yet publishes onto another connection's streams. The bond is
+    // connection IDENTITY, never a name.
+    const nc2 = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+    const sameSpaceOtherConn = await receiptStoreContext(nc2, SPACE);
+    await rejects("a SAME-SPACE store on a DIFFERENT connection refuses at ENTRY (the one-connection bond is identity, not a space-string match)",
+      () => commitGoalResult(ctx, { ref: r7, now: NOW, cause: "complete", state: "succeeded", receipts: { ...wiring, store: sameSpaceOtherConn } }), "failed-precondition");
+    c("…and that refused cross-connection commit ALSO left no terminal",
+      (await readGoalResult(ctx, r7)) === undefined);
+    await nc2.close();
   }
 
   // ── fail-closed storage reads ──

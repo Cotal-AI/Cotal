@@ -50,6 +50,8 @@ interface ReceiptResources { js: JetStreamClient; jsm: JetStreamManager; }
  *  never appears in this map, so it never authorizes; and `ctx.js`/`ctx.jsm` do not exist to be
  *  reassigned after construction. */
 const RECEIPT_RESOURCES = new WeakMap<ReceiptStoreContext, ReceiptResources>();
+/** The store's source connection, held privately for the §13.4 one-connection bond check. */
+const RECEIPT_CONNECTIONS = new WeakMap<ReceiptStoreContext, NatsConnection>();
 
 /** Bond the resources to one space by CONSTRUCTION (frozen token + WeakMap-private resources,
  *  same discipline as the other store contexts): a hand-assembled structural look-alike is
@@ -63,6 +65,7 @@ export async function receiptStoreContext(nc: NatsConnection, space: string): Pr
   const jsm = await jetstreamManager(nc);
   const ctx: ReceiptStoreContext = Object.freeze({ space });
   RECEIPT_RESOURCES.set(ctx, { js, jsm });
+  RECEIPT_CONNECTIONS.set(ctx, nc);
   return ctx;
 }
 
@@ -79,6 +82,17 @@ function resources(ctx: ReceiptStoreContext): ReceiptResources {
  *  broker: emission wiring is validated at seam ENTRY, so a hand-assembled store bundle refuses
  *  BEFORE any terminal is committed against it, never as a post-commit emission failure. */
 export function assertReceiptStoreContext(ctx: ReceiptStoreContext): void { resources(ctx); }
+
+/** Prove the store derives from EXACTLY this binding-layer connection (§13.4: "JS + JSM derive
+ *  from ONE connection by construction"): a same-space store built over a DIFFERENT connection
+ *  or broker passes any string-space compare, yet its publishes and lost-CAS winner reads land
+ *  on ANOTHER broker's streams - splicing one operation's authority across brokers. The bond is
+ *  connection IDENTITY, never a name. */
+export function assertReceiptStoreConnection(ctx: ReceiptStoreContext, nc: unknown): void {
+  resources(ctx);
+  if (nc === undefined || RECEIPT_CONNECTIONS.get(ctx) !== nc)
+    throw new EpEnvelopeError("failed-precondition", "the receipt store does not derive from this operation's own connection; one operation binds ONE broker connection, so a cross-connection (or cross-broker) store never publishes (SPEC 13.4)");
+}
 
 /** One receipt's coordinates: the accepted execution's identity (§13.2). The subject caller is
  *  the TRIPLE; the artifact's `caller` evidence carries `{id, lifecycleUid}`. */
@@ -118,7 +132,9 @@ export interface Receipt {
   space: string;
   endpoint: string;
   command: string;
-  /** The executing instance, recorded as EVIDENCE (never redemption authority). */
+  /** The EMITTING instance, recorded as EVIDENCE of who produced this attestation (a
+   *  post-crash reconciler records ITSELF here) - never proof of who executed the goal, and
+   *  never redemption authority. The executed outcome's authority is the committed terminal. */
   instance: { id: string; instanceId: string; epoch: number };
   caller: { id: string; lifecycleUid: string };
   schemaDigests: { input: string; output: string };
@@ -236,7 +252,9 @@ export function mintReceiptFromFacts(
     /** The committed terminal outcome (from the authoritative terminal fact, via
      *  {@link receiptOutcomeOfGoal} for goals, or a journaled command's own committed result). */
     terminal: ReceiptOutcome;
-    /** The executing instance, recorded as EVIDENCE (never redemption authority). */
+    /** The EMITTING instance, recorded as EVIDENCE of who produced this attestation (a
+     *  post-crash reconciler records ITSELF here) - never proof of who executed the goal, and
+     *  never redemption authority. The executed outcome's authority is the committed terminal. */
     instance: { id: string; instanceId: string; epoch: number };
     ts: number;
     signer: { keyId: string };
