@@ -7,6 +7,11 @@ import { join } from "node:path";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { startBridgeServer } from "../src/bridge.js";
 
+if (process.platform === "win32") {
+  console.log("✓ hermes quiet bridge skipped on Windows (the Hermes connector is Unix-only)");
+  process.exit(0);
+}
+
 const dir = mkdtempSync(join(tmpdir(), "cotal-hermes-quiet-"));
 const socketPath = join(dir, "bridge.sock");
 
