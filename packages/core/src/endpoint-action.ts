@@ -42,7 +42,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, assertIdToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 
@@ -422,6 +422,28 @@ export async function readGoalStatus(ctx: ActionContext, ref: GoalRef): Promise<
   return { value: parseStatus(JSON.parse(new TextDecoder().decode(entry.value)), key), revision: entry.revision };
 }
 
+/** LEADER-SERVED goal reads for the FENCING paths (the H2 epoch-CAS gap): the status read that
+ *  supplies a transition's CAS revision, and the spec read that gates a terminal commit's epoch
+ *  proof, must be read-your-writes against the leader — PINNED here, never inherited. The
+ *  records bucket is `allow_direct`, which invites follower-served Direct Gets; whether
+ *  `kv.get` actually issues one is a CLIENT-VERSION accident (@nats-io/kv 3.4.0's open path
+ *  happens to leave `direct` off and rides STREAM.MSG.GET today), and a fence must not rest on
+ *  an accident a client upgrade silently flips: a stale revision only loses the CAS later, but
+ *  the epoch proof PAIRED with that read would have validated against a superseded projection —
+ *  the staleness the checkpoint arm-fence closed. Non-fencing reads stay on `kv.get` (the
+ *  same split as the checkpoint module). */
+async function readGoalSpecLeader(ctx: ActionContext, snap: GoalRef): Promise<{ value: GoalSpecValue; revision: number } | undefined> {
+  const key = recordSpecKey(RECORD_KINDS.goal, goalQualifiers(snap));
+  const entry = await readRecordLeader(ctx.jsm, ctx.space, key);
+  return entry === undefined ? undefined : { value: parseSpec(entry.value, key, snap), revision: entry.revision };
+}
+
+async function readGoalStatusLeader(ctx: ActionContext, snap: GoalRef): Promise<{ value: GoalStatusValue; revision: number } | undefined> {
+  const key = recordStatusKey(RECORD_KINDS.goal, goalQualifiers(snap));
+  const entry = await readRecordLeader(ctx.jsm, ctx.space, key);
+  return entry === undefined ? undefined : { value: parseStatus(entry.value, key), revision: entry.revision };
+}
+
 /** The executor's authenticated identity (subject/creds, never a body claim), required when a
  *  goal's spec pins a target lifecycle (§13.6 item 7). */
 export interface GoalExecutor { lifecycleUid: string; epoch: number }
@@ -512,7 +534,10 @@ export async function transitionGoal(
     throw new EpEnvelopeError("failed-precondition", `a transition to "${to}"${spec.value.target === undefined ? " on a non-target goal" : ""} takes no executor/resolver (SPEC 13.6)`);
   }
   for (let pass = 0; pass < 2; pass++) {
-    const current = await readGoalStatus(ctx, snap);
+    // LEADER-SERVED (H2): this read supplies the CAS revision below AND pairs the currency
+    // proof; a follower-served revision would let the proof validate against a superseded
+    // projection and only find out at the CAS. The fence reads its coordinate from the leader.
+    const current = await readGoalStatusLeader(ctx, snap);
     if (current === undefined)
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is unknown; a transition projects only an accepted goal (SPEC 13.6)`);
     if (!isLegalGoalTransition(current.value.state, to))
@@ -726,7 +751,10 @@ export async function commitGoalResult(
     throw new EpEnvelopeError("failed-precondition", `unknown commit cause ${JSON.stringify(cause)}; the terminal commit accepts only complete|cancel|deny|readiness (SPEC 13.6)`);
   }
 
-  const spec = await readGoalSpec(ctx, snap);
+  // LEADER-SERVED (H2): this spec read gates the epoch proof below and the terminal CAS is
+  // create-only (first-terminal-wins, no revision pin to catch a stale input later), so the
+  // proof's input must come from the leader, not a possibly-follower Direct Get.
+  const spec = await readGoalSpecLeader(ctx, snap);
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; a terminal commits only for an accepted goal (SPEC 13.6)`);
 

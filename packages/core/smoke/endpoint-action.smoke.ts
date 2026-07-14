@@ -234,6 +234,46 @@ try {
       unc.won && unc.fact.state === "uncertain" && unc.status.state === "uncertain");
   }
 
+  // ── H2 (epoch proof atomic with the commit CAS): the FENCING reads are LEADER-SERVED.
+  //    transitionGoal's retry-loop status read (the CAS revision source, paired 1:1 with the
+  //    epoch proof) and commitGoalResult's pre-proof spec read (which gates a create-only
+  //    terminal CAS carrying no revision pin to catch a stale input later) must ride
+  //    STREAM.MSG.GET against the leader. The probe observes the WIRE: an interposed
+  //    connection records every records-KV STREAM.MSG.GET payload. HONESTY NOTE: on the
+  //    CURRENT stack (@nats-io/kv 3.4.0, whose open path leaves `direct` off) plain kv.get
+  //    ALSO rides STREAM.MSG.GET, so this probe cannot fail against the pre-H2 code today —
+  //    it is the CANARY, not the revert-proof: the moment any client change honors the
+  //    bucket's allow_direct and kv.get goes follower-servable, an unpinned fencing read
+  //    disappears from this wire capture and the probe fails, which is exactly the silent
+  //    regression H2 exists to make loud. The revert-proof for H2 is code-level (the fencing
+  //    sites call readGoalStatusLeader/readGoalSpecLeader, never kv.get). ──
+  {
+    const observed: string[] = [];
+    const observingNc = new Proxy(nc, {
+      get(target, prop) {
+        if (prop === "request") return (subj: string, payload?: Uint8Array, ...rest: unknown[]) => {
+          if (typeof subj === "string" && subj.startsWith("$JS.API.STREAM.MSG.GET.KV_cotal_records_") && payload !== undefined)
+            observed.push(new TextDecoder().decode(payload));
+          return (target as unknown as { request: (...a: unknown[]) => unknown }).request(subj, payload, ...rest);
+        };
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const octx = await actionContext(observingNc as never, SPACE);
+    const rh = ref("g-h2fence");
+    await bindGoal(octx, ref("g-h2fence"), "sha256:h2");
+    await createGoal(octx, rh, specOf("sha256:h2", { target: TARGET }));
+    observed.length = 0;
+    await transitionGoal(octx, rh, "running", { executor: { lifecycleUid: TARGET.lifecycleUid, epoch: 3 }, resolveCurrentEpoch: () => 3 });
+    c("transitionGoal's retry-loop status read rides the LEADER-SERVED STREAM.MSG.GET (H2: the CAS revision source is never a follower's answer)",
+      observed.some((p) => p.includes("g-h2fence.status")));
+    observed.length = 0;
+    const done = await commitGoalResult(octx, { ref: rh, now: NOW + 50, cause: "complete", state: "succeeded", executor: { lifecycleUid: TARGET.lifecycleUid, epoch: 3 }, resolveCurrentEpoch: () => 3 });
+    c("commitGoalResult's pre-proof spec read rides the LEADER-SERVED STREAM.MSG.GET (H2: the epoch proof's input comes from the leader)",
+      done.won && observed.some((p) => p.includes("g-h2fence.spec")));
+  }
+
   // ── MEDIUM 1: mid-flight ref mutation cannot split the commit ──
   {
     const rm = ref("g-mut");
