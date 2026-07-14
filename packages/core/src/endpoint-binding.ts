@@ -570,6 +570,23 @@ export function canonicalizerGrants(space: string, endpoint: string): string[] {
   return [consumeCreateRow(stream, cfg), ...consumeBindRows(stream, cfg.durable_name!)];
 }
 
+/** The canonicalizer principal's POOL-ROUTE rows (§13.9 matrix "Work-pool enqueue" +
+ *  "Work-pool reconciliation probe"): the `epw.<e>.>` enqueue publish (create-per-subject rides
+ *  the `Nats-Expected-Last-Subject-Sequence: 0` header, §13.6) and the FENCING leader-served
+ *  `STREAM.MSG.GET` reconciliation read the §13.6 predicate and the enqueue's CAS-loser
+ *  byte-identity check both require (EPW is `allow_direct=false`, so this is the ONLY read
+ *  path). The MSG.GET form is BODY-selected (no per-subject confinement in the grant), so these
+ *  rows are TRUSTED-canonicalizer-only: never on the pool owner (bind-only,
+ *  {@link poolOwnerBindGrants}), never on any caller, observer, or admin profile. The full
+ *  canonicalizer aggregate for an endpoint with pool routes is
+ *  `[...canonicalizerGrants(...), ...canonicalizerWorkGrants(...)]`. */
+export function canonicalizerWorkGrants(space: string, endpoint: string): string[] {
+  return [
+    `${spacePrefix(space)}.epw.${endpointToken(endpoint)}.>`,
+    `${JSAPI}.STREAM.MSG.GET.${epwStreamName(space)}`,
+  ];
+}
+
 /** A serving instance's effects rows: BIND-ONLY on the provisioner-pre-created shared `eff_<e>`
  *  (INFO/MSG.NEXT/ACK, never create) — instances pull-compete, none owns the durable (§13.9). */
 export function effectsBindGrants(space: string, endpoint: string): string[] {

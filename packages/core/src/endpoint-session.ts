@@ -232,6 +232,12 @@ export async function verifySessionGrant(
   opts: { space: string; resolveAnchor: AnchorResolver; now?: number },
 ): Promise<SessionGrant> {
   const now = opts.now ?? Date.now();
+  // The clock authority is validated at ENTRY, before any anchor or signature work (the same
+  // rule verifyHandleChain pins): every currency rule is a numeric comparison, so a
+  // NaN/fractional/negative clock would make them all silently false and a stale or
+  // forward-dated grant would VERIFY. The shared helper re-checks as a belt.
+  if (!Number.isSafeInteger(now) || now < 0)
+    throw new EpEnvelopeError("failed-precondition", `now must be a non-negative safe integer; got ${JSON.stringify(now)} (an invalid clock authority never verifies, SPEC 13.10)`);
   if (!isRec(raw)) invalid("a session grant is not an object");
   // Byte bound BEFORE any structural walk (a canonicalization failure is contract-invalid too:
   // an artifact that cannot canonicalize cannot have been signed). UTF-8 BYTES, not JS chars —
@@ -917,6 +923,10 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
         try {
           await opts.onData(head.data, head.seq);
         } catch (e) {
+          // A rejection landing in a rail that closed or broke DURING the await reports
+          // NOTHING: the rail is already terminal (its fault, if any, was already surfaced),
+          // and a second protocolError would double-fault a dead rail.
+          if (closed || broken) return;
           protocolError("handler", (e as Error)?.message ?? String(e));
           return;
         }

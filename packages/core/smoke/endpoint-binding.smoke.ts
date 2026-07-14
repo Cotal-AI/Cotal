@@ -12,7 +12,7 @@
  * Run: pnpm smoke:ep-binding   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, headers, nanos } from "@nats-io/transport-node";
@@ -29,7 +29,7 @@ import {
   canonConsumerConfig, poolConsumerConfig, timerWriterConsumerConfig,
   recordWriterConsumerConfig, effectsConsumerConfig, decisionReaderConfig, goalReaderConfig,
   eventReaderConfig, recordReaderConfig,
-  canonicalizerGrants, effectsBindGrants, recordWriterGrants, timerWriterGrants,
+  canonicalizerGrants, canonicalizerWorkGrants, effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   type EpCaller,
@@ -137,6 +137,14 @@ c("effects grants are BIND-ONLY (no CREATE, no DELETE)",
 c("pool-owner grants are BIND-ONLY on the pre-created pool durable",
   poolOwnerBindGrants(SPACE, "manager", "builds").includes("$JS.ACK.EPW_epbind.pool_manager_builds.>")
   && poolOwnerBindGrants(SPACE, "manager", "builds").every((r) => !r.includes(".CREATE.")));
+c("the canonicalizer POOL-ROUTE grants are exactly the matrix rows (enqueue publish + the fencing leader read)",
+  JSON.stringify(canonicalizerWorkGrants(SPACE, "manager")) === JSON.stringify([
+    "cotal.epbind.epw.manager.>",
+    "$JS.API.STREAM.MSG.GET.EPW_epbind",
+  ]));
+c("the EPW leader read is TRUSTED-CANONICALIZER-ONLY: no pool-owner, effects, or EPJ fragment carries it",
+  [...poolOwnerBindGrants(SPACE, "manager", "builds"), ...effectsBindGrants(SPACE, "manager"), ...canonicalizerGrants(SPACE, "manager")]
+    .every((r) => !r.includes("STREAM.MSG.GET")));
 c("the record-writer and timer-writer grants own their durables",
   recordWriterGrants(SPACE, RECORD_KINDS.svc).some((r) => r.startsWith("$JS.API.CONSUMER.CREATE.EPR_epbind.recw_epbind-svc."))
   && timerWriterGrants(SPACE).some((r) => r.startsWith("$JS.API.CONSUMER.CREATE.EPT_REQ_epbind.timerw_epbind.")));
@@ -349,6 +357,72 @@ try {
   for await (const m of cb) { got.push(m.subject); m.ack(); }
   c("the canonicalizer durable sees ONLY its own endpoint's submissions",
     got.length === 1 && got[0].startsWith("cotal.epbind.epj.manager."));
+
+  // ── SCOPED-CREDENTIAL confinement (§13.9 matrix rows 2271/2272 live): a second broker runs
+  // plain user authorization where `canon` holds EXACTLY the canonicalizerWorkGrants rows (plus
+  // $JS.API.INFO to bind the JS API and its own inbox) and `agent` holds neither. The broker,
+  // not a handler, must let the canonicalizer enqueue + leader-read while denying everyone else
+  // the body-selected EPW read.
+  {
+    const SPORT = 20000 + Math.floor(Math.random() * 40000);
+    const sd2 = mkdtempSync(join(tmpdir(), "cotal-epbind-auth-"));
+    const canonRows = canonicalizerWorkGrants(SPACE, "manager");
+    writeFileSync(join(sd2, "server.conf"), [
+      `port: ${SPORT}`,
+      `jetstream { store_dir: "${join(sd2, "js")}" }`,
+      "authorization {",
+      "  users [",
+      `    { user: "admin", password: "pw" }`,
+      `    { user: "canon", password: "pw", permissions: { publish = ${JSON.stringify([...canonRows, "$JS.API.INFO"])}, subscribe = ["_INBOX.>"] } }`,
+      `    { user: "agent", password: "pw", permissions: { publish = ["$JS.API.INFO"], subscribe = ["_INBOX.>"] } }`,
+      "  ]",
+      "}",
+    ].join("\n"));
+    const broker2 = spawn("nats-server", ["-c", join(sd2, "server.conf")], { stdio: "ignore" });
+    try {
+      let up2 = false;
+      for (let i = 0; i < 50 && !up2; i++) { up2 = await isReachable(`nats://127.0.0.1:${SPORT}`); if (!up2) await wait(100); }
+      if (!up2) throw new Error("the authorization broker did not come up");
+      const ncAdmin = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "admin", pass: "pw" });
+      await createEndpointStreams(await jetstreamManager(ncAdmin), new Kvm(ncAdmin), SPACE);
+
+      const ncCanon = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "canon", pass: "pw" });
+      const jsCanon = jetstream(ncCanon, { timeout: 2000 });
+      const jsmCanon = await jetstreamManager(ncCanon, { timeout: 2000 });
+      const scopedItem = epwSubject(SPACE, "manager", "builds", { ...caller, id: "scoped-1" });
+      {
+        const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        const ack = await jsCanon.publish(scopedItem, new TextEncoder().encode("scoped"), { headers: h });
+        c("the scoped canonicalizer credential ENQUEUES (the epw publish row is live-sufficient)", ack.seq > 0);
+      }
+      const scopedRead = await jsmCanon.streams.getMessage(epwStreamName(SPACE), { last_by_subj: scopedItem });
+      c("the scoped canonicalizer credential leader-reads the item (STREAM.MSG.GET row live-sufficient)",
+        scopedRead !== null && scopedRead.subject === scopedItem);
+      let canonDirectDenied = false;
+      try { await jsmCanon.direct.getMessage(epwStreamName(SPACE), { last_by_subj: scopedItem }); }
+      catch { canonDirectDenied = true; }
+      c("the scoped canonicalizer CANNOT take the follower path (Direct Get denied by grant AND allow_direct:false)", canonDirectDenied);
+
+      const ncAgent = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "agent", pass: "pw" });
+      const jsAgent = jetstream(ncAgent, { timeout: 1500 });
+      const jsmAgent = await jetstreamManager(ncAgent, { timeout: 1500 });
+      let agentReadDenied = false;
+      try { await jsmAgent.streams.getMessage(epwStreamName(SPACE), { last_by_subj: scopedItem }); }
+      catch { agentReadDenied = true; }
+      c("a NON-canonicalizer credential is DENIED the body-selected EPW leader read (broker-enforced)", agentReadDenied);
+      let agentEnqueueDenied = false;
+      try {
+        const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        await jsAgent.publish(epwSubject(SPACE, "manager", "builds", { ...caller, id: "scoped-evil" }), new TextEncoder().encode("evil"), { headers: h });
+      } catch { agentEnqueueDenied = true; }
+      c("a NON-canonicalizer credential is DENIED the pool enqueue (broker-enforced)", agentEnqueueDenied);
+      await ncCanon.close().catch(() => {}); await ncAgent.close().catch(() => {}); await ncAdmin.close().catch(() => {});
+    } finally {
+      if (broker2.pid) { try { process.kill(broker2.pid, "SIGKILL"); } catch { /* gone */ } }
+      await wait(200);
+      rmSync(sd2, { recursive: true, force: true });
+    }
+  }
 
   await nc.drain().catch(() => {});
   console.log(`\nENDPOINT BINDING SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);

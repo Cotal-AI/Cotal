@@ -45,6 +45,14 @@ export function assertArtifactCurrency(
   t: { iat: number; nbf?: number; exp: number },
   a: { now: number; ceilingMs: number; what: string; ceilingName: string; refusals: "opaque" | "post-signature" },
 ): void {
+  // The CLOCK AUTHORITY itself is validated before any rule runs: every check below is a pure
+  // numeric comparison, and a NaN/fractional/negative `now` makes each one silently false — a
+  // verifier whose clock is invalid must refuse, never accept (fail closed on the caller seam,
+  // the same entry rule verifyHandleChain pins on its own `opts.now`).
+  if (!Number.isSafeInteger(a.now) || a.now < 0)
+    throw new EpEnvelopeError("failed-precondition", `${a.what}: the currency clock now=${JSON.stringify(a.now)} is not a non-negative safe integer; an invalid clock authority never verifies (SPEC 13.10)`);
+  if (!Number.isSafeInteger(a.ceilingMs) || a.ceilingMs <= 0)
+    throw new EpEnvelopeError("internal", `${a.what}: the ${a.ceilingName} ceiling ${JSON.stringify(a.ceilingMs)} is not a positive integer`);
   const soft = (code: EpErrorCode): EpErrorCode => (a.refusals === "opaque" ? "permission-denied" : code);
   const nbf = t.nbf ?? t.iat;
   if (t.exp <= t.iat)

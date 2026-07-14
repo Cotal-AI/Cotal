@@ -177,6 +177,12 @@ await rejects("an early nbf stretching the span past the ceiling refuses", async
   // iat within ceiling of exp, but nbf far earlier makes min(iat,nbf) blow the span ceiling.
   await verify(signArtifact({ ...unsigned, nbf: NOW - SESSION_GRANT_MAX_TTL_MS, iat: NOW + 10, exp: NOW + 60_000 }, kp), NOW + 20);
 }, "contract-invalid");
+// The CLOCK AUTHORITY itself fails closed (handle-entry parity): every currency rule is a
+// numeric comparison, so an invalid `now` would make them ALL silently false and a stale or
+// forward-dated grant would VERIFY.
+await rejects("a NaN clock refuses at entry (an invalid clock authority never verifies)", async () => verify(mint(), Number.NaN), "failed-precondition");
+await rejects("a negative clock refuses at entry", async () => verify(mint(), -1), "failed-precondition");
+await rejects("a fractional clock refuses at entry", async () => verify(mint(), NOW + 0.5), "failed-precondition");
 
 // ---------- B. ledger + redemption seam ----------
 console.log("B. presenter-authenticated one-use redemption + the pinned two-gate fence");
@@ -653,6 +659,47 @@ try {
     c("a handler resolving AFTER local close advances nothing (no delivered, no credit)",
       serving.stats().delivered === 0 && credits.length === 0, { stats: serving.stats(), credits });
     watch.unsubscribe();
+  }
+  {
+    // A late REJECTION into a closed rail reports NOTHING: the rail is already terminal, and a
+    // post-close "handler" fault would double-fault it.
+    const gR = { ...grant, sessionId: mintSessionId() };
+    const errs: string[] = [];
+    let rejectR: (e: Error) => void = () => {};
+    const gateR = new Promise<void>((_res, rej) => { rejectR = rej; });
+    let entered = false;
+    const serving = openSessionRail({ nc: ncB, grant: gR, role: "serving", onData: async () => { entered = true; await gateR; }, onProtocolError: (r) => errs.push(r), idleCreditMs: 20 });
+    await ncA.flush(); await ncB.flush();
+    ncA.publish(epsSubject(SPACE, ENDPOINT, gR.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    await ncA.flush();
+    c("…setup: the handler is pending", await until(() => entered));
+    serving.close();
+    rejectR(new Error("late rejection"));
+    await wait(100);
+    c("a handler REJECTING after local close reports nothing (no post-close handler fault)",
+      errs.length === 0 && serving.stats().delivered === 0, { errs, stats: serving.stats() });
+  }
+  {
+    // A late REJECTION into a rail a GAP already broke adds NO second terminal fault.
+    const gG2 = { ...grant, sessionId: mintSessionId() };
+    const errs: string[] = [];
+    let rejectG: (e: Error) => void = () => {};
+    const gateG = new Promise<void>((_res, rej) => { rejectG = rej; });
+    let entered = false;
+    const serving = openSessionRail({ nc: ncB, grant: gG2, role: "serving", onData: async () => { entered = true; await gateG; }, onProtocolError: (r) => errs.push(r), idleCreditMs: 20 });
+    await ncA.flush(); await ncB.flush();
+    const inG2 = epsSubject(SPACE, ENDPOINT, gG2.sessionId, SERVING.epoch, "in");
+    ncA.publish(inG2, encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    await ncA.flush();
+    c("…setup: the handler is pending", await until(() => entered));
+    ncA.publish(inG2, encodeSessionFrame({ t: "f", seq: 5, data: { i: 5 } })); // the gap breaks the rail
+    await ncA.flush();
+    c("…the gap fault surfaces first", await until(() => errs.includes("gap")), errs);
+    rejectG(new Error("late rejection"));
+    await wait(100);
+    c("a handler REJECTING after a rail fault adds NO second terminal fault (the fault list stays ['gap'])",
+      errs.length === 1 && errs[0] === "gap" && serving.stats().delivered === 0, { errs, stats: serving.stats() });
+    serving.close();
   }
   {
     // CREDIT LOSS RECOVERY — mechanism (a) PIGGYBACK: a sender at a full window recovers when a
