@@ -15,21 +15,27 @@
  *    authority: an unredeemed grant dies with the caller's restart (§13.1), so redemption
  *    fresh-checks the holder epoch.
  *  - the SESSION LEDGER ROW contract (`session.<sessionId>` in the auth store, §13.12):
- *    `{sessionId, serving, holder, both credential ids, state, exp}` with the monotonic state
- *    grammar `issuing → active → closed|expired|superseded|retired` (all terminal). The
- *    create-CAS of the `issuing` row IS the one-use redemption; the finalize-CAS
- *    `issuing → active` fresh-checks BOTH process epochs and both lifecycle gates and releases
- *    the two credentials only on success. A credential is authority ONLY once its row is
- *    `active`; an `issuing` row confers nothing (the auth path's connect boundary enforces
- *    that; this module pins the contract and the ordering). A crash mid-issue leaves an
- *    `issuing` row the expiry sweep collects (revoking BOTH ids by name and tombstoning),
- *    never a live half-pair; a redemption racing a close loses its finalize and releases
- *    nothing.
- *  - the REDEMPTION SEAM ({@link redeemSession}): core owns the ordering and the refusal
- *    catalog; the trusted auth path (§9/§10, off-broker) wires the real KV create/finalize
- *    CAS, the credential mint (each per-session credential is simultaneously a
- *    credential-ledger row under its holder's lifecycle — the §13.1 barrier index), and
- *    revocation. The same seam pattern as D4's issuance gate.
+ *    `{sessionId, endpoint, serving, holder, both credential ids, per-credential revocation
+ *    marks, state, exp}` with the monotonic state grammar
+ *    `issuing → active → closed|expired|superseded|retired` (all terminal). The create-CAS of
+ *    the `issuing` row IS the one-use redemption; the finalize-CAS `issuing → active`
+ *    fresh-checks BOTH process epochs and both lifecycle gates and releases the two
+ *    credentials only on success. A credential is authority ONLY once its row is `active`; an
+ *    `issuing` row confers nothing (the auth path's connect boundary enforces that; this
+ *    module pins the contract and the ordering). A crash mid-issue leaves an `issuing` row the
+ *    expiry sweep collects (revoking BOTH ids by name and tombstoning), never a live
+ *    half-pair; a redemption racing a close loses its finalize and releases nothing. The
+ *    revocation marks make the sweep's retry REAL: a revoke that failed leaves its mark
+ *    unset, and every later sweep pass retries exactly the unmarked halves until both confirm.
+ *  - the REDEMPTION SEAM ({@link redeemSession}): core owns the ordering, the refusal catalog,
+ *    and the AUTHORITY EDGES — the redemption is presented by an AUTHENTICATED presenter that
+ *    must equal the grant's holder exactly (a leaked grant alone releases nothing; §13.10
+ *    holder-binding is enforced here, not assumed), and the lifecycle fence is the
+ *    REVISION-PINNED {@link SessionRedemptionHooks.stagePair} write against both parties'
+ *    OBSERVED issuance gates (a moved gate makes the pinned write LOSE; a read is never a
+ *    fence, §13.1/§13.9). The trusted auth path (§9/§10, off-broker) wires the real KV
+ *    create/finalize CAS, the credential mint, and revocation — the same seam pattern as D4's
+ *    issuance gate.
  *  - the RAILS + BOUNDED FLOW WINDOW ({@link openSessionRail}): a tiny framed protocol over
  *    OPAQUE data (`{t:"f",seq,data}`), credit-based sliding window sized by the grant
  *    (`window`, 1..{@link SESSION_WINDOW_MAX}); a sender whose window is full REFUSES with
@@ -40,19 +46,27 @@
  *    out loudly: the window doubles as the loss detector; there is no retransmit machinery —
  *    a broken session is closed and re-established (a durable session is a NEW
  *    establishment; the epoch is in the subject, so a restarted instance cannot resume).
+ *    Credit-loss recovery is three-legged: PIGGYBACKED absolute acks on reverse data, the
+ *    KEEPALIVE re-emit (a quiet peer gets the absolute watermark re-advertised every idle
+ *    tick — deliberately including watermarks already advertised, because the receiver cannot
+ *    observe whether an emitted credit arrived), and the TIMER-DRIVEN stall watchdog (a full
+ *    window with no ack advance breaks the rail with a detectable fault even if the sender
+ *    never calls send again).
  *  - CLOSE: the in-band `{t:"close"}` frame is an ADVISORY peer signal, never the revocation
- *    authority (EPS subjects are captured by nothing). Authoritative close/expiry live on the
- *    trusted auth path: an authenticated close op (a session party or the operator names the
- *    sessionId; party membership is verified against the ledger row), the auth path's own
- *    expiry timer, or either side's §13.1 barrier — each transitions the row terminal and
- *    revokes BOTH credentials, so neither side can keep a half-closed session alive and a
- *    crashed serving endpoint cannot orphan one (the ledger, not the endpoint, remembers what
- *    to revoke).
+ *    authority (EPS subjects are captured by nothing) — but it DOES tear down the receiving
+ *    side's local subscription and timer exactly once (a remote close must never leak local
+ *    resources). Authoritative close/expiry live on the trusted auth path: an authenticated
+ *    close op (a session party or the operator names the sessionId; party membership is
+ *    verified against the ledger row), the auth path's own expiry timer, or either side's
+ *    §13.1 barrier — each transitions the row terminal and revokes BOTH credentials, so
+ *    neither side can keep a half-closed session alive and a crashed serving endpoint cannot
+ *    orphan one (the ledger, not the endpoint, remembers what to revoke).
  */
 import { randomBytes } from "node:crypto";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { canonicalJson } from "./canonical.js";
+import { parsePrincipalKey, assertValidOwnerToken } from "./subjects.js";
 import {
   epsSubject,
   assertIdToken,
@@ -82,11 +96,21 @@ export const SESSION_GRANT_MAX_BYTES = 16 * 1024;
 /** The bounded flow window (§13.6: declared in the grant; overflow is `resource-exhausted`). */
 export const SESSION_WINDOW_DEFAULT = 64;
 export const SESSION_WINDOW_MAX = 1024;
+/** §13.6 "fresh unguessable sessionId": at least 22 base64url chars (≥128 bits) — enforced on
+ *  CALLER-SUPPLIED ids too, so a short guessable id cannot ride in through the mint arg. */
+export const SESSION_ID_MIN_CHARS = 22;
 
 /** Mint a fresh unguessable sessionId: 32 CSPRNG bytes, base64url (43 chars, within the
  *  bounded id-token grammar the subject builder pins). */
 export function mintSessionId(): string {
-  return assertIdToken(randomBytes(32).toString("base64url"), "sessionId");
+  return assertSessionId(randomBytes(32).toString("base64url"));
+}
+
+function assertSessionId(v: unknown): string {
+  const id = assertIdToken(v as string, "sessionId");
+  if (id.length < SESSION_ID_MIN_CHARS)
+    invalid(`sessionId is ${id.length} chars, under the ${SESSION_ID_MIN_CHARS}-char unguessability floor`);
+  return id;
 }
 
 // ---- the session grant artifact --------------------------------------------------------------
@@ -142,9 +166,18 @@ function assertEpochInt(v: unknown, what: string): number {
   return v;
 }
 
+/** `holder.id` is a PRINCIPAL, not a free-form string: the dot-form `<owner>.<actor>`
+ *  (user-mode) or a bare static/dev actor token (dot-free) — the same grammar the §13.1
+ *  deprovision target pins. A free-form holder would name a party no authority layer can
+ *  attribute, so the presenter-equality check downstream would compare garbage to garbage. */
 function assertHolderId(id: unknown): string {
   if (typeof id !== "string" || id.length === 0 || id.length > 256) invalid("holder.id is not a bounded principal string");
-  return id;
+  if (parsePrincipalKey(id)) return id;
+  try {
+    return assertValidOwnerToken(id);
+  } catch {
+    invalid(`holder.id "${id}" is neither a principal dot-form (<owner>.<actor>) nor a bare static actor token`);
+  }
 }
 
 /** Build + sign a session grant (the serving side's establishment answer). The rail subjects
@@ -157,7 +190,7 @@ export function mintSessionGrant(
   if (!Number.isSafeInteger(now)) invalid("now is not an integer");
   if (!Number.isSafeInteger(args.ttlMs) || args.ttlMs <= 0 || args.ttlMs > SESSION_GRANT_MAX_TTL_MS)
     invalid(`ttlMs ${String(args.ttlMs)} is not in (0, ${SESSION_GRANT_MAX_TTL_MS}]`);
-  const sessionId = args.sessionId !== undefined ? assertIdToken(args.sessionId, "sessionId") : mintSessionId();
+  const sessionId = args.sessionId !== undefined ? assertSessionId(args.sessionId) : mintSessionId();
   const endpoint = endpointToken(args.endpoint);
   const serving = {
     instanceId: assertLifecycleToken(args.serving.instanceId, "serving.instanceId"),
@@ -191,7 +224,8 @@ export function mintSessionGrant(
 /** Parse + verify a presented session grant, D28-exact: the signature verifies over the EXACT
  *  raw artifact (sig absent), the parsed projection is for semantics only; the anchor is
  *  resolved FRESH (role `sessions`, scope ceiling covers the endpoint); the rail subjects are
- *  re-derived and compared; currency is checked at `now`. Fail-closed everywhere. */
+ *  re-derived and compared; currency is checked at `now`. Fail-closed everywhere; every nested
+ *  object is a CLOSED schema. */
 export async function verifySessionGrant(
   raw: unknown,
   opts: { space: string; resolveAnchor: AnchorResolver; now?: number },
@@ -199,7 +233,8 @@ export async function verifySessionGrant(
   const now = opts.now ?? Date.now();
   if (!isRec(raw)) invalid("a session grant is not an object");
   // Byte bound BEFORE any structural walk (a canonicalization failure is contract-invalid too:
-  // an artifact that cannot canonicalize cannot have been signed).
+  // an artifact that cannot canonicalize cannot have been signed). UTF-8 BYTES, not JS chars —
+  // a multibyte payload must not slide under the bound on character count.
   let canonical: string;
   try {
     const { sig: _sig, ...rest } = raw as Record<string, unknown>;
@@ -207,7 +242,7 @@ export async function verifySessionGrant(
   } catch (e) {
     invalid(`session grant does not canonicalize: ${(e as Error)?.message ?? String(e)}`);
   }
-  if (canonical.length > SESSION_GRANT_MAX_BYTES) invalid(`session grant exceeds ${SESSION_GRANT_MAX_BYTES} bytes`);
+  if (Buffer.byteLength(canonical, "utf8") > SESSION_GRANT_MAX_BYTES) invalid(`session grant exceeds ${SESSION_GRANT_MAX_BYTES} bytes`);
 
   const o = raw as Record<string, unknown>;
   const allowed = new Set(["v", "sessionId", "space", "endpoint", "subjects", "holder", "serving", "window", "iat", "nbf", "exp", "nonce", "issuer", "sig"]);
@@ -215,15 +250,18 @@ export async function verifySessionGrant(
   if (o.v !== 1) invalid(`unknown session grant version ${String(o.v)}`);
   if (typeof o.space !== "string" || o.space.length === 0) invalid("space is not a string");
   if (o.space !== opts.space) throw new EpEnvelopeError("permission-denied", `session grant is for space "${o.space}", not "${opts.space}" (audience, SPEC 13.6)`);
-  const sessionId = assertIdToken(o.sessionId as string, "sessionId");
+  const sessionId = assertSessionId(o.sessionId);
   const endpoint = endpointToken(o.endpoint as string);
   if (!isRec(o.serving)) invalid("serving is not an object");
+  const sv = o.serving as Record<string, unknown>;
+  for (const k of Object.keys(sv)) if (k !== "instanceId" && k !== "epoch") invalid(`serving carries the unknown field "${k}" (closed schema)`);
   const serving = {
-    instanceId: assertLifecycleToken((o.serving as Record<string, unknown>).instanceId as string, "serving.instanceId"),
-    epoch: assertEpochInt((o.serving as Record<string, unknown>).epoch, "serving.epoch"),
+    instanceId: assertLifecycleToken(sv.instanceId as string, "serving.instanceId"),
+    epoch: assertEpochInt(sv.epoch, "serving.epoch"),
   };
   if (!isRec(o.holder)) invalid("holder is not an object");
   const h = o.holder as Record<string, unknown>;
+  for (const k of Object.keys(h)) if (k !== "id" && k !== "lifecycleUid" && k !== "processEpoch") invalid(`holder carries the unknown field "${k}" (closed schema)`);
   const holder = {
     id: assertHolderId(h.id),
     lifecycleUid: assertLifecycleToken(h.lifecycleUid as string, "holder.lifecycleUid"),
@@ -242,11 +280,14 @@ export async function verifySessionGrant(
   if (typeof o.exp !== "number" || !Number.isSafeInteger(o.exp)) invalid("exp is not an integer");
   if (o.exp - o.iat > SESSION_GRANT_MAX_TTL_MS) invalid(`session grant validity exceeds the ${SESSION_GRANT_MAX_TTL_MS}ms live ceiling`);
   if (typeof o.nonce !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(o.nonce)) invalid("nonce is not a bounded base64url token");
-  if (!isRec(o.issuer) || typeof (o.issuer as Record<string, unknown>).keyId !== "string") invalid("issuer.keyId is not a string");
+  if (!isRec(o.issuer)) invalid("issuer is not an object");
+  const iss = o.issuer as Record<string, unknown>;
+  for (const k of Object.keys(iss)) if (k !== "keyId") invalid(`issuer carries the unknown field "${k}" (closed schema)`);
+  if (typeof iss.keyId !== "string") invalid("issuer.keyId is not a string");
 
   // Anchor gate: fresh resolution, role, window-at-signing, revocation-at-verification, and
   // the sessions scope ceiling covers THIS endpoint (an absent dimension is closed).
-  const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: (o.issuer as { keyId: string }).keyId, role: "sessions", at: o.iat });
+  const anchor = await resolveAnchorForUse(opts.resolveAnchor, { keyId: iss.keyId, role: "sessions", at: o.iat });
   assertAnchorScopeCovers(anchor, "sessions", endpoint, "the session's endpoint");
   verifyArtifactSignature(o, anchor);
 
@@ -269,7 +310,7 @@ export async function verifySessionGrant(
     ...(o.nbf !== undefined ? { nbf: o.nbf as number } : {}),
     exp: o.exp,
     nonce: o.nonce,
-    issuer: { keyId: (o.issuer as { keyId: string }).keyId },
+    issuer: { keyId: iss.keyId },
     sig: o.sig as string,
   };
 }
@@ -282,20 +323,29 @@ export type SessionState = "issuing" | "active" | SessionTerminalState;
 
 /** The durable revocation authority that survives the serving endpoint (§13.6). Both
  *  credential ids are recorded FROM CREATION (the `issuing` write), so a crash at any later
- *  point leaves a row that names exactly what the sweep must revoke. */
+ *  point leaves a row that names exactly what the sweep must revoke. The row also pins the
+ *  ENDPOINT: `instanceId` is unique only within `(space, endpoint)`, so a row without the
+ *  endpoint could not prove WHICH endpoint's serving party is entitled to retrieve/close. */
 export interface SessionLedgerRow {
   sessionId: string;
+  /** The serving endpoint name — with `serving.instanceId`/`epoch` this is the full serving
+   *  identity every serving-party operation authenticates against. */
+  endpoint: string;
   serving: { instanceId: string; epoch: number };
   holder: { principal: string; lifecycleUid: string };
   credCaller: string;
   credServing: string;
+  /** Per-credential revocation completion (durable), created all-false: set only when that
+   *  id's revoke SUCCEEDED, so a swallowed revoke failure anywhere is retried by every later
+   *  sweep pass instead of silently leaking half a pair. */
+  revoked: { caller: boolean; serving: boolean };
   state: SessionState;
   exp: number;
 }
 
 /** The auth-store key (`session.<sessionId>`, §13.12). */
 export function sessionLedgerKey(sessionId: string): string {
-  return `session.${assertIdToken(sessionId, "sessionId")}`;
+  return `session.${assertSessionId(sessionId)}`;
 }
 
 /** The monotonic state grammar: `issuing → active`, `issuing → terminal` (the sweep collecting
@@ -317,14 +367,22 @@ type MaybePromise<T> = T | Promise<T>;
 /** The auth path's durable half: real implementations back this with the auth-store KV
  *  (create-only CAS / revision-pinned update); smokes supply a faithful in-memory fake. */
 export interface SessionLedger {
-  /** Create-only CAS of the `issuing` row. `"exists"` = the one-use is already burned. */
+  /** AUTHORITATIVE row read (leader-served, the §13.9 read-service class): the serving
+   *  retrieval and the holder's post-finalize retry decide on THIS, never on a caller-supplied
+   *  projection. `undefined` = no row. */
+  read(sessionId: string): MaybePromise<SessionLedgerRow | undefined>;
+  /** Create-only CAS of the `issuing` row (naming BOTH credential ids). `"exists"` = the
+   *  one-use is already burned. */
   createIssuing(row: SessionLedgerRow): MaybePromise<"created" | "exists">;
-  /** CAS `issuing → active`. `false` = the row moved under us (a close/sweep raced the
+  /** CAS `issuing → active`. `false` = the row moved under us (a close/sweep/barrier raced the
    *  finalize; the redemption LOSES and releases nothing). */
   finalizeActive(sessionId: string): MaybePromise<boolean>;
   /** CAS the row to a terminal state (close/expiry/barrier/abandoned redemption). `false` =
    *  already terminal (idempotent for the caller's purposes). */
   transitionTerminal(sessionId: string, to: SessionTerminalState): MaybePromise<boolean>;
+  /** Durably mark ONE credential id's revocation as COMPLETED. The sweep's terminal-row retry
+   *  is real only because the row remembers which halves confirmed. */
+  markRevoked(sessionId: string, credentialId: string): MaybePromise<void>;
 }
 
 /** The two per-session credential IDs (the credential-ledger ids revocation names). Allocated
@@ -335,35 +393,42 @@ export interface SessionCredentialIds {
   credServing: string;
 }
 
-/** One released per-session credential: the id revocation names + the usable creds bytes. A
- *  credential is authority ONLY once its session row is `active`; nothing releases usable bytes
- *  before finalize (an `issuing` row confers nothing). */
+/** One released per-session credential: the id revocation names, the usable creds bytes, and
+ *  the credential's OWN expiry — which MUST be ≤ the session row's `exp` (the seam validates
+ *  and fails loud on a hook that mints past the session's life). A credential is authority
+ *  ONLY once its session row is `active`; nothing releases usable bytes before finalize. */
 export interface SessionCredential {
   id: string;
   creds: string;
+  exp: number;
 }
 
-/** The auth path's durable half: real implementations back this with the auth-store KV
- *  (create-only CAS / revision-pinned update); smokes supply a faithful in-memory fake. */
-export interface SessionLedger {
-  /** Create-only CAS of the `issuing` row (naming BOTH credential ids). `"exists"` = the
-   *  one-use is already burned. */
-  createIssuing(row: SessionLedgerRow): MaybePromise<"created" | "exists">;
-  /** CAS `issuing → active`. `false` = the row moved under us (a close/sweep/barrier raced the
-   *  finalize; the redemption LOSES and releases nothing). */
-  finalizeActive(sessionId: string): MaybePromise<boolean>;
-  /** CAS the row to a terminal state (close/expiry/barrier/abandoned redemption). `false` =
-   *  already terminal (idempotent for the caller's purposes). */
-  transitionTerminal(sessionId: string, to: SessionTerminalState): MaybePromise<boolean>;
+/** One OBSERVED lifecycle issuance gate (§13.1): the auth-store gate key plus its revision at
+ *  the observation (a LEADER-SERVED read). The staged credential writes are PINNED to it — a
+ *  barrier that moves the gate between the observation and the stage makes the pinned write
+ *  LOSE. This is what makes the two-gate stage→commit ordering testable in core rather than an
+ *  opaque promise: the pin is data, and an adversarial probe can move the gate under it. */
+export interface LifecycleGatePin {
+  key: string;
+  revision: number;
+}
+
+/** The AUTHENTICATED presenter of a redemption — established by the trusted auth path's own
+ *  connection/exchange (§9/§10), NEVER read from the grant. {@link redeemSession} refuses
+ *  unless it equals the grant's holder exactly: possession of a leaked grant releases nothing. */
+export interface SessionPresenter {
+  id: string;
+  lifecycleUid: string;
 }
 
 /**
  * Everything {@link redeemSession} needs from the trusted auth path. The LIFECYCLE FENCE is the
- * gate-pinned {@link stagePair} write (a moved lifecycle issuance gate makes it LOSE), NOT a
- * boolean read — fresh reads are not fences (§13.1/§13.9). The process-epoch reads ARE fencing
- * reads and MUST be leader-served (the auth bucket `allow_direct=false` → `STREAM.MSG.GET`, per
- * the §13.9 read-service class), never a follower Direct Get. Every hook re-runs FRESH at
- * finalize; a cached answer would reopen the §13.1 window.
+ * revision-pinned {@link stagePair} write against both parties' OBSERVED gates (a moved gate
+ * makes it LOSE), NOT a boolean read — fresh reads are not fences (§13.1/§13.9). The
+ * process-epoch and gate reads ARE fencing/observation reads and MUST be leader-served (the
+ * auth bucket `allow_direct=false` → `STREAM.MSG.GET`, per the §13.9 read-service class),
+ * never a follower Direct Get. Every hook re-runs FRESH at finalize; a cached answer would
+ * reopen the §13.1 window.
  */
 export interface SessionRedemptionHooks {
   ledger: SessionLedger;
@@ -376,20 +441,48 @@ export interface SessionRedemptionHooks {
   /** The serving instance's CURRENT epoch (leader-served read), or undefined when it is not
    *  registered/live. */
   servingEpoch(endpoint: string, instanceId: string): MaybePromise<number | undefined>;
-  /** Stage BOTH per-session credential-ledger rows, each a GATE-PINNED CAS against its party's
-   *  lifecycle issuance gate (§13.1): caller = pub `in` + sub `out` EXACT, serving = the reverse.
-   *  A moved gate (a barrier retired the lifecycle) makes the pinned write LOSE — THROW; this is
-   *  the lifecycle fence. The rows are indexed under each lifecycle (a later-winning barrier
-   *  enumerates and revokes them), but confer NOTHING and release NO usable bytes until finalize. */
-  stagePair(grant: SessionGrant, ids: SessionCredentialIds): MaybePromise<void>;
-  /** After finalize → `active`, release ONE party's usable credential by id. Per-party sinks:
-   *  the holder receives ONLY its own credential in the redemption response; the serving
-   *  instance retrieves ONLY its own via a serving-authenticated one-use path ({@link
-   *  retrieveServingCredential}). No private material crosses between the two parties. */
+  /** LEADER-SERVED observation of the HOLDER's lifecycle issuance gate (§13.1). Throws when
+   *  the gate is gone (the lifecycle is retired). */
+  observeHolderGate(holder: { id: string; lifecycleUid: string }): MaybePromise<LifecycleGatePin>;
+  /** LEADER-SERVED observation of the SERVING instance's lifecycle issuance gate. */
+  observeServingGate(endpoint: string, instanceId: string): MaybePromise<LifecycleGatePin>;
+  /** Stage BOTH per-session credential-ledger rows, each write REVISION-PINNED to its party's
+   *  observed gate (§13.1): caller = pub `in` + sub `out` EXACT, serving = the reverse. A gate
+   *  that moved since its observation (a barrier retired the lifecycle) makes the pinned write
+   *  LOSE — THROW; this is the lifecycle fence, a write loss, never a boolean read. The rows
+   *  are indexed under each lifecycle (a later-winning barrier enumerates and revokes them),
+   *  but confer NOTHING and release NO usable bytes until finalize. */
+  stagePair(grant: SessionGrant, ids: SessionCredentialIds, pins: { holder: LifecycleGatePin; serving: LifecycleGatePin }): MaybePromise<void>;
+  /** After finalize → `active`, release ONE party's usable credential by id. IDEMPOTENT for
+   *  the row's lifetime: a repeated release of the same id returns the SAME credential bytes
+   *  (never a re-mint) — that is the authenticated lost-response retry path for BOTH parties.
+   *  Safe because every release sits behind exact presenter authentication (holder equality at
+   *  {@link redeemSession}; full serving identity at {@link retrieveServingCredential}), so a
+   *  repeat delivers no authority the party does not already hold; revocation (a terminal row)
+   *  is the authority boundary, not a release count. Per-party sinks: no private material ever
+   *  crosses between the two parties. */
   releaseCredential(sessionId: string, credentialId: string): MaybePromise<SessionCredential>;
-  /** Revoke one staged/released credential by id (eviction rides the auth path's machinery). */
+  /** Revoke one staged/released credential by id, IDEMPOTENTLY (re-revoking a dead id
+   *  succeeds — the sweep's terminal-row retry depends on it). */
   revokeCredential(id: string): MaybePromise<void>;
   now?(): number;
+}
+
+/** Bounded credential-ledger id (no usable bytes ride in an id). */
+function assertCredentialId(v: unknown, what: string): string {
+  if (typeof v !== "string" || v.length === 0 || v.length > 256) invalid(`${what} is not a bounded credential id`);
+  return v;
+}
+
+/** Fail-loud validation of what a release hook handed back: the requested id, within the
+ *  session's life. A hook that returns someone else's credential or one outliving the session
+ *  violated the seam contract — surface it, never pass it through. */
+function assertReleased(cred: SessionCredential, wantId: string, sessionExp: number): SessionCredential {
+  if (!isRec(cred) || cred.id !== wantId)
+    invalid(`the release returned credential "${String((cred as { id?: unknown })?.id)}", not the requested "${wantId}" (hook contract)`);
+  if (typeof cred.exp !== "number" || !Number.isSafeInteger(cred.exp) || cred.exp > sessionExp)
+    invalid(`released credential exp ${String(cred.exp)} is not an integer within the session exp ${sessionExp} (a credential must not outlive its session)`);
+  return cred;
 }
 
 async function refuseAndCollect(
@@ -400,8 +493,9 @@ async function refuseAndCollect(
   err: EpEnvelopeError,
 ): Promise<never> {
   // Best-effort containment before the refusal surfaces: the row (when ours) goes terminal and
-  // both staged credentials are revoked by name. Failures here must not mask the refusal —
-  // the expiry sweep is the durable backstop for exactly this window.
+  // both staged credentials are revoked by name, each marked on success. Failures here must
+  // not mask the refusal — the sweep's terminal-row retry (driven by the unmarked ids) is the
+  // durable backstop for exactly this window.
   try {
     await hooks.ledger.transitionTerminal(sessionId, to);
   } catch {
@@ -411,8 +505,9 @@ async function refuseAndCollect(
     for (const id of [ids.credCaller, ids.credServing]) {
       try {
         await hooks.revokeCredential(id);
+        await hooks.ledger.markRevoked(sessionId, id);
       } catch {
-        /* sweep backstop */
+        /* the unmarked id is retried by the sweep */
       }
     }
   }
@@ -420,23 +515,41 @@ async function refuseAndCollect(
 }
 
 /**
- * Redeem a VERIFIED session grant (§13.6 finalize-CAS ordering). The panel-locked order — no
- * half-issued session is ever usable, a redemption racing a close loses its finalize and
- * releases nothing:
+ * Redeem a VERIFIED session grant (§13.6 finalize-CAS ordering), presented by an AUTHENTICATED
+ * presenter. The panel-locked order — no half-issued session is ever usable, a redemption
+ * racing a close loses its finalize and releases nothing:
  *
- *   1. allocate both credential ids (no bytes);
- *   2. create-CAS the `issuing` row naming BOTH ids (the one-use — a duplicate loses here);
- *   3. stage both credential rows GATE-PINNED to each lifecycle issuance gate (the lifecycle
- *      FENCE: a retired lifecycle makes the pinned write lose);
- *   4. fresh-check both process epochs (leader-served reads, bounded by epoch-in-subject death);
+ *   0. the presenter must equal the grant's holder EXACTLY (identity before anything —
+ *      possession of a leaked grant releases nothing, §13.10 holder-binding);
+ *   1. allocate both credential ids (no bytes; bounded, distinct);
+ *   2. create-CAS the `issuing` row naming BOTH ids (the one-use — a duplicate loses here,
+ *      EXCEPT the authenticated holder retrying an active row after a lost response, which
+ *      re-releases the SAME holder credential);
+ *   3. observe both lifecycle issuance gates (leader-served) and stage both credential rows
+ *      REVISION-PINNED to them (the lifecycle FENCE: a moved gate makes the pinned write lose);
+ *   4. fresh-check both process epochs (leader-served reads) AND grant expiry;
  *   5. finalize-CAS `issuing → active` (a racing close/barrier wins here);
  *   6. release ONLY the HOLDER's credential (the serving side retrieves its own separately).
  *
  * The caller passes the output of {@link verifySessionGrant} (signature/anchor/currency already
- * enforced there). Returns the HOLDER's credential alone — {@link retrieveServingCredential}
- * delivers the serving side's, so no private material crosses between the two parties.
+ * enforced there) plus the presenter its OWN authenticated context established. Returns the
+ * HOLDER's credential alone — {@link retrieveServingCredential} delivers the serving side's, so
+ * no private material crosses between the two parties. A release failure AFTER finalize leaves
+ * the row `active` and throws: the authenticated holder retries this same call and lands on the
+ * re-release path (release is idempotent for the row's life), so a transient release outage is
+ * recoverable without a half-session.
  */
-export async function redeemSession(grant: SessionGrant, hooks: SessionRedemptionHooks): Promise<SessionCredential> {
+export async function redeemSession(
+  grant: SessionGrant,
+  presenter: SessionPresenter,
+  hooks: SessionRedemptionHooks,
+): Promise<SessionCredential> {
+  // (0) Identity first: the authenticated presenter IS the holder, exactly.
+  if (typeof presenter?.id !== "string" || typeof presenter?.lifecycleUid !== "string")
+    invalid("presenter is not an authenticated principal projection");
+  if (presenter.id !== grant.holder.id || presenter.lifecycleUid !== grant.holder.lifecycleUid)
+    throw new EpEnvelopeError("permission-denied", `session grant is holder-bound to ${grant.holder.id} (uid ${grant.holder.lifecycleUid}); the presenter is ${presenter.id} (uid ${presenter.lifecycleUid}) — a grant is not a bearer artifact (SPEC 13.6/13.10)`);
+
   const now = hooks.now?.() ?? Date.now();
   if (now > grant.exp) throw new EpEnvelopeError("expired", `session grant expired at ${grant.exp} (now ${now})`);
 
@@ -450,39 +563,68 @@ export async function redeemSession(grant: SessionGrant, hooks: SessionRedemptio
     throw new EpEnvelopeError("expired", `serving epoch ${String(preServing)} is not the grant's ${grant.serving.epoch}; the session dies with the serving instance's epoch (SPEC 13.6)`);
 
   // (1) Allocate both ids FIRST so the issuing row names both from its very first write — a crash
-  // after the create leaves a row that names exactly what the sweep revokes.
+  // after the create leaves a row that names exactly what the sweep revokes. Bounded + distinct:
+  // aliased ids would collapse the two parties' revocation into one name.
   const ids = await hooks.allocateCredentialIds(grant);
+  assertCredentialId(ids.credCaller, "credCaller");
+  assertCredentialId(ids.credServing, "credServing");
+  if (ids.credCaller === ids.credServing) invalid(`allocated credential ids alias ("${ids.credCaller}"); the two parties' ids must be distinct`);
 
   // (2) The one-use: create-CAS the issuing row.
   const row: SessionLedgerRow = {
     sessionId: grant.sessionId,
+    endpoint: grant.endpoint,
     serving: grant.serving,
     holder: { principal: grant.holder.id, lifecycleUid: grant.holder.lifecycleUid },
     credCaller: ids.credCaller,
     credServing: ids.credServing,
+    revoked: { caller: false, serving: false },
     state: "issuing",
     exp: grant.exp,
   };
   const created = await hooks.ledger.createIssuing(row);
-  if (created === "exists")
+  if (created === "exists") {
+    // The one-use is burned — with ONE authenticated exception: the holder whose redemption
+    // response was lost AFTER finalize retries the same call, and release is idempotent for
+    // the row's life (same bytes, no re-mint), so the retry re-releases the SAME credential.
+    // The ids allocated above were never staged and carry no bytes — orphans by design.
+    const existing = await hooks.ledger.read(grant.sessionId);
+    if (
+      existing !== undefined &&
+      existing.state === "active" &&
+      existing.holder.principal === presenter.id &&
+      existing.holder.lifecycleUid === presenter.lifecycleUid
+    ) {
+      return assertReleased(await hooks.releaseCredential(grant.sessionId, existing.credCaller), existing.credCaller, existing.exp);
+    }
     throw new EpEnvelopeError("permission-denied", `session ${grant.sessionId} is already redeemed; the issuing create-CAS is the one-use (SPEC 13.6)`);
+  }
 
-  // (3) The LIFECYCLE FENCE: stage both credential rows gate-pinned. A moved gate throws — a
-  // retired holder/serving lifecycle cannot mint a live half.
+  // (3) The LIFECYCLE FENCE: observe both issuance gates (leader-served), then stage both
+  // credential rows PINNED to those observations. A gate that moved — or is gone — means a
+  // barrier retired a party: the pinned write LOSES and nothing was ever usable.
   try {
-    await hooks.stagePair(grant, ids);
+    const pins = {
+      holder: await hooks.observeHolderGate(grant.holder),
+      serving: await hooks.observeServingGate(grant.endpoint, grant.serving.instanceId),
+    };
+    await hooks.stagePair(grant, ids, pins);
   } catch (e) {
     return refuseAndCollect(hooks, grant.sessionId, ids, "retired", e instanceof EpEnvelopeError ? e : new EpEnvelopeError("permission-denied", `session ${grant.sessionId} credential staging lost the lifecycle gate (a barrier retired a party during redemption, SPEC 13.1/13.6): ${(e as Error)?.message ?? String(e)}`));
   }
 
-  // (4) FINALIZE fresh checks (leader-served epoch reads; the lifecycle gates were fenced by the
-  // gate-pinned stage above, and a barrier that wins AFTER the stage finds both rows indexed).
+  // (4) FINALIZE fresh checks: leader-served epoch reads (the lifecycle gates were fenced by
+  // the pinned stage above, and a barrier that wins AFTER the stage finds both rows indexed),
+  // plus expiry AT the finalize — a slow stage must not activate a grant that died meanwhile.
   const holderEpoch = await hooks.holderProcessEpoch(grant.holder);
   if (holderEpoch !== grant.holder.processEpoch)
     return refuseAndCollect(hooks, grant.sessionId, ids, "retired", new EpEnvelopeError("expired", `holder process epoch moved to ${String(holderEpoch)} during redemption; finalize fresh-checks the holder (SPEC 13.6)`));
   const servingNow = await hooks.servingEpoch(grant.endpoint, grant.serving.instanceId);
   if (servingNow !== grant.serving.epoch)
     return refuseAndCollect(hooks, grant.sessionId, ids, "superseded", new EpEnvelopeError("expired", `serving epoch moved to ${String(servingNow)} during redemption; finalize fresh-checks the serving instance (SPEC 13.6)`));
+  const atFinalize = hooks.now?.() ?? Date.now();
+  if (atFinalize > grant.exp)
+    return refuseAndCollect(hooks, grant.sessionId, ids, "expired", new EpEnvelopeError("expired", `session grant expired at ${grant.exp} during redemption (now ${atFinalize}); finalize re-checks currency (SPEC 13.6)`));
 
   // (5) The finalize CAS — a racing close/barrier wins here.
   const finalized = await hooks.ledger.finalizeActive(grant.sessionId);
@@ -490,52 +632,76 @@ export async function redeemSession(grant: SessionGrant, hooks: SessionRedemptio
     for (const id of [ids.credCaller, ids.credServing]) {
       try {
         await hooks.revokeCredential(id);
+        await hooks.ledger.markRevoked(grant.sessionId, id);
       } catch {
-        /* sweep backstop */
+        /* sweep backstop (terminal-row retry) */
       }
     }
     throw new EpEnvelopeError("conflict", `session ${grant.sessionId} finalize lost: the row left "issuing" during redemption (a racing close wins; nothing is released, SPEC 13.6)`);
   }
 
   // (6) Release ONLY the holder's credential (the serving side retrieves its own separately).
-  return hooks.releaseCredential(grant.sessionId, ids.credCaller);
+  // A throw here leaves the row active: the authenticated holder retries and lands on the
+  // re-release path above — recoverable, never a half-session.
+  return assertReleased(await hooks.releaseCredential(grant.sessionId, ids.credCaller), ids.credCaller, grant.exp);
 }
 
 /** The serving instance retrieves ITS OWN credential after the session is `active`, through its
  *  own authenticated path (never the holder's redemption response — no private material crosses
- *  between the two parties, §13.6 per-party release). Refuses unless the row names this serving
- *  credential and is `active`. */
+ *  between the two parties, §13.6 per-party release). The presenter is the AUTHENTICATED serving
+ *  identity (endpoint + instanceId + epoch, established by the auth path's own context); the row
+ *  is read AUTHORITATIVELY from the ledger, never accepted as a caller-supplied projection.
+ *  Release is idempotent for the row's life (lost-response retry), behind the exact identity. */
 export async function retrieveServingCredential(
   sessionId: string,
-  row: Pick<SessionLedgerRow, "state" | "credServing">,
-  hooks: Pick<SessionRedemptionHooks, "releaseCredential">,
+  presenter: { endpoint: string; instanceId: string; epoch: number },
+  hooks: Pick<SessionRedemptionHooks, "ledger" | "releaseCredential">,
 ): Promise<SessionCredential> {
+  const row = await hooks.ledger.read(sessionId);
+  if (row === undefined)
+    throw new EpEnvelopeError("not-found", `session ${sessionId} has no ledger row (SPEC 13.6)`);
+  if (row.endpoint !== presenter.endpoint || row.serving.instanceId !== presenter.instanceId || row.serving.epoch !== presenter.epoch)
+    throw new EpEnvelopeError("permission-denied", `session ${sessionId} is pinned to serving ${row.endpoint}/${row.serving.instanceId}@${row.serving.epoch}, not the presenting ${presenter.endpoint}/${presenter.instanceId}@${presenter.epoch} (per-party release, SPEC 13.6)`);
   if (row.state !== "active")
     throw new EpEnvelopeError("failed-precondition", `session ${sessionId} is "${row.state}", not active; a credential is authority only once its row is active (SPEC 13.6)`);
-  return hooks.releaseCredential(sessionId, row.credServing);
+  return assertReleased(await hooks.releaseCredential(sessionId, row.credServing), row.credServing, row.exp);
 }
 
 /** The expiry sweep's per-row decision (the auth path enumerates `session.>` and calls this):
  *  an `issuing` or `active` row past its `exp` (plus the caller's margin) transitions
- *  `expired` and BOTH credential ids are revoked by name — a crashed half-issue can never
- *  leave a live half-pair. Returns whether this row was collected. Terminal rows are never
- *  touched (retention: rows live at least max session exp + a recovery margin, §13.6). */
+ *  `expired` and BOTH credential ids are revoked by name, each MARKED on success. A TERMINAL
+ *  row with an UNMARKED id is retried — that retry (not a comment) is what makes every
+ *  swallowed revoke failure in this module safe: the mark is set only by a revoke that
+ *  succeeded, so half a pair can never quietly outlive its session. Returns whether this pass
+ *  did work. Fully-collected terminal rows are never touched (retention: rows live at least
+ *  max session exp + a recovery margin, §13.6). */
 export async function sweepSessionRow(
   row: SessionLedgerRow,
   hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
   opts: { now: number; marginMs?: number },
 ): Promise<boolean> {
-  if ((SESSION_TERMINAL_STATES as readonly string[]).includes(row.state)) return false;
+  const revokePending = async (): Promise<void> => {
+    const pending: string[] = [];
+    if (!row.revoked.caller) pending.push(row.credCaller);
+    if (!row.revoked.serving) pending.push(row.credServing);
+    for (const id of pending) {
+      try {
+        await hooks.revokeCredential(id);
+        await hooks.ledger.markRevoked(row.sessionId, id);
+      } catch {
+        /* the mark stays unset — the NEXT sweep pass retries exactly this id */
+      }
+    }
+  };
+  if ((SESSION_TERMINAL_STATES as readonly string[]).includes(row.state)) {
+    if (row.revoked.caller && row.revoked.serving) return false; // fully collected
+    await revokePending();
+    return true;
+  }
   if (opts.now <= row.exp + (opts.marginMs ?? 0)) return false;
   const moved = await hooks.ledger.transitionTerminal(row.sessionId, "expired");
-  if (!moved) return false; // someone else already terminated it (they revoke)
-  for (const id of [row.credCaller, row.credServing]) {
-    try {
-      await hooks.revokeCredential(id);
-    } catch {
-      /* the next sweep pass retries: the row is terminal, ids are recorded */
-    }
-  }
+  if (!moved) return false; // raced another terminator; its marks (or the next pass) finish the revokes
+  await revokePending();
   return true;
 }
 
@@ -546,9 +712,10 @@ export async function sweepSessionRow(
  *  window (a full data window must never block the credits that reopen it, else instant
  *  deadlock). `ack` is an ABSOLUTE cumulative watermark (the sender's contiguous-received count
  *  on the OTHER rail): a data frame PIGGYBACKS it, so a lost dedicated credit self-heals on the
- *  next reverse data frame, and a lost pair recovers on the receiver's idle re-emit; absolute
- *  (not delta) so any single credit re-advertises the whole position. The in-band `close` is
- *  advisory (§13.6): revocation authority is the ledger, never this frame. */
+ *  next reverse data frame, and any deeper loss recovers on the keepalive re-emit; absolute
+ *  (not delta) so any single credit re-advertises the whole position and a duplicate is
+ *  harmless. The in-band `close` is advisory (§13.6): revocation authority is the ledger,
+ *  never this frame. */
 export type SessionFrame =
   | { t: "f"; seq: number; data: unknown; ack?: number }
   | { t: "credit"; ack: number }
@@ -595,23 +762,32 @@ export interface SessionRailOpts {
   nc: NatsConnection;
   grant: Pick<SessionGrant, "space" | "endpoint" | "sessionId" | "window"> & { serving: { epoch: number } };
   role: SessionRole;
-  /** Delivered in-order for CONTIGUOUS frames; a gap surfaces via onProtocolError("gap"). */
+  /** Delivered in-order for CONTIGUOUS frames, and the application accepts FIRST: a handler
+   *  that throws breaks the rail (`handler`) and the refused frame is neither counted
+   *  delivered nor credited — the sender must never count data as accepted that nothing
+   *  accepted. A gap surfaces via onProtocolError("gap"). */
   onData(data: unknown, seq: number): void;
-  /** The peer's advisory close frame arrived (authoritative close is the ledger's). */
+  /** The peer's advisory close frame arrived (authoritative close is the ledger's). The local
+   *  subscription and timer are torn down before this fires. */
   onClose?(): void;
-  /** A garbled frame, a sequence gap, or a send stall: the session is broken — close and
-   *  re-establish. `reason` is one of `garbled-frame` | `gap` | `credit-overrun` |
-   *  `subscription` | `stall`. */
+  /** The session is broken — close and re-establish. `reason` is one of `garbled-frame` |
+   *  `gap` | `credit-overrun` | `subscription` | `stall` | `handler` | `publish` |
+   *  `seq-exhausted`. The rail's subscription and timer are torn down before this fires (a
+   *  broken rail holds no resources). */
   onProtocolError?(reason: string, detail?: unknown): void;
   /** Broker payload ceiling for the SEND preflight (like assertFactFits). Default 1 MiB. */
   maxPayloadBytes?: number;
-  /** Idle credit re-emit interval (ms): while this side has delivered data past what it last
-   *  credited AND the peer has gone quiet (a possible double-credit-loss stall), re-advertise
-   *  the absolute watermark so the blocked peer recovers. 0 disables. Default 1000. */
+  /** Keepalive credit re-emit interval (ms): while this side has delivered ANY data and the
+   *  peer has gone quiet, re-advertise the absolute watermark every tick — including
+   *  watermarks already advertised, because this side cannot observe whether an emitted
+   *  credit ARRIVED (gating on "newer than last emitted" turns loss of the advertisement
+   *  itself into a permanent stall). Absolute acks are idempotent, so the honest recovery is
+   *  repetition; the cost is one control frame per quiet tick. 0 disables. Default 1000. */
   idleCreditMs?: number;
-  /** Sender stall watchdog (ms): if the data window stays full this long with NO credit advance
-   *  (both the dedicated credit AND its idle re-emits were lost under sustained loss), the next
-   *  send surfaces a DETECTABLE `stall` fault instead of hanging silently. Default 30000. */
+  /** Sender stall watchdog (ms): if the data window stays full this long with NO ack advance
+   *  (sustained credit loss or a dead peer), the rail breaks with a DETECTABLE `stall` fault —
+   *  TIMER-driven, so a sender that stops calling send() still learns its peer is gone; the
+   *  send path double-checks as a belt. 0 disables. Default 30000. */
   stallTimeoutMs?: number;
   /** Injectable clock (testability); default Date.now. */
   now?: () => number;
@@ -624,7 +800,7 @@ export interface SessionRail {
   /** Send one opaque data frame (piggybacking this side's absolute reverse-rail watermark).
    *  Throws `resource-exhausted` when the window is full (no buffering, §13.6), `contract-invalid`
    *  when the encoded frame exceeds the payload ceiling, and `failed-precondition` once the rail
-   *  is closed/broken (including a detected stall). Returns the frame's seq. */
+   *  is closed/broken (including a detected stall or a failed publish). Returns the frame's seq. */
   send(data: unknown): number;
   /** Send the advisory close frame and stop the rail locally. Idempotent. */
   close(): void;
@@ -640,11 +816,12 @@ export interface SessionRail {
  * FLOW CONTROL (panel-locked): the data window is bounded and per-direction; control frames
  * (`credit`, `close`) are EXEMPT (a full window never blocks the credits that reopen it).
  * Credits carry an ABSOLUTE cumulative watermark, PIGGYBACKED on reverse data frames, so a lost
- * dedicated credit self-heals on the next reverse traffic; a lost PAIR recovers on the idle
- * re-emit; sustained loss surfaces a detectable `stall` fault (never a silent hang). A dropped
- * DATA frame is unrecoverable at this transport (EPS is at-most-once, core-only) and shows as a
- * seq gap the app reacts to — reliability layers inside `data` or uses the journal/checkpoint
- * composites.
+ * dedicated credit self-heals on the next reverse traffic; ANY deeper loss (including loss of
+ * already-emitted threshold credits) recovers on the KEEPALIVE re-emit; sustained loss or a
+ * dead peer surfaces the TIMER-driven `stall` fault (never a silent hang, even for a sender
+ * that stopped calling send). A dropped DATA frame is unrecoverable at this transport (EPS is
+ * at-most-once, core-only) and shows as a seq gap the app reacts to — reliability layers
+ * inside `data` or uses the journal/checkpoint composites.
  */
 export function openSessionRail(opts: SessionRailOpts): SessionRail {
   const { grant, role } = opts;
@@ -662,18 +839,30 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
 
   let seq = 0; // last sent
   let ackedThrough = 0; // peer's contiguous ack for OUR egress (absolute)
-  let windowFullSince = 0; // when the window first blocked with no ack advance (0 = not blocked)
+  let windowFullSince = 0; // when the window became full with no ack advance (0 = not blocked)
   let expected = 1; // next ingress data seq we can deliver contiguously
   let deliveredSinceCredit = 0;
-  let lastEmittedAck = 0; // highest absolute ack we have advertised (dedicated or piggybacked)
   let dataSinceIdleTick = false; // did ingress data arrive since the last idle tick?
   let delivered = 0;
   let closed = false;
   let broken = false;
+  let tornDown = false;
+  let idleTimer: { unref?: () => void } | undefined;
+  let sub: Subscription | undefined;
   const creditEvery = Math.max(1, Math.ceil(window / 2));
 
-  const protocolError = (reason: string, detail?: unknown) => {
+  // EXACTLY-ONCE local cleanup, whoever triggers it (local close, PEER close, or a protocol
+  // fault): a remote peer must never be able to leave this side holding a dangling
+  // subscription + interval per session (a remotely triggerable resource leak).
+  const teardown = (): void => {
+    if (tornDown) return;
+    tornDown = true;
+    if (idleTimer) clearIntervalFn(idleTimer);
+    sub?.unsubscribe();
+  };
+  const protocolError = (reason: string, detail?: unknown): void => {
     broken = true;
+    teardown(); // a broken rail holds no resources
     opts.onProtocolError?.(reason, detail);
   };
   // Absorb an absolute watermark from a credit frame OR a piggybacked data ack. Monotonic — a
@@ -690,12 +879,14 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
     }
   };
   const emitCredit = (): void => {
-    const ack = expected - 1;
-    lastEmittedAck = ack;
-    opts.nc.publish(egress, encodeSessionFrame({ t: "credit", ack }));
+    try {
+      opts.nc.publish(egress, encodeSessionFrame({ t: "credit", ack: expected - 1 }));
+    } catch (e) {
+      protocolError("publish", (e as Error)?.message ?? String(e));
+    }
   };
 
-  const sub: Subscription = opts.nc.subscribe(ingress, {
+  sub = opts.nc.subscribe(ingress, {
     callback: (err, msg) => {
       if (closed || broken) return;
       if (err) {
@@ -715,23 +906,34 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
       }
       if (frame.t === "close") {
         closed = true;
+        teardown();
         opts.onClose?.();
         return;
       }
       // Data. Its piggybacked ack refreshes OUR credit first (self-heals a lost dedicated
-      // credit), then contiguity governs delivery (§13.6: a dropped frame is the composite's
-      // problem): a duplicate drops, a GAP breaks the session loudly.
-      if (frame.ack !== undefined) applyAck(frame.ack);
+      // credit) — and an OVERRUNNING piggyback breaks the rail BEFORE the frame's data can
+      // reach the application: a protocol-invalid frame must have no application effect.
+      if (frame.ack !== undefined) {
+        applyAck(frame.ack);
+        if (broken) return;
+      }
       dataSinceIdleTick = true;
       if (frame.seq < expected) return; // duplicate — idempotent drop
       if (frame.seq > expected) {
         protocolError("gap", { expected, got: frame.seq });
         return;
       }
+      // The APPLICATION accepts FIRST: a throwing handler must not advance the cumulative
+      // watermark or earn credit for a frame nothing accepted — the rail breaks loudly instead.
+      try {
+        opts.onData(frame.data, frame.seq);
+      } catch (e) {
+        protocolError("handler", (e as Error)?.message ?? String(e));
+        return;
+      }
       expected++;
       delivered++;
       deliveredSinceCredit++;
-      opts.onData(frame.data, frame.seq);
       if (deliveredSinceCredit >= creditEvery) {
         deliveredSinceCredit = 0;
         emitCredit();
@@ -739,34 +941,43 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
     },
   });
 
-  // Idle re-emit: while we hold ungranted delivery (delivered past our last advertised ack) and
-  // the peer has gone quiet (no ingress data this tick — the tell of a sender blocked on a full
-  // window whose credits were lost), re-advertise the absolute watermark. Non-spammy: it fires
-  // only on the quiet-with-ungranted-delivery condition, at most once per interval.
-  const idleTimer = idleCreditMs > 0
-    ? setIntervalFn(() => {
-        if (closed || broken) return;
-        if (!dataSinceIdleTick && expected - 1 > lastEmittedAck) emitCredit();
-        dataSinceIdleTick = false;
-      }, idleCreditMs)
-    : undefined;
-  idleTimer?.unref?.();
-
-  const stopTimers = () => { if (idleTimer) clearIntervalFn(idleTimer); };
+  // One tick drives BOTH recovery legs:
+  //  - the KEEPALIVE credit re-emit: while this side has delivered anything and the peer went
+  //    quiet, re-advertise the absolute watermark — deliberately NOT gated on what was already
+  //    advertised (see idleCreditMs docs: the double-credit-loss counterexample).
+  //  - the STALL WATCHDOG: a window that stays full past stallTimeoutMs with no ack advance
+  //    breaks the rail with a DETECTABLE fault even if the sender never calls send() again.
+  if (idleCreditMs > 0 || stallTimeoutMs > 0) {
+    idleTimer = setIntervalFn(() => {
+      if (closed || broken) return;
+      if (stallTimeoutMs > 0 && windowFullSince !== 0) {
+        const blockedMs = now() - windowFullSince;
+        if (blockedMs > stallTimeoutMs) {
+          protocolError("stall", { window, ackedThrough, sent: seq, blockedMs });
+          return;
+        }
+      }
+      if (idleCreditMs > 0 && !dataSinceIdleTick && expected > 1) emitCredit();
+      dataSinceIdleTick = false;
+    }, idleCreditMs > 0 ? idleCreditMs : 1000);
+    idleTimer.unref?.();
+  }
 
   return {
     send(data: unknown): number {
       if (closed || broken)
         throw new EpEnvelopeError("failed-precondition", "session rail is closed/broken; establish a new session (SPEC 13.6)");
+      if (seq >= Number.MAX_SAFE_INTEGER - 1) {
+        protocolError("seq-exhausted", { seq });
+        throw new EpEnvelopeError("failed-precondition", "session rail exhausted its sequence space; establish a new session (SPEC 13.6)");
+      }
       if (seq - ackedThrough >= window) {
-        // The window is full. Distinguish a TRANSIENT stall (retry when credit lands) from a
-        // sustained one (both credit and its idle re-emits lost): after stallTimeoutMs with no
-        // ack advance, break the rail with a DETECTABLE fault instead of hanging forever.
+        // The window is full. The timer is the primary stall detector; this path double-checks
+        // (belt for a caller running with timers disabled) and otherwise refuses TRANSIENTLY.
         const t = now();
         if (windowFullSince === 0) windowFullSince = t;
-        else if (t - windowFullSince > stallTimeoutMs) {
+        else if (stallTimeoutMs > 0 && t - windowFullSince > stallTimeoutMs) {
           protocolError("stall", { window, ackedThrough, sent: seq, blockedMs: t - windowFullSince });
-          stopTimers();
           throw new EpEnvelopeError("failed-precondition", `session rail stalled: the window stayed full ${t - windowFullSince}ms with no credit; the peer is unreachable, re-establish (SPEC 13.6)`);
         }
         throw new EpEnvelopeError(
@@ -779,21 +990,33 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
       const frame = encodeSessionFrame({ t: "f", seq: seq + 1, data, ...(ack > 0 ? { ack } : {}) });
       if (frame.byteLength > maxPayload)
         throw new EpEnvelopeError("contract-invalid", `session frame is ${frame.byteLength} bytes, over the ${maxPayload}-byte payload ceiling`);
+      // Publish BEFORE advancing: a synchronous publish failure must not consume the seq (the
+      // peer would otherwise see a permanent gap from a frame that never left this process,
+      // and the local stats would count it in flight). A failed publish breaks the rail.
+      try {
+        opts.nc.publish(egress, frame);
+      } catch (e) {
+        protocolError("publish", (e as Error)?.message ?? String(e));
+        throw new EpEnvelopeError("failed-precondition", `session rail publish failed; the rail is broken, re-establish (SPEC 13.6): ${(e as Error)?.message ?? String(e)}`);
+      }
       seq++;
-      if (ack > lastEmittedAck) lastEmittedAck = ack;
-      opts.nc.publish(egress, frame);
+      // Arm the watchdog the moment the window BECOMES full: a sender that now only waits
+      // (never calling send again) is still covered by the timer-driven stall check.
+      if (seq - ackedThrough >= window && windowFullSince === 0) windowFullSince = now();
       return seq;
     },
     close(): void {
-      if (closed) return;
+      if (closed) {
+        teardown(); // idempotent; also covers close-after-broken
+        return;
+      }
       closed = true;
-      stopTimers();
       try {
         opts.nc.publish(egress, encodeSessionFrame({ t: "close" }));
       } catch {
         /* advisory only — the ledger is the authority */
       }
-      sub.unsubscribe();
+      teardown();
     },
     stats() {
       return { sent: seq, ackedThrough, delivered, inFlight: seq - ackedThrough };

@@ -2,20 +2,31 @@
  * v0.4 §13.6 SESSION (bidirectional stream) smoke — the composite's three layers:
  *
  *   A. the SESSION GRANT artifact (broker-free): mint → verify round-trip; the refusal
- *      battery — wrong audience, substituted/tampered rail subjects, unknown field, unknown/
- *      revoked/wrong-role/scope-closed key, tampered payload, expired, not-yet-valid, TTL over
- *      the live ceiling, window out of bounds.
- *   B. the LEDGER + REDEMPTION seam (faithful in-memory ledger): one-use (duplicate redemption
- *      loses the create-CAS and revokes only ITS OWN staged pair), finalize fresh-checks
- *      (holder-epoch drift → retired, serving-epoch drift → superseded, dead lifecycle →
- *      retired; each revokes both staged ids and releases nothing), redemption-racing-close
- *      loses its finalize, crash-mid-issue leaves an `issuing` row the sweep collects (both
- *      ids revoked, tombstoned), state-grammar monotonicity, pre-check refusals burn nothing.
+ *      battery — wrong audience, substituted/tampered rail subjects, unknown field (top-level
+ *      AND nested: every object is a closed schema), unknown/revoked/wrong-role/scope-closed
+ *      key, tampered payload, expired, not-yet-valid, TTL over the live ceiling, window out of
+ *      bounds, free-form holder id (principal grammar), short sessionId (unguessability
+ *      floor), and the UTF-8 BYTE bound (multibyte cannot slide under on char count).
+ *   B. the LEDGER + REDEMPTION seam (faithful in-memory ledger with REAL revision-pinned
+ *      gates): presenter authentication (a leaked grant is not a bearer artifact), one-use
+ *      with the authenticated-holder retry exception (lost response → same credential, never
+ *      a re-mint), the ADVERSARIAL two-gate fence probe (a gate moved between observation and
+ *      stage makes the pinned write LOSE), finalize fresh-checks (holder/serving epoch drift
+ *      AND expiry-at-finalize), redemption-racing-close, serving retrieval bound to the FULL
+ *      authenticated serving identity against the AUTHORITATIVE row (wrong instance/epoch/
+ *      endpoint refuse), hostile release hooks fail loud (wrong id, credential outliving the
+ *      session, aliased ids), release-outage recovery (row stays active; retry recovers), the
+ *      sweep's REAL revoke retry (per-credential marks; a failed revoke is retried on the
+ *      terminal row until confirmed), state-grammar monotonicity.
  *   C. the RAILS over a REAL broker: duplex in-order delivery with credits cycling through a
  *      small window; window overflow REFUSES resource-exhausted (no buffering); a sequence
- *      GAP breaks the session loudly (credits stall); duplicates drop; garbled frames and
- *      credit overruns surface as protocol errors; the in-band close is advisory
- *      (peer notified, local rail refuses further sends).
+ *      GAP breaks the session loudly; duplicates drop; garbled frames and credit overruns
+ *      surface as protocol errors; an OVERRUNNING PIGGYBACK breaks the rail BEFORE its data
+ *      reaches the app; a THROWING HANDLER earns no delivery and no credit; the
+ *      DOUBLE-CREDIT-LOSS counterexample (an already-emitted watermark is re-advertised while
+ *      the peer is quiet); the TIMER-driven stall watchdog (fires with no further send call);
+ *      peer-close teardown (no remotely triggerable subscription/timer leak); the in-band
+ *      close is advisory.
  *   D. NO STANDING EPS GRANT: the caller/serve grant builders emit no `eps.` row (§13.9
  *      :2068-2070 — both sides hold only redemption-minted per-session credentials).
  *
@@ -57,6 +68,10 @@ const NOW = 1_700_000_000_000;
 const kp = createUser();
 const HOLDER = { id: "u_holder.cli", lifecycleUid: "h".repeat(26), processEpoch: 3 };
 const SERVING = { instanceId: "s".repeat(26), epoch: 7 };
+/** The AUTHENTICATED presenter the trusted auth path establishes (here: the honest holder). */
+const PRESENTER = { id: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid };
+/** The authenticated serving identity for per-party retrieval. */
+const SERVING_PRESENTER = { endpoint: ENDPOINT, instanceId: SERVING.instanceId, epoch: SERVING.epoch };
 const anchors = new Map<string, SignerAnchor>();
 anchors.set("k1", {
   keyId: "k1", publicKey: kp.getPublicKey(), owner: ENDPOINT,
@@ -88,6 +103,24 @@ await rejects("re-signed substituted subjects fail the derivation check", async 
   await verify(swapped);
 }, "permission-denied");
 await rejects("unknown field refuses (closed schema)", async () => verify({ ...mint(), extra: 1 }), "contract-invalid");
+await rejects("unknown field INSIDE holder refuses (closed nested schema)", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  await verify(signArtifact({ ...unsigned, holder: { ...g.holder, admin: true } }, kp));
+}, "contract-invalid");
+await rejects("unknown field INSIDE issuer refuses (closed nested schema)", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  await verify(signArtifact({ ...unsigned, issuer: { keyId: "k1", scope: "all" } }, kp));
+}, "contract-invalid");
+await rejects("a free-form holder id refuses at mint (principal grammar, not any string)", () => mint({ holder: { ...HOLDER, id: "not a principal!" } }), "contract-invalid");
+await rejects("a short caller-supplied sessionId refuses at mint (unguessability floor)", () => mint({ sessionId: "shortid1" }), "contract-invalid");
+await rejects("a short sessionId refuses at verify even re-signed", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  await verify(signArtifact({ ...unsigned, sessionId: "shortid1" }, kp));
+}, "contract-invalid");
+await rejects("the grant byte bound counts UTF-8 BYTES, not JS chars", async () => verify({ ...mint(), space: "€".repeat(6000) }), "contract-invalid");
 await rejects("tampered window (payload) kills the signature", async () => verify({ ...mint(), window: 9 }), "permission-denied");
 await rejects("unknown signing key refuses", async () => {
   const g = mintSessionGrant({ space: SPACE, endpoint: ENDPOINT, holder: HOLDER, serving: SERVING, ttlMs: 60_000, issuerKeyId: "nope", now: NOW }, kp);
@@ -115,15 +148,18 @@ await rejects("TTL over the live ceiling refuses at mint", () => mint({ ttlMs: S
 await rejects("window out of bounds refuses at mint", () => mint({ window: SESSION_WINDOW_MAX + 1 }), "contract-invalid");
 
 // ---------- B. ledger + redemption seam ----------
-console.log("B. one-use redemption + finalize fresh-checks (faithful in-memory ledger)");
+console.log("B. presenter-authenticated one-use redemption + the pinned two-gate fence");
 
-interface FakeState { rows: Map<string, SessionLedgerRow>; revoked: string[]; staged: number; released: string[]; alloc: number }
+interface FakeState { rows: Map<string, SessionLedgerRow>; revoked: string[]; staged: number; released: string[]; alloc: number; gates: Map<string, number> }
 function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: SessionRedemptionHooks; st: FakeState } {
-  const st: FakeState = { rows: new Map(), revoked: [], staged: 0, released: [], alloc: 0 };
+  const st: FakeState = { rows: new Map(), revoked: [], staged: 0, released: [], alloc: 0, gates: new Map() };
   const ledger: SessionLedger = {
+    // The AUTHORITATIVE read hands back a copy, like a real KV get — callers must not be able
+    // to mutate ledger truth through the projection.
+    read: (id) => { const r = st.rows.get(id); return r ? { ...r, serving: { ...r.serving }, holder: { ...r.holder }, revoked: { ...r.revoked } } : undefined; },
     createIssuing(row) {
       if (st.rows.has(row.sessionId)) return "exists";
-      st.rows.set(row.sessionId, { ...row });
+      st.rows.set(row.sessionId, { ...row, revoked: { ...row.revoked } });
       return "created";
     },
     finalizeActive(id) {
@@ -141,7 +177,15 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
       r.state = to;
       return true;
     },
+    markRevoked(id, credId) {
+      const r = st.rows.get(id);
+      if (!r) throw new Error(`markRevoked: no row ${id}`);
+      if (credId === r.credCaller) r.revoked.caller = true;
+      else if (credId === r.credServing) r.revoked.serving = true;
+      else throw new Error(`markRevoked: unknown credential ${credId}`);
+    },
   };
+  const gatePin = (key: string) => { if (!st.gates.has(key)) st.gates.set(key, 1); return { key, revision: st.gates.get(key)! }; };
   const hooks: SessionRedemptionHooks = {
     ledger,
     holderProcessEpoch: () => HOLDER.processEpoch,
@@ -150,9 +194,19 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
       const n = ++st.alloc;
       return { credCaller: `cc${n}`, credServing: `cs${n}` };
     },
-    // The lifecycle FENCE (default: gates hold). A gate-pinned stage that loses THROWS.
-    stagePair: () => { st.staged++; },
-    releaseCredential: (_id, credId) => { st.released.push(credId); return { id: credId, creds: `CREDS-${credId}` }; },
+    observeHolderGate: (h) => gatePin(`gate.${h.lifecycleUid}`),
+    observeServingGate: (_e, inst) => gatePin(`gate.${inst}`),
+    // The lifecycle FENCE is REAL in this fake: each stage is revision-pinned to its observed
+    // gate; a gate that moved since observation makes the stage LOSE (a write loss, not a read).
+    stagePair: (_g, _ids, pins) => {
+      for (const pin of [pins.holder, pins.serving]) {
+        const cur = st.gates.get(pin.key);
+        if (cur !== pin.revision) throw new EpEnvelopeError("permission-denied", `gate ${pin.key} moved (rev ${cur}, pinned ${pin.revision}); the pinned stage loses`);
+      }
+      st.staged++;
+    },
+    // Idempotent for the row's life: same bytes on repeat (the lost-response retry path).
+    releaseCredential: (_sid, credId) => { st.released.push(credId); return { id: credId, creds: `CREDS-${credId}`, exp: NOW + 30_000 }; },
     revokeCredential: (id) => { st.revoked.push(id); },
     now: () => NOW + 10,
     ...over,
@@ -163,40 +217,88 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
 {
   const g = await verify(mint());
   const { hooks, st } = fakeHooks();
-  const holderCred = await redeemSession(g, hooks);
+  const holderCred = await redeemSession(g, PRESENTER, hooks);
   const row = st.rows.get(g.sessionId)!;
-  c("happy path: row active, BOTH ids recorded from creation, ONLY the holder credential released",
-    row.state === "active" && row.credCaller === "cc1" && row.credServing === "cs1" && holderCred.id === "cc1" && st.released.join() === "cc1" && st.revoked.length === 0, { row, holderCred, released: st.released });
-  c("the serving side retrieves ITS OWN credential separately (no cross-party bytes)",
-    (await retrieveServingCredential(g.sessionId, row, hooks)).id === "cs1" && st.released.join() === "cc1,cs1", st.released);
+  c("happy path: row active, ENDPOINT + both ids recorded from creation, ONLY the holder credential released",
+    row.state === "active" && row.endpoint === ENDPOINT && row.credCaller === "cc1" && row.credServing === "cs1" && holderCred.id === "cc1" && holderCred.exp <= g.exp && st.released.join() === "cc1" && st.revoked.length === 0, { row, holderCred, released: st.released });
   c("ledger key grammar", sessionLedgerKey(g.sessionId) === `session.${g.sessionId}`);
-
-  // DUPLICATE redemption: the create-CAS is the one-use — the second attempt loses at the create
-  // (before any staging), and the first row is untouched.
-  await rejects("duplicate redemption loses the create-CAS (one-use burned)", () => redeemSession(g, hooks), "permission-denied");
-  c("…the duplicate staged NOTHING new (the create is the one-use, before the stage)", st.staged === 1, st);
-  c("…the winner's row is untouched", st.rows.get(g.sessionId)!.state === "active" && st.rows.get(g.sessionId)!.credCaller === "cc1");
+  // The ONE authenticated exception to the one-use: the holder whose response was lost retries
+  // and gets the SAME credential back — no re-mint, no new stage, no second session.
+  const again = await redeemSession(g, PRESENTER, hooks);
+  c("the authenticated holder's retry re-releases the SAME credential (lost response recovers; nothing re-staged)",
+    again.id === "cc1" && st.staged === 1 && st.rows.get(g.sessionId)!.credCaller === "cc1", { again, staged: st.staged });
+}
+{
+  // PRESENTER AUTHENTICATION: possession of the signed grant is NOT authority.
+  const g = await verify(mint());
+  const { hooks, st } = fakeHooks();
+  await rejects("a leaked grant redeemed by a NON-holder presenter refuses (holder-bound, never bearer)",
+    () => redeemSession(g, { id: "u_thief.cli", lifecycleUid: HOLDER.lifecycleUid }, hooks), "permission-denied");
+  await rejects("the holder's principal under ANOTHER lifecycle refuses (live authority, 13.1)",
+    () => redeemSession(g, { id: HOLDER.id, lifecycleUid: "x".repeat(26) }, hooks), "permission-denied");
+  c("…identity is checked FIRST: nothing allocated, the one-use is NOT burned", st.alloc === 0 && st.rows.size === 0, st);
+}
+{
+  // A duplicate against a row still MID-ISSUE refuses: the retry exception applies only to active.
+  const g = await verify(mint());
+  const { hooks, st } = fakeHooks();
+  st.rows.set(g.sessionId, { sessionId: g.sessionId, endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccI", credServing: "csI", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW + 60_000 });
+  await rejects("a duplicate against a still-issuing row refuses (one-use; the retry applies only to an active row)", () => redeemSession(g, PRESENTER, hooks), "permission-denied");
+  c("…and released nothing", st.released.length === 0);
+}
+{
+  // SERVING RETRIEVAL: the FULL authenticated serving identity against the AUTHORITATIVE row.
+  const g = await verify(mint());
+  const { hooks } = fakeHooks();
+  await redeemSession(g, PRESENTER, hooks);
+  const sc = await retrieveServingCredential(g.sessionId, SERVING_PRESENTER, hooks);
+  c("the serving side retrieves ITS OWN credential via its authenticated identity (no cross-party bytes)", sc.id === "cs1" && sc.exp <= g.exp, sc);
+  c("…idempotently (a lost response retries to the same bytes)", (await retrieveServingCredential(g.sessionId, SERVING_PRESENTER, hooks)).id === "cs1");
+  await rejects("a WRONG instanceId refuses (per-party release)", () => retrieveServingCredential(g.sessionId, { ...SERVING_PRESENTER, instanceId: "z".repeat(26) }, hooks), "permission-denied");
+  await rejects("a WRONG epoch refuses", () => retrieveServingCredential(g.sessionId, { ...SERVING_PRESENTER, epoch: SERVING.epoch + 1 }, hooks), "permission-denied");
+  await rejects("the SAME instanceId under a DIFFERENT endpoint refuses (instanceId is unique only per endpoint; the row pins it)",
+    () => retrieveServingCredential(g.sessionId, { ...SERVING_PRESENTER, endpoint: "other" }, hooks), "permission-denied");
+  await rejects("an unknown session refuses (the row is read authoritatively, never caller-supplied)",
+    () => retrieveServingCredential(mintSessionId(), SERVING_PRESENTER, hooks), "not-found");
 }
 {
   // retrieveServingCredential refuses on a non-active row (an issuing row confers nothing).
-  const { hooks } = fakeHooks();
+  const { hooks, st } = fakeHooks();
+  const sid = mintSessionId();
+  st.rows.set(sid, { sessionId: sid, endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccX", credServing: "csX", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW + 60_000 });
   await rejects("serving retrieval on a non-active row refuses (issuing confers nothing)",
-    () => retrieveServingCredential("s", { state: "issuing", credServing: "csX" }, hooks), "failed-precondition");
+    () => retrieveServingCredential(sid, SERVING_PRESENTER, hooks), "failed-precondition");
 }
 {
-  // The LIFECYCLE FENCE: a barrier retires a party during redemption, so the gate-pinned stage
-  // LOSES (throws). The row is transitioned terminal and both ids revoked; nothing released.
+  // The LIFECYCLE FENCE, direct form: the gate-pinned stage LOSES (throws). The row is
+  // transitioned terminal, both ids revoked AND marked; nothing released.
   const g = await verify(mint());
   const { hooks, st } = fakeHooks({ stagePair: () => { throw new EpEnvelopeError("permission-denied", "lifecycle gate moved (barrier retired the holder)"); } });
-  await rejects("a retired lifecycle makes the gate-pinned stage LOSE (the lifecycle fence, not a read)", () => redeemSession(g, hooks), "permission-denied");
-  c("…row retired + both ids revoked + nothing released", st.rows.get(g.sessionId)!.state === "retired" && st.revoked.join() === "cc1,cs1" && st.released.length === 0, st);
+  await rejects("a retired lifecycle makes the gate-pinned stage LOSE (the lifecycle fence, not a read)", () => redeemSession(g, PRESENTER, hooks), "permission-denied");
+  c("…row retired + both ids revoked + marked + nothing released",
+    st.rows.get(g.sessionId)!.state === "retired" && st.revoked.join() === "cc1,cs1" && st.rows.get(g.sessionId)!.revoked.caller && st.rows.get(g.sessionId)!.revoked.serving && st.released.length === 0, st);
+}
+{
+  // The ADVERSARIAL two-gate probe: a barrier moves the HOLDER's gate BETWEEN the observation
+  // and the stage — the revision pin makes the stage lose. This is the ordering the panel
+  // demanded be testable, not an opaque promise.
+  const g = await verify(mint());
+  const { hooks, st } = fakeHooks();
+  const observe = hooks.observeHolderGate;
+  hooks.observeHolderGate = async (h) => {
+    const pin = await observe(h);
+    st.gates.set(pin.key, pin.revision + 1); // the barrier wins right after we looked
+    return pin;
+  };
+  await rejects("a gate moved BETWEEN observation and stage makes the pinned stage LOSE (adversarial ordering probe)", () => redeemSession(g, PRESENTER, hooks), "permission-denied");
+  c("…row retired + both ids revoked + nothing released", st.rows.get(g.sessionId)!.state === "retired" && st.revoked.length === 2 && st.released.length === 0, st);
 }
 {
   // HOLDER EPOCH drift at finalize (fresh-check): pre-check passes, second read moved.
   const g = await verify(mint());
   let reads = 0;
   const { hooks, st } = fakeHooks({ holderProcessEpoch: () => (++reads === 1 ? HOLDER.processEpoch : HOLDER.processEpoch + 1) });
-  await rejects("holder restart during redemption refuses at the finalize fresh-check", () => redeemSession(g, hooks), "expired");
+  await rejects("holder restart during redemption refuses at the finalize fresh-check", () => redeemSession(g, PRESENTER, hooks), "expired");
   c("…row went retired + both staged ids revoked, nothing released", st.rows.get(g.sessionId)!.state === "retired" && st.revoked.length === 2 && st.released.length === 0, st);
 }
 {
@@ -204,8 +306,17 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
   const g = await verify(mint());
   let reads = 0;
   const { hooks, st } = fakeHooks({ servingEpoch: () => (++reads === 1 ? SERVING.epoch : SERVING.epoch + 1) });
-  await rejects("serving supersession during redemption refuses at finalize", () => redeemSession(g, hooks), "expired");
+  await rejects("serving supersession during redemption refuses at finalize", () => redeemSession(g, PRESENTER, hooks), "expired");
   c("…row went superseded + both staged ids revoked", st.rows.get(g.sessionId)!.state === "superseded" && st.revoked.length === 2, st);
+}
+{
+  // EXPIRY AT FINALIZE: passes the pre-check, expires during the (slow) stage — the finalize
+  // re-checks currency and refuses; nothing is released.
+  const g = await verify(mint());
+  let calls = 0;
+  const { hooks, st } = fakeHooks({ now: () => (++calls === 1 ? NOW + 10 : NOW + 60_001) });
+  await rejects("a grant that expires DURING redemption refuses at the finalize currency re-check", () => redeemSession(g, PRESENTER, hooks), "expired");
+  c("…row expired + both ids revoked, nothing released", st.rows.get(g.sessionId)!.state === "expired" && st.revoked.length === 2 && st.released.length === 0, st);
 }
 {
   // REDEMPTION RACING A CLOSE: the row leaves `issuing` between the stage and the finalize — the
@@ -220,28 +331,74 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
       void base.hooks.ledger.transitionTerminal(g.sessionId, "closed");
     },
   };
-  await rejects("a redemption racing a close loses its finalize (conflict), releases nothing", () => redeemSession(g, hooks), "conflict");
+  await rejects("a redemption racing a close loses its finalize (conflict), releases nothing", () => redeemSession(g, PRESENTER, hooks), "conflict");
   c("…the racer's terminal state stands + the loser revoked both staged ids, released nothing", base.st.rows.get(g.sessionId)!.state === "closed" && base.st.revoked.length === 2 && base.st.released.length === 0, base.st);
 }
 {
   // PRE-CHECK refusals burn nothing: wrong holder epoch up front → no alloc, no create, no stage.
   const g = await verify(mint());
   const { hooks, st } = fakeHooks({ holderProcessEpoch: () => HOLDER.processEpoch + 5 });
-  await rejects("an unredeemed grant does not survive the caller's restart (pre-check)", () => redeemSession(g, hooks), "expired");
+  await rejects("an unredeemed grant does not survive the caller's restart (pre-check)", () => redeemSession(g, PRESENTER, hooks), "expired");
   c("…nothing allocated/staged, one-use NOT burned", st.alloc === 0 && st.staged === 0 && st.rows.size === 0);
 }
 {
-  // CRASH MID-ISSUE → the sweep collects: an `issuing` row past exp is transitioned expired
-  // and BOTH recorded ids revoked; terminal + unexpired rows are untouched.
+  // HOSTILE RELEASE HOOKS fail loud: the seam validates what came back, never passes it through.
+  const g1 = await verify(mint());
+  const wrongId = fakeHooks({ releaseCredential: () => ({ id: "someone-else", creds: "X", exp: NOW + 1000 }) });
+  await rejects("a release returning a DIFFERENT credential id fails loud (hook contract)", () => redeemSession(g1, PRESENTER, wrongId.hooks), "contract-invalid");
+  const g2 = await verify(mint());
+  const longLife = fakeHooks({ releaseCredential: (_s, id) => ({ id, creds: "X", exp: NOW + SESSION_GRANT_MAX_TTL_MS * 2 }) });
+  await rejects("a released credential OUTLIVING the session fails loud (cred exp within session exp)", () => redeemSession(g2, PRESENTER, longLife.hooks), "contract-invalid");
+  const g3 = await verify(mint());
+  const aliased = fakeHooks({ allocateCredentialIds: () => ({ credCaller: "same", credServing: "same" }) });
+  await rejects("ALIASED credential ids refuse before the one-use create", () => redeemSession(g3, PRESENTER, aliased.hooks), "contract-invalid");
+  c("…nothing created for the aliased pair", aliased.st.rows.size === 0);
+}
+{
+  // RELEASE OUTAGE AFTER FINALIZE is recoverable: the row stays active and the holder's
+  // authenticated retry lands on the re-release path — never a torn-down half-session.
+  const g = await verify(mint());
+  let releases = 0;
   const { hooks, st } = fakeHooks();
-  const row: SessionLedgerRow = { sessionId: mintSessionId(), serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccX", credServing: "csX", state: "issuing", exp: NOW };
+  const realRelease = hooks.releaseCredential;
+  hooks.releaseCredential = (sid, id) => {
+    if (++releases === 1) throw new Error("transient release outage");
+    return realRelease(sid, id);
+  };
+  await rejects("a transient release failure after finalize surfaces (the row stays active)", () => redeemSession(g, PRESENTER, hooks));
+  c("…the row is ACTIVE, not torn down", st.rows.get(g.sessionId)!.state === "active");
+  c("…and the holder's retry recovers the SAME credential", (await redeemSession(g, PRESENTER, hooks)).id === "cc1");
+}
+{
+  // CRASH MID-ISSUE → the sweep collects: an `issuing` row past exp is transitioned expired
+  // and BOTH recorded ids revoked + MARKED; a fully-collected terminal row is untouched.
+  const { hooks, st } = fakeHooks();
+  const row: SessionLedgerRow = { sessionId: mintSessionId(), endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccX", credServing: "csX", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW };
   st.rows.set(row.sessionId, row);
-  c("sweep collects a crashed half-issue past exp (row expired, BOTH ids revoked)",
-    (await sweepSessionRow(row, hooks, { now: NOW + 1 })) === true && st.rows.get(row.sessionId)!.state === "expired" && st.revoked.join() === "ccX,csX", st);
-  c("sweep never touches a terminal row", (await sweepSessionRow(st.rows.get(row.sessionId)!, hooks, { now: NOW + 999 })) === false);
-  const live: SessionLedgerRow = { ...row, sessionId: mintSessionId(), state: "active", exp: NOW + 60_000 };
+  c("sweep collects a crashed half-issue past exp (row expired, BOTH ids revoked + marked)",
+    (await sweepSessionRow(row, hooks, { now: NOW + 1 })) === true && st.rows.get(row.sessionId)!.state === "expired" && st.revoked.join() === "ccX,csX" && row.revoked.caller && row.revoked.serving, st);
+  c("sweep leaves a fully-collected terminal row alone", (await sweepSessionRow(st.rows.get(row.sessionId)!, hooks, { now: NOW + 999 })) === false);
+  const live: SessionLedgerRow = { ...row, sessionId: mintSessionId(), revoked: { caller: false, serving: false }, state: "active", exp: NOW + 60_000 };
   st.rows.set(live.sessionId, live);
   c("sweep leaves an unexpired active row alone", (await sweepSessionRow(live, hooks, { now: NOW })) === false && live.state === "active");
+}
+{
+  // THE REVOKE RETRY IS REAL: one revoke fails during collection; the row goes terminal with
+  // one UNMARKED id; the next pass retries EXACTLY that id; the pass after is a no-op. This is
+  // the counterexample to "the next sweep retries" being a comment on early-returning code.
+  const { hooks, st } = fakeHooks();
+  let failOnce = true;
+  hooks.revokeCredential = (id) => {
+    if (id === "csY" && failOnce) { failOnce = false; throw new Error("revocation outage"); }
+    st.revoked.push(id);
+  };
+  const row: SessionLedgerRow = { sessionId: mintSessionId(), endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccY", credServing: "csY", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW };
+  st.rows.set(row.sessionId, row);
+  c("sweep pass 1: row terminal; the FAILED revoke leaves its mark unset",
+    (await sweepSessionRow(row, hooks, { now: NOW + 1 })) === true && st.rows.get(row.sessionId)!.state === "expired" && row.revoked.caller === true && row.revoked.serving === false, row);
+  c("sweep pass 2 retries EXACTLY the unmarked id on the TERMINAL row",
+    (await sweepSessionRow(st.rows.get(row.sessionId)!, hooks, { now: NOW + 2 })) === true && st.rows.get(row.sessionId)!.revoked.serving === true && st.revoked.join() === "ccY,csY", st);
+  c("sweep pass 3: fully collected, no-op", (await sweepSessionRow(st.rows.get(row.sessionId)!, hooks, { now: NOW + 3 })) === false);
 }
 {
   // State grammar monotonicity.
@@ -352,6 +509,36 @@ try {
     serving.close(); caller.close(); caller5.close();
   }
   {
+    // A protocol-invalid PIGGYBACK must have NO application effect: the overrunning ack breaks
+    // the rail BEFORE the frame's data reaches onData.
+    const gO = { ...grant, sessionId: mintSessionId() };
+    const errs: string[] = []; const got: unknown[] = [];
+    const serving = openSessionRail({ nc: ncB, grant: gO, role: "serving", onData: (d) => got.push(d), onProtocolError: (r) => errs.push(r) });
+    await ncB.flush();
+    ncA.publish(epsSubject(SPACE, ENDPOINT, gO.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "f", seq: 1, data: { evil: 1 }, ack: 99 }));
+    await ncA.flush();
+    c("an overrunning piggyback ack breaks the rail BEFORE the frame's data reaches the app",
+      await until(() => errs.includes("credit-overrun")) && got.length === 0, { errs, got });
+    serving.close();
+  }
+  {
+    // The APPLICATION accepts FIRST: a throwing handler breaks the rail; the refused frame is
+    // neither counted delivered nor credited (the sender must never count it accepted).
+    const gH = { ...grant, sessionId: mintSessionId() };
+    const credits: number[] = [];
+    const watch = ncA.subscribe(epsSubject(SPACE, ENDPOINT, gH.sessionId, SERVING.epoch, "out"), { callback: (_e, m) => { const f = parseSessionFrame(m.data); if (f.t === "credit") credits.push(f.ack); } });
+    const errs: string[] = [];
+    const serving = openSessionRail({ nc: ncB, grant: gH, role: "serving", onData: () => { throw new Error("app refused the frame"); }, onProtocolError: (r) => errs.push(r), idleCreditMs: 20 });
+    await ncA.flush(); await ncB.flush();
+    ncA.publish(epsSubject(SPACE, ENDPOINT, gH.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    await ncA.flush();
+    c("a throwing handler breaks the rail (handler fault); the frame is NOT counted delivered",
+      await until(() => errs.includes("handler")) && serving.stats().delivered === 0, { errs, stats: serving.stats() });
+    await wait(100);
+    c("…and no credit was ever emitted for the refused frame", credits.length === 0, credits);
+    serving.close(); watch.unsubscribe();
+  }
+  {
     // CREDIT LOSS RECOVERY — mechanism (a) PIGGYBACK: a sender at a full window recovers when a
     // reverse DATA frame carries a piggybacked absolute ack, even with NO standalone credit frame
     // (the dedicated credit was "lost"). window=2; fill it; inject one data frame on the caller's
@@ -369,10 +556,9 @@ try {
     caller.close();
   }
   {
-    // CREDIT LOSS RECOVERY — mechanism (b) IDLE RE-EMIT: a receiver holding ungranted delivery
-    // (below the standalone credit threshold) whose peer has gone quiet re-advertises its absolute
-    // watermark on the idle timer, so a double-credit-loss stall self-heals. window big enough that
-    // one delivered frame never hits the standalone threshold; assert a credit appears anyway.
+    // CREDIT LOSS RECOVERY — mechanism (b) KEEPALIVE, sub-threshold leg: a receiver holding
+    // ungranted delivery (below the standalone credit threshold) whose peer has gone quiet
+    // advertises its absolute watermark on the idle tick.
     const g8 = { ...grant, sessionId: mintSessionId(), window: 16 };
     const inSubj = epsSubject(SPACE, ENDPOINT, g8.sessionId, SERVING.epoch, "in");
     const outSubj = epsSubject(SPACE, ENDPOINT, g8.sessionId, SERVING.epoch, "out");
@@ -382,14 +568,48 @@ try {
     await ncA.flush(); await ncB.flush();
     ncA.publish(inSubj, encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } })); // 1 < creditEvery(8): no standalone threshold credit
     await ncA.flush();
-    c("the idle re-emit re-advertises the absolute watermark for a quiet peer (double-loss self-heal)",
+    c("the keepalive advertises the absolute watermark for a quiet peer (sub-threshold delivery)",
       await until(() => credits.includes(1), 3000), credits);
     serving.close(); watch.unsubscribe();
   }
   {
-    // STALL WATCHDOG: no credits AT ALL (bare subscriber, no reverse traffic, no idle re-emit
-    // reaching us), a full window, and a short stall timeout with an injected clock — the next
-    // send past the timeout surfaces a DETECTABLE `stall` fault, never a silent hang.
+    // CREDIT LOSS RECOVERY — mechanism (b) KEEPALIVE, the DOUBLE-CREDIT-LOSS counterexample
+    // (panel round 2): a threshold credit that was EMITTED and then LOST must be re-advertised
+    // while the peer stays quiet. A re-emit gated on "newer than what I already emitted" never
+    // fires here and the blocked sender stalls forever. window=4 (threshold 2): deliver 2
+    // frames (threshold credit ack=2 emitted once), then quiet — the SAME watermark must appear
+    // again.
+    const gK = { ...grant, sessionId: mintSessionId() }; // window 4 → creditEvery 2
+    const inSubj = epsSubject(SPACE, ENDPOINT, gK.sessionId, SERVING.epoch, "in");
+    const outSubj = epsSubject(SPACE, ENDPOINT, gK.sessionId, SERVING.epoch, "out");
+    const acks: number[] = [];
+    const watch = ncA.subscribe(outSubj, { callback: (_e, m) => { const f = parseSessionFrame(m.data); if (f.t === "credit") acks.push(f.ack); } });
+    const serving = openSessionRail({ nc: ncB, grant: gK, role: "serving", onData: () => {}, idleCreditMs: 25, stallTimeoutMs: 60_000 });
+    await ncA.flush(); await ncB.flush();
+    ncA.publish(inSubj, encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    ncA.publish(inSubj, encodeSessionFrame({ t: "f", seq: 2, data: { i: 2 } }));
+    await ncA.flush();
+    c("an ALREADY-EMITTED watermark is re-advertised while the peer is quiet (emitted-credit loss recovers)",
+      await until(() => acks.filter((a) => a === 2).length >= 2, 4000), acks);
+    serving.close(); watch.unsubscribe();
+  }
+  {
+    // STALL WATCHDOG is TIMER-driven: a sender that fills the window and then only WAITS
+    // (never calling send again) still gets the detectable fault.
+    const gS = { ...grant, sessionId: mintSessionId(), window: 2 };
+    const errs: string[] = [];
+    const sub = ncB.subscribe(epsSubject(SPACE, ENDPOINT, gS.sessionId, SERVING.epoch, "in"), { callback: () => {} });
+    await ncB.flush();
+    const caller = openSessionRail({ nc: ncA, grant: gS, role: "caller", onData: () => {}, onProtocolError: (r) => errs.push(r), idleCreditMs: 20, stallTimeoutMs: 60 });
+    caller.send({ i: 1 }); caller.send({ i: 2 }); // fills the window — the send itself arms the watchdog
+    c("the stall watchdog fires with NO further send() call (a waiting sender learns its peer is gone)",
+      await until(() => errs.includes("stall"), 4000), errs);
+    await rejects("…and the broken rail refuses the next send", () => { caller.send({ i: 3 }); }, "failed-precondition");
+    caller.close(); sub.unsubscribe();
+  }
+  {
+    // STALL WATCHDOG, send-path belt (injected clock): with the timer's clock frozen, the send
+    // path itself surfaces the fault past the timeout.
     const g7 = { ...grant, sessionId: mintSessionId(), window: 2 };
     let clock = NOW;
     const errs: string[] = [];
@@ -402,6 +622,25 @@ try {
     await rejects("past the stall timeout the send surfaces a DETECTABLE fault (not a silent hang)", () => { caller.send({ i: 3 }); }, "failed-precondition");
     c("…the stall fired as a protocol error (session-fault, re-establish)", errs.includes("stall"), errs);
     caller.close(); sub.unsubscribe();
+  }
+  {
+    // PEER-CLOSE TEARDOWN: a remote advisory close clears the local timer + subscription
+    // exactly once (not a remotely triggerable per-session leak); a later local close is
+    // idempotent.
+    const gC2 = { ...grant, sessionId: mintSessionId() };
+    let created = 0, cleared = 0, peerClosed = false;
+    const rail = openSessionRail({
+      nc: ncB, grant: gC2, role: "serving", onData: () => {}, onClose: () => { peerClosed = true; },
+      setIntervalFn: (fn, ms) => { created++; return setInterval(fn, ms) as never; },
+      clearIntervalFn: (h) => { cleared++; clearInterval(h as ReturnType<typeof setInterval>); },
+    });
+    await ncB.flush();
+    ncA.publish(epsSubject(SPACE, ENDPOINT, gC2.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "close" }));
+    await ncA.flush();
+    c("a peer advisory close tears down the local timer/subscription (no remotely triggerable leak)",
+      await until(() => peerClosed && cleared === 1) && created === 1, { created, cleared, peerClosed });
+    rail.close();
+    c("…and a later local close is idempotent (no double teardown)", cleared === 1, cleared);
   }
   {
     // Frame parse grammar (closed schema) + payload ceiling.

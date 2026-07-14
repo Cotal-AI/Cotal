@@ -1741,8 +1741,11 @@ overflow is `resource-exhausted`, never unbounded buffering). Close is explicit,
 revocation has a **durable** named authority that survives the
 serving endpoint: the trusted auth path (the exchange/callout of §9/§10) persists a **session
 ledger row** at redemption, key `session.<sessionId>` in the auth store (§13.12), value
-`{sessionId, serving instance + epoch, holder (principal + lifecycleUid), both minted
-credential ids, state, exp}`, create-only CAS per `sessionId` (this CAS IS the one-use
+`{sessionId, endpoint, serving instance + epoch, holder (principal + lifecycleUid), both
+minted credential ids, per-credential revocation marks, state, exp}` (the endpoint is in the
+row because an `instanceId` is unique only within its endpoint, so every serving-party
+operation authenticates against the full serving identity the row pins), create-only CAS per
+`sessionId` (this CAS IS the one-use
 redemption), state monotonic
 (`active → closed | expired | superseded | retired`, all terminal), and each per-session
 credential is simultaneously a credential-ledger row under its holder's lifecycle (§13.1),
@@ -1760,7 +1763,10 @@ terminal state (`closed`/`expired`/`superseded`/`retired`) and revoke both crede
 name (the ids are known from the row, whether or not both credentials were released) so a
 crash mid-issue leaves an `issuing` row that the expiry sweep collects (revoking both ids and
 tombstoning), never a live half-pair, and a redemption racing a close loses its finalize CAS
-and releases nothing. The auth path revokes BOTH per-session
+and releases nothing. A revocation mark is set only by a revoke that SUCCEEDED; a terminal
+row with an unmarked credential is retried by every later sweep pass, exactly the unconfirmed
+ids, until both marks confirm, so a transient revocation failure can never quietly leave half
+a pair alive. The auth path revokes BOTH per-session
 credentials with eviction (bounded
 propagation) on any of: an **authenticated close input** on the trusted auth path itself,
 a defined operation of the SAME exchange/callout surface that redemption already uses
