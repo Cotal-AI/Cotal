@@ -2165,8 +2165,10 @@ tail is fully qualified; **no UNTRUSTED profile (agent/observer/admin) holds any
 audit MUST run this over Appendix B too, not only this matrix; the profile tables are
 generated from these rows, so a generated grant that contradicts the matrix fails the build);
 and the ONLY `STREAM.MSG.GET` (body-selected) grants that exist at all are the leader-served
-FENCING reads (read service, below) of named TRUSTED single-purpose profiles, each granted to
-no other profile: the auth path on `KV_cotal_auth_<space>`, the lifecycle mapping-reader and
+reads of named TRUSTED single-purpose profiles, each granted to no other profile - every one
+a FENCING read (read service, below) except where its row names it a CAS-PINNING read, a
+leader-served currency read whose FENCE is the pinned CAS write it feeds (§13.1: a read is
+never a fence): the auth path on `KV_cotal_auth_<space>`, the lifecycle mapping-reader and
 the provisioner-registration principal on the `cotal_records_<space>` heads, the endpoint's
 canonicalizer on `EPF_<space>`/`EPW_<space>`, the endpoint's commit principal on its own
 `EPF_<space>` fact families AND on `KV_cotal_records_<space>` (its goal/checkpoint FENCING
@@ -2174,7 +2176,11 @@ spec-and-currency reads: the terminal-commit's spec read and the epoch/deadline 
 read-service clause names), each record kind's spec/status writer principal on
 `KV_cotal_records_<space>` (its fresh lifecycle-mapping `processEpoch` currency read, the
 writer-table stale-writer fence), and the space's timer writer on
-`KV_cotal_records_<space>` (its fresh generation/deadline check before arming). The timer
+`KV_cotal_records_<space>` (its fresh generation/deadline check before arming, a FENCING
+read) and on `EPT_<space>` (`$JS.API.STREAM.MSG.GET.EPT_<space>`, the armed-subject's own
+last-by-subject sequence read: CAS-PINNING, the leader-served input to the arm's
+`Nats-Expected-Last-Subject-Sequence` publish, whose broker CAS - not the read - is the
+fence, the same §13.1 complementarity class as the FIRE handler's status CAS). The timer
 FIRE handler holds no records `STREAM.MSG.GET`: its settlement is a revision-pinned status
 CAS, so a stale read loses the CAS loudly (§13.1 complementarity), never mis-fires (the
 matrix rows below). The body-selected form is not
@@ -2227,7 +2233,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Reader/pool/effects consumer provisioning (one-shot, at capability mint / endpoint setup) | the provisioner | exact full-tail extended creates for every pre-created durable this matrix names: `$JS.API.CONSUMER.CREATE.EPW_<space>.<poolD>.cotal.<space>.epw.<e>.<pool>.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<effD>.cotal.<space>.epf.<e>.dec.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<decD>.cotal.<space>.epf.<e>.dec.<cO>.<cA>.<cUid>.>`, `$JS.API.CONSUMER.CREATE.EPF_<space>.<goalD>.cotal.<space>.epf.<e>.goal.<cO>.<cA>.<cUid>.>` (per action capability), `$JS.API.CONSUMER.CREATE.EPE_<space>.<eveD-n>.<granted full-tail subtree>`, `$JS.API.CONSUMER.CREATE.KV_cotal_records_<space>.<recD-n>.$KV.cotal_records_<space>.<granted subtree>`, every create PULL, every filter a full literal tail; plus matching `CONSUMER.DELETE` for deprovisioning (lifecycle-keyed names, §13.1) | mediated, trusted provisioning only |
 | Events | the owning instance | `epe.<endpoint>.<instanceId>.<epoch>.>` | direct; subject-confined, epoch-pinned |
 | Timer schedule request | the owning instance | publish `ept.<endpoint>.<instanceId>.<epoch>.*.schedule` (never `.armed`/`.fire`); a request carrying any scheduling header is rejected by the timer writer (§13.2) | direct; epoch-pinned; captured by the schedules-DISABLED request stream |
-| Timer request consume + arm | the space's timer writer principal (singleton infra, like the delivery daemon) | consume: `$JS.API.CONSUMER.CREATE.EPT_REQ_<space>.<timerD>.cotal.<space>.ept.*.*.*.*.schedule` (full-tail single filter) + `$JS.API.CONSUMER.INFO.EPT_REQ_<space>.<timerD>` + `$JS.API.CONSUMER.MSG.NEXT.EPT_REQ_<space>.<timerD>` + `$JS.ACK.EPT_REQ_<space>.<timerD>.>`; arm: publish `ept.*.*.*.*.armed`, deriving `Nats-Schedule-Target` = the sibling `.fire` from the authenticated request subject tokens ONLY, stripping/rejecting every client scheduling header, and **fresh-checking the authoritative timer generation/deadline before arming** (a FENCING read: leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_records_<space>` on the checkpoint record plus the armed-subject's own last-by-subject get, read service above); a redelivered or delayed stale-generation request is discarded, never armed, so it cannot overwrite the current schedule and silently lose the live deadline (§13.2, §13.6, §13.12) | mediated |
+| Timer request consume + arm | the space's timer writer principal (singleton infra, like the delivery daemon) | consume: `$JS.API.CONSUMER.CREATE.EPT_REQ_<space>.<timerD>.cotal.<space>.ept.*.*.*.*.schedule` (full-tail single filter) + `$JS.API.CONSUMER.INFO.EPT_REQ_<space>.<timerD>` + `$JS.API.CONSUMER.MSG.NEXT.EPT_REQ_<space>.<timerD>` + `$JS.ACK.EPT_REQ_<space>.<timerD>.>`; arm: publish `ept.*.*.*.*.armed`, deriving `Nats-Schedule-Target` = the sibling `.fire` from the authenticated request subject tokens ONLY, stripping/rejecting every client scheduling header, and **fresh-checking the authoritative timer generation/deadline before arming** (a FENCING read: leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_records_<space>` on the checkpoint record, read service above); the arm also reads the armed-subject's own last sequence via `$JS.API.STREAM.MSG.GET.EPT_<space>` and publishes with `Nats-Expected-Last-Subject-Sequence` pinned to it - that read is CAS-PINNING, not fencing: the broker CAS is the fence and a delayed writer's stale read loses it loudly (§13.1 complementarity, the FIRE handler's class); a redelivered or delayed stale-generation request is discarded, never armed, so it cannot overwrite the current schedule and silently lose the live deadline (§13.2, §13.6, §13.12) | mediated |
 | Timer fire consume | the owning instance | its own `ept.<endpoint>.<instanceId>.<epoch>.*.fire` (fired messages validated against its authoritative schedule state AND the broker-authored scheduler-origin header = its exact sibling `.armed`, §13.12); no client credential holds `.armed` or `.fire` publish | direct read |
 | Session `.in` publish | the session's caller (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.in` exact | direct |
 | Session `.in` subscribe | the serving instance (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.in` exact | direct read |
