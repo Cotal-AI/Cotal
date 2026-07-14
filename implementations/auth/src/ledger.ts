@@ -464,6 +464,9 @@ export function ledgerAclResolver(dir: string): AclResolver {
       allowPublish: row.allowPublish,
       ...(row.role ? { role: row.role } : {}),
       lifecycleUid: t.act.lifecycleUid,
+      // The CURRENT grant's capabilities, so the mint re-contains the bearer against the row
+      // as of THIS read (the callout's fresh-row re-check), not only as of the connect gate.
+      scope: row.scope,
     };
   };
 }

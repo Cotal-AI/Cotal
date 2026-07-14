@@ -15,7 +15,11 @@ import type { ValidatedUserToken } from "./token.js";
  *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 export type AclResolver = (
   t: ValidatedUserToken,
-) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid">;
+) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid"> & {
+  /** The actor's CURRENT capability grant (the row's scope), so the mint can re-contain the
+   *  bearer's capabilities against the row AS OF THE MINT, not only as of the connect gate. */
+  scope: string[];
+};
 
 /**
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
@@ -43,22 +47,36 @@ export function calloutPermissions(
         "callout permissions: top-level scope != act.scope - act.scope is the single capability authority",
       );
     const principal: MintPrincipal = { owner: t.owner, actor: t.act.actor, connId };
+    // A claimless bearer of EITHER shape mints nothing, even in a composition that skipped the
+    // connect gate (the equality against the row's uid follows below; this refusal is the
+    // claim-side half).
+    if (t.act.lifecycleUid === undefined)
+      throw new Error("callout permissions: bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
+    // FRESH-ROW re-read AT THE MINT, both arms: the connect boundary's ledger read
+    // (`ledgerAuthorizeConnect`) is not the final read before authority is minted - a
+    // revoke/re-grant landing between the two reads would mint from stale claims (for a view
+    // bearer, the full elevated profile; for an agent bearer, capabilities the current grant no
+    // longer carries). The resolver re-reads the CURRENT row and enforces lifecycle equality
+    // itself; here the bearer's capabilities are re-contained against the CURRENT grant, so a
+    // narrowed or moved row refuses at the mint. Two sequential reads narrow the window rather
+    // than linearize it (strict revocation linearization is a gate/CAS write, the 13.1 fence
+    // pattern); the mint trusts the SECOND read.
+    const acl = resolveAcl(t);
+    if (acl.lifecycleUid !== t.act.lifecycleUid)
+      throw new Error("callout permissions: the current row's lifecycle is not the bearer's - the alias was re-granted during connect; re-exchange for a fresh bearer");
+    const current = new Set(acl.scope);
+    for (const s of caps)
+      if (!current.has(s))
+        throw new Error(`callout permissions: bearer capability "${s}" is no longer in the actor's CURRENT grant - re-exchange for a fresh bearer`);
     if (t.act.view !== undefined) {
-      // ELEVATED VIEW: the exchange already ledger-authorized it, and `ledgerAuthorizeConnect`
-      // fresh-read the row again this connect (act.scope ⊆ current row AND the bearer's lifecycle
-      // claim === the row's CURRENT uid — no view carve-out: a predecessor incarnation's still-live
-      // view bearer dies at the alias's re-grant instead of minting the elevated profile). Here is
-      // the LAST defense-in-depth re-assert: the bearer's own capability list must carry the
-      // view's required scope, or nothing is minted. View names ARE profile names (a closed enum,
+      // ELEVATED VIEW: the exchange already ledger-authorized it, the connect gate fresh-read
+      // the row, and the containment above re-checked the CURRENT row at the mint. The LAST
+      // defense-in-depth re-assert: the bearer's own capability list must carry the view's
+      // required scope, or nothing is minted. View names ARE profile names (a closed enum,
       // never a client-chosen profile passthrough); channel ACLs don't apply to these profiles.
       const need = VIEW_REQUIRED_SCOPE[t.act.view];
       if (!caps.includes(need))
         throw new Error(`callout permissions: view "${t.act.view}" without capability "${need}" in act.scope - refusing to mint`);
-      // Same-depth lifecycle re-assert as the agent arm's resolver: a claimless VIEW bearer mints
-      // nothing here even in a composition that skipped the connect gate (the equality itself
-      // lives at ledgerAuthorizeConnect, which holds the ledger; this arm holds only the claim).
-      if (t.act.lifecycleUid === undefined)
-        throw new Error("callout permissions: view bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
       return permissionsFor(
         t.act.view,
         t.space,
@@ -68,14 +86,14 @@ export function calloutPermissions(
         t.act.view === "deployer" ? { controlTier: CONTROL_PRIVILEGED } : {},
       );
     }
-    const acl = resolveAcl(t);
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
+    const { scope: _rowScope, ...aclOpts } = acl;
     return permissionsFor(
       "agent",
       t.space,
-      { ...principal, ...(acl.lifecycleUid !== undefined ? { lifecycleUid: acl.lifecycleUid } : {}) },
-      { ...acl, capabilities: caps },
+      { ...principal, lifecycleUid: acl.lifecycleUid },
+      { ...aclOpts, capabilities: caps },
     );
   };
 }

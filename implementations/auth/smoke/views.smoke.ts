@@ -131,9 +131,13 @@ const tok = (view: UserTokenView | undefined, caps: string[], uid: string | null
   exp: Math.floor(Date.now() / 1000) + 60,
 });
 let aclConsulted = 0;
-const forView = calloutPermissions((t) => {
+// The fake ledger row the resolver serves: the CURRENT grant. `rowScope` is mutated by the
+// narrowed-grant probes below, exactly like an operator revoke landing between the connect
+// gate's read and the mint.
+let rowScope = ["spawn", "admin", "role:default"];
+const forView = calloutPermissions(() => {
   aclConsulted++;
-  return { allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid };
+  return { allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: rowScope };
 });
 type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
 {
@@ -148,7 +152,7 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
   check("admin view subscribes the messaging plane (chat/inst/svc), never the space-wide tap",
     ["chat", "inst", "svc"].every((pl) => (admin.sub?.allow ?? []).includes(`${spacePrefix(SPACE)}.${pl}.>`))
     && !(admin.sub?.allow ?? []).includes(`${spacePrefix(SPACE)}.>`), admin.sub);
-  check("admin view mints without the channel ACL resolver", aclConsulted === before);
+  check("admin view RE-READS the current row at the mint (the mint trusts the fresh read, not the connect gate's)", aclConsulted === before + 1);
   check(
     "admin view carries NO chat publish (read-only by ACL)",
     !(admin.pub?.allow ?? []).some((s) => s.includes(".chat.") && !s.startsWith("$JS")),
@@ -189,6 +193,34 @@ for (const [view, caps] of [
   } catch (e) {
     check("a CLAIMLESS view bearer refuses to mint the elevated profile", String(e).includes("no lifecycle claim"));
   }
+}
+{
+  // THE MINT-TIME TOCTOU (freelance, D7 round): the connect gate's ledger read is NOT the final
+  // read before the elevated mint. The mint re-reads the CURRENT row and trusts THAT.
+  // (a) The alias was re-granted mid-connect: the bearer's uid is no longer the row's.
+  try {
+    forView(tok("admin", ["spawn", "admin"], "y".repeat(26)), CONN);
+    check("a bearer for a re-granted alias refuses AT THE MINT (view arm)", false);
+  } catch (e) {
+    check("a bearer for a re-granted alias refuses AT THE MINT (view arm)", String(e).includes("re-granted during connect"));
+  }
+  // (b) The grant was NARROWED mid-connect (operator revoked "admin"): the elevated mint refuses.
+  rowScope = ["spawn", "role:default"];
+  try {
+    forView(tok("admin", ["spawn", "admin"]), CONN);
+    check("a grant narrowed mid-connect refuses the elevated mint (view arm)", false);
+  } catch (e) {
+    check("a grant narrowed mid-connect refuses the elevated mint (view arm)", String(e).includes("no longer in the actor's CURRENT grant"));
+  }
+  // (c) The AGENT arm re-contains its capabilities against the current row too (same class:
+  // `capabilities: caps` gates spawn grants and must not ride a stale bearer past a revoke).
+  try {
+    forView(tok(undefined, ["spawn", "admin"]), CONN);
+    check("a grant narrowed mid-connect refuses stale capabilities (agent arm)", false);
+  } catch (e) {
+    check("a grant narrowed mid-connect refuses stale capabilities (agent arm)", String(e).includes("no longer in the actor's CURRENT grant"));
+  }
+  rowScope = ["spawn", "admin", "role:default"];
 }
 
 // ---------- D. the bridge authorizes views against the fresh grant ----------
