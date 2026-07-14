@@ -75,6 +75,11 @@ function resources(ctx: ReceiptStoreContext): ReceiptResources {
   return r;
 }
 
+/** Prove a context is store-branded (minted by {@link receiptStoreContext}) without touching the
+ *  broker: emission wiring is validated at seam ENTRY, so a hand-assembled store bundle refuses
+ *  BEFORE any terminal is committed against it, never as a post-commit emission failure. */
+export function assertReceiptStoreContext(ctx: ReceiptStoreContext): void { resources(ctx); }
+
 /** One receipt's coordinates: the accepted execution's identity (§13.2). The subject caller is
  *  the TRIPLE; the artifact's `caller` evidence carries `{id, lifecycleUid}`. */
 export interface ReceiptRef {
@@ -271,6 +276,27 @@ export function mintReceiptFromFacts(
     ts: args.ts,
     signer: args.signer,
   }, keyPair);
+}
+
+/** Prove a RECORDED receipt attests the same facts as a freshly fact-derived candidate: every
+ *  attestation field (identity + outcome) must agree; only the emission evidence (instance, ts,
+ *  signer, sig) may differ, because two legitimate emitters — the inline commit path and the
+ *  reconciler — mint from the SAME facts at different moments. First-recorded-wins is the §13.10
+ *  rule; a recorded receipt that DISAGREES with the facts is exactly the forged-attestation class
+ *  CF-1 closes and is a loud `conflict`, never silently adopted. */
+export function assertReceiptAttestsSameFacts(recorded: Receipt, candidate: Receipt): void {
+  const same =
+    recorded.requestId === candidate.requestId && recorded.sourceSeq === candidate.sourceSeq
+    && recorded.space === candidate.space && recorded.endpoint === candidate.endpoint
+    && recorded.command === candidate.command
+    && recorded.caller.id === candidate.caller.id && recorded.caller.lifecycleUid === candidate.caller.lifecycleUid
+    && recorded.schemaDigests.input === candidate.schemaDigests.input
+    && recorded.schemaDigests.output === candidate.schemaDigests.output
+    && recorded.argsDigest === candidate.argsDigest
+    && recorded.outcome.ok === candidate.outcome.ok && recorded.outcome.code === candidate.outcome.code
+    && recorded.resultDigest === candidate.resultDigest;
+  if (!same)
+    throw new EpEnvelopeError("conflict", `the recorded receipt for ${recorded.endpoint}/${recorded.requestId}#${recorded.sourceSeq} disagrees with the committed facts it claims to attest; one execution has one receipt and it must attest the committed record (SPEC 13.10)`);
 }
 
 /** Closed shape validation, IDENTITY-BOUND to the ref/subject it was read for (§13.4/§13.10):

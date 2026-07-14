@@ -138,7 +138,7 @@ try {
   const kv = await openRecordsBucket(nc, SPACE);
   const ctx: ActionContext = await actionContext(nc, SPACE);
   const INSTANCE = "i".repeat(26);
-  const spec = (fingerprint: string) => ({ fingerprint, command: "deploy", caller: { id: "u_abc.worker", lifecycleUid: UID }, sourceSeq: 1, acceptedAt: NOW });
+  const spec = (fingerprint: string) => ({ fingerprint, command: "deploy", caller: { id: "u_abc.worker", lifecycleUid: UID }, requestId: "req-guard", sourceSeq: 1, acceptedAt: NOW });
 
   // hold → checkpoint owned by the guard responder + goal waiting
   const g1 = goalOf("g-hold");

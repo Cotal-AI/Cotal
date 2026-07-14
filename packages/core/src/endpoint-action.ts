@@ -43,8 +43,13 @@ import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, assertIdToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader } from "./endpoint-records.js";
-import { epfStreamName, epfGoalBindSubject, readLastFact } from "./endpoint-journal.js";
+import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
+import {
+  mintReceiptFromFacts, receiptOutcomeOfGoal, publishReceipt, readReceipt,
+  assertReceiptAttestsSameFacts, assertReceiptStoreContext,
+  type Receipt, type ReceiptStoreContext,
+} from "./endpoint-receipt.js";
 
 /** A trusted, space-bonded action context: the KV + JS + JSM all DERIVE from one binding-layer
  *  connection and one space by the constructor (never injected independently — a branded bundle
@@ -289,6 +294,11 @@ export interface GoalSpecValue {
   command: string;
   caller: { id: string; lifecycleUid: string };
   target?: { owner: string; actor: string; lifecycleUid: string; mappingRevision: number };
+  /** The accepted submission's request id — the goal's ADDRESS for its durable acceptance fact
+   *  (`epf.<e>.dec.<triple>.<id>`), written at acceptance when it is known. The raw submission
+   *  (EPJ) is age-evicted, so receipt reconstruction after a crash reads the acceptance THROUGH
+   *  this address and proves the chain (id + sourceSeq + fingerprint) before minting (§13.10). */
+  requestId: string;
   sourceSeq: number;
   acceptedAt: number;
   readinessDeadlineMs?: number;
@@ -301,9 +311,11 @@ function parseSpec(raw: unknown, key: string, ref: GoalRef): GoalSpecValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal spec ${key} is not an object; garbled mediated record state never authorizes (SPEC 13.4)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
+  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "requestId", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
   if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0 || typeof o.command !== "string")
     throw new EpEnvelopeError("internal", `goal spec ${key} is malformed; garbled state never authorizes (SPEC 13.4)`);
+  try { assertIdToken(o.requestId as string, "requestId"); }
+  catch { throw new EpEnvelopeError("internal", `goal spec ${key} carries no valid requestId (the goal's address for its durable acceptance fact); garbled state never authorizes (SPEC 13.4/13.10)`); }
   if (o.goalId !== ref.goalId)
     throw new EpEnvelopeError("internal", `goal spec ${key} names goalId ${JSON.stringify(o.goalId)}, not its key's ${ref.goalId}; a mis-keyed record never authorizes (SPEC 13.4)`);
   const c = o.caller as Record<string, unknown> | undefined;
@@ -663,6 +675,120 @@ async function commitTerminalFact(
   return { won: res.won, fact: winner, status };
 }
 
+// ---- receipt emission (§13.10, D9 part 2) -----------------------------------------------------
+
+/** What receipt emission needs beyond the action context: the receipt store bonded to the SAME
+ *  space, the executing instance recorded as EVIDENCE (never redemption authority), and the
+ *  receipts-scoped signer + key. */
+export interface ReceiptEmissionWiring {
+  store: ReceiptStoreContext;
+  instance: { id: string; instanceId: string; epoch: number };
+  signer: { keyId: string };
+  keyPair: { sign(input: Uint8Array): Uint8Array };
+}
+
+/** One emission attempt's outcome: `emitted` (this attempt's receipt won the create-only CAS)
+ *  or `converged` (a receipt already attests these facts — an earlier attempt's or a racing
+ *  emitter's, ADOPTED only after it proves agreement with the facts). A recorded receipt that
+ *  DISAGREES with the committed facts is a loud `conflict`, never adopted. */
+export type ReceiptEmissionResult = { outcome: "emitted" | "converged"; receipt: Receipt };
+
+/** Validate emission wiring at seam ENTRY (fail loud BEFORE any commit or publish happens
+ *  against it): the store must be BRANDED (minted by receiptStoreContext) and bonded to THIS
+ *  context's space — a cross-space store would publish receipts into a foreign space's stream. */
+function assertEmissionWiring(ctx: ActionContext, wiring: ReceiptEmissionWiring): void {
+  if (wiring === null || typeof wiring !== "object"
+    || typeof (wiring.keyPair as { sign?: unknown } | undefined)?.sign !== "function"
+    || typeof (wiring.signer as { keyId?: unknown } | undefined)?.keyId !== "string")
+    throw new EpEnvelopeError("failed-precondition", "receipt emission wiring carries the receipt store context, the instance evidence, the signer keyId, and the signing key (SPEC 13.10)");
+  assertReceiptStoreContext(wiring.store);
+  if (wiring.store.space !== ctx.space)
+    throw new EpEnvelopeError("failed-precondition", `the receipt store is bonded to space ${JSON.stringify(wiring.store.space)}, not this action context's ${JSON.stringify(ctx.space)}; a cross-space emission never publishes (SPEC 13.4)`);
+}
+
+/** The SHARED emission seam (§13.10): derive the goal terminal's receipt from the two
+ *  authoritative facts and publish it idempotently. The inline commit path and the reconciler
+ *  both run exactly this, so the receipt is reconstructable after any crash between effect and
+ *  emission. Steps: read the DURABLE acceptance through the goal's recorded address
+ *  (`spec.requestId`), prove the chain (the fact must be the acceptance THIS spec was written
+ *  from — id + sourceSeq + fingerprint + command, not merely SOME fact on the subject, which
+ *  post-horizon id reuse could make a different execution's), mint via
+ *  {@link mintReceiptFromFacts}, then create-only publish. A racing emitter with different
+ *  evidence (its own ts/instance) is adopted exactly when its receipt attests the SAME facts;
+ *  a recorded receipt that disagrees is the forged-attestation class CF-1 closes and throws. */
+export async function emitReceiptForTerminal(
+  ctx: ActionContext,
+  wiring: ReceiptEmissionWiring,
+  args: { ref: GoalRef; spec: GoalSpecValue; fact: GoalResultFact; ts: number },
+): Promise<ReceiptEmissionResult> {
+  assertCtx(ctx);
+  assertEmissionWiring(ctx, wiring);
+  const snap = snapshotRef(args.ref);
+  const ts = assertSafeInt(args.ts, "ts");
+  const spec = args.spec;
+  const fact = args.fact;
+  if (fact.goalId !== snap.goalId || fact.fingerprint !== spec.fingerprint)
+    throw new EpEnvelopeError("internal", `the terminal fact (goal ${JSON.stringify(fact.goalId)}, fingerprint ${JSON.stringify(fact.fingerprint)}) does not belong to goal "${snap.goalId}" under the accepted fingerprint ${spec.fingerprint}; a foreign terminal never mints a receipt (SPEC 13.10)`);
+  const subject = epfSubject(ctx.space, snap.endpoint, ["dec", snap.caller.owner, snap.caller.actor, snap.caller.uid, spec.requestId]);
+  const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
+  if (raw === undefined)
+    throw new EpEnvelopeError("failed-precondition", `no decision fact exists at ${subject}; a receipt derives from the durable acceptance and cannot be reconstructed without it - check the fact retention floor (SPEC 13.10/13.12)`);
+  const decision = parseDecisionFact(raw, subject);
+  if (decision.decision !== "accepted")
+    throw new EpEnvelopeError("internal", `the decision fact for request "${spec.requestId}" is a rejection, yet goal "${snap.goalId}" carries a committed terminal; the authority chain is broken - reconcile the store (SPEC 13.4)`);
+  if (decision.sourceSeq !== spec.sourceSeq || decision.fingerprint !== spec.fingerprint)
+    throw new EpEnvelopeError("internal", `the acceptance at ${subject} (sourceSeq ${decision.sourceSeq}, fingerprint ${decision.fingerprint}) is not the acceptance goal "${snap.goalId}" was created from (sourceSeq ${spec.sourceSeq}, fingerprint ${spec.fingerprint}); a foreign acceptance never mints this goal's receipt (SPEC 13.10)`);
+  const op = (decision.request as { op?: { command?: unknown } }).op;
+  if (op?.command !== spec.command)
+    throw new EpEnvelopeError("internal", `the acceptance at ${subject} carries command ${JSON.stringify(op?.command)}, not the accepted goal's ${JSON.stringify(spec.command)}; a foreign acceptance never mints this goal's receipt (SPEC 13.10)`);
+  const candidate = mintReceiptFromFacts({
+    acceptance: decision, caller: snap.caller, space: ctx.space,
+    terminal: receiptOutcomeOfGoal(fact.state, fact.outcomeDigest),
+    instance: wiring.instance, ts, signer: wiring.signer,
+  }, wiring.keyPair);
+  const rref = { endpoint: snap.endpoint, caller: snap.caller, requestId: decision.id, sourceSeq: decision.sourceSeq };
+  const recorded = await readReceipt(wiring.store, rref);
+  if (recorded !== undefined) {
+    assertReceiptAttestsSameFacts(recorded, candidate);
+    return { outcome: "converged", receipt: recorded };
+  }
+  try {
+    const res = await publishReceipt(wiring.store, rref, candidate);
+    return { outcome: res.won ? "emitted" : "converged", receipt: res.receipt };
+  } catch (e) {
+    // publishReceipt's byte-identity convergence loses to a racing emitter whose evidence
+    // (ts/instance) legitimately differs; adopt its receipt exactly when it attests the SAME
+    // facts, and propagate the conflict when it does not.
+    if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+    const winner = await readReceipt(wiring.store, rref);
+    if (winner === undefined) throw e;
+    assertReceiptAttestsSameFacts(winner, candidate);
+    return { outcome: "converged", receipt: winner };
+  }
+}
+
+/** The durable backstop for the §13.10 MUST-emit guarantee: re-derive and publish the receipt
+ *  for a goal whose terminal committed but whose emission was omitted (a crash between the
+ *  terminal CAS and the publish, or a commit made without emission wiring). Reads the persisted
+ *  spec and the committed terminal FRESH, then runs the SAME emission seam the inline path uses.
+ *  `no-terminal` = nothing to attest yet (the goal simply is not terminal — never an error). */
+export async function reconcileReceiptEmission(
+  ctx: ActionContext,
+  wiring: ReceiptEmissionWiring,
+  args: { ref: GoalRef; now: number },
+): Promise<ReceiptEmissionResult | { outcome: "no-terminal" }> {
+  assertCtx(ctx);
+  assertEmissionWiring(ctx, wiring);
+  const snap = snapshotRef(args.ref);
+  const now = assertSafeInt(args.now, "now");
+  const spec = await readGoalSpec(ctx, snap);
+  if (spec === undefined)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; only an accepted goal's terminal ever carries a receipt (SPEC 13.6/13.10)`);
+  const fact = await readGoalResult(ctx, snap);
+  if (fact === undefined) return { outcome: "no-terminal" };
+  return emitReceiptForTerminal(ctx, wiring, { ref: snap, spec: spec.value, fact, ts: now });
+}
+
 /** A deny's AUTHORITATIVE PREDICATE (§13.6): a bare `deny` proves nothing, so the commit
  *  boundary requires and VERIFIES one of:
  *   - `hold-expired`: the named checkpoint's recorded spec must BIND this exact goal and its
@@ -695,16 +821,25 @@ export type GoalCommitCause =
  *  accepted goal and its CAUSE (see {@link GoalCommitCause}). First terminal fact wins uniformly
  *  (completion, cancel, deny, and readiness race here); a loser observes the winner and its
  *  projection converges. Every operation input detaches at ENTRY (single-read, before the first
- *  await): a caller mutating cause/state/data/executor across the spec read changes nothing. */
+ *  await): a caller mutating cause/state/data/executor across the spec read changes nothing.
+ *
+ *  RECEIPT EMISSION (§13.10): with `receipts` wired, the commit emits the terminal's receipt
+ *  INLINE, best-effort, for the WINNING fact (won or lost — the terminal is committed either
+ *  way and emission is idempotent). Invalid wiring refuses at ENTRY, before any terminal
+ *  commits; a RUNTIME emission failure after the irreversible commit surfaces as
+ *  `receiptEmission: { outcome: "failed" }` — it never masks the committed terminal, and
+ *  {@link reconcileReceiptEmission} is the durable backstop that converges it. */
 export async function commitGoalResult(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number } & GoalCommitCause,
-): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
+  args: { ref: GoalRef; now: number; receipts?: ReceiptEmissionWiring } & GoalCommitCause,
+): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue; receiptEmission?: ReceiptEmissionResult | { outcome: "failed"; error: EpEnvelopeError } }> {
   assertCtx(ctx);
-  // ENTRY SNAPSHOT (single-read): ref, clock, cause, and every per-cause field detach BEFORE
-  // the first await; the terminal payload detaches strict-canonical here too.
+  // ENTRY SNAPSHOT (single-read): ref, clock, cause, wiring, and every per-cause field detach
+  // BEFORE the first await; the terminal payload detaches strict-canonical here too.
   const snap = snapshotRef(args.ref);
   const now = assertSafeInt(args.now, "now");
+  const receipts = args.receipts;
+  if (receipts !== undefined) assertEmissionWiring(ctx, receipts);
   const cause = args.cause;
   const dataRaw = (args as { data?: unknown }).data;
   let data: unknown;
@@ -758,17 +893,30 @@ export async function commitGoalResult(
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; a terminal commits only for an accepted goal (SPEC 13.6)`);
 
+  // The post-commit emission tail every cause routes through: the terminal is already committed
+  // and immutable when this runs, so a runtime emission failure SURFACES on the result instead
+  // of masking the commit (the reconciler converges it); wiring errors refused at entry above.
+  const finish = async (committed: { won: boolean; fact: GoalResultFact; status: GoalStatusValue }) => {
+    if (receipts === undefined) return committed;
+    try {
+      return { ...committed, receiptEmission: await emitReceiptForTerminal(ctx, receipts, { ref: snap, spec: spec.value, fact: committed.fact, ts: now }) };
+    } catch (e) {
+      const error = e instanceof EpEnvelopeError ? e : new EpEnvelopeError("internal", `receipt emission failed: ${(e as Error)?.message ?? String(e)}`);
+      return { ...committed, receiptEmission: { outcome: "failed" as const, error } };
+    }
+  };
+
   if (plan.cause === "complete") {
     // Currency immediately before the terminal CAS — the check is paired with the commit it
     // fences, never a stale earlier read (SPEC 13.6 item 7).
     await assertExecutorCurrency(spec.value, snap.goalId, plan.executor, plan.resolver, plan.budget);
-    return commitTerminalFact(ctx, snap, spec.value, plan.state, data, now);
+    return finish(await commitTerminalFact(ctx, snap, spec.value, plan.state, data, now));
   }
   if (plan.cause === "cancel") {
     const status = await readGoalStatus(ctx, snap);
     if (status === undefined || status.value.state !== "cancelling")
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not \`cancelling\` (state ${status?.value.state ?? "unknown"}); a cancel terminal follows a requested cancel, never a naked assertion (SPEC 13.6)`);
-    return commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now);
+    return finish(await commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now));
   }
   if (plan.cause === "deny") {
     if (plan.denial.kind === "hold-expired") {
@@ -787,14 +935,14 @@ export async function commitGoalResult(
       if (settle === undefined || settle.settle !== "expired")
         throw new EpEnvelopeError("failed-precondition", `checkpoint "${plan.denial.token}" has no RECORDED expired settlement (${settle === undefined ? "still live" : `settled ${settle.settle}`}); a live or resumed hold never denies (SPEC 13.6)`);
     }
-    return commitTerminalFact(ctx, snap, spec.value, "failed", data, now);
+    return finish(await commitTerminalFact(ctx, snap, spec.value, "failed", data, now));
   }
   // readiness
   if (spec.value.readinessDeadlineMs === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" declares no readiness deadline; an unbounded goal is never settled uncertain (SPEC 13.6)`);
   if (now < spec.value.acceptedAt + spec.value.readinessDeadlineMs)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not past its readiness deadline (acceptedAt ${spec.value.acceptedAt} + ${spec.value.readinessDeadlineMs}ms > now ${now}); an early uncertain settle would steal a still-possible success (SPEC 13.6)`);
-  return commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now);
+  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now));
 }
 
 // ---- cancel (§13.6 item 4) --------------------------------------------------------------------

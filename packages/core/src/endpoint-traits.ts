@@ -516,7 +516,9 @@ export type EpPricedProofVerify = (q: {
 /** What the serve boundary wires to enforce its governed surface: the branded surface plus
  *  the hooks its traits demand ({@link import("./endpoint-serve.js").serveEndpoint} refuses
  *  at construction if a governed command's hook is missing — fail closed at wiring time,
- *  not at first request). */
+ *  not at first request). `verifyPaymentProof` is the JOURNAL-side gate's hook: priced implies
+ *  journal-class (§13.10 — a receipt derives from the journaled acceptance), so the ephemeral
+ *  rail never demands it; serveEndpoint refuses an ephemeral priced command outright. */
 export interface EpTraitEnforcement {
   governed: EpGovernedSurface;
   guard?: EpGuardWiring;

@@ -8,10 +8,13 @@
  * verified two-step read; strip/substitute/forge/stale-digest/downgrade all refuse), the
  * whole-surface coverage check (BOTH strip directions), the §13.7 downgrade/removal revision
  * check across re-registrations, and the fail-closed pre-effect gate in serveEndpoint:
- * guarded (allow/deny/hold/throw/malformed; obligations VERIFIED then surfaced), priced (proof in the auth
- * slot verified before effect, one-use replay refused, a guard deny never burns a proof),
- * construction refusals (governed command without enforcement, extraneous enforcement,
- * missing hooks, foreign-grant surface, governed journal command), and cast silence.
+ * guarded (allow/deny/hold/throw/malformed; obligations VERIFIED then surfaced), priced (an
+ * EPHEMERAL priced command refuses at construction — priced implies journal-class, §13.10 —
+ * and the shared gate's proof seam is probed DIRECTLY: proof verified before effect, one-use
+ * replay refused, a guard deny never burns a proof; the journal acceptance→effect path reuses
+ * that gate in a later slice), construction refusals (governed command without enforcement,
+ * extraneous enforcement, missing guard hook, foreign-grant surface, governed journal command),
+ * and cast silence.
  * The guard and proof-verifier implementations here are smoke FAKES — core owns only the
  * seams (§13.9); policy engines and payment rails are extensions.
  *
@@ -32,7 +35,7 @@ import {
   signArtifact, signatureInput,
   verifyTraitDefinition, isVerifiedTraitDefinition, traitDefinitionDigest,
   verifyTraitAttachment, isVerifiedTraitAttachment,
-  verifyGovernedSurface, assertGovernedSurfaceFor,
+  verifyGovernedSurface, assertGovernedSurfaceFor, assertGovernedPreEffect,
   TRAIT_GUARDED, TRAIT_PRICED,
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
   type GuardCallSeam, type EpTraitEnforcement, type EpGovernedSurface,
@@ -72,7 +75,7 @@ anchor("acme-traits-1", acmeKp, { owner: "com.acme", scope: { traits: ["com.acme
 anchor("op-noscope-1", opKp, { scope: undefined });
 anchor("op-norole-1", opKp, { roles: ["receipts"], scope: { receipts: ["vault"] } });
 anchor("op-revoked-1", opKp, { revoked: true });
-anchor("op-obl-1", opKp, { roles: ["obligations"], scope: { obligations: ["vault", "tgtvault"] } });
+anchor("op-obl-1", opKp, { roles: ["obligations"], scope: { obligations: ["vault", "vaultlive", "tgtvault"] } });
 const resolveAnchor: AnchorResolver = (keyId) => anchors.get(keyId);
 
 // ── contract-store: value schemas + cluster documents, each a manifest+root pair (§13.7) ──
@@ -404,12 +407,28 @@ try {
     () => serveEndpoint(nc, SPACE, grantV1, vaultDefs(), { public: true }));
   await rejects("a guarded command without a guard seam refuses at construction",
     () => serveEndpoint(nc, SPACE, grantV1, vaultDefs(), { public: true }, { traits: { governed: surfaceV1, verifyPaymentProof } }));
-  await rejects("a priced command without a proof verifier refuses at construction",
-    () => serveEndpoint(nc, SPACE, grantV1, vaultDefs(), { public: true }, { traits: { governed: surfaceV1, guard } }));
+  await rejects("an EPHEMERAL priced command refuses at construction even fully wired: priced implies journal-class - a receipt derives from the journaled acceptance, and the rail records none (SPEC 13.10)",
+    () => serveEndpoint(nc, SPACE, grantV1, vaultDefs(), { public: true }, { traits: enforcement }));
   await rejects("a STRUCTURAL (unbranded) governed surface refuses at construction",
     () => serveEndpoint(nc, SPACE, grantV1, vaultDefs(), { public: true }, { traits: { governed: { commands: surfaceV1.commands } as EpGovernedSurface, guard, verifyPaymentProof } }));
 
-  const handle = serveEndpoint(nc, SPACE, grantV1, vaultDefs(), { public: true }, { traits: enforcement });
+  // The LIVE rail serves a guarded-only cluster ("vaultlive"): no rail can carry a priced
+  // command any more, so the guard rows, cast silence, and the swap probe run here while the
+  // priced seam is probed directly against the shared gate below.
+  const LIVE_CMDS = [
+    { name: "launch", class: "ephemeral", targeted: false, capability: "vault.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_GUARDED] },
+    { name: "free", class: "ephemeral", targeted: false, capability: "vault.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
+  ];
+  const DC_LIVE = register({ urn: "ai.cotal.vaultlive", revision: 1, attributes: [], events: [], commands: LIVE_CMDS });
+  await reg({ endpoint: "vaultlive", owner: "u_op", clusterDigests: [DC_LIVE], protocol: { v: 1 } }, IID);
+  const grantLive = await grantFor("vaultlive", IID);
+  const surfaceLive = await verifyGovernedSurface({
+    serve: grantLive, definitions: [defGuarded], resolveAnchor, readArtifact,
+    attachments: [signArtifact(attBody({ endpoint: "vaultlive", command: "launch", contractDigest: DC_LIVE }), opKp)],
+  });
+  const liveEnforcement: EpTraitEnforcement = { governed: surfaceLive, guard };
+  const EP_LIVE = "vaultlive";
+  const handle = serveEndpoint(nc, SPACE, grantLive, ["launch", "free"].map(defFor), { public: true }, { traits: liveEnforcement });
   await nc.flush();
 
   const replies: { subject: string; reply: EndpointReply }[] = [];
@@ -421,10 +440,10 @@ try {
   const nonce = () => `n${String(nonceN++).padStart(23, "0")}`;
   const call = async (command: string, over: Record<string, unknown> = {}) => {
     const body = {
-      v: 1, id: `req-${reqN++}`, op: { endpoint: "vault", command, inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
+      v: 1, id: `req-${reqN++}`, op: { endpoint: EP_LIVE, command, inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
       class: "ephemeral", replyExpected: true, deadlineMs: 2000, args: { name: "x" }, from: { id: "u_abc.worker", name: "w" }, ...over,
     };
-    nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "vault", command, caller, nonce: nonce() }), new TextEncoder().encode(JSON.stringify(body)));
+    nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: EP_LIVE, command, caller, nonce: nonce() }), new TextEncoder().encode(JSON.stringify(body)));
     await nc.flush();
     for (let i = 0; i < 40 && replies.length === 0; i++) await wait(50);
     return replies.shift();
@@ -470,32 +489,37 @@ try {
     rHang?.reply.ok === false && rHang.reply.error?.code === "permission-denied" && ran.launch === 2);
   guardMode = "allow";
 
-  const rNoProof = await call("charge");
-  c("a priced command with NO auth-slot proof refuses before the verifier is ever consulted",
-    rNoProof?.reply.ok === false && rNoProof.reply.error?.code === "permission-denied" && verifierCalls === 0 && ran.charge === 0);
-  const rBadProof = await call("charge", { auth: "proof-forged" });
-  c("an invalid proof refuses permission-denied with no effect",
-    rBadProof?.reply.ok === false && rBadProof.reply.error?.code === "permission-denied" && ran.charge === 0);
-  const rPaid = await call("charge", { auth: "proof-ok", id: "req-paid-1" });
-  c("a valid proof in the auth slot effects", rPaid?.reply.ok === true && ran.charge === 1);
-  const rReplay = await call("charge", { auth: "proof-ok", id: "req-paid-1" });
-  c("proof replay for the same request id refuses (the seam's one-use default), no second effect",
-    rReplay?.reply.ok === false && rReplay.reply.error?.code === "permission-denied" && ran.charge === 1);
+  // The priced seam, probed DIRECTLY against the shared pre-effect gate (no rail can carry a
+  // priced command any more — priced implies journal-class — and the journal acceptance→effect
+  // path reuses exactly this gate in a later slice). `enforcement` carries surfaceV1's priced
+  // values for charge/both.
+  const gateCall = (command: string, requestId: string, auth?: string) => assertGovernedPreEffect({
+    enforcement, endpoint: "vault", command, caller, requestId, space: SPACE,
+    ...(auth !== undefined ? { auth } : {}), deadlineMs: 2_000,
+  });
+  await rejects("a priced command with NO auth-slot proof refuses before the verifier is ever consulted",
+    () => gateCall("charge", "req-noproof-1"), "permission-denied");
+  c("…and the verifier was never consulted for it", verifierCalls === 0);
+  await rejects("an invalid proof refuses permission-denied",
+    () => gateCall("charge", "req-bad-1", "proof-forged"), "permission-denied");
+  c("a valid proof in the auth slot passes the gate (the effect boundary would proceed)",
+    (await gateCall("charge", "req-paid-1", "proof-ok")).obligations === undefined);
+  await rejects("proof replay for the same request id refuses (the seam's one-use default)",
+    () => gateCall("charge", "req-paid-1", "proof-ok"), "permission-denied");
 
   guardMode = "deny";
   const verifierBefore = verifierCalls;
-  const rBothDeny = await call("both", { auth: "proof-ok", id: "req-both-1" });
-  c("guard-then-priced ORDER: a guard deny never burns a one-use payment proof",
-    rBothDeny?.reply.ok === false && verifierCalls === verifierBefore && ran.both === 0);
+  await rejects("guard-then-priced ORDER: a guard deny refuses BEFORE the proof is consulted",
+    () => gateCall("both", "req-both-1", "proof-ok"), "permission-denied");
+  c("…so a guard deny never burns a one-use payment proof", verifierCalls === verifierBefore);
   guardMode = "allow";
-  const rBoth = await call("both", { auth: "proof-ok", id: "req-both-1" });
-  c("guarded AND priced both pass -> effect (the un-burnt proof redeems)",
-    rBoth?.reply.ok === true && ran.both === 1);
+  await gateCall("both", "req-both-1", "proof-ok");
+  c("guarded AND priced both pass the gate (the un-burnt proof redeems)", usedProofs.has("req-both-1"));
 
   guardMode = "deny";
-  nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "vault", command: "launch", caller, nonce: nonce() }),
+  nc.publish(epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: EP_LIVE, command: "launch", caller, nonce: nonce() }),
     new TextEncoder().encode(JSON.stringify({
-      v: 1, id: "req-cast-1", op: { endpoint: "vault", command: "launch", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
+      v: 1, id: "req-cast-1", op: { endpoint: EP_LIVE, command: "launch", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest },
       class: "ephemeral", replyExpected: false, args: { name: "x" }, from: { id: "u_abc.worker", name: "w" },
     })));
   await nc.flush();
@@ -510,13 +534,13 @@ try {
   // launch appear ungoverned and effect ungated) and confirm the ORIGINAL gate still runs.
   guardMode = "deny";
   const launchBefore = ran.launch;
-  enforcement.governed = { commands: {} } as EpGovernedSurface;
-  enforcement.guard = undefined as unknown as typeof enforcement.guard;
+  liveEnforcement.governed = { commands: {} } as EpGovernedSurface;
+  liveEnforcement.guard = undefined as unknown as typeof liveEnforcement.guard;
   const rSwap = await call("launch");
   c("a post-construction swap of enforcement.governed/guard does NOT disable the gate (snapshot bound at construction)",
     rSwap?.reply.ok === false && rSwap.reply.error?.code === "permission-denied" && ran.launch === launchBefore);
-  enforcement.governed = surfaceV1;
-  enforcement.guard = guard;
+  liveEnforcement.governed = surfaceLive;
+  liveEnforcement.guard = guard;
   guardMode = "allow";
 
   await handle.stop();

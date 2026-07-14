@@ -18,16 +18,19 @@ import { join } from "node:path";
 import { connect, headers } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
+import { createUser } from "@nats-io/nkeys";
 import {
   ownerCommitProof, type OwnerCommitProof,
   isReachable, EpEnvelopeError, contractDigest, updateRecordEntry,
-  createEndpointStreams, openRecordsBucket, epeSubject,
+  createEndpointStreams, openRecordsBucket, epeSubject, epfSubject,
   actionContext, bindGoal, classifyGoalReuse, resolveGoalSubmission, createGoal, readGoalSpec, readGoalStatus,
   transitionGoal, isLegalGoalTransition, projectGoalTerminal,
   commitGoalResult, readGoalResult, requestGoalCancel, settleGoalUncertain, goalTombstone,
   goalResultSubject, goalProgressTopic, goalRefOf,
+  reconcileReceiptEmission, receiptStoreContext, readReceipt, publishReceipt, mintReceipt, publishFactCreateOnly,
   GOAL_TERMINAL_STATES, GOAL_TERMINAL_DETAIL_KIND,
   type EpCaller, type GoalRef, type ParsedEpRequest, type GoalResultFact, type ActionContext,
+  type Receipt, type ReceiptEmissionWiring, type ReceiptStoreContext,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -48,7 +51,7 @@ const req = { plane: "request", route: "one", endpoint: "manager", command: "dep
 const TARGET = { owner: "u_wrk", actor: "svc", lifecycleUid: "e".repeat(26), mappingRevision: 4 };
 const specOf = (fingerprint: string, over: Record<string, unknown> = {}) => ({
   fingerprint, command: "deploy", caller: { id: "u_abc.worker", lifecycleUid: UID },
-  sourceSeq: 7, acceptedAt: 1_000_000, ...over,
+  requestId: "req-any", sourceSeq: 7, acceptedAt: 1_000_000, ...over,
 });
 const NOW = 1_000_000;
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -330,6 +333,111 @@ try {
     await js.publish(goalResultSubject(SPACE, rf), enc(JSON.stringify(forged)), { headers: h });
     await rejects("a recorded result whose fingerprint disagrees with the accepted spec is NEVER served as the cached outcome",
       () => resolveGoalSubmission(ctx, req, "g-ff", "sha256:ff"), "internal");
+  }
+
+  // ── §13.10 receipt emission (D9 part 2): inline at the commit, idempotent convergence, the
+  //    reconciler backstop, and fail-closed wiring/chain ──
+  {
+    const kp = createUser();
+    const store = await receiptStoreContext(nc, SPACE);
+    const wiring: ReceiptEmissionWiring = { store, instance: { id: "u_mgr.manager", instanceId: "i".repeat(26), epoch: 2 }, signer: { keyId: "rcpt-1" }, keyPair: kp };
+    const IN_D = contractDigest({ in: 1 });
+    const OUT_D = contractDigest({ out: 1 });
+    const ARGS = { image: "app:1" };
+    const em = (x: unknown) => x as { outcome: string; receipt: Receipt; error?: EpEnvelopeError };
+    let seqN = 100;
+    // A durable acceptance at the goal's decision address, exactly as the canonicalizer records
+    // it (parseDecisionFact validates the FULL shape on the emission read, so the fixture is a
+    // real acceptance, not a shell).
+    const acceptFixture = async (id: string, goalId: string, fingerprint: string): Promise<number> => {
+      const sourceSeq = seqN++;
+      const request = { v: 1, id, op: { endpoint: "manager", command: "deploy", inputDigest: IN_D, outputDigest: OUT_D }, class: "journal", replyExpected: false, deadlineMs: 5_000, goalId, args: ARGS, from: { id: "u_abc.worker", name: "w" } };
+      const fact = { v: 1, id, decision: "accepted", fingerprint, request, caller: { id: "u_abc.worker", lifecycleUid: UID }, contractDigests: { input: IN_D, output: OUT_D }, authzDecision: { revision: 1, epoch: 1 }, route: "effects", sourceSeq, ts: NOW };
+      const res = await publishFactCreateOnly(js, epfSubject(SPACE, "manager", ["dec", caller.owner, caller.actor, caller.uid, id]), enc(JSON.stringify(fact)));
+      if (!res.won) throw new Error("acceptance fixture CAS lost");
+      return sourceSeq;
+    };
+    const FP1 = contractDigest({ job: 1 });
+    const FP2 = contractDigest({ job: 2 });
+    const FP3 = contractDigest({ job: 3 });
+    const FP4 = contractDigest({ job: 4 });
+    const FP7 = contractDigest({ job: 7 });
+
+    const r1 = ref("g-rcpt1");
+    const s1 = await acceptFixture("req-rcpt1", "g-rcpt1", FP1);
+    await bindGoal(ctx, r1, FP1);
+    await createGoal(ctx, r1, specOf(FP1, { requestId: "req-rcpt1", sourceSeq: s1 }));
+    const done1 = await commitGoalResult(ctx, { ref: r1, now: NOW + 5, cause: "complete", state: "succeeded", data: { deployed: true }, receipts: wiring });
+    c("the commit emits the terminal's receipt INLINE: identity from the acceptance, outcome from the committed terminal",
+      em(done1.receiptEmission).outcome === "emitted" && em(done1.receiptEmission).receipt.requestId === "req-rcpt1"
+      && em(done1.receiptEmission).receipt.sourceSeq === s1 && em(done1.receiptEmission).receipt.command === "deploy"
+      && em(done1.receiptEmission).receipt.argsDigest === contractDigest(ARGS)
+      && em(done1.receiptEmission).receipt.outcome.ok === true && em(done1.receiptEmission).receipt.resultDigest === done1.fact.outcomeDigest);
+    c("the emitted receipt is RECORDED at the execution's receipt subject (readable, not just returned)",
+      (await readReceipt(store, { endpoint: "manager", caller, requestId: "req-rcpt1", sourceSeq: s1 }))?.sig === em(done1.receiptEmission).receipt.sig);
+    const again = await commitGoalResult(ctx, { ref: r1, now: NOW + 99, cause: "complete", state: "succeeded", data: { deployed: true }, receipts: wiring });
+    c("a repeat commit loses the terminal CAS and CONVERGES on the recorded receipt (a later clock, the same facts)",
+      again.won === false && em(again.receiptEmission).outcome === "converged" && em(again.receiptEmission).receipt.sig === em(done1.receiptEmission).receipt.sig);
+    const rec1 = await reconcileReceiptEmission(ctx, wiring, { ref: r1, now: NOW + 500 });
+    c("the reconciler on an already-emitted goal converges (a post-crash re-mint adopts the recorded receipt)",
+      rec1.outcome === "converged" && em(rec1).receipt.sig === em(done1.receiptEmission).receipt.sig);
+
+    const r2 = ref("g-rcpt2");
+    const s2 = await acceptFixture("req-rcpt2", "g-rcpt2", FP2);
+    await createGoal(ctx, r2, specOf(FP2, { requestId: "req-rcpt2", sourceSeq: s2 }));
+    const done2 = await commitGoalResult(ctx, { ref: r2, now: NOW + 5, cause: "complete", state: "failed", data: { err: "boom" } });
+    c("a commit WITHOUT wiring emits nothing (the omitted-emission window the reconciler exists for)",
+      done2.receiptEmission === undefined && (await readReceipt(store, { endpoint: "manager", caller, requestId: "req-rcpt2", sourceSeq: s2 })) === undefined);
+    const rec2 = await reconcileReceiptEmission(ctx, wiring, { ref: r2, now: NOW + 900 });
+    c("the reconciler is the MUST-emit backstop: it re-derives the receipt from the two facts alone; a FAILED terminal attests ok:false code:'failed'",
+      rec2.outcome === "emitted" && em(rec2).receipt.outcome.ok === false && em(rec2).receipt.outcome.code === "failed"
+      && em(rec2).receipt.resultDigest === done2.fact.outcomeDigest);
+
+    const r3 = ref("g-rcpt3");
+    const s3 = await acceptFixture("req-rcpt3", "g-rcpt3", FP3);
+    await createGoal(ctx, r3, specOf(FP3, { requestId: "req-rcpt3", sourceSeq: s3 }));
+    c("the reconciler on a non-terminal goal is `no-terminal` (nothing to attest, nothing minted)",
+      (await reconcileReceiptEmission(ctx, wiring, { ref: r3, now: NOW })).outcome === "no-terminal");
+
+    const r4 = ref("g-rcpt4");
+    const s4 = await acceptFixture("req-rcpt4", "g-rcpt4", FP4);
+    await createGoal(ctx, r4, specOf(FP4, { requestId: "req-rcpt4", sourceSeq: s4 }));
+    // A buggy or malicious emitter records a SUCCESS receipt before the goal actually fails:
+    // the forged-attestation class CF-1 closes must refuse on every emission path, never adopt.
+    const forged = mintReceipt({
+      ref: { endpoint: "manager", caller, requestId: "req-rcpt4", sourceSeq: s4 }, space: SPACE, command: "deploy",
+      instance: wiring.instance, caller: { id: "u_abc.worker", lifecycleUid: UID }, schemaDigests: { input: IN_D, output: OUT_D },
+      args: ARGS, outcome: { ok: true }, result: { forged: true }, ts: NOW, signer: { keyId: "rcpt-1" },
+    }, kp);
+    await publishReceipt(store, { endpoint: "manager", caller, requestId: "req-rcpt4", sourceSeq: s4 }, forged);
+    const done4 = await commitGoalResult(ctx, { ref: r4, now: NOW + 5, cause: "complete", state: "failed", receipts: wiring });
+    c("a recorded receipt that DISAGREES with the committed facts is NEVER adopted: the commit stands, the emission surfaces `conflict`",
+      done4.fact.state === "failed" && em(done4.receiptEmission).outcome === "failed" && em(done4.receiptEmission).error?.code === "conflict");
+    await rejects("…and the reconciler refuses the same forgery loudly (no silent convergence on a disagreeing receipt)",
+      () => reconcileReceiptEmission(ctx, wiring, { ref: r4, now: NOW + 10 }), "conflict");
+
+    const r5 = ref("g-rcpt5");
+    await createGoal(ctx, r5, specOf(FP1, { requestId: "req-ghost", sourceSeq: 9_999 }));
+    const done5 = await commitGoalResult(ctx, { ref: r5, now: NOW + 5, cause: "complete", state: "succeeded", receipts: wiring });
+    c("a MISSING durable acceptance surfaces as a failed emission (failed-precondition) and never masks the committed terminal",
+      done5.fact.state === "succeeded" && em(done5.receiptEmission).outcome === "failed" && em(done5.receiptEmission).error?.code === "failed-precondition");
+
+    const r6 = ref("g-rcpt6");
+    await createGoal(ctx, r6, specOf(contractDigest({ job: "other" }), { requestId: "req-rcpt1", sourceSeq: s1 }));
+    await commitGoalResult(ctx, { ref: r6, now: NOW + 5, cause: "complete", state: "succeeded" });
+    await rejects("an acceptance that is NOT the one this goal was created from never mints (the chain proves id + sourceSeq + fingerprint, not merely SOME fact on the subject)",
+      () => reconcileReceiptEmission(ctx, wiring, { ref: r6, now: NOW + 10 }), "internal");
+
+    const r7 = ref("g-rcpt7");
+    const s7 = await acceptFixture("req-rcpt7", "g-rcpt7", FP7);
+    await createGoal(ctx, r7, specOf(FP7, { requestId: "req-rcpt7", sourceSeq: s7 }));
+    const foreignStore = await receiptStoreContext(nc, "epactother");
+    await rejects("CROSS-SPACE wiring refuses at ENTRY (failed-precondition), before any terminal commits against it",
+      () => commitGoalResult(ctx, { ref: r7, now: NOW, cause: "complete", state: "succeeded", receipts: { ...wiring, store: foreignStore } }), "failed-precondition");
+    c("…and the refused commit left NO terminal (a wiring error is an entry refusal, not a post-commit emission failure)",
+      (await readGoalResult(ctx, r7)) === undefined);
+    await rejects("a HAND-ASSEMBLED store context never authorizes emission (the store brand is constructed, not asserted)",
+      () => commitGoalResult(ctx, { ref: r7, now: NOW, cause: "complete", state: "succeeded", receipts: { ...wiring, store: { space: SPACE } as ReceiptStoreContext } }), "failed-precondition");
   }
 
   // ── fail-closed storage reads ──

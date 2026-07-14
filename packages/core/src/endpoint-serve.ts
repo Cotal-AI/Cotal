@@ -350,8 +350,12 @@ export function serveEndpoint(
       const per = enforcement.governed.commands[d.command];
       if (per?.[TRAIT_GUARDED] !== undefined && enforcement.guard === undefined)
         throw new Error(`command "${d.command}" is guarded and no guard seam is wired; an unreachable guard is deny, so construction refuses rather than denying every request (SPEC 13.6)`);
-      if (per?.[TRAIT_PRICED] !== undefined && enforcement.verifyPaymentProof === undefined)
-        throw new Error(`command "${d.command}" is priced and no proof verifier is wired; an unverifiable proof never effects, so construction refuses (SPEC 13.10)`);
+      // priced ⇒ journal-class (§13.10): a priced effect MUST leave a receipt, and a receipt
+      // derives from the journaled acceptance fact — the ephemeral rail records no acceptance,
+      // so an ephemeral priced command structurally CANNOT satisfy MUST-emit. Every def in this
+      // table is rail-served (ephemeral), hence any priced def here refuses at construction.
+      if (per?.[TRAIT_PRICED] !== undefined)
+        throw new Error(`command "${d.command}" is priced and declared ephemeral; a priced effect MUST leave a receipt, and a receipt derives from the journaled acceptance fact, so priced implies journal-class (SPEC 13.10) - declare the command class journal`);
     }
   }
   defs.push({
