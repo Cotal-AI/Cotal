@@ -18,7 +18,50 @@
  */
 import { fromPublic } from "@nats-io/nkeys";
 import { canonicalJson } from "./canonical.js";
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError, type EpErrorCode } from "./endpoint-envelope.js";
+
+/**
+ * The §13.6/§13.10 validity-window currency rules for a timed signed artifact, in ONE place —
+ * handle links and session grants both call this (SPEC 1778: session expiry follows the handle
+ * rules), so a rule added or tightened later lands in every verifier by construction instead of
+ * hand-copied blocks drifting apart:
+ *
+ *   1. `exp > iat` (an empty/backward window never verifies)
+ *   2. `nbf ≤ exp` (a window that opens after it closes never verifies)
+ *   3. the validity SPAN is measured from `min(iat, nbf)` and must fit the ceiling (an early
+ *      `nbf` or forward-dated `iat` cannot manufacture a longer window)
+ *   4. no FUTURE `iat` (a forward-dated artifact never verifies, §13.10)
+ *   5. `nbf ≤ now ≤ exp` (the window itself)
+ *   6. `exp ≤ now + ceiling` (clock-anchored: a dated-in-the-future artifact cannot outlive
+ *      its ceiling even when its own span is in-bounds)
+ *
+ * `refusals` picks the refusal-code policy by WHERE the caller runs the check: "opaque" for a
+ * verifier that checks currency BEFORE the signature (handle links — every refusal is
+ * `permission-denied`, so a forged artifact learns nothing from the code), "post-signature"
+ * for one that checks after identity is established (session grants — structural violations
+ * are `contract-invalid`, an early presentation `failed-precondition`, a stale one `expired`).
+ */
+export function assertArtifactCurrency(
+  t: { iat: number; nbf?: number; exp: number },
+  a: { now: number; ceilingMs: number; what: string; ceilingName: string; refusals: "opaque" | "post-signature" },
+): void {
+  const soft = (code: EpErrorCode): EpErrorCode => (a.refusals === "opaque" ? "permission-denied" : code);
+  const nbf = t.nbf ?? t.iat;
+  if (t.exp <= t.iat)
+    throw new EpEnvelopeError(soft("contract-invalid"), `${a.what} exp ${t.exp} is not after iat ${t.iat}; an empty/backward window never verifies (SPEC 13.6)`);
+  if (nbf > t.exp)
+    throw new EpEnvelopeError(soft("contract-invalid"), `${a.what} nbf ${nbf} is past its exp ${t.exp}; a window that opens after it closes never verifies (SPEC 13.6)`);
+  if (t.exp - Math.min(t.iat, nbf) > a.ceilingMs)
+    throw new EpEnvelopeError(soft("contract-invalid"), `${a.what} validity span ${t.exp - Math.min(t.iat, nbf)}ms exceeds the ${a.ceilingName} ceiling ${a.ceilingMs}ms (SPEC 13.6)`);
+  if (t.iat > a.now)
+    throw new EpEnvelopeError("permission-denied", `${a.what} claims a FUTURE signing time (iat ${t.iat} > now ${a.now}); a forward-dated artifact never verifies (SPEC 13.10)`);
+  if (a.now < nbf)
+    throw new EpEnvelopeError(soft("failed-precondition"), `${a.what} is not yet valid (nbf ${nbf}, now ${a.now}) (SPEC 13.6)`);
+  if (a.now > t.exp)
+    throw new EpEnvelopeError(soft("expired"), `${a.what} expired at ${t.exp} (now ${a.now}) (SPEC 13.6)`);
+  if (t.exp > a.now + a.ceilingMs)
+    throw new EpEnvelopeError("permission-denied", `${a.what} remains valid ${t.exp - a.now}ms past now, beyond the clock-anchored ${a.ceilingName} ceiling ${a.ceilingMs}ms; a dated-in-the-future artifact cannot outlive its ceiling (SPEC 13.6)`);
+}
 
 /** The §13.10 anchor roles: which artifact family a registered key may sign. */
 export const ANCHOR_ROLES = [

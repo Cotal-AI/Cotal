@@ -31,7 +31,7 @@ import { contractDigest, isContractDigest, canonicalJson } from "./canonical.js"
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { assertBoundedOwner, assertLifecycleToken, assertCommandToken, endpointToken, EP_AUTHZ_MODES, type EpTarget, type EpAuthzMode } from "./endpoint-subjects.js";
 import type { EpCapability } from "./endpoint-grants.js";
-import { verifyArtifactSignature, resolveAnchorForUse, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
+import { verifyArtifactSignature, resolveAnchorForUse, assertArtifactCurrency, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
 
 /** A per-command target tuple inside a grant entry — a CLOSED set of three legal shapes
  *  (§13.6): no components; `targetOwner` alone; or the full triple. Every other combination is
@@ -574,16 +574,12 @@ export async function verifyHandleChain(
     // Per-link currency (§13.6: expiry/ceilings fail closed on EVERY link, not only the leaf).
     if (h.space !== A.space)
       throw new EpEnvelopeError("permission-denied", `handle "${h.id}" is bound to space ${h.space}, not ${A.space} (SPEC 13.6)`);
-    const nbf = h.nbf ?? h.iat;
-    if (A.now < nbf || A.now > h.exp)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" is outside its validity window [${nbf}, ${h.exp}] at now ${A.now} (SPEC 13.6: expiry fails closed on every link)`);
-    if (h.iat > A.now)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" claims a FUTURE signing time (iat ${h.iat} > now ${A.now}); a forward-dated artifact never verifies (SPEC 13.10)`);
-    const ttlCeiling = h.sturdy ? A.maxSturdyTtlMs : A.maxLiveTtlMs;
-    if (h.exp - Math.min(h.iat, nbf) > ttlCeiling)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" validity span ${h.exp - Math.min(h.iat, nbf)}ms exceeds the ${h.sturdy ? "sturdy" : "live"} ceiling ${ttlCeiling}ms (SPEC 13.6)`);
-    if (h.exp > A.now + ttlCeiling)
-      throw new EpEnvelopeError("permission-denied", `handle "${h.id}" remains valid ${h.exp - A.now}ms past now, beyond the clock-anchored ${h.sturdy ? "sturdy" : "live"} ceiling ${ttlCeiling}ms; a dated-in-the-future artifact cannot outlive its ceiling (SPEC 13.6)`);
+    // The shared §13.6/§13.10 window rules (assertArtifactCurrency); "opaque" because this runs
+    // BEFORE the link's signature check, so every refusal stays permission-denied.
+    assertArtifactCurrency(
+      { iat: h.iat, ...(h.nbf !== undefined ? { nbf: h.nbf } : {}), exp: h.exp },
+      { now: A.now, ceilingMs: h.sturdy ? A.maxSturdyTtlMs : A.maxLiveTtlMs, what: `handle "${h.id}"`, ceilingName: h.sturdy ? "sturdy" : "live", refusals: "opaque" },
+    );
     if (!h.sturdy) {
       if (i === 0) {
         if (h.epoch !== A.presenter.epoch)

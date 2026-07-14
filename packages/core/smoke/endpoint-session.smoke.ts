@@ -146,6 +146,37 @@ await rejects("not-yet-valid (nbf) refuses", async () => {
 }, "failed-precondition");
 await rejects("TTL over the live ceiling refuses at mint", () => mint({ ttlMs: SESSION_GRANT_MAX_TTL_MS + 1 }), "contract-invalid");
 await rejects("window out of bounds refuses at mint", () => mint({ window: SESSION_WINDOW_MAX + 1 }), "contract-invalid");
+// The clock-anchored ceiling parity (handle rules, SPEC 1778/13.10): a FORWARD-DATED grant must
+// not manufacture validity past the live ceiling even when its own span is in-bounds. A span-only
+// implementation accepts this artifact (exp-iat = the ceiling exactly); a clock-anchored one refuses.
+await rejects("a FORWARD-DATED iat (span in-bounds, valid far past now+ceiling) refuses (clock-anchored, not just span)", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  // iat=now+24h, exp=iat+24h: span = 24h passes the span check, but the artifact claims validity
+  // out to now+48h; the clock-anchored currency gates (future iat / exp past now+ceiling) refuse.
+  await verify(signArtifact({ ...unsigned, iat: NOW + SESSION_GRANT_MAX_TTL_MS, exp: NOW + 2 * SESSION_GRANT_MAX_TTL_MS }, kp), NOW);
+}, "permission-denied");
+await rejects("a future iat (signed ahead of now) refuses", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  await verify(signArtifact({ ...unsigned, iat: NOW + 5000, exp: NOW + 5000 + 60_000 }, kp), NOW + 10);
+}, "permission-denied");
+await rejects("an empty/backward window (exp <= iat) refuses at verify", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  await verify(signArtifact({ ...unsigned, iat: NOW, exp: NOW }, kp), NOW + 10);
+}, "contract-invalid");
+await rejects("nbf past exp refuses at verify", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  await verify(signArtifact({ ...unsigned, iat: NOW, nbf: NOW + 90_000, exp: NOW + 60_000 }, kp), NOW + 10);
+}, "contract-invalid");
+await rejects("an early nbf stretching the span past the ceiling refuses", async () => {
+  const g = mint();
+  const { sig: _s, ...unsigned } = g;
+  // iat within ceiling of exp, but nbf far earlier makes min(iat,nbf) blow the span ceiling.
+  await verify(signArtifact({ ...unsigned, nbf: NOW - SESSION_GRANT_MAX_TTL_MS, iat: NOW + 10, exp: NOW + 60_000 }, kp), NOW + 20);
+}, "contract-invalid");
 
 // ---------- B. ledger + redemption seam ----------
 console.log("B. presenter-authenticated one-use redemption + the pinned two-gate fence");
@@ -537,6 +568,91 @@ try {
     await wait(100);
     c("…and no credit was ever emitted for the refused frame", credits.length === 0, credits);
     serving.close(); watch.unsubscribe();
+  }
+  {
+    // An ASYNC handler is AWAITED: its rejection refuses the frame exactly like a sync throw —
+    // the rail breaks (handler fault) and the frame is neither counted delivered nor credited.
+    const gA = { ...grant, sessionId: mintSessionId() };
+    const credits: number[] = [];
+    const watch = ncA.subscribe(epsSubject(SPACE, ENDPOINT, gA.sessionId, SERVING.epoch, "out"), { callback: (_e, m) => { const f = parseSessionFrame(m.data); if (f.t === "credit") credits.push(f.ack); } });
+    const errs: string[] = [];
+    const serving = openSessionRail({ nc: ncB, grant: gA, role: "serving", onData: async () => { throw new Error("async app refused the frame"); }, onProtocolError: (r) => errs.push(r), idleCreditMs: 20 });
+    await ncA.flush(); await ncB.flush();
+    ncA.publish(epsSubject(SPACE, ENDPOINT, gA.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    await ncA.flush();
+    c("an ASYNC handler rejection breaks the rail (handler fault); the frame is NOT counted delivered",
+      await until(() => errs.includes("handler")) && serving.stats().delivered === 0, { errs, stats: serving.stats() });
+    await wait(100);
+    c("…and the rejected async frame was never credited", credits.length === 0, credits);
+    serving.close(); watch.unsubscribe();
+  }
+  {
+    // Async acceptance is SERIALIZED in seq order: frame 2 arrives while frame 1's handler is
+    // still pending — NOT a false gap; nothing advances until the pending handler resolves,
+    // then both accept in order.
+    const gQ = { ...grant, sessionId: mintSessionId() };
+    const order: number[] = [];
+    let release1: () => void = () => {};
+    const gate1 = new Promise<void>((r) => { release1 = r; });
+    const errs: string[] = [];
+    const serving = openSessionRail({
+      nc: ncB, grant: gQ, role: "serving",
+      onData: async (_d, seq) => { if (seq === 1) await gate1; order.push(seq); },
+      onProtocolError: (r) => errs.push(r), idleCreditMs: 0,
+    });
+    await ncB.flush();
+    const inQ = epsSubject(SPACE, ENDPOINT, gQ.sessionId, SERVING.epoch, "in");
+    ncA.publish(inQ, encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    ncA.publish(inQ, encodeSessionFrame({ t: "f", seq: 2, data: { i: 2 } }));
+    await ncA.flush();
+    await wait(60);
+    c("while frame 1's async handler is pending, frame 2 queues (no premature advance, no false gap)",
+      serving.stats().delivered === 0 && errs.length === 0, { errs, stats: serving.stats() });
+    release1();
+    c("frames accept IN ORDER once the pending handler resolves (serialized async acceptance)",
+      await until(() => order.length === 2 && serving.stats().delivered === 2) && order[0] === 1 && order[1] === 2, { order, stats: serving.stats() });
+    serving.close();
+  }
+  {
+    // The pending-frame queue is BOUNDED by the grant window: a peer that ignores flow control
+    // while a handler is wedged cannot pile promises — the over-window frame breaks the rail.
+    const gW = { ...grant, sessionId: mintSessionId(), window: 2 };
+    const errs: string[] = [];
+    const serving = openSessionRail({
+      nc: ncB, grant: gW, role: "serving",
+      onData: async () => { await new Promise<void>(() => {}); }, // wedged handler: never resolves
+      onProtocolError: (r) => errs.push(r), idleCreditMs: 0,
+    });
+    await ncB.flush();
+    const inW = epsSubject(SPACE, ENDPOINT, gW.sessionId, SERVING.epoch, "in");
+    ncA.publish(inW, encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    ncA.publish(inW, encodeSessionFrame({ t: "f", seq: 2, data: { i: 2 } }));
+    ncA.publish(inW, encodeSessionFrame({ t: "f", seq: 3, data: { i: 3 } })); // past the window
+    await ncA.flush();
+    c("over-window ingress while a handler is wedged breaks the rail (flood), never an unbounded backlog",
+      await until(() => errs.includes("flood")) && serving.stats().delivered === 0, { errs, stats: serving.stats() });
+    serving.close();
+  }
+  {
+    // A handler resolving AFTER the rail closed advances NOTHING: no watermark, no delivered
+    // count, no credit for a frame accepted into a dead rail.
+    const gP = { ...grant, sessionId: mintSessionId() };
+    const credits: number[] = [];
+    const watch = ncA.subscribe(epsSubject(SPACE, ENDPOINT, gP.sessionId, SERVING.epoch, "out"), { callback: (_e, m) => { const f = parseSessionFrame(m.data); if (f.t === "credit") credits.push(f.ack); } });
+    let releaseP: () => void = () => {};
+    const gateP = new Promise<void>((r) => { releaseP = r; });
+    let entered = false;
+    const serving = openSessionRail({ nc: ncB, grant: gP, role: "serving", onData: async () => { entered = true; await gateP; }, idleCreditMs: 20 });
+    await ncA.flush(); await ncB.flush();
+    ncA.publish(epsSubject(SPACE, ENDPOINT, gP.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
+    await ncA.flush();
+    c("…setup: the async handler is mid-flight (entered, unresolved)", await until(() => entered), { entered });
+    serving.close(); // the rail dies with the handler in flight
+    releaseP(); // the handler resolves into a dead rail
+    await wait(100);
+    c("a handler resolving AFTER local close advances nothing (no delivered, no credit)",
+      serving.stats().delivered === 0 && credits.length === 0, { stats: serving.stats(), credits });
+    watch.unsubscribe();
   }
   {
     // CREDIT LOSS RECOVERY — mechanism (a) PIGGYBACK: a sender at a full window recovers when a

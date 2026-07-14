@@ -78,6 +78,7 @@ import {
   verifyArtifactSignature,
   resolveAnchorForUse,
   assertAnchorScopeCovers,
+  assertArtifactCurrency,
   signArtifact,
   type AnchorResolver,
 } from "./endpoint-signing.js";
@@ -278,7 +279,6 @@ export async function verifySessionGrant(
   if (typeof o.iat !== "number" || !Number.isSafeInteger(o.iat)) invalid("iat is not an integer");
   if (o.nbf !== undefined && (typeof o.nbf !== "number" || !Number.isSafeInteger(o.nbf))) invalid("nbf is not an integer");
   if (typeof o.exp !== "number" || !Number.isSafeInteger(o.exp)) invalid("exp is not an integer");
-  if (o.exp - o.iat > SESSION_GRANT_MAX_TTL_MS) invalid(`session grant validity exceeds the ${SESSION_GRANT_MAX_TTL_MS}ms live ceiling`);
   if (typeof o.nonce !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(o.nonce)) invalid("nonce is not a bounded base64url token");
   if (!isRec(o.issuer)) invalid("issuer is not an object");
   const iss = o.issuer as Record<string, unknown>;
@@ -292,10 +292,14 @@ export async function verifySessionGrant(
   verifyArtifactSignature(o, anchor);
 
   // Currency LAST (after identity): a forged-but-expired artifact is permission-denied above,
-  // never a soft "expired" that leaks verification order.
-  const nbf = (o.nbf as number | undefined) ?? (o.iat as number);
-  if (now < nbf) throw new EpEnvelopeError("failed-precondition", `session grant is not yet valid (nbf ${nbf}, now ${now})`);
-  if (now > (o.exp as number)) throw new EpEnvelopeError("expired", `session grant expired at ${o.exp as number} (now ${now})`);
+  // never a soft "expired" that leaks verification order. The rules are the SHARED
+  // assertArtifactCurrency (SPEC 1778: session expiry follows the handle rules — enforced by
+  // calling the same primitive verifyHandleChain calls, not a hand copy that can drift);
+  // "post-signature" because identity is established, so the soft codes are safe here.
+  assertArtifactCurrency(
+    { iat: o.iat as number, ...(o.nbf !== undefined ? { nbf: o.nbf as number } : {}), exp: o.exp as number },
+    { now, ceilingMs: SESSION_GRANT_MAX_TTL_MS, what: "session grant", ceilingName: "live", refusals: "post-signature" },
+  );
 
   return {
     v: 1,
@@ -762,16 +766,22 @@ export interface SessionRailOpts {
   nc: NatsConnection;
   grant: Pick<SessionGrant, "space" | "endpoint" | "sessionId" | "window"> & { serving: { epoch: number } };
   role: SessionRole;
-  /** Delivered in-order for CONTIGUOUS frames, and the application accepts FIRST: a handler
-   *  that throws breaks the rail (`handler`) and the refused frame is neither counted
-   *  delivered nor credited — the sender must never count data as accepted that nothing
-   *  accepted. A gap surfaces via onProtocolError("gap"). */
-  onData(data: unknown, seq: number): void;
+  /** Delivered in-order for CONTIGUOUS frames, and the application accepts FIRST: the handler
+   *  may be async — it is AWAITED, and the watermark advances and credit emits only after it
+   *  RESOLVES, so credit means the receiver's buffer actually freed (back-pressure) and a
+   *  rejection refuses the frame exactly like a synchronous throw: the rail breaks (`handler`)
+   *  and the refused frame is neither counted delivered nor credited. Acceptance is SERIALIZED
+   *  in seq order (one handler in flight; NATS does not serialize callback promises); frames
+   *  arriving while a handler is pending queue up to the grant WINDOW — past it the rail breaks
+   *  (`flood`), never an unbounded backlog. A handler wedged forever stalls credit, so the
+   *  SENDER's window fills and its stall watchdog surfaces the fault. A gap surfaces via
+   *  onProtocolError("gap"). */
+  onData(data: unknown, seq: number): void | Promise<void>;
   /** The peer's advisory close frame arrived (authoritative close is the ledger's). The local
    *  subscription and timer are torn down before this fires. */
   onClose?(): void;
   /** The session is broken — close and re-establish. `reason` is one of `garbled-frame` |
-   *  `gap` | `credit-overrun` | `subscription` | `stall` | `handler` | `publish` |
+   *  `gap` | `credit-overrun` | `flood` | `subscription` | `stall` | `handler` | `publish` |
    *  `seq-exhausted`. The rail's subscription and timer are torn down before this fires (a
    *  broken rail holds no resources). */
   onProtocolError?(reason: string, detail?: unknown): void;
@@ -815,6 +825,9 @@ export interface SessionRail {
  *
  * FLOW CONTROL (panel-locked): the data window is bounded and per-direction; control frames
  * (`credit`, `close`) are EXEMPT (a full window never blocks the credits that reopen it).
+ * RECEIVE-side acceptance is serialized and the (possibly async) handler AWAITED — credit
+ * emits only for frames the application actually accepted — and the pending-frame queue is
+ * bounded by the same window (`flood` past it), so neither side ever buffers unboundedly.
  * Credits carry an ABSOLUTE cumulative watermark, PIGGYBACKED on reverse data frames, so a lost
  * dedicated credit self-heals on the next reverse traffic; ANY deeper loss (including loss of
  * already-emitted threshold credits) recovers on the KEEPALIVE re-emit; sustained loss or a
@@ -886,6 +899,42 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
     }
   };
 
+  // SERIALIZED data acceptance: the application accepts FIRST and may be ASYNC — NATS does not
+  // serialize callback promises, so the callback only enqueues and this single drain loop runs
+  // one handler at a time in seq order. The watermark advances and credit emits only after the
+  // handler RESOLVES (credit == the receiver's buffer actually freed: the §13.6 back-pressure
+  // semantic), so an async rejection refuses the frame exactly like a synchronous throw. The
+  // HEAD frame stays queued while its handler runs, so the window bound below counts it; a
+  // handler that resolves into a rail that closed or broke meanwhile advances NOTHING.
+  const ingressQueue: Array<{ seq: number; data: unknown }> = [];
+  let draining = false;
+  const drain = async (): Promise<void> => {
+    if (draining) return;
+    draining = true;
+    try {
+      while (!closed && !broken && ingressQueue.length > 0) {
+        const head = ingressQueue[0];
+        try {
+          await opts.onData(head.data, head.seq);
+        } catch (e) {
+          protocolError("handler", (e as Error)?.message ?? String(e));
+          return;
+        }
+        if (closed || broken) return;
+        ingressQueue.shift();
+        expected++;
+        delivered++;
+        deliveredSinceCredit++;
+        if (deliveredSinceCredit >= creditEvery) {
+          deliveredSinceCredit = 0;
+          emitCredit();
+        }
+      }
+    } finally {
+      draining = false;
+    }
+  };
+
   sub = opts.nc.subscribe(ingress, {
     callback: (err, msg) => {
       if (closed || broken) return;
@@ -918,26 +967,23 @@ export function openSessionRail(opts: SessionRailOpts): SessionRail {
         if (broken) return;
       }
       dataSinceIdleTick = true;
-      if (frame.seq < expected) return; // duplicate — idempotent drop
-      if (frame.seq > expected) {
-        protocolError("gap", { expected, got: frame.seq });
+      // Contiguity is judged against the queue's tail (the head may still be in its handler):
+      // a peer sending in order while an earlier handler is pending is NOT a gap.
+      const nextIngress = expected + ingressQueue.length;
+      if (frame.seq < nextIngress) return; // duplicate — idempotent drop
+      if (frame.seq > nextIngress) {
+        protocolError("gap", { expected: nextIngress, got: frame.seq });
         return;
       }
-      // The APPLICATION accepts FIRST: a throwing handler must not advance the cumulative
-      // watermark or earn credit for a frame nothing accepted — the rail breaks loudly instead.
-      try {
-        opts.onData(frame.data, frame.seq);
-      } catch (e) {
-        protocolError("handler", (e as Error)?.message ?? String(e));
+      // The ingress queue is bounded by the grant WINDOW (an honest peer can never have more
+      // unacknowledged frames in flight): a peer that ignores flow control while a handler is
+      // pending cannot pile promises here — the rail breaks instead (§13.6: never unbounded).
+      if (ingressQueue.length >= window) {
+        protocolError("flood", { queued: ingressQueue.length, window });
         return;
       }
-      expected++;
-      delivered++;
-      deliveredSinceCredit++;
-      if (deliveredSinceCredit >= creditEvery) {
-        deliveredSinceCredit = 0;
-        emitCredit();
-      }
+      ingressQueue.push({ seq: frame.seq, data: frame.data });
+      void drain();
     },
   });
 
