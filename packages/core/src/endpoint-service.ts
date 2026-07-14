@@ -58,8 +58,39 @@ export interface ServiceStatus {
 export const SERVICE_READY = "ready";
 export const SERVICE_EXITED = "exited";
 /** Restart-intensity escalation (§13.6 virtual endpoints): the instance stops restarting and
- *  the lifecycle retires terminally; readers treat it as permanently not-startable. */
+ *  the lifecycle retires terminally; readers treat it as permanently not-startable. The state
+ *  is IRREVERSIBLE at {@link writeServiceStatus}: no later status write (any epoch) replaces
+ *  it — the only touch a stored escalated row admits is the supervisor's own revision-pinned
+ *  retirement mark, written directly by the reconciler, never through this writer. */
 export const SERVICE_ESCALATED = "escalated";
+
+/** The SUPERVISOR-OWNED status fields (§13.6 restart intensity): the durable restart history
+ *  and the retirement-complete mark. {@link writeServiceStatus} carries them forward on every
+ *  UNPINNED (instance-side) write — an ordinary successor `ready` write can neither reset nor
+ *  forge them; only the supervisor's revision-pinned read-modify-write replaces them. */
+export const SERVICE_RESTART_HISTORY_FIELD = "restarts";
+export const SERVICE_RETIRED_MARK_FIELD = "retiredAt";
+
+/** The §13.6 virtual activation policy (`spec.activation`), a CLOSED schema: `mode` is the
+ *  literal `on-demand` and `capacity` (the pool admission bound) is REQUIRED — an unbounded
+ *  pool is not a policy, and a free-floating capacity knob unbound from the registration was
+ *  the drift the panel refused. The restart knobs default per SPEC (3 within 60s). */
+export interface VirtualActivationPolicy {
+  mode: "on-demand";
+  capacity: number;
+  maxRestarts?: number;
+  restartWindowMs?: number;
+}
+
+export function parseActivationPolicy(raw: unknown): VirtualActivationPolicy {
+  const o = isRec(raw) ? raw : svcFail("activation policy is not an object");
+  for (const k of Object.keys(o)) if (!["mode", "capacity", "maxRestarts", "restartWindowMs"].includes(k)) svcFail(`activation policy carries unknown field "${k}" (closed schema)`);
+  if (o.mode !== "on-demand") svcFail(`activation.mode "${String(o.mode)}" is not "on-demand"`);
+  if (typeof o.capacity !== "number" || !Number.isSafeInteger(o.capacity) || o.capacity <= 0) svcFail("activation.capacity must be a positive integer (a virtual pool is bounded by policy, never open-ended)");
+  if (o.maxRestarts !== undefined && (typeof o.maxRestarts !== "number" || !Number.isSafeInteger(o.maxRestarts) || o.maxRestarts <= 0)) svcFail("activation.maxRestarts must be a positive integer");
+  if (o.restartWindowMs !== undefined && (typeof o.restartWindowMs !== "number" || !Number.isSafeInteger(o.restartWindowMs) || o.restartWindowMs <= 0)) svcFail("activation.restartWindowMs must be a positive integer");
+  return o as unknown as VirtualActivationPolicy;
+}
 
 const STATE_TOKEN = /^[a-z][a-z0-9-]{0,31}$/;
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -87,7 +118,7 @@ export function parseServiceSpec(raw: unknown, key: { endpoint: string }): Servi
   if (!Array.isArray(o.clusterDigests) || o.clusterDigests.length === 0 || !o.clusterDigests.every(isDigest))
     svcFail("clusterDigests must be a non-empty array of sha256 digests");
   if (!isRec(o.protocol) || o.protocol.v !== 1) svcFail("protocol.v");
-  if (o.activation !== undefined && !isRec(o.activation)) svcFail("activation");
+  if (o.activation !== undefined) parseActivationPolicy(o.activation); // closed schema, capacity REQUIRED (§13.6)
   return o as unknown as ServiceSpec;
 }
 
@@ -175,8 +206,9 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
 async function readGovernedDeclarations(
   readArtifact: (digest: string) => Promise<unknown> | unknown,
   clusterDigests: readonly string[],
-): Promise<Map<string, Set<string>>> {
+): Promise<{ governed: Map<string, Set<string>>; classes: Map<string, string> }> {
   const out = new Map<string, Set<string>>();
+  const classes = new Map<string, string>();
   const read = async (digest: string): Promise<unknown> => {
     const raw = await readArtifact(digest);
     if (raw === undefined)
@@ -190,9 +222,10 @@ async function readGovernedDeclarations(
       const set = out.get(cmd.name) ?? new Set<string>();
       for (const t of (cmd.traits ?? [])) if (GOVERNED_TRAIT_URNS.includes(t)) set.add(t);
       out.set(cmd.name, set); // present for EVERY command, governed or not
+      classes.set(cmd.name, cmd.class);
     }
   }
-  return out;
+  return { governed: out, classes };
 }
 
 /** Governed-continuity at the mediated registration write (§13.7: removal/downgrade is an
@@ -414,7 +447,16 @@ export async function registerServiceInstance(
       // else: this instance's OWN orphan from an aborted earlier attempt (the gate has reopened
       // past its stamp since) — the slot-take below replaces it.
     }
-    const next = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests);
+    const { governed: next, classes } = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests);
+    // §13.6: a VIRTUAL endpoint's commands MUST be journal-class — an ephemeral call to an
+    // endpoint with no live instance is an honest `unavailable`, so registering an on-demand
+    // activation policy over an ephemeral command would advertise a surface that cannot exist.
+    if (spec.activation !== undefined) {
+      for (const [name, cls] of classes) {
+        if (cls !== "journal")
+          throw new EpEnvelopeError("failed-precondition", `endpoint "${spec.endpoint}" registers on-demand activation but declares the ${cls}-class command "${name}"; a virtual endpoint's commands MUST be journal-class (SPEC 13.6)`);
+      }
+    }
     assertGovernedDeclarationContinuity(gov.commands, next);
     governPromote = { commands: serializeGovernanceCommands(mergeEndpointGovernance(gov.commands, next)) };
     const slotValue: EndpointGovernance = {
@@ -575,8 +617,26 @@ export async function writeServiceStatus(
   }
   if (stored && stored.operation === "PUT") {
     const recorded = parseServiceStatus(decodeJson(stored.value, key));
+    // ESCALATED is IRREVERSIBLE here (§13.6): no later write, any epoch, replaces it. The only
+    // permitted touch on an escalated row is the supervisor's revision-pinned retirement mark,
+    // which the escalation reconciler writes DIRECTLY (never through this writer).
+    if (recorded.state === SERVICE_ESCALATED)
+      throw new EpEnvelopeError("failed-precondition", `"${args.endpoint}/${args.instanceId}" is escalated; the state is terminal and a status write cannot clear it (SPEC 13.6)`);
     if (args.epoch < recorded.epoch)
       throw new EpEnvelopeError("conflict", `status write from epoch ${args.epoch} is below the stored status epoch ${recorded.epoch} (SPEC 13.9)`);
+    if (args.expectedStatusRevision === undefined) {
+      // The SUPERVISOR-OWNED fields ride through every instance-side (unpinned) write: strip
+      // whatever the caller supplied and copy the stored values, so an ordinary successor
+      // `ready` write can neither RESET nor FORGE the restart history or the retirement mark
+      // (§13.6: the history survives successor convergence). The supervisor's own pinned
+      // read-modify-write is the one path that replaces them.
+      const s = status as Record<string, unknown>;
+      delete s[SERVICE_RESTART_HISTORY_FIELD];
+      delete s[SERVICE_RETIRED_MARK_FIELD];
+      const r = recorded as Record<string, unknown>;
+      if (r[SERVICE_RESTART_HISTORY_FIELD] !== undefined) s[SERVICE_RESTART_HISTORY_FIELD] = r[SERVICE_RESTART_HISTORY_FIELD];
+      if (r[SERVICE_RETIRED_MARK_FIELD] !== undefined) s[SERVICE_RETIRED_MARK_FIELD] = r[SERVICE_RETIRED_MARK_FIELD];
+    }
     return updateRecordEntry(kv, key, status, stored.revision);
   }
   return createRecordEntry(kv, key, status);
@@ -633,6 +693,7 @@ export async function freezeExpectedSet(kv: KV, endpoint: string): Promise<Froze
     parseServiceSpec(rec.spec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
     const status = parseServiceStatus(rec.status.value);
     if (status.state === SERVICE_EXITED) continue;
+    if (status.state === SERVICE_ESCALATED) continue; // terminally not-startable (§13.6): never a live scatter member
     if (rec.staleProjection) continue; // liveness predates the CURRENT registration: not live under it
     frozen.push({ instanceId, registrationRevision: rec.spec.revision, epoch: status.epoch });
   }

@@ -1799,12 +1799,19 @@ per-pool consumer INFO after reconciling the canonicalizer's own outstanding acc
 against the predicate below (a repaired item is inside the count new work competes under);
 the read fails closed (an unreadable consumer is `unavailable`, never an empty pool), and the
 sum is honest only while the pool consumer's delivery ceiling is unlimited
-(`max_deliver = -1`, pinned at creation AND re-checked at every read, because a message that
-exhausts a finite ceiling stays stored but leaves both counters and MaxDeliver is editable
-after creation). The virtual endpoint's canonicalizer durable serializes admission
+(`max_deliver = -1`) AND its filter is exactly the pool's own subtree; BOTH are editable after
+creation, so both are pinned at creation AND re-proved at every read (a message that exhausts
+a finite ceiling stays stored but leaves both counters; a narrowed or foreign filter reads
+empty while stored work remains). The admission capacity comes from the endpoint's REGISTERED
+activation policy (`spec.activation`, a closed schema whose `capacity` is required), never a
+free-standing knob. The virtual endpoint's canonicalizer durable serializes admission
 (`max_ack_pending = 1`): one submission is in the count-decide-enqueue path at a time, so two
-submissions cannot both observe the same free slot; pool-worker execution concurrency is an
-independent knob, already inside the count via `num_ack_pending`. Acceptance and
+submissions cannot both observe the same free slot; because MaxAckPending is also editable
+after creation, every admission re-proves the live pin and refuses on drift rather than
+deciding under a serialization it no longer has; pool-worker execution concurrency is an
+independent knob, already inside the count via `num_ack_pending`. A virtual endpoint's
+registration REFUSES if any declared command is not journal-class (an ephemeral surface
+cannot exist with no live instance). Acceptance and
 enqueue span two streams with no atomic bridge, so the enqueue is **idempotent, keyed by the
 acceptance identity, and reconciled against a decidable predicate**: the pool subject carries
 the acceptance identity and the enqueue is a create (expected-last-sequence-for-subject 0),
@@ -1830,11 +1837,20 @@ durable reminders ride the timer plane.
 Supervision is restart-intensity escalation: more than `maxRestarts` (default 3) within
 `restartWindow` (default 60s) escalates; the instance stops restarting, status records
 `escalated`, the lifecycle retires terminally (§13.1), and the failure is loud. The restart
-history is DURABLE on the instance's own status record and each note is a revision-pinned
-CAS: a supervisor restart cannot amnesty the count, two concurrent notes cannot merge-lose a
-restart, and an `escalated` status refuses further notes. The escalation commits before the
-lifecycle retirement runs, and a retirement failure leaves the escalation standing (it
-retries; nothing un-escalates).
+history is DURABLE on the instance's own status record, SUPERVISOR-OWNED (the status writer
+carries it forward through every ordinary instance-side write, so a successor's `ready`
+convergence can neither reset nor forge it), and each note is a revision-pinned CAS: a
+supervisor restart cannot amnesty the count and two concurrent notes cannot merge-lose a
+restart. Each history entry is bound to the DYING PROCESS EPOCH (a real restart advances the
+epoch), so a replayed or duplicated notification of one restart is an idempotent no-op, never
+a double count; and a supervision clock behind the newest recorded restart REFUSES rather
+than silently truncating history. `escalated` is IRREVERSIBLE at the status writer (no later
+write, any epoch, replaces it), refuses further notes, and is excluded from every liveness
+derivation (a frozen scatter expected set never contains an escalated instance). The
+escalation commits before the lifecycle retirement runs; the retire seam MUST be idempotent,
+a retirement failure leaves the escalation standing, and a reconciler retries retirement on
+already-escalated rows until it completes, recording completion durably (nothing
+un-escalates).
 
 ### 13.7 Contracts and discovery
 
@@ -2270,6 +2286,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Credential ledger (issuance gate, descendant enumeration, lineage index, revocation) | the trusted auth path (§9/§10) | writes: `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` + `….gate.<lifecycleUid>` (the issuance gate, revision-pinned CAS is the mint fence, §13.1) + `….srcgate.<issuerKeyId>.<id>` (per-handle source gate, §13.1) + `….bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` (the per-ancestor lineage index) + `….session.<sessionId>` (create-CAS `issuing`, finalize-CAS `active`, §13.6); reads: **leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_auth_<space>`** (with `allow_direct=false` a KV get is exactly this body-selected `last_by_subj` call against the stream LEADER; read-your-writes, not a follower-served `DIRECT.GET`; the body-selection is safe here because this profile IS the trusted auth path, and it is granted to no other profile) for gate/session/row state, which is why the mint and session fences are revision-pinned CAS *writes* rather than reads (a read is never a fence, §13.1); and **point-in-time prefix enumeration** via a fresh consumer the barrier creates and deletes per run, `$JS.API.CONSUMER.CREATE.KV_cotal_auth_<space>.*.$KV.cotal_auth_<space>.>` (name-token wildcard: one throwaway PULL consumer per barrier run / expiry sweep, `DeliverPolicy: LastPerSubject`, `AckPolicy: none`, filter pinned to the enumerated prefix `cred.<uid>.>`, `bysrc.<issuerKeyId>.<id>.>`, or `session.>`), then `$JS.API.CONSUMER.INFO.KV_cotal_auth_<space>.*`, `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_<space>.*`, and `$JS.API.CONSUMER.DELETE.KV_cotal_auth_<space>.*` (three distinct API subjects, never a slash-alternation shorthand); `LastPerSubject` replays the CURRENT last value of every key under the prefix (a fresh snapshot, bounded by the captured stream sequence at create), which is exactly the barrier's need and precisely what a standing acking durable canNOT give: its cursor advances, so a later run or a post-crash auth process can never re-scan rows it already acked. The consumer is created and deleted per run, never reused. (The `deliver_subject` hazard of §13.9 does not arise: this profile is the trusted auth path itself, which already holds any authority a push target could reach.) The barrier's family enumeration and the expiry sweep are executable reads, not prose. No other profile holds ANY grant on `cotal_auth_<space>` | mediated |
 | Work-pool enqueue | the endpoint's canonicalizer (from accepted decisions only) | `epw.<endpoint>.>` publish, create-per-subject (`Nats-Expected-Last-Subject-Sequence: 0`; the acceptance identity is the subject, §13.2) | mediated |
 | Work-pool reconciliation probe | the endpoint's canonicalizer | leader-served `$JS.API.STREAM.MSG.GET.EPW_<space>` (body-selected `last_by_subj` on the exact item subject; the probe is FENCING, read service above: a follower-served `DIRECT.GET` that misses the live entry re-arms settled work, so that form is NOT granted) + the CAS-winner read row above (`dec` + `wrk` last-by-subject), together they decide the §13.6 predicate: accepted, **`now < workExpiry`** (an expired item is never re-enqueued; it is terminally settled `expired` with its `wrk` fact and acked without effect), no terminal, no live entry ⇒ re-enqueue for the item's REMAINING TTL; a worker likewise MUST check `now < workExpiry` before lease/effect and refuse expired work | mediated |
+| Virtual-endpoint activation watch | the endpoint's activator principal (holder of its activation capability, §13.6) | exactly `$JS.API.CONSUMER.INFO.EPW_<space>.<poolD>` (the per-pool occupancy snapshot; request/reply, so watching is bounded polling); the instance START is a mediated, target-bound seam resolved by the supervisor's own authority, never a broker grant; NOTHING else: no `CONSUMER.MSG.NEXT`/`$JS.ACK` (watching is never draining), no `STREAM.MSG.GET.EPW_<space>` (no reconciliation authority), no consumer create/update/delete, no `epw.>` publish | mediated |
 | Work-pool consume + ack | the pool's owning endpoint ONLY (workers hold NO pool grant, §13.5) | **bind-only** on the provisioner-pre-created exact-filter `poolD` (grammar above): `$JS.API.CONSUMER.INFO.EPW_<space>.<poolD>`, `$JS.API.CONSUMER.MSG.NEXT.EPW_<space>.<poolD>`, `$JS.ACK.EPW_<space>.<poolD>.>` (ack only after committed terminal state); NO consumer create, NO stream-wide read | mediated |
 | Lease issue / fencing advance | the pool's owning endpoint (`lease` command) | its `lease` record keys (§13.7 grammar), via the record-writer seam | mediated |
 | Lifecycle mapping / teardown | minting manager's commit path; lifecycle-pinned deprovisioner | the **unsplit** alias CAS head `$KV.cotal_records_<space>.lifecycle.<owner>.<actor>` (one atomic key, NOT `.spec`/`.status`-split; the authoritative current mapping and the only `mappingRevision` source, activation/retirement serialize here by CAS, §13.7); leader-consistent current-mapping read `$JS.API.DIRECT.GET` is NOT used for authority reads of this key (the records bucket may follower-serve; a fresh mapping read is a leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_records_<space>` last-by-subject get on the head key; leader-served for read-your-writes, granted to the trusted mapping-reader/mediator profile, not a follower-served `DIRECT.GET`); optional append-only per-UID audit `$KV.cotal_records_<space>.lifecycle.<owner>.<actor>.<lifecycleUid>`; teardown: exact lifecycle-keyed names only | mediated / broker-pinned delete |

@@ -29,7 +29,8 @@ import {
   canonConsumerConfig, poolConsumerConfig, timerWriterConsumerConfig,
   recordWriterConsumerConfig, effectsConsumerConfig, decisionReaderConfig, goalReaderConfig,
   eventReaderConfig, recordReaderConfig,
-  canonicalizerGrants, canonicalizerWorkGrants, effectsBindGrants, recordWriterGrants, timerWriterGrants,
+  canonicalizerGrants, canonicalizerWorkGrants, activatorGrants, activatorContext, readPoolOccupancy,
+  effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   type EpCaller,
@@ -375,6 +376,7 @@ try {
       `    { user: "admin", password: "pw" }`,
       `    { user: "canon", password: "pw", permissions: { publish = ${JSON.stringify([...canonRows, "$JS.API.INFO"])}, subscribe = ["_INBOX.>"] } }`,
       `    { user: "agent", password: "pw", permissions: { publish = ["$JS.API.INFO"], subscribe = ["_INBOX.>"] } }`,
+      `    { user: "activator", password: "pw", permissions: { publish = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds"))}, subscribe = ["_INBOX.>"] } }`,
       "  ]",
       "}",
     ].join("\n"));
@@ -384,7 +386,9 @@ try {
       for (let i = 0; i < 50 && !up2; i++) { up2 = await isReachable(`nats://127.0.0.1:${SPORT}`); if (!up2) await wait(100); }
       if (!up2) throw new Error("the authorization broker did not come up");
       const ncAdmin = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "admin", pass: "pw" });
-      await createEndpointStreams(await jetstreamManager(ncAdmin), new Kvm(ncAdmin), SPACE);
+      const jsmAdmin = await jetstreamManager(ncAdmin);
+      await createEndpointStreams(jsmAdmin, new Kvm(ncAdmin), SPACE);
+      await jsmAdmin.consumers.add(epwStreamName(SPACE), poolConsumerConfig(SPACE, "manager", "builds"));
 
       const ncCanon = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "canon", pass: "pw" });
       const jsCanon = jetstream(ncCanon, { timeout: 2000 });
@@ -416,6 +420,34 @@ try {
         await jsAgent.publish(epwSubject(SPACE, "manager", "builds", { ...caller, id: "scoped-evil" }), new TextEncoder().encode("evil"), { headers: h });
       } catch { agentEnqueueDenied = true; }
       c("a NON-canonicalizer credential is DENIED the pool enqueue (broker-enforced)", agentEnqueueDenied);
+
+      // The ACTIVATOR profile (§13.9 matrix): exactly ONE row — the per-pool Consumer INFO. The
+      // narrow context binds without $JS.API.INFO (checkAPI: false), the occupancy read works,
+      // and every other JetStream surface is broker-denied.
+      const ncAct = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "activator", pass: "pw" });
+      const actx = await activatorContext(ncAct, SPACE);
+      const actOcc = await readPoolOccupancy(actx, "manager", "builds");
+      c("the ONE-row activator credential reads occupancy (exact Consumer INFO is live-sufficient)", actOcc.occupancy === 1, actOcc);
+      const jsmAct = await jetstreamManager(ncAct, { timeout: 1500, checkAPI: false });
+      let actGetDenied = false;
+      try { await jsmAct.streams.getMessage(epwStreamName(SPACE), { last_by_subj: scopedItem }); }
+      catch { actGetDenied = true; }
+      c("the activator is DENIED the body-selected EPW leader read (INFO-only, no reconciliation authority)", actGetDenied);
+      let actNextDenied = false;
+      try { await ncAct.request(`$JS.API.CONSUMER.MSG.NEXT.${epwStreamName(SPACE)}.${poolDurable("manager", "builds")}`, new TextEncoder().encode("{}"), { timeout: 1200 }); }
+      catch { actNextDenied = true; }
+      c("the activator is DENIED pool consume (MSG.NEXT; watching is never draining)", actNextDenied);
+      let actCreateDenied = false;
+      try { await jsmAct.consumers.add(epwStreamName(SPACE), poolConsumerConfig(SPACE, "manager", "evil")); }
+      catch { actCreateDenied = true; }
+      c("the activator is DENIED consumer creation (no self-widened watch surface)", actCreateDenied);
+      let actPubDenied = false;
+      try {
+        const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        await jetstream(ncAct, { timeout: 1200 }).publish(epwSubject(SPACE, "manager", "builds", { ...caller, id: "act-evil" }), new TextEncoder().encode("evil"), { headers: h });
+      } catch { actPubDenied = true; }
+      c("the activator is DENIED the pool enqueue (watching is never writing)", actPubDenied);
+      await ncAct.close().catch(() => {});
       await ncCanon.close().catch(() => {}); await ncAgent.close().catch(() => {}); await ncAdmin.close().catch(() => {});
     } finally {
       if (broker2.pid) { try { process.kill(broker2.pid, "SIGKILL"); } catch { /* gone */ } }

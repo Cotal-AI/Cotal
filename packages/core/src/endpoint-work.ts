@@ -88,6 +88,13 @@ function assertCtx(ctx: WorkPoolContext): void {
     throw new EpEnvelopeError("failed-precondition", `the work-pool context was not constructed by workPoolContext(); a hand-assembled resource bundle never authorizes - the space bond is constructed, not asserted (SPEC 13.4)`);
 }
 
+/** The brand assertion, exported for sibling modules composing over this context (the §13.6
+ *  virtual admission/occupancy seams): every seam that accepts a WorkPoolContext enforces the
+ *  constructed bond, none trusts a structural look-alike. */
+export function assertWorkPoolContext(ctx: WorkPoolContext): void {
+  assertCtx(ctx);
+}
+
 /** Snapshot the item ref to a validated, DETACHED copy at seam entry, BEFORE the first await:
  *  a caller-shared mutable ref can otherwise split one operation's identity across its lease
  *  CAS and its terminal publish (settle item A, publish item B). Every seam works only on
