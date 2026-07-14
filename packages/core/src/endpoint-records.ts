@@ -16,6 +16,7 @@
  * mediator (§13.9 "Mediated reads"); the helpers below run inside trusted principals.
  */
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
+import type { JetStreamManager } from "@nats-io/jetstream";
 import { token } from "./subjects.js";
 import {
   endpointToken, assertBoundedOwner, assertIdToken, assertLifecycleToken, assertPoolToken,
@@ -38,6 +39,38 @@ export async function openRecordsBucket(
 ): Promise<KV> {
   const kvm = new Kvm(nc);
   return opts.create ? kvm.create(recordsBucket(space)) : kvm.open(recordsBucket(space));
+}
+
+/** LEADER-SERVED read of one records-KV key: `STREAM.MSG.GET last_by_subj` on the bucket's
+ *  backing stream, never `kv.get`/`DIRECT.GET`. A FENCING read — a fresh-check a mediated
+ *  writer acts on before publishing authority state — needs read-your-writes against the
+ *  leader; the bucket keeps `allow_direct=true` for the non-fencing paths, and a
+ *  follower-served Direct Get may answer with a superseded revision, which is exactly the
+ *  staleness a fence must not carry (§13.9, the same rule as {@link readLastFact}).
+ *  `undefined` = the key has never been written. A DEL/PURGE marker is a DELETION, never
+ *  absence — fail-closed refusal, the caller reconciles the store. */
+export async function readRecordLeader(
+  jsm: JetStreamManager,
+  space: string,
+  key: string,
+): Promise<{ value: unknown; revision: number } | undefined> {
+  const bucket = recordsBucket(space);
+  let m;
+  try {
+    m = await jsm.streams.getMessage(`KV_${bucket}`, { last_by_subj: `$KV.${bucket}.${key}` });
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 10037) return undefined; // no message on the subject
+    throw e;
+  }
+  if (!m) return undefined;
+  const op = m.header?.get("KV-Operation");
+  if (op)
+    throw new EpEnvelopeError("failed-precondition", `the record ${key} carries a ${op} marker; a deletion is never absence - reconcile the store (SPEC 13.7)`);
+  try {
+    return { value: JSON.parse(new TextDecoder().decode(m.data)), revision: m.seq };
+  } catch (e) {
+    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(e as Error).message}`);
+  }
 }
 
 // ---- the kind registry (§13.7 "Record kinds and key grammar") -------------------------------

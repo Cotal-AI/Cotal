@@ -2,7 +2,11 @@
  * v0.4 §13.6 AWAITABLE CHECKPOINT smoke — the one durable pause primitive against a real
  * broker with REAL message schedules: mint (spec + waiting status + `.schedule` request), the
  * timer writer's arm (ADR-51 header rejection; subject-derived target; same-generation
- * idempotence), heartbeat generation supersede (the superseded deadline's fire NO-OPS), the
+ * idempotence), the ARM FENCE (a delayed writer whose status proof was current when taken but
+ * whose publish lands after a newer arm is rejected by the BROKER's subject-CAS, and a
+ * no-competitor stale arm is repaired by the post-publish self-heal re-read — both driven
+ * deterministically by holding the writer's leader-served status response mid-flight),
+ * heartbeat generation supersede (the superseded deadline's fire NO-OPS), the
  * broker-authored fire origin check (forged fires discard), the ONE-USE settle CAS (resume
  * and expiry race; duplicate resume is conflict; expiry fails closed), holder-bound resume,
  * the durable reconciler's harmless over-emission, and deletion fail-closure (a DEL on the
@@ -61,7 +65,7 @@ try {
   await jsm.consumers.add(eptReqStreamName(SPACE), timerWriterConsumerConfig(SPACE, { ackWaitMs: 5_000 }));
   const writerC = await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
   // The smoke's timer-writer loop: fetch each .schedule request and arm it via the writer seam.
-  const wctx = timerWriterContext(kv, js, SPACE);
+  const wctx = await timerWriterContext(nc, SPACE);
   const drainAndArm = async (expect: number) => {
     const armed: { generation?: number }[] = [];
     for await (const m of await writerC.fetch({ max_messages: expect, expires: 2000 })) {
@@ -70,6 +74,52 @@ try {
       m.ack();
     }
     return armed;
+  };
+  // Fetch raw .schedule requests WITHOUT arming them (the delayed-writer probes replay them).
+  const fetchRequests = async (expect: number) => {
+    const msgs: { subject: string; data: Uint8Array }[] = [];
+    for await (const m of await writerC.fetch({ max_messages: expect, expires: 2000 })) {
+      msgs.push({ subject: m.subject, data: m.data });
+      m.ack();
+    }
+    return msgs;
+  };
+  // A connection whose next records-KV STREAM.MSG.GET response can be HELD: the response is
+  // materialized immediately (the status proof is taken NOW, while it is genuinely current) but
+  // only handed to the awaiting writer when released — the deterministic DELAYED-WRITER
+  // schedule (proof valid when taken, the publish landing after the world moved). The matcher
+  // doubles as the M2 structural proof: it only fires if the writer's fresh-check rides the
+  // leader-served STREAM.MSG.GET API — a kv.get/DIRECT.GET fresh-check would never be held and
+  // the probes below would fail.
+  const gatedConnection = () => {
+    let armGate = false;
+    let release: (() => void) | undefined;
+    const gated = new Proxy(nc, {
+      get(target, prop) {
+        if (prop === "request") return async (subj: string, ...rest: unknown[]) => {
+          const p = (target as unknown as { request: (...a: unknown[]) => Promise<unknown> }).request(subj, ...rest);
+          if (armGate && typeof subj === "string" && subj.startsWith("$JS.API.STREAM.MSG.GET.KV_cotal_records_")) {
+            armGate = false; // hold exactly ONE status read
+            const result = await p;
+            await new Promise<void>((r) => { release = r; });
+            return result;
+          }
+          return p;
+        };
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    return {
+      nc: gated,
+      holdNextStatusRead: () => { armGate = true; },
+      whenHeld: async () => { while (release === undefined) await wait(10); },
+      release: () => { release!(); release = undefined; },
+    };
+  };
+  const lastArmedBody = async (tok: string) => {
+    const m = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: eptSubject(SPACE, "manager", IID, EPOCH, tok, "armed") });
+    return JSON.parse(new TextDecoder().decode(m!.data)) as { generation: number };
   };
   const NOW = Date.now(); // real schedules need real wall-clock deadlines; the OWNER clock probes use offsets from this
 
@@ -195,6 +245,56 @@ try {
     c("a .schedule request for an UNKNOWN checkpoint is discarded", (await armCheckpointTimer(wctx, unknownReq)).armed === false);
   }
 
+  // ── 8dcad72 HIGH (the ARM FENCE): a DELAYED writer whose status proof was taken while gen1
+  //    was GENUINELY CURRENT, but whose publish lands only after gen2 is armed, is rejected by
+  //    the BROKER (Nats-Expected-Last-Subject-Sequence pinned to the pre-proof .armed read) —
+  //    the fresh-check alone cannot catch this schedule, because the proof was valid when
+  //    taken. Without the fence the delayed publish replaces gen2's schedule (the rollup) and
+  //    the live deadline silently rolls back. ──
+  {
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cphf"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 600_000, now: NOW });
+    const [gen1Req] = await fetchRequests(1); // captured, NOT armed — gen1's .armed does not exist yet
+    const gate = gatedConnection();
+    const delayedCtx = await timerWriterContext(gate.nc as never, SPACE);
+    gate.holdNextStatusRead();
+    const delayedArm = armCheckpointTimer(delayedCtx, gen1Req, { statusBudgetMs: 30_000 });
+    await gate.whenHeld(); // the delayed writer has read .armed seq (0) and PROVEN gen1 current — now the world moves
+    await heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cphf"), instanceId: IID, epoch: EPOCH, deadline: NOW + 900_000, now: NOW + 100 });
+    const armedGen2 = await drainAndArm(1);
+    c("the live writer arms generation 2 while the delayed writer's gen1 publish is still in flight", armedGen2.length === 1 && armedGen2[0].generation === 2);
+    gate.release(); // the delayed writer now publishes its stale-but-once-valid gen1 arm
+    const delayed = await delayedArm;
+    c("the DELAYED gen1 arm is rejected by the broker CAS and discarded on the re-proof (armed:false, stale) — process timing never orders the fence",
+      delayed.armed === false && delayed.reason === "stale");
+    c("…and the live schedule is STILL generation 2 (the delayed publish never rolled the deadline back)",
+      (await lastArmedBody("cphf")).generation === 2);
+  }
+
+  // ── the POST-PUBLISH SELF-HEAL: a stale-but-once-valid arm that lands with NO competitor
+  //    (its CAS succeeds — nobody armed since its read) leaves a SUPERSEDED schedule live while
+  //    gen2's own request is still queued. The writer's post-publish re-read catches the moved
+  //    status and immediately arms the LIVE coordinate instead of waiting for that request or
+  //    the reconciler. ──
+  {
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpsh"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 600_000, now: NOW });
+    const [gen1Req] = await fetchRequests(1); // captured, NOT armed
+    const gate = gatedConnection();
+    const delayedCtx = await timerWriterContext(gate.nc as never, SPACE);
+    gate.holdNextStatusRead();
+    const delayedArm = armCheckpointTimer(delayedCtx, gen1Req, { statusBudgetMs: 30_000 });
+    await gate.whenHeld();
+    await heartbeatCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpsh"), instanceId: IID, epoch: EPOCH, deadline: NOW + 900_000, now: NOW + 100 });
+    // gen2's request stays QUEUED (not drained): the delayed gen1 publish has no competitor.
+    gate.release();
+    const delayed = await delayedArm;
+    c("with NO competing arm the delayed gen1 publish wins its CAS (armed:true for the request's generation)",
+      delayed.armed === true && delayed.generation === 1);
+    c("…but the post-publish re-read SELF-HEALS: the live schedule is generation 2 without gen2's request having been processed",
+      (await lastArmedBody("cpsh")).generation === 2);
+    await drainAndArm(1); // gen2's queued request: an idempotent no-op replacement at the writer
+    c("…and gen2's own delayed request remains a harmless idempotent re-arm", (await lastArmedBody("cpsh")).generation === 2);
+  }
+
   // ── HIGH 3: the deadline is a live fence. A heartbeat at/after the deadline refuses (a due
   //    checkpoint expires, not extends); a resume at/after the deadline drives EXPIRED (fails
   //    closed), never claims resumed, even with no fire yet processed. ──
@@ -282,12 +382,25 @@ try {
   // ── re-verify 8ea3abe MEDIUM 3: the timer writer is resource-attested and bounded ──
   {
     const req = (tok: string, sp: string) => ({ subject: eptSubject(sp, "manager", IID, EPOCH, tok, "schedule"), data: new TextEncoder().encode(JSON.stringify({ v: 1, timerId: tok, generation: 1, deadline: NOW + 60_000 })) });
-    await rejects("a HAND-ASSEMBLED timer-writer context refuses (the brand attests construction)",
+    await rejects("a HAND-ASSEMBLED timer-writer context refuses (the WeakMap carries no resources for a look-alike)",
       () => armCheckpointTimer({ kv, js, space: SPACE } as never, req("cp5", SPACE)), "permission-denied");
+    c("the context token exposes NO broker resources to rebind (js/jsm/kv are module-private, distsys 8dcad72 M1)",
+      !("js" in wctx) && !("jsm" in wctx) && !("kv" in wctx) && Object.isFrozen(wctx));
     await rejects("a CROSS-SPACE .schedule request refuses (the writer's status authority answers for one space)",
       () => armCheckpointTimer(wctx, req("cp5", "otherspace")), "permission-denied");
-    const hangingKv = { get: () => new Promise(() => { /* never settles */ }) } as never;
-    const hungCtx = timerWriterContext(hangingKv, js, SPACE);
+    // A stuck status authority: the records-KV leader read never answers (the EPT sequence read
+    // before it passes through untouched).
+    const hangingNc = new Proxy(nc, {
+      get(target, prop) {
+        if (prop === "request") return (subj: string, ...rest: unknown[]) =>
+          typeof subj === "string" && subj.startsWith("$JS.API.STREAM.MSG.GET.KV_cotal_records_")
+            ? new Promise(() => { /* never settles */ })
+            : (target as unknown as { request: (...a: unknown[]) => unknown }).request(subj, ...rest);
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const hungCtx = await timerWriterContext(hangingNc as never, SPACE);
     await rejects("a STUCK status authority is a bounded unavailable refusal, never a hung writer",
       () => armCheckpointTimer(hungCtx, req("cp5", SPACE), { statusBudgetMs: 100 }), "unavailable");
     await rejects("a non-positive statusBudgetMs refuses", () => armCheckpointTimer(wctx, req("cp5", SPACE), { statusBudgetMs: 0 }), "failed-precondition");

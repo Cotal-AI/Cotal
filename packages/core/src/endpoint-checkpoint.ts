@@ -17,7 +17,12 @@
  *    bytes — and the writer REJECTS a request carrying one (the ADR-51 confused-deputy
  *    closure). The writer alone publishes the authoritative `.armed` (on EPT) with
  *    `Nats-Schedule-Target` = the sibling `.fire` derived from the AUTHENTICATED request
- *    subject's own tokens, never a body field. A same-`(timerId, generation)` arm re-derives
+ *    subject's own tokens, never a body field. Every arm is FENCED: the writer reads the
+ *    `.armed` subject's last sequence, proves the authoritative status LEADER-SERVED
+ *    (`STREAM.MSG.GET`, never a possibly-follower Direct Get), and publishes with
+ *    `Nats-Expected-Last-Subject-Sequence` pinned to that read — a delayed writer whose proof
+ *    was superseded is rejected by the BROKER, so `.armed` can never roll back to a stale
+ *    deadline. A same-`(timerId, generation)` arm re-derives
  *    the same `.armed` — the server's same-subject rollup makes a duplicate a no-op
  *    replacement, so the durable RECONCILER simply re-emits a `.schedule` at the current
  *    generation for every `waiting` status it owns; over-emission is harmless and a missing
@@ -30,12 +35,13 @@
  * Deadlines are mandatory; clocks are inputs (`now`), never a module-internal Date.now.
  */
 import type { KV } from "@nats-io/kv";
-import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import { headers as natsHeaders, type MsgHdrs } from "@nats-io/transport-node";
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { headers as natsHeaders, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, eptSubject, parseEpSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
+import { eptStreamName } from "./endpoint-binding.js";
 
 /** A checkpoint's coordinates: the owning endpoint + the minted token. */
 export interface CheckpointRef {
@@ -504,34 +510,43 @@ const SCHEDULING_HEADERS = ["Nats-Schedule", "Nats-Schedule-Target", "Nats-Sched
 /** The largest ms-epoch the broker's `@at <ISO>` schedule can represent (JS Date's ISO range). */
 const MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 
-/** The timer writer's RESOURCE-ATTESTED context: the records KV (its fresh-check status
- *  authority), the JetStream client (its `.armed` publish rail), and the ONE space both serve,
- *  bound together as one opaque frozen value. The brand (a module-private WeakSet) makes a
- *  hand-assembled look-alike refusable, so the writer can never fresh-check a space-A request
- *  against a space-B status authority with the same token. */
+/** The timer writer's RESOURCE-ATTESTED context: an OPAQUE token carrying only the ONE space
+ *  this writer serves. The broker resources it operates with (the `.armed` publish rail and the
+ *  leader-read authority) are derived from ONE connection at construction and live in a
+ *  module-private WeakMap keyed by the frozen token — they are not reachable properties, so a
+ *  holder of the token cannot rebind the writer's publish rail or its status authority after
+ *  construction (`ctx.js = evil` has nothing to assign to), and a hand-assembled look-alike
+ *  carries no resources at all (the same containment as the receipt and contract stores). */
 export interface TimerWriterContext {
-  readonly kv: KV;
-  readonly js: JetStreamClient;
   readonly space: string;
 }
 
-const BRANDED_TIMER_CONTEXTS = new WeakSet<object>();
+interface TimerWriterResources {
+  js: JetStreamClient;
+  jsm: JetStreamManager;
+}
 
-export function timerWriterContext(kv: KV, js: JetStreamClient, space: string): TimerWriterContext {
-  if (kv === null || typeof kv !== "object" || typeof (kv as { get?: unknown }).get !== "function")
-    throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a records KV (SPEC 13.2)`);
-  if (js === null || typeof js !== "object" || typeof (js as { publish?: unknown }).publish !== "function")
-    throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a JetStream client (SPEC 13.2)`);
+const TIMER_RESOURCES = new WeakMap<TimerWriterContext, TimerWriterResources>();
+
+export async function timerWriterContext(nc: NatsConnection, space: string): Promise<TimerWriterContext> {
+  if (nc === null || typeof nc !== "object")
+    throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a NATS connection (SPEC 13.2)`);
   if (typeof space !== "string" || space.length === 0)
     throw new EpEnvelopeError("failed-precondition", `a timer-writer context requires a nonempty space (SPEC 13.2)`);
-  const ctx: TimerWriterContext = Object.freeze({ kv, js, space });
-  BRANDED_TIMER_CONTEXTS.add(ctx);
+  const js = jetstream(nc);
+  const jsm = await jetstreamManager(nc);
+  const ctx: TimerWriterContext = Object.freeze({ space });
+  TIMER_RESOURCES.set(ctx, { js, jsm });
   return ctx;
 }
 
-function assertTimerCtx(ctx: TimerWriterContext): void {
-  if (ctx === null || typeof ctx !== "object" || !BRANDED_TIMER_CONTEXTS.has(ctx))
+/** Brand check AND resource fetch in one step: only a token minted by {@link timerWriterContext}
+ *  has an entry. */
+function timerResources(ctx: TimerWriterContext): TimerWriterResources {
+  const r = ctx === null || typeof ctx !== "object" ? undefined : TIMER_RESOURCES.get(ctx);
+  if (r === undefined)
     throw new EpEnvelopeError("permission-denied", `the timer-writer context was not constructed by timerWriterContext(); a hand-assembled context never attests its resources (SPEC 13.2)`);
+  return r;
 }
 
 /** Race the fresh-check against the writer's budget: a stuck status authority is a bounded
@@ -545,22 +560,95 @@ async function withStatusBudget<T>(p: Promise<T> | T, budgetMs: number, what: st
   try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
 }
 
+/** LEADER-SERVED status read for the writer's fresh-check (distsys 8dcad72 M2): the fence the
+ *  arm decision rests on needs read-your-writes against the leader. `kv.get` on the
+ *  `allow_direct` records bucket may be FOLLOWER-served and answer a superseded generation —
+ *  a fresh-check over that answer would arm exactly the stale deadline the check exists to
+ *  discard. Same rule and mechanism as {@link readLastFact}. */
+async function readCheckpointStatusLeader(
+  jsm: JetStreamManager, space_: string, ref: CheckpointRef,
+): Promise<{ value: CheckpointStatusValue; revision: number } | undefined> {
+  const key = recordStatusKey(RECORD_KINDS.cp, cpQualifiers(ref));
+  const entry = await readRecordLeader(jsm, space_, key);
+  return entry === undefined ? undefined : { value: parseCpStatus(entry.value, key), revision: entry.revision };
+}
+
+/** The `.armed` subject's current last stream sequence (0 = no armed message), leader-served:
+ *  the CAS coordinate of the arm fence below. */
+async function readLastArmedSeq(jsm: JetStreamManager, space_: string, armedSubject: string): Promise<number> {
+  try {
+    const m = await jsm.streams.getMessage(eptStreamName(space_), { last_by_subj: armedSubject });
+    return m?.seq ?? 0;
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 10037) return 0; // no message on the subject
+    throw e;
+  }
+}
+
+/** One FENCED arm of `(generation, deadline)` onto the derived armed/fire subjects — the arm
+ *  fence (distsys 8dcad72 HIGH). Order is load-bearing: (1) read the `.armed` subject's last
+ *  sequence, (2) prove the authoritative status LEADER-SERVED, (3) publish `.armed` with
+ *  `Nats-Expected-Last-Subject-Sequence` pinned to read (1). A publish can then land ONLY if no
+ *  other `.armed` landed after this writer's sequence read — and its status proof is newer than
+ *  that read — so a DELAYED writer that proved a since-superseded generation cannot replace the
+ *  newer schedule: the broker rejects its publish, the bounded retry re-proves the (moved)
+ *  status, and the stale coordinate is discarded. The broker orders the fence, never process
+ *  timing. A lost CAS with the coordinate still current retries (a competing writer armed the
+ *  SAME coordinate — the retry converges on the rollup). */
+async function armCoordinate(
+  r: TimerWriterResources,
+  space_: string,
+  parsed: { endpoint: string; instanceId: string; epoch: number; timerId: string },
+  want: { generation: number; deadline: number },
+  budget: number,
+  subject: string,
+): Promise<{ armed: boolean; armedSubject?: string; fireSubject?: string; generation?: number; reason?: "stale" | "settled" | "unknown" }> {
+  const armedSubject = eptSubject(space_, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "armed");
+  const fireSubject = eptSubject(space_, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "fire");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const lastSeq = await withStatusBudget(readLastArmedSeq(r.jsm, space_, armedSubject), budget, `the .armed sequence read for ${subject}`);
+    const current = await withStatusBudget(
+      readCheckpointStatusLeader(r.jsm, space_, { endpoint: parsed.endpoint, token: parsed.timerId }),
+      budget, `the status fresh-check for ${subject}`,
+    );
+    if (current === undefined) return { armed: false, reason: "unknown" };
+    if (current.value.state !== "waiting") return { armed: false, reason: "settled" };
+    if (current.value.deadlineGeneration !== want.generation || current.value.deadline !== want.deadline)
+      return { armed: false, reason: "stale" }; // a heartbeat superseded this coordinate; arming it would roll back the live deadline
+    const h = natsHeaders();
+    h.set("Nats-Schedule", `@at ${new Date(want.deadline).toISOString()}`);
+    h.set("Nats-Schedule-Target", fireSubject);
+    h.set("Nats-Expected-Last-Subject-Sequence", String(lastSeq));
+    try {
+      await r.js.publish(armedSubject, new TextEncoder().encode(JSON.stringify({ v: 1, timerId: parsed.timerId, generation: want.generation, deadline: want.deadline })), { headers: h });
+    } catch (e) {
+      if (isCasLoss(e)) continue; // a competing .armed landed after the sequence read — re-prove and retry
+      throw e;
+    }
+    return { armed: true, armedSubject, fireSubject, generation: want.generation };
+  }
+  throw new EpEnvelopeError("conflict", `the .armed subject for ${subject} moved on every fenced attempt; re-deliver the request and retry (SPEC 13.6)`);
+}
+
 /** The TIMER WRITER: turn one authenticated `.schedule` request into the authoritative `.armed`
  *  publish. The armed/fire subjects derive from the REQUEST SUBJECT's own tokens (never body
  *  fields); the body must agree with the subject's timerId; any scheduling header on the request
  *  is a loud refusal; a request whose subject space is not the context's space is refused (the
  *  writer's status authority answers for ONE space). The writer FRESH-CHECKS the authoritative
- *  `(generation, deadline)` from the context's records KV within a bounded budget and arms ONLY
- *  the current generation — a stale/delayed request is DISCARDED (`{ armed: false }`), so a
- *  rollup can never roll `.armed` back to a superseded deadline. A current request re-derives
- *  the same `.armed`; the server rollup makes it an idempotent no-op replacement (what the
- *  reconciler's over-emission rests on). */
+ *  `(generation, deadline)` LEADER-SERVED within a bounded budget and arms ONLY the current
+ *  generation under the {@link armCoordinate} broker CAS fence — a stale/delayed request is
+ *  DISCARDED (`{ armed: false }`) and a delayed PUBLISH is rejected by the broker itself, so
+ *  `.armed` can never roll back to a superseded deadline. A current request re-derives the same
+ *  `.armed`; the server rollup makes it an idempotent no-op replacement (what the reconciler's
+ *  over-emission rests on). After a successful arm the writer RE-READS the status and, if a
+ *  heartbeat advanced it mid-flight, immediately arms the LIVE coordinate (bounded self-heal;
+ *  the durable reconciler stays the crash backstop). */
 export async function armCheckpointTimer(
   ctx: TimerWriterContext,
   msg: { subject: string; headers?: MsgHdrs; data: Uint8Array },
   opts?: { statusBudgetMs?: number },
 ): Promise<{ armed: boolean; armedSubject?: string; fireSubject?: string; generation?: number; reason?: "stale" | "settled" | "unknown" }> {
-  assertTimerCtx(ctx);
+  const resources = timerResources(ctx);
   // Snapshot the FULL request input to detached locals at entry (the subject, the headers ref, and
   // the body bytes are read EXACTLY ONCE, before any parse/space-check/publish): a shifting subject
   // getter must not let the writer parse one coordinate, then space-check, arm, or error against a
@@ -590,23 +678,27 @@ export async function armCheckpointTimer(
     || typeof o.generation !== "number" || !Number.isSafeInteger(o.generation) || o.generation < 1
     || typeof o.deadline !== "number" || !Number.isSafeInteger(o.deadline) || o.deadline < 0 || o.deadline > MAX_SCHEDULE_MS)
     throw new EpEnvelopeError("failed-precondition", `the .schedule request on ${subject} is malformed, its body timerId disagrees with the authenticated subject token, or its deadline is out of the scheduler's date range (SPEC 13.2)`);
-  // FRESH-CHECK (bounded): arm only the current generation/deadline from the context's own
-  // records KV; discard a stale or settled request.
-  const current = await withStatusBudget(
-    readCheckpointStatus(ctx.kv, { endpoint: parsed.endpoint, token: parsed.timerId }),
-    budget, `the status fresh-check for ${subject}`,
+  // The FENCED arm: leader-served fresh-check + broker subject-CAS (armCoordinate).
+  const result = await armCoordinate(resources, ctx.space, parsed, { generation: o.generation as number, deadline: o.deadline as number }, budget, subject);
+  if (!result.armed) return result;
+  // POST-PUBLISH SELF-HEAL: if a heartbeat advanced the status while this arm was in flight, the
+  // request for the NEW coordinate may itself be delayed — arm the LIVE coordinate now (one
+  // bounded pass) instead of leaving the superseded schedule live until that request or the
+  // reconciler's next scan lands. A `conflict` here means a competing writer is already arming
+  // the live schedule: the winner is observed, never fought.
+  const live = await withStatusBudget(
+    readCheckpointStatusLeader(resources.jsm, ctx.space, { endpoint: parsed.endpoint, token: parsed.timerId }),
+    budget, `the post-publish re-read for ${subject}`,
   );
-  if (current === undefined) return { armed: false, reason: "unknown" };
-  if (current.value.state !== "waiting") return { armed: false, reason: "settled" };
-  if (current.value.deadlineGeneration !== o.generation || current.value.deadline !== o.deadline)
-    return { armed: false, reason: "stale" }; // a heartbeat superseded this request; arming it would roll back the live deadline
-  const armedSubject = eptSubject(ctx.space, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "armed");
-  const fireSubject = eptSubject(ctx.space, parsed.endpoint, parsed.instanceId, parsed.epoch, parsed.timerId, "fire");
-  const h = natsHeaders();
-  h.set("Nats-Schedule", `@at ${new Date(o.deadline as number).toISOString()}`);
-  h.set("Nats-Schedule-Target", fireSubject);
-  await ctx.js.publish(armedSubject, new TextEncoder().encode(JSON.stringify({ v: 1, timerId: parsed.timerId, generation: o.generation, deadline: o.deadline })), { headers: h });
-  return { armed: true, armedSubject, fireSubject, generation: o.generation as number };
+  if (live !== undefined && live.value.state === "waiting"
+    && (live.value.deadlineGeneration !== o.generation || live.value.deadline !== o.deadline)) {
+    try {
+      await armCoordinate(resources, ctx.space, parsed, { generation: live.value.deadlineGeneration, deadline: live.value.deadline }, budget, subject);
+    } catch (e) {
+      if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+    }
+  }
+  return result;
 }
 
 function space(subject: string): string {
