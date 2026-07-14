@@ -268,9 +268,15 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/jwt':
         specifier: 0.0.10-5
         version: 0.0.10-5
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/nkeys':
         specifier: ^2.0.3
         version: 2.0.3
@@ -281,9 +287,6 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
-      '@nats-io/jetstream':
-        specifier: ^3.4.0
-        version: 3.4.0
       better-auth:
         specifier: ^1.6.23
         version: 1.6.23(@opentelemetry/api@1.9.0)(react@19.2.7)

@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/auth",
-  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 ↔ Plane 2).",
+  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 \u2194 Plane 2).",
   "version": "0.11.2",
   "license": "Apache-2.0",
   "repository": {
@@ -28,10 +28,11 @@
     "@nats-io/jwt": "0.0.10-5",
     "@nats-io/nkeys": "^2.0.3",
     "@nats-io/transport-node": "^3.4.0",
-    "jose": "^6.2.3"
+    "jose": "^6.2.3",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/kv": "^3.4.0"
   },
   "devDependencies": {
-    "@nats-io/jetstream": "^3.4.0",
     "better-auth": "^1.6.23"
   },
   "files": [

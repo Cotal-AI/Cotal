@@ -101,3 +101,4 @@ export {
 export { runAuthService, JWKS_MAX_AGE_SEC } from "./service.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
+export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, writeLifecycleGate, closeSession, sweepSessions, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
