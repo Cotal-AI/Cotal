@@ -200,18 +200,24 @@ export async function runGuardGate(opts: {
     if (e instanceof EpEnvelopeError && e.code === "permission-denied") throw e;
     denyClosed(`the guard call failed (${(e as Error)?.message ?? String(e)})`);
   }
-  if (!isRec(called) || !isRec(called.responder)
-    || typeof (called.responder as Record<string, unknown>).id !== "string"
-    || typeof (called.responder as Record<string, unknown>).lifecycleUid !== "string")
+  if (!isRec(called) || !isRec(called.responder))
     denyClosed("the guard call seam returned no authenticated responder identity");
-  // SNAPSHOT the seam's answer and responder to DETACHED values at entry, BEFORE the parse and
-  // the anchor awaits: the obligation signatures verify over EXACTLY these bytes, so a caller
-  // that mutates the raw answer/obligations/responder during the awaited anchor resolution can
-  // never split what was parsed/scoped from what the signature verifies (D28 consuming boundary).
+  // SINGLE-READ the responder identity BEFORE any touch of the answer (security H3): serializing
+  // the answer runs caller getters, which could mutate `called.responder` between a type-check
+  // and a later read - so each property is read EXACTLY ONCE, validated as the read local, and
+  // frozen before `called.answer` is ever evaluated.
+  const responderId = (called.responder as Record<string, unknown>).id;
+  const responderUid = (called.responder as Record<string, unknown>).lifecycleUid;
+  if (typeof responderId !== "string" || responderId.length === 0 || typeof responderUid !== "string" || responderUid.length === 0)
+    denyClosed("the guard call seam returned no authenticated responder identity");
+  const responder = Object.freeze({ id: responderId, lifecycleUid: responderUid });
+  // SNAPSHOT the seam's answer to a DETACHED value BEFORE the parse and the anchor awaits: the
+  // obligation signatures verify over EXACTLY these bytes, so a caller that mutates the raw
+  // answer/obligations during the awaited anchor resolution can never split what was
+  // parsed/scoped from what the signature verifies (D28 consuming boundary).
   let answerSnapshot: unknown;
   try { answerSnapshot = JSON.parse(canonicalJson(called.answer)); } // throws on non-interchangeable I-JSON; the detached tree is unreachable to the caller
   catch (e) { return denyClosed(`the guard answer is not interchangeable JSON (${(e as Error).message})`); }
-  const responder = Object.freeze({ id: called.responder.id, lifecycleUid: called.responder.lifecycleUid });
 
   const { answer, rawObligations } = parseGuardAnswer(answerSnapshot);
   if (answer.decision === "deny")

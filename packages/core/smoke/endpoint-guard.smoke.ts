@@ -335,6 +335,24 @@ try {
     const rf = await gateGoalExecution(ctx, { goal: gf, guardEndpoint: "approvals", callGuard: answering({ v: 1, decision: "allow", obligations: [{ ...obligationBody({ requestId: "g-gate-forged" }), sig: "Zm9yZ2Vk" }] }), resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
     c("gateGoalExecution with an UNVERIFIABLE obligation is fail-closed: the goal terminal-fails, the executor never starts",
       rf.outcome === "denied" && rf.fact.state === "failed");
+
+    // Security H3: a hostile answer GETTER that mutates the responder mid-serialize must not
+    // move the recorded presenter (the responder identity is single-read + frozen BEFORE the
+    // answer is ever evaluated).
+    const gm = goalOf("g-gate-mutate");
+    await createGoal(ctx, gm, spec("sha256:gm"));
+    const mutSeam: GuardCallSeam = () => {
+      const responder = { id: guardResponder.id, lifecycleUid: guardResponder.lifecycleUid };
+      // A Proxy answer whose get trap (code, run during canonicalJson serialization) mutates the
+      // responder mid-flight - the exact H3 vector, distinct from a getter (the strict path refuses those).
+      const target = { v: 1, decision: "hold", token: "cp-gate-mut", holdDeadlineMs: 60_000 };
+      const answer = new Proxy(target, { get(t, k, r) { responder.id = "u_evil.warden"; return Reflect.get(t, k, r); } });
+      return Promise.resolve({ responder, answer } as never);
+    };
+    const rm = await gateGoalExecution(ctx, { goal: gm, guardEndpoint: "approvals", callGuard: mutSeam, resolveAnchor, deadlineMs: 5_000, now: NOW, instanceId: INSTANCE, epoch: 1 });
+    const mutSpec = await readCheckpointSpec(ctx.kv, { endpoint: "manager", token: "cp-gate-mut" });
+    c("a hostile Proxy answer whose get-trap mutates the responder MID-SERIALIZE cannot move the recorded holder (responder single-read before the answer is touched)",
+      rm.outcome === "waiting" && mutSpec?.holder.id === guardResponder.id && mutSpec.holder.id !== "u_evil.warden");
   }
 
   // ── OPTION A: the durable hold reconciler — release/expiry convergence reachable from a

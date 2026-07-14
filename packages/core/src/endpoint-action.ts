@@ -706,17 +706,20 @@ function assertEmissionWiring(ctx: ActionContext, wiring: ReceiptEmissionWiring)
     throw new EpEnvelopeError("failed-precondition", `the receipt store is bonded to space ${JSON.stringify(wiring.store.space)}, not this action context's ${JSON.stringify(ctx.space)}; a cross-space emission never publishes (SPEC 13.4)`);
 }
 
-/** The SHARED emission seam (§13.10): derive the goal terminal's receipt from the two
- *  authoritative facts and publish it idempotently. The inline commit path and the reconciler
- *  both run exactly this, so the receipt is reconstructable after any crash between effect and
- *  emission. Steps: read the DURABLE acceptance through the goal's recorded address
+/** The SHARED emission core (§13.10), MODULE-PRIVATE (engineer/security HIGH: `spec` and
+ *  `fact` are TRUSTED inputs here, so only the two callers that derive them from their own
+ *  authority reads may reach this seam - commitGoalResult passes its terminal-CAS winner and
+ *  leader-read spec, reconcileReceiptEmission passes its own fresh reads; a public seam would
+ *  let a fabricated terminal permanently win the create-only receipt subject): derive the goal
+ *  terminal's receipt from the two authoritative facts and publish it idempotently, so the
+ *  receipt is reconstructable after any crash between effect and emission. Steps: read the DURABLE acceptance through the goal's recorded address
  *  (`spec.requestId`), prove the chain (the fact must be the acceptance THIS spec was written
  *  from — id + sourceSeq + fingerprint + command, not merely SOME fact on the subject, which
  *  post-horizon id reuse could make a different execution's), mint via
  *  {@link mintReceiptFromFacts}, then create-only publish. A racing emitter with different
  *  evidence (its own ts/instance) is adopted exactly when its receipt attests the SAME facts;
  *  a recorded receipt that disagrees is the forged-attestation class CF-1 closes and throws. */
-export async function emitReceiptForTerminal(
+async function emitReceiptForTerminal(
   ctx: ActionContext,
   wiring: ReceiptEmissionWiring,
   args: { ref: GoalRef; spec: GoalSpecValue; fact: GoalResultFact; ts: number },
