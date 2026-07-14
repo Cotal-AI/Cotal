@@ -17,16 +17,41 @@ export interface ExtensionRef {
   readonly name: string;
 }
 
+/** An opaque restore point captured by {@link Registry.snapshot}. */
+export type RegistrySnapshot = ReadonlyMap<string, Extension>;
+
 export class Registry {
   #byKey = new Map<string, Extension>();
 
-  /** Register one or more extensions. A duplicate `kind:name` throws. */
+  /** Register one or more extensions, all-or-nothing. A duplicate `kind:name` (already present, or
+   *  repeated within this call) throws BEFORE any of the batch is applied, so a rejected multi-key
+   *  registration never leaves half of it resolvable. */
   register(...exts: Extension[]): void {
-    for (const ext of exts) {
-      const key = `${ext.kind}:${ext.name}`;
-      if (this.#byKey.has(key)) throw new Error(`extension already registered: ${key}`);
-      this.#byKey.set(key, ext);
+    const keys = exts.map((ext) => `${ext.kind}:${ext.name}`);
+    const seen = new Set<string>();
+    for (const key of keys) {
+      if (this.#byKey.has(key) || seen.has(key)) throw new Error(`extension already registered: ${key}`);
+      seen.add(key);
     }
+    exts.forEach((ext, i) => this.#byKey.set(keys[i], ext));
+  }
+
+  /** Remove one extension by kind + name; returns whether it was registered. Generic teardown — it
+   *  knows nothing about what a kind means. */
+  unregister(kind: string, name: string): boolean {
+    return this.#byKey.delete(`${kind}:${name}`);
+  }
+
+  /** Capture the current registration set as a restore point (a copy — later mutation is invisible
+   *  to it). Pair with {@link restore} to make a self-registering `import()` transactional. */
+  snapshot(): RegistrySnapshot {
+    return new Map(this.#byKey);
+  }
+
+  /** Roll the registry back to a snapshot: it becomes exactly what it was at capture. Callers MUST
+   *  serialize loads (single-flight) so a rollback never discards a concurrent load's registrations. */
+  restore(snap: RegistrySnapshot): void {
+    this.#byKey = new Map(snap);
   }
 
   /** Resolve one extension by kind + name. Unknown throws. */

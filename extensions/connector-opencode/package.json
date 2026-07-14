@@ -19,12 +19,9 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json && pnpm run bundle",
-    "bundle": "esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js --external:@opencode-ai/plugin --external:@opencode-ai/sdk",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core --external:@opencode-ai/plugin --external:@opencode-ai/sdk && esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js --external:@opencode-ai/plugin --external:@opencode-ai/sdk",
     "prepublishOnly": "pnpm run build"
-  },
-  "dependencies": {
-    "@cotal-ai/connector-core": "workspace:*"
   },
   "peerDependencies": {
     "@cotal-ai/core": ">=0.1.0",
@@ -33,6 +30,7 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/connector-core": "workspace:*",
     "@opencode-ai/plugin": "^1.16.2",
     "@opencode-ai/sdk": "^1.16.2",
     "esbuild": "^0.28.0",

@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   registry,
   type Command,
@@ -10,12 +7,11 @@ import {
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import {
-  extensionPackageDir,
   extensionLocalProcesses,
-  extensionMutationLockState,
   extensionProvides,
-  installedExtensionVersion,
+  importInstalledExtension,
   loadExtensionsManifest,
+  materializeFromManifest,
   type CachedCommand,
   type InstalledExtension,
   type LocalProcess,
@@ -46,14 +42,6 @@ function unknownRuntimeError(name: string): string {
   const pkg = OFFICIAL_RUNTIMES[name];
   if (pkg) return `no installed extension provides runtime "${name}" - install it with \`cotal ext add ${pkg}\``;
   return `unknown runtime "${name}" (known: ${knownRuntimeNames().join(", ")}) - install a provider with \`cotal ext add <npm-package>\`, or check the name`;
-}
-
-function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
-  const message = e instanceof Error ? e.message : String(e);
-  const compatibility = /does not provide an export named/.test(message) && /@cotal-ai\/(core|workspace)/.test(message)
-    ? " (the extension is not compatible with this cotal binary's linked @cotal-ai/* packages; update the binary and extension together)"
-    : "";
-  return new Error(`extension ${pkg}@${ext.version} failed to import: ${message}${compatibility} - reinstall it: \`cotal ext add ${ext.spec}\``);
 }
 
 /**
@@ -190,25 +178,20 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   return live;
 }
 
-/** Resolve a provider, lazily importing the installed package that advertised it when necessary. */
+/** Resolve a provider, lazily importing the installed package that advertised it when necessary.
+ *  The registered short-circuit and the composition-root gate stay here (CLI process state); the
+ *  actual manifest read + transactional import is the shared workspace primitive. */
 export async function materializeExtension<T extends Extension = Extension>(ref: ExtensionRef): Promise<T> {
   const registered = registry.all().find((ext) => ext.kind === ref.kind && ext.name === ref.name);
   if (registered) return registered as T;
   if (!installedEnabled)
     throw new Error(`no ${ref.kind} registered for "${ref.name}" - import its integration in this composition root`);
-  const ext = loadExtensionsManifest().extensions.find((candidate) =>
-    extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
-  );
-  if (!ext) {
-    if (ref.kind === "runtime") throw new Error(unknownRuntimeError(ref.name));
-    throw new Error(`no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``);
-  }
-  await importInstalledExtension(ext);
-  try {
-    return registry.resolve<T>(ref.kind, ref.name);
-  } catch {
-    throw new Error(`extension ${ext.pkg} imported but did not register ${ref.kind} "${ref.name}" - re-add it: \`cotal ext add ${ext.spec}\``);
-  }
+  return materializeFromManifest<T>(ref, {
+    hint: (r) =>
+      r.kind === "runtime"
+        ? unknownRuntimeError(r.name)
+        : `no installed extension provides ${r.kind} "${r.name}" - install it with \`cotal ext add <npm-package>\``,
+  });
 }
 
 /** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */
@@ -216,34 +199,4 @@ export async function preflightRuntime(name: string): Promise<void> {
   if (name === "pty") return;
   const provider = await materializeExtension<RuntimeProvider>({ kind: "runtime", name });
   if (!provider.available()) throw new Error(`${name} runtime requested but it is not reachable`);
-}
-
-async function importInstalledExtension(ext: InstalledExtension): Promise<void> {
-  const mutation = extensionMutationLockState();
-  if (mutation.state === "active")
-    throw new Error(`extension install/remove is in progress (pid ${mutation.owner}) - retry after the active \`cotal ext\` command finishes`);
-  const pkg = ext.pkg;
-  const onDisk = installedExtensionVersion(pkg);
-  if (!onDisk) {
-    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
-  }
-  if (onDisk !== ext.version) {
-    throw new Error(
-      `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
-    );
-  }
-  const dir = extensionPackageDir(pkg);
-  const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string; exports?: unknown };
-  let entry = meta.main ?? "index.js";
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  try {
-    await import(pathToFileURL(join(dir, entry)).href); // self-registers into OUR registry (core is linked)
-  } catch (e) {
-    throw importFailure(pkg, ext, e);
-  }
 }
