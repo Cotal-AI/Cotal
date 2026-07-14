@@ -62,7 +62,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-life-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk (loadSpaceAuth)
-for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "bypass1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
@@ -127,12 +127,20 @@ const wrongUidCon: Connector = { kind: "connector", name: "e2e-wronguid", requir
 const wrongUidRegCon: Connector = { kind: "connector", name: "e2e-wronguid-reg", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
   command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid() },
 }) };
+// The AUTHORITY-BYPASS shape (panel #6 authority boundary): a child holding a valid agent
+// credential claims kind:"endpoint" (client metadata) to SKIP the library register-only dm_ proof,
+// register-only + a lied uid. The manager readiness LIFECYCLE FENCE (presence uid == the minted
+// uid) must still reject it — client-authored kind is not the authority boundary.
+const bypassKindCon: Connector = { kind: "connector", name: "e2e-bypass-kind", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
+  command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_E2E_KIND: "endpoint" },
+}) };
 registry.register(stubCon);
 registry.register(dieCon);
 registry.register(idleCon);
 registry.register(noUidCon);
 registry.register(wrongUidCon);
 registry.register(wrongUidRegCon);
+registry.register(bypassKindCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 
@@ -221,7 +229,17 @@ try {
     const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot });
     check("a REGISTER-ONLY (consume:false) launch that lies a uid never reports started (dm_ proof denied)", rWrongReg.ok === false, rWrongReg);
     const added = (await presenceKeys()).filter((k) => !before.has(k));
-    check("NONE of the failed launches left a presence ghost (fail BEFORE presence, consume or register-only)", added.length === 0, added);
+    check("NONE of the fail-before-presence launches left a presence ghost (dropped/lying uid, consume or register-only)", added.length === 0, added);
+
+    // The AUTHORITY BOUNDARY (panel #6): a child claims kind:endpoint to SKIP the library dm_
+    // proof, so it DOES publish presence with its lied uid (a ghost record exists). The manager
+    // readiness LIFECYCLE FENCE rejects it anyway - client-authored kind is not the authority
+    // boundary; the manager owns the expected uid, so the ghost never reports STARTED.
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000;
+    const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot });
+    check("a kind:endpoint child with a lied uid never reports STARTED (manager readiness lifecycle fence, not client kind)",
+      rBypass.ok === false && /uncertain/i.test((rBypass as { error?: string }).error ?? ""), rBypass);
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000;
   }
 
   // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).

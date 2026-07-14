@@ -13,7 +13,10 @@ const ep = new CotalEndpoint({
   space: e.COTAL_SPACE,
   servers: e.COTAL_SERVERS,
   creds: readFileSync(e.COTAL_CREDS, "utf8"),
-  card: { id: e.COTAL_ID, name: e.COTAL_NAME, role: "worker", kind: "agent" },
+  // COTAL_E2E_KIND lets the authority-bypass probe claim kind:"endpoint" (client-authored
+  // metadata) to skip the library register-only proof — the manager readiness lifecycle fence
+  // must still reject it. Defaults to a real agent.
+  card: { id: e.COTAL_ID, name: e.COTAL_NAME, role: "worker", kind: e.COTAL_E2E_KIND || "agent" },
   lifecycleUid: e.COTAL_LIFECYCLE_UID,
   channels: [],
   consume: e.COTAL_E2E_CONSUME === "1",

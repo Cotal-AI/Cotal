@@ -1315,7 +1315,15 @@ export class Manager {
     // through managedPrincipal or a static launch can never be seen joining (every static spawn would
     // resolve "uncertain"; caught by the lifecycle e2e).
     const wanted = this.managedPrincipal(a);
-    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline");
+    // READINESS LIFECYCLE FENCE (SPEC 13.1): match the exact principal AND the exact lifecycle uid
+    // the manager minted for THIS spawn (presence carries it, §6/:315). The endpoint's own
+    // register-only broker proof is gated on the CLIENT-authored `card.kind`, which a managed child
+    // holding a valid agent credential could set to "endpoint" to skip - so it is defense-in-depth,
+    // NOT the authority boundary. This equality is: the manager (not the child) owns the expected
+    // uid, so a ghost that advertises a wrong/absent uid never reports STARTED, whatever kind it
+    // claims. Presence omits the uid only for open-mode peers, which the manager never spawns.
+    const joined = (): boolean =>
+      this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid);
 
     return await new Promise((resolve) => {
       let done = false;
