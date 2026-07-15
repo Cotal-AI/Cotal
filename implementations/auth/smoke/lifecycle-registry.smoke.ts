@@ -128,6 +128,13 @@ try {
     await jsm.streams.add({ ...capAuth, name: "KV_cotal_auth_shapemir", subjects: ["$KV.cotal_auth_shapemir.>"] });
     await rejects("a MIRRORED records store refuses at bind (a follower copy never serves authority)",
       () => openLifecycleRegistry(nc, "shapemir"), "failed-precondition");
+    // RETENTION: an Interest/WorkQueue-retention stream deletes rows on consumer interest/ack —
+    // the barrier's own throwaway enumeration consumer would trigger the deletion. Refuse at bind.
+    await createEndpointStreams(jsm, kvm, "shaperet");
+    const retRecords = (await jsm.streams.info("KV_cotal_records_shaperet")).config;
+    await jsm.streams.update("KV_cotal_records_shaperet", { ...retRecords, retention: "interest" as never });
+    await rejects("a records store with INTEREST retention refuses at bind (non-Limits deletes authority rows on ack)",
+      () => openLifecycleRegistry(nc, "shaperet"), "failed-precondition");
   }
 
   console.log("B. the space-global UID reservation (create-only, never-deleted)");
@@ -300,6 +307,15 @@ try {
     await authKv.put(`gate.${uid5}`, enc.encode(JSON.stringify({ lifecycleUid: uid5, state: "frozen", generation: 0, op: { opId: "k".repeat(26), kind: "activation", successor: "x" } })));
     await rejects("an ACTIVATION op carrying a successor refuses at parse (per-kind: only takeover/registration stage successors)",
       () => observeGate(reg, uid5), "internal");
+    // IMPOSSIBLE persisted state: a `retired` gate under a takeover/registration kind can never
+    // be produced by any writer (only activation-orphan/retirement terminalize), so a hand-written
+    // one must refuse at PARSE — never be returned as a settled terminal by the idempotence path.
+    const uid6 = "l".repeat(26);
+    await authKv.put(`gate.${uid6}`, enc.encode(JSON.stringify({ lifecycleUid: uid6, state: "retired", generation: 2, op: { opId: "m".repeat(26), kind: "takeover" } })));
+    await rejects("a RETIRED gate under a TAKEOVER kind refuses at parse (impossible state fails closed, never a same-op terminal success)",
+      () => observeGate(reg, uid6), "internal");
+    await rejects("…and retireGate over that corrupt retired row refuses too (the parse guard protects the idempotence path)",
+      () => retireGate(reg, { lifecycleUid: uid6, revision: 1, opId: "m".repeat(26) }), "internal");
   }
   {
     // The PER-KIND transition table (SPEC 13.1), each refused transition proved live.
@@ -328,6 +344,8 @@ try {
     const reopened2 = await reopenGate(reg, { lifecycleUid: uidK, revision: takFrozen.revision, opId: opTak2 });
     await rejects("a RETIREMENT freeze refuses a successor (a retirement has none)",
       () => freezeGate(reg, { lifecycleUid: uidK, revision: reopened2.revision, op: { opId: mintLifecycleUid(), kind: "retirement", successor: "x" } }), "failed-precondition");
+    await rejects("a takeover freeze with an EMPTY successor token refuses BEFORE the CAS (never persist corruption)",
+      () => freezeGate(reg, { lifecycleUid: uidK, revision: reopened2.revision, op: { opId: mintLifecycleUid(), kind: "takeover", successor: "" } }), "failed-precondition");
     const uidD = await reserveLifecycleUid(reg, { owner: "u_kind3", actor: "cli", mintedBy: MGR });
     await createGateFrozen(reg, { lifecycleUid: uidD, op: { opId: mintLifecycleUid(), kind: "activation" } });
     await authKv.delete(`gate.${uidD}`);

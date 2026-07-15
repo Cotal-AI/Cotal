@@ -7,13 +7,15 @@
  * (create/observe/freeze/op-pinned reopen/retire) for the agent gate family `gate.<lifecycleUid>`.
  *
  * DELIBERATELY NOT HERE (the later gated slices, §13.1 barrier order):
- *  - no production `EpIssuanceBarrier` (enumerate/revoke/verified-evict needs the (3) normative
- *    credential ledger; an empty enumeration or no-op eviction would be a fake barrier);
- *  - no public process-epoch advance and no head retirement: `active → retiring → retired` and
- *    the epoch CAS are finalization steps of the takeover/retirement BARRIERS, and exposing
- *    them without the completed barrier would recreate the half-fence D13 exists to remove;
+ *  - the (3) normative credential ledger and the (2b) takeover barrier live in the SIBLING
+ *    module `credential-ledger.ts` (the same authority over the same stores, reached through
+ *    {@link registryStores}); this module keeps only the barrier's module-internal epoch seam
+ *    ({@link advanceEpochWithinTakeover} — there is still NO public epoch advance);
+ *  - no head retirement: `active → retiring → retired` is a finalization step of the
+ *    RETIREMENT barrier (a later slice), and exposing it without the completed barrier would
+ *    recreate the half-fence D13 exists to remove;
  *  - no reachable production activation wiring and no credential release (the head is written
- *    WITHOUT `currentCredentialId` until the ledger slice mints under the reopened gate).
+ *    WITHOUT `currentCredentialId` until production issuance mints under the reopened gate).
  *
  * SURFACE: the activation saga and the gate primitives are PACKAGE-INTERNAL (not exported from
  * the package index) until the (3) ledger slice completes them into real operations; "no
@@ -43,7 +45,7 @@
  *    op-pinned CAS plus the caller's own authenticated authority is what advances the gate),
  *    and a stranger can neither reopen nor terminalize another operation's freeze.
  */
-import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -86,6 +88,9 @@ interface RegistryInternals {
   recordsKv: KV;
   authKv: KV;
   jsm: JetStreamManager;
+  /** The JetStream client over the SAME authenticated connection — the credential-ledger
+   *  barrier's per-run throwaway enumeration consumer fetches through it (SPEC 13.9). */
+  js: JetStreamClient;
 }
 const REGISTRIES = new WeakMap<LifecycleRegistry, RegistryInternals>();
 const READERS = new WeakMap<LifecycleMappingReader, { space: string; jsm: JetStreamManager }>();
@@ -106,6 +111,7 @@ function readerInternals(rd: LifecycleMappingReader): { space: string; jsm: JetS
 /** The bucket-config fields the shape proofs inspect (wire names, per the JetStream API). */
 interface AuthorityStreamCfg {
   allow_direct?: boolean;
+  retention?: string;
   max_age?: number;
   max_msgs?: number;
   max_bytes?: number;
@@ -114,13 +120,22 @@ interface AuthorityStreamCfg {
 }
 
 /** Prove an authority store's stream shape at bind (SPEC 13.12): PRIMARY (never a
- *  mirror/sourced copy) and NO bucket-wide silent-eviction limit — no age retention and no
+ *  mirror/sourced copy), LIMITS retention (an Interest/WorkQueue stream deletes a message once
+ *  consumers have interest/ack it — an authority row would silently vanish after a barrier's
+ *  point-in-time enumeration reads it), and NO silent-eviction limit — no age retention and no
  *  finite global message/byte cap (under DiscardOld a finite global limit evicts a PRIOR
- *  authority key's latest row the moment an unrelated key is written, silently reopening UID
- *  reuse or dropping a gate fence). A store that cannot be proved never serves. */
+ *  authority key's latest row the moment an unrelated key is written). A store that cannot be
+ *  proved never serves. (A per-subject cap is NOT a vector: NATS keeps at least the latest value
+ *  per subject for any cap ≥ 1, and 0/-1 mean unlimited, so no setting drops a key's own row.) */
 function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: string): void {
   if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
     throw new EpEnvelopeError("failed-precondition", `the store ${bucket} is a mirror/sourced stream; a follower copy cannot serve authority reads or CAS (SPEC 13.12) — bind the primary`);
+  // A KV bucket is Limits-retention by construction, but the backing stream config is what
+  // actually governs eviction, so prove it (a stream reprovisioned as Interest/WorkQueue under
+  // the KV_ name would delete authority rows on consumer interest/ack — the barrier's throwaway
+  // enumeration consumer would itself trigger the deletion).
+  if (typeof cfg.retention === "string" && cfg.retention !== "limits")
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} has ${cfg.retention} retention, not limits; a non-Limits stream deletes authority rows on consumer interest/ack (SPEC 13.12) — reprovision as a KV bucket`);
   if (typeof cfg.max_age === "number" && cfg.max_age > 0)
     throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted authority row silently drops a fence (SPEC 13.12) — reprovision`);
   if (typeof cfg.max_msgs === "number" && cfg.max_msgs >= 0)
@@ -157,7 +172,7 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string): 
   if (authCfg.allow_direct !== false)
     throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable gate store defeats read-your-writes (SPEC 13.1) — reprovision`);
   const reg: LifecycleRegistry = Object.freeze({ space });
-  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc) });
   return reg;
 }
 
@@ -273,6 +288,44 @@ async function readHeadCandidate(kv: KV, owner: string, actor: string): Promise<
   return { mapping: parseMapping(entry.value, key, owner, actor), revision: entry.revision };
 }
 
+/** PACKAGE-INTERNAL accessor for the trusted auth path's sibling modules (the credential
+ *  ledger + issuance barrier, which are the SAME authority over the SAME stores). Deliberately
+ *  never re-exported from the package index: a sealed registry stays the only door. */
+export function registryStores(reg: LifecycleRegistry): { space: string; recordsKv: KV; authKv: KV; jsm: JetStreamManager; js: JetStreamClient } {
+  return internals(reg);
+}
+
+/** PACKAGE-INTERNAL: the barrier's candidate read of an alias head (the credential-ledger
+ *  takeover barrier captures its `fromEpoch` coordinate from it, and its epoch CAS re-reads
+ *  through {@link advanceEpochWithinTakeover}). Same never-deleted discipline as every head
+ *  read; never re-exported from the package index. */
+export async function readLifecycleHeadForOperation(
+  reg: LifecycleRegistry,
+  owner: string,
+  actor: string,
+): Promise<{ mapping: LifecycleMapping; revision: number } | undefined> {
+  return readHeadCandidate(internals(reg).recordsKv, owner, actor);
+}
+
+/** The takeover barrier's epoch-advance head CAS (SPEC 13.1: NO public epoch advance exists;
+ *  this is a finalization step of the takeover barrier, module-internal for the credential
+ *  ledger's barrier only, and idempotent for the barrier's crash-resume). Advances the epoch by
+ *  exactly one, revision-pinned, only while the head is ACTIVE at the SAME uid. */
+export async function advanceEpochWithinTakeover(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; fromEpoch: number },
+): Promise<"advanced" | "already-advanced"> {
+  const { recordsKv } = internals(reg);
+  const cur = await readHeadCandidate(recordsKv, args.owner, args.actor);
+  if (cur === undefined || cur.mapping.state !== "active" || cur.mapping.lifecycleUid !== args.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", `the takeover epoch advance for "${args.owner}/${args.actor}" requires an ACTIVE head at uid ${args.lifecycleUid}; found ${cur === undefined ? "no head" : `${cur.mapping.state} at ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
+  if (cur.mapping.processEpoch === args.fromEpoch + 1) return "already-advanced";
+  if (cur.mapping.processEpoch !== args.fromEpoch)
+    throw new EpEnvelopeError("failed-precondition", `the head for "${args.owner}/${args.actor}" is at epoch ${cur.mapping.processEpoch}, not the takeover's captured epoch ${args.fromEpoch} (or its +1); a foreign operation moved it (SPEC 13.1)`);
+  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...cur.mapping, processEpoch: args.fromEpoch + 1 }, cur.revision);
+  return "advanced";
+}
+
 // ---- the space-global UID reservation (records store) ----------------------------------------
 
 /** Try to reserve ONE explicit candidate UID (test/provisioning-internal; production paths use
@@ -357,6 +410,12 @@ function parseGate(raw: Uint8Array, key: string, lifecycleUid: string): EpGateRo
     for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
     if (typeof op.opId !== "string" || typeof op.kind !== "string" || !GATE_OP_KINDS.has(op.kind))
       throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent does not validate (SPEC 13.1)`);
+    // STATE x KIND invariant (SPEC 13.1 per-kind transition sets): only an activation orphan or
+    // a retirement produces a `retired` gate, so a persisted `retired` gate carrying a
+    // takeover/registration kind is IMPOSSIBLE state — refuse it at parse, never let the terminal
+    // idempotence path return it as a settled success (fail-closed on corruption, not open).
+    if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
+      throw new EpEnvelopeError("internal", `the issuance gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1) — impossible persisted state, refused`);
     if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
       throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
     try {
@@ -422,6 +481,8 @@ export async function freezeGate(
   const { authKv } = internals(reg);
   if (args.op.successor !== undefined && args.op.kind === "retirement")
     throw new EpEnvelopeError("failed-precondition", "a retirement freeze carries no successor (SPEC 13.1: a retirement has none)");
+  if (args.op.successor !== undefined && args.op.successor.length === 0)
+    throw new EpEnvelopeError("failed-precondition", "the freeze carries an empty successor token; a summary token is a non-empty stage.<opId> reference or absent (SPEC 13.1) — validate before the CAS, never persist corruption");
   const current = await observeGate(reg, args.lifecycleUid);
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state !== "open")
@@ -533,7 +594,13 @@ export async function activateLifecycle(
       try {
         await retireGate(reg, { lifecycleUid, revision: gate.revision, opId });
       } catch (cleanup) {
-        throw new EpEnvelopeError("unavailable", `lifecycle activation for "${owner}/${actor}" lost the head CAS AND terminalizing its orphan gate failed; the uid ${lifecycleUid} is burned but its gate is still frozen by op ${opId} — resume the same op with resumeActivation: ${(cleanup as Error)?.message ?? String(cleanup)}`);
+        // The resume coordinates ride STRUCTURED details (never only the prose message): a
+        // recovery path reads {uid, opId} from `details`, it does not parse a sentence.
+        throw new EpEnvelopeError(
+          "unavailable",
+          `lifecycle activation for "${owner}/${actor}" lost the head CAS AND terminalizing its orphan gate failed; the uid ${lifecycleUid} is burned but its gate is still frozen by op ${opId} — resume the same op with resumeActivation: ${(cleanup as Error)?.message ?? String(cleanup)}`,
+          [{ kind: "resume-activation", owner, actor, lifecycleUid, opId }],
+        );
       }
       throw new EpEnvelopeError("conflict", `lifecycle activation for "${owner}/${actor}" lost the head CAS (a concurrent activation won); this saga's uid ${lifecycleUid} is burned and its gate terminalized (SPEC 13.1)`);
     }

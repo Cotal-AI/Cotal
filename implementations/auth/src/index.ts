@@ -101,16 +101,17 @@ export {
 export { runAuthService, JWKS_MAX_AGE_SEC } from "./service.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
-// NB: writeLifecycleGate + holderGateId/servingGateId are the D13-registry test/provisioning
-// stand-ins and are deliberately NOT re-exported here (import them directly from the module in
-// smokes/provisioning). The public surface is the store + hooks + close/sweep seams.
-export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
+// NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
+// re-exported here (import it directly from the module in smokes/provisioning). The public
+// surface is the store + hooks + close/sweep seams.
+export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type EndpointGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
 // NB: the package surface is the sealed contexts + the READ seams only. The activation saga,
-// the UID reservation, and the gate primitives (create/observe/freeze/reopen/retire) are
-// PACKAGE-INTERNAL until the (3) normative credential ledger completes them into real barriers:
-// a pre-ledger activation that opens a mintable gate with no credential release, or a public
-// epoch advance / head retirement around an incomplete barrier, would recreate the half-fence
-// D13 removes. Smokes and provisioning tooling import those directly from the module.
+// the UID reservation, the gate primitives (create/observe/freeze/reopen/retire), the
+// normative credential ledger (credential-ledger.ts: rows, source gates, the mint protocol),
+// and the takeover barrier are ALL package-internal: their executor seam is the sealed
+// registry itself, and exposing a public epoch advance / head retirement / bare gate reopen
+// around an incomplete barrier would recreate the half-fence D13 removes. Smokes and
+// provisioning tooling import them directly from the modules.
 export {
   openLifecycleRegistry, openLifecycleMappingReader,
   readLifecycleMappingLeader, lifecycleProcessEpochReader,

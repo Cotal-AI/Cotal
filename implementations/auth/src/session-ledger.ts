@@ -15,19 +15,32 @@
  *  - the `issuing` create IS the one-use; a credential is authority ONLY once its row is
  *    `active` (the connect-time session-credential arm — a named follow-up — checks the row,
  *    and {@link retrieveServingCredential} in core already refuses non-active rows);
- *  - the lifecycle gates (`gate.<lifecycleUid>`) are the D13 registry's keys; this adapter
- *    CONSUMES them (observe/pin/touch). {@link writeLifecycleGate} is the registry's stand-in
- *    for provisioning and smokes until D13 lands, not a public authority surface;
+ *  - the HOLDER side consumes the REAL D13 registry (SPEC §13.1): the issuance gate
+ *    `gate.<lifecycleUid>` is observed through the sealed registry, and the holder's current
+ *    process epoch is the ALIAS HEAD read (leader-served, `active`-only currency, and the
+ *    head must name the presented holder's OWN lifecycleUid — a superseded or replaced
+ *    incarnation yields no epoch);
+ *  - the SERVING side consumes the disjoint ENDPOINT gate family `epgate.<endpoint>.<instanceId>`
+ *    (SPEC §13.1: explicit prefix, never arity; the endpoint fence coordinates of §13.5/§13.7).
+ *    {@link writeEndpointGate} is the D14 endpoint-registration stand-in for provisioning and
+ *    smokes, not a public authority surface;
  *  - the gate TOUCH preserves the value and bumps only the revision: it exists so a barrier
- *    that moved the gate between observation and stage LOSES the race durably (§13.1: a read
+ *    that moved a gate between observation and stage LOSES the race durably (§13.1: a read
  *    is never a fence). Concurrent redemptions of the SAME lifecycle serialize on it — the
  *    loser's grant dies (one-use, already burned), which is the fail-loud contract;
- *  - per-session credential rows (`cred.<lifecycleUid>.<sessionId>.<c|s>`) are indexed under
- *    each party's lifecycle, created STAGED before finalize (a later-winning barrier
- *    enumerates and revokes them), and their ids are DETERMINISTIC (uid + sessionId + party),
- *    so a crashed redemption leaves nothing unnameable.
+ *  - the per-session credentials are NORMATIVE LEDGER ROWS (§13.1 closed schema, monotonic
+ *    `active → revoked`): the caller's under its holder lifecycle
+ *    (`cred.<lifecycleUid>.<sessionId>.c` — the takeover barrier enumerates and revokes it),
+ *    the serving side's under its endpoint instance
+ *    (`epcred.<endpoint>.<instanceId>.<sessionId>.s`), both with
+ *    `sourceChain: ["session.<sessionId>"]`. The IMPLEMENTATION pins the release needs (the
+ *    signing kid, its thumbprint, the party) live in `stage.session.<sessionId>.<c|s>` rows —
+ *    the `stage.` family, never under a ledger prefix a barrier enumerates (§13.1). All ids
+ *    stay DETERMINISTIC (uid/instance + sessionId + party), so a crashed redemption leaves
+ *    nothing unnameable.
  */
-import { Kvm, type KV } from "@nats-io/kv";
+import type { KV } from "@nats-io/kv";
+import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, type CryptoKey } from "jose";
@@ -37,6 +50,7 @@ import {
   epsSubject,
   endpointToken,
   assertLifecycleToken,
+  parsePrincipalKey,
   sessionLedgerKey,
   assertSessionStateTransition,
   sweepSessionRow,
@@ -50,6 +64,19 @@ import {
   type SessionTerminalState,
   type LifecycleGatePin,
 } from "@cotal-ai/core";
+import {
+  observeGate,
+  registryStores,
+  readLifecycleMappingLeader,
+  type LifecycleRegistry,
+  type LifecycleMappingReader,
+} from "./lifecycle-registry.js";
+import {
+  createRowByteIdempotent,
+  markLedgerRowRevoked,
+  parseLedgerRow,
+  type CredentialLedgerRow,
+} from "./credential-ledger.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -209,65 +236,97 @@ export function kvSessionLedger(kv: KV): SessionLedger {
   };
 }
 
-// ---- lifecycle gates (the D13 registry's keys; this adapter consumes them) ----------------------
+// ---- the endpoint gate family (epgate.<endpoint>.<instanceId>, SPEC 13.1) -----------------------
 
-export interface LifecycleGateRow {
+/** The ENDPOINT-instance issuance gate (SPEC §13.1: a DISJOINT family from the agent
+ *  `gate.<lifecycleUid>`, distinguished by explicit prefix and never token arity; carries the
+ *  endpoint fence coordinates of §13.5/§13.7). Closed schema; `frozen`/`retired` are op-bound
+ *  exactly like the agent family. */
+export interface EndpointGateRow {
   state: "open" | "frozen" | "retired";
-  processEpoch: number;
   generation: number;
+  processEpoch: number;
+  registrationRevision: number;
+  nameAuthorityRevision: number;
+  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
 }
 
-// Gate + credential identity. The HOLDER is keyed by its globally-unique lifecycle UID; the
-// SERVING side is keyed by (endpoint, instanceId) because an instanceId is unique ONLY within
-// (space, endpoint) — an endpoint-BLIND serving key would let equal instanceIds under two
-// endpoints collide on the gate/revision and the credential family (§13.1/§13.6). This is the
-// D13 gate-model coherence coordinate; the adapter qualifies it forward-compatibly here.
-/** The gate-id TAIL (what follows `gate.`) for a holder lifecycle. */
-export const holderGateId = (lifecycleUid: string): string => assertLifecycleToken(lifecycleUid, "lifecycleUid");
-/** The gate-id TAIL for a serving instance, endpoint-qualified. */
-export const servingGateId = (endpoint: string, instanceId: string): string => `${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
-const gateKey = (gateId: string): string => `gate.${gateId}`;
+/** The endpoint gate key `epgate.<endpoint>.<instanceId>` (an instanceId is unique ONLY within
+ *  `(space, endpoint)`, so the key is endpoint-qualified — equal instanceIds under two
+ *  endpoints never collide on the gate or the credential family, §13.1/§13.6). */
+export const epgateKey = (endpoint: string, instanceId: string): string =>
+  `epgate.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
 
-/** The DETERMINISTIC per-party credential ids: the caller under its holder lifecycle, the
- *  serving under its (endpoint, instanceId) — so the id encodes the party AND the id-family is
- *  endpoint-qualified, matching the gate keying. */
+/** The DETERMINISTIC per-party credential ids: the caller under its holder lifecycle (the
+ *  `cred.` family), the serving under its (endpoint, instanceId) (the `epcred.` family) — the
+ *  id encodes the party and prefixes its own ledger key. */
 const callerCredId = (holderUid: string, sessionId: string): string => `${holderUid}.${sessionId}.c`;
 const servingCredId = (endpoint: string, instanceId: string, sessionId: string): string => `${endpointToken(endpoint)}.${instanceId}.${sessionId}.s`;
 
-function parseGate(raw: Uint8Array, key: string): LifecycleGateRow {
+/** Route a deterministic session credential id to its NORMATIVE ledger row key: `.c` ids live
+ *  under the holder's agent family (`cred.<lifecycleUid>.<sessionId>.c`), `.s` ids under the
+ *  serving endpoint family (`epcred.<endpoint>.<instanceId>.<sessionId>.s`). */
+function credLedgerKey(id: string): string {
+  if (id.endsWith(".c")) return `cred.${id}`;
+  if (id.endsWith(".s")) return `epcred.${id}`;
+  throw new EpEnvelopeError("failed-precondition", `credential id ${JSON.stringify(id)} names neither session party (…​.c | …​.s); nothing routes (SPEC 13.6)`);
+}
+
+function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
   let o: unknown;
   try {
     o = JSON.parse(dec.decode(raw));
   } catch {
-    throw new EpEnvelopeError("internal", `the lifecycle gate ${key} is not JSON (SPEC 13.1)`);
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
   }
-  if (!isRec(o) || !["open", "frozen", "retired"].includes(o.state as string) || !uint(o.processEpoch) || !uint(o.generation))
-    throw new EpEnvelopeError("internal", `the lifecycle gate ${key} does not validate (SPEC 13.1)`);
-  return o as unknown as LifecycleGateRow;
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
+  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "op"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
+  if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
+  if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);
+  if (o.state === "open" && o.op !== undefined)
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is open but carries an op intent (SPEC 13.1)`);
+  if (o.op !== undefined) {
+    const op = o.op as Record<string, unknown>;
+    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
+    if (typeof op.opId !== "string" || !["activation", "takeover", "registration", "retirement"].includes(op.kind as string))
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent does not validate (SPEC 13.1)`);
+  }
+  return o as unknown as EndpointGateRow;
 }
 
-/** Write a lifecycle gate at its gate-id TAIL (holder: {@link holderGateId}; serving:
- *  {@link servingGateId}). This is a TEST/PROVISIONING stand-in for the D13 registry's
- *  monotonic-CAS gate writer, NOT a production authority surface (production gates are written
- *  only by the lifecycle registry with a revision-pinned CAS, never an unpinned `put`). It is
- *  deliberately NOT re-exported from the package index; import it only from smokes/provisioning. */
-export async function writeLifecycleGate(kv: KV, gateId: string, gate: LifecycleGateRow): Promise<void> {
-  await kv.put(gateKey(gateId), enc.encode(JSON.stringify(gate)));
+/** Write an endpoint gate. This is the D14 endpoint-registration stand-in for provisioning and
+ *  smokes, NOT a production authority surface (production endpoint gates are written only by
+ *  the registration/takeover machinery with revision-pinned CAS, never an unpinned `put`). It
+ *  is deliberately NOT re-exported from the package index. */
+export async function writeEndpointGate(kv: KV, endpoint: string, instanceId: string, gate: EndpointGateRow): Promise<void> {
+  await kv.put(epgateKey(endpoint, instanceId), enc.encode(JSON.stringify(gate)));
 }
 
-async function observeGate(kv: KV, gateId: string, what: string): Promise<{ pin: LifecycleGatePin; gate: LifecycleGateRow }> {
-  const entry = await kv.get(gateKey(gateId));
-  if (!entry || entry.operation !== "PUT")
-    throw new EpEnvelopeError("permission-denied", `${what} has no lifecycle issuance gate (${gateKey(gateId)}); a retired or never-provisioned lifecycle mints nothing (SPEC 13.1)`);
-  const gate = parseGate(entry.value, gateKey(gateId));
+/** Observe the serving instance's endpoint gate (candidate read feeding the pinned touch). A
+ *  DEL/PURGE marker refuses loudly — a gate is never deleted (corruption, not absence). */
+async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string, what: string): Promise<{ pin: LifecycleGatePin; gate: EndpointGateRow }> {
+  const key = epgateKey(endpoint, instanceId);
+  const entry = await kv.get(key);
+  if (!entry)
+    throw new EpEnvelopeError("permission-denied", `${what} has no endpoint issuance gate (${key}); an unregistered instance mints nothing (SPEC 13.1)`);
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
+  const gate = parseEndpointGate(entry.value, key);
   if (gate.state !== "open")
-    throw new EpEnvelopeError("permission-denied", `${what}'s lifecycle issuance gate is "${gate.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
-  return { pin: { key: gateKey(gateId), revision: entry.revision }, gate };
+    throw new EpEnvelopeError("permission-denied", `${what}'s endpoint issuance gate is "${gate.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
+  return { pin: { key, revision: entry.revision }, gate };
 }
 
-// ---- per-session credential rows + the deterministic release ------------------------------------
+// ---- the session stage pins (stage.session.<sessionId>.<c|s>) + the deterministic release -------
 
-interface SessionCredRow {
+/** The IMPLEMENTATION pins a deterministic release needs, staged beside the normative ledger
+ *  row — in the `stage.` family, never under a ledger prefix a barrier enumerates (§13.1).
+ *  Revocation state does NOT live here: the normative `cred.`/`epcred.` row is the authority
+ *  a release checks and a barrier revokes. */
+interface SessionStagePin {
   v: 1;
   kind: "session";
   sessionId: string;
@@ -278,28 +337,29 @@ interface SessionCredRow {
   /** The pinned key's public thumbprint: release refuses if the kid now resolves to different
    *  key material (a rebound label is not the pinned key). */
   kidThumbprint: string;
-  state: "staged" | "revoked";
   exp: number;
 }
 
-const credKey = (id: string): string => `cred.${id}`;
+const stagePinKey = (sessionId: string, party: "caller" | "serving"): string =>
+  `stage.session.${sessionId}.${party === "caller" ? "c" : "s"}`;
 
-function parseCredRow(raw: Uint8Array, key: string): SessionCredRow {
+function parseStagePin(raw: Uint8Array, key: string): SessionStagePin {
   let o: unknown;
   try {
     o = JSON.parse(dec.decode(raw));
   } catch {
-    throw new EpEnvelopeError("internal", `the credential row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.3)`);
+    throw new EpEnvelopeError("internal", `the session stage pin ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.3)`);
   }
-  if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential row ${key} is not an object`);
-  const allowed = new Set(["v", "kind", "sessionId", "party", "kid", "kidThumbprint", "state", "exp"]);
-  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential row ${key} carries the unknown field "${k}" (closed schema; a garbled trusted write never authorizes, SPEC 13.3)`);
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the session stage pin ${key} is not an object`);
+  const allowed = new Set(["v", "kind", "sessionId", "party", "kid", "kidThumbprint", "exp"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the session stage pin ${key} carries the unknown field "${k}" (closed schema; a garbled trusted write never authorizes, SPEC 13.3)`);
   const r = o as Record<string, unknown>;
   if (r.v !== 1 || r.kind !== "session" || typeof r.sessionId !== "string" || (r.party !== "caller" && r.party !== "serving") ||
-      typeof r.kid !== "string" || r.kid.length === 0 || typeof r.kidThumbprint !== "string" || r.kidThumbprint.length === 0 ||
-      (r.state !== "staged" && r.state !== "revoked") || !uint(r.exp))
-    throw new EpEnvelopeError("internal", `the credential row ${key} does not validate; a structurally malformed credential never becomes a signed capability (SPEC 13.3)`);
-  return r as unknown as SessionCredRow;
+      typeof r.kid !== "string" || r.kid.length === 0 || typeof r.kidThumbprint !== "string" || r.kidThumbprint.length === 0 || !uint(r.exp))
+    throw new EpEnvelopeError("internal", `the session stage pin ${key} does not validate; a structurally malformed pin never becomes a signed capability (SPEC 13.3)`);
+  if (key !== stagePinKey(r.sessionId, r.party))
+    throw new EpEnvelopeError("internal", `the session stage pin at ${key} embeds (${r.sessionId}, ${r.party}); a key-mismatched pin never authorizes (SPEC 13.6)`);
+  return r as unknown as SessionStagePin;
 }
 
 /** The adapter's signing identity for released session credentials (EdDSA/Ed25519). Determinism
@@ -322,15 +382,26 @@ export interface SessionHookDeps {
    *  space, so a caller cannot mix space-A authority rows with space-B rails, and the eps rails
    *  are RE-DERIVED from the bonded space at release. */
   store: SessionAuthStore;
+  /** The sealed D13 lifecycle registry (the SAME trusted authority; the holder-gate observe
+   *  goes through it, so the session path consumes the registry's own marker/parse discipline). */
+  registry: LifecycleRegistry;
+  /** The sealed leader-served mapping reader (the holder's current-epoch seam: the alias HEAD,
+   *  `active`-only currency, bound to the presented holder's own lifecycleUid). */
+  reader: LifecycleMappingReader;
   signer: SessionSigner;
   now?: () => number;
 }
 
-/** Build the production {@link SessionRedemptionHooks} over the branded auth store. */
+/** Build the production {@link SessionRedemptionHooks} over the branded auth store + the
+ *  sealed D13 registry/reader (both brands enforced — a hand-assembled context never
+ *  authorizes, at construction for the store/registry and at first use for the reader). */
 export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemptionHooks {
   assertStore(deps.store);
+  registryStores(deps.registry); // brand check: throws on a hand-assembled registry
   const { kv, space } = deps.store;
-  const { signer } = deps;
+  const { signer, registry, reader } = deps;
+  if (registry.space !== space || reader.space !== space)
+    throw new EpEnvelopeError("failed-precondition", `the lifecycle registry/reader are bonded to spaces "${registry.space}"/"${reader.space}", not the auth store's "${space}"; cross-space authority never composes (SPEC 13.12)`);
   const ledger = kvSessionLedger(kv);
   const now = deps.now
     ? () => { const t = deps.now!(); if (!Number.isSafeInteger(t) || t < 0) throw new EpEnvelopeError("failed-precondition", `the session clock returned ${JSON.stringify(t)}, not a non-negative safe integer; a malformed clock never authorizes (SPEC 13.10)`); return t; }
@@ -352,24 +423,33 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
     const row = parseRow(rowEntry.value, sessionLedgerKey(sessionId));
     if (row.state !== "active")
       throw new EpEnvelopeError("failed-precondition", `session ${sessionId} is "${row.state}", not active; a credential is authority only once its row is active (SPEC 13.6)`);
-    const credEntry = await kv.get(credKey(credentialId));
-    if (!credEntry || credEntry.operation !== "PUT")
-      throw new EpEnvelopeError("failed-precondition", `credential ${credentialId} has no staged row; release follows the stage, never invents (SPEC 13.6)`);
-    const cred = parseCredRow(credEntry.value, credKey(credentialId));
-    if (cred.sessionId !== sessionId)
-      throw new EpEnvelopeError("internal", `credential ${credentialId} names session ${cred.sessionId}, not ${sessionId}; a mis-bound credential never authorizes (SPEC 13.6)`);
-    if (cred.state === "revoked")
+    // The NORMATIVE ledger row is the authority a release checks (§13.1: unledgered mints
+    // cannot occur — no row, no release; a revoked row never re-releases).
+    const ledgerKey = credLedgerKey(credentialId);
+    const ledgerEntry = await kv.get(ledgerKey);
+    if (!ledgerEntry || ledgerEntry.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `credential ${credentialId} has no ledger row at ${ledgerKey}; release follows the ledger, never invents (SPEC 13.1)`);
+    const ledgerRow: CredentialLedgerRow = parseLedgerRow(ledgerEntry.value, ledgerKey);
+    if (!ledgerRow.sourceChain.includes(`session.${sessionId}`) || !ledgerRow.credentialId.startsWith(`${sessionId}.`))
+      throw new EpEnvelopeError("internal", `the ledger row ${ledgerKey} does not carry session ${sessionId}'s lineage; a mis-bound credential never authorizes (SPEC 13.1/13.6)`);
+    if (ledgerRow.state === "revoked")
       throw new EpEnvelopeError("permission-denied", `credential ${credentialId} is revoked; a revoked half never re-releases (SPEC 13.6)`);
-    const key = signer.resolve(cred.kid);
+    // The IMPLEMENTATION pins (kid, thumbprint, party) ride the stage.-family pin row.
+    const party: "caller" | "serving" = credentialId.endsWith(".c") ? "caller" : "serving";
+    const pinEntry = await kv.get(stagePinKey(sessionId, party));
+    if (!pinEntry || pinEntry.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `credential ${credentialId} has no stage pin at ${stagePinKey(sessionId, party)}; release follows the stage, never invents (SPEC 13.6)`);
+    const pin = parseStagePin(pinEntry.value, stagePinKey(sessionId, party));
+    const key = signer.resolve(pin.kid);
     if (key === undefined)
-      throw new EpEnvelopeError("unavailable", `the signing key ${cred.kid} pinned by credential ${credentialId} is not resolvable; release fails closed rather than re-minting under a different key (SPEC 13.6/13.10)`);
-    if (signer.thumbprint(cred.kid) !== cred.kidThumbprint)
-      throw new EpEnvelopeError("permission-denied", `the signing key ${cred.kid} now resolves to different key material (thumbprint mismatch); a rebound kid label is not the pinned key, release fails closed (SPEC 13.10)`);
+      throw new EpEnvelopeError("unavailable", `the signing key ${pin.kid} pinned by credential ${credentialId} is not resolvable; release fails closed rather than re-minting under a different key (SPEC 13.6/13.10)`);
+    if (signer.thumbprint(pin.kid) !== pin.kidThumbprint)
+      throw new EpEnvelopeError("permission-denied", `the signing key ${pin.kid} now resolves to different key material (thumbprint mismatch); a rebound kid label is not the pinned key, release fails closed (SPEC 13.10)`);
     // DETERMINISTIC mint under the PINNED key: identical payload + EdDSA => identical bytes on
     // every re-release. Subjects RE-DERIVED from the row, never trusted from storage.
-    const jwt = await new SignJWT({ act: { kind: "session", sessionId, party: cred.party, subjects: railSubjects(row, cred.party) } })
-      .setProtectedHeader({ alg: "EdDSA", kid: cred.kid })
-      .setSubject(cred.party === "caller" ? row.holder.principal : row.endpoint)
+    const jwt = await new SignJWT({ act: { kind: "session", sessionId, party, subjects: railSubjects(row, party) } })
+      .setProtectedHeader({ alg: "EdDSA", kid: pin.kid })
+      .setSubject(party === "caller" ? row.holder.principal : row.endpoint)
       .setExpirationTime(Math.floor(row.exp / 1000))
       .sign(key);
     return { id: credentialId, creds: jwt, exp: row.exp };
@@ -387,41 +467,55 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       };
     },
     async holderProcessEpoch(holder) {
-      const entry = await kv.get(gateKey(holderGateId(holder.lifecycleUid)));
-      if (!entry || entry.operation !== "PUT") return undefined;
-      return parseGate(entry.value, gateKey(holderGateId(holder.lifecycleUid))).processEpoch;
+      // The holder's CURRENT epoch is the ALIAS HEAD (SPEC 13.1, amended): leader-served,
+      // `active`-ONLY currency, and the head must name the PRESENTED holder's own
+      // lifecycleUid — a superseded/replaced incarnation's grant yields no epoch and dies.
+      const p = parsePrincipalKey(holder.id);
+      if (!p)
+        throw new EpEnvelopeError("failed-precondition", `holder id ${JSON.stringify(holder.id)} is not a principal dot-form; no head read routes (SPEC 13.1)`);
+      const head = await readLifecycleMappingLeader(reader, p.owner, p.actor);
+      if (head === undefined || head.mapping.state !== "active" || head.mapping.lifecycleUid !== holder.lifecycleUid) return undefined;
+      return head.mapping.processEpoch;
     },
     async servingEpoch(endpoint, instanceId) {
-      const entry = await kv.get(gateKey(servingGateId(endpoint, instanceId)));
-      if (!entry || entry.operation !== "PUT") return undefined;
-      return parseGate(entry.value, gateKey(servingGateId(endpoint, instanceId))).processEpoch;
+      const key = epgateKey(endpoint, instanceId);
+      const entry = await kv.get(key);
+      if (!entry) return undefined;
+      if (entry.operation !== "PUT")
+        throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
+      return parseEndpointGate(entry.value, key).processEpoch;
     },
     async observeHolderGate(holder) {
-      return (await observeGate(kv, holderGateId(holder.lifecycleUid), `holder ${holder.id}`)).pin;
+      // The REAL D13 registry gate (SPEC 13.1): the registry's own observe carries the
+      // marker/closed-parse discipline; only an OPEN gate mints.
+      const gate = await observeGate(registry, holder.lifecycleUid);
+      if (gate === undefined)
+        throw new EpEnvelopeError("permission-denied", `holder ${holder.id} has no lifecycle issuance gate (gate.${holder.lifecycleUid}); a never-activated or retired lifecycle mints nothing (SPEC 13.1)`);
+      if (gate.row.state !== "open")
+        throw new EpEnvelopeError("permission-denied", `holder ${holder.id}'s lifecycle issuance gate is "${gate.row.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
+      return { key: `gate.${holder.lifecycleUid}`, revision: gate.revision };
     },
     async observeServingGate(endpoint, instanceId) {
-      return (await observeGate(kv, servingGateId(endpoint, instanceId), `serving ${endpoint}/${instanceId}`)).pin;
+      return (await observeEndpointGate(kv, endpoint, instanceId, `serving ${endpoint}/${instanceId}`)).pin;
     },
     async stagePair(grant, ids, pins) {
-      // Stage both credential rows CREATE-ONLY (indexed under each lifecycle; staged rows
-      // confer nothing), then TOUCH-CAS both gates pinned at their observed revisions: the
-      // gate write IS the §13.1 fence — a barrier that moved either gate since observation
-      // makes the pinned touch LOSE, and the redemption collects and refuses.
+      // Stage the NORMATIVE ledger rows + the implementation stage pins CREATE-ONLY (rows
+      // write BEFORE the gate CAS, §13.1 mint protocol; staged rows confer nothing until the
+      // session row finalizes `active`), then TOUCH-CAS both gates pinned at their observed
+      // revisions: the gate write IS the §13.1 fence — a barrier that moved either gate since
+      // observation makes the pinned touch LOSE, and the redemption collects and refuses.
+      const tp = signer.thumbprint(signer.current.kid);
+      if (tp === undefined) throw new EpEnvelopeError("unavailable", `the current signing key ${signer.current.kid} has no resolvable thumbprint; staging fails closed (SPEC 13.10)`);
       const stage = async (id: string, party: "caller" | "serving") => {
-        const tp = signer.thumbprint(signer.current.kid);
-        if (tp === undefined) throw new EpEnvelopeError("unavailable", `the current signing key ${signer.current.kid} has no resolvable thumbprint; staging fails closed (SPEC 13.10)`);
-        const value: SessionCredRow = { v: 1, kind: "session", sessionId: grant.sessionId, party, kid: signer.current.kid, kidThumbprint: tp, state: "staged", exp: grant.exp };
-        try {
-          await kv.create(credKey(id), enc.encode(JSON.stringify(value)));
-        } catch (e) {
-          if (!isCasLoss(e))
-            throw new EpEnvelopeError("unavailable", `staging credential ${id} is ambiguous (SPEC 13.6): ${(e as Error)?.message ?? String(e)}`);
-          // A create loss here is a RETRY over this session's own deterministic ids (the
-          // one-use already fenced foreign sessions): verify byte identity, else fail loud.
-          const existing = await kv.get(credKey(id));
-          if (!existing || dec.decode(existing.value) !== JSON.stringify(value))
-            throw new EpEnvelopeError("conflict", `credential row ${id} exists with FOREIGN content; a staged name never silently re-binds (SPEC 13.6)`);
-        }
+        // The normative §13.1 row, in its party's family (a create loss is a RETRY over this
+        // session's own deterministic ids — the one-use already fenced foreign sessions — so
+        // byte-identical proceeds and foreign content refuses).
+        const ledgerRow: CredentialLedgerRow = party === "caller"
+          ? { credentialId: `${grant.sessionId}.c`, holderPrincipal: grant.holder.id, lifecycleUid: grant.holder.lifecycleUid, sourceChain: [`session.${grant.sessionId}`], state: "active", exp: grant.exp }
+          : { credentialId: `${grant.sessionId}.s`, holderPrincipal: grant.endpoint, lifecycleUid: grant.serving.instanceId, sourceChain: [`session.${grant.sessionId}`], state: "active", exp: grant.exp };
+        await createRowByteIdempotent(kv, credLedgerKey(id), ledgerRow);
+        const pinRow: SessionStagePin = { v: 1, kind: "session", sessionId: grant.sessionId, party, kid: signer.current.kid, kidThumbprint: tp, exp: grant.exp };
+        await createRowByteIdempotent(kv, stagePinKey(grant.sessionId, party), pinRow);
       };
       await stage(ids.credCaller, "caller");
       await stage(ids.credServing, "serving");
@@ -454,20 +548,13 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
     },
     releaseCredential: release,
     async revokeCredential(id) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const entry = await kv.get(credKey(id));
-        if (!entry || entry.operation !== "PUT") return; // a dead id re-revokes successfully (idempotent)
-        const cred = parseCredRow(entry.value, credKey(id));
-        if (cred.state === "revoked") return;
-        try {
-          await kv.update(credKey(id), enc.encode(JSON.stringify({ ...cred, state: "revoked" })), entry.revision);
-          return;
-        } catch (e) {
-          if (isCasLoss(e)) continue;
-          throw new EpEnvelopeError("unavailable", `revoking ${id} is ambiguous; the sweep retries the unmarked half (SPEC 13.6): ${(e as Error)?.message ?? String(e)}`);
-        }
-      }
-      throw new EpEnvelopeError("unavailable", `revoking ${id} kept losing its pin; the sweep retries (SPEC 13.6)`);
+      // Route to the NORMATIVE ledger row and mark it revoked (monotonic). A NEVER-STAGED id
+      // re-revokes successfully (idempotent — the refuse-and-collect path revokes ids whose
+      // stage may not have run); an existing row's marker/parse discipline stays loud.
+      const key = credLedgerKey(id);
+      const entry = await kv.get(key);
+      if (!entry) return; // a dead (never-staged) id re-revokes successfully
+      await markLedgerRowRevoked(kv, key);
     },
     ...(now ? { now } : {}),
   };
@@ -525,7 +612,7 @@ export async function closeSession(
     for (const [id, marked] of [[after.credCaller, after.revoked.caller], [after.credServing, after.revoked.serving]] as const) {
       if (marked) continue;
       try {
-        const entry = await store.kv.get(credKey(id));
+        const entry = await store.kv.get(credLedgerKey(id));
         if (!entry || entry.operation !== "PUT") { fullyRevoked = false; continue; } // absent: leave for the sweep, never mark
         await hooks.revokeCredential(id);
         await hooks.ledger.markRevoked(args.sessionId, id);
