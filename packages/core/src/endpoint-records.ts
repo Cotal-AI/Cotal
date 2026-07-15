@@ -115,6 +115,21 @@ export const LIFECYCLE_HEAD: RecordKindDef = {
   mediation: "mediated",
 };
 
+/** The §13.1 space-global UID RESERVATION (§13.7): `uid.<lifecycleUid>` — ONE atomic unsplit
+ *  key, create-only and NEVER-DELETED for the life of the space. The KEY is the reservation
+ *  (the value records the reserving authority + intended alias, audit only): the minting
+ *  authority wins this create BEFORE any gate or head write, a create conflict BURNS the
+ *  candidate (the alias head alone cannot reject the same UID under a different alias, and
+ *  the gate./cred. families key by UID alone), and a DEL/PURGE marker is corruption, never
+ *  reusable absence. */
+export const UID_RESERVATION: RecordKindDef = {
+  kind: "uid",
+  qualifiers: [qUid("lifecycleUid")],
+  split: false,
+  writers: { spec: "minting-authority", status: "minting-authority" },
+  mediation: "mediated",
+};
+
 /** The endpoint-wide GOVERNANCE HEAD (§13.7 "a self-published descriptor cannot strip, forge,
  *  or downgrade a governed annotation"): `govern.<endpoint>` — ONE atomic unsplit key holding
  *  the endpoint's MONOTONIC (append-only) BINDING governed-trait imposition per command, plus
@@ -206,7 +221,7 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
 };
 
 const registry = new Map<string, RecordKindDef[]>();
-for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, GOVERN_HEAD]) {
+for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD]) {
   const list = registry.get(def.kind) ?? [];
   list.push(def);
   registry.set(def.kind, list);

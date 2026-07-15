@@ -105,4 +105,14 @@ import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-s
 // stand-ins and are deliberately NOT re-exported here (import them directly from the module in
 // smokes/provisioning). The public surface is the store + hooks + close/sweep seams.
 export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
-export { activateLifecycle, advanceProcessEpoch, retireLifecycleHead, readLifecycleHeadLeader, lifecycleProcessEpochReader, lifecycleRegistryManager, type LifecycleHead } from "./lifecycle-registry.js";
+// NB: no public process-epoch advance and no head retirement are exported — those are
+// finalization steps of the takeover/retirement BARRIERS (the later D13 slices), and exposing
+// them around an incomplete barrier would recreate the half-fence D13 removes. `tryReserveUid`
+// (explicit-candidate reservation) stays module-internal for probes/migration tooling.
+export {
+  openLifecycleRegistry, openLifecycleMappingReader,
+  reserveLifecycleUid, activateLifecycle, resumeActivation,
+  observeGate, createGateFrozen, freezeGate, reopenGate, retireGate,
+  readLifecycleMappingLeader, lifecycleProcessEpochReader,
+  type LifecycleRegistry, type LifecycleMappingReader, type LifecycleMapping, type EpGateRow,
+} from "./lifecycle-registry.js";

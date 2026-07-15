@@ -1,41 +1,56 @@
 /**
- * The D13 generic lifecycle registry (SPEC §13.1): the production KV owner of the lifecycle
- * identity the manager, delivery, serve, session, and virtual-endpoint paths all authenticate
- * against. This first slice is the LIFECYCLE HEAD registry — the unsplit `lifecycle.<owner>.<actor>`
- * mapping head in the per-space records store (`cotal_records_<space>`, §13.7) — plus the
- * leader-served mapping reader that backs the `readProcessEpoch` seam D11 (restart supervision,
- * status commit) and D7 (session redemption) inject today. The KV issuance gate + barrier
- * (`gate.<endpoint>.<lifecycleUid>` in the auth store) and the credential ledger land in the
- * next slices over this foundation.
+ * The D13 lifecycle registry, slice (1)+(2a) (SPEC §13.1, as amended): the sealed storage
+ * authority for lifecycle identity — the space-global UID reservation, the three-state alias
+ * head (`active | retiring | retired`), the activation saga over both stores, the leader-served
+ * mapping reader that backs the `readProcessEpoch` seam D11 (restart supervision, status
+ * commit) and D7 (session redemption) inject, and the issuance-gate CAS PRIMITIVES
+ * (create/observe/freeze/op-pinned reopen/retire) for the agent gate family `gate.<lifecycleUid>`.
  *
- * The head is the §13.1 activation/retirement LINEARIZATION POINT:
- *  - it is a SINGLE unsplit key, so activation, process-epoch advance (takeover/restart), and
- *    terminal retirement all serialize on ONE key's revision — a read is never a fence, every
- *    transition is a revision-pinned CAS write;
- *  - the lifecycle UID is minted ONCE per incarnation and RECORDED in the head, never re-minted
- *    per process; it is unguessable, and NEVER REUSED — a re-activation of a retired alias mints
- *    a FRESH uid at a bumped generation, so a stale bearer of the predecessor's uid can never
- *    name the successor's resources;
- *  - the head is NEVER-DELETED (the §13.12 authority-key discipline): a reader treats only TRUE
- *    ABSENCE as a virgin alias, and a deletion marker refuses LOUDLY as corruption, never as
- *    absence — the create-only CAS (which conflicts on a deletion marker) makes reuse-over-DEL
- *    impossible;
- *  - the authoritative epoch/state read that GATES egress authority is FENCING by use, so it is
- *    leader-served `STREAM.MSG.GET` ({@link readLifecycleHeadLeader}), never a follower Direct Get
- *    the records bucket's `allow_direct=true` would otherwise permit.
+ * DELIBERATELY NOT HERE (the later gated slices, §13.1 barrier order):
+ *  - no production `EpIssuanceBarrier` (enumerate/revoke/verified-evict needs the (3) normative
+ *    credential ledger; an empty enumeration or no-op eviction would be a fake barrier);
+ *  - no public process-epoch advance and no head retirement: `active → retiring → retired` and
+ *    the epoch CAS are finalization steps of the takeover/retirement BARRIERS, and exposing
+ *    them without the completed barrier would recreate the half-fence D13 exists to remove;
+ *  - no reachable production activation wiring and no credential release (the head is written
+ *    WITHOUT `currentCredentialId` until the ledger slice mints under the reopened gate).
+ *
+ * The model (§13.1):
+ *  - the UID is entropy, never order: before anything else the minting authority WINS the
+ *    create-only, never-deleted, SPACE-GLOBAL reservation `uid.<lifecycleUid>`; a create
+ *    conflict burns the candidate (the alias head alone cannot reject the same UID under a
+ *    different alias), and a DEL/PURGE marker is corruption, never reusable absence;
+ *  - the head is a SINGLE unsplit key and `mappingRevision` IS its STORE revision (one leader
+ *    read returns `{ mapping, revision }`; the value carries no revision field);
+ *  - `active` is the ONLY current state: every currency seam (the epoch reader here) yields no
+ *    current mapping and no current epoch for `retiring` AND `retired` alike;
+ *  - activation is a CROSS-BUCKET SAGA with a durable op intent, in the normative order:
+ *    reserve UID → create the gate `frozen` carrying the activation op (unmintable from
+ *    birth) → CAS the alias head → reopen the gate LAST; a head-CAS loser terminalizes its own
+ *    orphan gate and its UID stays burned; a crash resumes the SAME op ({@link resumeActivation}),
+ *    never minting a second UID for one activation;
+ *  - the head and the reservation are NEVER-DELETED: a reader treats only TRUE ABSENCE as
+ *    virgin, and a deletion marker refuses LOUDLY as corruption;
+ *  - a `frozen` gate MUST carry its durable operation intent `{ opId, kind }`: a resumer
+ *    advances only the SAME `opId` (the opId is an identifier, never a bearer capability — the
+ *    op-pinned CAS plus the caller's own authenticated authority is what advances the gate),
+ *    and a stranger can neither reopen nor terminalize another operation's freeze.
  */
 import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
-import type { KV } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   EpEnvelopeError,
   LIFECYCLE_HEAD,
+  UID_RESERVATION,
   recordAtomicKey,
   createRecordEntry,
   updateRecordEntry,
   readRecordLeader,
   mintLifecycleUid,
   assertLifecycleToken,
+  epAuthBucket,
+  isCasLoss as isRawCasLoss,
 } from "@cotal-ai/core";
 
 const enc = new TextEncoder();
@@ -44,39 +59,125 @@ const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
 
-/**
- * The `lifecycle.<owner>.<actor>` head value (§13.1). One incarnation of an alias: its minted
- * uid, the manager that supervises it, its fenced process epoch, its state, and the generation
- * that advances on each (re)activation so a stale uid can never be confused with a successor.
- */
-export interface LifecycleHead {
-  owner: string;
-  actor: string;
-  /** The never-reused lifecycle UID of THIS incarnation (a fresh mint per activation). */
-  lifecycleUid: string;
-  /** The manager instance that minted/supervises this incarnation. */
-  managerInstance: string;
-  /** The fenced process epoch — advanced on takeover/supervised restart (§13.1: live authority
-   *  dies on restart; egress binds this). */
-  processEpoch: number;
-  /** `active` while the incarnation may mint/serve; `retired` is terminal for THIS incarnation
-   *  (a later activation of the alias is a NEW incarnation at a bumped generation + fresh uid). */
-  state: "active" | "retired";
-  /** Bumped on every activation of the alias, so `(alias, generation)` names one incarnation and
-   *  a stale uid/gate cannot masquerade as the current one. */
-  generation: number;
+// ---- the sealed contexts --------------------------------------------------------------------
+// Both are BRANDED (WeakMap membership, §13.12): a hand-assembled object never authorizes, so a
+// caller cannot pair this module's writers with a foreign bucket, an injected reader, or a
+// mismatched space. The internals (the KVs, the JSM, the space bond) are module-private.
+
+/** The minting authority's sealed registry over the space's PRIMARY records + auth stores. */
+export interface LifecycleRegistry {
+  readonly space: string;
+}
+/** The read-only sealed mapping reader (the confined reader profile holds ONLY the records
+ *  leader read; it cannot write a head or touch the auth store). */
+export interface LifecycleMappingReader {
+  readonly space: string;
 }
 
-const HEAD_STATES = new Set(["active", "retired"]);
+interface RegistryInternals {
+  space: string;
+  recordsKv: KV;
+  authKv: KV;
+  jsm: JetStreamManager;
+}
+const REGISTRIES = new WeakMap<LifecycleRegistry, RegistryInternals>();
+const READERS = new WeakMap<LifecycleMappingReader, { space: string; jsm: JetStreamManager }>();
+
+function internals(reg: LifecycleRegistry): RegistryInternals {
+  const i = REGISTRIES.get(reg);
+  if (!i)
+    throw new EpEnvelopeError("failed-precondition", "the lifecycle registry was not constructed by openLifecycleRegistry(); a hand-assembled context never authorizes (SPEC 13.12)");
+  return i;
+}
+function readerInternals(rd: LifecycleMappingReader): { space: string; jsm: JetStreamManager } {
+  const i = READERS.get(rd);
+  if (!i)
+    throw new EpEnvelopeError("failed-precondition", "the mapping reader was not constructed by openLifecycleMappingReader(); a hand-assembled context never authorizes (SPEC 13.12)");
+  return i;
+}
+
+/** Open the minting authority's sealed lifecycle registry: binds the space's primary records
+ *  bucket AND its auth bucket (both shape-proved: the auth store must be leader-only
+ *  `allow_direct=false`, un-aged, and primary — never a mirror/sourced copy, §13.12). */
+export async function openLifecycleRegistry(nc: NatsConnection, space: string): Promise<LifecycleRegistry> {
+  const jsm = await jetstreamManager(nc);
+  const kvm = new Kvm(nc);
+  const recordsBucket = `cotal_records_${space}`;
+  const authBucket = epAuthBucket(space);
+  let recordsKv: KV, authKv: KV;
+  try {
+    recordsKv = await kvm.open(recordsBucket);
+    await recordsKv.status();
+  } catch (e) {
+    throw new EpEnvelopeError("failed-precondition", `the records store ${recordsBucket} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
+  }
+  let authCfg: { allow_direct?: boolean; max_age?: number; mirror?: unknown; sources?: unknown };
+  try {
+    authKv = await kvm.open(authBucket);
+    await authKv.status();
+    authCfg = (await jsm.streams.info(`KV_${authBucket}`)).config;
+  } catch (e) {
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (authCfg.allow_direct !== false)
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable gate store defeats read-your-writes (SPEC 13.1) — reprovision`);
+  if (typeof authCfg.max_age === "number" && authCfg.max_age > 0)
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} carries bucket-wide age eviction (max_age ${authCfg.max_age}); an age-evicted gate silently drops a fence (SPEC 13.12) — reprovision`);
+  if (authCfg.mirror !== undefined || (Array.isArray(authCfg.sources) && authCfg.sources.length > 0))
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} is a mirror/sourced stream; a follower copy cannot serve authority CAS (SPEC 13.1) — bind the primary`);
+  const reg: LifecycleRegistry = Object.freeze({ space });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm });
+  return reg;
+}
+
+/** Open the sealed read-only mapping reader (the confined-reader seam: leader-served records
+ *  `STREAM.MSG.GET` is the ONLY capability it needs, so it works under a scoped credential that
+ *  holds nothing else). */
+export async function openLifecycleMappingReader(nc: NatsConnection, space: string): Promise<LifecycleMappingReader> {
+  const rd: LifecycleMappingReader = Object.freeze({ space });
+  READERS.set(rd, { space, jsm: await jetstreamManager(nc) });
+  return rd;
+}
+
+// ---- the head (records store) ---------------------------------------------------------------
+
+/** The `lifecycle.<owner>.<actor>` head value (§13.1, amended). One incarnation of an alias.
+ *  `mappingRevision` is NOT here: it is the head key's STORE revision (§13.1), returned beside
+ *  the mapping by the leader read. `currentCredentialId` stays ABSENT until the (3) normative
+ *  ledger mints under the reopened gate (an active head naming a released credential before the
+ *  ledger exists would be exactly the unledgered mint §13.1 forbids). */
+export interface LifecycleMapping {
+  owner: string;
+  actor: string;
+  /** The never-reused, space-globally reserved lifecycle UID of THIS incarnation. */
+  lifecycleUid: string;
+  /** The minting/supervising authority. */
+  managerInstance: string;
+  /** The fenced process epoch (§13.1: live authority binds it; advanced only by the takeover
+   *  barrier, which this slice does not expose). */
+  processEpoch: number;
+  /** `active` is the ONLY current state. `retiring` = the terminal barrier's op-bound
+   *  containment phase (non-current, NOT replaceable). `retired` = terminal AND asserts the
+   *  completed barrier (only then may activation replace the alias, with a fresh UID). */
+  state: "active" | "retiring" | "retired";
+  /** The public credential fingerprint + authority epoch — absent until the ledger slice. */
+  currentCredentialId?: string;
+  /** REQUIRED at `retiring` (the retirement operation's durable intent); absent otherwise. */
+  op?: { opId: string; kind: "retirement" };
+}
+
+const HEAD_STATES = new Set(["active", "retiring", "retired"]);
 
 function headKey(owner: string, actor: string): string {
   return recordAtomicKey(LIFECYCLE_HEAD, [owner, actor]);
 }
+function uidKey(lifecycleUid: string): string {
+  return recordAtomicKey(UID_RESERVATION, [lifecycleUid]);
+}
 
-/** Validate a head value at the consuming boundary (§13.3: mediated-writer state that does not
- *  validate is a writer bug, never a data error) — closed schema, and the embedded owner/actor
- *  MUST agree with the key so a key-mismatched row never authorizes. */
-function parseHead(raw: Uint8Array, key: string, owner: string, actor: string): LifecycleHead {
+/** Validate a head value at the consuming boundary — CLOSED schema (nested `op` included), and
+ *  the embedded owner/actor MUST agree with the key so a key-mismatched row never authorizes. */
+function parseMapping(raw: Uint8Array, key: string, owner: string, actor: string): LifecycleMapping {
   let o: unknown;
   try {
     o = JSON.parse(dec.decode(raw));
@@ -84,171 +185,361 @@ function parseHead(raw: Uint8Array, key: string, owner: string, actor: string): 
     throw new EpEnvelopeError("internal", `the lifecycle head ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} is not an object`);
-  const allowed = new Set(["owner", "actor", "lifecycleUid", "managerInstance", "processEpoch", "state", "generation"]);
+  const allowed = new Set(["owner", "actor", "lifecycleUid", "managerInstance", "processEpoch", "state", "currentCredentialId", "op"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (
     o.owner !== owner || o.actor !== actor ||
     typeof o.lifecycleUid !== "string" || typeof o.managerInstance !== "string" || o.managerInstance.length === 0 ||
-    !uint(o.processEpoch) || typeof o.state !== "string" || !HEAD_STATES.has(o.state) ||
-    !uint(o.generation) || o.generation < 1
+    !uint(o.processEpoch) || o.processEpoch < 1 || typeof o.state !== "string" || !HEAD_STATES.has(o.state) ||
+    (o.currentCredentialId !== undefined && (typeof o.currentCredentialId !== "string" || o.currentCredentialId.length === 0))
   )
-    throw new EpEnvelopeError("internal", `the lifecycle head ${key} does not validate (owner/actor/uid/epoch/state/generation); a garbled or key-mismatched head never authorizes (SPEC 13.1/13.3)`);
+    throw new EpEnvelopeError("internal", `the lifecycle head ${key} does not validate (owner/actor/uid/epoch/state); a garbled or key-mismatched head never authorizes (SPEC 13.1/13.3)`);
   try {
     assertLifecycleToken(o.lifecycleUid);
   } catch {
     throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries a malformed lifecycleUid "${String(o.lifecycleUid)}" (SPEC 13.1)`);
   }
-  return o as unknown as LifecycleHead;
+  // The retirement op intent: REQUIRED at `retiring`, forbidden elsewhere; itself closed.
+  if (o.state === "retiring") {
+    if (!isRec(o.op)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} is retiring without its durable op intent (SPEC 13.1: retiring is op-bound)`);
+  } else if (o.op !== undefined) {
+    throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries an op intent in state "${o.state}" (SPEC 13.1: only retiring is op-bound)`);
+  }
+  if (o.op !== undefined) {
+    const op = o.op as Record<string, unknown>;
+    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind") throw new EpEnvelopeError("internal", `the lifecycle head ${key} op intent carries the unknown field "${k}" (closed schema)`);
+    if (typeof op.opId !== "string" || op.kind !== "retirement")
+      throw new EpEnvelopeError("internal", `the lifecycle head ${key} op intent does not validate (SPEC 13.1)`);
+    try {
+      assertLifecycleToken(op.opId);
+    } catch {
+      throw new EpEnvelopeError("internal", `the lifecycle head ${key} op intent carries a malformed opId (SPEC 13.1)`);
+    }
+  }
+  return o as unknown as LifecycleMapping;
 }
 
-/** Read the head via a raw `kv.get` (candidate read for a CAS-fenced mutation). A DEL/PURGE
- *  marker is CORRUPTION, never absence (§13.12: authority keys are never-deleted), so it refuses
- *  loudly; TRUE absence returns undefined. NOT for authority decisions — those use
- *  {@link readLifecycleHeadLeader} (leader-served). */
-async function readHeadCandidate(kv: KV, owner: string, actor: string): Promise<{ head: LifecycleHead; revision: number } | undefined> {
+/** Candidate read for a CAS-fenced mutation (raw `kv.get`; the auth decision is the CAS itself,
+ *  §13.1: a read is never a fence). A DEL/PURGE marker is CORRUPTION, never absence. */
+async function readHeadCandidate(kv: KV, owner: string, actor: string): Promise<{ mapping: LifecycleMapping; revision: number } | undefined> {
   const key = headKey(owner, actor);
   const entry = await kv.get(key);
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the lifecycle head ${key} carries a ${entry.operation} marker; an authority head is never deleted (a deletion is corruption, not absence, SPEC 13.12)`);
-  return { head: parseHead(entry.value, key, owner, actor), revision: entry.revision };
+  return { mapping: parseMapping(entry.value, key, owner, actor), revision: entry.revision };
 }
 
+// ---- the space-global UID reservation (records store) ----------------------------------------
+
+/** Try to reserve ONE explicit candidate UID (test/provisioning-internal; production paths use
+ *  {@link reserveLifecycleUid}). Create-only: `"won"` reserves it forever; `"burned"` means the
+ *  candidate already exists OR carries a deletion marker — either way it is unusable, per the
+ *  never-reuse rule. NOT exported from the package index: an explicit candidate is only for
+ *  probes and migration tooling, never a caller-chosen identity. */
+export async function tryReserveUid(
+  reg: LifecycleRegistry,
+  lifecycleUid: string,
+  audit: { owner: string; actor: string; mintedBy: string },
+): Promise<"won" | "burned"> {
+  const { recordsKv } = internals(reg);
+  assertLifecycleToken(lifecycleUid);
+  try {
+    await createRecordEntry(recordsKv, uidKey(lifecycleUid), { owner: audit.owner, actor: audit.actor, mintedBy: audit.mintedBy });
+    return "won";
+  } catch (e) {
+    if (isCasLoss(e)) return "burned";
+    throw e;
+  }
+}
+
+/** Reserve a fresh lifecycle UID space-globally (§13.1): mint a CSPRNG candidate, win its
+ *  create-only reservation, and on a collision burn the candidate and draw another. At ≥128
+ *  bits a collision is effectively adversarial, so a handful of retries is a correctness
+ *  formality, not a capacity plan; exhausting them refuses loudly. */
+export async function reserveLifecycleUid(
+  reg: LifecycleRegistry,
+  audit: { owner: string; actor: string; mintedBy: string },
+): Promise<string> {
+  for (let i = 0; i < 4; i++) {
+    const candidate = mintLifecycleUid();
+    if ((await tryReserveUid(reg, candidate, audit)) === "won") return candidate;
+  }
+  throw new EpEnvelopeError("internal", "four fresh 128-bit UID candidates collided with existing reservations; that is not chance — inspect the uid.> family (SPEC 13.1)");
+}
+
+// ---- the issuance-gate CAS primitives (auth store, agent family `gate.<lifecycleUid>`) -------
+
+/** The agent-family issuance gate row (§13.1, amended): `frozen` MUST carry the durable op
+ *  intent; the embedded uid MUST agree with the key. (The disjoint ENDPOINT family
+ *  `epgate.<endpoint>.<instanceId>` and the full barrier land with the (3)/(2b) ledger slices.) */
+export interface EpGateRow {
+  lifecycleUid: string;
+  state: "open" | "frozen" | "retired";
+  /** Mint generation: born 0 under the activation freeze, first mintable generation is 1 (the
+   *  activation's reopen), and every barrier reopen advances it. */
+  generation: number;
+  /** REQUIRED at `frozen` (which operation owns this freeze and may advance it); retained on
+   *  `retired` as the terminalizing op (audit); absent at `open`. */
+  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement" };
+}
+
+const GATE_STATES = new Set(["open", "frozen", "retired"]);
+const GATE_OP_KINDS = new Set(["activation", "takeover", "registration", "retirement"]);
+
+function gateKey(lifecycleUid: string): string {
+  return `gate.${assertLifecycleToken(lifecycleUid)}`;
+}
+
+function parseGate(raw: Uint8Array, key: string, lifecycleUid: string): EpGateRow {
+  let o: unknown;
+  try {
+    o = JSON.parse(dec.decode(raw));
+  } catch {
+    throw new EpEnvelopeError("internal", `the issuance gate ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
+  }
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the issuance gate ${key} is not an object`);
+  for (const k of Object.keys(o)) if (k !== "lifecycleUid" && k !== "state" && k !== "generation" && k !== "op") throw new EpEnvelopeError("internal", `the issuance gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
+  if (o.lifecycleUid !== lifecycleUid || typeof o.state !== "string" || !GATE_STATES.has(o.state) || !uint(o.generation))
+    throw new EpEnvelopeError("internal", `the issuance gate ${key} does not validate (uid/state/generation); a garbled or key-mismatched gate never authorizes (SPEC 13.1)`);
+  if (o.state === "frozen" && !isRec(o.op))
+    throw new EpEnvelopeError("internal", `the issuance gate ${key} is frozen without its durable op intent (SPEC 13.1: a frozen gate is op-bound)`);
+  if (o.state === "open" && o.op !== undefined)
+    throw new EpEnvelopeError("internal", `the issuance gate ${key} is open but carries an op intent (SPEC 13.1: open gates are not op-bound)`);
+  if (o.op !== undefined) {
+    const op = o.op as Record<string, unknown>;
+    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind") throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
+    if (typeof op.opId !== "string" || typeof op.kind !== "string" || !GATE_OP_KINDS.has(op.kind))
+      throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent does not validate (SPEC 13.1)`);
+    try {
+      assertLifecycleToken(op.opId);
+    } catch {
+      throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries a malformed opId (SPEC 13.1)`);
+    }
+  }
+  return o as unknown as EpGateRow;
+}
+
+/** Observe the gate (the candidate read feeding a revision-pinned CAS; the auth store is
+ *  leader-only by shape, `allow_direct=false`). A DEL/PURGE marker refuses loudly. */
+export async function observeGate(reg: LifecycleRegistry, lifecycleUid: string): Promise<{ row: EpGateRow; revision: number } | undefined> {
+  const { authKv } = internals(reg);
+  const key = gateKey(lifecycleUid);
+  const entry = await authKv.get(key);
+  if (!entry) return undefined;
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the issuance gate ${key} carries a ${entry.operation} marker; a gate is never deleted (a deletion is corruption, not absence, SPEC 13.12)`);
+  return { row: parseGate(entry.value, key, lifecycleUid), revision: entry.revision };
+}
+
+async function putGate(authKv: KV, lifecycleUid: string, row: EpGateRow, expectedRevision: number): Promise<number> {
+  try {
+    return await authKv.put(gateKey(lifecycleUid), enc.encode(JSON.stringify(row)), { previousSeq: expectedRevision });
+  } catch (e) {
+    if (isRawCasLoss(e))
+      throw new EpEnvelopeError("conflict", `the issuance gate CAS for ${gateKey(lifecycleUid)} lost (expected revision ${expectedRevision}); re-read and re-decide (SPEC 13.8)`);
+    throw e;
+  }
+}
+
+/** Create the gate FROZEN under its operation's durable intent (create-only: conflicts on an
+ *  existing gate or a deletion marker). Born unmintable at generation 0: no credential can be
+ *  released until the operation's own reopen (§13.1 activation saga). */
+export async function createGateFrozen(
+  reg: LifecycleRegistry,
+  args: { lifecycleUid: string; op: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement" } },
+): Promise<{ row: EpGateRow; revision: number }> {
+  const { authKv } = internals(reg);
+  const row: EpGateRow = { lifecycleUid: assertLifecycleToken(args.lifecycleUid), state: "frozen", generation: 0, op: { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind } };
+  const revision = await putGate(authKv, args.lifecycleUid, row, 0);
+  return { row, revision };
+}
+
+/** CAS the gate `open → frozen` carrying the freezing operation's durable intent, at the
+ *  observed revision. The bar of every barrier: a staged mint's own finalize CAS loses. */
+export async function freezeGate(
+  reg: LifecycleRegistry,
+  args: { lifecycleUid: string; revision: number; op: { opId: string; kind: "takeover" | "registration" | "retirement" } },
+): Promise<{ row: EpGateRow; revision: number }> {
+  const { authKv } = internals(reg);
+  const current = await observeGate(reg, args.lifecycleUid);
+  if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
+  if (current.row.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}", not open; only an open gate freezes (a frozen/retired gate belongs to its own operation, SPEC 13.1)`);
+  const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "frozen", generation: current.row.generation, op: { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind } };
+  const revision = await putGate(authKv, args.lifecycleUid, row, args.revision);
+  return { row, revision };
+}
+
+/** CAS the gate `frozen → open` at the NEXT generation — op-pinned: only the freeze's own
+ *  operation (the same `opId`) reopens, as its barrier's final step; a stranger or a stale
+ *  reconciler refuses before the CAS is even attempted. */
+export async function reopenGate(
+  reg: LifecycleRegistry,
+  args: { lifecycleUid: string; revision: number; opId: string },
+): Promise<{ row: EpGateRow; revision: number }> {
+  const { authKv } = internals(reg);
+  const current = await observeGate(reg, args.lifecycleUid);
+  if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
+  if (current.row.state !== "frozen")
+    throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}", not frozen; there is no freeze to reopen (SPEC 13.1)`);
+  if (current.row.op?.opId !== args.opId)
+    throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; only the completing operation reopens its own freeze (SPEC 13.1)`);
+  const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "open", generation: current.row.generation + 1 };
+  const revision = await putGate(authKv, args.lifecycleUid, row, args.revision);
+  return { row, revision };
+}
+
+/** CAS the gate `frozen → retired` (terminal; never reopened) — op-pinned like the reopen. The
+ *  activation saga uses it to terminalize a head-CAS loser's orphan gate; the retirement
+ *  barrier uses it as its own gate terminalization step. */
+export async function retireGate(
+  reg: LifecycleRegistry,
+  args: { lifecycleUid: string; revision: number; opId: string },
+): Promise<{ row: EpGateRow; revision: number }> {
+  const { authKv } = internals(reg);
+  const current = await observeGate(reg, args.lifecycleUid);
+  if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
+  if (current.row.state === "retired") return current; // idempotent terminal
+  if (current.row.state !== "frozen")
+    throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}"; only a frozen gate terminalizes (freeze first — the bar precedes the terminal, SPEC 13.1)`);
+  if (current.row.op?.opId !== args.opId)
+    throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; only the owning operation terminalizes its freeze (SPEC 13.1)`);
+  const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "retired", generation: current.row.generation, op: current.row.op };
+  const revision = await putGate(authKv, args.lifecycleUid, row, args.revision);
+  return { row, revision };
+}
+
+// ---- the activation saga (§13.1: reserve → gate frozen → head CAS → reopen LAST) -------------
+
 /**
- * Activate the alias `(owner, actor)` (§13.1): mint a FRESH lifecycle uid and write the head at
- * generation 1 for a virgin alias, or a fresh uid at `generation + 1` re-activating a RETIRED
- * alias. Serialized on the head's single key:
- *  - virgin (true absence): create-only CAS (conflicts on a deletion marker, so a reused alias
- *    can never recreate over a tombstone) — one winner on concurrent same-alias activation;
- *  - retired: revision-pinned CAS `retired → active` at a bumped generation + fresh uid;
- *  - already `active`: refused `already-exists` (an active incarnation is not re-activated;
- *    a takeover/restart uses {@link advanceProcessEpoch}, not a new incarnation).
- * The initial process epoch is 1 (or the caller's, e.g. resuming a supervised restart's epoch).
- * Returns the new head. A concurrent loser sees `conflict` (re-read and re-decide).
+ * Activate the alias `(owner, actor)`: the full §13.1 initial-activation saga. Refuses an
+ * `active` head (`already-exists`: a takeover advances the epoch through its barrier, never a
+ * new incarnation) and a `retiring` head (`failed-precondition`: a retiring alias is NOT
+ * replaceable until its barrier completes). A virgin alias activates by create-only head CAS; a
+ * `retired` predecessor is replaced by revision-pinned CAS with a FRESH reserved UID. The
+ * head-CAS loser terminalizes its own orphan gate (its UID stays burned forever) and rethrows
+ * the `conflict`. Returns the new mapping, its store revision (= `mappingRevision`), and the
+ * saga's `opId` (the durable intent a crashed caller resumes with, {@link resumeActivation}).
+ *
+ * NOT wired to any production spawn path in this slice; the ledger slice adds credential
+ * minting under the reopened gate before this becomes reachable.
  */
 export async function activateLifecycle(
-  kv: KV,
-  args: { owner: string; actor: string; managerInstance: string; processEpoch?: number },
-): Promise<LifecycleHead> {
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; managerInstance: string },
+): Promise<{ mapping: LifecycleMapping; revision: number; opId: string }> {
+  const { recordsKv } = internals(reg);
   const { owner, actor } = args;
   if (typeof args.managerInstance !== "string" || args.managerInstance.length === 0)
-    throw new EpEnvelopeError("failed-precondition", "activateLifecycle requires a managerInstance (the supervising authority)");
-  const processEpoch = args.processEpoch ?? 1;
-  if (!uint(processEpoch) || processEpoch < 1)
-    throw new EpEnvelopeError("failed-precondition", `processEpoch ${String(args.processEpoch)} is not a positive integer`);
-  const key = headKey(owner, actor);
-  const current = await readHeadCandidate(kv, owner, actor);
-  if (current !== undefined && current.head.state === "active")
-    throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is already active (generation ${current.head.generation}, uid ${current.head.lifecycleUid}); a takeover/restart advances the epoch, it does not re-activate (SPEC 13.1)`);
-  const head: LifecycleHead = {
-    owner, actor,
-    lifecycleUid: mintLifecycleUid(),
-    managerInstance: args.managerInstance,
-    processEpoch,
-    state: "active",
-    generation: current === undefined ? 1 : current.head.generation + 1,
-  };
-  if (current === undefined) {
-    await createRecordEntry(kv, key, head); // create-only: conflicts on a deletion marker (never-reuse)
-  } else {
-    await updateRecordEntry(kv, key, head, current.revision); // retired → active, revision-pinned
+    throw new EpEnvelopeError("failed-precondition", "activateLifecycle requires a managerInstance (the minting authority)");
+  const current = await readHeadCandidate(recordsKv, owner, actor);
+  if (current !== undefined && current.mapping.state === "active")
+    throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is already active (uid ${current.mapping.lifecycleUid}); a takeover advances the epoch through its barrier, it does not re-activate (SPEC 13.1)`);
+  if (current !== undefined && current.mapping.state === "retiring")
+    throw new EpEnvelopeError("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`);
+  const opId = mintLifecycleUid();
+  // 1. Win the space-global UID reservation.
+  const lifecycleUid = await reserveLifecycleUid(reg, { owner, actor, mintedBy: args.managerInstance });
+  // 2. Create the gate FROZEN under this activation's durable intent (unmintable from birth).
+  const gate = await createGateFrozen(reg, { lifecycleUid, op: { opId, kind: "activation" } });
+  // 3. CAS the alias head (create-only for virgin; revision-pinned over the retired predecessor).
+  const mapping: LifecycleMapping = { owner, actor, lifecycleUid, managerInstance: args.managerInstance, processEpoch: 1, state: "active" };
+  let revision: number;
+  try {
+    revision = current === undefined
+      ? await createRecordEntry(recordsKv, headKey(owner, actor), mapping)
+      : await updateRecordEntry(recordsKv, headKey(owner, actor), mapping, current.revision);
+  } catch (e) {
+    if (isCasLoss(e)) {
+      // The loser terminalizes ITS OWN orphan gate; its UID stays burned (never deleted, never reused).
+      await retireGate(reg, { lifecycleUid, revision: gate.revision, opId }).catch(() => {});
+      throw new EpEnvelopeError("conflict", `lifecycle activation for "${owner}/${actor}" lost the head CAS (a concurrent activation won); this saga's uid ${lifecycleUid} is burned and its gate terminalized (SPEC 13.1)`);
+    }
+    throw e;
   }
-  return head;
+  // 4. Reopen the gate at its first mintable generation — the saga's LAST step.
+  await reopenGate(reg, { lifecycleUid, revision: gate.revision, opId });
+  return { mapping, revision, opId };
 }
 
 /**
- * Advance the fenced process epoch of the ACTIVE incarnation (§13.1 takeover/supervised
- * restart): a revision-pinned CAS on the head, so two racing takeovers cannot both win and a
- * stale supervisor's advance loses. Refuses a retired lifecycle (a terminal incarnation gets no
- * new epoch) and refuses a non-monotonic epoch. Returns the new head.
+ * Resume a crashed activation saga from its durable coordinates (`{alias, lifecycleUid, opId}`,
+ * the intent the minting authority persists before step 1 and the gate carries from step 2).
+ * Reads the durable state and finishes the SAME operation deterministically:
+ *  - head active at OUR uid → finish step 4 (reopen the gate) if it is still frozen by us;
+ *  - head absent / retired / owned by another uid → our head CAS never won (or never ran):
+ *    terminalize our orphan gate; the uid stays burned.
+ * Idempotent; never advances another operation's freeze (the op-pinned CAS refuses). Returns
+ * what it did.
  */
-export async function advanceProcessEpoch(
-  kv: KV,
-  args: { owner: string; actor: string; toEpoch: number; managerInstance?: string },
-): Promise<LifecycleHead> {
-  const { owner, actor } = args;
-  if (!uint(args.toEpoch) || args.toEpoch < 1)
-    throw new EpEnvelopeError("failed-precondition", `toEpoch ${String(args.toEpoch)} is not a positive integer`);
-  const current = await readHeadCandidate(kv, owner, actor);
-  if (current === undefined)
-    throw new EpEnvelopeError("not-found", `lifecycle "${owner}/${actor}" has no head; there is nothing to advance (SPEC 13.1)`);
-  if (current.head.state !== "active")
-    throw new EpEnvelopeError("failed-precondition", `lifecycle "${owner}/${actor}" is "${current.head.state}"; a retired incarnation gets no new process epoch (re-activate the alias instead, SPEC 13.1)`);
-  if (args.toEpoch <= current.head.processEpoch)
-    throw new EpEnvelopeError("failed-precondition", `epoch ${args.toEpoch} is not above the current ${current.head.processEpoch}; the process epoch is monotonic (SPEC 13.1)`);
-  const head: LifecycleHead = { ...current.head, processEpoch: args.toEpoch, ...(args.managerInstance ? { managerInstance: args.managerInstance } : {}) };
-  await updateRecordEntry(kv, headKey(owner, actor), head, current.revision);
-  return head;
+export async function resumeActivation(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; opId: string },
+): Promise<"completed" | "terminalized" | "already-settled"> {
+  const { recordsKv } = internals(reg);
+  const head = await readHeadCandidate(recordsKv, args.owner, args.actor);
+  const gate = await observeGate(reg, args.lifecycleUid);
+  const won = head !== undefined && head.mapping.state === "active" && head.mapping.lifecycleUid === args.lifecycleUid;
+  if (gate === undefined) {
+    // Crash before step 2: nothing durable beyond the reservation; the uid stays burned.
+    if (won) throw new EpEnvelopeError("internal", `the head names uid ${args.lifecycleUid} but its gate does not exist; an active head without a gate is corruption (SPEC 13.1)`);
+    return "already-settled";
+  }
+  if (gate.row.state === "retired") return "already-settled";
+  if (gate.row.state === "open") {
+    if (!won)
+      throw new EpEnvelopeError("internal", `the gate for uid ${args.lifecycleUid} is open but the head does not name it; an open gate without its active head is corruption (SPEC 13.1)`);
+    return "already-settled";
+  }
+  // frozen: only OUR op may advance it (reopen/retire are op-pinned and will refuse a stranger).
+  if (won) {
+    await reopenGate(reg, { lifecycleUid: args.lifecycleUid, revision: gate.revision, opId: args.opId });
+    return "completed";
+  }
+  await retireGate(reg, { lifecycleUid: args.lifecycleUid, revision: gate.revision, opId: args.opId });
+  return "terminalized";
 }
 
-/**
- * Retire the active incarnation of `(owner, actor)` TERMINALLY (§13.1): a revision-pinned CAS
- * `active → retired` on the head. Idempotent for an already-retired head (`retired: false`);
- * the head is NEVER deleted, so the retirement is a durable terminal state a later reader sees,
- * not an absence. The full §13.1 retirement BARRIER (revoke the credential family, verified
- * eviction, alias release) lands with the credential-ledger + barrier slices over this; this is
- * the head's own terminal transition.
- */
-export async function retireLifecycleHead(
-  kv: KV,
-  args: { owner: string; actor: string },
-): Promise<{ retired: boolean; head: LifecycleHead | undefined }> {
-  const { owner, actor } = args;
-  const current = await readHeadCandidate(kv, owner, actor);
-  if (current === undefined)
-    throw new EpEnvelopeError("not-found", `lifecycle "${owner}/${actor}" has no head to retire (SPEC 13.1)`);
-  if (current.head.state === "retired") return { retired: false, head: current.head };
-  const head: LifecycleHead = { ...current.head, state: "retired" };
-  await updateRecordEntry(kv, headKey(owner, actor), head, current.revision);
-  return { retired: true, head };
-}
+// ---- the leader-served mapping reader (the currency seam) ------------------------------------
 
 /**
- * The LEADER-SERVED mapping reader (§13.1: activation/retirement serialize on the head, and a
- * fresh authority read of it is leader-served `STREAM.MSG.GET`, never a follower Direct Get the
- * records bucket's `allow_direct=true` would permit). This is the production reader that backs
- * the `readProcessEpoch` seam D11 (restart supervision, status commit) and D7 (session
- * redemption) inject: the fenced epoch of the CURRENT active incarnation, or `undefined` for a
- * retired/absent lifecycle (an unauthorized egress). A DEL/PURGE marker refuses loudly.
+ * The LEADER-SERVED mapping read (§13.1: `mappingRevision` IS the returned store revision; the
+ * records bucket allows Direct Get for non-fencing reads, but an authority read of the head is
+ * leader-served `STREAM.MSG.GET`, never a follower get). Returns the mapping REGARDLESS of
+ * state — currency is the CALLER's rule, and the epoch seam below applies it. A DEL/PURGE
+ * marker refuses loudly.
  */
-export async function readLifecycleHeadLeader(
-  jsm: JetStreamManager,
-  space: string,
+export async function readLifecycleMappingLeader(
+  rd: LifecycleMappingReader,
   owner: string,
   actor: string,
-): Promise<{ head: LifecycleHead; revision: number } | undefined> {
+): Promise<{ mapping: LifecycleMapping; revision: number } | undefined> {
+  const { jsm, space } = readerInternals(rd);
   const key = headKey(owner, actor);
   let entry: { value: unknown; revision: number } | undefined;
   try {
     entry = await readRecordLeader(jsm, space, key);
   } catch (e) {
-    // readRecordLeader itself refuses a DEL/PURGE marker (failed-precondition) — never absence.
-    if (e instanceof EpEnvelopeError) throw e;
+    if (e instanceof EpEnvelopeError) throw e; // incl. the DEL/PURGE refusal
     throw new EpEnvelopeError("unavailable", `the leader-served lifecycle-head read for "${owner}/${actor}" failed; an authority read fails closed, never open (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
   if (entry === undefined) return undefined;
-  return { head: parseHead(enc.encode(JSON.stringify(entry.value)), key, owner, actor), revision: entry.revision };
+  return { mapping: parseMapping(enc.encode(JSON.stringify(entry.value)), key, owner, actor), revision: entry.revision };
 }
 
 /**
- * The `readProcessEpoch` PRODUCTION SEAM the D11/D7 paths inject (`() => Promise<number>` /
- * `number | undefined`): the current active incarnation's fenced epoch read leader-served, or
- * `undefined` when the lifecycle is retired/absent (so a superseded process's status write or a
- * leaked session grant fails the epoch fence). Bind it as `readProcessEpoch: () =>
- * lifecycleProcessEpochReader(jsm, space, owner, actor)`.
+ * The `readProcessEpoch` PRODUCTION SEAM the D11/D7 paths inject: the CURRENT incarnation's
+ * fenced epoch, leader-served — and current means `state: "active"` ONLY (§13.1, amended):
+ * `retiring` and `retired` alike yield `undefined`, so a superseded process's status write, a
+ * containment-phase mint, or a leaked session grant all fail the epoch fence. Bind it as
+ * `readProcessEpoch: () => lifecycleProcessEpochReader(reader, owner, actor)`.
  */
 export async function lifecycleProcessEpochReader(
-  jsm: JetStreamManager,
-  space: string,
+  rd: LifecycleMappingReader,
   owner: string,
   actor: string,
 ): Promise<number | undefined> {
-  const read = await readLifecycleHeadLeader(jsm, space, owner, actor);
-  return read !== undefined && read.head.state === "active" ? read.head.processEpoch : undefined;
-}
-
-/** Open a JetStream manager for the leader-served reads (a thin helper so callers do not have to
- *  import `@nats-io/jetstream` directly). */
-export async function lifecycleRegistryManager(nc: NatsConnection): Promise<JetStreamManager> {
-  return jetstreamManager(nc);
+  const read = await readLifecycleMappingLeader(rd, owner, actor);
+  return read !== undefined && read.mapping.state === "active" ? read.mapping.processEpoch : undefined;
 }
