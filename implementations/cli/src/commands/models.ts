@@ -1,6 +1,7 @@
-import { CONTROL_PRIVILEGED, registry, type CompletionResult, type Connector, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
+import { CONTROL_PRIVILEGED, type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { extensionNames } from "../ext-loader.js";
 import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -13,7 +14,7 @@ export const modelsFlags = [
 export function modelsComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, modelsFlags);
   if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
-  if (flag?.name === "agent") return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
+  if (flag?.name === "agent") return { items: extensionNames("connector").map((name) => ({ value: name })), directive: "nofiles" };
   if (flag?.name === "creds") return { items: [], directive: "default" };
   return { items: [], directive: "nofiles" };
 }

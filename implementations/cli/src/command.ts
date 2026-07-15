@@ -8,6 +8,7 @@ import {
   setCommandSurface,
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
+import { reconcileSeededConnectors } from "./seed/reconcile.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -54,6 +55,38 @@ function commandHelp(cmd: Command): void {
   flags.forEach((f, i) => console.log(`  ${left[i].padEnd(pad)}  ${c.dim(f.description ?? "")}`));
 }
 
+/**
+ * The connector-seeding boot gate. Returns `true` iff it fully handled the command (maintenance
+ * `ext seed`), so the caller returns without the normal dispatch.
+ *
+ *  - `ext seed [--repair|--reset|--force]` is dispatched HERE, before the manifest overlay, so repair
+ *    survives a corrupt manifest.
+ *  - every other real command reconciles first (so `npm i -g cotal-ai && cotal ext list` shows the
+ *    four, and a first-command `ext add` still seeds), EXCEPT completion/help and a seed CHILD — a
+ *    process carrying `COTAL_EXT_SEEDING=1` whose command is `ext add`/`ext seed` (the marker, not an
+ *    `ext`-subcommand allowlist, is what breaks the recursive-reconcile deadlock).
+ */
+async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
+  const [name, sub] = argv;
+  if (name === "ext" && sub === "seed") {
+    const extCmd = registry.all<Command>("command").find((cmd) => cmd.name === "ext");
+    if (!extCmd) throw new Error("internal error: the `ext` command is not registered");
+    await extCmd.run(parseCommandArgs(extCmd, argv.slice(1)));
+    return true;
+  }
+  if (skipAutoReconcile(argv)) return false;
+  await reconcileSeededConnectors();
+  return false;
+}
+
+function skipAutoReconcile(argv: string[]): boolean {
+  const [name, sub] = argv;
+  if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
+  if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
+  if (process.env.COTAL_EXT_SEEDING === "1" && name === "ext" && (sub === "add" || sub === "seed")) return true;
+  return false;
+}
+
 /** node's parseArgs throws these for unknown/malformed flags; treat as a usage error. */
 function isArgError(e: unknown): boolean {
   const code = (e as { code?: string })?.code;
@@ -74,6 +107,17 @@ export interface RunCliOptions {
  *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
+  // On the published binary, keep the four built-in connectors seeded (first run + version bump)
+  // through the SAME `ext add` path a third party uses. This runs BEFORE the manifest overlay so
+  // `ext seed --repair` can fix a corrupt manifest (the overlay is fatal on corrupt JSON).
+  if (opts.extensions) {
+    try {
+      if (await seedBoot(registry, argv)) return;
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
   let commands: Command[];
   try {
     commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");

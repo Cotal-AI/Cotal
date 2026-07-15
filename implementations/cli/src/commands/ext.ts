@@ -9,8 +9,6 @@ import {
   cacheLocalProcess,
   extensionPackageDir,
   extensionLocalProcesses,
-  extensionMutationLockPath,
-  extensionMutationLockState,
   extensionProvides,
   extensionsDir,
   extensionsManifestPath,
@@ -19,6 +17,7 @@ import {
   installedExtensionVersion,
   loadExtensionsManifest,
   provenance,
+  RESERVED_CONNECTOR_NAMES,
   saveExtensionsManifest,
   type InstalledExtension,
   type LocalProcess,
@@ -27,6 +26,8 @@ import {
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
+import { claimExtensionMutation } from "../lib/ext-mutation.js";
+import { runSeed } from "../seed/reconcile.js";
 
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
@@ -49,7 +50,11 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === "add" && rest[0]) return add(rest[0]);
   if (sub === "remove" && rest[0]) return remove(rest[0]);
   if (sub === "list" && !rest.length) return list();
-  console.error(c.red("usage: cotal ext <add <npm-package> | remove <name> | list>"));
+  if (sub === "seed" && !rest.length) {
+    const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
+    return runSeed({ repair, reset, force });
+  }
+  console.error(c.red("usage: cotal ext <add <npm-package> | remove <name> | list | seed [--repair|--reset|--force]>"));
   process.exit(1);
 }
 
@@ -125,35 +130,6 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
   }
 }
 
-/** Serialize prefix mutations. A dead owner's lock is reclaimed; a live owner fails loud. */
-function claimExtensionMutation(): () => void {
-  const lock = extensionMutationLockPath();
-  mkdirSync(dirname(lock), { recursive: true });
-  for (;;) {
-    let fd: number;
-    try {
-      fd = openSync(lock, "wx", 0o600);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const status = extensionMutationLockState();
-      if (status.state === "absent") continue; // raced with the owner's cleanup
-      if (status.state === "active")
-        throw new Error(`another \`cotal ext\` mutation is in progress (pid ${status.owner})`);
-      rmSync(lock, { force: true });
-      continue;
-    }
-    try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      try {
-        if (readFileSync(lock, "utf8").trim() === String(process.pid)) rmSync(lock, { force: true });
-      } catch { /* already reclaimed/removed */ }
-    };
-  }
-}
-
 async function add(spec: string): Promise<void> {
   const dir = extensionsDir();
   mkdirSync(dir, { recursive: true });
@@ -169,7 +145,11 @@ async function add(spec: string): Promise<void> {
   // dependencies (a heuristic that binds to the wrong key if the prefix ever drifted, and that made
   // re-adding an installed extension impossible).
   const pkg = packageNameFromSpec(resolved, isPath);
-  const releaseMutation = claimExtensionMutation();
+  // A seed child runs UNDER the reconcile's mutation lock (its parent already holds it for the whole
+  // run); claiming again would deadlock against the parent's live PID. The child skips the claim and
+  // stamps its entry `source:"seeded"` so refresh-gating and repair hints key on the marker, not a path.
+  const seeding = process.env.COTAL_EXT_SEEDING === "1";
+  const releaseMutation = seeding ? () => {} : claimExtensionMutation();
   try {
     await addTransaction();
   } finally {
@@ -291,6 +271,11 @@ async function add(spec: string): Promise<void> {
   if (!contributed.length) {
     fail(pkg, `imported cleanly but registered no extensions in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
   }
+  // `cotal` is reserved (the binary's own name — there is no runtime alias anymore); a connector must
+  // never claim it, or `--agent cotal` would be ambiguous with the CLI.
+  const reserved = contributed.find((ext) => ext.kind === "connector" && RESERVED_CONNECTOR_NAMES.includes(ext.name));
+  if (reserved) fail(pkg, `contributes connector "${reserved.name}", which is a reserved name - a connector cannot be named ${RESERVED_CONNECTOR_NAMES.join(", ")}`);
+
   // Builtin collisions can't happen here (registry.register throws on a duplicate, surfacing as
   // failed-to-import above, naming the extension). OTHER installed extensions are invisible to the
   // registry during this add (they aren't imported), so their CACHED names are checked explicitly —
@@ -310,6 +295,7 @@ async function add(spec: string): Promise<void> {
     pkg,
     version,
     spec: resolved,
+    ...(seeding ? { source: "seeded" as const } : {}),
     provides: contributed.map(cacheExtension),
     commands: commands.map(cacheCommand),
     localProcesses: localProcesses.map(cacheLocalProcess),

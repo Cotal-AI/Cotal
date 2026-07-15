@@ -39,6 +39,9 @@ export interface InstalledExtension {
   readonly version: string;
   /** The spec the operator passed to `ext add` (registry range, file:, tarball…) — for re-adds. */
   readonly spec: string;
+  /** `"seeded"` iff installed by the built-in-connector reconcile (not an operator `ext add`). Keys
+   *  refresh-gating and import-failure hints on the marker rather than trusting the spec path. */
+  readonly source?: "seeded";
   /** Every registry contribution made by the package. Older command-only manifests omit this; the
    *  loader derives `command:<name>` entries from `commands` for compatibility. */
   readonly provides?: readonly ExtensionRef[];

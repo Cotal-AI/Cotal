@@ -7,6 +7,7 @@ import {
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import {
+  connectorInstallHint,
   extensionLocalProcesses,
   extensionProvides,
   importInstalledExtension,
@@ -190,7 +191,9 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
     hint: (r) =>
       r.kind === "runtime"
         ? unknownRuntimeError(r.name)
-        : `no installed extension provides ${r.kind} "${r.name}" - install it with \`cotal ext add <npm-package>\``,
+        : r.kind === "connector"
+          ? connectorInstallHint(r.name)
+          : `no installed extension provides ${r.kind} "${r.name}" - install it with \`cotal ext add <npm-package>\``,
   });
 }
 

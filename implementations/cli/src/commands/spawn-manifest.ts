@@ -67,7 +67,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   const runtime = m.runtime ?? "pty";
 
   // Connectors + their binaries must exist before any mutation (no fallback).
-  const connErr = preflightConnectors(eff);
+  const connErr = await preflightConnectors(eff);
   if (connErr) {
     console.error(c.red(`✗ connector preflight failed: ${connErr}`));
     process.exit(1);

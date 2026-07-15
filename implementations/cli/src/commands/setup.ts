@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, provenance } from "@cotal-ai/workspace";
+import { materializeExtension } from "../ext-loader.js";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
@@ -244,7 +245,16 @@ function claudePluginStep(): Step {
     explain: "Lets a Claude Code session join the web and wake on peer messages.",
     context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
     async run() {
-      installClaudePlugin();
+      // The claude connector is a seeded/`ext add`ed plugin now, not a static import — materialize it
+      // for its `pluginRoot`. If the operator removed it, skip the plugin (with a hint), never crash
+      // the guided flow.
+      let claude: Connector;
+      try {
+        claude = await materializeExtension<Connector>({ kind: "connector", name: "claude" });
+      } catch {
+        return "claude connector not installed - skipping the plugin (re-add it: cotal ext add @cotal-ai/connector-claude-code)";
+      }
+      installClaudePlugin(claude);
       return "cotal@cotal-mesh (local scope)";
     },
   };
@@ -330,9 +340,9 @@ async function readyCard(cwd: string): Promise<void> {
 /** Materialize a stable plugin marketplace under ~/.cotal/claude-plugin (surviving
  *  npx cache eviction) and install the plugin from it. The marketplace name must stay
  *  `cotal-mesh` (the connector's channel ref `plugin:cotal@cotal-mesh` depends on it). */
-function installClaudePlugin(): void {
-  const { pluginRoot } = registry.resolve<Connector>("connector", "claude");
-  if (!pluginRoot) throw new Error('the registered "claude" connector ships no plugin assets');
+function installClaudePlugin(claudeConnector: Connector): void {
+  const { pluginRoot } = claudeConnector;
+  if (!pluginRoot) throw new Error('the "claude" connector ships no plugin assets');
   for (const f of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"]) {
     if (!existsSync(join(pluginRoot, f))) {
       throw new Error(
