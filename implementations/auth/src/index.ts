@@ -101,4 +101,7 @@ export {
 export { runAuthService, JWKS_MAX_AGE_SEC } from "./service.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
-export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, writeLifecycleGate, closeSession, sweepSessions, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
+// NB: writeLifecycleGate + holderGateId/servingGateId are the D13-registry test/provisioning
+// stand-ins and are deliberately NOT re-exported here (import them directly from the module in
+// smokes/provisioning). The public surface is the store + hooks + close/sweep seams.
+export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";

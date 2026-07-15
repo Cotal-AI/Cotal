@@ -343,6 +343,12 @@ export interface SessionLedgerRow {
   endpoint: string;
   serving: { instanceId: string; epoch: number };
   holder: { principal: string; lifecycleUid: string };
+  /** The WINNING grant's Ed25519 signature — the full verified-artifact identity (it covers
+   *  window, holder processEpoch, iat/nbf, nonce, issuer, everything signed). The lost-response
+   *  retry re-releases ONLY when the presenting grant's signature equals this, so a DIFFERENT
+   *  signed grant that merely reuses the sessionId + the compared coordinate subset can never
+   *  re-release the winner's credential (§13.6/§13.10). */
+  grantSig: string;
   credCaller: string;
   credServing: string;
   /** Per-credential revocation completion (durable), created all-false: set only when that
@@ -586,6 +592,7 @@ export async function redeemSession(
     endpoint: grant.endpoint,
     serving: grant.serving,
     holder: { principal: grant.holder.id, lifecycleUid: grant.holder.lifecycleUid },
+    grantSig: grant.sig,
     credCaller: ids.credCaller,
     credServing: ids.credServing,
     revoked: { caller: false, serving: false },
@@ -600,20 +607,17 @@ export async function redeemSession(
     // The ids allocated above were never staged and carry no bytes — orphans by design.
     const existing = await hooks.ledger.read(grant.sessionId);
     // The retry re-releases ONLY for an EXACT replay of the grant that WON the one-use: the
-    // presenter must be the holder AND every immutable row coordinate (endpoint, serving
-    // identity, exp) must equal this grant's. A DIFFERENT signed grant that merely reuses the
-    // sessionId + holder (a distinct endpoint, serving instance/epoch, or exp) is NOT a
-    // lost-response retry — it loses the one-use as `permission-denied`, never re-releasing the
-    // winner's credential (SPEC 13.6).
+    // presenter must be the holder AND the presenting grant's SIGNATURE must equal the winner's
+    // (the signature is the full verified-artifact identity — window, holder processEpoch,
+    // iat/nbf, nonce, issuer, everything signed — so a DIFFERENT signed grant reusing only the
+    // sessionId + a coordinate subset can never re-release the winner's credential, even with a
+    // larger flow window, SPEC 13.6/13.10).
     if (
       existing !== undefined &&
       existing.state === "active" &&
       existing.holder.principal === presenter.id &&
       existing.holder.lifecycleUid === presenter.lifecycleUid &&
-      existing.endpoint === grant.endpoint &&
-      existing.serving.instanceId === grant.serving.instanceId &&
-      existing.serving.epoch === grant.serving.epoch &&
-      existing.exp === grant.exp
+      existing.grantSig === grant.sig
     ) {
       // Re-release the WINNER's stored credential id (never the freshly allocated `ids`, which
       // the create just lost): the ids allocated for this racing attempt carry no bytes.

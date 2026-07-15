@@ -35,6 +35,8 @@ import {
   EpEnvelopeError,
   epAuthBucket,
   epsSubject,
+  endpointToken,
+  assertLifecycleToken,
   sessionLedgerKey,
   assertSessionStateTransition,
   sweepSessionRow,
@@ -54,17 +56,33 @@ const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
+/** The trusted per-space auth store: the KV BONDED to its space, constructed ONLY by
+ *  {@link openSessionAuthStore} (so a caller can never hand-assemble a KV with a mismatched
+ *  space, mixing space-A authority rows with space-B rails). Branded — every seam that takes a
+ *  store rejects a structural look-alike. */
+export interface SessionAuthStore {
+  kv: KV;
+  space: string;
+}
+const AUTH_STORES = new WeakSet<SessionAuthStore>();
+function assertStore(store: SessionAuthStore): void {
+  if (!AUTH_STORES.has(store))
+    throw new EpEnvelopeError("failed-precondition", `the session auth store was not constructed by openSessionAuthStore(); a hand-assembled {kv, space} never authorizes — the space bond is constructed, not asserted (SPEC 13.12)`);
+}
+
 /** Open the per-space auth store and PROVE its security-critical shape, not merely that some
  *  bucket exists. `Kvm.open` binds lazily, so this forces the bind AND inspects the backing
- *  stream config: the store MUST be `allow_direct=false` (every read here is an authority
- *  read that this module treats as leader-served by construction; a Direct-Get-capable bucket
- *  would let release/close/connect decisions read follower-stale, §13.1) and MUST carry NO
- *  bucket-wide age eviction (an age-evicted `session.`/gate authority key would silently drop a
- *  fence, §13.12). A config-drifted bucket fails loud HERE, never at the first authority read. */
-export async function openSessionAuthStore(nc: NatsConnection, space: string): Promise<KV> {
+ *  stream config: the store MUST be `allow_direct=false` (every read here is an authority read
+ *  treated as leader-served by construction; a Direct-Get-capable bucket would let
+ *  release/close/connect decisions read follower-stale, §13.1), MUST carry NO age eviction
+ *  (bucket-wide OR per-message TTL — an age-evicted `session.`/gate authority key silently drops
+ *  a fence, §13.12), and MUST NOT be a mirror/sourced stream (a mirror is a follower copy). A
+ *  config-drifted bucket fails loud HERE, never at the first authority read. Returns the BRANDED
+ *  store the hooks/close/sweep seams consume. */
+export async function openSessionAuthStore(nc: NatsConnection, space: string): Promise<SessionAuthStore> {
   const bucket = epAuthBucket(space);
   const kv = await new Kvm(nc).open(bucket);
-  let cfg: { allow_direct?: boolean; max_age?: number };
+  let cfg: { allow_direct?: boolean; max_age?: number; mirror?: unknown; sources?: unknown; num_replicas?: number };
   try {
     await kv.status();
     cfg = (await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`)).config;
@@ -75,7 +93,11 @@ export async function openSessionAuthStore(nc: NatsConnection, space: string): P
     throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} has allow_direct=${String(cfg.allow_direct)}, not false; every authority read here must be leader-served, a Direct-Get-capable store defeats read-your-writes (§13.1) — reprovision`);
   if (typeof cfg.max_age === "number" && cfg.max_age > 0)
     throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted session/gate authority key silently drops a fence (§13.12) — reprovision without MaxAge`);
-  return kv;
+  if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is a mirror/sourced stream; a follower copy cannot serve read-your-writes authority reads (§13.1) — bind the primary`);
+  const store: SessionAuthStore = { kv, space };
+  AUTH_STORES.add(store);
+  return store;
 }
 
 // ---- the session ledger over session.<sessionId> rows ------------------------------------------
@@ -88,17 +110,28 @@ function parseRow(raw: Uint8Array, key: string): SessionLedgerRow {
     throw new EpEnvelopeError("internal", `the session row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.3)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the session row ${key} is not an object`);
+  const allowed = new Set(["sessionId", "endpoint", "serving", "holder", "grantSig", "credCaller", "credServing", "revoked", "state", "exp"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the session row ${key} carries the unknown field "${k}" (closed schema, SPEC 13.3)`);
   const r = o as Partial<SessionLedgerRow> & Record<string, unknown>;
   const states: readonly string[] = ["issuing", "active", ...SESSION_TERMINAL_STATES];
   if (
     typeof r.sessionId !== "string" || typeof r.endpoint !== "string" ||
     !isRec(r.serving) || typeof r.serving.instanceId !== "string" || !uint(r.serving.epoch) ||
     !isRec(r.holder) || typeof r.holder.principal !== "string" || typeof r.holder.lifecycleUid !== "string" ||
-    typeof r.credCaller !== "string" || typeof r.credServing !== "string" ||
+    typeof r.grantSig !== "string" || r.grantSig.length === 0 ||
+    typeof r.credCaller !== "string" || typeof r.credServing !== "string" || r.credCaller === r.credServing ||
     !isRec(r.revoked) || typeof r.revoked.caller !== "boolean" || typeof r.revoked.serving !== "boolean" ||
     typeof r.state !== "string" || !states.includes(r.state) || !uint(r.exp)
   )
     throw new EpEnvelopeError("internal", `the session row ${key} does not validate; garbled trusted-path state never authorizes (SPEC 13.3)`);
+  // KEY BINDING: the embedded sessionId MUST equal the `session.<id>` key, so a key-mismatched
+  // poison row can never make a transition/sweep/release act on a DIFFERENT session.
+  if (key !== sessionLedgerKey(r.sessionId))
+    throw new EpEnvelopeError("internal", `the session row at ${key} embeds sessionId "${r.sessionId}" (key ${sessionLedgerKey(r.sessionId)}); a key-mismatched row never authorizes (SPEC 13.6)`);
+  // CREDENTIAL-ID BINDING: each id must be the DETERMINISTIC per-party coordinate, so a
+  // semantically poisoned row cannot swap the caller/serving rails.
+  if (r.credCaller !== callerCredId(r.holder.lifecycleUid, r.sessionId) || r.credServing !== servingCredId(r.endpoint, r.serving.instanceId, r.sessionId))
+    throw new EpEnvelopeError("internal", `the session row ${key} names non-deterministic credential ids (caller "${r.credCaller}", serving "${r.credServing}"); a swapped/aliased id never authorizes (SPEC 13.6)`);
   return r as SessionLedgerRow;
 }
 
@@ -184,7 +217,22 @@ export interface LifecycleGateRow {
   generation: number;
 }
 
-const gateKey = (lifecycleUid: string): string => `gate.${lifecycleUid}`;
+// Gate + credential identity. The HOLDER is keyed by its globally-unique lifecycle UID; the
+// SERVING side is keyed by (endpoint, instanceId) because an instanceId is unique ONLY within
+// (space, endpoint) — an endpoint-BLIND serving key would let equal instanceIds under two
+// endpoints collide on the gate/revision and the credential family (§13.1/§13.6). This is the
+// D13 gate-model coherence coordinate; the adapter qualifies it forward-compatibly here.
+/** The gate-id TAIL (what follows `gate.`) for a holder lifecycle. */
+export const holderGateId = (lifecycleUid: string): string => assertLifecycleToken(lifecycleUid, "lifecycleUid");
+/** The gate-id TAIL for a serving instance, endpoint-qualified. */
+export const servingGateId = (endpoint: string, instanceId: string): string => `${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
+const gateKey = (gateId: string): string => `gate.${gateId}`;
+
+/** The DETERMINISTIC per-party credential ids: the caller under its holder lifecycle, the
+ *  serving under its (endpoint, instanceId) — so the id encodes the party AND the id-family is
+ *  endpoint-qualified, matching the gate keying. */
+const callerCredId = (holderUid: string, sessionId: string): string => `${holderUid}.${sessionId}.c`;
+const servingCredId = (endpoint: string, instanceId: string, sessionId: string): string => `${endpointToken(endpoint)}.${instanceId}.${sessionId}.s`;
 
 function parseGate(raw: Uint8Array, key: string): LifecycleGateRow {
   let o: unknown;
@@ -198,20 +246,23 @@ function parseGate(raw: Uint8Array, key: string): LifecycleGateRow {
   return o as unknown as LifecycleGateRow;
 }
 
-/** The D13 registry's write, stood in for provisioning and smokes (create or replace). NOT a
- *  public authority surface: production gates are written only by the lifecycle registry. */
-export async function writeLifecycleGate(kv: KV, lifecycleUid: string, gate: LifecycleGateRow): Promise<void> {
-  await kv.put(gateKey(lifecycleUid), enc.encode(JSON.stringify(gate)));
+/** Write a lifecycle gate at its gate-id TAIL (holder: {@link holderGateId}; serving:
+ *  {@link servingGateId}). This is a TEST/PROVISIONING stand-in for the D13 registry's
+ *  monotonic-CAS gate writer, NOT a production authority surface (production gates are written
+ *  only by the lifecycle registry with a revision-pinned CAS, never an unpinned `put`). It is
+ *  deliberately NOT re-exported from the package index; import it only from smokes/provisioning. */
+export async function writeLifecycleGate(kv: KV, gateId: string, gate: LifecycleGateRow): Promise<void> {
+  await kv.put(gateKey(gateId), enc.encode(JSON.stringify(gate)));
 }
 
-async function observeGate(kv: KV, lifecycleUid: string, what: string): Promise<{ pin: LifecycleGatePin; gate: LifecycleGateRow }> {
-  const entry = await kv.get(gateKey(lifecycleUid));
+async function observeGate(kv: KV, gateId: string, what: string): Promise<{ pin: LifecycleGatePin; gate: LifecycleGateRow }> {
+  const entry = await kv.get(gateKey(gateId));
   if (!entry || entry.operation !== "PUT")
-    throw new EpEnvelopeError("permission-denied", `${what} has no lifecycle issuance gate (${gateKey(lifecycleUid)}); a retired or never-provisioned lifecycle mints nothing (SPEC 13.1)`);
-  const gate = parseGate(entry.value, gateKey(lifecycleUid));
+    throw new EpEnvelopeError("permission-denied", `${what} has no lifecycle issuance gate (${gateKey(gateId)}); a retired or never-provisioned lifecycle mints nothing (SPEC 13.1)`);
+  const gate = parseGate(entry.value, gateKey(gateId));
   if (gate.state !== "open")
     throw new EpEnvelopeError("permission-denied", `${what}'s lifecycle issuance gate is "${gate.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
-  return { pin: { key: gateKey(lifecycleUid), revision: entry.revision }, gate };
+  return { pin: { key: gateKey(gateId), revision: entry.revision }, gate };
 }
 
 // ---- per-session credential rows + the deterministic release ------------------------------------
@@ -224,6 +275,9 @@ interface SessionCredRow {
   /** The signing key id PINNED at stage: release resolves THIS key, so a signer rotation
    *  between the first release and the lost-response retry still yields byte-identical bytes. */
   kid: string;
+  /** The pinned key's public thumbprint: release refuses if the kid now resolves to different
+   *  key material (a rebound label is not the pinned key). */
+  kidThumbprint: string;
   state: "staged" | "revoked";
   exp: number;
 }
@@ -238,11 +292,12 @@ function parseCredRow(raw: Uint8Array, key: string): SessionCredRow {
     throw new EpEnvelopeError("internal", `the credential row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.3)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential row ${key} is not an object`);
-  const allowed = new Set(["v", "kind", "sessionId", "party", "kid", "state", "exp"]);
+  const allowed = new Set(["v", "kind", "sessionId", "party", "kid", "kidThumbprint", "state", "exp"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential row ${key} carries the unknown field "${k}" (closed schema; a garbled trusted write never authorizes, SPEC 13.3)`);
   const r = o as Record<string, unknown>;
   if (r.v !== 1 || r.kind !== "session" || typeof r.sessionId !== "string" || (r.party !== "caller" && r.party !== "serving") ||
-      typeof r.kid !== "string" || r.kid.length === 0 || (r.state !== "staged" && r.state !== "revoked") || !uint(r.exp))
+      typeof r.kid !== "string" || r.kid.length === 0 || typeof r.kidThumbprint !== "string" || r.kidThumbprint.length === 0 ||
+      (r.state !== "staged" && r.state !== "revoked") || !uint(r.exp))
     throw new EpEnvelopeError("internal", `the credential row ${key} does not validate; a structurally malformed credential never becomes a signed capability (SPEC 13.3)`);
   return r as unknown as SessionCredRow;
 }
@@ -256,21 +311,26 @@ function parseCredRow(raw: Uint8Array, key: string): SessionCredRow {
 export interface SessionSigner {
   current: { kid: string; key: CryptoKey };
   resolve(kid: string): CryptoKey | undefined;
+  /** The stable public-key THUMBPRINT for a kid (RFC 7638 JWK thumbprint). Pinned in the
+   *  credential row at stage and re-checked at release, so a signer that rebinds a `kid` label
+   *  to a DIFFERENT key cannot silently re-sign a session's credential under new key material. */
+  thumbprint(kid: string): string | undefined;
 }
 
 export interface SessionHookDeps {
-  kv: KV;
-  /** The space, so the eps rails are RE-DERIVED from durable session coordinates at release,
-   *  never trusted from stored subject arrays (a corrupt widened-subjects write cannot become a
-   *  signed capability). */
-  space: string;
+  /** The BRANDED per-space auth store ({@link openSessionAuthStore}) — the KV bonded to its
+   *  space, so a caller cannot mix space-A authority rows with space-B rails, and the eps rails
+   *  are RE-DERIVED from the bonded space at release. */
+  store: SessionAuthStore;
   signer: SessionSigner;
   now?: () => number;
 }
 
-/** Build the production {@link SessionRedemptionHooks} over the auth store. */
+/** Build the production {@link SessionRedemptionHooks} over the branded auth store. */
 export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemptionHooks {
-  const { kv, space, signer } = deps;
+  assertStore(deps.store);
+  const { kv, space } = deps.store;
+  const { signer } = deps;
   const ledger = kvSessionLedger(kv);
   const now = deps.now
     ? () => { const t = deps.now!(); if (!Number.isSafeInteger(t) || t < 0) throw new EpEnvelopeError("failed-precondition", `the session clock returned ${JSON.stringify(t)}, not a non-negative safe integer; a malformed clock never authorizes (SPEC 13.10)`); return t; }
@@ -303,6 +363,8 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
     const key = signer.resolve(cred.kid);
     if (key === undefined)
       throw new EpEnvelopeError("unavailable", `the signing key ${cred.kid} pinned by credential ${credentialId} is not resolvable; release fails closed rather than re-minting under a different key (SPEC 13.6/13.10)`);
+    if (signer.thumbprint(cred.kid) !== cred.kidThumbprint)
+      throw new EpEnvelopeError("permission-denied", `the signing key ${cred.kid} now resolves to different key material (thumbprint mismatch); a rebound kid label is not the pinned key, release fails closed (SPEC 13.10)`);
     // DETERMINISTIC mint under the PINNED key: identical payload + EdDSA => identical bytes on
     // every re-release. Subjects RE-DERIVED from the row, never trusted from storage.
     const jwt = await new SignJWT({ act: { kind: "session", sessionId, party: cred.party, subjects: railSubjects(row, cred.party) } })
@@ -316,29 +378,29 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
   return {
     ledger,
     allocateCredentialIds(grant) {
-      // DETERMINISTIC, distinct, bounded, and key-recoverable: the id embeds the party's
-      // lifecycle uid, so revocation-by-name needs no side index and a redemption retry
-      // re-allocates the SAME names (no orphan ids).
+      // DETERMINISTIC, distinct, bounded, key-recoverable, and ENDPOINT-QUALIFIED on the serving
+      // side (an instanceId is unique only within (space, endpoint)): a redemption retry
+      // re-allocates the SAME names, and equal instanceIds under two endpoints never collide.
       return {
-        credCaller: `${grant.holder.lifecycleUid}.${grant.sessionId}.c`,
-        credServing: `${grant.serving.instanceId}.${grant.sessionId}.s`,
+        credCaller: callerCredId(grant.holder.lifecycleUid, grant.sessionId),
+        credServing: servingCredId(grant.endpoint, grant.serving.instanceId, grant.sessionId),
       };
     },
     async holderProcessEpoch(holder) {
-      const entry = await kv.get(gateKey(holder.lifecycleUid));
+      const entry = await kv.get(gateKey(holderGateId(holder.lifecycleUid)));
       if (!entry || entry.operation !== "PUT") return undefined;
-      return parseGate(entry.value, gateKey(holder.lifecycleUid)).processEpoch;
+      return parseGate(entry.value, gateKey(holderGateId(holder.lifecycleUid))).processEpoch;
     },
-    async servingEpoch(_endpoint, instanceId) {
-      const entry = await kv.get(gateKey(instanceId));
+    async servingEpoch(endpoint, instanceId) {
+      const entry = await kv.get(gateKey(servingGateId(endpoint, instanceId)));
       if (!entry || entry.operation !== "PUT") return undefined;
-      return parseGate(entry.value, gateKey(instanceId)).processEpoch;
+      return parseGate(entry.value, gateKey(servingGateId(endpoint, instanceId))).processEpoch;
     },
     async observeHolderGate(holder) {
-      return (await observeGate(kv, holder.lifecycleUid, `holder ${holder.id}`)).pin;
+      return (await observeGate(kv, holderGateId(holder.lifecycleUid), `holder ${holder.id}`)).pin;
     },
     async observeServingGate(endpoint, instanceId) {
-      return (await observeGate(kv, instanceId, `serving ${endpoint}/${instanceId}`)).pin;
+      return (await observeGate(kv, servingGateId(endpoint, instanceId), `serving ${endpoint}/${instanceId}`)).pin;
     },
     async stagePair(grant, ids, pins) {
       // Stage both credential rows CREATE-ONLY (indexed under each lifecycle; staged rows
@@ -346,7 +408,9 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       // gate write IS the §13.1 fence — a barrier that moved either gate since observation
       // makes the pinned touch LOSE, and the redemption collects and refuses.
       const stage = async (id: string, party: "caller" | "serving") => {
-        const value: SessionCredRow = { v: 1, kind: "session", sessionId: grant.sessionId, party, kid: signer.current.kid, state: "staged", exp: grant.exp };
+        const tp = signer.thumbprint(signer.current.kid);
+        if (tp === undefined) throw new EpEnvelopeError("unavailable", `the current signing key ${signer.current.kid} has no resolvable thumbprint; staging fails closed (SPEC 13.10)`);
+        const value: SessionCredRow = { v: 1, kind: "session", sessionId: grant.sessionId, party, kid: signer.current.kid, kidThumbprint: tp, state: "staged", exp: grant.exp };
         try {
           await kv.create(credKey(id), enc.encode(JSON.stringify(value)));
         } catch (e) {
@@ -425,9 +489,11 @@ export type SessionCloser =
  * already-terminal row (`transitioned: false`, the marks still retried).
  */
 export async function closeSession(
+  store: SessionAuthStore,
   hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
   args: { sessionId: string; closer: SessionCloser; to?: SessionTerminalState },
 ): Promise<{ transitioned: boolean; fullyRevoked: boolean }> {
+  assertStore(store);
   const row = await hooks.ledger.read(args.sessionId);
   if (row === undefined)
     throw new EpEnvelopeError("not-found", `session ${args.sessionId} has no ledger row (SPEC 13.6)`);
@@ -438,19 +504,29 @@ export async function closeSession(
     (c.kind === "serving" && c.endpoint === row.endpoint && c.instanceId === row.serving.instanceId && c.epoch === row.serving.epoch);
   if (!member)
     throw new EpEnvelopeError("permission-denied", `the presenter is not a party to session ${args.sessionId} (close is party- or operator-authenticated against the ledger row, SPEC 13.6)`);
-  const transitioned = await hooks.ledger.transitionTerminal(args.sessionId, args.to ?? "closed");
-  // Revoke both halves; report whether containment COMPLETED. The row transition blocks NEW
-  // release/connect, but a mint-time revocation is not verified live eviction of an
-  // already-connected peer (that is the §13.1 barrier's evictPrincipal step, the named D13
-  // wiring). Close does NOT silently claim success when a revoke failed: `fullyRevoked` is
-  // false and the unmarked half is the sweep's durable retry backstop, so the caller can
-  // surface the incomplete containment rather than trust a timer.
+  // A PARTY close (holder/serving) always produces `closed`; only the OPERATOR may name a
+  // barrier-specific terminal reason (superseded/retired/expired). A party choosing a barrier
+  // reason would let one side stamp a lifecycle-barrier outcome it does not own.
+  const to: SessionTerminalState = c.kind === "operator" ? (args.to ?? "closed") : "closed";
+  if (c.kind !== "operator" && args.to !== undefined && args.to !== "closed")
+    throw new EpEnvelopeError("permission-denied", `a party close of session ${args.sessionId} produces only "closed"; a barrier-specific terminal reason is the operator's / the §13.1 barrier's (SPEC 13.6)`);
+  const transitioned = await hooks.ledger.transitionTerminal(args.sessionId, to);
+  // Containment: revoke both halves and report whether it COMPLETED. The row transition blocks
+  // NEW release/connect, but a mint-time revocation is not verified live eviction (the §13.1
+  // barrier's evictPrincipal step, named D13 wiring), so close never silently claims success.
+  // CRITICAL race guard: an ABSENT credential row is left UNMARKED, not confirmed — a close
+  // racing an in-flight redemption's stage (issuing → close → stage creates the deterministic
+  // rows AFTER close) must not durably mark a half "collected" before its row exists, or the
+  // sweep would skip the eventually-staged credential. Only a half whose row EXISTED and was
+  // revoked is marked; every absent half is the sweep's retry backstop.
   const after = await hooks.ledger.read(args.sessionId);
   let fullyRevoked = true;
   if (after) {
     for (const [id, marked] of [[after.credCaller, after.revoked.caller], [after.credServing, after.revoked.serving]] as const) {
       if (marked) continue;
       try {
+        const entry = await store.kv.get(credKey(id));
+        if (!entry || entry.operation !== "PUT") { fullyRevoked = false; continue; } // absent: leave for the sweep, never mark
         await hooks.revokeCredential(id);
         await hooks.ledger.markRevoked(args.sessionId, id);
       } catch {
@@ -469,10 +545,12 @@ export async function closeSession(
  *  one poison row would block the whole bucket's expiry/revocation backstop). Returns how many
  *  rows this pass acted on plus the keys that failed. */
 export async function sweepSessions(
-  kv: KV,
+  store: SessionAuthStore,
   hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
   opts: { now: number; marginMs?: number },
 ): Promise<{ acted: number; failed: string[] }> {
+  assertStore(store);
+  const kv = store.kv;
   if (!Number.isSafeInteger(opts.now) || opts.now < 0)
     throw new EpEnvelopeError("failed-precondition", `the sweep clock ${JSON.stringify(opts.now)} is not a non-negative safe integer; a malformed clock would expire live rows or spare dead ones (SPEC 13.6)`);
   if (opts.marginMs !== undefined && (!Number.isSafeInteger(opts.marginMs) || opts.marginMs < 0))
