@@ -72,7 +72,9 @@ import {
 } from "./endpoint-work.js";
 import {
   writeServiceStatus,
+  supervisorWriteGrant,
   parseServiceStatus,
+  parseServiceSpec,
   parseActivationPolicy,
   SERVICE_ESCALATED,
   SERVICE_EXITED,
@@ -81,8 +83,8 @@ import {
   type ServiceStatus,
   type VirtualActivationPolicy,
 } from "./endpoint-service.js";
-import { RECORD_KINDS, recordStatusKey, updateRecordEntry } from "./endpoint-records.js";
-import { assertLifecycleToken, endpointToken, assertPoolToken } from "./endpoint-subjects.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, updateRecordEntry, readRecordLeader } from "./endpoint-records.js";
+import { assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken } from "./endpoint-subjects.js";
 import { spacePrefix } from "./subjects.js";
 
 function invalid(what: string): never {
@@ -111,12 +113,20 @@ export async function activatorContext(nc: NatsConnection, space: string): Promi
   return ctx;
 }
 
-/** The activator principal's ENTIRE broker authority (§13.6/§13.9): the ONE exact per-pool
- *  Consumer INFO row. The start is a mediated, target-bound seam (off-broker or its own ep
- *  rail), so it contributes no row here; NOTHING else — no MSG.NEXT/ACK, no EPW
- *  STREAM.MSG.GET, no consumer create/update/delete, no EPW publish. */
-export function activatorGrants(space: string, endpoint: string, pool: string): string[] {
-  return [`$JS.API.CONSUMER.INFO.${epwStreamName(space)}.${poolDurable(endpoint, pool)}`];
+/** The activator principal's COMPLETE broker authority (§13.6/§13.9): the exact per-pool
+ *  Consumer INFO PUBLISH row plus — since Consumer INFO is a request/reply call — the
+ *  CONNECTION-SCOPED reply inbox SUBSCRIBE row `_INBOX_<connId>.>` (never account-wide
+ *  `_INBOX.>`, which is cross-connection reply-read authority). The start is a mediated,
+ *  target-bound seam (off-broker or its own ep rail), so it contributes no row here; NOTHING
+ *  else — no MSG.NEXT/ACK, no EPW STREAM.MSG.GET, no consumer create/update/delete, no EPW
+ *  publish. The credential's OWN lifetime/renewal/lifecycle-UID binding rides the production
+ *  activator provisioning (the named manager-wiring slice); this is the confined subject set.
+ *  `connId` is the connection's validated inbox nonce (the same `_INBOX_<connId>` prefix the
+ *  connection sets); omit it to get the publish half alone. */
+export function activatorGrants(space: string, endpoint: string, pool: string, connId?: string): { publish: string[]; subscribe: string[] } {
+  const publish = [`$JS.API.CONSUMER.INFO.${epwStreamName(space)}.${poolDurable(endpoint, pool)}`];
+  const subscribe = connId !== undefined ? [`_INBOX_${assertIdToken(connId, "activator connId")}.>`] : [];
+  return { publish, subscribe };
 }
 
 // ---- occupancy (the shared reader: admission + activator) -------------------------------------
@@ -173,8 +183,10 @@ export async function readPoolOccupancy(
     throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports filter "${String(info.config.filter_subject)}", not the pool's own "${expectedFilter}"; FilterSubject is editable post-create and a narrowed/foreign filter undercounts stored work — repin the consumer (SPEC 13.6/13.9)`);
   if (info.config.ack_policy !== AckPolicy.Explicit)
     throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports ack_policy "${String(info.config.ack_policy)}", not explicit; without the ack barrier num_ack_pending does not mean owned work (SPEC 13.9)`);
-  if (!uint(info.num_pending) || !uint(info.num_ack_pending))
-    throw new EpEnvelopeError("internal", `pool consumer ${durable} reported non-integer counters (num_pending ${String(info.num_pending)}, num_ack_pending ${String(info.num_ack_pending)})`);
+  if ((info.config as { deliver_subject?: unknown }).deliver_subject !== undefined)
+    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} is a PUSH consumer (deliver_subject set); the §13.6 pool is pull-only, a delete/recreate must not substitute a push shape — repin the consumer (SPEC 13.9)`);
+  if (!uint(info.num_pending) || !uint(info.num_ack_pending) || !Number.isSafeInteger(info.num_pending + info.num_ack_pending))
+    throw new EpEnvelopeError("internal", `pool consumer ${durable} reported non-safe-integer counters (num_pending ${String(info.num_pending)}, num_ack_pending ${String(info.num_ack_pending)})`);
   return { pending: info.num_pending, ackPending: info.num_ack_pending, occupancy: info.num_pending + info.num_ack_pending };
 }
 
@@ -196,6 +208,32 @@ export function virtualAdmissionConsumerConfig(
   opts: { ackWaitMs?: number } = {},
 ): Partial<ConsumerConfig> {
   return canonConsumerConfig(space, endpoint, { ackWaitMs: opts.ackWaitMs, maxAckPending: 1 });
+}
+
+// ---- the registered activation policy (bound to the svc registration, never caller-supplied) ---
+
+/**
+ * Read the endpoint's REGISTERED §13.6 activation policy from its `svc.<endpoint>.<instanceId>`
+ * spec — the ONE authority for capacity and the restart knobs, so no decision or supervision
+ * seam trusts a caller-supplied policy. The read is fail-closed: a missing registration is
+ * `failed-precondition` (there is no policy to admit or supervise under), and a registration
+ * without an `activation` block means the endpoint is not virtual, so a virtual decision over
+ * it refuses. `readSpec` is the trusted leader-served reader the caller wires (records-KV
+ * leader for the admission fence, the records bucket for the supervisor note).
+ */
+async function readRegisteredActivation(
+  readSpec: () => Promise<{ value: unknown } | undefined>,
+  endpoint: string,
+  instanceId: string,
+): Promise<VirtualActivationPolicy> {
+  const iId = assertLifecycleToken(instanceId, "instanceId");
+  const entry = await readSpec();
+  if (entry === undefined)
+    throw new EpEnvelopeError("failed-precondition", `endpoint "${endpoint}/${iId}" has no registered svc spec; a virtual decision has no policy to bind to (SPEC 13.6)`);
+  const spec = parseServiceSpec(entry.value, { endpoint });
+  if (spec.activation === undefined)
+    throw new EpEnvelopeError("failed-precondition", `endpoint "${endpoint}/${iId}" is registered without an activation policy (not a virtual endpoint); no on-demand admission or restart supervision applies (SPEC 13.6)`);
+  return parseActivationPolicy(spec.activation);
 }
 
 // ---- admission ---------------------------------------------------------------------------------
@@ -236,16 +274,22 @@ export async function admitVirtualWork(
   args: {
     endpoint: string;
     pool: string;
-    /** The endpoint's REGISTERED §13.6 activation policy (`spec.activation`, parsed/closed). */
-    policy: VirtualActivationPolicy;
+    /** The registered instance whose `svc` spec carries the activation policy (§13.6): the
+     *  capacity is READ from that registration, LEADER-SERVED, never taken from the caller. */
+    instanceId: string;
     /** The canonicalizer's own accepted-but-unsettled items (its journal redeliveries). */
     outstanding?: OutstandingAcceptance[];
     now: number;
   },
 ): Promise<VirtualAdmissionVerdict> {
   assertWorkPoolContext(ctx);
-  const policy = parseActivationPolicy(args.policy);
   if (!Number.isSafeInteger(args.now)) invalid(`now ${String(args.now)} is not an integer`);
+  // The capacity is bound to the REGISTERED policy, read leader-served (the admission fence is
+  // a decision gate): a caller cannot pass a wider capacity than the endpoint registered.
+  const policy = await readRegisteredActivation(
+    () => readRecordLeader(ctx.jsm, ctx.space, recordSpecKey(RECORD_KINDS.svc, [args.endpoint, args.instanceId])),
+    args.endpoint, args.instanceId,
+  );
 
   // (1) The serial pin is proved LIVE at every admission, not assumed from creation.
   const admissionDurable = canonDurable(args.endpoint);
@@ -257,6 +301,13 @@ export async function admitVirtualWork(
   }
   if (admissionInfo.config.max_ack_pending !== 1)
     throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports max_ack_pending ${String(admissionInfo.config.max_ack_pending)}, not 1; MaxAckPending is editable post-create and without the pin two submissions can observe the same free slot — repin the consumer (SPEC 13.6)`);
+  // Re-prove the load-bearing shape too (defense against a delete/recreate substituting a
+  // semantically different consumer that keeps the same max_ack_pending/filter): the serial
+  // pin only serializes when ack is Explicit and delivery is pull (no deliver_subject).
+  if (admissionInfo.config.ack_policy !== AckPolicy.Explicit)
+    throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports ack_policy "${String(admissionInfo.config.ack_policy)}", not explicit; max_ack_pending only serializes an ack-barriered consumer (SPEC 13.9)`);
+  if ((admissionInfo.config as { deliver_subject?: unknown }).deliver_subject !== undefined)
+    throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} is a PUSH consumer (deliver_subject set); the canonicalizer is pull-only, a push shape does not serialize the decision path (SPEC 13.9)`);
   const expectedAdmissionFilter = `${spacePrefix(ctx.space)}.epj.${endpointToken(args.endpoint)}.>`;
   if ((admissionInfo.config as { filter_subjects?: unknown }).filter_subjects !== undefined || admissionInfo.config.filter_subject !== expectedAdmissionFilter)
     throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports filter "${String(admissionInfo.config.filter_subject)}", not the endpoint's own "${expectedAdmissionFilter}"; a drifted admission filter serializes the wrong stream — repin the consumer (SPEC 13.9)`);
@@ -367,14 +418,20 @@ export function startVirtualActivator(opts: VirtualActivatorOpts): VirtualActiva
         // Deliberately NOT awaited by the tick chain: a slow or wedged start must not stop the
         // polling that makes the wedge observable. The flag dedupes; errors surface via onError.
         void (async () => {
+          let begun = false;
           try {
             const live = await opts.isLive();
             if (stopped) return; // stop() during the liveness read: do not begin
             if (!live) {
               starts++;
+              begun = true;
               await opts.startInstance();
             }
           } catch (e) {
+            // A pre-start failure (a rejecting isLive) AFTER stop is SILENT: no start began, so
+            // it is not a real activation fault, only a race the stop won. A failure once the
+            // start actually BEGAN is always reported (the started work's result matters).
+            if (!begun && stopped) return;
             startErrors++;
             opts.onError("start", e);
           } finally {
@@ -456,8 +513,6 @@ export async function noteInstanceRestart(
     /** The DYING instance's epoch (still the mapping's current one until a successor activates). */
     epoch: number;
     now: number;
-    maxRestarts?: number;
-    restartWindowMs?: number;
     /** The trusted lifecycle-mapping reader (same seam as {@link writeServiceStatus}). */
     readProcessEpoch: () => Promise<number> | number;
     /** The D13/§13.1 terminal retire seam, invoked ONLY on escalation. MUST be idempotent
@@ -465,16 +520,20 @@ export async function noteInstanceRestart(
     retireLifecycle: () => Promise<void>;
   },
 ): Promise<{ escalated: boolean; restartsInWindow: number; duplicate: boolean }> {
-  const maxRestarts = args.maxRestarts ?? RESTART_MAX_DEFAULT;
-  const windowMs = args.restartWindowMs ?? RESTART_WINDOW_MS_DEFAULT;
   if (!uint(args.now)) invalid(`now ${String(args.now)} is not an unsigned integer`);
   if (!uint(args.epoch)) invalid(`epoch ${String(args.epoch)} is not an unsigned integer`);
-  if (!Number.isSafeInteger(maxRestarts) || maxRestarts <= 0) invalid(`maxRestarts ${String(args.maxRestarts)} is not a positive integer`);
-  if (!Number.isSafeInteger(windowMs) || windowMs <= 0) invalid(`restartWindowMs ${String(args.restartWindowMs)} is not a positive integer`);
   if (typeof args.retireLifecycle !== "function") invalid("retireLifecycle is required; escalation without terminal retirement is a half-fence");
 
   const iId = assertLifecycleToken(args.instanceId, "instanceId");
   const what = `"${args.endpoint}/${args.instanceId}"`;
+  // The restart-intensity thresholds are bound to the REGISTERED activation policy, never
+  // caller-supplied: a supervisor cannot loosen the window to suppress an escalation.
+  const policy = await readRegisteredActivation(
+    async () => { const e = await kv.get(recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId])); return e && e.operation === "PUT" ? { value: JSON.parse(td.decode(e.value)) } : undefined; },
+    args.endpoint, iId,
+  );
+  const maxRestarts = policy.maxRestarts ?? RESTART_MAX_DEFAULT;
+  const windowMs = policy.restartWindowMs ?? RESTART_WINDOW_MS_DEFAULT;
   const key = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
   const stored = await kv.get(key);
   let prior: ServiceStatus | undefined;
@@ -489,15 +548,18 @@ export async function noteInstanceRestart(
     throw new EpEnvelopeError("failed-precondition", `${what} is escalated; the instance has stopped restarting and its lifecycle retires terminally (SPEC 13.6; reconcileEscalation is the retirement retry), a further restart note never applies`);
 
   const history = parseHistory(prior?.[RESTART_HISTORY_FIELD], what);
+  // CLOCK REGRESSION is checked BEFORE the duplicate short-circuit: a rolled-back supervision
+  // clock must fail loud on EVERY note, including a replay, rather than silently returning a
+  // stale window count computed against the bad clock (SPEC 13.6).
+  const newest = history.reduce((m, e) => Math.max(m, e.t), 0);
+  if (args.now < newest)
+    throw new EpEnvelopeError("failed-precondition", `${what}: the supervision clock ${args.now} is BEHIND the newest recorded restart ${newest}; a clock regression must not amnesty durable history (SPEC 13.6) — restore the clock or reconcile manually`);
   if (history.some((e) => e.epoch === args.epoch)) {
     // The SAME dying epoch is already recorded: this note is a replay/duplicate of a restart
     // already counted — idempotent no-op (a real restart advances the epoch).
     const inWindow = history.filter((e) => args.now - e.t < windowMs).length;
     return { escalated: false, restartsInWindow: inWindow, duplicate: true };
   }
-  const newest = history.reduce((m, e) => Math.max(m, e.t), 0);
-  if (args.now < newest)
-    throw new EpEnvelopeError("failed-precondition", `${what}: the supervision clock ${args.now} is BEHIND the newest recorded restart ${newest}; a clock regression must not amnesty durable history (SPEC 13.6) — restore the clock or reconcile manually`);
   const pruned = history.filter((e) => args.now - e.t < windowMs);
   pruned.push({ t: args.now, epoch: args.epoch });
   const escalated = pruned.length > maxRestarts;
@@ -515,6 +577,7 @@ export async function noteInstanceRestart(
     status,
     readProcessEpoch: args.readProcessEpoch,
     expectedStatusRevision,
+    supervisor: supervisorWriteGrant(), // the branded authority to originate the history + escalation
   });
   if (escalated) {
     try {

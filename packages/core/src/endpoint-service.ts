@@ -66,10 +66,31 @@ export const SERVICE_ESCALATED = "escalated";
 
 /** The SUPERVISOR-OWNED status fields (§13.6 restart intensity): the durable restart history
  *  and the retirement-complete mark. {@link writeServiceStatus} carries them forward on every
- *  UNPINNED (instance-side) write — an ordinary successor `ready` write can neither reset nor
- *  forge them; only the supervisor's revision-pinned read-modify-write replaces them. */
+ *  INSTANCE-side write and strips whatever the caller supplied; ONLY a holder of the branded
+ *  {@link SupervisorWriteGrant} may originate them or the `escalated` state. */
 export const SERVICE_RESTART_HISTORY_FIELD = "restarts";
 export const SERVICE_RETIRED_MARK_FIELD = "retiredAt";
+
+/** The AUTHORITY to originate supervisor-owned state (the restart history, the retirement
+ *  mark, the `escalated` state) through {@link writeServiceStatus}. It is a BRANDED capability,
+ *  not a scalar flag: only {@link supervisorWriteGrant} mints one, and the writer checks
+ *  membership in a module-private WeakSet, so a caller cannot fabricate the authority by
+ *  passing a look-alike object (the flaw a plain `expectedStatusRevision`-implies-privilege
+ *  gate had — any caller selecting the current revision could forge). The §13.6 supervisor
+ *  seams ({@link noteInstanceRestart}, the escalation reconciler) mint and pass it; an
+ *  instance-side status write never holds one. */
+export interface SupervisorWriteGrant {
+  readonly __supervisorWrite: true;
+}
+const SUPERVISOR_WRITE_GRANTS = new WeakSet<object>();
+export function supervisorWriteGrant(): SupervisorWriteGrant {
+  const g = Object.freeze({ __supervisorWrite: true as const });
+  SUPERVISOR_WRITE_GRANTS.add(g);
+  return g;
+}
+function isSupervisorWrite(g: unknown): boolean {
+  return typeof g === "object" && g !== null && SUPERVISOR_WRITE_GRANTS.has(g);
+}
 
 /** The §13.6 virtual activation policy (`spec.activation`), a CLOSED schema: `mode` is the
  *  literal `on-demand` and `capacity` (the pool admission bound) is REQUIRED — an unbounded
@@ -222,7 +243,10 @@ async function readGovernedDeclarations(
       const set = out.get(cmd.name) ?? new Set<string>();
       for (const t of (cmd.traits ?? [])) if (GOVERNED_TRAIT_URNS.includes(t)) set.add(t);
       out.set(cmd.name, set); // present for EVERY command, governed or not
-      classes.set(cmd.name, cmd.class);
+      // NON-JOURNAL WINS the cross-cluster merge: a command declared ephemeral in ANY cluster
+      // is ephemeral for the journal-class virtual-registration check, so a later journal
+      // redeclaration cannot mask an earlier ephemeral one (§13.6).
+      if (classes.get(cmd.name) !== "ephemeral") classes.set(cmd.name, cmd.class);
     }
   }
   return { governed: out, classes };
@@ -578,7 +602,12 @@ function decodeJson(value: Uint8Array, key: string): unknown {
  *  `expectedStatusRevision` pins the CAS to the CALLER's observed status revision (0 = observed
  *  ABSENT) for read-modify-write callers whose new value derives from the stored one (the §13.6
  *  restart-intensity history): without the pin, this function's own fresh internal read would
- *  let two concurrent derivations silently merge-lose each other's contribution. */
+ *  let two concurrent derivations silently merge-lose each other's contribution. It is PURELY a
+ *  CAS pin — the AUTHORITY to originate supervisor-owned state is the separate branded
+ *  {@link SupervisorWriteGrant} (`supervisor`), never revision presence. Without the grant this
+ *  is an instance-side write: it may not carry the restart history, the retirement mark, or the
+ *  `escalated` state (they are stripped on both create and update, and `escalated` refuses),
+ *  and the stored supervisor fields ride forward untouched. */
 export async function writeServiceStatus(
   kv: KV,
   args: {
@@ -588,9 +617,22 @@ export async function writeServiceStatus(
     status: ServiceStatus;
     readProcessEpoch: () => Promise<number> | number;
     expectedStatusRevision?: number;
+    supervisor?: SupervisorWriteGrant;
   },
 ): Promise<number> {
-  const status = parseServiceStatus(args.status);
+  // DETACH at entry, BEFORE any await: a caller-shared status object mutated during the
+  // spec/mapping/status reads below could otherwise change epoch/state/reserved fields after
+  // validation and split the authenticated coordinate from the stored bytes (the same
+  // snapshot-before-await discipline as work-item refs).
+  const status: ServiceStatus = JSON.parse(JSON.stringify(parseServiceStatus(args.status)));
+  const bySupervisor = isSupervisorWrite(args.supervisor);
+  if (!bySupervisor && status.state === SERVICE_ESCALATED)
+    throw new EpEnvelopeError("failed-precondition", `an instance-side status write cannot ORIGINATE "${SERVICE_ESCALATED}" for "${args.endpoint}/${args.instanceId}"; escalation is the supervisor's branded authority (SPEC 13.6)`);
+  if (!bySupervisor) {
+    const s = status as Record<string, unknown>;
+    delete s[SERVICE_RESTART_HISTORY_FIELD];
+    delete s[SERVICE_RETIRED_MARK_FIELD];
+  }
   if (status.epoch !== args.epoch)
     throw new EpEnvelopeError("internal", `status.epoch ${status.epoch} disagrees with the writer-authenticated epoch ${args.epoch} (SPEC 13.9: the epoch rides the subject)`);
   assertStatusValue(status);
@@ -618,21 +660,17 @@ export async function writeServiceStatus(
   if (stored && stored.operation === "PUT") {
     const recorded = parseServiceStatus(decodeJson(stored.value, key));
     // ESCALATED is IRREVERSIBLE here (§13.6): no later write, any epoch, replaces it. The only
-    // permitted touch on an escalated row is the supervisor's revision-pinned retirement mark,
-    // which the escalation reconciler writes DIRECTLY (never through this writer).
+    // permitted touch on an escalated row is the supervisor's retirement mark, which the
+    // escalation reconciler writes DIRECTLY (never through this writer).
     if (recorded.state === SERVICE_ESCALATED)
       throw new EpEnvelopeError("failed-precondition", `"${args.endpoint}/${args.instanceId}" is escalated; the state is terminal and a status write cannot clear it (SPEC 13.6)`);
     if (args.epoch < recorded.epoch)
       throw new EpEnvelopeError("conflict", `status write from epoch ${args.epoch} is below the stored status epoch ${recorded.epoch} (SPEC 13.9)`);
-    if (args.expectedStatusRevision === undefined) {
-      // The SUPERVISOR-OWNED fields ride through every instance-side (unpinned) write: strip
-      // whatever the caller supplied and copy the stored values, so an ordinary successor
-      // `ready` write can neither RESET nor FORGE the restart history or the retirement mark
-      // (§13.6: the history survives successor convergence). The supervisor's own pinned
-      // read-modify-write is the one path that replaces them.
+    if (!bySupervisor) {
+      // The supervisor-owned fields ride FORWARD through this instance-side write: they were
+      // stripped above, so copy the stored values back (a successor's `ready` convergence
+      // survives the history, §13.6).
       const s = status as Record<string, unknown>;
-      delete s[SERVICE_RESTART_HISTORY_FIELD];
-      delete s[SERVICE_RETIRED_MARK_FIELD];
       const r = recorded as Record<string, unknown>;
       if (r[SERVICE_RESTART_HISTORY_FIELD] !== undefined) s[SERVICE_RESTART_HISTORY_FIELD] = r[SERVICE_RESTART_HISTORY_FIELD];
       if (r[SERVICE_RETIRED_MARK_FIELD] !== undefined) s[SERVICE_RETIRED_MARK_FIELD] = r[SERVICE_RETIRED_MARK_FIELD];

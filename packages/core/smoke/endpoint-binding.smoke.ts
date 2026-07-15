@@ -376,7 +376,7 @@ try {
       `    { user: "admin", password: "pw" }`,
       `    { user: "canon", password: "pw", permissions: { publish = ${JSON.stringify([...canonRows, "$JS.API.INFO"])}, subscribe = ["_INBOX.>"] } }`,
       `    { user: "agent", password: "pw", permissions: { publish = ["$JS.API.INFO"], subscribe = ["_INBOX.>"] } }`,
-      `    { user: "activator", password: "pw", permissions: { publish = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds"))}, subscribe = ["_INBOX.>"] } }`,
+      `    { user: "activator", password: "pw", permissions: { publish = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn").publish)}, subscribe = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn").subscribe)} } }`,
       "  ]",
       "}",
     ].join("\n"));
@@ -424,10 +424,19 @@ try {
       // The ACTIVATOR profile (§13.9 matrix): exactly ONE row — the per-pool Consumer INFO. The
       // narrow context binds without $JS.API.INFO (checkAPI: false), the occupancy read works,
       // and every other JetStream surface is broker-denied.
-      const ncAct = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "activator", pass: "pw" });
+      const ncAct = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "activator", pass: "pw", inboxPrefix: "_INBOX_actconn" });
       const actx = await activatorContext(ncAct, SPACE);
       const actOcc = await readPoolOccupancy(actx, "manager", "builds");
-      c("the ONE-row activator credential reads occupancy (exact Consumer INFO is live-sufficient)", actOcc.occupancy === 1, actOcc);
+      c("the activator credential (INFO + scoped inbox, no account-wide _INBOX) reads occupancy over its confined reply inbox", actOcc.occupancy === 1, actOcc);
+      // FOREIGN-INBOX denial: the SAME credential on a connection whose inbox prefix does NOT
+      // match its grant cannot receive the reply — the scoped inbox is real confinement.
+      const ncActWrong = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "activator", pass: "pw", inboxPrefix: "_INBOX_foreign" });
+      const jsmActWrong = await jetstreamManager(ncActWrong, { timeout: 1200, checkAPI: false });
+      let foreignInboxDenied = false;
+      try { await jsmActWrong.consumers.info(epwStreamName(SPACE), poolDurable("manager", "builds")); }
+      catch { foreignInboxDenied = true; }
+      c("the activator on a FOREIGN inbox prefix cannot read replies (the scoped inbox is real confinement, not decoration)", foreignInboxDenied);
+      await ncActWrong.close().catch(() => {});
       const jsmAct = await jetstreamManager(ncAct, { timeout: 1500, checkAPI: false });
       let actGetDenied = false;
       try { await jsmAct.streams.getMessage(epwStreamName(SPACE), { last_by_subj: scopedItem }); }

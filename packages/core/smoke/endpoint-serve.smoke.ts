@@ -411,6 +411,30 @@ try {
   throws("a JOURNAL-class registered command refuses rail-serving at construction (journal rides epj)",
     () => serveEndpoint(null as never, SPACE, grantJournal, [def("submitjob")], { public: true }));
 
+  // §13.6 virtual registration: an ON-DEMAND activation policy is only valid over an
+  // all-journal-class surface (an ephemeral call to an endpoint with no live instance is an
+  // honest `unavailable`, so it cannot be advertised).
+  {
+    const vpol = { mode: "on-demand", capacity: 4 };
+    await reg(kv, { spec: { endpoint: "vjob", owner: "u_op", clusterDigests: [DC_JOURNAL], protocol: { v: 1 }, activation: vpol }, instanceId: IID_A, registrant: asOp, authority });
+    c("an on-demand registration over an all-journal surface is admitted", true);
+    await rejects("an on-demand registration over an EPHEMERAL command refuses (a virtual endpoint's commands MUST be journal-class)",
+      () => reg(kv, { spec: { endpoint: "veph", owner: "u_op", clusterDigests: [DC_MAIN], protocol: { v: 1 }, activation: vpol }, instanceId: IID_A, registrant: asOp, authority }), "failed-precondition");
+    await rejects("an on-demand registration over a MIXED surface refuses (the one ephemeral command is enough)",
+      () => reg(kv, { spec: { endpoint: "vmixed", owner: "u_op", clusterDigests: [DC_MIXED], protocol: { v: 1 }, activation: vpol }, instanceId: IID_A, registrant: asOp, authority }), "failed-precondition");
+    // NON-JOURNAL WINS the cross-cluster class merge: a command declared ephemeral in one
+    // cluster and journal in another is ephemeral for the check, so a later journal
+    // redeclaration cannot mask the earlier ephemeral one and sneak a virtual registration in.
+    const DOC_EPH_RUN = { urn: "ai.cotal.ephrun", revision: 1, attributes: [], events: [], commands: [cmd("run")] };
+    const DOC_JRN_RUN = { urn: "ai.cotal.jrnrun", revision: 1, attributes: [], events: [], commands: [cmd("run", { class: "journal" })] };
+    const DC_EPH_RUN = register(DOC_EPH_RUN);
+    const DC_JRN_RUN = register(DOC_JRN_RUN);
+    // Order the JOURNAL cluster LAST: a last-declaration-wins merge would let it mask the
+    // earlier ephemeral 'run' and admit; non-journal-wins keeps it ephemeral and refuses.
+    await rejects("on-demand registration where 'run' is ephemeral first then journal REFUSES (non-journal wins the merge, order-independent)",
+      () => reg(kv, { spec: { endpoint: "vmerge", owner: "u_op", clusterDigests: [DC_EPH_RUN, DC_JRN_RUN], protocol: { v: 1 }, activation: vpol }, instanceId: IID_A, registrant: asOp, authority }), "failed-precondition");
+  }
+
   // ---- serve: two instances of one class ----
   const grantB = await authorizeServeGrant(kv, {
     space: SPACE, endpoint: "manager", instanceId: IID_B, epoch: 1,

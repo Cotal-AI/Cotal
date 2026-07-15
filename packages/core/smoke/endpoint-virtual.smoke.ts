@@ -35,11 +35,11 @@ import {
   workPoolContext, enqueueWorkItem, openRecordsBucket, epjSubject,
   readPoolOccupancy, admitVirtualWork, startVirtualActivator, noteInstanceRestart,
   reconcileEscalation, parseActivationPolicy, freezeExpectedSet,
-  writeServiceStatus, RESTART_HISTORY_FIELD, RETIRED_MARK_FIELD,
+  writeServiceStatus, supervisorWriteGrant, RESTART_HISTORY_FIELD, RETIRED_MARK_FIELD,
   SERVICE_ESCALATED, SERVICE_EXITED, SERVICE_READY,
   RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry,
   type EpCaller, type WorkItemRef, type WorkPoolContext, type ServiceStatus,
-  type VirtualActivationPolicy, type ActivatorContext, type RestartHistoryEntry,
+  type ActivatorContext, type RestartHistoryEntry,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -62,7 +62,6 @@ const caller: EpCaller & { id: string } = { owner: "u_abc", actor: "worker", uid
 const ref = (id: string, pool: string): WorkItemRef => ({ endpoint: "manager", pool, acceptance: { ...caller, id } });
 const enc = (s: string) => new TextEncoder().encode(s);
 const td = new TextDecoder();
-const POLICY: VirtualActivationPolicy = { mode: "on-demand", capacity: 2 };
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-epvirtual-"));
@@ -114,8 +113,10 @@ try {
     await rejects("a zero capacity refuses", () => parseActivationPolicy({ mode: "on-demand", capacity: 0 }));
     await rejects("an unknown policy field refuses (closed schema)", () => parseActivationPolicy({ mode: "on-demand", capacity: 1, extra: true }));
     await rejects("a foreign mode refuses", () => parseActivationPolicy({ mode: "eager", capacity: 1 }));
-    c("the exact activator grant profile is the ONE per-pool Consumer INFO row",
-      JSON.stringify(activatorGrants(SPACE, "manager", "vbuilds")) === JSON.stringify([`$JS.API.CONSUMER.INFO.EPW_epvirtual.pool_manager_vbuilds`]));
+    c("the activator grant profile is the ONE per-pool Consumer INFO publish row + no inbox without a connId",
+      JSON.stringify(activatorGrants(SPACE, "manager", "vbuilds")) === JSON.stringify({ publish: [`$JS.API.CONSUMER.INFO.EPW_epvirtual.pool_manager_vbuilds`], subscribe: [] }));
+    c("a connId adds exactly the CONNECTION-SCOPED reply inbox (never account-wide _INBOX.>)",
+      JSON.stringify(activatorGrants(SPACE, "manager", "vbuilds", "actconn1").subscribe) === JSON.stringify(["_INBOX_actconn1.>"]));
   }
 
   console.log("B. the fail-closed occupancy read (every editable knob re-proved)");
@@ -152,35 +153,47 @@ try {
       () => readPoolOccupancy({ kv: ctx.kv, js: ctx.js, jsm: ctx.jsm, space: SPACE } as WorkPoolContext, "manager", "vbuilds"), "failed-precondition");
   }
 
-  console.log("C. admission: the policy-bound capacity fence + the live serial pin + orphan repair");
+  console.log("C. admission: the REGISTRATION-BOUND capacity fence + the live serial pin + orphan repair");
   {
+    // The capacity is READ from the endpoint's registered svc spec, never the caller. Register
+    // three virtual manager instances at distinct capacities (the pool 'vbuilds' occupancy is
+    // shared across them) so the fence is proven against the REGISTERED value, not an argument.
+    const vspec = (cap: number) => ({ endpoint: "manager", owner: "u_wrk", clusterDigests: [`sha256:${"0".repeat(64)}`], protocol: { v: 1 }, activation: { mode: "on-demand", capacity: cap } });
+    const M2 = "a".repeat(26), M3 = "b".repeat(26), M4 = "c".repeat(26), MPLAIN = "d".repeat(26), MGHOST = "e".repeat(26);
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", M2]), vspec(2));
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", M3]), vspec(3));
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", M4]), vspec(4));
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", MPLAIN]), { endpoint: "manager", owner: "u_wrk", clusterDigests: [`sha256:${"0".repeat(64)}`], protocol: { v: 1 } });
+
     await rejects("a hand-built context refuses at admission too",
-      () => admitVirtualWork({ kv: ctx.kv, js: ctx.js, jsm: ctx.jsm, space: SPACE } as WorkPoolContext, { endpoint: "manager", pool: "vbuilds", policy: POLICY, now: NOW }), "failed-precondition");
-    await rejects("a garbled policy refuses (closed schema rides into admission)",
-      () => admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", policy: { mode: "on-demand", capacity: 0 } as VirtualActivationPolicy, now: NOW }));
-    const full = await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", policy: POLICY, now: NOW });
-    c("occupancy 2 against policy capacity 2 is REFUSED (admitted false, the caller's resource-exhausted decision fact)",
+      () => admitVirtualWork({ kv: ctx.kv, js: ctx.js, jsm: ctx.jsm, space: SPACE } as WorkPoolContext, { endpoint: "manager", pool: "vbuilds", instanceId: M2, now: NOW }), "failed-precondition");
+    await rejects("admission against an UNREGISTERED instance refuses (no policy to bind to)",
+      () => admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: MGHOST, now: NOW }), "failed-precondition");
+    await rejects("admission against a NON-VIRTUAL registration (no activation) refuses",
+      () => admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: MPLAIN, now: NOW }), "failed-precondition");
+    const full = await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: M2, now: NOW });
+    c("occupancy 2 against the REGISTERED capacity 2 is REFUSED (the caller cannot widen it)",
       !full.admitted && full.occupancy.occupancy === 2 && full.capacity === 2 && full.repaired === 0, full);
-    const free = await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", policy: { mode: "on-demand", capacity: 3 }, now: NOW });
-    c("occupancy 2 against capacity 3 admits", free.admitted && free.occupancy.occupancy === 2, free);
+    const free = await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: M3, now: NOW });
+    c("occupancy 2 against REGISTERED capacity 3 admits", free.admitted && free.occupancy.occupancy === 2 && free.capacity === 3, free);
     // The SERIAL PIN is re-proved LIVE at every admission (MaxAckPending is editable).
     await jsm.consumers.update(epjStreamName(SPACE), canonDurable("manager"), { max_ack_pending: 2 });
     await rejects("a drifted admission durable (max_ack_pending 2) REFUSES admission (the serial invariant is gone, never assumed)",
-      () => admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", policy: POLICY, now: NOW }), "failed-precondition");
+      () => admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: M3, now: NOW }), "failed-precondition");
     await jsm.consumers.update(epjStreamName(SPACE), canonDurable("manager"), { max_ack_pending: 1 });
     c("repinning the admission durable restores admission",
-      (await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", policy: { mode: "on-demand", capacity: 3 }, now: NOW })).admitted);
+      (await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: M3, now: NOW })).admitted);
     // ORPHAN REPAIR ORDERING: an acceptance that never made it into the pool is re-enqueued
-    // FIRST and then COUNTED: the same capacity-3 admission now refuses.
+    // FIRST and then COUNTED: the capacity-3 registration now refuses.
     const orphan = ref("vb-lost", "vbuilds");
     const repaired = await admitVirtualWork(ctx, {
-      endpoint: "manager", pool: "vbuilds", policy: { mode: "on-demand", capacity: 3 }, now: NOW,
+      endpoint: "manager", pool: "vbuilds", instanceId: M3, now: NOW,
       outstanding: [{ ref: orphan, itemBytes: enc("lost"), workExpiry: EXPIRY }],
     });
-    c("a lost acceptance is repaired INTO the pool before counting (repaired 1, occupancy 3, capacity 3 refuses)",
+    c("a lost acceptance is repaired INTO the pool before counting (repaired 1, occupancy 3, registered capacity 3 refuses)",
       repaired.repaired === 1 && repaired.occupancy.occupancy === 3 && !repaired.admitted, repaired);
     const again = await admitVirtualWork(ctx, {
-      endpoint: "manager", pool: "vbuilds", policy: { mode: "on-demand", capacity: 4 }, now: NOW,
+      endpoint: "manager", pool: "vbuilds", instanceId: M4, now: NOW,
       outstanding: [{ ref: orphan, itemBytes: enc("lost"), workExpiry: EXPIRY }],
     });
     c("re-presenting the same acceptance repairs NOTHING (the live entry settles the predicate; idempotent)",
@@ -262,6 +275,21 @@ try {
     await wait(100);
     c("stop() during a pending await prevents a not-yet-begun start (re-checked after EVERY await)",
       raceStarts === 0 && racer.stats().starts === 0, { raceStarts, stats: racer.stats() });
+    // A REJECTING isLive after stop is SILENT: no start began, so it is the stop winning a
+    // race, not a real activation fault — onError must NOT fire (false-alarm noise).
+    const raceErrs: string[] = [];
+    let rejectLive: (e: Error) => void = () => {};
+    const rejGate = new Promise<boolean>((_r, rej) => { rejectLive = rej; });
+    const rejRacer = startVirtualActivator({
+      ctx: actx, endpoint: "manager", pool: "vact",
+      startInstance: async () => {}, isLive: () => rejGate, onError: (k) => raceErrs.push(k), pollMs: 100, ...timerFns,
+    });
+    await fire(1);
+    rejRacer.stop();
+    rejectLive(new Error("liveness backend blip"));
+    await wait(100);
+    c("a REJECTING isLive after stop is SILENT (no onError for a pre-start race the stop won)",
+      raceErrs.length === 0 && rejRacer.stats().startErrors === 0, { raceErrs, stats: rejRacer.stats() });
 
     // INFO failure is LOUD and polling continues with backoff.
     const errsI: Array<{ k: string }> = [];
@@ -307,6 +335,31 @@ try {
       return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID, epoch, now, readProcessEpoch: readEpoch, retireLifecycle: async () => { retire.push("called"); }, ...over });
     };
     const readStatus = async (iid: string): Promise<ServiceStatus> => JSON.parse(td.decode((await kv.get(recordStatusKey(RECORD_KINDS.svc, ["manager", iid])))!.value)) as ServiceStatus;
+
+    // SUPERVISOR-FIELD FORGE: the authority to originate the supervisor-owned state is a BRANDED
+    // grant, NOT revision presence — so a forge is refused whether the caller pins a revision or
+    // not (the old expectedStatusRevision-implies-privilege gate let any caller selecting the
+    // current revision forge). On both the create and the update path, an ungranted write cannot
+    // originate escalated and its restarts/retiredAt are stripped.
+    const IIDG = "g".repeat(26);
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDG]), spec);
+    await rejects("a FIRST ungranted write cannot ORIGINATE escalated (create-path forge refused)",
+      () => writeServiceStatus(kv, { endpoint: "manager", instanceId: IIDG, epoch: 1, status: { epoch: 1, state: SERVICE_ESCALATED, observedSpecRevision: 0 }, readProcessEpoch: () => 1 }), "failed-precondition");
+    await rejects("a PINNED but ungranted write ALSO cannot originate escalated (revision presence is not authority)",
+      () => writeServiceStatus(kv, { endpoint: "manager", instanceId: IIDG, epoch: 1, status: { epoch: 1, state: SERVICE_ESCALATED, observedSpecRevision: 0 }, readProcessEpoch: () => 1, expectedStatusRevision: 0 }), "failed-precondition");
+    await writeServiceStatus(kv, { endpoint: "manager", instanceId: IIDG, epoch: 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: 0, [RESTART_HISTORY_FIELD]: [{ t: 5, epoch: -1 }], [RETIRED_MARK_FIELD]: 123 } as ServiceStatus, readProcessEpoch: () => 1, expectedStatusRevision: 0 });
+    {
+      const s = await readStatus(IIDG);
+      c("a PINNED but ungranted first write STRIPS forged restarts/retiredAt (branded authority, not revision presence)",
+        s.state === SERVICE_READY && s[RESTART_HISTORY_FIELD] === undefined && s[RETIRED_MARK_FIELD] === undefined, s);
+    }
+    const forgedRecon = await reconcileEscalation(kv, { endpoint: "manager", instanceId: IIDG, now: NOW, retireLifecycle: async () => { throw new Error("should never be called on a non-escalated row"); } });
+    c("…so a forged completion mark cannot fake retirement (the row is not escalated; reconcile is a clean no-op)",
+      !forgedRecon.escalated && !forgedRecon.acted, forgedRecon);
+    // A branded SUPERVISOR write DOES originate the state (the sanctioned path).
+    await writeServiceStatus(kv, { endpoint: "manager", instanceId: IIDG, epoch: 1, status: { epoch: 1, state: SERVICE_EXITED, observedSpecRevision: 0, [RESTART_HISTORY_FIELD]: [{ t: 5, epoch: 1 }] }, readProcessEpoch: () => 1, supervisor: supervisorWriteGrant() });
+    c("a BRANDED supervisor write originates the restart history (the sanctioned authority path)",
+      ((await readStatus(IIDG))[RESTART_HISTORY_FIELD] as RestartHistoryEntry[]).length === 1);
 
     const n1 = await note(NOW, 7);
     c("restart 1 records durably (exited, history 1, epoch-bound entry)", !n1.escalated && !n1.duplicate && n1.restartsInWindow === 1, n1);
@@ -355,14 +408,16 @@ try {
     c("the reconciler on an already-marked escalation is a NO-OP (idempotent, the seam is not re-invoked)",
       done.escalated && done.retired && !done.acted && retire.length === 1, { done, retire });
 
-    // HONEST HALVES + RETRY: a failing retire seam leaves the escalation standing; the
+    // REGISTRATION-BOUND thresholds + HONEST HALVES + RETRY: the maxRestarts comes from the
+    // REGISTERED activation policy (a supervisor cannot loosen it), so a spec with maxRestarts 1
+    // escalates on the SECOND note. A failing retire seam leaves the escalation standing; the
     // reconciler is the retry that completes retirement and marks it.
     const IIDF = "k".repeat(26);
-    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDF]), spec);
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDF]), { endpoint: "manager", owner: "u_wrk", clusterDigests: [`sha256:${"0".repeat(64)}`], protocol: { v: 1 }, activation: { mode: "on-demand", capacity: 2, maxRestarts: 1 } });
     let fRetire = 0;
     const noteF = (now: number, epoch: number, fail2: boolean) => {
       currentEpoch = epoch;
-      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IIDF, epoch, now, maxRestarts: 1, readProcessEpoch: readEpoch, retireLifecycle: async () => { fRetire++; if (fail2) throw new Error("registry down"); } });
+      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IIDF, epoch, now, readProcessEpoch: readEpoch, retireLifecycle: async () => { fRetire++; if (fail2) throw new Error("registry down"); } });
     };
     await noteF(NOW, 1, false);
     await rejects("a retire-seam failure after the escalation CAS is unavailable (honest half-commit)",
@@ -395,6 +450,10 @@ try {
     await note2(NOW + 10_000, 1);
     await rejects("a supervision clock BEHIND the newest recorded restart refuses (a rollback cannot amnesty history)",
       () => note2(NOW + 5_000, 2), "failed-precondition");
+    // CLOCK-BEFORE-DUPLICATE: a regressed clock refuses EVEN for a duplicate-epoch replay (the
+    // clock check runs first), rather than returning a stale window count against the bad clock.
+    await rejects("a regressed clock refuses even on a DUPLICATE-epoch note (clock checked before the duplicate short-circuit)",
+      () => note2(NOW + 5_000, 1), "failed-precondition");
     {
       const s = await readStatus(IID2);
       c("…the history is intact after the refusal", (s[RESTART_HISTORY_FIELD] as RestartHistoryEntry[]).length === 1, s);
