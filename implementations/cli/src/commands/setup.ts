@@ -404,13 +404,19 @@ function writeDemoAgent(path: string, body: string): void {
 
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
  *  then the user's to shape. Unlike the demo team it's never refreshed (seed-if-absent), so any
- *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy. */
+ *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy.
+ *
+ *  Read scope is split intentionally: the ACTIVE set (`subscribe`) is just `general`, so a fresh
+ *  agent isn't firehosed every channel on the mesh at boot, while the read ACL (`allowSubscribe:
+ *  [">"]`) still PERMITS it to read anything — it just has to `cotal_join` a channel to start
+ *  receiving it. (`subscribe: [">"]` would auto-subscribe to every channel, the old behavior.) */
 const DEFAULT_AGENT = `---
 name: default_agent
 role: default
 description: An agent on the mesh
 tags: []
-subscribe: [">"]
+subscribe: [general]
+allowSubscribe: [">"]
 allowPublish: [">"]
 capabilities: [spawn]
 ---
