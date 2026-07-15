@@ -599,15 +599,27 @@ export async function redeemSession(
     // the row's life (same bytes, no re-mint), so the retry re-releases the SAME credential.
     // The ids allocated above were never staged and carry no bytes — orphans by design.
     const existing = await hooks.ledger.read(grant.sessionId);
+    // The retry re-releases ONLY for an EXACT replay of the grant that WON the one-use: the
+    // presenter must be the holder AND every immutable row coordinate (endpoint, serving
+    // identity, exp) must equal this grant's. A DIFFERENT signed grant that merely reuses the
+    // sessionId + holder (a distinct endpoint, serving instance/epoch, or exp) is NOT a
+    // lost-response retry — it loses the one-use as `permission-denied`, never re-releasing the
+    // winner's credential (SPEC 13.6).
     if (
       existing !== undefined &&
       existing.state === "active" &&
       existing.holder.principal === presenter.id &&
-      existing.holder.lifecycleUid === presenter.lifecycleUid
+      existing.holder.lifecycleUid === presenter.lifecycleUid &&
+      existing.endpoint === grant.endpoint &&
+      existing.serving.instanceId === grant.serving.instanceId &&
+      existing.serving.epoch === grant.serving.epoch &&
+      existing.exp === grant.exp
     ) {
+      // Re-release the WINNER's stored credential id (never the freshly allocated `ids`, which
+      // the create just lost): the ids allocated for this racing attempt carry no bytes.
       return assertReleased(await hooks.releaseCredential(grant.sessionId, existing.credCaller), existing.credCaller, existing.exp);
     }
-    throw new EpEnvelopeError("permission-denied", `session ${grant.sessionId} is already redeemed; the issuing create-CAS is the one-use (SPEC 13.6)`);
+    throw new EpEnvelopeError("permission-denied", `session ${grant.sessionId} is already redeemed; the issuing create-CAS is the one-use, and only an exact replay of the winning grant re-releases (SPEC 13.6)`);
   }
 
   // (3) The LIFECYCLE FENCE: observe both issuance gates (leader-served), then stage both

@@ -28,11 +28,13 @@
  *    so a crashed redemption leaves nothing unnameable.
  */
 import { Kvm, type KV } from "@nats-io/kv";
+import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, type CryptoKey } from "jose";
 import {
   EpEnvelopeError,
   epAuthBucket,
+  epsSubject,
   sessionLedgerKey,
   assertSessionStateTransition,
   sweepSessionRow,
@@ -52,16 +54,27 @@ const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
-/** Open the per-space auth store and PROVE it exists: `Kvm.open` binds lazily (it does not
- *  throw on a missing bucket), so a fresh status read forces the bind — a space that was never
- *  set up fails loud here, never at the first write. */
+/** Open the per-space auth store and PROVE its security-critical shape, not merely that some
+ *  bucket exists. `Kvm.open` binds lazily, so this forces the bind AND inspects the backing
+ *  stream config: the store MUST be `allow_direct=false` (every read here is an authority
+ *  read that this module treats as leader-served by construction; a Direct-Get-capable bucket
+ *  would let release/close/connect decisions read follower-stale, §13.1) and MUST carry NO
+ *  bucket-wide age eviction (an age-evicted `session.`/gate authority key would silently drop a
+ *  fence, §13.12). A config-drifted bucket fails loud HERE, never at the first authority read. */
 export async function openSessionAuthStore(nc: NatsConnection, space: string): Promise<KV> {
-  const kv = await new Kvm(nc).open(epAuthBucket(space));
+  const bucket = epAuthBucket(space);
+  const kv = await new Kvm(nc).open(bucket);
+  let cfg: { allow_direct?: boolean; max_age?: number };
   try {
     await kv.status();
+    cfg = (await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`)).config;
   } catch (e) {
-    throw new EpEnvelopeError("failed-precondition", `the auth store ${epAuthBucket(space)} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
   }
+  if (cfg.allow_direct !== false)
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} has allow_direct=${String(cfg.allow_direct)}, not false; every authority read here must be leader-served, a Direct-Get-capable store defeats read-your-writes (§13.1) — reprovision`);
+  if (typeof cfg.max_age === "number" && cfg.max_age > 0)
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted session/gate authority key silently drops a fence (§13.12) — reprovision without MaxAge`);
   return kv;
 }
 
@@ -208,37 +221,69 @@ interface SessionCredRow {
   kind: "session";
   sessionId: string;
   party: "caller" | "serving";
-  subjects: { pub: string[]; sub: string[] };
+  /** The signing key id PINNED at stage: release resolves THIS key, so a signer rotation
+   *  between the first release and the lost-response retry still yields byte-identical bytes. */
+  kid: string;
   state: "staged" | "revoked";
   exp: number;
 }
 
 const credKey = (id: string): string => `cred.${id}`;
 
-/** The adapter's signing identity for released session credentials (EdDSA/Ed25519; the same
- *  key class the bearer issuer uses). Determinism is the point: Ed25519 signatures are
- *  deterministic and the payload is constructed identically per (session, party), so the
- *  idempotent re-release returns byte-identical creds with NO stored secret. */
+function parseCredRow(raw: Uint8Array, key: string): SessionCredRow {
+  let o: unknown;
+  try {
+    o = JSON.parse(dec.decode(raw));
+  } catch {
+    throw new EpEnvelopeError("internal", `the credential row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.3)`);
+  }
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential row ${key} is not an object`);
+  const allowed = new Set(["v", "kind", "sessionId", "party", "kid", "state", "exp"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential row ${key} carries the unknown field "${k}" (closed schema; a garbled trusted write never authorizes, SPEC 13.3)`);
+  const r = o as Record<string, unknown>;
+  if (r.v !== 1 || r.kind !== "session" || typeof r.sessionId !== "string" || (r.party !== "caller" && r.party !== "serving") ||
+      typeof r.kid !== "string" || r.kid.length === 0 || (r.state !== "staged" && r.state !== "revoked") || !uint(r.exp))
+    throw new EpEnvelopeError("internal", `the credential row ${key} does not validate; a structurally malformed credential never becomes a signed capability (SPEC 13.3)`);
+  return r as unknown as SessionCredRow;
+}
+
+/** The adapter's signing identity for released session credentials (EdDSA/Ed25519). Determinism
+ *  is the point: Ed25519 signatures are deterministic and the payload is constructed identically
+ *  per (session, party), so the idempotent re-release returns byte-identical creds. New stages
+ *  pin `current.kid`; release resolves the PINNED kid via `resolve` (rotation-safe: a rotated
+ *  signer still reproduces the row's original bytes), returning undefined for an unknown/retired
+ *  key so a release whose signing key is gone fails loud rather than re-minting under a new key. */
 export interface SessionSigner {
-  key: CryptoKey;
-  kid: string;
+  current: { kid: string; key: CryptoKey };
+  resolve(kid: string): CryptoKey | undefined;
 }
 
 export interface SessionHookDeps {
   kv: KV;
+  /** The space, so the eps rails are RE-DERIVED from durable session coordinates at release,
+   *  never trusted from stored subject arrays (a corrupt widened-subjects write cannot become a
+   *  signed capability). */
+  space: string;
   signer: SessionSigner;
   now?: () => number;
 }
 
 /** Build the production {@link SessionRedemptionHooks} over the auth store. */
 export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemptionHooks {
-  const { kv, signer } = deps;
+  const { kv, space, signer } = deps;
   const ledger = kvSessionLedger(kv);
+  const now = deps.now
+    ? () => { const t = deps.now!(); if (!Number.isSafeInteger(t) || t < 0) throw new EpEnvelopeError("failed-precondition", `the session clock returned ${JSON.stringify(t)}, not a non-negative safe integer; a malformed clock never authorizes (SPEC 13.10)`); return t; }
+    : undefined;
 
-  const railSubjects = (grant: Pick<SessionGrant, "subjects">, party: "caller" | "serving") =>
-    party === "caller"
-      ? { pub: [grant.subjects.in], sub: [grant.subjects.out] }
-      : { pub: [grant.subjects.out], sub: [grant.subjects.in] };
+  // Re-derive the two eps rails from durable session coordinates (space, endpoint, serving
+  // epoch, sessionId) — NEVER the stored subject arrays — so a corrupt credential row cannot
+  // sign widened/foreign subjects as authority.
+  const railSubjects = (row: SessionLedgerRow, party: "caller" | "serving") => {
+    const inSubj = epsSubject(space, row.endpoint, row.sessionId, row.serving.epoch, "in");
+    const outSubj = epsSubject(space, row.endpoint, row.sessionId, row.serving.epoch, "out");
+    return party === "caller" ? { pub: [inSubj], sub: [outSubj] } : { pub: [outSubj], sub: [inSubj] };
+  };
 
   const release = async (sessionId: string, credentialId: string): Promise<SessionCredential> => {
     const rowEntry = await kv.get(sessionLedgerKey(sessionId));
@@ -250,15 +295,21 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
     const credEntry = await kv.get(credKey(credentialId));
     if (!credEntry || credEntry.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `credential ${credentialId} has no staged row; release follows the stage, never invents (SPEC 13.6)`);
-    const cred = JSON.parse(dec.decode(credEntry.value)) as SessionCredRow;
+    const cred = parseCredRow(credEntry.value, credKey(credentialId));
+    if (cred.sessionId !== sessionId)
+      throw new EpEnvelopeError("internal", `credential ${credentialId} names session ${cred.sessionId}, not ${sessionId}; a mis-bound credential never authorizes (SPEC 13.6)`);
     if (cred.state === "revoked")
       throw new EpEnvelopeError("permission-denied", `credential ${credentialId} is revoked; a revoked half never re-releases (SPEC 13.6)`);
-    // DETERMINISTIC mint: identical payload + EdDSA => identical bytes on every re-release.
-    const jwt = await new SignJWT({ act: { kind: "session", sessionId, party: cred.party, subjects: cred.subjects } })
-      .setProtectedHeader({ alg: "EdDSA", kid: signer.kid })
+    const key = signer.resolve(cred.kid);
+    if (key === undefined)
+      throw new EpEnvelopeError("unavailable", `the signing key ${cred.kid} pinned by credential ${credentialId} is not resolvable; release fails closed rather than re-minting under a different key (SPEC 13.6/13.10)`);
+    // DETERMINISTIC mint under the PINNED key: identical payload + EdDSA => identical bytes on
+    // every re-release. Subjects RE-DERIVED from the row, never trusted from storage.
+    const jwt = await new SignJWT({ act: { kind: "session", sessionId, party: cred.party, subjects: railSubjects(row, cred.party) } })
+      .setProtectedHeader({ alg: "EdDSA", kid: cred.kid })
       .setSubject(cred.party === "caller" ? row.holder.principal : row.endpoint)
       .setExpirationTime(Math.floor(row.exp / 1000))
-      .sign(signer.key);
+      .sign(key);
     return { id: credentialId, creds: jwt, exp: row.exp };
   };
 
@@ -295,7 +346,7 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       // gate write IS the §13.1 fence — a barrier that moved either gate since observation
       // makes the pinned touch LOSE, and the redemption collects and refuses.
       const stage = async (id: string, party: "caller" | "serving") => {
-        const value: SessionCredRow = { v: 1, kind: "session", sessionId: grant.sessionId, party, subjects: railSubjects(grant, party), state: "staged", exp: grant.exp };
+        const value: SessionCredRow = { v: 1, kind: "session", sessionId: grant.sessionId, party, kid: signer.current.kid, state: "staged", exp: grant.exp };
         try {
           await kv.create(credKey(id), enc.encode(JSON.stringify(value)));
         } catch (e) {
@@ -310,16 +361,30 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       };
       await stage(ids.credCaller, "caller");
       await stage(ids.credServing, "serving");
+      // Touch each DISTINCT gate key ONCE, in CANONICAL (sorted) order. Deduping is essential:
+      // a self-session whose holder and serving name the SAME gate would otherwise touch it
+      // twice and the second touch would deterministically lose its own now-bumped pin.
+      // Canonical order prevents the crossed-pair livelock (two reciprocal redemptions each
+      // winning one gate and losing the other, burning BOTH one-uses with no barrier): both
+      // contend the lexicographically-first key first, so exactly one wins and proceeds.
+      const byKey = new Map<string, number>();
       for (const pin of [pins.holder, pins.serving]) {
-        const entry = await kv.get(pin.key);
-        if (!entry || entry.operation !== "PUT" || entry.revision !== pin.revision)
-          throw new EpEnvelopeError("permission-denied", `the lifecycle gate ${pin.key} moved since its observation (revision ${entry?.revision ?? "gone"} vs pinned ${pin.revision}); the staged pair loses (SPEC 13.1)`);
+        const seen = byKey.get(pin.key);
+        if (seen !== undefined && seen !== pin.revision)
+          throw new EpEnvelopeError("internal", `the same gate ${pin.key} was observed at two revisions (${seen} vs ${pin.revision}); a single observation feeds the pinned touch (SPEC 13.1)`);
+        byKey.set(pin.key, pin.revision);
+      }
+      for (const key of [...byKey.keys()].sort()) {
+        const revision = byKey.get(key)!;
+        const entry = await kv.get(key);
+        if (!entry || entry.operation !== "PUT" || entry.revision !== revision)
+          throw new EpEnvelopeError("permission-denied", `the lifecycle gate ${key} moved since its observation (revision ${entry?.revision ?? "gone"} vs pinned ${revision}); the staged pair loses (SPEC 13.1)`);
         try {
-          await kv.update(pin.key, entry.value, pin.revision);
+          await kv.update(key, entry.value, revision);
         } catch (e) {
           if (isCasLoss(e))
-            throw new EpEnvelopeError("permission-denied", `the lifecycle gate ${pin.key} moved during the stage; the pinned write LOSES (SPEC 13.1)`);
-          throw new EpEnvelopeError("unavailable", `the gate touch for ${pin.key} is ambiguous; redemption fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+            throw new EpEnvelopeError("permission-denied", `the lifecycle gate ${key} moved during the stage; the pinned write LOSES (SPEC 13.1)`);
+          throw new EpEnvelopeError("unavailable", `the gate touch for ${key} is ambiguous; redemption fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
         }
       }
     },
@@ -328,7 +393,7 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       for (let attempt = 0; attempt < 3; attempt++) {
         const entry = await kv.get(credKey(id));
         if (!entry || entry.operation !== "PUT") return; // a dead id re-revokes successfully (idempotent)
-        const cred = JSON.parse(dec.decode(entry.value)) as SessionCredRow;
+        const cred = parseCredRow(entry.value, credKey(id));
         if (cred.state === "revoked") return;
         try {
           await kv.update(credKey(id), enc.encode(JSON.stringify({ ...cred, state: "revoked" })), entry.revision);
@@ -340,7 +405,7 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       }
       throw new EpEnvelopeError("unavailable", `revoking ${id} kept losing its pin; the sweep retries (SPEC 13.6)`);
     },
-    ...(deps.now ? { now: deps.now } : {}),
+    ...(now ? { now } : {}),
   };
 }
 
@@ -362,7 +427,7 @@ export type SessionCloser =
 export async function closeSession(
   hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
   args: { sessionId: string; closer: SessionCloser; to?: SessionTerminalState },
-): Promise<{ transitioned: boolean }> {
+): Promise<{ transitioned: boolean; fullyRevoked: boolean }> {
   const row = await hooks.ledger.read(args.sessionId);
   if (row === undefined)
     throw new EpEnvelopeError("not-found", `session ${args.sessionId} has no ledger row (SPEC 13.6)`);
@@ -374,7 +439,14 @@ export async function closeSession(
   if (!member)
     throw new EpEnvelopeError("permission-denied", `the presenter is not a party to session ${args.sessionId} (close is party- or operator-authenticated against the ledger row, SPEC 13.6)`);
   const transitioned = await hooks.ledger.transitionTerminal(args.sessionId, args.to ?? "closed");
+  // Revoke both halves; report whether containment COMPLETED. The row transition blocks NEW
+  // release/connect, but a mint-time revocation is not verified live eviction of an
+  // already-connected peer (that is the §13.1 barrier's evictPrincipal step, the named D13
+  // wiring). Close does NOT silently claim success when a revoke failed: `fullyRevoked` is
+  // false and the unmarked half is the sweep's durable retry backstop, so the caller can
+  // surface the incomplete containment rather than trust a timer.
   const after = await hooks.ledger.read(args.sessionId);
+  let fullyRevoked = true;
   if (after) {
     for (const [id, marked] of [[after.credCaller, after.revoked.caller], [after.credServing, after.revoked.serving]] as const) {
       if (marked) continue;
@@ -382,27 +454,41 @@ export async function closeSession(
         await hooks.revokeCredential(id);
         await hooks.ledger.markRevoked(args.sessionId, id);
       } catch {
-        /* the unmarked id is retried by the sweep */
+        fullyRevoked = false; // the unmarked id is the sweep's retry backstop; close reports incomplete
       }
     }
+  } else {
+    fullyRevoked = false;
   }
-  return { transitioned };
+  return { transitioned, fullyRevoked };
 }
 
 /** Enumerate `session.>` and run core's per-row sweep decision: expiry transitions + the
- *  terminal-row unmarked-id revoke retry. Returns how many rows this pass acted on. */
+ *  terminal-row unmarked-id revoke retry. Corruption is LOUD but LOCAL: a single malformed row
+ *  is collected and reported, never allowed to abort containment of the other valid rows (else
+ *  one poison row would block the whole bucket's expiry/revocation backstop). Returns how many
+ *  rows this pass acted on plus the keys that failed. */
 export async function sweepSessions(
   kv: KV,
   hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
   opts: { now: number; marginMs?: number },
-): Promise<{ acted: number }> {
+): Promise<{ acted: number; failed: string[] }> {
+  if (!Number.isSafeInteger(opts.now) || opts.now < 0)
+    throw new EpEnvelopeError("failed-precondition", `the sweep clock ${JSON.stringify(opts.now)} is not a non-negative safe integer; a malformed clock would expire live rows or spare dead ones (SPEC 13.6)`);
+  if (opts.marginMs !== undefined && (!Number.isSafeInteger(opts.marginMs) || opts.marginMs < 0))
+    throw new EpEnvelopeError("failed-precondition", `the sweep margin ${JSON.stringify(opts.marginMs)} is not a non-negative safe integer (SPEC 13.6)`);
   let acted = 0;
+  const failed: string[] = [];
   const keys = await kv.keys("session.>");
   for await (const key of keys) {
-    const entry = await kv.get(key);
-    if (!entry || entry.operation !== "PUT") continue;
-    const row = parseRow(entry.value, key);
-    if (await sweepSessionRow(row, hooks, opts)) acted++;
+    try {
+      const entry = await kv.get(key);
+      if (!entry || entry.operation !== "PUT") continue;
+      const row = parseRow(entry.value, key);
+      if (await sweepSessionRow(row, hooks, opts)) acted++;
+    } catch {
+      failed.push(key); // one poison row never blocks the rest of the bucket's containment
+    }
   }
-  return { acted };
+  return { acted, failed };
 }
