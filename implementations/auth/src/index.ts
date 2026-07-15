@@ -105,3 +105,4 @@ import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-s
 // stand-ins and are deliberately NOT re-exported here (import them directly from the module in
 // smokes/provisioning). The public surface is the store + hooks + close/sweep seams.
 export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
+export { activateLifecycle, advanceProcessEpoch, retireLifecycleHead, readLifecycleHeadLeader, lifecycleProcessEpochReader, lifecycleRegistryManager, type LifecycleHead } from "./lifecycle-registry.js";
