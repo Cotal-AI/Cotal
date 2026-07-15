@@ -15,6 +15,13 @@
  *  - no reachable production activation wiring and no credential release (the head is written
  *    WITHOUT `currentCredentialId` until the ledger slice mints under the reopened gate).
  *
+ * SURFACE: the activation saga and the gate primitives are PACKAGE-INTERNAL (not exported from
+ * the package index) until the (3) ledger slice completes them into real operations; "no
+ * production callsite" is not the same as no reachable API, so the API is not reachable. The
+ * executor seam is the sealed registry itself: it is constructed only over the minting
+ * authority's own authenticated connection, so holding a gate's `opId` string grants nothing
+ * to a caller that cannot open the registry (the opId is an identifier, §13.1).
+ *
  * The model (§13.1):
  *  - the UID is entropy, never order: before anything else the minting authority WINS the
  *    create-only, never-deleted, SPACE-GLOBAL reservation `uid.<lifecycleUid>`; a create
@@ -96,46 +103,82 @@ function readerInternals(rd: LifecycleMappingReader): { space: string; jsm: JetS
   return i;
 }
 
+/** The bucket-config fields the shape proofs inspect (wire names, per the JetStream API). */
+interface AuthorityStreamCfg {
+  allow_direct?: boolean;
+  max_age?: number;
+  max_msgs?: number;
+  max_bytes?: number;
+  mirror?: unknown;
+  sources?: unknown;
+}
+
+/** Prove an authority store's stream shape at bind (SPEC 13.12): PRIMARY (never a
+ *  mirror/sourced copy) and NO bucket-wide silent-eviction limit — no age retention and no
+ *  finite global message/byte cap (under DiscardOld a finite global limit evicts a PRIOR
+ *  authority key's latest row the moment an unrelated key is written, silently reopening UID
+ *  reuse or dropping a gate fence). A store that cannot be proved never serves. */
+function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: string): void {
+  if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} is a mirror/sourced stream; a follower copy cannot serve authority reads or CAS (SPEC 13.12) — bind the primary`);
+  if (typeof cfg.max_age === "number" && cfg.max_age > 0)
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted authority row silently drops a fence (SPEC 13.12) — reprovision`);
+  if (typeof cfg.max_msgs === "number" && cfg.max_msgs >= 0)
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries a finite global message cap (max_msgs ${cfg.max_msgs}); under discard-old it silently evicts never-deleted authority keys (SPEC 13.12) — reprovision`);
+  if (typeof cfg.max_bytes === "number" && cfg.max_bytes >= 0)
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries a finite global byte cap (max_bytes ${cfg.max_bytes}); under discard-old it silently evicts never-deleted authority keys (SPEC 13.12) — reprovision`);
+}
+
 /** Open the minting authority's sealed lifecycle registry: binds the space's primary records
- *  bucket AND its auth bucket (both shape-proved: the auth store must be leader-only
- *  `allow_direct=false`, un-aged, and primary — never a mirror/sourced copy, §13.12). */
+ *  bucket AND its auth bucket. BOTH are shape-proved at bind (SPEC 13.12): primary, un-aged,
+ *  no finite global eviction cap; the auth store additionally leader-only `allow_direct=false`. */
 export async function openLifecycleRegistry(nc: NatsConnection, space: string): Promise<LifecycleRegistry> {
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
   const recordsBucket = `cotal_records_${space}`;
   const authBucket = epAuthBucket(space);
   let recordsKv: KV, authKv: KV;
+  let recordsCfg: AuthorityStreamCfg;
   try {
     recordsKv = await kvm.open(recordsBucket);
-    await recordsKv.status();
+    recordsCfg = (await jsm.streams.info(`KV_${recordsBucket}`)).config;
   } catch (e) {
     throw new EpEnvelopeError("failed-precondition", `the records store ${recordsBucket} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
   }
-  let authCfg: { allow_direct?: boolean; max_age?: number; mirror?: unknown; sources?: unknown };
+  assertAuthorityStreamShape(recordsCfg, recordsBucket);
+  let authCfg: AuthorityStreamCfg;
   try {
     authKv = await kvm.open(authBucket);
-    await authKv.status();
     authCfg = (await jsm.streams.info(`KV_${authBucket}`)).config;
   } catch (e) {
     throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
   }
+  assertAuthorityStreamShape(authCfg, authBucket);
   if (authCfg.allow_direct !== false)
     throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable gate store defeats read-your-writes (SPEC 13.1) — reprovision`);
-  if (typeof authCfg.max_age === "number" && authCfg.max_age > 0)
-    throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} carries bucket-wide age eviction (max_age ${authCfg.max_age}); an age-evicted gate silently drops a fence (SPEC 13.12) — reprovision`);
-  if (authCfg.mirror !== undefined || (Array.isArray(authCfg.sources) && authCfg.sources.length > 0))
-    throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} is a mirror/sourced stream; a follower copy cannot serve authority CAS (SPEC 13.1) — bind the primary`);
   const reg: LifecycleRegistry = Object.freeze({ space });
   REGISTRIES.set(reg, { space, recordsKv, authKv, jsm });
   return reg;
 }
 
-/** Open the sealed read-only mapping reader (the confined-reader seam: leader-served records
- *  `STREAM.MSG.GET` is the ONLY capability it needs, so it works under a scoped credential that
- *  holds nothing else). */
+/** Open the sealed read-only mapping reader. Its scoped credential holds EXACTLY the records
+ *  leader read (`STREAM.MSG.GET`) plus the records `STREAM.INFO` for the bind-time shape proof
+ *  (SPEC 13.9/13.12): a reader that cannot prove it is bound to the primary, non-evicting
+ *  records store refuses to serve authority reads (it could otherwise leader-read a MIRROR's
+ *  leader and call that the mapping). */
 export async function openLifecycleMappingReader(nc: NatsConnection, space: string): Promise<LifecycleMappingReader> {
+  const recordsBucket = `cotal_records_${space}`;
+  let jsm: JetStreamManager;
+  let recordsCfg: AuthorityStreamCfg;
+  try {
+    jsm = await jetstreamManager(nc);
+    recordsCfg = (await jsm.streams.info(`KV_${recordsBucket}`)).config;
+  } catch (e) {
+    throw new EpEnvelopeError("failed-precondition", `the mapping reader cannot bind + shape-prove the records store ${recordsBucket} (the reader profile holds the API probe, STREAM.INFO, and its own connection-scoped inbox, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
+  }
+  assertAuthorityStreamShape(recordsCfg, recordsBucket);
   const rd: LifecycleMappingReader = Object.freeze({ space });
-  READERS.set(rd, { space, jsm: await jetstreamManager(nc) });
+  READERS.set(rd, { space, jsm });
   return rd;
 }
 
@@ -279,9 +322,12 @@ export interface EpGateRow {
   /** Mint generation: born 0 under the activation freeze, first mintable generation is 1 (the
    *  activation's reopen), and every barrier reopen advances it. */
   generation: number;
-  /** REQUIRED at `frozen` (which operation owns this freeze and may advance it); retained on
-   *  `retired` as the terminalizing op (audit); absent at `open`. */
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement" };
+  /** REQUIRED at `frozen` (which operation owns this freeze and may advance it) AND at
+   *  `retired` (the terminalizing op, audit + same-op idempotence); absent at `open`.
+   *  `successor` is a per-kind summary token (SPEC 13.1): only `takeover`/`registration`
+   *  may carry one (their authoritative successor artifacts live under `stage.<opId>.`);
+   *  `activation`/`retirement` never do. */
+  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
 }
 
 const GATE_STATES = new Set(["open", "frozen", "retired"]);
@@ -302,15 +348,17 @@ function parseGate(raw: Uint8Array, key: string, lifecycleUid: string): EpGateRo
   for (const k of Object.keys(o)) if (k !== "lifecycleUid" && k !== "state" && k !== "generation" && k !== "op") throw new EpEnvelopeError("internal", `the issuance gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (o.lifecycleUid !== lifecycleUid || typeof o.state !== "string" || !GATE_STATES.has(o.state) || !uint(o.generation))
     throw new EpEnvelopeError("internal", `the issuance gate ${key} does not validate (uid/state/generation); a garbled or key-mismatched gate never authorizes (SPEC 13.1)`);
-  if (o.state === "frozen" && !isRec(o.op))
-    throw new EpEnvelopeError("internal", `the issuance gate ${key} is frozen without its durable op intent (SPEC 13.1: a frozen gate is op-bound)`);
+  if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
+    throw new EpEnvelopeError("internal", `the issuance gate ${key} is ${o.state} without its durable op intent (SPEC 13.1: a frozen gate is op-bound, and a retired gate retains its terminalizing op)`);
   if (o.state === "open" && o.op !== undefined)
     throw new EpEnvelopeError("internal", `the issuance gate ${key} is open but carries an op intent (SPEC 13.1: open gates are not op-bound)`);
   if (o.op !== undefined) {
     const op = o.op as Record<string, unknown>;
-    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind") throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
+    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
     if (typeof op.opId !== "string" || typeof op.kind !== "string" || !GATE_OP_KINDS.has(op.kind))
       throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent does not validate (SPEC 13.1)`);
+    if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
+      throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
     try {
       assertLifecycleToken(op.opId);
     } catch {
@@ -343,14 +391,24 @@ async function putGate(authKv: KV, lifecycleUid: string, row: EpGateRow, expecte
 }
 
 /** Create the gate FROZEN under its operation's durable intent (create-only: conflicts on an
- *  existing gate or a deletion marker). Born unmintable at generation 0: no credential can be
- *  released until the operation's own reopen (§13.1 activation saga). */
+ *  existing gate or a deletion marker). A gate is BORN only under an ACTIVATION intent (SPEC
+ *  13.1 per-kind transition sets: takeover/registration/retirement freeze an EXISTING open
+ *  gate), and only for a UID whose space-global reservation was already WON: a gate over an
+ *  unreserved UID would mint outside the never-reuse fence. Born unmintable at generation 0:
+ *  no credential can be released until the operation's own reopen (§13.1 activation saga). */
 export async function createGateFrozen(
   reg: LifecycleRegistry,
-  args: { lifecycleUid: string; op: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement" } },
+  args: { lifecycleUid: string; op: { opId: string; kind: "activation" } },
 ): Promise<{ row: EpGateRow; revision: number }> {
-  const { authKv } = internals(reg);
-  const row: EpGateRow = { lifecycleUid: assertLifecycleToken(args.lifecycleUid), state: "frozen", generation: 0, op: { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind } };
+  const { authKv, recordsKv } = internals(reg);
+  if (args.op.kind !== "activation")
+    throw new EpEnvelopeError("failed-precondition", `an issuance gate is born only under an activation intent, not "${String(args.op.kind)}" (SPEC 13.1: other operations freeze an existing open gate)`);
+  const reservation = await recordsKv.get(uidKey(assertLifecycleToken(args.lifecycleUid)));
+  if (!reservation)
+    throw new EpEnvelopeError("failed-precondition", `no uid reservation exists for ${args.lifecycleUid}; the reservation is won BEFORE any gate or head write (SPEC 13.1)`);
+  if (reservation.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the uid reservation for ${args.lifecycleUid} carries a ${reservation.operation} marker; a reservation is never deleted (corruption, not absence, SPEC 13.12)`);
+  const row: EpGateRow = { lifecycleUid: args.lifecycleUid, state: "frozen", generation: 0, op: { opId: assertLifecycleToken(args.op.opId), kind: "activation" } };
   const revision = await putGate(authKv, args.lifecycleUid, row, 0);
   return { row, revision };
 }
@@ -359,21 +417,27 @@ export async function createGateFrozen(
  *  observed revision. The bar of every barrier: a staged mint's own finalize CAS loses. */
 export async function freezeGate(
   reg: LifecycleRegistry,
-  args: { lifecycleUid: string; revision: number; op: { opId: string; kind: "takeover" | "registration" | "retirement" } },
+  args: { lifecycleUid: string; revision: number; op: { opId: string; kind: "takeover" | "registration" | "retirement"; successor?: string } },
 ): Promise<{ row: EpGateRow; revision: number }> {
   const { authKv } = internals(reg);
+  if (args.op.successor !== undefined && args.op.kind === "retirement")
+    throw new EpEnvelopeError("failed-precondition", "a retirement freeze carries no successor (SPEC 13.1: a retirement has none)");
   const current = await observeGate(reg, args.lifecycleUid);
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}", not open; only an open gate freezes (a frozen/retired gate belongs to its own operation, SPEC 13.1)`);
-  const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "frozen", generation: current.row.generation, op: { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind } };
+  const op: EpGateRow["op"] = { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind };
+  if (args.op.successor !== undefined) op.successor = args.op.successor;
+  const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "frozen", generation: current.row.generation, op };
   const revision = await putGate(authKv, args.lifecycleUid, row, args.revision);
   return { row, revision };
 }
 
 /** CAS the gate `frozen → open` at the NEXT generation — op-pinned: only the freeze's own
  *  operation (the same `opId`) reopens, as its barrier's final step; a stranger or a stale
- *  reconciler refuses before the CAS is even attempted. */
+ *  reconciler refuses before the CAS is even attempted. Per-kind (SPEC 13.1): a reopen
+ *  belongs to activation, takeover, and a registration abort — NEVER retirement (a
+ *  retirement freeze never reopens; its only exit is the terminal). */
 export async function reopenGate(
   reg: LifecycleRegistry,
   args: { lifecycleUid: string; revision: number; opId: string },
@@ -385,6 +449,8 @@ export async function reopenGate(
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}", not frozen; there is no freeze to reopen (SPEC 13.1)`);
   if (current.row.op?.opId !== args.opId)
     throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; only the completing operation reopens its own freeze (SPEC 13.1)`);
+  if (current.row.op.kind === "retirement")
+    throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a RETIREMENT; a retirement freeze never reopens (SPEC 13.1: its only exit is the terminal)`);
   const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "open", generation: current.row.generation + 1 };
   const revision = await putGate(authKv, args.lifecycleUid, row, args.revision);
   return { row, revision };
@@ -392,7 +458,10 @@ export async function reopenGate(
 
 /** CAS the gate `frozen → retired` (terminal; never reopened) — op-pinned like the reopen. The
  *  activation saga uses it to terminalize a head-CAS loser's orphan gate; the retirement
- *  barrier uses it as its own gate terminalization step. */
+ *  barrier uses it as its own gate terminalization step. Per-kind (SPEC 13.1): only an
+ *  ACTIVATION orphan or a RETIREMENT terminalizes — a takeover/registration freeze aborts by
+ *  reopening, never by the terminal. Idempotence at `retired` is SAME-OP idempotence: a
+ *  stranger's retry on a terminal gate refuses, it does not "succeed". */
 export async function retireGate(
   reg: LifecycleRegistry,
   args: { lifecycleUid: string; revision: number; opId: string },
@@ -400,11 +469,17 @@ export async function retireGate(
   const { authKv } = internals(reg);
   const current = await observeGate(reg, args.lifecycleUid);
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
-  if (current.row.state === "retired") return current; // idempotent terminal
+  if (current.row.state === "retired") {
+    if (current.row.op?.opId !== args.opId)
+      throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} was terminalized by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; terminal idempotence is same-op idempotence (SPEC 13.1)`);
+    return current; // idempotent terminal, same op
+  }
   if (current.row.state !== "frozen")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}"; only a frozen gate terminalizes (freeze first — the bar precedes the terminal, SPEC 13.1)`);
   if (current.row.op?.opId !== args.opId)
     throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; only the owning operation terminalizes its freeze (SPEC 13.1)`);
+  if (current.row.op.kind !== "activation" && current.row.op.kind !== "retirement")
+    throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a ${current.row.op.kind}; only an activation orphan or a retirement terminalizes (a ${current.row.op.kind} aborts by reopening, SPEC 13.1)`);
   const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "retired", generation: current.row.generation, op: current.row.op };
   const revision = await putGate(authKv, args.lifecycleUid, row, args.revision);
   return { row, revision };
@@ -452,8 +527,14 @@ export async function activateLifecycle(
       : await updateRecordEntry(recordsKv, headKey(owner, actor), mapping, current.revision);
   } catch (e) {
     if (isCasLoss(e)) {
-      // The loser terminalizes ITS OWN orphan gate; its UID stays burned (never deleted, never reused).
-      await retireGate(reg, { lifecycleUid, revision: gate.revision, opId }).catch(() => {});
+      // The loser terminalizes ITS OWN orphan gate; its UID stays burned (never deleted, never
+      // reused). A cleanup failure is NEVER swallowed as success: the caller gets the durable
+      // coordinates and resumes the SAME op (resumeActivation) to finish the terminalization.
+      try {
+        await retireGate(reg, { lifecycleUid, revision: gate.revision, opId });
+      } catch (cleanup) {
+        throw new EpEnvelopeError("unavailable", `lifecycle activation for "${owner}/${actor}" lost the head CAS AND terminalizing its orphan gate failed; the uid ${lifecycleUid} is burned but its gate is still frozen by op ${opId} — resume the same op with resumeActivation: ${(cleanup as Error)?.message ?? String(cleanup)}`);
+      }
       throw new EpEnvelopeError("conflict", `lifecycle activation for "${owner}/${actor}" lost the head CAS (a concurrent activation won); this saga's uid ${lifecycleUid} is burned and its gate terminalized (SPEC 13.1)`);
     }
     throw e;
@@ -486,7 +567,13 @@ export async function resumeActivation(
     if (won) throw new EpEnvelopeError("internal", `the head names uid ${args.lifecycleUid} but its gate does not exist; an active head without a gate is corruption (SPEC 13.1)`);
     return "already-settled";
   }
-  if (gate.row.state === "retired") return "already-settled";
+  if (gate.row.state === "retired") {
+    // Terminal idempotence is SAME-OP idempotence: a stranger cannot claim another
+    // operation's terminal as its own settlement.
+    if (gate.row.op?.opId !== args.opId)
+      throw new EpEnvelopeError("permission-denied", `the gate for uid ${args.lifecycleUid} was terminalized by operation ${gate.row.op?.opId ?? "<none>"}, not ${args.opId} (SPEC 13.1)`);
+    return "already-settled";
+  }
   if (gate.row.state === "open") {
     if (!won)
       throw new EpEnvelopeError("internal", `the gate for uid ${args.lifecycleUid} is open but the head does not name it; an open gate without its active head is corruption (SPEC 13.1)`);

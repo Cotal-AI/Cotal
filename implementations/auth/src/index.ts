@@ -105,14 +105,14 @@ import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-s
 // stand-ins and are deliberately NOT re-exported here (import them directly from the module in
 // smokes/provisioning). The public surface is the store + hooks + close/sweep seams.
 export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type LifecycleGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
-// NB: no public process-epoch advance and no head retirement are exported — those are
-// finalization steps of the takeover/retirement BARRIERS (the later D13 slices), and exposing
-// them around an incomplete barrier would recreate the half-fence D13 removes. `tryReserveUid`
-// (explicit-candidate reservation) stays module-internal for probes/migration tooling.
+// NB: the package surface is the sealed contexts + the READ seams only. The activation saga,
+// the UID reservation, and the gate primitives (create/observe/freeze/reopen/retire) are
+// PACKAGE-INTERNAL until the (3) normative credential ledger completes them into real barriers:
+// a pre-ledger activation that opens a mintable gate with no credential release, or a public
+// epoch advance / head retirement around an incomplete barrier, would recreate the half-fence
+// D13 removes. Smokes and provisioning tooling import those directly from the module.
 export {
   openLifecycleRegistry, openLifecycleMappingReader,
-  reserveLifecycleUid, activateLifecycle, resumeActivation,
-  observeGate, createGateFrozen, freezeGate, reopenGate, retireGate,
   readLifecycleMappingLeader, lifecycleProcessEpochReader,
   type LifecycleRegistry, type LifecycleMappingReader, type LifecycleMapping, type EpGateRow,
 } from "./lifecycle-registry.js";

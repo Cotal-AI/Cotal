@@ -1,14 +1,21 @@
 /**
  * D13 (1)+(2a) lifecycle-registry smoke — the amended §13.1 model against a real broker:
- * the sealed two-store registry (brand + shape proofs), the space-global create-only
- * never-deleted UID reservation (collision burns, DEL is corruption), the three-state head
+ * the sealed two-store registry (brand + FULL shape proofs on BOTH stores: primary,
+ * un-aged, no finite global eviction cap), the space-global create-only never-deleted UID
+ * reservation (collision burns, DEL is corruption), the three-state head
  * (`active | retiring | retired`) with active-ONLY currency, the activation saga in the
  * normative order (reserve → gate frozen(op) → head CAS → reopen LAST) with one-winner
  * concurrency, loser gate-terminalization, and failpoint/resume at every boundary, the
  * issuance-gate CAS primitives (create/observe/freeze/op-pinned reopen/retire, monotonic,
- * stranger-proof), and the leader-served mapping reader run under a SCOPED credential that
- * holds exactly the records `STREAM.MSG.GET` (denials proved: no Direct Get, no auth-store
- * read, no head write).
+ * stranger-proof, and the PER-KIND transition table: born only by activation over a won
+ * reservation, retirement never reopens, takeover/registration never terminalize, terminal
+ * idempotence is same-op), the leader-served mapping reader run under a SCOPED credential
+ * (records `STREAM.MSG.GET` + the bind-time `STREAM.INFO` shape proof, a CONNECTION-scoped
+ * inbox; denials proved: no Direct Get, no auth-store read, no head write, no foreign
+ * inbox), and the full minting profile run SCOPED end-to-end (never only as admin).
+ *
+ * The saga + gate primitives are package-internal (SPEC surface honesty), so this smoke
+ * imports them from the module; the package index exports only the sealed opens + reads.
  *
  * Run: pnpm smoke:lifecycle-registry:auth   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -25,12 +32,13 @@ import {
 } from "@cotal-ai/core";
 import {
   openLifecycleRegistry, openLifecycleMappingReader,
-  reserveLifecycleUid, activateLifecycle, resumeActivation,
-  observeGate, createGateFrozen, freezeGate, reopenGate, retireGate,
   readLifecycleMappingLeader, lifecycleProcessEpochReader,
   type LifecycleRegistry,
 } from "../src/index.js";
-import { tryReserveUid } from "../src/lifecycle-registry.js";
+import {
+  tryReserveUid, reserveLifecycleUid, activateLifecycle, resumeActivation,
+  observeGate, createGateFrozen, freezeGate, reopenGate, retireGate,
+} from "../src/lifecycle-registry.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -49,9 +57,11 @@ const uidKey = (u: string) => recordAtomicKey(UID_RESERVATION, [u]);
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-lifereg-"));
-// A conf broker with a full ADMIN user and a SCOPED mapping-reader user holding exactly the
-// records leader read (§13.9: the leader reader must work under scoped trusted credentials,
-// not only as admin) — plus $JS.API.INFO for the client's API probe and its own inbox.
+// A conf broker with a full ADMIN user, a SCOPED mapping-reader user (records leader read +
+// the bind-time STREAM.INFO shape proof, §13.9; a CONNECTION-scoped inbox, never the
+// account-wide default), and a SCOPED minting-profile WRITER user (the registry's real
+// authority: store opens + shape proofs, records Direct Get candidate reads, auth leader
+// reads, and the two KV write families — nothing else, no consumer create, no stream admin).
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
@@ -60,8 +70,18 @@ authorization {
   users = [
     { user: "admin", password: "pw" }
     { user: "reader", password: "pw", permissions: {
-        publish: { allow: ["$JS.API.INFO", "$JS.API.STREAM.MSG.GET.KV_${RECORDS}"] }
-        subscribe: { allow: ["_INBOX.>"] }
+        publish: { allow: ["$JS.API.INFO", "$JS.API.STREAM.MSG.GET.KV_${RECORDS}", "$JS.API.STREAM.INFO.KV_${RECORDS}"] }
+        subscribe: { allow: ["_INBOX_rdr.>"] }
+      } }
+    { user: "writer", password: "pw", permissions: {
+        publish: { allow: [
+          "$JS.API.INFO",
+          "$JS.API.STREAM.INFO.KV_${RECORDS}", "$JS.API.STREAM.INFO.KV_cotal_auth_${SPACE}",
+          "$JS.API.DIRECT.GET.KV_${RECORDS}", "$JS.API.DIRECT.GET.KV_${RECORDS}.>",
+          "$JS.API.STREAM.MSG.GET.KV_${RECORDS}", "$JS.API.STREAM.MSG.GET.KV_cotal_auth_${SPACE}",
+          "$KV.${RECORDS}.>", "$KV.cotal_auth_${SPACE}.>"
+        ] }
+        subscribe: { allow: ["_INBOX_wrt.>"] }
       } }
   ]
 }
@@ -86,6 +106,29 @@ try {
     () => reserveLifecycleUid({ space: SPACE } as LifecycleRegistry, { owner: "u_x", actor: "cli", mintedBy: MGR }), "failed-precondition");
   const recordsKv = await new Kvm(nc).open(RECORDS);
   const authKv = await new Kvm(nc).open(epAuthBucket(SPACE));
+  {
+    // The shape proofs are executable, not prose (SPEC 13.12): a store whose config can
+    // silently evict a never-deleted authority row refuses at bind, on BOTH consuming seams.
+    const jsm = await jetstreamManager(nc);
+    const kvm = new Kvm(nc);
+    await createEndpointStreams(jsm, kvm, "shapecap");
+    const capRecords = (await jsm.streams.info("KV_cotal_records_shapecap")).config;
+    await jsm.streams.update("KV_cotal_records_shapecap", { ...capRecords, max_msgs: 1 });
+    await rejects("a records store with a finite global message cap (silent discard-old eviction) refuses at registry bind",
+      () => openLifecycleRegistry(nc, "shapecap"), "failed-precondition");
+    await rejects("…and at the mapping-reader bind (the reader shape-proves its store too)",
+      () => openLifecycleMappingReader(nc, "shapecap"), "failed-precondition");
+    await jsm.streams.update("KV_cotal_records_shapecap", { ...capRecords });
+    const capAuth = (await jsm.streams.info("KV_cotal_auth_shapecap")).config;
+    await jsm.streams.update("KV_cotal_auth_shapecap", { ...capAuth, max_bytes: 1024 });
+    await rejects("an auth store with a finite global byte cap refuses at registry bind (BOTH stores are proved)",
+      () => openLifecycleRegistry(nc, "shapecap"), "failed-precondition");
+    await jsm.streams.add({ ...capRecords, name: "KV_cotal_records_shapemir", subjects: undefined, mirror: { name: "KV_cotal_records_shapecap" } } as never);
+    // A VALID auth store for the mirror space, so the mirror check is the ONLY refusal cause.
+    await jsm.streams.add({ ...capAuth, name: "KV_cotal_auth_shapemir", subjects: ["$KV.cotal_auth_shapemir.>"] });
+    await rejects("a MIRRORED records store refuses at bind (a follower copy never serves authority)",
+      () => openLifecycleRegistry(nc, "shapemir"), "failed-precondition");
+  }
 
   console.log("B. the space-global UID reservation (create-only, never-deleted)");
   const u1 = await reserveLifecycleUid(reg, { owner: "u_alice", actor: "cli", mintedBy: MGR });
@@ -149,6 +192,8 @@ try {
     c("resume of a pre-head-CAS crash terminalizes the orphan (the uid stays burned; a fresh attempt is a NEW op)",
       (await resumeActivation(reg, { owner: "u_carol", actor: "cli", lifecycleUid: uid, opId })) === "terminalized");
     c("…idempotently", (await resumeActivation(reg, { owner: "u_carol", actor: "cli", lifecycleUid: uid, opId })) === "already-settled");
+    await rejects("a STRANGER cannot claim the terminal as its own settlement (terminal idempotence is same-op)",
+      () => resumeActivation(reg, { owner: "u_carol", actor: "cli", lifecycleUid: uid, opId: mintLifecycleUid() }), "permission-denied");
   }
   {
     // Crash after step 3 (head CASed, gate still frozen): resume COMPLETES the same op.
@@ -247,15 +292,64 @@ try {
     await authKv.put(`gate.${uid3}`, enc.encode(JSON.stringify({ lifecycleUid: uid3, state: "frozen", generation: 0, op: { opId: "h".repeat(26), kind: "activation" } })));
     await authKv.delete(`gate.${uid3}`);
     await rejects("a DEL marker on a gate refuses loudly (a gate is never deleted)", () => observeGate(reg, uid3), "failed-precondition");
+    const uid4 = "i".repeat(26);
+    await authKv.put(`gate.${uid4}`, enc.encode(JSON.stringify({ lifecycleUid: uid4, state: "retired", generation: 1 })));
+    await rejects("a RETIRED gate without its terminalizing op refuses at parse (retired retains the op as audit)",
+      () => observeGate(reg, uid4), "internal");
+    const uid5 = "j".repeat(26);
+    await authKv.put(`gate.${uid5}`, enc.encode(JSON.stringify({ lifecycleUid: uid5, state: "frozen", generation: 0, op: { opId: "k".repeat(26), kind: "activation", successor: "x" } })));
+    await rejects("an ACTIVATION op carrying a successor refuses at parse (per-kind: only takeover/registration stage successors)",
+      () => observeGate(reg, uid5), "internal");
+  }
+  {
+    // The PER-KIND transition table (SPEC 13.1), each refused transition proved live.
+    const uidT = await reserveLifecycleUid(reg, { owner: "u_kind", actor: "cli", mintedBy: MGR });
+    await rejects("a gate cannot be BORN under a non-activation intent (other operations freeze an EXISTING gate)",
+      () => (createGateFrozen as (r: LifecycleRegistry, a: { lifecycleUid: string; op: { opId: string; kind: string } }) => Promise<unknown>)(reg, { lifecycleUid: uidT, op: { opId: mintLifecycleUid(), kind: "takeover" } }), "failed-precondition");
+    await rejects("a gate cannot be created over an UNRESERVED uid (the reservation is won BEFORE any gate write)",
+      () => createGateFrozen(reg, { lifecycleUid: mintLifecycleUid(), op: { opId: mintLifecycleUid(), kind: "activation" } }), "failed-precondition");
+    const opAct = mintLifecycleUid(), opRet = mintLifecycleUid(), opStr = mintLifecycleUid();
+    const born = await createGateFrozen(reg, { lifecycleUid: uidT, op: { opId: opAct, kind: "activation" } });
+    const opened = await reopenGate(reg, { lifecycleUid: uidT, revision: born.revision, opId: opAct });
+    const retFrozen = await freezeGate(reg, { lifecycleUid: uidT, revision: opened.revision, op: { opId: opRet, kind: "retirement" } });
+    await rejects("a RETIREMENT freeze never reopens, even for the OWNING op (its only exit is the terminal)",
+      () => reopenGate(reg, { lifecycleUid: uidT, revision: retFrozen.revision, opId: opRet }), "failed-precondition");
+    const retired = await retireGate(reg, { lifecycleUid: uidT, revision: retFrozen.revision, opId: opRet });
+    await rejects("a STRANGER's retry on a TERMINAL gate refuses (terminal idempotence is same-op, never a success)",
+      () => retireGate(reg, { lifecycleUid: uidT, revision: retired.revision, opId: opStr }), "permission-denied");
+    const uidK = await reserveLifecycleUid(reg, { owner: "u_kind2", actor: "cli", mintedBy: MGR });
+    const opAct2 = mintLifecycleUid(), opTak2 = mintLifecycleUid();
+    const born2 = await createGateFrozen(reg, { lifecycleUid: uidK, op: { opId: opAct2, kind: "activation" } });
+    const opened2 = await reopenGate(reg, { lifecycleUid: uidK, revision: born2.revision, opId: opAct2 });
+    const takFrozen = await freezeGate(reg, { lifecycleUid: uidK, revision: opened2.revision, op: { opId: opTak2, kind: "takeover", successor: "gen-2" } });
+    c("a takeover freeze may carry its successor summary (per-kind, SPEC 13.1)", takFrozen.row.op?.successor === "gen-2");
+    await rejects("a TAKEOVER freeze never terminalizes (it aborts by reopening)",
+      () => retireGate(reg, { lifecycleUid: uidK, revision: takFrozen.revision, opId: opTak2 }), "failed-precondition");
+    const reopened2 = await reopenGate(reg, { lifecycleUid: uidK, revision: takFrozen.revision, opId: opTak2 });
+    await rejects("a RETIREMENT freeze refuses a successor (a retirement has none)",
+      () => freezeGate(reg, { lifecycleUid: uidK, revision: reopened2.revision, op: { opId: mintLifecycleUid(), kind: "retirement", successor: "x" } }), "failed-precondition");
+    const uidD = await reserveLifecycleUid(reg, { owner: "u_kind3", actor: "cli", mintedBy: MGR });
+    await createGateFrozen(reg, { lifecycleUid: uidD, op: { opId: mintLifecycleUid(), kind: "activation" } });
+    await authKv.delete(`gate.${uidD}`);
+    await rejects("a gate is never recreated over a DEL marker (create-only over the ENTIRE history, symmetric to the uid burn)",
+      () => createGateFrozen(reg, { lifecycleUid: uidD, op: { opId: mintLifecycleUid(), kind: "activation" } }), "conflict");
   }
 
   console.log("G. the leader reader under a SCOPED credential (not admin) + denials");
   {
-    const ncReader = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "reader", pass: "pw" });
+    const ncReader = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "reader", pass: "pw", inboxPrefix: "_INBOX_rdr" });
     const scopedReader = await openLifecycleMappingReader(ncReader, SPACE);
     const read = await readLifecycleMappingLeader(scopedReader, "u_dan", "cli");
-    c("the leader-served mapping read WORKS under the scoped reader credential (records STREAM.MSG.GET only)",
+    c("the leader-served mapping read WORKS under the scoped reader credential (records STREAM.MSG.GET + the bind-time STREAM.INFO proof, a connection-scoped inbox)",
       read !== undefined && read.mapping.state === "active", read?.mapping);
+    {
+      // The inbox is CONNECTION-scoped: the same credential under a foreign inbox prefix
+      // never receives an API reply, so the reader fails closed instead of serving.
+      const ncForeign = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "reader", pass: "pw", inboxPrefix: "_INBOX_other", timeout: 3000 });
+      await rejects("a FOREIGN inbox prefix under the reader credential fails closed at bind (the subscribe grant is inbox-exact)",
+        () => openLifecycleMappingReader(ncForeign, SPACE), "failed-precondition");
+      await ncForeign.close().catch(() => {});
+    }
     c("…and the epoch seam works scoped too", (await lifecycleProcessEpochReader(scopedReader, "u_dan", "cli")) === 1);
     await rejects("the scoped reader CANNOT Direct Get the head (the follower path is not granted)",
       () => ncReader.request(`$JS.API.DIRECT.GET.KV_${RECORDS}`, enc.encode(JSON.stringify({ last_by_subj: `$KV.${RECORDS}.${headKey("u_dan", "cli")}` })), { timeout: 1500 }));
@@ -271,6 +365,23 @@ try {
         before !== undefined && after !== undefined && after.revision === before.revision, { before: before?.revision, after: after?.revision });
     }
     await ncReader.close().catch(() => {});
+  }
+
+  console.log("H. the minting profile SCOPED end-to-end (never proved only as admin)");
+  {
+    const ncWriter = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "writer", pass: "pw", inboxPrefix: "_INBOX_wrt" });
+    const scopedReg = await openLifecycleRegistry(ncWriter, SPACE);
+    c("the registry opens under the scoped minting profile (bind-time opens + BOTH shape proofs pass scoped)", scopedReg.space === SPACE);
+    const act2 = await activateLifecycle(scopedReg, { owner: "u_scoped", actor: "cli", managerInstance: MGR });
+    c("the FULL activation saga runs under the scoped profile (reserve, gate create, head CAS, reopen)",
+      act2.mapping.state === "active" && act2.mapping.processEpoch === 1, act2.mapping);
+    const g = await observeGate(scopedReg, act2.mapping.lifecycleUid);
+    c("…gate open at generation 1 (auth leader reads + writes work scoped)", g !== undefined && g.row.state === "open" && g.row.generation === 1);
+    await rejects("the writer profile CANNOT create consumers (no enumeration authority exists in this slice)",
+      () => ncWriter.request(`$JS.API.CONSUMER.CREATE.KV_${RECORDS}.x1.$KV.${RECORDS}.uid.>`, enc.encode("{}"), { timeout: 1500 }));
+    await rejects("…and CANNOT delete or admin a stream (no stream-admin authority)",
+      () => ncWriter.request(`$JS.API.STREAM.DELETE.KV_${RECORDS}`, enc.encode(""), { timeout: 1500 }));
+    await ncWriter.close().catch(() => {});
   }
 
   await nc.drain().catch(() => {});
