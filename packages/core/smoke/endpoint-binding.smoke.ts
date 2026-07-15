@@ -376,7 +376,7 @@ try {
       `    { user: "admin", password: "pw" }`,
       `    { user: "canon", password: "pw", permissions: { publish = ${JSON.stringify([...canonRows, "$JS.API.INFO"])}, subscribe = ["_INBOX.>"] } }`,
       `    { user: "agent", password: "pw", permissions: { publish = ["$JS.API.INFO"], subscribe = ["_INBOX.>"] } }`,
-      `    { user: "activator", password: "pw", permissions: { publish = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn").publish)}, subscribe = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn").subscribe)} } }`,
+      `    { user: "activator", password: "pw", permissions: { publish = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn01").publish)}, subscribe = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn01").subscribe)} } }`,
       "  ]",
       "}",
     ].join("\n"));
@@ -424,7 +424,7 @@ try {
       // The ACTIVATOR profile (§13.9 matrix): exactly ONE row — the per-pool Consumer INFO. The
       // narrow context binds without $JS.API.INFO (checkAPI: false), the occupancy read works,
       // and every other JetStream surface is broker-denied.
-      const ncAct = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "activator", pass: "pw", inboxPrefix: "_INBOX_actconn" });
+      const ncAct = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "activator", pass: "pw", inboxPrefix: "_INBOX_actconn01" });
       const actx = await activatorContext(ncAct, SPACE);
       const actOcc = await readPoolOccupancy(actx, "manager", "builds");
       c("the activator credential (INFO + scoped inbox, no account-wide _INBOX) reads occupancy over its confined reply inbox", actOcc.occupancy === 1, actOcc);

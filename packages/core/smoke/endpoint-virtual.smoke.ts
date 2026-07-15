@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
+import * as core from "../src/index.js";
 import {
   isReachable, EpEnvelopeError,
   createEndpointStreams, epwStreamName, epjStreamName, poolDurable, canonDurable,
@@ -35,7 +36,7 @@ import {
   workPoolContext, enqueueWorkItem, openRecordsBucket, epjSubject,
   readPoolOccupancy, admitVirtualWork, startVirtualActivator, noteInstanceRestart,
   reconcileEscalation, parseActivationPolicy, freezeExpectedSet,
-  writeServiceStatus, supervisorWriteGrant, RESTART_HISTORY_FIELD, RETIRED_MARK_FIELD,
+  writeServiceStatus, RESTART_HISTORY_FIELD, RETIRED_MARK_FIELD,
   SERVICE_ESCALATED, SERVICE_EXITED, SERVICE_READY,
   RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry,
   type EpCaller, type WorkItemRef, type WorkPoolContext, type ServiceStatus,
@@ -332,9 +333,12 @@ try {
     const retire: string[] = [];
     const note = (now: number, epoch: number, over: Partial<Parameters<typeof noteInstanceRestart>[1]> = {}) => {
       currentEpoch = epoch;
-      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID, epoch, now, readProcessEpoch: readEpoch, retireLifecycle: async () => { retire.push("called"); }, ...over });
+      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID, epoch, now, readProcessEpoch: readEpoch, readSpecLeader: specLeader(IID), retireLifecycle: async () => { retire.push("called"); }, ...over });
     };
     const readStatus = async (iid: string): Promise<ServiceStatus> => JSON.parse(td.decode((await kv.get(recordStatusKey(RECORD_KINDS.svc, ["manager", iid])))!.value)) as ServiceStatus;
+    // The restart-policy read is leader-served by contract; single-node broker = kv.get is the
+    // leader, so wire a {value, revision} reader over the spec key for each instance.
+    const specLeader = (iid: string) => async () => { const e = await kv.get(recordSpecKey(RECORD_KINDS.svc, ["manager", iid])); return e && e.operation === "PUT" ? { value: JSON.parse(td.decode(e.value)), revision: e.revision } : undefined; };
 
     // SUPERVISOR-FIELD FORGE: the authority to originate the supervisor-owned state is a BRANDED
     // grant, NOT revision presence — so a forge is refused whether the caller pins a revision or
@@ -356,10 +360,11 @@ try {
     const forgedRecon = await reconcileEscalation(kv, { endpoint: "manager", instanceId: IIDG, now: NOW, retireLifecycle: async () => { throw new Error("should never be called on a non-escalated row"); } });
     c("…so a forged completion mark cannot fake retirement (the row is not escalated; reconcile is a clean no-op)",
       !forgedRecon.escalated && !forgedRecon.acted, forgedRecon);
-    // A branded SUPERVISOR write DOES originate the state (the sanctioned path).
-    await writeServiceStatus(kv, { endpoint: "manager", instanceId: IIDG, epoch: 1, status: { epoch: 1, state: SERVICE_EXITED, observedSpecRevision: 0, [RESTART_HISTORY_FIELD]: [{ t: 5, epoch: 1 }] }, readProcessEpoch: () => 1, supervisor: supervisorWriteGrant() });
-    c("a BRANDED supervisor write originates the restart history (the sanctioned authority path)",
-      ((await readStatus(IIDG))[RESTART_HISTORY_FIELD] as RestartHistoryEntry[]).length === 1);
+    // The supervisor-write MINT is NOT in the public API: an @cotal-ai/core consumer cannot
+    // import it and forge, so the brand is a real authority boundary (the sanctioned origination
+    // path is exercised through noteInstanceRestart below, never a public factory).
+    c("the supervisor-write mint is NOT publicly exported (no ambient forge factory)",
+      (core as Record<string, unknown>).supervisorWriteGrant === undefined && (core as Record<string, unknown>).mintSupervisorWrite === undefined);
 
     const n1 = await note(NOW, 7);
     c("restart 1 records durably (exited, history 1, epoch-bound entry)", !n1.escalated && !n1.duplicate && n1.restartsInWindow === 1, n1);
@@ -417,7 +422,7 @@ try {
     let fRetire = 0;
     const noteF = (now: number, epoch: number, fail2: boolean) => {
       currentEpoch = epoch;
-      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IIDF, epoch, now, readProcessEpoch: readEpoch, retireLifecycle: async () => { fRetire++; if (fail2) throw new Error("registry down"); } });
+      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IIDF, epoch, now, readProcessEpoch: readEpoch, readSpecLeader: specLeader(IIDF), retireLifecycle: async () => { fRetire++; if (fail2) throw new Error("registry down"); } });
     };
     await noteF(NOW, 1, false);
     await rejects("a retire-seam failure after the escalation CAS is unavailable (honest half-commit)",
@@ -445,7 +450,7 @@ try {
     await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IID2]), spec);
     const note2 = (now: number, epoch: number) => {
       currentEpoch = epoch;
-      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID2, epoch, now, readProcessEpoch: readEpoch, retireLifecycle: async () => {} });
+      return noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID2, epoch, now, readProcessEpoch: readEpoch, readSpecLeader: specLeader(IID2), retireLifecycle: async () => {} });
     };
     await note2(NOW + 10_000, 1);
     await rejects("a supervision clock BEHIND the newest recorded restart refuses (a rollback cannot amnesty history)",
@@ -478,11 +483,11 @@ try {
     await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IID4]), spec);
     await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, ["manager", IID4]), { epoch: 7, state: SERVICE_EXITED, observedSpecRevision: 0, [RESTART_HISTORY_FIELD]: [{ t: 1 }] });
     await rejects("a garbled stored restart history refuses (internal), never a fabricated count",
-      () => noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID4, epoch: 7, now: NOW, readProcessEpoch: () => 7, retireLifecycle: async () => {} }), "internal");
+      () => noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID4, epoch: 7, now: NOW, readProcessEpoch: () => 7, readSpecLeader: specLeader(IID4), retireLifecycle: async () => {} }), "internal");
 
     // THE EPOCH FENCE rides through: a note from a non-current epoch is expired.
     await rejects("a restart note from a superseded epoch is expired (the mapping fence rides through writeServiceStatus)",
-      () => noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID2, epoch: 6, now: NOW + 90_000, readProcessEpoch: () => 5, retireLifecycle: async () => {} }), "expired");
+      () => noteInstanceRestart(kv, { endpoint: "manager", instanceId: IID2, epoch: 6, now: NOW + 90_000, readProcessEpoch: () => 5, readSpecLeader: specLeader(IID2), retireLifecycle: async () => {} }), "expired");
   }
 
   console.log("F. escalated instances are NEVER live to scatter");
@@ -500,6 +505,43 @@ try {
     const frozen = await freezeExpectedSet(kv, E);
     c("the frozen expected set contains the READY instance and EXCLUDES the escalated one (terminally not-startable)",
       frozen.length === 1 && frozen[0].instanceId === IIDR, frozen);
+  }
+
+  console.log("G. the 1ab3f8d round: mark/history validation, DEL fail-closed, connId strictness, revision carry");
+  {
+    const specLeader = (iid: string) => async () => { const e = await kv.get(recordSpecKey(RECORD_KINDS.svc, ["manager", iid])); return e && e.operation === "PUT" ? { value: JSON.parse(td.decode(e.value)), revision: e.revision } : undefined; };
+    const spec = { endpoint: "manager", owner: "u_wrk", clusterDigests: [`sha256:${"0".repeat(64)}`], protocol: { v: 1 }, activation: { mode: "on-demand", capacity: 2 } };
+    // A stored status with a retiredAt mark on a NON-escalated row is corruption: reconcileEscalation
+    // reads it through parseServiceStatus and fails closed (internal), never treating it as retired.
+    const IIDM = "p".repeat(26);
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDM]), spec);
+    await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, ["manager", IIDM]), { epoch: 1, state: SERVICE_READY, observedSpecRevision: 0, [RETIRED_MARK_FIELD]: 123 });
+    await rejects("a retiredAt mark on a NON-escalated stored row refuses at the read boundary (a forged mark cannot fake retirement)",
+      () => reconcileEscalation(kv, { endpoint: "manager", instanceId: IIDM, now: NOW, retireLifecycle: async () => {} }), "internal");
+    // A stored status with a duplicate-epoch history refuses too.
+    const IIDD = "q".repeat(26);
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDD]), spec);
+    await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, ["manager", IIDD]), { epoch: 1, state: SERVICE_EXITED, observedSpecRevision: 0, [RESTART_HISTORY_FIELD]: [{ t: 1, epoch: 2 }, { t: 2, epoch: 2 }] });
+    await rejects("a DUPLICATE-epoch stored restart history refuses (a fabricated count never rides through)",
+      () => noteInstanceRestart(kv, { endpoint: "manager", instanceId: IIDD, epoch: 3, now: NOW, readProcessEpoch: () => 1, readSpecLeader: specLeader(IIDD), retireLifecycle: async () => {} }), "internal");
+    // reconcileEscalation on a DEL marker fails closed (a deletion is never clean absence).
+    const IIDL = "r".repeat(26);
+    await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDL]), spec);
+    await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, ["manager", IIDL]), { epoch: 1, state: SERVICE_ESCALATED, observedSpecRevision: 0 });
+    await kv.delete(recordStatusKey(RECORD_KINDS.svc, ["manager", IIDL]));
+    await rejects("reconcileEscalation on a DEL marker fails closed (an escalated identity never skips retirement via a deletion)",
+      () => reconcileEscalation(kv, { endpoint: "manager", instanceId: IIDL, now: NOW, retireLifecycle: async () => {} }), "failed-precondition");
+    // noteInstanceRestart REQUIRES a leader-served spec reader (no follower kv.get).
+    await rejects("noteInstanceRestart without readSpecLeader refuses (the policy is FENCING, never a follower read)",
+      () => noteInstanceRestart(kv, { endpoint: "manager", instanceId: IIDM, epoch: 1, now: NOW, readProcessEpoch: () => 1, retireLifecycle: async () => {} } as never), "contract-invalid");
+    // activatorGrants uses the strict inbox-connId grammar (8-120), not a permissive id token.
+    await rejects("a too-short activator connId refuses (assertInboxConnId, not a permissive id token)", () => activatorGrants(SPACE, "manager", "vbuilds", "short"));
+    // admit carries the RE-PROVEN registration revision into the verdict (bound to the accept CAS).
+    const IIDA = "s".repeat(26);
+    const specRev = await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, ["manager", IIDA]), spec);
+    const admitVerdict = await admitVirtualWork(ctx, { endpoint: "manager", pool: "vbuilds", instanceId: IIDA, now: NOW });
+    c("the admission verdict carries the re-proven registration revision (bound to the acceptance commit)",
+      admitVerdict.policyRevision === specRev, { policyRevision: admitVerdict.policyRevision, specRev });
   }
 } finally {
   broker.kill("SIGKILL");

@@ -429,10 +429,14 @@ try {
     const DOC_JRN_RUN = { urn: "ai.cotal.jrnrun", revision: 1, attributes: [], events: [], commands: [cmd("run", { class: "journal" })] };
     const DC_EPH_RUN = register(DOC_EPH_RUN);
     const DC_JRN_RUN = register(DOC_JRN_RUN);
-    // Order the JOURNAL cluster LAST: a last-declaration-wins merge would let it mask the
-    // earlier ephemeral 'run' and admit; non-journal-wins keeps it ephemeral and refuses.
-    await rejects("on-demand registration where 'run' is ephemeral first then journal REFUSES (non-journal wins the merge, order-independent)",
+    // A command name declared in TWO clusters is an ambiguous surface: registration refuses the
+    // duplicate up front (regardless of class or order), rather than publishing a surface that
+    // serve authorization would later reject as internal-ambiguous.
+    await rejects("registration with a cross-cluster DUPLICATE command name REFUSES (ambiguous surface)",
       () => reg(kv, { spec: { endpoint: "vmerge", owner: "u_op", clusterDigests: [DC_EPH_RUN, DC_JRN_RUN], protocol: { v: 1 }, activation: vpol }, instanceId: IID_A, registrant: asOp, authority }), "failed-precondition");
+    // …and a NON-virtual registration with a cross-cluster duplicate is refused too (not activation-gated).
+    await rejects("a non-virtual registration with a cross-cluster duplicate name also REFUSES",
+      () => reg(kv, { spec: { endpoint: "vmerge2", owner: "u_op", clusterDigests: [DC_EPH_RUN, DC_JRN_RUN], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority }), "failed-precondition");
   }
 
   // ---- serve: two instances of one class ----

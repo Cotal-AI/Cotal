@@ -22,6 +22,7 @@ import {
   createRecordEntry, updateRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
+import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -71,26 +72,12 @@ export const SERVICE_ESCALATED = "escalated";
 export const SERVICE_RESTART_HISTORY_FIELD = "restarts";
 export const SERVICE_RETIRED_MARK_FIELD = "retiredAt";
 
-/** The AUTHORITY to originate supervisor-owned state (the restart history, the retirement
- *  mark, the `escalated` state) through {@link writeServiceStatus}. It is a BRANDED capability,
- *  not a scalar flag: only {@link supervisorWriteGrant} mints one, and the writer checks
- *  membership in a module-private WeakSet, so a caller cannot fabricate the authority by
- *  passing a look-alike object (the flaw a plain `expectedStatusRevision`-implies-privilege
- *  gate had — any caller selecting the current revision could forge). The §13.6 supervisor
- *  seams ({@link noteInstanceRestart}, the escalation reconciler) mint and pass it; an
- *  instance-side status write never holds one. */
-export interface SupervisorWriteGrant {
-  readonly __supervisorWrite: true;
-}
-const SUPERVISOR_WRITE_GRANTS = new WeakSet<object>();
-export function supervisorWriteGrant(): SupervisorWriteGrant {
-  const g = Object.freeze({ __supervisorWrite: true as const });
-  SUPERVISOR_WRITE_GRANTS.add(g);
-  return g;
-}
-function isSupervisorWrite(g: unknown): boolean {
-  return typeof g === "object" && g !== null && SUPERVISOR_WRITE_GRANTS.has(g);
-}
+/** The AUTHORITY to originate supervisor-owned state (the restart history, the retirement mark,
+ *  the `escalated` state) through {@link writeServiceStatus} — the type only. The MINT lives in
+ *  the package-internal `endpoint-supervisor` module (never re-exported), so it is not
+ *  ambiently obtainable: possession of a genuine grant proves the write came from a §13.6
+ *  supervisor seam, not a scalar flag any caller could set. */
+export type { SupervisorWriteGrant };
 
 /** The §13.6 virtual activation policy (`spec.activation`), a CLOSED schema: `mode` is the
  *  literal `on-demand` and `capacity` (the pool admission bound) is REQUIRED — an unbounded
@@ -149,6 +136,22 @@ export function parseServiceStatus(raw: unknown): ServiceStatus {
   if (!wireInt(o.epoch)) svcFail("status.epoch");
   if (typeof o.state !== "string" || !STATE_TOKEN.test(o.state)) svcFail("status.state");
   if (!wireInt(o.observedSpecRevision)) svcFail("status.observedSpecRevision");
+  // The SUPERVISOR-OWNED fields are validated at the consuming boundary too, so corrupt/legacy
+  // state never rides through the escalation barrier (§13.6): the restart history is an array
+  // of {t, epoch} with UNIQUE epochs (a real restart advances the epoch; a duplicate is a
+  // fabricated count), and the retirement mark is a non-negative integer that appears ONLY on an
+  // escalated row (a mark on a live row would let a forged `retiredAt` fake completion).
+  if (o[SERVICE_RESTART_HISTORY_FIELD] !== undefined) {
+    const h = o[SERVICE_RESTART_HISTORY_FIELD];
+    if (!Array.isArray(h) || !h.every((e) => isRec(e) && wireInt(e.t) && wireInt(e.epoch)))
+      svcFail(`status.${SERVICE_RESTART_HISTORY_FIELD} is not an array of {t, epoch}`);
+    const epochs = new Set((h as { epoch: number }[]).map((e) => e.epoch));
+    if (epochs.size !== h.length) svcFail(`status.${SERVICE_RESTART_HISTORY_FIELD} has duplicate epochs (a fabricated count)`);
+  }
+  if (o[SERVICE_RETIRED_MARK_FIELD] !== undefined) {
+    if (!wireInt(o[SERVICE_RETIRED_MARK_FIELD])) svcFail(`status.${SERVICE_RETIRED_MARK_FIELD} is not a non-negative integer`);
+    if (o.state !== SERVICE_ESCALATED) svcFail(`status.${SERVICE_RETIRED_MARK_FIELD} is present on a "${String(o.state)}" row; a retirement mark appears only on an escalated row (§13.6)`);
+  }
   return o as unknown as ServiceStatus;
 }
 
@@ -242,11 +245,13 @@ async function readGovernedDeclarations(
     for (const cmd of document.commands) {
       const set = out.get(cmd.name) ?? new Set<string>();
       for (const t of (cmd.traits ?? [])) if (GOVERNED_TRAIT_URNS.includes(t)) set.add(t);
+      // A command name is DECLARED ONCE across the whole closure: a cross-cluster duplicate is
+      // an ambiguous surface (serve authorization rejects it later as internal-ambiguous), so
+      // registration refuses it up front rather than publishing a surface that cannot serve.
+      if (out.has(cmd.name))
+        throw new EpEnvelopeError("failed-precondition", `command "${cmd.name}" is declared in more than one cluster of the closure; a duplicate command name is an ambiguous surface (SPEC 13.7)`);
       out.set(cmd.name, set); // present for EVERY command, governed or not
-      // NON-JOURNAL WINS the cross-cluster merge: a command declared ephemeral in ANY cluster
-      // is ephemeral for the journal-class virtual-registration check, so a later journal
-      // redeclaration cannot mask an earlier ephemeral one (§13.6).
-      if (classes.get(cmd.name) !== "ephemeral") classes.set(cmd.name, cmd.class);
+      classes.set(cmd.name, cmd.class);
     }
   }
   return { governed: out, classes };
@@ -620,19 +625,22 @@ export async function writeServiceStatus(
     supervisor?: SupervisorWriteGrant;
   },
 ): Promise<number> {
-  // DETACH at entry, BEFORE any await: a caller-shared status object mutated during the
-  // spec/mapping/status reads below could otherwise change epoch/state/reserved fields after
-  // validation and split the authenticated coordinate from the stored bytes (the same
-  // snapshot-before-await discipline as work-item refs).
-  const status: ServiceStatus = JSON.parse(JSON.stringify(parseServiceStatus(args.status)));
+  // SNAPSHOT the raw input FIRST (a JSON round-trip reads each getter exactly once, so nothing a
+  // caller controls flips between here and the awaits below — validate-then-clone would validate
+  // the caller object then re-read it during the clone, a getter/Proxy TOCTOU). An instance-side
+  // (ungranted) write cannot ORIGINATE the supervisor-owned state: its reserved fields are
+  // stripped from the RAW snapshot BEFORE validation (a forged garbage `restarts`/`retiredAt` is
+  // dropped, not rejected — the instance's ordinary `ready`/`exited` write still goes through),
+  // and it may not originate `escalated`. Only THEN validate the (possibly stripped) snapshot.
+  const raw = JSON.parse(JSON.stringify(args.status)) as Record<string, unknown>;
   const bySupervisor = isSupervisorWrite(args.supervisor);
-  if (!bySupervisor && status.state === SERVICE_ESCALATED)
-    throw new EpEnvelopeError("failed-precondition", `an instance-side status write cannot ORIGINATE "${SERVICE_ESCALATED}" for "${args.endpoint}/${args.instanceId}"; escalation is the supervisor's branded authority (SPEC 13.6)`);
   if (!bySupervisor) {
-    const s = status as Record<string, unknown>;
-    delete s[SERVICE_RESTART_HISTORY_FIELD];
-    delete s[SERVICE_RETIRED_MARK_FIELD];
+    if (raw.state === SERVICE_ESCALATED)
+      throw new EpEnvelopeError("failed-precondition", `an instance-side status write cannot ORIGINATE "${SERVICE_ESCALATED}" for "${args.endpoint}/${args.instanceId}"; escalation is the supervisor's branded authority (SPEC 13.6)`);
+    delete raw[SERVICE_RESTART_HISTORY_FIELD];
+    delete raw[SERVICE_RETIRED_MARK_FIELD];
   }
+  const status: ServiceStatus = parseServiceStatus(raw);
   if (status.epoch !== args.epoch)
     throw new EpEnvelopeError("internal", `status.epoch ${status.epoch} disagrees with the writer-authenticated epoch ${args.epoch} (SPEC 13.9: the epoch rides the subject)`);
   assertStatusValue(status);

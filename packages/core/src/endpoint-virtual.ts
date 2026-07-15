@@ -70,9 +70,9 @@ import {
   type WorkPoolContext,
   type WorkItemRef,
 } from "./endpoint-work.js";
+import { mintSupervisorWrite } from "./endpoint-supervisor.js";
 import {
   writeServiceStatus,
-  supervisorWriteGrant,
   parseServiceStatus,
   parseServiceSpec,
   parseActivationPolicy,
@@ -84,8 +84,8 @@ import {
   type VirtualActivationPolicy,
 } from "./endpoint-service.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, updateRecordEntry, readRecordLeader } from "./endpoint-records.js";
-import { assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken } from "./endpoint-subjects.js";
-import { spacePrefix } from "./subjects.js";
+import { assertLifecycleToken, endpointToken, assertPoolToken } from "./endpoint-subjects.js";
+import { spacePrefix, assertInboxConnId } from "./subjects.js";
 
 function invalid(what: string): never {
   throw new EpEnvelopeError("contract-invalid", `${what} (SPEC 13.6 virtual)`);
@@ -125,7 +125,7 @@ export async function activatorContext(nc: NatsConnection, space: string): Promi
  *  connection sets); omit it to get the publish half alone. */
 export function activatorGrants(space: string, endpoint: string, pool: string, connId?: string): { publish: string[]; subscribe: string[] } {
   const publish = [`$JS.API.CONSUMER.INFO.${epwStreamName(space)}.${poolDurable(endpoint, pool)}`];
-  const subscribe = connId !== undefined ? [`_INBOX_${assertIdToken(connId, "activator connId")}.>`] : [];
+  const subscribe = connId !== undefined ? [`_INBOX_${assertInboxConnId(connId)}.>`] : [];
   return { publish, subscribe };
 }
 
@@ -218,14 +218,16 @@ export function virtualAdmissionConsumerConfig(
  * seam trusts a caller-supplied policy. The read is fail-closed: a missing registration is
  * `failed-precondition` (there is no policy to admit or supervise under), and a registration
  * without an `activation` block means the endpoint is not virtual, so a virtual decision over
- * it refuses. `readSpec` is the trusted leader-served reader the caller wires (records-KV
- * leader for the admission fence, the records bucket for the supervisor note).
+ * it refuses. `readSpec` MUST be LEADER-SERVED (the policy read gates escalation/retirement and
+ * capacity, so it is FENCING by use; a follower Direct Get could read a stale wider policy) and
+ * returns the spec value plus its store revision, so a decision can carry the revision and
+ * RE-PROVE it after its later awaits (a re-registration must not narrow the policy mid-flight).
  */
 async function readRegisteredActivation(
-  readSpec: () => Promise<{ value: unknown } | undefined>,
+  readSpec: () => Promise<{ value: unknown; revision: number } | undefined>,
   endpoint: string,
   instanceId: string,
-): Promise<VirtualActivationPolicy> {
+): Promise<{ policy: VirtualActivationPolicy; revision: number }> {
   const iId = assertLifecycleToken(instanceId, "instanceId");
   const entry = await readSpec();
   if (entry === undefined)
@@ -233,7 +235,7 @@ async function readRegisteredActivation(
   const spec = parseServiceSpec(entry.value, { endpoint });
   if (spec.activation === undefined)
     throw new EpEnvelopeError("failed-precondition", `endpoint "${endpoint}/${iId}" is registered without an activation policy (not a virtual endpoint); no on-demand admission or restart supervision applies (SPEC 13.6)`);
-  return parseActivationPolicy(spec.activation);
+  return { policy: parseActivationPolicy(spec.activation), revision: entry.revision };
 }
 
 // ---- admission ---------------------------------------------------------------------------------
@@ -254,6 +256,9 @@ export interface VirtualAdmissionVerdict {
   capacity: number;
   /** How many outstanding acceptances the pre-admission reconciliation re-enqueued. */
   repaired: number;
+  /** The RE-PROVEN registration revision the decision bound to (§13.6): the caller carries it
+   *  into the acceptance commit so the accept CAS fences on the same policy coordinate. */
+  policyRevision: number;
 }
 
 /**
@@ -286,10 +291,9 @@ export async function admitVirtualWork(
   if (!Number.isSafeInteger(args.now)) invalid(`now ${String(args.now)} is not an integer`);
   // The capacity is bound to the REGISTERED policy, read leader-served (the admission fence is
   // a decision gate): a caller cannot pass a wider capacity than the endpoint registered.
-  const policy = await readRegisteredActivation(
-    () => readRecordLeader(ctx.jsm, ctx.space, recordSpecKey(RECORD_KINDS.svc, [args.endpoint, args.instanceId])),
-    args.endpoint, args.instanceId,
-  );
+  const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, args.instanceId]);
+  const readPolicy = () => readRegisteredActivation(() => readRecordLeader(ctx.jsm, ctx.space, specKey), args.endpoint, args.instanceId);
+  const { policy, revision: policyRevision } = await readPolicy();
 
   // (1) The serial pin is proved LIVE at every admission, not assumed from creation.
   const admissionDurable = canonDurable(args.endpoint);
@@ -318,9 +322,16 @@ export async function admitVirtualWork(
     const verdict = await reconcileWorkItem(ctx, { ref: o.ref, itemBytes: o.itemBytes, workExpiry: o.workExpiry, now: args.now });
     if (verdict.state === "re-enqueued") repaired++;
   }
-  // (3) + (4)
+  // (3) occupancy
   const occupancy = await readPoolOccupancy(ctx, args.endpoint, args.pool);
-  return { admitted: occupancy.occupancy < policy.capacity, occupancy, capacity: policy.capacity, repaired };
+  // (4) RE-PROVE the policy revision after every await above: a re-registration that NARROWED
+  // capacity mid-flight must not let this decision admit under the stale wider policy. The
+  // decision binds the re-proven policy (§13.6); the caller carries `policyRevision` into the
+  // acceptance commit so the accept CAS (after this helper returns) fences on the same coordinate.
+  const fresh = await readPolicy();
+  if (fresh.revision !== policyRevision)
+    throw new EpEnvelopeError("conflict", `endpoint "${args.endpoint}/${args.instanceId}" re-registered during admission (policy revision ${policyRevision} → ${fresh.revision}); the decision refuses rather than admit under a stale policy (SPEC 13.6)`);
+  return { admitted: occupancy.occupancy < fresh.policy.capacity, occupancy, capacity: fresh.policy.capacity, repaired, policyRevision: fresh.revision };
 }
 
 // ---- the activator -----------------------------------------------------------------------------
@@ -515,6 +526,12 @@ export async function noteInstanceRestart(
     now: number;
     /** The trusted lifecycle-mapping reader (same seam as {@link writeServiceStatus}). */
     readProcessEpoch: () => Promise<number> | number;
+    /** LEADER-SERVED reader of the endpoint's `svc.<endpoint>.<instanceId>` spec (value +
+     *  revision). The restart-intensity thresholds are FENCING by use (they gate escalation and
+     *  retirement), so the policy MUST NOT be read through a follower-capable KV get — a stale
+     *  wider window would suppress an escalation. Production wires the records-KV leader-served
+     *  `STREAM.MSG.GET` reader here (the same one the admission fence uses). */
+    readSpecLeader: () => Promise<{ value: unknown; revision: number } | undefined>;
     /** The D13/§13.1 terminal retire seam, invoked ONLY on escalation. MUST be idempotent
      *  ({@link reconcileEscalation} re-invokes it on retry). */
     retireLifecycle: () => Promise<void>;
@@ -523,15 +540,14 @@ export async function noteInstanceRestart(
   if (!uint(args.now)) invalid(`now ${String(args.now)} is not an unsigned integer`);
   if (!uint(args.epoch)) invalid(`epoch ${String(args.epoch)} is not an unsigned integer`);
   if (typeof args.retireLifecycle !== "function") invalid("retireLifecycle is required; escalation without terminal retirement is a half-fence");
+  if (typeof args.readSpecLeader !== "function") invalid("readSpecLeader is required; the restart-intensity policy is FENCING and must be read leader-served, never a follower KV get (SPEC 13.6/13.9)");
 
   const iId = assertLifecycleToken(args.instanceId, "instanceId");
   const what = `"${args.endpoint}/${args.instanceId}"`;
-  // The restart-intensity thresholds are bound to the REGISTERED activation policy, never
-  // caller-supplied: a supervisor cannot loosen the window to suppress an escalation.
-  const policy = await readRegisteredActivation(
-    async () => { const e = await kv.get(recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId])); return e && e.operation === "PUT" ? { value: JSON.parse(td.decode(e.value)) } : undefined; },
-    args.endpoint, iId,
-  );
+  // The restart-intensity thresholds are bound to the REGISTERED activation policy, read
+  // LEADER-SERVED (fencing by use), never caller-supplied and never follower-stale: a supervisor
+  // cannot loosen the window to suppress an escalation, and a stale wider window cannot either.
+  const { policy } = await readRegisteredActivation(args.readSpecLeader, args.endpoint, iId);
   const maxRestarts = policy.maxRestarts ?? RESTART_MAX_DEFAULT;
   const windowMs = policy.restartWindowMs ?? RESTART_WINDOW_MS_DEFAULT;
   const key = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
@@ -577,7 +593,7 @@ export async function noteInstanceRestart(
     status,
     readProcessEpoch: args.readProcessEpoch,
     expectedStatusRevision,
-    supervisor: supervisorWriteGrant(), // the branded authority to originate the history + escalation
+    supervisor: mintSupervisorWrite(), // the package-private authority to originate the history + escalation
   });
   if (escalated) {
     try {
@@ -620,7 +636,11 @@ export async function reconcileEscalation(
   const iId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
   const stored = await kv.get(key);
-  if (!stored || stored.operation !== "PUT") return { escalated: false, retired: false, acted: false };
+  if (!stored) return { escalated: false, retired: false, acted: false }; // TRUE absence: never escalated
+  // A DEL/PURGE marker is CORRUPTION, not clean absence: reconciling over it could let an
+  // escalated identity's retirement silently never run. Fail closed (§13.12 retention floor).
+  if (stored.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the status for "${args.endpoint}/${args.instanceId}" carries a ${stored.operation} marker; a deletion is never clean absence, an escalated identity must not skip retirement (SPEC 13.12)`);
   const status = parseServiceStatus(JSON.parse(td.decode(stored.value)));
   if (status.state !== SERVICE_ESCALATED) return { escalated: false, retired: false, acted: false };
   if (status[RETIRED_MARK_FIELD] !== undefined) return { escalated: true, retired: true, acted: false };

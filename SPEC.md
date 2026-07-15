@@ -1804,16 +1804,22 @@ creation, so both are pinned at creation AND re-proved at every read (a message 
 a finite ceiling stays stored but leaves both counters; a narrowed or foreign filter reads
 empty while stored work remains). The admission capacity comes from the endpoint's REGISTERED
 activation policy (`spec.activation`, a closed schema whose `capacity` is required), READ
-leader-served from the registration at each decision, never a free-standing argument; the
-restart-intensity thresholds are read from the SAME registered policy, so a supervisor cannot
-loosen the window to suppress an escalation. A command declared non-journal-class in ANY
-cluster of the closure is non-journal for the registration check (a later journal
-redeclaration cannot mask an earlier ephemeral one). The supervisor-owned status fields (the
+leader-served from the registration at each decision (the read is FENCING by use, so a
+follower Direct Get is never used) and its registration revision RE-PROVEN after the decision's
+later reads and carried into the acceptance commit, never a free-standing argument; the
+restart-intensity thresholds are read leader-served from the SAME registered policy, so neither
+a caller nor a follower-stale read can loosen the window to suppress an escalation. A command
+name is declared ONCE across the whole closure; a cross-cluster duplicate is an ambiguous
+surface and registration refuses it, and a command declared non-journal-class in ANY cluster is
+non-journal for the on-demand registration check. The supervisor-owned status fields (the
 restart history and the retirement mark) and the `escalated` state can be ORIGINATED only
-under the supervisor's DISTINCT WRITE AUTHORITY (a branded capability the restart-note and the
-escalation reconciler hold, not mere presence of a revision pin): an instance-side status
-write, whether it creates the first status or updates a later one, has them stripped and
-cannot originate `escalated`. Every status write operates on a validated DETACHED snapshot
+under the supervisor's DISTINCT WRITE AUTHORITY (a package-private branded capability held by
+the restart-note and the escalation reconciler, never an ambiently-mintable factory or the mere
+presence of a revision pin): an instance-side status write, whether it creates the first status
+or updates a later one, has them stripped and cannot originate `escalated`. The restart history
+and retirement mark are validated at every read boundary (a unique-epoch history, an integer
+mark present only on an escalated row), and a DEL/PURGE status marker fails closed on the
+retirement path (a deletion is never clean absence). Every status write operates on a validated DETACHED snapshot
 taken before its first read, so a caller mutating a shared status object mid-write cannot split
 the authenticated coordinate from the stored bytes. The activator's reply authority is its
 own CONNECTION-SCOPED inbox (`_INBOX_<connId>.>`), never the account-wide default, and its
