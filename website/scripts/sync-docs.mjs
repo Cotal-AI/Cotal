@@ -7,6 +7,7 @@
 // with docs/README.md (the docs index): a page added to /docs joins both in the
 // same change. Missing source files fail the sync loudly — no silent drift.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -219,6 +220,35 @@ for (const rel of assetRefs) {
   copyFileSync(join(repoRoot, rel), dest);
 }
 
+// Publish the Agent Skills discovery index (/.well-known/agent-skills/index.json,
+// Agent Skills Discovery RFC v0.2.0): one entry per committed SKILL.md, digested
+// here so the hash can never drift from the artifact. public/ is copied into
+// dist verbatim, so the source digest is the served digest.
+const skillsDir = join(pubDir, '.well-known', 'agent-skills');
+const skills = [];
+for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+  if (!entry.isDirectory()) continue;
+  const file = join(skillsDir, entry.name, 'SKILL.md'); // missing SKILL.md fails the sync
+  const raw = readFileSync(file);
+  const description = raw.toString('utf8').match(/^description:\s*"?(.+?)"?\s*$/m)?.[1];
+  if (!description) throw new Error(`no description frontmatter in ${file}`);
+  skills.push({
+    name: entry.name,
+    type: 'skill-md',
+    description,
+    url: `/.well-known/agent-skills/${entry.name}/SKILL.md`,
+    digest: `sha256:${createHash('sha256').update(raw).digest('hex')}`,
+  });
+}
+writeFileSync(
+  join(skillsDir, 'index.json'),
+  JSON.stringify(
+    { $schema: 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', skills },
+    null,
+    2,
+  ) + '\n',
+);
+
 console.log(
-  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + ${assetRefs.size} images`,
+  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + ${assetRefs.size} images + ${skills.length} skills`,
 );
