@@ -43,6 +43,10 @@
     "@cotal-ai/pi": "workspace:*",
     "@cotal-ai/workspace": "workspace:*"
   },
+  "devDependencies": {
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
+  },
   "files": [
     "dist",
     "README.md",
