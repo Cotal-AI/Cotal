@@ -200,9 +200,14 @@ export async function createEndpointStreams(
     deny_delete: true,
     deny_purge: true,
   });
-  // Records KV — per-key CAS; allow_direct for plain reads (the lifecycle head and every
-  // fenced read still go leader-served STREAM.MSG.GET, a caller choice, §13.9).
-  await kvm.create(recordsBucket(space), { allow_direct: true });
+  // Records KV — per-key CAS; rows are never deleted. deny_delete/deny_purge close stream-API
+  // erasure as defense in depth (a raw KV subject grant can still emit a DEL marker, which every
+  // reader treats as corruption). Fenced reads stay leader-served STREAM.MSG.GET (§13.9).
+  const recordBucket = recordsBucket(space);
+  await kvm.create(recordBucket, { allow_direct: true });
+  const recordStream = `KV_${recordBucket}`;
+  const recordConfig = (await jsm.streams.info(recordStream)).config;
+  await jsm.streams.update(recordStream, { ...recordConfig, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });
   // Auth KV — leader-served only; per-key TTL machinery on (cred./bysrc. rows), NO bucket age.
   await kvm.create(epAuthBucket(space), {
     allow_direct: false,
@@ -665,8 +670,13 @@ export function mediatorEnumConsumerName(endpoint: string, connId: string): stri
  *  decision publish is payload-blind, so a compromised mediator can forge an ACCEPTANCE within
  *  its own endpoint — an escalation to injecting executed work, never merely reject/stall —
  *  because rejection-only is not subject-expressible (both decisions MUST share the create-only
- *  decision subject for first-wins settlement); it can never forge beyond its endpoint. (2) the
- *  body-selected `STREAM.MSG.GET` fencing reads expose the records/EPF/EPW streams space-wide.
+ *  decision subject for first-wins settlement); it can never forge beyond its endpoint. (2) its
+ *  own-endpoint `$KV...oblig` subject grant cannot enforce create-only/monotonic CAS: it can
+ *  overwrite a row to valid `terminal` and hide cleanup debt, or emit DEL/PURGE markers (the
+ *  latter fail loud as corruption; stream-level erasure is denied). (3) the body-selected
+ *  `STREAM.MSG.GET` fencing reads expose the records/EPF/EPW streams space-wide, and raw JS API
+ *  requests carry a caller-selected reply subject, so a compromised mediator can direct fetched
+ *  API/message bytes onto a foreign rail (confused-deputy injection, not foreign read access).
  *  The former third residual (a name-`*` consumer INFO/MSG.NEXT reach) is CLOSED by the
  *  deterministic name pin. */
 export function admissionMediatorGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
@@ -698,7 +708,10 @@ export function admissionMediatorGrants(space: string, endpoint: string, connId:
  *  require — a STREAM-level grant whose read exposure is space-wide; that residual is EXPLICIT
  *  per D32 and accepted only for this trusted, bounded-lived, per-op profile. The cleaner holds
  *  NO terminal-publish or lease authority: the op-bounded executor CASes the lease and publishes
- *  its derived terminal, and the cleaner re-reads it before ACK. The reply inbox is
+ *  its derived terminal, and the cleaner re-reads it before ACK. D32 residuals: raw ACK cannot be
+ *  conditioned on a prior terminal, so compromise can suppress listed-pool work terminal-free;
+ *  the space-wide EPF `STREAM.MSG.GET` exposes fact content, and its caller-selected reply can
+ *  inject fetched API/message bytes onto a foreign rail. The reply inbox is
  *  connection-scoped (`_INBOX_<connId>.>`, never the account-wide default). NO `epw.>` publish,
  *  NO consumer create/update/delete, NO raw stream DELETE. The profile is revoked and its
  *  principal cluster-verified-evicted by the barrier BEFORE any frontier records (§13.1). */

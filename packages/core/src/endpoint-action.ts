@@ -685,7 +685,7 @@ export function goalTombstone(fact: GoalResultFact): GoalResultFact {
 }
 
 /** Closed validation, IDENTITY-BOUND to the ref, with the tombstone digest RE-VERIFIED. */
-function parseResult(raw: unknown, subject: string, ref: GoalRef): GoalResultFact {
+export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef): GoalResultFact {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal result fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
@@ -708,7 +708,7 @@ export async function readGoalResult(ctx: ActionContext, ref: GoalRef): Promise<
   const snap = snapshotRef(ref);
   const subject = goalResultSubject(ctx.space, snap);
   const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
-  return raw === undefined ? undefined : parseResult(raw, subject, snap);
+  return raw === undefined ? undefined : parseGoalResultFact(raw, subject, snap);
 }
 
 /** The raw create-only terminal CAS (PRIVATE): the state is already authorized by the cause,

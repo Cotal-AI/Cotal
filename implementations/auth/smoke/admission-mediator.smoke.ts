@@ -419,6 +419,34 @@ try {
     await publishFactCreateOnly(js, resultSubject, enc.encode(JSON.stringify(result)));
     const actionDone = await drainTargetForEndpoint(med, action.target.lifecycleUid);
     c("a codec-valid goal result with the acceptance fingerprint lets an action row quiesce", actionDone.reconciledAcceptedEpf === 1, actionDone);
+
+    const bare = await acceptEffects("fxbare", "m".repeat(26), "fx0004", 24);
+    await publishFactCreateOnly(js, epfEffectSubject(SPACE, EP, bare.caller, "fx0004"), enc.encode(JSON.stringify({ v: 1, id: "fx0004", ts: NOW })));
+    await rejects("a bare eff marker (no fingerprint/sourceSeq binding) never proves quiescence",
+      () => drainTargetForEndpoint(med, bare.target.lifecycleUid), "internal");
+
+    const garbled = await acceptEffects("fxgarb", "n".repeat(26), "fx0005", 25);
+    await publishFactCreateOnly(js, epfEffectSubject(SPACE, EP, garbled.caller, "fx0005"), enc.encode(JSON.stringify("executed")));
+    await rejects("a malformed (non-object) eff body never proves quiescence",
+      () => drainTargetForEndpoint(med, garbled.target.lifecycleUid), "internal");
+
+    const seq = await acceptEffects("fxseq", "o".repeat(26), "fx0006", 26);
+    await publishFactCreateOnly(js, epfEffectSubject(SPACE, EP, seq.caller, "fx0006"),
+      enc.encode(JSON.stringify({ ...effectFactOf(seq.fact, NOW), sourceSeq: 999 })));
+    await rejects("an eff fact bound to a DIFFERENT sourceSeq never proves quiescence (second identity pin)",
+      () => drainTargetForEndpoint(med, seq.target.lifecycleUid), "internal");
+
+    const badResult = await acceptEffects("fxbadres", "p".repeat(26), "fx0007", 27, "goal0002");
+    await publishFactCreateOnly(js, epfSubject(SPACE, EP, ["goal", badResult.caller.owner, badResult.caller.actor, badResult.caller.uid, "goal0002", "result"]),
+      enc.encode(JSON.stringify({ v: 1, goalId: "goal0002", state: "succeeded" })));
+    await rejects("a malformed goal result never proves an action row's quiescence",
+      () => drainTargetForEndpoint(med, badResult.target.lifecycleUid), "internal");
+
+    const wrongResult = await acceptEffects("fxwrongres", "q".repeat(26), "fx0008", 28, "goal0003");
+    await publishFactCreateOnly(js, epfSubject(SPACE, EP, ["goal", wrongResult.caller.owner, wrongResult.caller.actor, wrongResult.caller.uid, "goal0003", "result"]),
+      enc.encode(JSON.stringify({ v: 1, goalId: "goal0003", fingerprint: fp("not-this-acceptance"), state: "succeeded", outcomeDigest: contractDigest(null), ts: NOW })));
+    await rejects("a codec-valid goal result carrying a FOREIGN fingerprint never proves quiescence (second identity pin)",
+      () => drainTargetForEndpoint(med, wrongResult.target.lifecycleUid), "internal");
   }
 
   console.log("G. a proof never crosses endpoints or outlives its TTL");

@@ -25,7 +25,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
   createEndpointStreams, epwStreamName, poolDurable, poolConsumerConfig,
-  workPoolContext, enqueueWorkItem, leaseWorkItem, commitWorkItem, readWorkTerminal, reconcileWorkItem,
+  workPoolContext, enqueueWorkItem, leaseWorkItem, commitWorkItem, readWorkTerminal, reconcileWorkItem, retireWorkItem,
   workItemSubject, workTerminalSubject, openRecordsBucket,
   type EpCaller, type WorkItemRef, type WorkWorker, type WorkPoolContext,
 } from "../src/index.js";
@@ -447,6 +447,25 @@ try {
         bufOffered.set(enc("BBBB")); // mutate the caller Buffer in place; a real copy is unaffected, an aliasing slice would flip to BBBB and lose the conflict
         return pr;
       }, "conflict");
+  }
+
+  // ── retirement and commit contend on the SAME lease revision. Exactly one disposition owns
+  //    the lease, and every successful observer must converge on its matching terminal. ──
+  {
+    const rRace = ref("req-retire-race");
+    const eRace = await enqueueWorkItem(ctx, rRace, enc("wrace"));
+    await leaseWorkItem(ctx, { ref: rRace, sourceSeq: eRace.seq!, attempt: 1, worker: workerA, now: NOW, leaseTtlMs: 5_000, workExpiry: EXPIRY });
+    await Promise.allSettled([
+      commitWorkItem(ctx, { ref: rRace, caller: workerA, lease: { sourceSeq: eRace.seq!, attempt: 1, fencingToken: 1 }, outcome: { committed: true }, now: NOW + 10 }),
+      retireWorkItem(ctx, { ref: rRace, workExpiry: EXPIRY, opId: "r".repeat(26), targetUid: "t".repeat(26), now: NOW + 10 }),
+    ]);
+    const terminal = await readWorkTerminal(ctx, rRace);
+    const leaseEntry = await kv.get(`lease.manager.builds.u_abc.worker.${UID}.req-retire-race.spec`);
+    const lease = JSON.parse(new TextDecoder().decode(leaseEntry!.value)) as { state: string; disposition: string; opId?: string; outcome?: unknown };
+    c("commit-CAS vs retirement-CAS leaves one settled lease with a canonically matching terminal",
+      lease.state === "settled" && terminal !== undefined && terminal.disposition === lease.disposition
+        && (lease.disposition !== "retired" || (terminal.disposition === "retired" && terminal.opId === lease.opId)),
+      { lease, terminal });
   }
 
   // ── a DEL marker on the lease record never resets an authoritative lease ──

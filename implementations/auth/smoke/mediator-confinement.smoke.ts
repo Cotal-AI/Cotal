@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { connect, headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -207,6 +207,30 @@ try {
     const r = await publishFactCreateOnly(jsMed, epfSubject(SPACE, EP, ["dec", "local", "caller", "b".repeat(26), "own001"]), enc.encode(JSON.stringify({ residual: true })));
     c("the own-endpoint decision publish REMAINS possible: the NAMED D32 acceptance-forge residual, in-endpoint only", r.won === true);
   }
+  {
+    const subject = `$KV.${recordsBucket(SPACE)}.${got.key}`;
+    await jsMed.publish(subject, enc.encode(JSON.stringify({ ...got.row, state: "terminal" })));
+    const overwritten = await jsm.streams.getMessage(recordsKvStreamName(SPACE), { last_by_subj: subject });
+    c("the mediator CAN overwrite its own obligation to valid terminal: the named payload-blind KV residual",
+      JSON.parse(new TextDecoder().decode(overwritten.data)).state === "terminal");
+
+    const delSubject = `$KV.${recordsBucket(SPACE)}.oblig.${tgt.lifecycleUid}.${EP}.local.caller.${"q".repeat(26)}.del001`;
+    const h = natsHeaders(); h.set("KV-Operation", "DEL");
+    await jsMed.publish(delSubject, new Uint8Array(), { headers: h });
+    const marker = await jsm.streams.getMessage(recordsKvStreamName(SPACE), { last_by_subj: delSubject });
+    c("the mediator CAN emit an own-obligation DEL marker (readers fail loud; stream erasure remains denied)", marker.header?.get("KV-Operation") === "DEL");
+  }
+  {
+    const foreignReply = `foreign.reply.${Date.now()}`;
+    let injected = false;
+    const fsub = nc.subscribe(foreignReply, { max: 1, callback: (err, m) => { if (!err && m) injected = true; } });
+    await nc.flush();
+    medNc.publish(`$JS.API.STREAM.MSG.GET.${recordsKvStreamName(SPACE)}`, enc.encode(JSON.stringify({ last_by_subj: `$KV.${recordsBucket(SPACE)}.${got.key}` })), { reply: foreignReply });
+    await medNc.flush();
+    await wait(500);
+    try { fsub.unsubscribe(); } catch { /* max reached */ }
+    c("raw JetStream API authority CAN direct a response onto a foreign reply subject: the named confused-deputy injection residual", injected);
+  }
 
   console.log("C. the cleaner's rows are LIVE-SUFFICIENT (the real cleaner over the scoped credential)");
   // One expired item in the listed pool, enqueued + accepted by the trusted side.
@@ -244,6 +268,16 @@ try {
   }
 
   console.log("D. the cleaner's boundary is BROKER-enforced");
+  {
+    const suppressed = { ...cE, id: "drop001" };
+    await js.publish(epwSubject(SPACE, EP, POOL, suppressed), enc.encode("{}"));
+    const consumer = await bind.js.consumers.get(epwStreamName(SPACE), poolDurable(EP, POOL));
+    let acked = false;
+    for await (const m of await consumer.fetch({ max_messages: 1, expires: 1000 })) acked = await m.ackAck();
+    const ref = { endpoint: EP, pool: POOL, acceptance: suppressed };
+    const terminal = await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, ref));
+    c("the cleaner CAN ACK a listed-pool item without a terminal: the named terminal-free suppression residual", acked && terminal === undefined);
+  }
   await denied("the cleaner CANNOT write a wrk terminal, even for its listed pool",
     () => publishFactCreateOnly(bind.js, epfSubject(SPACE, EP, ["wrk", POOL, cE.owner, cE.actor, cE.uid, "ev0002"]), enc.encode("{}")).then((r) => { if (!r.won) throw new Error("cas-lost"); }));
   await denied("the cleaner CANNOT write a decision fact at all",

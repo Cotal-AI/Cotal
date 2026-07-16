@@ -264,9 +264,8 @@ export interface WorkLease {
   sourceSeq: number;
   /** The broker delivery count of the owner's fetch: the ONLY evidence of delivery. */
   attempt: number;
-  /** Present for `leased` and `settled:committed` (and kept on a leased-then-expired
-   *  settlement); ABSENT only for the NEVER-LEASED `settled:expired` sentinel (reconciliation
-   *  settled a dead item that was accepted+enqueued but never leased). */
+  /** Present for `leased` and `settled:committed` (and kept when an existing lease is settled
+   *  expired/retired); ABSENT only for a NEVER-LEASED workerless settlement sentinel. */
   worker?: WorkWorker;
   /** CAS-incremented once per attempt — the §13.8 monotonic fencing token. */
   fencingToken: number;
@@ -285,9 +284,10 @@ export interface WorkLease {
 /** Closed per-state/per-disposition validation (§13.4/§13.5): a `leased` lease MUST carry a
  *  worker + positive attempt/sourceSeq and NO settlement fields; a `settled:committed` MUST
  *  carry a worker + a present `outcome` + committedTs + positive execution coordinates (its
- *  terminal fact derives from them); a `settled:expired` carries committedTs, KEEPS its worker
- *  when it was ever leased (worker-less = the never-leased sentinel), and never an outcome.
- *  Unknown fields and garbled cross-variant state never authorize. */
+ *  terminal fact derives from them); `settled:expired|retired` carry committedTs, KEEP their
+ *  worker when one was ever leased (workerless = never-leased), and never carry an outcome.
+ *  A retired settlement additionally carries its op/target binding. Unknown fields and garbled
+ *  cross-variant state never authorize. */
 function parseLease(raw: unknown, key: string): WorkLease {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `lease record ${key} is not an object; garbled mediated lease state never authorizes (SPEC 13.5)`);
@@ -316,9 +316,8 @@ function parseLease(raw: unknown, key: string): WorkLease {
     throw new EpEnvelopeError("internal", `${String(o.disposition ?? o.state)} lease record ${key} carries retirement fields; garbled cross-variant state never authorizes (SPEC 13.5)`);
   }
   const needsWorker = o.state === "leased" || committed;
-  // An EXECUTED coordinate set (any record that carries a worker, including a worker-bearing
-  // expired record) is positive across ALL THREE coordinates; only the worker-less never-leased
-  // expiry sentinel may carry zeros.
+  // An EXECUTED coordinate set (any record that carries a worker) is positive across ALL THREE
+  // coordinates; only a workerless never-leased expiry/retirement sentinel may carry zeros.
   const executed = needsWorker || o.worker !== undefined;
   if (executed && ((o.attempt as number) < 1 || (o.sourceSeq as number) < 1 || (o.fencingToken as number) < 1))
     throw new EpEnvelopeError("internal", `lease record ${key} is ${o.state}/${String(o.disposition ?? "")} with zero execution coordinates (attempt/sourceSeq/fencingToken); garbled state never authorizes (SPEC 13.5)`);

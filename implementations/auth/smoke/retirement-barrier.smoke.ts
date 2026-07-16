@@ -20,14 +20,14 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, contractDigest, createRecordEntry, updateRecordEntry,
-  recordAtomicKey, RETIREMENT_FRONTIER, evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX,
+  recordAtomicKey, recordSpecKey, RECORD_KINDS, RETIREMENT_FRONTIER, evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX,
   effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseWorkTerminalFact, parseDecisionFact, workTerminalSubject,
 } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, drainTargetForEndpoint, type MediatedRequest } from "../src/index.js";
 import { openLifecycleRegistry, activateLifecycle, registryStores, observeGate, reopenGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { stageAgentMint, finalizeAgentMint, credRowKey, type EvictPrincipal } from "../src/credential-ledger.js";
-import { runAgentRetirementBarrier, resumeAgentRetirement, type RetirementDeps, type PoolCleanerBind } from "../src/retirement-barrier.js";
+import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind } from "../src/retirement-barrier.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -192,6 +192,16 @@ try {
   // A FOREIGN (untargeted) item already past its own horizon: the cleaner settles it `expired`.
   const cFor = { owner: "local", actor: "other", uid: "d".repeat(26) };
   await acceptPoolItem({ endpoint: EP, caller: cFor, id: "for001", workExpiry: NOW - 5, sourceSeq: 6 });
+  // Reachable commit crash: the lease CAS committed, but the owner died before publishing `wrk`.
+  // Retirement must derive/publish COMMITTED from this authoritative lease, never overwrite it.
+  const cCommitted = { owner: "local", actor: "worker", uid: "f".repeat(26) };
+  await acceptPoolItem({ endpoint: EP, caller: cCommitted, id: "com001", target: tgt1, workExpiry: NOW + 100_000, sourceSeq: 7 });
+  await createRecordEntry(recordsKv, recordSpecKey(RECORD_KINDS.lease, [EP, POOL, cCommitted.owner, cCommitted.actor, cCommitted.uid, "com001"]), {
+    v: 1, state: "settled", sourceSeq: 7, attempt: 1,
+    worker: { kind: "agent", owner: "local", actor: "worker", lifecycleUid: "w".repeat(26) },
+    fencingToken: 1, leaseDeadline: NOW + 5_000, workExpiry: NOW + 100_000,
+    disposition: "committed", outcome: { preserved: true }, committedTs: NOW - 1,
+  });
   // An item ALREADY durably terminal: the cleaner only ACKs it.
   const cDone = { owner: "local", actor: "other", uid: "e".repeat(26) };
   const doneRef = { endpoint: EP, pool: POOL, acceptance: { ...cDone, id: "done01" } };
@@ -210,8 +220,8 @@ try {
   c("the victim's live connection was killed by the containment eviction", await until(() => victimClosed || victim!.isClosed()), events.filter((e) => e.startsWith("evict:")));
   c("the drain drove this endpoint's obligations", res1.drainedEndpoints.includes(EP), res1.drainedEndpoints);
   const cleanedA = res1.cleaned[`${EP}/${POOL}`];
-  c("the cleaner settled exactly the three item classes (terminal-ACK / expired / retired)",
-    cleanedA !== undefined && cleanedA.ackedTerminal === 1 && cleanedA.settledExpired === 1 && cleanedA.settledRetired === 1, cleanedA);
+  c("the cleaner settled terminal/committed-crash, expired, and retired item classes",
+    cleanedA !== undefined && cleanedA.ackedTerminal === 2 && cleanedA.settledExpired === 1 && cleanedA.settledRetired === 1, cleanedA);
   {
     const row = JSON.parse(dec.decode((await authKv.get(credRowKey(uid1, "root0001")))!.value)) as { state: string };
     c("the root credential row is revoked", row.state === "revoked", row);
@@ -219,6 +229,10 @@ try {
     const term = parseWorkTerminalFact(await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, ownRef)), workTerminalSubject(SPACE, ownRef), ownRef);
     c("the retiring target's live item carries a core-valid `retired` terminal bound to the op + target",
       term.disposition === "retired" && term.opId === op1 && term.targetUid === uid1, term);
+    const committedRef = { endpoint: EP, pool: POOL, acceptance: { ...cCommitted, id: "com001" } };
+    const committed = parseWorkTerminalFact(await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, committedRef)), workTerminalSubject(SPACE, committedRef), committedRef);
+    c("a committed lease with no wrk is recovered as its committed terminal, never retired",
+      committed.disposition === "committed" && (committed.outcome as { preserved?: boolean }).preserved === true, committed);
     const forRef = { endpoint: EP, pool: POOL, acceptance: { ...cFor, id: "for001" } };
     const termFor = parseWorkTerminalFact(await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, forRef)), workTerminalSubject(SPACE, forRef), forRef);
     c("the foreign expired item was settled `expired` against its OWN horizon", termFor.disposition === "expired", termFor);
@@ -377,6 +391,65 @@ try {
     c("…but the cleaner principal was STILL verified-evicted (kill-live is not skipped by a deny-new failure)", evictedCleaner);
     c("…the live cleaner connection is dead, and no frontier recorded (fail-closed)",
       await until(() => liveConn?.isClosed() === true) && (await recordsKv.get(frontierKeyOf(uid7))) === null);
+  }
+
+  console.log("F. a late row on an already-drained endpoint forces another drain");
+  {
+    const act8 = await activateLifecycle(reg, { owner: "local", actor: "late", managerInstance: MGR });
+    const uid8 = act8.mapping.lifecycleUid;
+    const target8 = { owner: "local", actor: "late", lifecycleUid: uid8 };
+    const caller8 = { owner: "local", actor: "caller", uid: "m".repeat(26) };
+    const first = await obtainEpfObligation(meds[EP], mkReq(EP, caller8), { target: target8, id: "late01", fingerprint: fp("late01"), sourceSeq: 31, route: "effects" });
+    const lateKey = `oblig.${uid8}.${EP}.${caller8.owner}.${caller8.actor}.${caller8.uid}.late02`;
+    const base = mkDeps({ guardUid: uid8 });
+    let drainCalls = 0;
+    let injected = false;
+    const deps8: RetirementDeps = {
+      ...base,
+      drainTargetObligations: async (endpoint, targetUid) => {
+        drainCalls++;
+        await base.drainTargetObligations(endpoint, targetUid);
+        if (!injected) {
+          injected = true;
+          await createRecordEntry(recordsKv, lateKey, { ...first.row, opId: "8".repeat(26), fingerprint: fp("late02"), sourceSeq: 32 });
+        }
+      },
+    };
+    await runAgentRetirementBarrier(reg, {
+      owner: "local", actor: "late", lifecycleUid: uid8, opId: "9".repeat(26),
+      endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+    }, deps8);
+    const lateDecisionSubject = epfSubject(SPACE, EP, ["dec", caller8.owner, caller8.actor, caller8.uid, "late02"]);
+    const lateDecision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), lateDecisionSubject), lateDecisionSubject);
+    c("the same endpoint was re-drained for the newly observed row identity", drainCalls === 2 && lateDecision.decision === "rejected", { drainCalls, lateDecision });
+  }
+
+  console.log("G. the executor settlement seam is intent-closed (the confused-deputy guard)");
+  {
+    const { work } = registryStores(reg);
+    const actHostage = await activateLifecycle(reg, { owner: "local", actor: "hostage", managerInstance: MGR });
+    const actRetire = await activateLifecycle(reg, { owner: "local", actor: "victim9", managerInstance: MGR });
+    const intent = {
+      kind: "retirement" as const, lifecycleUid: actRetire.mapping.lifecycleUid, owner: "local", actor: "victim9",
+      fromGeneration: 1, endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+    };
+    const settle = settlementForIntent(work, intent, { endpoint: EP, pools: [POOL] }, SPACE, "g".repeat(26), () => clock);
+    // An item legitimately in the LISTED pool, but accepted for a DIFFERENT live target: the
+    // subtler branch — the ref itself is in-intent, only the acceptance's target is foreign.
+    const cHost = { owner: "local", actor: "chost", uid: "p".repeat(26) };
+    await acceptPoolItem({ endpoint: EP, caller: cHost, id: "host01", target: { owner: "local", actor: "hostage", lifecycleUid: actHostage.mapping.lifecycleUid }, workExpiry: clock + 100_000, sourceSeq: 41, skipEnqueue: true });
+    const hostRef = { endpoint: EP, pool: POOL, acceptance: { ...cHost, id: "host01" } };
+    const itemBytes = enc.encode(JSON.stringify({ item: "host01" }));
+    await rejects("a ref on a foreign endpoint refuses before any lease read or CAS",
+      () => settle({ ref: { ...hostRef, endpoint: EP2 }, itemBytes, disposition: "retired" }), "permission-denied");
+    await rejects("a ref on an unlisted pool refuses",
+      () => settle({ ref: { ...hostRef, pool: "smuggled" }, itemBytes, disposition: "retired" }), "permission-denied");
+    await rejects("a listed-pool item accepted for a FOREIGN target never retires under this intent",
+      () => settle({ ref: hostRef, itemBytes, disposition: "retired" }), "permission-denied");
+    await rejects("a live item never settles `expired` before its own acceptance horizon",
+      () => settle({ ref: hostRef, itemBytes, disposition: "expired" }), "permission-denied");
+    c("the refusals settled nothing: the foreign-target item has no terminal fact",
+      (await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, hostRef))) === undefined);
   }
 
   await nc.drain().catch(() => {});

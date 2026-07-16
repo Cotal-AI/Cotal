@@ -409,7 +409,12 @@ export interface RetirementResult {
   frontiers: Record<string, number>;
 }
 
-function settlementForIntent(
+/** Build the intent-closed executor settlement seam (§13.9): the returned function runs under
+ *  the barrier's op-bounded authority and refuses any ref the durable intent does not cover —
+ *  a foreign endpoint or unlisted pool, an unaccepted or non-pool decision, expiring a live
+ *  item, or retiring an item accepted for a target outside this intent. The cleaner chooses
+ *  refs; it can never borrow this authority beyond the intent (the confused-deputy closure). */
+export function settlementForIntent(
   work: WorkPoolContext,
   intent: RetirementIntent,
   spec: RetirementPoolSpec,
