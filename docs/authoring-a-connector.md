@@ -49,8 +49,11 @@ sharing the binary's single `@cotal-ai/core` registry instance:
 - **`@cotal-ai/core` is a `peerDependency`, never a regular dependency.** A regular dep vendors a
   second copy of core, whose separate registry would swallow your `registry.register` call — the add
   would import your package cleanly but see zero contributions and refuse it. Any other `@cotal-ai/*`
-  you use is a peer too. At install time `ext add` junction-links each `@cotal-ai/*` peer to the
-  binary's own copy.
+  you use is a peer too. `ext add` junction-links each `@cotal-ai/*` peer to the binary's own copy;
+  lazy materialization verifies and rebinds those links for the registry-facing entry's initial import,
+  so global installs and source worktrees can share the machine extension prefix. Import every host peer
+  in that initial graph; launcher/child artifacts that run later must bundle their dependencies rather
+  than resolving a mutable host-peer link after another Cotal process may have rebound it.
 - **Bundle core as external.** If you bundle (esbuild/rollup), mark `@cotal-ai/core` (and any other
   `@cotal-ai/*`) `--external` so the runtime `import` resolves the host's copy, not an inlined one.
 - **Importing the package must self-register.** Your entry (`main`/`exports`) must run

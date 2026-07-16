@@ -3,7 +3,7 @@ import { acquireLock, extensionMutationLockPath } from "@cotal-ai/workspace";
 /**
  * The extension-prefix writer lock: serializes every `cotal ext` mutation (add/remove) AND the
  * built-in seeding reconcile against each other, over the shared crash-safe advisory-lock primitive
- * (atomic `mkdir` publish, PID + process-start liveness, bounded wait, nonce-guarded release). Lives
+ * (atomic hard-link publish, PID + process-start liveness, bounded wait, nonce-guarded release). Lives
  * in its own lib so both `commands/ext.ts` and the `seed/` reconcile hold it without an import cycle:
  * the reconcile keeps it for its WHOLE run (across every seed child) so an operator `ext add`/`remove`
  * can't interleave between children and strand a stale refresh decision; each seed child skips

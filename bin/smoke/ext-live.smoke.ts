@@ -19,7 +19,7 @@
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -117,6 +117,64 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
   ok("<TAB> offers cached flags WITHOUT importing", comp.status === 0 && /--shout/.test(comp.stdout), comp.stdout);
   const run = cotal(["hello-ext"]);
   ok("running the broken extension fails loud, naming it", run.status === 1 && /cotal-ext-fixture/.test(run.stderr) && /BOOM/.test(run.stderr), run.stderr.slice(0, 300));
+  writeFileSync(installedIndex, good);
+}
+
+// -- B2: a peer link left by another Cotal host is rebound before lazy import -----------------------
+{
+  const peer = join(extDir, "node_modules", "cotal-ext-fixture", "node_modules", "@cotal-ai", "core");
+  const foreign = join(sandbox, "foreign-core");
+  mkdirSync(foreign, { recursive: true });
+  writeFileSync(join(foreign, "package.json"), JSON.stringify({ name: "@cotal-ai/core", version: "1.0.0", type: "module", exports: "./index.js" }));
+  writeFileSync(join(foreign, "index.js"), "export const registry = { register() {} };\n");
+  rmSync(peer, { recursive: true, force: true });
+  symlinkSync(foreign, peer, "junction");
+  const rebound = cotal(["hello-ext", "host-switch"]);
+  const hostCore = realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core"));
+  ok(
+    "lazy load rebinds a peer link left by another Cotal host",
+    rebound.status === 0 && /hello host-switch/.test(rebound.stdout) && realpathSync(peer) === hostCore,
+    rebound.stdout + rebound.stderr,
+  );
+}
+
+// -- B3: the cross-process lock covers rebind + complete module evaluation --------------------------
+{
+  const ready = join(sandbox, "materialize-ready");
+  const release = join(sandbox, "materialize-release");
+  const peer = join(extDir, "node_modules", "cotal-ext-fixture", "node_modules", "@cotal-ai", "core");
+  const good = readFileSync(installedIndex, "utf8");
+  writeFileSync(
+    installedIndex,
+    `import { existsSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
+import { registry } from "@cotal-ai/core";
+writeFileSync(${JSON.stringify(ready)}, "ready");
+while (!existsSync(${JSON.stringify(release)})) await sleep(10);
+registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run: async () => console.log("barrier-ok") });
+`,
+  );
+  let stdout = "";
+  let stderr = "";
+  const first = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox });
+  first.stdout.on("data", (data) => (stdout += data.toString()));
+  first.stderr.on("data", (data) => (stderr += data.toString()));
+  const firstDone = new Promise<number | null>((resolve) => first.on("close", resolve));
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(ready) && Date.now() < deadline) await sleep(20);
+  try {
+    ok("first materializer reaches top-level await while holding the prefix lock", existsSync(ready), stderr);
+    const blocked = cotal(["hello-ext"]);
+    ok(
+      "a competing materializer fails before rebinding the active host's peer",
+      blocked.status === 1 && /install\/remove is in progress/.test(blocked.stderr) && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core")),
+      blocked.stderr,
+    );
+  } finally {
+    writeFileSync(release, "release");
+  }
+  const firstStatus = await firstDone;
+  ok("the lock holder completes after its module evaluation barrier releases", firstStatus === 0 && /barrier-ok/.test(stdout), stdout + stderr);
   writeFileSync(installedIndex, good);
 }
 
