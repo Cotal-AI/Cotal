@@ -91,6 +91,19 @@ try {
   const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi"];
   const allSeeded = manifest.extensions.filter((e) => officials.includes(e.pkg)).every((e) => e.source === "seeded");
   check("all four recorded source:seeded (registered into the binary's single core)", allSeeded && manifest.extensions.filter((e) => officials.includes(e.pkg)).length === 4);
+
+  // The launcher shim a connector's buildLaunch runs (`node dist/serve.js` / `dist/launch.js`) must be
+  // PACKAGED — a build that emits only declarations for it passes install + import + materialize but
+  // fails at LAUNCH with MODULE_NOT_FOUND. Assert those buildLaunch targets exist in the installed
+  // payload (a self-contained esbuild bundle each), so a dropped shim can never ship again.
+  const extRoot = join(cfg, "cotal", "extensions", "node_modules");
+  const launchShims: Record<string, string> = {
+    "@cotal-ai/connector-opencode": "dist/serve.js",
+    "@cotal-ai/connector-hermes": "dist/launch.js",
+  };
+  for (const [pkg, shim] of Object.entries(launchShims)) {
+    check(`${pkg} launcher shim ${shim} is packaged (buildLaunch target exists)`, existsSync(join(extRoot, ...pkg.split("/"), ...shim.split("/"))));
+  }
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

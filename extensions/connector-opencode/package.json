@@ -20,7 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core --external:@opencode-ai/plugin --external:@opencode-ai/sdk && esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js --external:@opencode-ai/plugin --external:@opencode-ai/sdk",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core --external:@opencode-ai/plugin --external:@opencode-ai/sdk && esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js --external:@opencode-ai/plugin --external:@opencode-ai/sdk && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js --external:@opencode-ai/plugin --external:@opencode-ai/sdk",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
