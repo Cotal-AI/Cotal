@@ -72,6 +72,13 @@ async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
   if (name === "ext" && sub === "seed") {
     const extCmd = registry.all<Command>("command").find((cmd) => cmd.name === "ext");
     if (!extCmd) throw new Error("internal error: the `ext` command is not registered");
+    // `ext seed` is dispatched HERE, before the global/per-command help intercepts, so `--repair` can
+    // fix a corrupt manifest. A help request must still short-circuit to usage and mutate NOTHING
+    // (the maintenance run below writes the seed stamp/manifest).
+    if (argv.includes("--help") || argv.includes("-h")) {
+      commandHelp(extCmd);
+      return true;
+    }
     await extCmd.run(parseCommandArgs(extCmd, argv.slice(1)));
     return true;
   }

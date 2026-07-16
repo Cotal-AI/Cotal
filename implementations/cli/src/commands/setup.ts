@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, provenance } from "@cotal-ai/workspace";
+import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
@@ -237,23 +237,22 @@ async function pickConnectors(
   return new Set(picked as string[]);
 }
 
-/** The Claude Code plugin install, as a step (spinner + failure handling + handoff). */
-function claudePluginStep(): Step {
+/** The Claude Code plugin install, as a step (spinner + failure handling + handoff). Exported for the
+ *  setup-failloud smoke (removed-connector skip vs broken-connector throw). */
+export function claudePluginStep(): Step {
   return {
     name: "claude-plugin",
     title: "Install the Claude Code plugin",
     explain: "Lets a Claude Code session join the web and wake on peer messages.",
     context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
     async run() {
-      // The claude connector is a seeded/`ext add`ed plugin now, not a static import — materialize it
-      // for its `pluginRoot`. If the operator removed it, skip the plugin (with a hint), never crash
-      // the guided flow.
-      let claude: Connector;
-      try {
-        claude = await materializeExtension<Connector>({ kind: "connector", name: "claude" });
-      } catch {
+      // The claude connector is a seeded/`ext add`ed plugin now, not a static import. Only a GENUINE
+      // removal (absent from the manifest) skips the plugin; a present-but-broken connector (version
+      // skew, incompatible core, missing entry, import throw) must fail loud through runSteps with the
+      // real repair diagnostic, never be misreported as a deliberate removal.
+      if (!manifestExtensionNames("connector").includes("claude"))
         return "claude connector not installed - skipping the plugin (re-add it: cotal ext add @cotal-ai/connector-claude-code)";
-      }
+      const claude = await materializeExtension<Connector>({ kind: "connector", name: "claude" });
       installClaudePlugin(claude);
       return "cotal@cotal-mesh (local scope)";
     },
