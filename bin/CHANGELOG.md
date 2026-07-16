@@ -1,5 +1,19 @@
 # cotal-ai
 
+## 0.11.5
+
+### Patch Changes
+
+- 446ccc4: Resolve package-manager bin symlinks before locating the connector seed generation and bundled payloads.
+- Updated dependencies [446ccc4]
+  - @cotal-ai/cli@0.11.5
+  - @cotal-ai/core@0.11.5
+  - @cotal-ai/workspace@0.11.5
+  - @cotal-ai/manager@0.11.5
+  - @cotal-ai/delivery@0.11.5
+  - @cotal-ai/connector-core@0.11.5
+  - @cotal-ai/auth@0.11.5
+
 ## 0.11.4
 
 ### Patch Changes
