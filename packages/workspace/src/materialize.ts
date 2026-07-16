@@ -3,13 +3,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
+  bindExtensionPeers,
   extensionPackageDir,
-  extensionMutationLockState,
+  extensionMutationLockPath,
   extensionProvides,
   installedExtensionVersion,
   loadExtensionsManifest,
   type InstalledExtension,
 } from "./extensions.js";
+import { acquireLock } from "./advisory-lock.js";
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -32,6 +34,28 @@ function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error 
  *  so their advertised-key checks can't interleave. */
 let loadChain: Promise<void> = Promise.resolve();
 
+function enqueueLoad(load: () => Promise<void>): Promise<void> {
+  const run = loadChain.then(load);
+  loadChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+async function withExtensionLock(load: () => Promise<void>): Promise<void> {
+  const held = acquireLock(extensionMutationLockPath(), {
+    label: "extension materialization",
+    waitMs: 0,
+    onTimeout: (owner) => new Error(`extension install/remove is in progress (pid ${owner.pid}) - retry after the active \`cotal ext\` command finishes`),
+  });
+  try {
+    await load();
+  } finally {
+    held.release();
+  }
+}
+
 /**
  * Verify the pin, resolve the entry, and import the package TRANSACTIONALLY and INVISIBLY. The
  * import's self-registrations are STAGED (never resolvable while it runs); they publish atomically
@@ -41,12 +65,11 @@ let loadChain: Promise<void> = Promise.resolve();
  * share a validation window.
  */
 export async function importInstalledExtension(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
-  const run = loadChain.then(() => loadOne(ext, advertised));
-  loadChain = run.then(
-    () => undefined,
-    () => undefined, // keep the chain alive so one load's failure doesn't wedge the next
-  );
-  return run;
+  if (registry.has(advertised.kind, advertised.name)) return;
+  return enqueueLoad(async () => {
+    if (registry.has(advertised.kind, advertised.name)) return;
+    await withExtensionLock(() => loadOne(ext, advertised));
+  });
 }
 
 async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
@@ -56,9 +79,6 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // empty and wrongly read as "did not register"; the live check short-circuits that. commitStaged
   // publishes ALL of a package's keys, so a sibling ref requested concurrently is live here too.
   if (registry.has(advertised.kind, advertised.name)) return;
-  const mutation = extensionMutationLockState();
-  if (mutation.state === "active")
-    throw new Error(`extension install/remove is in progress (pid ${mutation.owner}) - retry after the active \`cotal ext\` command finishes`);
   const pkg = ext.pkg;
   const onDisk = installedExtensionVersion(pkg);
   if (!onDisk) {
@@ -69,6 +89,9 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
       `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
     );
   }
+  // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.
+  // Rebind before the first import in this process so registration lands in this host's core registry.
+  bindExtensionPeers([pkg], pkg);
   const dir = extensionPackageDir(pkg);
   const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string; exports?: unknown };
   let entry = meta.main ?? "index.js";
@@ -120,14 +143,18 @@ export async function materializeFromManifest<T extends Extension = Extension>(
   ref: ExtensionRef,
   opts: { hint?: (ref: ExtensionRef) => string } = {},
 ): Promise<T> {
-  const ext = loadExtensionsManifest().extensions.find((candidate) =>
-    extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+  await enqueueLoad(() =>
+    withExtensionLock(async () => {
+      const ext = loadExtensionsManifest().extensions.find((candidate) =>
+        extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+      );
+      if (!ext) {
+        throw new Error(
+          opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
+        );
+      }
+      await loadOne(ext, ref);
+    }),
   );
-  if (!ext) {
-    throw new Error(
-      opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
-    );
-  }
-  await importInstalledExtension(ext, ref); // throws if the package doesn't advertise ref; else ref is now committed
   return registry.resolve<T>(ref.kind, ref.name);
 }

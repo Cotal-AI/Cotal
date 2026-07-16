@@ -46,7 +46,7 @@ export function stampPath(): string {
   return join(seedDir(), "stamp.json");
 }
 
-/** The reconcile-wide lock DIRECTORY (shared advisory-lock primitive: atomic `mkdir` publish, PID +
+/** The reconcile-wide lock (shared advisory-lock primitive: atomic hard-link publish, PID +
  *  process-start liveness, bounded wait, dead-owner reclaim). */
 export function reconcileLockPath(): string {
   return join(seedDir(), "reconcile.lock");

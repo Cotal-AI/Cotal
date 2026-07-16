@@ -3,7 +3,7 @@ import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSp
 import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
- *  From the BUILD, `launch.js` is a self-contained ESM bundle (connector-core inlined): run it with
+ *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
  *  this same node, so an installed plugin needs no `tsx` on disk. From SOURCE (dev, the package's
  *  `import` resolves to src/), run the `.ts` entry through tsx. */
 const FROM_BUILD = import.meta.url.includes("/dist/");

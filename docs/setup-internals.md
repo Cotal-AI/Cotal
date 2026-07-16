@@ -135,8 +135,11 @@ the package `files`. `seed/paths.ts:shippedSourceDir` resolves the live `extensi
 source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install. The reconcile copies
 that payload into the durable store `seed/store/<version>/<name>` and `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
-junction-links each `@cotal-ai/*` peer to the binary's own copy, so every connector shares the binary's
-single `@cotal-ai/core` registry instance.
+junction-links each `@cotal-ai/*` peer to the binary's own copy. Before the first lazy import in each
+process, materialization rechecks those links by realpath and rebinds stale links under the extension
+lock. This lets the registry-facing imports of a global install, npx, and source worktrees share the
+machine prefix while each process still gets its host's single `@cotal-ai/core` registry instance;
+launcher artifacts are self-contained and do not resolve those mutable links later.
 
 **Reconcile policy** (generation = the `cotal-ai` version): a never-seeded built-in is seeded; a
 still-installed one WE seeded (`source: "seeded"`) is refreshed only when the version bumps (semver
@@ -147,7 +150,7 @@ of removed-vs-never-seeded and is unioned with its backup on read, so a truncate
 resurrects a removal.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
-atomic `mkdir` publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
+atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
 whole reconcile and every `cotal ext` mutation; a live reconcile is waited on, not mistaken for a crash.
 A crash **cursor** is journaled before each connector mutation and cleared only at the final commit, so
 a SIGKILL mid-run is detected on the next boot (fail loud → `ext seed --repair` re-installs the
