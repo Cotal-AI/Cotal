@@ -1,5 +1,5 @@
 ---
-"@cotal-ai/cli": minor
+"@cotal-ai/cli": patch
 "@cotal-ai/core": patch
 ---
 
