@@ -48,7 +48,7 @@ interface Run {
 function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {}): Run {
   const r = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...process.env, XDG_CONFIG_HOME: cfg, ...extraEnv },
+    env: { ...process.env, XDG_CONFIG_HOME: cfg, COTAL_SEED_DEBUG: "1", ...extraEnv },
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }

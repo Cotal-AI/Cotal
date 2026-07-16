@@ -153,6 +153,8 @@ async function add(spec: string): Promise<void> {
   // Authenticated: only an `ext add` whose marker matches the LIVE reconcile lock AND whose spec is a
   // staged official-connector path qualifies — a forged `COTAL_EXT_SEEDING` can't skip the lock.
   const seeding = isAuthenticSeedChild() && isPath && resolved.startsWith(seedStoreDir() + sep);
+  if (!seeding && process.env.COTAL_SEED_DEBUG && process.env.COTAL_EXT_SEEDING && process.env.COTAL_EXT_SEEDING !== "1")
+    console.error(`[seed-debug] authentic=${isAuthenticSeedChild()} isPath=${isPath} startsWith=${resolved.startsWith(seedStoreDir() + sep)} resolved=${resolved} storeDir=${seedStoreDir()}`);
   const releaseMutation = seeding ? () => {} : claimExtensionMutation();
   // Upgrade the parent's pending marker to a live one carrying this child's PID, as the first act — so
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
