@@ -80,18 +80,15 @@ async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
   return false;
 }
 
-/** Long-running internal daemons re-exec'd by the stack (`up`/`spawn` spawn them). They don't launch
- *  agents, so they never need the built-in connectors — and running the first-run seed (npm installs)
- *  on their boot both wastes time and delays a readiness-timed daemon (it broke delivery-daemon boot
- *  on Windows). The user-facing command that spawned them already seeded when it mattered. */
-const DAEMON_COMMANDS = new Set(["deliver", "supervise", "auth-service", "feedback-intake"]);
-
 function skipAutoReconcile(argv: string[]): boolean {
   const [name, sub] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
-  if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true; // explicit operator opt-out (still allows `ext seed`)
-  if (name !== undefined && DAEMON_COMMANDS.has(name)) return true; // internal daemons don't use connectors
+  // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
+  // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,
+  // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
+  // `cotal supervise --roster`, the agent supervisor + container entrypoint) still seeds on first run.
+  if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   return false;

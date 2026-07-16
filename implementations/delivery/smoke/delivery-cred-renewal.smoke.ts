@@ -103,6 +103,9 @@ try {
   daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
+    // This harness runs the delivery daemon DIRECTLY (not via `up`), so its first-real-command seed
+    // would run four npm installs and delay lease-ready; the daemon needs no connectors, so opt out.
+    env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   daemon.stdout!.on("data", (d: Buffer) => { output += d.toString(); });
   daemon.stderr!.on("data", (d: Buffer) => { output += d.toString(); });

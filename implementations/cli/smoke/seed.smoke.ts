@@ -97,6 +97,31 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   check("idempotent: stamp untouched across boots (fast-path, no re-seed)", m1 === m2);
 }
 
+// ── direct `supervise` (the agent supervisor) SEEDS on a fresh config — it is NOT a skipped daemon ─
+{
+  const cfg = track(freshCfg());
+  const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi"];
+  const seededOnDisk = (): number => {
+    try {
+      return (readJson(manifestPath(cfg)).extensions as { pkg: string }[]).filter((e) => officials.includes(e.pkg)).length;
+    } catch {
+      return 0;
+    }
+  };
+  // A direct `cotal supervise` is a USER command, not a spawner child, so it must run the first-run
+  // seed before it would launch any agent. Point it at an unreachable broker; the boot-gate seed runs
+  // BEFORE the connect attempt, so the connectors appear regardless of the connect outcome — poll the
+  // manifest on disk (not `ext list`, which would itself seed) and kill the daemon once they exist.
+  const child = spawn("node", [BIN, "supervise", "--space", "seedsmoke", "--server", "nats://127.0.0.1:59998"], {
+    env: { ...process.env, XDG_CONFIG_HOME: cfg },
+    stdio: "ignore",
+  });
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline && seededOnDisk() < 4) await new Promise((r) => setTimeout(r, 1000));
+  child.kill("SIGKILL");
+  check("direct `supervise` seeds all four connectors on a fresh config (public command, not exempted)", seededOnDisk() === 4);
+}
+
 // ── 3. removability + removed-stays-removed ──────────────────────────────────────────────────────
 {
   const cfg = track(freshCfg());
