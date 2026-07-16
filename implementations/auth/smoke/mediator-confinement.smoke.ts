@@ -29,6 +29,7 @@ import {
   admissionMediatorGrants, retirementCleanerGrants, mediatorEnumConsumerName, recordsBucket, recordsKvStreamName,
   epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseDecisionFact, parseWorkTerminalFact, workTerminalSubject,
+  reconcileWorkItem, workPoolContext,
 } from "@cotal-ai/core";
 import {
   openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, settleEpfOrSelfObligation,
@@ -225,8 +226,16 @@ try {
   }
   clnNc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "cleaner", pass: "pw", inboxPrefix: `_INBOX_${CLN_CONN}` });
   const bind = { jsm: await jetstreamManager(clnNc, { timeout: 2000 }), js: jetstream(clnNc, { timeout: 2000 }), principal: "local.cleaner" };
-  const cleaned = await runExactPoolCleaner(bind, { space: SPACE, endpoint: EP, pool: POOL, targetUid: tgt.lifecycleUid, opId: "1".repeat(26), now: () => NOW, maxStalledPasses: 4 });
-  c("the REAL cleaner reaches proven quiescence over the scoped credential (bind + NEXT + ACK + wrk + MSG.GET rows live)",
+  const executorWork = await workPoolContext(nc, SPACE);
+  const cleaned = await runExactPoolCleaner(bind, {
+    space: SPACE, endpoint: EP, pool: POOL, targetUid: tgt.lifecycleUid, now: () => NOW, maxStalledPasses: 4,
+    settleItem: async ({ ref, itemBytes }) => {
+      const verdict = await reconcileWorkItem(executorWork, { ref, itemBytes, workExpiry: NOW - 5, now: NOW });
+      if (!("fact" in verdict)) throw new Error(`executor returned ${verdict.state}`);
+      return verdict.fact;
+    },
+  });
+  c("the REAL cleaner reaches proven quiescence while a distinct executor owns lease + terminal settlement",
     cleaned.settledExpired === 1 && cleaned.ackedTerminal === 0 && cleaned.settledRetired === 0, cleaned);
   {
     const ref = { endpoint: EP, pool: POOL, acceptance: { ...cE, id: "exp001" } };
@@ -235,8 +244,8 @@ try {
   }
 
   console.log("D. the cleaner's boundary is BROKER-enforced");
-  await denied("the cleaner CANNOT write a wrk terminal for a NON-listed pool",
-    () => publishFactCreateOnly(bind.js, epfSubject(SPACE, EP, ["wrk", POOL2, cE.owner, cE.actor, cE.uid, "ev0002"]), enc.encode("{}")).then((r) => { if (!r.won) throw new Error("cas-lost"); }));
+  await denied("the cleaner CANNOT write a wrk terminal, even for its listed pool",
+    () => publishFactCreateOnly(bind.js, epfSubject(SPACE, EP, ["wrk", POOL, cE.owner, cE.actor, cE.uid, "ev0002"]), enc.encode("{}")).then((r) => { if (!r.won) throw new Error("cas-lost"); }));
   await denied("the cleaner CANNOT write a decision fact at all",
     () => publishFactCreateOnly(bind.js, epfSubject(SPACE, EP, ["dec", cE.owner, cE.actor, cE.uid, "ev0003"]), enc.encode("{}")).then((r) => { if (!r.won) throw new Error("cas-lost"); }));
   await denied("the cleaner CANNOT enqueue pool work (no epw publish)",
@@ -253,6 +262,10 @@ try {
     () => bind.jsm.streams.getMessage(epwStreamName(SPACE), { last_by_subj: epwSubject(SPACE, EP, POOL, { ...cE, id: "exp001" }) }));
   await denied("the cleaner CANNOT touch the records store",
     () => bind.js.publish(`$KV.${recordsBucket(SPACE)}.oblig.${tgt.lifecycleUid}.${EP}.local.caller.${"a".repeat(26)}.x02`, enc.encode("{}")));
+  await denied("the cleaner CANNOT CAS or overwrite an exact listed-pool lease",
+    () => bind.js.publish(`$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL}.local.caller.${cE.uid}.exp001.spec`, enc.encode("{}")));
+  await denied("the cleaner CANNOT leader-read the records stream",
+    () => bind.jsm.streams.getMessage(recordsKvStreamName(SPACE), { last_by_subj: `$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL}.local.caller.${cE.uid}.exp001.spec` }));
   await subDenied("the cleaner CANNOT subscribe the account-wide _INBOX.> (its reply inbox is connection-scoped)", "cleaner", "_INBOX.>", PORT);
   await subDenied("the cleaner CANNOT subscribe ANOTHER principal's scoped inbox", "cleaner", `_INBOX_${MED_CONN}.>`, PORT);
 

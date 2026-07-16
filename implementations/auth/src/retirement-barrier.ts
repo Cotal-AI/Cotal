@@ -57,10 +57,12 @@ import {
   parseWorkTerminalFact,
   poolConsumerConfig,
   poolDurable,
-  publishFactCreateOnly,
   readLastFact,
   recordAtomicKey,
+  reconcileWorkItem,
+  retireWorkItem,
   workTerminalSubject,
+  type WorkPoolContext,
   type WorkItemRef,
   type WorkTerminalFact,
 } from "@cotal-ai/core";
@@ -82,7 +84,6 @@ import {
 } from "./credential-ledger.js";
 import { enumerateObligationRows } from "./admission-mediator.js";
 
-const enc = new TextEncoder();
 const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -209,6 +210,15 @@ export interface PoolCleanResult {
   settledRetired: number;
 }
 
+/** Executor-authority settlement seam. The cleaner supplies only delivery identity/bytes and a
+ *  requested disposition; the implementation is closed over the durable retirement intent and
+ *  independently re-derives every authority coordinate before touching the lease. */
+export type SettleRetirementPoolItem = (args: {
+  ref: WorkItemRef;
+  itemBytes: Uint8Array;
+  disposition: "expired" | "retired";
+}) => Promise<WorkTerminalFact>;
+
 /** Rebuild-and-compare parse of a delivered EPW message subject against the bound pool: the
  *  trailing four tokens are the acceptance identity, and the rebuilt subject must equal the
  *  delivered one exactly (bijective — a truncated or foreign-family subject never settles). */
@@ -225,20 +235,6 @@ function itemRefOf(space: string, endpoint: string, pool: string, subject: strin
   if (rebuilt !== subject)
     throw new EpEnvelopeError("internal", `the delivered pool message ${subject} does not rebuild from the bound pool coordinates (${rebuilt}); the durable's filter proof does not cover it (SPEC 13.9) — refused`);
   return ref;
-}
-
-/** Settle one item's terminal fact create-only. A LOST create is observed as the existing
- *  terminal (§13.9: a residual in-flight publish that wins is simply observed) — but the winner
- *  must still be a VALID terminal for this exact item. */
-async function settleTerminal(bind: PoolCleanerBind, space: string, ref: WorkItemRef, fact: WorkTerminalFact): Promise<"won" | "observed"> {
-  const subject = workTerminalSubject(space, ref);
-  const res = await publishFactCreateOnly(bind.js, subject, enc.encode(JSON.stringify(fact)));
-  if (res.won) return "won";
-  const winner = await readLastFact(bind.jsm, epfStreamName(space), subject);
-  if (winner === undefined)
-    throw new EpEnvelopeError("internal", `the terminal CAS for ${subject} was lost but no winning fact is readable (SPEC 13.4)`);
-  parseWorkTerminalFact(winner, subject, ref);
-  return "observed";
 }
 
 /** ACK a settled delivery with confirmation (§13.9: a fire-and-forget ACK is confirmed with
@@ -264,15 +260,16 @@ export async function runExactPoolCleaner(
   bind: PoolCleanerBind,
   args: {
     space: string; endpoint: string; pool: string;
+    /** Executor-authority, intent-closed lease/terminal seam; never cleaner-owned handles. */
+    settleItem: SettleRetirementPoolItem;
     /** The retiring target this operation may re-bind items to. */
-    targetUid: string; opId: string;
+    targetUid: string;
     now: () => number;
     fetchExpiresMs?: number; maxStalledPasses?: number;
   },
 ): Promise<PoolCleanResult> {
   const { space, endpoint, pool } = args;
   const targetUid = assertLifecycleToken(args.targetUid, "targetUid");
-  const opId = assertLifecycleToken(args.opId, "opId");
   const stream = epwStreamName(space);
   const durable = poolDurable(endpoint, pool);
   const expect = poolConsumerConfig(space, endpoint, pool);
@@ -331,17 +328,33 @@ export async function runExactPoolCleaner(
         throw new EpEnvelopeError("internal", `the pool item ${m.subject} was accepted without a workExpiry; a pool-routed acceptance always carries the absolute horizon (corruption, SPEC 13.8) — the cleaner refuses`);
       const now = args.now();
       if (now >= fact.workExpiry) {
-        // Expired: bound to the item's OWN horizon — settleable for ANY target (§13.9).
-        await settleTerminal(bind, space, ref, { v: 1, disposition: "expired", pool, caller: ref.acceptance, workExpiry: fact.workExpiry, ts: now });
+        const settled = await args.settleItem({ ref, itemBytes: m.data, disposition: "expired" });
+        const observedRaw = await readLastFact(bind.jsm, epfStreamName(space), termSubject);
+        if (observedRaw === undefined)
+          throw new EpEnvelopeError("internal", `the executor settled ${m.subject} but no terminal ${termSubject} is readable; the cleaner never ACKs an unproven settlement (SPEC 13.9)`);
+        const observed = parseWorkTerminalFact(observedRaw, termSubject, ref);
+        if (JSON.stringify(observed) !== JSON.stringify(settled))
+          throw new EpEnvelopeError("internal", `the terminal ${termSubject} does not match the executor's lease-derived settlement; the cleaner refuses to ACK (SPEC 13.5/13.9)`);
         await ackSync(m, m.subject);
-        counts.settledExpired++; progressed++;
+        if (observed.disposition === "expired") counts.settledExpired++;
+        else if (observed.disposition === "retired") counts.settledRetired++;
+        else counts.ackedTerminal++;
+        progressed++;
         continue;
       }
       if (fact.target !== undefined && fact.target.lifecycleUid === targetUid) {
-        // Live but bound to THIS operation's retiring target: settle `retired` (§13.9).
-        await settleTerminal(bind, space, ref, { v: 1, disposition: "retired", pool, caller: ref.acceptance, opId, targetUid, ts: now });
+        const settled = await args.settleItem({ ref, itemBytes: m.data, disposition: "retired" });
+        const observedRaw = await readLastFact(bind.jsm, epfStreamName(space), termSubject);
+        if (observedRaw === undefined)
+          throw new EpEnvelopeError("internal", `the executor settled ${m.subject} but no terminal ${termSubject} is readable; the cleaner never ACKs an unproven settlement (SPEC 13.9)`);
+        const observed = parseWorkTerminalFact(observedRaw, termSubject, ref);
+        if (JSON.stringify(observed) !== JSON.stringify(settled))
+          throw new EpEnvelopeError("internal", `the terminal ${termSubject} does not match the executor's lease-derived settlement; the cleaner refuses to ACK (SPEC 13.5/13.9)`);
         await ackSync(m, m.subject);
-        counts.settledRetired++; progressed++;
+        if (observed.disposition === "expired") counts.settledExpired++;
+        else if (observed.disposition === "retired") counts.settledRetired++;
+        else counts.ackedTerminal++;
+        progressed++;
         continue;
       }
       // Live, unexpired, foreign target: NEVER settled or ACKed (§13.9). It stays delivered but
@@ -396,6 +409,43 @@ export interface RetirementResult {
   frontiers: Record<string, number>;
 }
 
+function settlementForIntent(
+  work: WorkPoolContext,
+  intent: RetirementIntent,
+  spec: RetirementPoolSpec,
+  space: string,
+  opId: string,
+  now: () => number,
+): SettleRetirementPoolItem {
+  const allowedPools = new Set(spec.pools);
+  return async ({ ref, itemBytes, disposition }) => {
+    if (ref.endpoint !== spec.endpoint || !allowedPools.has(ref.pool))
+      throw new EpEnvelopeError("permission-denied", `the retirement executor for ${spec.endpoint} refuses item ${ref.endpoint}/${ref.pool}; the durable intent grants only its listed endpoint/pools (SPEC 13.1/13.9)`);
+    const decSubject = epfSubject(space, ref.endpoint, ["dec", ref.acceptance.owner, ref.acceptance.actor, ref.acceptance.uid, ref.acceptance.id]);
+    const decRaw = await readLastFact(work.jsm, epfStreamName(space), decSubject);
+    if (decRaw === undefined)
+      throw new EpEnvelopeError("internal", `the retirement executor found no acceptance decision for ${decSubject}; cleaner-supplied coordinates never authorize settlement (SPEC 13.8)`);
+    const fact = parseDecisionFact(decRaw, decSubject);
+    if (fact.decision !== "accepted" || fact.route !== `pool.${ref.pool}` || fact.workExpiry === undefined)
+      throw new EpEnvelopeError("permission-denied", `the retirement executor refuses ${decSubject}; it is not an accepted item for intent pool ${ref.pool} (SPEC 13.8/13.9)`);
+    const clock = now();
+    if (disposition === "expired") {
+      if (clock < fact.workExpiry)
+        throw new EpEnvelopeError("permission-denied", `the retirement executor refuses to expire live item ${decSubject}; its acceptance horizon is ${fact.workExpiry} (executor clock ${clock})`);
+      const verdict = await reconcileWorkItem(work, { ref, itemBytes, workExpiry: fact.workExpiry, now: clock });
+      if (!("fact" in verdict))
+        throw new EpEnvelopeError("internal", `expired retirement settlement for ${decSubject} returned nonterminal state ${verdict.state}; the executor refuses to authorize an ACK`);
+      return verdict.fact;
+    }
+    const target = fact.target;
+    if (target === undefined || target.owner !== intent.owner || target.actor !== intent.actor || target.lifecycleUid !== intent.lifecycleUid)
+      throw new EpEnvelopeError("permission-denied", `the retirement executor refuses to retire ${decSubject}; its accepted target is outside this durable retirement intent (SPEC 13.1/13.9)`);
+    return (await retireWorkItem(work, {
+      ref, workExpiry: fact.workExpiry, opId, targetUid: intent.lifecycleUid, now: clock,
+    })).fact;
+  };
+}
+
 /** Run the cleaner step for one endpoint entry: mint the bind, clean every listed pool, then —
  *  BEFORE anything else proceeds — retire the cleaner credential and verified-evict its
  *  principal, on the failure path too (a wedged barrier never leaves a live cleaner). */
@@ -404,15 +454,17 @@ async function cleanEndpointPools(
   spec: RetirementPoolSpec,
   space: string,
   opId: string,
+  work: WorkPoolContext,
   deps: RetirementDeps,
   cleaned: Record<string, PoolCleanResult>,
 ): Promise<void> {
   const bind = await deps.openCleaner({ opId, endpoint: spec.endpoint, pools: [...spec.pools] });
+  const settleItem = settlementForIntent(work, intent, spec, space, opId, deps.now);
   let cleanerError: unknown;
   try {
     for (const pool of spec.pools) {
       cleaned[`${spec.endpoint}/${pool}`] = await runExactPoolCleaner(bind, {
-        space, endpoint: spec.endpoint, pool, targetUid: intent.lifecycleUid, opId,
+        space, endpoint: spec.endpoint, pool, settleItem, targetUid: intent.lifecycleUid,
         now: deps.now, fetchExpiresMs: deps.cleaner?.fetchExpiresMs, maxStalledPasses: deps.cleaner?.maxStalledPasses,
       });
     }
@@ -455,7 +507,7 @@ export async function runAgentRetirementBarrier(
   },
   deps: RetirementDeps,
 ): Promise<RetirementResult> {
-  const { space, authKv, recordsKv, jsm, js } = registryStores(reg);
+  const { space, authKv, recordsKv, jsm, js, work } = registryStores(reg);
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);
   const frontierKey = recordAtomicKey(RETIREMENT_FRONTIER, [args.lifecycleUid]);
@@ -559,17 +611,21 @@ export async function runAgentRetirementBarrier(
   // are already settled. New rows cannot appear (the head is `retiring`, so every obtain fails
   // its currency read), which is why re-enumeration converges.
   const drainedEndpoints: string[] = [];
+  const verifiedAcceptedEpf = new Set<string>();
   for (let pass = 1; ; pass++) {
     const rows = await enumerateObligationRows({ jsm, js }, space, `oblig.${intent.lifecycleUid}.>`);
     const nonTerminal = rows.filter((r) => r.row.state === "provisional" || r.row.state === "accepted");
-    const endpoints = [...new Set(nonTerminal.map((r) => r.key.split(".")[2]))].sort();
-    const undrained = endpoints.filter((ep) => !drainedEndpoints.includes(ep));
-    if (undrained.length === 0) break; // every endpoint with a non-terminal row is drained + route-verified
+    const needingDrain = nonTerminal.filter((r) => r.row.state !== "accepted" || r.row.decision !== "epf" || !verifiedAcceptedEpf.has(`${r.key}@${r.revision}`));
+    if (needingDrain.length === 0) break; // all accepted EPF rows seen here were route-verified at this exact revision
+    const endpoints = [...new Set(needingDrain.map((r) => r.key.split(".")[2]))].sort();
     if (pass > 4)
-      throw new EpEnvelopeError("unavailable", `the obligation drain for ${intent.lifecycleUid} did not reach quiescence in ${pass - 1} passes (${undrained.length} undrained endpoint(s), first ${undrained[0]}); investigate before retiring (SPEC 13.8)`);
-    for (const ep of undrained) {
+      throw new EpEnvelopeError("unavailable", `the obligation drain for ${intent.lifecycleUid} did not reach quiescence in ${pass - 1} passes (${needingDrain.length} row(s) still needing drain, first ${needingDrain[0]?.key}); investigate before retiring (SPEC 13.8)`);
+    for (const ep of endpoints) {
       await deps.drainTargetObligations(ep, intent.lifecycleUid);
-      drainedEndpoints.push(ep);
+      if (!drainedEndpoints.includes(ep)) drainedEndpoints.push(ep);
+      for (const r of nonTerminal)
+        if (r.key.split(".")[2] === ep && r.row.state === "accepted" && r.row.decision === "epf")
+          verifiedAcceptedEpf.add(`${r.key}@${r.revision}`);
     }
   }
 
@@ -577,7 +633,7 @@ export async function runAgentRetirementBarrier(
   // verified-evicted BEFORE any frontier records (§13.1 cleaner fence).
   const cleaned: Record<string, PoolCleanResult> = {};
   for (const spec of intent.endpoints) {
-    await cleanEndpointPools(intent, spec, space, opId, deps, cleaned);
+    await cleanEndpointPools(intent, spec, space, opId, work, deps, cleaned);
   }
 
   // 6. Record the per-stream retirement frontiers (create-only; an existing record is THIS

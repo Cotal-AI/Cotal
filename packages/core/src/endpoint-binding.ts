@@ -693,26 +693,23 @@ export function admissionMediatorGrants(space: string, endpoint: string, connId:
 /** The RETIREMENT CLEANER principal's rows (§13.9 matrix "Terminal pool cleanup", §13.1
  *  barrier): minted per (retirement op × endpoint) with the EXACT pools the op intent
  *  enumerates — never a pool wildcard, never space-wide EPW rights. Per listed pool: BIND-ONLY
- *  on the provisioner-pre-created durable (INFO/MSG.NEXT/ACK, never create/update/delete) plus
- *  the create-only terminal `wrk` publish scoped to that pool. Plus the leader-served EPF
- *  `STREAM.MSG.GET` its terminal-observe and acceptance re-bind reads require — a STREAM-level
- *  grant whose read exposure is space-wide; that residual is EXPLICIT per D32 and accepted only
- *  for this trusted, bounded-lived, per-op profile. The `wrk` publish carries the parallel
- *  EXPLICIT write residual: it is payload-blind within the listed pools, so a compromised
- *  cleaner can forge a terminal `wrk` fact for its own listed pools' LIVE work without the
- *  code's `expired`/`retired` gating (work suppression / mis-settlement, the exact parallel of
- *  the mediator's acceptance-forge), never beyond the listed pools. The reply inbox is
+ *  on the provisioner-pre-created durable (INFO/MSG.NEXT/ACK, never create/update/delete). Plus
+ *  the leader-served EPF `STREAM.MSG.GET` its terminal-observe and acceptance re-bind reads
+ *  require — a STREAM-level grant whose read exposure is space-wide; that residual is EXPLICIT
+ *  per D32 and accepted only for this trusted, bounded-lived, per-op profile. The cleaner holds
+ *  NO terminal-publish or lease authority: the op-bounded executor CASes the lease and publishes
+ *  its derived terminal, and the cleaner re-reads it before ACK. The reply inbox is
  *  connection-scoped (`_INBOX_<connId>.>`, never the account-wide default). NO `epw.>` publish,
  *  NO consumer create/update/delete, NO raw stream DELETE. The profile is revoked and its
  *  principal cluster-verified-evicted by the barrier BEFORE any frontier records (§13.1). */
 export function retirementCleanerGrants(space: string, endpoint: string, pools: string[], connId: string): { publish: string[]; subscribe: string[] } {
   if (!Array.isArray(pools) || pools.length === 0)
     throw new Error("a retirement-cleaner grant lists at least one exact pool (SPEC 13.9: the op intent enumerates them; a poolless cleaner is no cleaner)");
-  const e = endpointToken(endpoint);
+  endpointToken(endpoint);
   const publish: string[] = [];
   for (const pool of pools) {
-    publish.push(...consumeBindRows(epwStreamName(space), poolDurable(endpoint, pool)));
-    publish.push(`${spacePrefix(space)}.epf.${e}.wrk.${assertPoolToken(pool)}.>`);
+    const p = assertPoolToken(pool);
+    publish.push(...consumeBindRows(epwStreamName(space), poolDurable(endpoint, p)));
   }
   publish.push(`${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`, `${JSAPI}.INFO`);
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };

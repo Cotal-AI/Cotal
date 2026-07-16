@@ -53,7 +53,7 @@ import {
   EpEnvelopeError,
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
-  epfSubject, epfStreamName, epwSubject, epwStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
+  epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, goalResultSubject, parseGoalResultFact, publishFactCreateOnly, readLastFact, parseDecisionFact, parseEffectFact,
   workTerminalSubject, parseWorkTerminalFact,
   contractDigest, parseEpSubject,
   type RejectionFact, type DecisionFact, type WorkItemRef,
@@ -1127,9 +1127,46 @@ async function verifyAcceptedEpfRoute(
   row: ObligationRow,
   reconciler: ReconcileAcceptedRoute | undefined,
 ): Promise<void> {
-  if (row.route === "effects") return; // established by the acceptance decision fact
-  const pool = row.route!.slice("pool.".length);
   const [cOwner, cActor, cUid, id] = key.split(".").slice(3); // [oblig, target, endpoint, cO, cA, cUid, id]
+  if (row.route === "effects") {
+    const decSubject = epfSubject(med.space, med.endpoint, ["dec", cOwner, cActor, cUid, id]);
+    const decRaw = await readLastFact(med.jsm, epfStreamName(med.space), decSubject);
+    if (decRaw === undefined)
+      throw new EpEnvelopeError("internal", `accepted effects obligation ${key} has no decision fact; accepted rows derive from a durable decision (corruption, SPEC 13.8)`);
+    const fact = parseDecisionFact(decRaw, decSubject);
+    if (fact.decision !== "accepted")
+      throw new EpEnvelopeError("internal", `accepted effects obligation ${key} points at a rejected decision fact; obligation/decision state diverged (corruption, SPEC 13.8)`);
+    assertDecisionMatchesRow(fact, row, key);
+    const goalId = typeof fact.request.goalId === "string" ? fact.request.goalId : undefined;
+    const goalRef = goalId !== undefined
+      ? { endpoint: med.endpoint, caller: { owner: cOwner, actor: cActor, uid: cUid }, goalId }
+      : undefined;
+    const doneSubject = goalRef !== undefined
+      ? goalResultSubject(med.space, goalRef)
+      : epfEffectSubject(med.space, med.endpoint, { owner: cOwner, actor: cActor, uid: cUid }, id);
+    const established = async (): Promise<boolean> => {
+      const doneRaw = await readLastFact(med.jsm, epfStreamName(med.space), doneSubject);
+      if (doneRaw === undefined) return false;
+      if (goalRef !== undefined) {
+        const done = parseGoalResultFact(doneRaw, doneSubject, goalRef);
+        if (done.fingerprint !== fact.fingerprint)
+          throw new EpEnvelopeError("internal", `goal completion ${doneSubject} does not match accepted decision ${decSubject}; a mismatched terminal never proves quiescence (SPEC 13.6/13.9)`);
+        return true;
+      }
+      const done = parseEffectFact(doneRaw, doneSubject);
+      if (done.fingerprint !== fact.fingerprint || done.sourceSeq !== fact.sourceSeq)
+        throw new EpEnvelopeError("internal", `effect completion ${doneSubject} does not match accepted decision ${decSubject}; a mismatched marker never proves quiescence (SPEC 13.9)`);
+      return true;
+    };
+    if (await established()) return;
+    if (reconciler === undefined)
+      throw new EpEnvelopeError("failed-precondition", `accepted effects obligation ${key} has no durable completion marker ${doneSubject} and no reconcileAcceptedRoute was given; a drain never declares quiescence over executable accepted effects work (SPEC 13.8/13.9)`);
+    await reconciler(row, key);
+    if (!(await established()))
+      throw new EpEnvelopeError("unavailable", `the reconciler for accepted effects obligation ${key} did not establish durable completion marker ${doneSubject}; effects work is still executable and quiescence fails closed (SPEC 13.8/13.9)`);
+    return;
+  }
+  const pool = row.route!.slice("pool.".length);
   const ref: WorkItemRef = { endpoint: med.endpoint, pool, acceptance: { owner: cOwner, actor: cActor, uid: cUid, id } };
   const wrkSubject = workTerminalSubject(med.space, ref);
   const itemSubject = epwSubject(med.space, med.endpoint, pool, ref.acceptance);

@@ -275,8 +275,10 @@ export interface WorkLease {
   /** The item's absolute work horizon (§13.8), persisted so commit fences on it too. */
   workExpiry: number;
   /** Present iff `state === "settled"`: how it settled and (for a commit) the cached outcome. */
-  disposition?: "committed" | "expired";
+  disposition?: "committed" | "expired" | "retired";
   outcome?: unknown;
+  opId?: string;
+  targetUid?: string;
   committedTs?: number;
 }
 
@@ -292,18 +294,27 @@ function parseLease(raw: unknown, key: string): WorkLease {
   const o = raw as Record<string, unknown>;
   if (o.v !== 1 || (o.state !== "leased" && o.state !== "settled"))
     throw new EpEnvelopeError("internal", `lease record ${key} has an unknown version/state; garbled state never authorizes (SPEC 13.5)`);
-  assertClosedKeys(o, ["v", "state", "sourceSeq", "attempt", "worker", "fencingToken", "leaseDeadline", "workExpiry", "disposition", "outcome", "committedTs"], `lease record ${key}`);
+  assertClosedKeys(o, ["v", "state", "sourceSeq", "attempt", "worker", "fencingToken", "leaseDeadline", "workExpiry", "disposition", "outcome", "opId", "targetUid", "committedTs"], `lease record ${key}`);
   for (const [name, v] of [["sourceSeq", o.sourceSeq], ["attempt", o.attempt], ["fencingToken", o.fencingToken], ["leaseDeadline", o.leaseDeadline], ["workExpiry", o.workExpiry]] as const)
     if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0)
       throw new EpEnvelopeError("internal", `lease record ${key} field ${name} is not a safe integer; garbled state never authorizes (SPEC 13.5)`);
   const committed = o.state === "settled" && o.disposition === "committed";
   const expired = o.state === "settled" && o.disposition === "expired";
-  if (o.state === "settled" && !committed && !expired)
+  const retired = o.state === "settled" && o.disposition === "retired";
+  if (o.state === "settled" && !committed && !expired && !retired)
     throw new EpEnvelopeError("internal", `settled lease record ${key} has no valid disposition; garbled state never authorizes (SPEC 13.5)`);
-  if (o.state === "leased" && (o.disposition !== undefined || o.outcome !== undefined || o.committedTs !== undefined))
+  if (o.state === "leased" && (o.disposition !== undefined || o.outcome !== undefined || o.opId !== undefined || o.targetUid !== undefined || o.committedTs !== undefined))
     throw new EpEnvelopeError("internal", `leased lease record ${key} carries settlement fields; garbled cross-variant state never authorizes (SPEC 13.5)`);
-  if (expired && o.outcome !== undefined)
-    throw new EpEnvelopeError("internal", `expired lease record ${key} carries an outcome; garbled cross-variant state never authorizes (SPEC 13.5)`);
+  if ((expired || retired) && o.outcome !== undefined)
+    throw new EpEnvelopeError("internal", `${o.disposition as string} lease record ${key} carries an outcome; garbled cross-variant state never authorizes (SPEC 13.5)`);
+  if (retired) {
+    if (typeof o.opId !== "string" || typeof o.targetUid !== "string")
+      throw new EpEnvelopeError("internal", `retired lease record ${key} carries no op/target binding; garbled state never authorizes (SPEC 13.1)`);
+    assertLifecycleToken(o.opId, "retired lease opId");
+    assertLifecycleToken(o.targetUid, "retired lease targetUid");
+  } else if (o.opId !== undefined || o.targetUid !== undefined) {
+    throw new EpEnvelopeError("internal", `${String(o.disposition ?? o.state)} lease record ${key} carries retirement fields; garbled cross-variant state never authorizes (SPEC 13.5)`);
+  }
   const needsWorker = o.state === "leased" || committed;
   // An EXECUTED coordinate set (any record that carries a worker, including a worker-bearing
   // expired record) is positive across ALL THREE coordinates; only the worker-less never-leased
@@ -321,7 +332,7 @@ function parseLease(raw: unknown, key: string): WorkLease {
     ...(worker !== undefined ? { worker } : {}),
     fencingToken: o.fencingToken as number,
     leaseDeadline: o.leaseDeadline as number, workExpiry: o.workExpiry as number,
-    ...(o.state === "settled" ? { disposition: o.disposition as "committed" | "expired", outcome: o.outcome, committedTs: o.committedTs as number } : {}),
+    ...(o.state === "settled" ? { disposition: o.disposition as "committed" | "expired" | "retired", outcome: o.outcome, opId: o.opId as string | undefined, targetUid: o.targetUid as string | undefined, committedTs: o.committedTs as number } : {}),
   };
 }
 
@@ -500,6 +511,11 @@ function terminalOf(ref: WorkItemRef, lease: WorkLease): WorkTerminalFact {
     if (lease.worker === undefined || lease.committedTs === undefined)
       throw new EpEnvelopeError("internal", `a committed lease for ${ref.acceptance.id} is missing its worker/committedTs; garbled state never authorizes (SPEC 13.5)`);
     return { v: 1, disposition: "committed", pool: ref.pool, caller: ref.acceptance, sourceSeq: lease.sourceSeq, attempt: lease.attempt, fencingToken: lease.fencingToken, worker: lease.worker, outcome: lease.outcome, ts: lease.committedTs };
+  }
+  if (lease.disposition === "retired") {
+    if (lease.opId === undefined || lease.targetUid === undefined || lease.committedTs === undefined)
+      throw new EpEnvelopeError("internal", `a retired lease for ${ref.acceptance.id} is missing its op/target/committedTs; garbled state never authorizes (SPEC 13.1)`);
+    return { v: 1, disposition: "retired", pool: ref.pool, caller: ref.acceptance, opId: lease.opId, targetUid: lease.targetUid, ts: lease.committedTs };
   }
   return { v: 1, disposition: "expired", pool: ref.pool, caller: ref.acceptance, workExpiry: lease.workExpiry, ts: lease.committedTs ?? 0 };
 }
@@ -777,6 +793,46 @@ export async function reconcileWorkItem(
     throw new EpEnvelopeError("failed-precondition", `the item is not settled, not expired, not live, and its create-only re-enqueue is refused by the stream's per-subject history; needs operator reconciliation (SPEC 13.6)`);
   }
   return { state: "re-enqueued", seq: re.seq! };
+}
+
+/** Settle a still-live pool item as `retired` for the §13.1 exact-pool cleaner. Unlike ordinary
+ *  expiry reconciliation, retirement is target-bound and may settle unexpired work, but it still
+ *  uses the lease key as the single arbiter: a racing commit, lease advance, or cleaner settlement
+ *  all contend on this revision before any terminal fact is published. */
+export async function retireWorkItem(
+  ctx: WorkPoolContext,
+  args: { ref: WorkItemRef; workExpiry: number; opId: string; targetUid: string; now: number },
+): Promise<{ won: boolean; fact: WorkTerminalFact }> {
+  assertCtx(ctx);
+  const ref = snapshotRef(args.ref);
+  const workExpiry = assertSafeInt(args.workExpiry, "workExpiry");
+  const opId = assertLifecycleToken(args.opId, "retirement opId");
+  const targetUid = assertLifecycleToken(args.targetUid, "retirement targetUid");
+  const now = assertSafeInt(args.now, "now");
+  const terminal = await readWorkTerminal(ctx, ref);
+  if (terminal !== undefined) return { won: false, fact: terminal };
+  const key = leaseKeyOf(ref);
+  for (let pass = 0; pass < 2; pass++) {
+    const entry = await ctx.kv.get(key);
+    if (entry !== undefined && entry !== null && entry.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `the lease record ${key} carries a ${entry.operation} marker; a deletion never resets an authoritative lease (SPEC 13.5)`);
+    const cur = entry === undefined || entry === null ? undefined : parseLease(decodeJson(entry.value, key), key);
+    if (cur?.state === "settled") return publishTerminal(ctx, ref, terminalOf(ref, cur));
+    if (cur !== undefined && cur.workExpiry !== workExpiry)
+      throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${cur.workExpiry} but retirement supplies ${workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);
+    const retired: WorkLease = cur !== undefined
+      ? { ...cur, state: "settled", disposition: "retired", opId, targetUid, committedTs: now }
+      : { v: 1, state: "settled", sourceSeq: 0, attempt: 0, fencingToken: 0, leaseDeadline: workExpiry, workExpiry, disposition: "retired", opId, targetUid, committedTs: now };
+    try {
+      if (cur !== undefined) await updateRecordEntry(ctx.kv, key, retired, entry!.revision);
+      else await createRecordEntry(ctx.kv, key, retired);
+    } catch (e) {
+      if (e instanceof EpEnvelopeError && e.code === "conflict") continue;
+      throw e;
+    }
+    return publishTerminal(ctx, ref, terminalOf(ref, retired));
+  }
+  throw new EpEnvelopeError("conflict", `the lease record ${key} moved twice during one retirement settle; re-read and re-decide (SPEC 13.8)`);
 }
 
 /** The §13.6 liveness read: the subject-confined LEADER-SERVED last-by-subject probe on the

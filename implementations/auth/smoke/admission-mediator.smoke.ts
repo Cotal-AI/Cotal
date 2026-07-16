@@ -15,12 +15,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, recordAtomicKey, GOVERN_HEAD, LIFECYCLE_HEAD,
   createRecordEntry, updateRecordEntry, readRecordLeader, contractDigest,
-  epfSubject, epfStreamName, epwSubject, readLastFact, parseDecisionFact,
+  effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, readLastFact, parseDecisionFact,
 } from "@cotal-ai/core";
 import { drainTargetForEndpoint } from "../src/index.js";
 import {
@@ -87,13 +87,24 @@ try {
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(`nats://auth:pw@127.0.0.1:${PORT}`); if (!up) await wait(100); }
   if (!up) throw new Error("broker did not come up");
   nc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "auth", pass: "pw" });
-  await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE);
-  await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE_B);
+  const jsm = await jetstreamManager(nc);
+  await createEndpointStreams(jsm, new Kvm(nc), SPACE);
+  await createEndpointStreams(jsm, new Kvm(nc), SPACE_B);
   const reg = await openLifecycleRegistry(nc, SPACE);
   const { recordsKv } = registryStores(reg);
+  const js = jetstream(nc);
   let clock = NOW;
   const med = await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, proofTtlMs: 1000 });
-  const drainDeps = { applyCommit: (k: string, b: Uint8Array) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: async () => {} };
+  const markEffectsDone = async (row: { route?: string }, key: string) => {
+    if (row.route !== "effects") return;
+    const [cOwner, cActor, cUid, id] = key.split(".").slice(3);
+    const decSubject = epfSubject(SPACE, EP, ["dec", cOwner, cActor, cUid, id]);
+    const decision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), decSubject), decSubject);
+    if (decision.decision !== "accepted") throw new Error(`expected accepted decision at ${decSubject}`);
+    const subject = epfEffectSubject(SPACE, EP, { owner: cOwner, actor: cActor, uid: cUid }, id);
+    await publishFactCreateOnly(js, subject, new TextEncoder().encode(JSON.stringify(effectFactOf(decision, clock))));
+  };
+  const drainDeps = { applyCommit: (k: string, b: Uint8Array) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: markEffectsDone };
 
   console.log("A. the govern head + immutable content-addressed policy version");
   const policyV1 = await publishPolicyVersion(reg, EP, { capacity: 10, v: 1 });
@@ -358,6 +369,56 @@ try {
       c("a multibyte settle reason emits a core-valid fact whose detail is UTF-8 byte-bounded (never split past 256 bytes)",
         fact.decision === "rejected" && Buffer.byteLength(detail, "utf8") <= 256 && Buffer.byteLength(detail, "utf8") > 0, Buffer.byteLength(detail, "utf8"));
     }
+  }
+
+  console.log("L. effects-route quiescence requires an execution-bound terminal marker");
+  {
+    const digest = contractDigest({ schema: 1 });
+    const acceptEffects = async (targetActor: string, callerUid: string, id: string, sourceSeq: number, goalId?: string) => {
+      const act = await activateLifecycle(reg, { owner: "local", actor: targetActor, managerInstance: MGR });
+      const target = { owner: "local", actor: targetActor, lifecycleUid: act.mapping.lifecycleUid };
+      const caller = { owner: "local", actor: "caller", uid: callerUid };
+      const fingerprint = fp(id);
+      const obtained = await obtainEpfObligation(med, mkReq(caller), { target, id, fingerprint, sourceSeq, route: "effects" });
+      const request: Record<string, unknown> = {
+        v: 1, id, op: { endpoint: EP, command: "run", inputDigest: digest, outputDigest: digest },
+        class: "journal", replyExpected: false, deadlineMs: 5000, args: {},
+        from: { id: `${caller.owner}.${caller.actor}`, name: "c" }, target,
+      };
+      if (goalId !== undefined) request.goalId = goalId;
+      const raw = {
+        v: 1, id, decision: "accepted", fingerprint, request,
+        caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid }, target,
+        contractDigests: { input: digest, output: digest }, authzDecision: { revision: 1, epoch: 1 },
+        route: "effects", sourceSeq, ts: NOW,
+      };
+      const subject = epfSubject(SPACE, EP, ["dec", caller.owner, caller.actor, caller.uid, id]);
+      const fact = parseDecisionFact(raw, subject);
+      if (fact.decision !== "accepted") throw new Error(`expected accepted decision at ${subject}`);
+      if (!(await publishFactCreateOnly(js, subject, enc.encode(JSON.stringify(fact)))).won) throw new Error(`acceptance forge lost on ${subject}`);
+      await updateRecordEntry(recordsKv, obtained.key, { ...obtained.row, state: "accepted" }, obtained.revision);
+      return { target, caller, obtained, fact };
+    };
+
+    const pending = await acceptEffects("fxpending", "j".repeat(26), "fx0001", 21);
+    await rejects("an accepted effects decision with no eff/goal terminal blocks quiescence",
+      () => drainTargetForEndpoint(med, pending.target.lifecycleUid, { reconcileAcceptedRoute: async () => {} }), "unavailable");
+    const completed = await drainTargetForEndpoint(med, pending.target.lifecycleUid, { reconcileAcceptedRoute: markEffectsDone });
+    c("a bound, codec-valid eff fact lets the effects row quiesce", completed.reconciledAcceptedEpf === 1, completed);
+
+    const wrong = await acceptEffects("fxwrong", "k".repeat(26), "fx0002", 22);
+    const wrongSubject = epfEffectSubject(SPACE, EP, wrong.caller, "fx0002");
+    const wrongFact = { ...effectFactOf(wrong.fact, NOW), fingerprint: fp("different-acceptance") };
+    await publishFactCreateOnly(js, wrongSubject, enc.encode(JSON.stringify(wrongFact)));
+    await rejects("an eff fact whose fingerprint does not match the accepted decision never proves quiescence",
+      () => drainTargetForEndpoint(med, wrong.target.lifecycleUid), "internal");
+
+    const action = await acceptEffects("fxaction", "l".repeat(26), "fx0003", 23, "goal0001");
+    const resultSubject = epfSubject(SPACE, EP, ["goal", action.caller.owner, action.caller.actor, action.caller.uid, "goal0001", "result"]);
+    const result = { v: 1, goalId: "goal0001", fingerprint: action.fact.fingerprint, state: "succeeded", outcomeDigest: contractDigest(null), ts: NOW };
+    await publishFactCreateOnly(js, resultSubject, enc.encode(JSON.stringify(result)));
+    const actionDone = await drainTargetForEndpoint(med, action.target.lifecycleUid);
+    c("a codec-valid goal result with the acceptance fingerprint lets an action row quiesce", actionDone.reconciledAcceptedEpf === 1, actionDone);
   }
 
   console.log("G. a proof never crosses endpoints or outlives its TTL");

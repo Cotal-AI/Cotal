@@ -21,7 +21,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, contractDigest, createRecordEntry, updateRecordEntry,
   recordAtomicKey, RETIREMENT_FRONTIER, evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX,
-  epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
+  effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseWorkTerminalFact, parseDecisionFact, workTerminalSubject,
 } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, drainTargetForEndpoint, type MediatedRequest } from "../src/index.js";
@@ -140,7 +140,14 @@ try {
     drainTargetObligations: async (endpoint, targetUid) => {
       const med = meds[endpoint as keyof typeof meds];
       if (med === undefined) throw new Error(`no mediator for endpoint ${endpoint}`);
-      await drainTargetForEndpoint(med, targetUid, { reconcileAcceptedRoute: async () => {} });
+      await drainTargetForEndpoint(med, targetUid, { reconcileAcceptedRoute: async (row, key) => {
+        if (row.route !== "effects") return;
+        const [cOwner, cActor, cUid, id] = key.split(".").slice(3);
+        const decSubject = epfSubject(SPACE, endpoint, ["dec", cOwner, cActor, cUid, id]);
+        const decision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), decSubject), decSubject);
+        if (decision.decision !== "accepted") throw new Error(`expected accepted decision at ${decSubject}`);
+        await publishFactCreateOnly(js, epfEffectSubject(SPACE, endpoint, { owner: cOwner, actor: cActor, uid: cUid }, id), enc.encode(JSON.stringify(effectFactOf(decision, clock))));
+      } });
     },
     openCleaner: async ({ endpoint, pools }): Promise<PoolCleanerBind> => {
       if (opts.failCleanerOpen) throw new Error("simulated crash at cleaner mint");

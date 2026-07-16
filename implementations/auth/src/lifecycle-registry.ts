@@ -60,6 +60,8 @@ import {
   assertLifecycleToken,
   epAuthBucket,
   isCasLoss as isRawCasLoss,
+  workPoolContext,
+  type WorkPoolContext,
 } from "@cotal-ai/core";
 
 const enc = new TextEncoder();
@@ -91,6 +93,7 @@ interface RegistryInternals {
   /** The JetStream client over the SAME authenticated connection — the credential-ledger
    *  barrier's per-run throwaway enumeration consumer fetches through it (SPEC 13.9). */
   js: JetStreamClient;
+  work: WorkPoolContext;
 }
 const REGISTRIES = new WeakMap<LifecycleRegistry, RegistryInternals>();
 const READERS = new WeakMap<LifecycleMappingReader, { space: string; jsm: JetStreamManager }>();
@@ -174,7 +177,7 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string): 
   if (authCfg.allow_direct !== false)
     throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable gate store defeats read-your-writes (SPEC 13.1) — reprovision`);
   const reg: LifecycleRegistry = Object.freeze({ space });
-  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc) });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space) });
   return reg;
 }
 
@@ -301,7 +304,7 @@ async function readHeadCandidate(kv: KV, owner: string, actor: string): Promise<
 /** PACKAGE-INTERNAL accessor for the trusted auth path's sibling modules (the credential
  *  ledger + issuance barrier, which are the SAME authority over the SAME stores). Deliberately
  *  never re-exported from the package index: a sealed registry stays the only door. */
-export function registryStores(reg: LifecycleRegistry): { space: string; recordsKv: KV; authKv: KV; jsm: JetStreamManager; js: JetStreamClient } {
+export function registryStores(reg: LifecycleRegistry): { space: string; recordsKv: KV; authKv: KV; jsm: JetStreamManager; js: JetStreamClient; work: WorkPoolContext } {
   return internals(reg);
 }
 

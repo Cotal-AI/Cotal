@@ -52,6 +52,11 @@ export function epfGoalBindSubject(space: string, source: { endpoint: string; ca
   const c = source.caller;
   return epfSubject(space, source.endpoint, ["goal", c.owner, c.actor, c.uid, goalId, "bind"]);
 }
+/** The non-action effects completion fact (§13.9 ack barrier):
+ *  `epf.<e>.eff.<caller triple>.<id>`. */
+export function epfEffectSubject(space: string, endpoint: string, caller: EpCaller, id: string): string {
+  return epfSubject(space, endpoint, ["eff", caller.owner, caller.actor, caller.uid, assertIdToken(id, "effect id")]);
+}
 
 /** Default idempotency horizon (§13.4 item 6; space-configurable). The horizon is REALIZED by
  *  decision-fact retention, never by a clock: the create-only CAS returns the recorded decision
@@ -142,6 +147,25 @@ export interface QuarantineFact {
 
 export type DecisionFact = AcceptanceFact | RejectionFact;
 
+export interface EffectFact {
+  v: 1;
+  id: string;
+  fingerprint: string;
+  caller: FactCaller;
+  sourceSeq: number;
+  ts: number;
+}
+
+/** Build the durable completion marker for one validated non-action `effects` acceptance. */
+export function effectFactOf(acceptance: AcceptanceFact, ts: number): EffectFact {
+  if (acceptance.route !== "effects" || typeof acceptance.request.goalId === "string")
+    throw new EpEnvelopeError("failed-precondition", "an effect completion fact is only for a non-action route:effects acceptance (actions complete through goal.result)");
+  if (!isDigest(acceptance.fingerprint) || !posInt(acceptance.sourceSeq) || !wireInt(ts))
+    throw new EpEnvelopeError("failed-precondition", "an effect completion fact requires a validated acceptance fingerprint/sourceSeq and non-negative timestamp");
+  const caller = checkCaller(acceptance.caller, "effect acceptance caller");
+  return { v: 1, id: assertIdToken(acceptance.id, "effect id"), fingerprint: acceptance.fingerprint, caller, sourceSeq: acceptance.sourceSeq, ts };
+}
+
 function factFail(what: string): never {
   throw new EpEnvelopeError("internal", `fact does not validate: ${what}`);
 }
@@ -149,6 +173,11 @@ const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 const wireInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const posInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
 const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
+
+function assertClosedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
+  const ok = new Set(allowed);
+  for (const k of Object.keys(o)) if (!ok.has(k)) factFail(`${what} carries unknown field ${k}`);
+}
 
 function checkError(v: unknown, what: string): { code: string; detail?: string } {
   if (!isRec(v) || typeof v.code !== "string" || !isEpErrorCode(v.code)) factFail(`${what}.code`);
@@ -215,6 +244,14 @@ export function parseDecisionFactSubject(subject: string): FactAddress {
   const p = parseEpSubject(subject);
   if (!p || p.plane !== "fact" || p.topic.length !== 5 || p.topic[0] !== "dec")
     throw new EpEnvelopeError("internal", `${subject} is not a decision-fact subject`);
+  return { endpoint: p.endpoint, caller: { id: `${p.topic[1]}.${p.topic[2]}`, lifecycleUid: p.topic[3] }, id: p.topic[4] };
+}
+
+/** Parse an effect-completion fact subject into its authenticated acceptance identity. */
+export function parseEffectFactSubject(subject: string): FactAddress {
+  const p = parseEpSubject(subject);
+  if (!p || p.plane !== "fact" || p.topic.length !== 5 || p.topic[0] !== "eff")
+    throw new EpEnvelopeError("internal", `${subject} is not an effect-completion fact subject`);
   return { endpoint: p.endpoint, caller: { id: `${p.topic[1]}.${p.topic[2]}`, lifecycleUid: p.topic[3] }, id: p.topic[4] };
 }
 
@@ -288,6 +325,24 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
   if (o.workExpiry !== undefined && !posInt(o.workExpiry)) factFail("workExpiry");
   if (String(o.route).startsWith("pool.") !== (o.workExpiry !== undefined)) factFail("workExpiry is present iff the route is a pool");
   return o as unknown as AcceptanceFact;
+}
+
+/** Validate a non-action effects completion fact at the consuming boundary. A bare marker on the
+ *  right subject is not enough: the body must bind the accepted fingerprint and source sequence
+ *  so the drain can compare it to the decision that authorized this exact effect. */
+export function parseEffectFact(raw: unknown, subject: string): EffectFact {
+  const addr = parseEffectFactSubject(subject);
+  const o = isRec(raw) ? raw : factFail("effect fact is not an object");
+  assertClosedKeys(o, ["v", "id", "fingerprint", "caller", "sourceSeq", "ts"], `effect fact on ${subject}`);
+  if (o.v !== 1) factFail("effect.v");
+  if (o.id !== addr.id) factFail("effect.id disagrees with the fact subject");
+  if (!isDigest(o.fingerprint)) factFail("effect.fingerprint");
+  if (!posInt(o.sourceSeq)) factFail("effect.sourceSeq must be a positive stream sequence");
+  if (!wireInt(o.ts)) factFail("effect.ts must be a non-negative integer");
+  const caller = checkCaller(o.caller, "effect.caller");
+  if (caller.id !== addr.caller.id || caller.lifecycleUid !== addr.caller.lifecycleUid)
+    factFail("effect.caller disagrees with the fact subject");
+  return { v: 1, id: addr.id, fingerprint: o.fingerprint as string, caller, sourceSeq: o.sourceSeq as number, ts: o.ts as number };
 }
 
 /** Validate a quarantine fact at its consuming boundary; the body's source sequence must agree
