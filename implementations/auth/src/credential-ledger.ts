@@ -710,24 +710,14 @@ export async function runAgentTakeoverBarrier(
     if (gate.row.state === "frozen") {
       if (gate.row.op?.opId !== opId)
         throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is frozen by operation ${gate.row.op?.opId ?? "<none>"}, not ${opId}; one barrier at a time (SPEC 13.1)`);
-      // Our own freeze — but before proceeding, prove the head is still OURS to advance: at the
-      // captured epoch (mid-barrier) or at +1 stamped with OUR opId (a resume after our own
-      // step-5 advance). Anything else is a freeze held over a FOREIGN completion (a torn-pair
-      // intent from a crashed pre-guard run): revoking/evicting under it would kill the
-      // winner's successor and the epoch CAS would wedge on the foreign stamp forever — so
-      // ABORT by reopening our own freeze (a takeover aborts by reopening, SPEC 13.1 per-kind
-      // exits) and refuse; rows a previous poisoned run already revoked stay revoked (never
-      // un-revoked) and their holder re-mints under the reopened gate.
-      const h = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);
-      if (h === undefined || h.mapping.state !== "active" || h.mapping.lifecycleUid !== intent.lifecycleUid)
-        throw new EpEnvelopeError("internal", `the head for "${intent.owner}/${intent.actor}" is ${h === undefined ? "gone" : `${h.mapping.state} at ${h.mapping.lifecycleUid}`} under this takeover's own freeze; a retirement cannot run inside a foreign freeze (corruption, SPEC 13.1)`);
-      const oursMidBarrier = h.mapping.processEpoch === intent.fromEpoch;
-      const oursAdvanced = h.mapping.processEpoch === intent.fromEpoch + 1 && h.mapping.lastTakeoverOpId === opId;
-      if (!oursMidBarrier && !oursAdvanced) {
-        await reopenGate(reg, { lifecycleUid: intent.lifecycleUid, revision: gate.revision, opId });
-        throw new EpEnvelopeError("conflict", `the takeover ${opId} of ${intent.lifecycleUid} held a freeze over a FOREIGN head movement (captured epoch ${intent.fromEpoch}, head at ${h.mapping.processEpoch} by ${h.mapping.lastTakeoverOpId ?? "<none>"}); the stale freeze was reopened and this operation lost — any rows it revoked re-mint under the reopened gate (SPEC 13.1)`);
-      }
-      break; // our own freeze (fresh or resumed)
+      // Our own freeze (fresh or resumed). Whether we are still the CURRENT operation or a
+      // stale loser whose freeze straddled a foreign completion is decided at the epoch CAS
+      // (step 5), NOT here: a freeze held over a foreign head may already have PARTIALLY
+      // revoked the family before crashing, so recovery MUST complete containment (revoke +
+      // reconcile + verified-evict every family holder) before it aborts — reopening early
+      // would leave a revoked credential's connection live. We therefore proceed into the
+      // containment steps unconditionally and let advanceEpochWithinTakeover detect the loss.
+      break;
     }
     if (gate.row.state === "open" && gate.row.generation === intent.fromGeneration + 1) {
       // The gate reopened at OUR successor generation. Confirm the head shows a completed
@@ -813,7 +803,24 @@ export async function runAgentTakeoverBarrier(
   // 5. The epoch head CAS — LAST among the containment steps (SPEC 13.1: no predecessor egress
   // survives to publish under the old epoch once the successor's epoch exists). It STAMPS this
   // op's id, so the completion is bound to exactly this operation. Idempotent for our own advance.
-  await advanceEpochWithinTakeover(reg, { owner: intent.owner, actor: intent.actor, lifecycleUid: intent.lifecycleUid, fromEpoch: intent.fromEpoch, opId });
+  // If a FOREIGN operation already advanced the epoch (a stale/torn intent that froze the gate
+  // and revoked the family before crashing), this throws `conflict`. We have already completed
+  // CONTAINMENT above (every revoked row's holder is verified-evicted), so the state is
+  // consistent — no revoked credential is left live. We then ABORT SAFELY: reopen our own
+  // freeze WITHOUT advancing the epoch (the winner owns it) so the lifecycle is not wedged, and
+  // rethrow. This is the crash-boundary counterpart to the pre-freeze head guard (which stops a
+  // FRESH stale intent from freezing at all).
+  try {
+    await advanceEpochWithinTakeover(reg, { owner: intent.owner, actor: intent.actor, lifecycleUid: intent.lifecycleUid, fromEpoch: intent.fromEpoch, opId });
+  } catch (e) {
+    if (e instanceof EpEnvelopeError && e.code === "conflict") {
+      const g = await observeGate(reg, intent.lifecycleUid);
+      if (g !== undefined && g.row.state === "frozen" && g.row.op?.opId === opId)
+        await reopenGate(reg, { lifecycleUid: intent.lifecycleUid, revision: g.revision, opId }); // abort, no epoch advance
+      throw new EpEnvelopeError("conflict", `the takeover ${opId} of ${intent.lifecycleUid} lost: a foreign operation already advanced the epoch (captured ${intent.fromEpoch}). Containment completed (${revokedRows} row(s) revoked and every holder verified-evicted) and the gate was reopened without an epoch advance; nothing is wedged and no revoked credential is left live (SPEC 13.1)`);
+    }
+    throw e;
+  }
 
   // 6. Reopen the gate at the successor's first mintable generation — the barrier's own final
   // step (SPEC 13.1: no credential of generation G is ever live when G+1 mints).

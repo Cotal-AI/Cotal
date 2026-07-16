@@ -41,7 +41,7 @@ import { writeEndpointGate, reconcileSessionForTakeover } from "../src/session-l
 import {
   stageAgentMint, finalizeAgentMint, enumerateAgentFamily,
   createSourceGateOpen, observeSourceGate, freezeSourceGate, revokeHandleSource,
-  runAgentTakeoverBarrier, resumeAgentTakeover,
+  runAgentTakeoverBarrier, resumeAgentTakeover, markLedgerRowRevoked,
   credRowKey, srcgateKey, stageIntentKey,
   type EvictPrincipal, type ReconcileSessionPair,
 } from "../src/credential-ledger.js";
@@ -87,6 +87,7 @@ accounts {
       { user: "local-victim", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
       { user: "local-victim2", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
       { user: "local-victim3", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
+      { user: "local-wedge", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
     ]
   }
 }
@@ -94,7 +95,7 @@ accounts {
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
 
 let nc: NatsConnection | undefined, sysObserver: NatsConnection | undefined, sysEvictor: NatsConnection | undefined,
-  victim1: NatsConnection | undefined, victim2: NatsConnection | undefined, servingConn: NatsConnection | undefined;
+  victim1: NatsConnection | undefined, victim2: NatsConnection | undefined, servingConn: NatsConnection | undefined, wedgeConn: NatsConnection | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(`nats://auth:pw@127.0.0.1:${PORT}`); if (!up) await wait(100); }
@@ -405,16 +406,30 @@ try {
     const gateW = await observeGate(reg, uidW);
     c("…and the gate was NOT moved (still OPEN at the winner's generation 2 — no wedge, nothing revoked)",
       gateW?.row.state === "open" && gateW?.row.generation === 2, gateW?.row);
-    // The pre-existing WEDGED shape (a pre-guard crash): the gate already frozen under a torn
-    // intent. The resume detects the foreign head movement UNDER its own freeze, ABORTS by
-    // reopening (a takeover aborts by reopening), and refuses — the lifecycle is not wedged.
+    // The CRASH-BOUNDARY wedged shape (freelance BLOCKER): a pre-guard op B froze the winner's
+    // generation, REVOKED a family row, then crashed BEFORE evicting that row's still-LIVE
+    // holder. The resume must COMPLETE containment (verified-evict every revoked holder) before
+    // it aborts — reopening early would leave a revoked credential's connection live. Model it:
+    // mint a successor credential under the winner's uid (gate open at gen 2), open its LIVE
+    // connection, revoke its row (B's partial containment), freeze under the torn intent (B's
+    // freeze), then resume.
+    const succ = await stageAgentMint(reg, { lifecycleUid: uidW, credentialId: "wsucc001", holderPrincipal: "local.wedge", sourceChain: ["root"], exp: NOW + 60_000 });
+    await finalizeAgentMint(reg, succ);
+    wedgeConn = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "local-wedge", pass: "pw", reconnect: false });
+    await markLedgerRowRevoked(authKv, credRowKey(uidW, "wsucc001")); // B revoked, then crashed before evicting
+    const gateWnow = await observeGate(reg, uidW);
     await authKv.create(stageIntentKey(opC), enc.encode(JSON.stringify({ kind: "takeover", lifecycleUid: uidW, owner: "local", actor: "wedge", fromEpoch: 1, fromGeneration: 2 })));
-    await freezeGate(reg, { lifecycleUid: uidW, revision: gateW!.revision, op: { opId: opC, kind: "takeover" } });
-    await rejects("a gate ALREADY FROZEN under a torn intent aborts by reopening and refuses (unwedge, not permafreeze)",
+    await freezeGate(reg, { lifecycleUid: uidW, revision: gateWnow!.revision, op: { opId: opC, kind: "takeover" } });
+    await rejects("a gate ALREADY FROZEN under a torn intent COMPLETES containment then aborts by reopening (unwedge, not permafreeze, not skip-eviction)",
       () => resumeAgentTakeover(reg, opC, { evictPrincipal: liveEvict }), "conflict");
+    let wedgeGone = false;
+    try { wedgeGone = await until(() => wedgeConn!.isClosed(), 3000); } catch { wedgeGone = wedgeConn!.isClosed(); }
+    c("…the revoked successor's LIVE connection was VERIFIED-evicted during the abort (no revoked credential left live)", wedgeGone);
     const gateW2 = await observeGate(reg, uidW);
-    c("…the aborted freeze REOPENED the gate (generation 3 — the successor re-mints, nothing is permanently frozen)",
+    c("…and only THEN the aborted freeze REOPENED the gate (generation 3 — nothing permanently frozen)",
       gateW2?.row.state === "open" && gateW2?.row.generation === 3, gateW2?.row);
+    const succRow = JSON.parse(dec.decode((await authKv.get(credRowKey(uidW, "wsucc001")))!.value)) as { state: string };
+    c("…the successor row stays revoked (monotonic; the abort never un-revokes)", succRow.state === "revoked", succRow);
   }
 
   console.log("K. the staged-mint pins are deep-frozen and the finalize trusts only the module snapshot");
@@ -439,7 +454,7 @@ try {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
-  for (const conn of [victim1, victim2, servingConn, sysObserver, sysEvictor]) { try { await conn?.close(); } catch { /* closed */ } }
+  for (const conn of [victim1, victim2, servingConn, wedgeConn, sysObserver, sysEvictor]) { try { await conn?.close(); } catch { /* closed */ } }
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
