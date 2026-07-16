@@ -53,7 +53,7 @@ import {
   EpEnvelopeError,
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
-  epfSubject, epfStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
+  epfSubject, epfStreamName, epwSubject, epwStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
   contractDigest, parseEpSubject,
   type RejectionFact, type DecisionFact,
   mintLifecycleUid, assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken,
@@ -77,6 +77,15 @@ const MAX_ERROR_DETAIL = 256;
 /** The proof TTL ceiling (§13.8: a proof is bounded-lived; 60 s is 4x the reference call
  *  deadline, headroom for a slow admission without letting a proof outlive its state). */
 const MAX_PROOF_TTL_MS = 60_000;
+
+/** Truncate a string to at most `maxBytes` UTF-8 bytes without splitting a multibyte character
+ *  (the §13.4 error-detail bound is a BYTE limit; a UTF-16 `.slice` can overshoot it). */
+function truncateUtf8(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  let out = s;
+  while (Buffer.byteLength(out, "utf8") > maxBytes) out = out.slice(0, -1);
+  return out;
+}
 const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
 /** The CANONICAL content digest of a JSON value, `<hex>` (no prefix) for a `policy` key segment.
  *  Uses core's RFC-8785 canonicalizer (`contractDigest` = `sha256:<hex over I-JSON>`), so
@@ -153,13 +162,15 @@ export async function openAdmissionMediator(
 
 // ---- the obligation row (§13.7 key grammar, §13.8 closed per-class value) ---------------------
 
-/** The §13.8 commit-value union (CLOSED): the exact base64url value bytes, or an immutable
- *  create-only records key whose stored raw bytes ARE the commit bytes. */
+/** The §13.8 commit-value union (CLOSED): a canonical base64url JSON encoding of the committed
+ *  value, or an IMMUTABLE `policy`-kind records key whose stored value IS the commit value. */
 export type CommitValue = { enc: "b64u"; bytes: string } | { enc: "ref"; key: string };
 
-/** The complete `self`-class commit intent (§13.8): a crashed writer's commit is finishable
- *  from this alone. `commitDigest` is `<64 hex>` of the RAW value bytes (stored without the
- *  `sha256:` prefix — the prefix is a subject-token convention, not a value one). */
+/** The complete `self`-class commit intent (§13.8): a crashed writer's commit is finishable from
+ *  this alone. `commitDigest` is the RFC-8785 CANONICAL content digest of the committed value,
+ *  `sha256:<hex>` (the same `*Digest` scalar shape §13.7 uses). `commitValue` is RESOLVED and
+ *  its canonical digest VERIFIED against `commitDigest` at obtain (before the row can accept),
+ *  so a mismatched value/digest can never reach `accepted` and wedge recovery. */
 export interface SelfCommitIntent {
   commitKey: string;
   commitBaseRevision: number;
@@ -718,6 +729,11 @@ export async function obtainSelfObligation(
   if (!isRec(cm) || typeof cm.commitKey !== "string" || cm.commitKey.length === 0 || !uint(cm.commitBaseRevision) || typeof cm.commitDigest !== "string" || !DIGEST_SCALAR_RE.test(cm.commitDigest))
     throw new EpEnvelopeError("failed-precondition", "a self-class obtain requires the complete commit intent { commitKey, commitBaseRevision, commitValue, commitDigest (sha256:<hex>) } (SPEC 13.8)");
   parseCommitValue(cm.commitValue, "<obtain>");
+  // RESOLVE + verify the commit value canonically digests to commitDigest BEFORE the row can be
+  // created/accepted (§13.8: deterministic finishability). A mismatched value/digest, a
+  // non-canonical b64u, or a mutable/absent ref is refused here, never reaching `accepted` where
+  // recovery would wedge every drain forever.
+  await resolveCommitValue(i, { commitKey: cm.commitKey, commitBaseRevision: cm.commitBaseRevision, commitValue: cm.commitValue, commitDigest: cm.commitDigest });
   return obtainObligation(
     i,
     request,
@@ -786,9 +802,10 @@ async function settleObligation(
   }
   const toks = key.split(".");
   const [cOwner, cActor, cUid, id] = toks.slice(3); // [oblig, target, endpoint, cOwner, cActor, cUid, id]
-  // The detail is BOUNDED to the §13.4 error-detail limit: `parseDecisionFact` rejects a longer
-  // one, so the mediator's own rejection fact must fit or core would refuse to read it back.
-  const detail = `settled by the admission mediator: ${why}`.slice(0, MAX_ERROR_DETAIL);
+  // The detail is BOUNDED to the §13.4 error-detail limit, which counts UTF-8 BYTES (what
+  // `parseDecisionFact` enforces), not UTF-16 code units — a multibyte `why` truncated by
+  // `.slice` could still exceed the byte limit and make core refuse the mediator's own fact.
+  const detail = truncateUtf8(`settled by the admission mediator: ${why}`, MAX_ERROR_DETAIL);
   const rejection: RejectionFact = {
     v: 1, id, decision: "rejected", fingerprint: row.fingerprint!,
     error: { code: "failed-precondition", detail },
@@ -817,6 +834,8 @@ async function settleObligation(
 function assertDecisionMatchesRow(fact: DecisionFact, row: ObligationRow, key: string): void {
   if (fact.fingerprint !== row.fingerprint)
     throw new EpEnvelopeError("internal", `the decision fact on ${key}'s coordinate pins fingerprint ${fact.fingerprint}, not this obligation's ${row.fingerprint}; a foreign acceptance identity never settles this obligation (SPEC 13.4/13.8)`);
+  if (fact.sourceSeq !== row.sourceSeq)
+    throw new EpEnvelopeError("internal", `the decision fact on ${key}'s coordinate pins sourceSeq ${fact.sourceSeq}, not this obligation's ${row.sourceSeq}; the winner's full acceptance identity (fingerprint + sourceSeq + route) must match (SPEC 13.4/13.8)`);
   if (fact.decision === "accepted" && fact.route !== row.route)
     throw new EpEnvelopeError("internal", `the acceptance fact on ${key}'s coordinate pins route ${fact.route}, not this obligation's ${row.route} (SPEC 13.4/13.8)`);
 }
@@ -885,32 +904,56 @@ export async function acceptSelfObligation(med: AdmissionMediator, proof: Admiss
  *  a principal that holds it (the mediator's own grant is the obligation family, §13.9). */
 export type ApplyCommit = (commitKey: string, valueBytes: Uint8Array, baseRevision: number) => Promise<void>;
 
-/** Resolve a commit intent's value bytes (§13.8): decode `b64u` (a JSON encoding of the
- *  committed value), or leader-read the immutable `ref` key's value; either way VERIFY the
- *  value's CANONICAL digest equals `commitDigest` BEFORE returning (a ref or byte blob that does
- *  not canonically digest to the intent refuses, fail-closed). Returns bytes {@link ApplyCommit}
- *  parses into the record value; the digest is over the canonical VALUE, not the raw bytes, so
- *  a non-canonical storage stringify never breaks the comparison (§13.8, RFC-8785). */
-async function resolveCommitBytes(med: MediatorInternals, intent: SelfCommitIntent): Promise<Uint8Array> {
+/** Strictly decode a `b64u` commit value: CANONICAL base64url (a round-trip re-encode must
+ *  reproduce the input exactly, rejecting non-zero pad bits that Node's decoder tolerates) and
+ *  FATAL UTF-8 (no replacement chars), then parse JSON. A strict second implementation refuses
+ *  exactly what a lax one would silently accept, so the closed union stays interoperable (§13.8). */
+function strictB64uToJson(b64u: string, commitKey: string): { value: unknown; bytes: Uint8Array } {
+  if (!/^[A-Za-z0-9_-]*$/.test(b64u))
+    throw new EpEnvelopeError("failed-precondition", `the b64u commit value for ${commitKey} is not base64url (RFC 4648 §5, no pad); a non-canonical encoding never resolves (SPEC 13.8)`);
+  const bytes = new Uint8Array(Buffer.from(b64u, "base64url"));
+  if (Buffer.from(bytes).toString("base64url") !== b64u)
+    throw new EpEnvelopeError("failed-precondition", `the b64u commit value for ${commitKey} is not canonical base64url (its bytes re-encode differently); a lax decoder would tolerate stray pad bits (SPEC 13.8)`);
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new EpEnvelopeError("failed-precondition", `the b64u commit value for ${commitKey} is not valid UTF-8; a recovery never writes replacement-decoded bytes (SPEC 13.8)`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new EpEnvelopeError("failed-precondition", `the b64u commit value for ${commitKey} is not JSON; a recovery never writes non-JSON (SPEC 13.8)`);
+  }
+  return { value, bytes };
+}
+
+/** Resolve a commit intent's value + bytes (§13.8) and VERIFY its canonical digest equals
+ *  `commitDigest` — the SINGLE integrity gate used at BOTH obtain (before the row can accept)
+ *  and recovery, so a mismatched value/digest never reaches `accepted` to wedge a drain. A
+ *  `b64u` value is strictly decoded (canonical base64url + fatal UTF-8); a `ref` MUST name an
+ *  IMMUTABLE `policy`-kind key (a mutable ref could move after acceptance and permanently wedge
+ *  recovery), leader-read and self-certified. The digest is over the canonical VALUE, so a
+ *  non-canonical storage stringify never breaks the comparison (RFC-8785). */
+async function resolveCommitValue(med: MediatorInternals, intent: SelfCommitIntent): Promise<{ value: unknown; bytes: Uint8Array }> {
   let value: unknown;
   let bytes: Uint8Array;
   if (intent.commitValue.enc === "b64u") {
-    bytes = new Uint8Array(Buffer.from(intent.commitValue.bytes, "base64url"));
-    try {
-      value = JSON.parse(dec.decode(bytes));
-    } catch {
-      throw new EpEnvelopeError("internal", `the b64u commit bytes for ${intent.commitKey} are not JSON; a recovery never writes non-JSON (SPEC 13.8)`);
-    }
+    ({ value, bytes } = strictB64uToJson(intent.commitValue.bytes, intent.commitKey));
   } else {
-    const read = await readRecordLeader(med.jsm, med.space, intent.commitValue.key);
+    const refKey = intent.commitValue.key;
+    if (!/^policy\.[^.]+\.[0-9a-f]{64}$/.test(refKey))
+      throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${refKey} is not an immutable policy.<endpoint>.<digest> key; only an immutable create-only kind may be referenced (a mutable ref could move after acceptance and wedge recovery, SPEC 13.8)`);
+    const read = await readRecordLeader(med.jsm, med.space, refKey);
     if (read === undefined)
-      throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${intent.commitValue.key} does not exist; a recovery cannot resolve the promised value (SPEC 13.8)`);
+      throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${refKey} does not exist; a recovery cannot resolve the promised value (SPEC 13.8)`);
     value = read.value;
     bytes = enc.encode(JSON.stringify(read.value));
   }
   if (contractDigest(value) !== intent.commitDigest)
-    throw new EpEnvelopeError("internal", `the resolved commit value does not canonically digest to the pinned commitDigest; a recovery never writes unverified bytes (SPEC 13.8)`);
-  return bytes;
+    throw new EpEnvelopeError("failed-precondition", `the resolved commit value does not canonically digest to the pinned commitDigest; the intent is refused before it can accept (SPEC 13.8)`);
+  return { value, bytes };
 }
 
 /** Drive an `accepted` `self`-class obligation to `terminal` deterministically from its pinned
@@ -961,7 +1004,7 @@ async function recoverSelfCore(
   }
   const atBase = (record === undefined && intent.commitBaseRevision === 0) || (record !== undefined && record.revision === intent.commitBaseRevision);
   if (atBase) {
-    const bytes = await resolveCommitBytes(i, intent);
+    const { bytes } = await resolveCommitValue(i, intent);
     await deps.applyCommit(intent.commitKey, bytes, intent.commitBaseRevision);
     await terminal();
     return "re-applied";
@@ -1037,6 +1080,32 @@ export interface DrainResult {
   reconciledAcceptedEpf: number;
 }
 
+/** Verify an ACCEPTED epf row's route reached its durable postcondition before the drain counts
+ *  it quiescent (§13.8 accept-side reconciliation). The drain OWNS the check so a presence-only
+ *  reconciler cannot fake it: an `effects` route is established by its own acceptance decision
+ *  fact (the row is accepted, so that fact exists); a `pool.<pool>` route requires the EPW item
+ *  at the acceptance identity to EXIST (the enqueue landed). If it is missing (crash before
+ *  enqueue), the injected reconciler repairs it and the drain RE-READS; still missing fails
+ *  closed. */
+async function verifyAcceptedEpfRoute(
+  med: MediatorInternals,
+  key: string,
+  row: ObligationRow,
+  reconciler: ReconcileAcceptedRoute | undefined,
+): Promise<void> {
+  if (row.route === "effects") return; // established by the acceptance decision fact
+  const pool = row.route!.slice("pool.".length);
+  const [cOwner, cActor, cUid, id] = key.split(".").slice(3); // [oblig, target, endpoint, cO, cA, cUid, id]
+  const subject = epwSubject(med.space, med.endpoint, pool, { owner: cOwner, actor: cActor, uid: cUid, id });
+  const established = async (): Promise<boolean> => (await readLastFact(med.jsm, epwStreamName(med.space), subject)) !== undefined;
+  if (await established()) return;
+  if (reconciler === undefined)
+    throw new EpEnvelopeError("failed-precondition", `accepted pool obligation ${key} has no EPW item (its enqueue did not land) and no reconcileAcceptedRoute was given; a drain never declares quiescence over unmaterialized accepted work (SPEC 13.8)`);
+  await reconciler(row, key);
+  if (!(await established()))
+    throw new EpEnvelopeError("unavailable", `the reconciler for accepted pool obligation ${key} did not establish its EPW item; the route is still unmaterialized and quiescence fails closed (SPEC 13.8)`);
+}
+
 /** Drain the rows a `counts` predicate SELECTS under `filter` to quiescence (§13.8): settle
  *  every counted provisional through its decision coordinate, drive every counted accepted
  *  self-class row to terminal, and run the injected route reconciler for every counted accepted
@@ -1068,14 +1137,12 @@ async function drainFilter(
         await recoverSelfCore(med, item.key, { applyCommit: deps.applyCommit });
         recoveredSelf++;
       } else if (item.row.state === "accepted") {
-        // Accepted EPF: run accept-side route reconciliation BEFORE declaring quiescence (an
-        // accepted decision whose enqueue/effect/goal never landed must not be silently
-        // declared quiescent). It does not block quiescence (its route facts track it), but the
-        // reconciler MUST run — synchronously, each pass, so the quiescent pass has reconciled
-        // every counted accepted EPF row.
-        if (deps.reconcileAcceptedRoute === undefined)
-          throw new EpEnvelopeError("failed-precondition", `the drain found an ACCEPTED epf obligation ${item.key} but was given no reconcileAcceptedRoute; accept-side reconciliation is required before quiescence (SPEC 13.8)`);
-        await deps.reconcileAcceptedRoute(item.row, item.key);
+        // Accepted EPF: the drain VERIFIES the route's durable postcondition BEFORE declaring
+        // quiescence (an accepted decision whose enqueue never landed must not be silently
+        // declared quiescent). The drain OWNS the check (it reads the route marker itself), so a
+        // no-op reconciler cannot fake it — for a pool route a missing EPW item calls the
+        // injected reconciler and then RE-READS, failing closed if still unmaterialized.
+        await verifyAcceptedEpfRoute(med, item.key, item.row, deps.reconcileAcceptedRoute);
         reconciledAcceptedEpf++;
       }
     }

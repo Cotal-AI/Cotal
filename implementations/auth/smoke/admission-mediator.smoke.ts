@@ -20,8 +20,9 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, recordAtomicKey, GOVERN_HEAD, LIFECYCLE_HEAD,
   createRecordEntry, updateRecordEntry, readRecordLeader, contractDigest,
-  epfSubject, epfStreamName, readLastFact, parseDecisionFact,
+  epfSubject, epfStreamName, epwSubject, readLastFact, parseDecisionFact,
 } from "@cotal-ai/core";
+import { drainTargetForEndpoint } from "../src/index.js";
 import {
   openLifecycleRegistry, openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation,
   acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
@@ -271,6 +272,47 @@ try {
     // subject-derived (the id is the only caller-chosen token).
     const idg = await obtainEpfObligation(med, mkReq({ owner: "local", actor: "caller", uid: "n".repeat(26) }), { target: tgt, id: "subj001", fingerprint: fp("s"), sourceSeq: 1, route: "effects" });
     c("the obligation key embeds the SUBJECT-derived caller triple", idg.key === `oblig.${tgt.lifecycleUid}.${EP}.local.caller.${"n".repeat(26)}.subj001`, idg.key);
+  }
+
+  console.log("J. the round-7 fold: commit-digest integrity at obtain, sourceSeq bind, accepted-EPF postcondition");
+  {
+    // B2: a self obtain whose b64u value does NOT digest to commitDigest refuses AT OBTAIN,
+    // never reaching accepted where recovery would wedge the drain.
+    const realCommit = commitOf({ x: 1 });
+    await rejects("a self obtain whose value does not canonically digest to commitDigest refuses at obtain",
+      () => obtainSelfObligation(med, mkReq({ ...CALLER, uid: "a".repeat(26) }), { target: tgt, id: "mm0001", commit: { commitKey: `svc.${EP}.mm.status`, commitBaseRevision: 0, commitValue: { enc: "b64u", bytes: Buffer.from(enc.encode(JSON.stringify({ x: 2 }))).toString("base64url") }, commitDigest: realCommit.commitDigest } }), "failed-precondition");
+    // b64u that is not canonical base64url (stray pad bits) refuses.
+    await rejects("a non-canonical base64url commit value refuses at obtain",
+      () => obtainSelfObligation(med, mkReq({ ...CALLER, uid: "b".repeat(26) }), { target: tgt, id: "mm0002", commit: { commitKey: `svc.${EP}.mm.status`, commitBaseRevision: 0, commitValue: { enc: "b64u", bytes: "eyJhIjoxfR" }, commitDigest: contractDigest({ a: 1 }) } }), "failed-precondition");
+    // A ref to a non-immutable (non-policy) key refuses.
+    await rejects("a commit-value ref to a non-immutable key refuses at obtain",
+      () => obtainSelfObligation(med, mkReq({ ...CALLER, uid: "c".repeat(26) }), { target: tgt, id: "mm0003", commit: { commitKey: `svc.${EP}.mm.status`, commitBaseRevision: 0, commitValue: { enc: "ref", key: `svc.${EP}.x.status` }, commitDigest: contractDigest({ a: 1 }) } }), "failed-precondition");
+
+    // H2: a decision fact with the row's fingerprint + route but a FOREIGN sourceSeq never settles it.
+    const sg = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "e".repeat(26) }), { target: tgt, id: "ss0001", fingerprint: fp("SS"), sourceSeq: 11, route: "effects" });
+    {
+      const decSubject = epfSubject(SPACE, EP, ["dec", CALLER.owner, CALLER.actor, "e".repeat(26), "ss0001"]);
+      const foreignSeq = { v: 1, id: "ss0001", decision: "rejected", fingerprint: fp("SS"), error: { code: "failed-precondition" }, caller: { id: `${CALLER.owner}.${CALLER.actor}`, lifecycleUid: "e".repeat(26) }, sourceSeq: 99, ts: NOW };
+      await publishFactCreateOnly(registryStores(reg).js, decSubject, enc.encode(JSON.stringify(foreignSeq)));
+      await rejects("a decision fact with a FOREIGN sourceSeq (same fp/route) never settles the obligation",
+        () => settleEpfOrSelfObligation(med, sg.key, "the smoke tries to settle"), "internal");
+    }
+
+    // B4: an ACCEPTED pool-routed epf row whose EPW item is MISSING fails the drain (the drain
+    // owns the postcondition; a no-op reconciler cannot fake it), and a reconciler that
+    // establishes the item lets the drain reach quiescence. Uses a FRESH isolated target so the
+    // drain sees only this row (the earlier probes left poisoned provisionals under `tgt`).
+    const actB4 = await activateLifecycle(reg, { owner: "local", actor: "b4target", managerInstance: MGR });
+    const tgtB4 = { owner: "local", actor: "b4target", lifecycleUid: actB4.mapping.lifecycleUid };
+    const POOL = "workpool";
+    const pg = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "f".repeat(26) }), { target: tgtB4, id: "acc001", fingerprint: fp("P"), sourceSeq: 4, route: `pool.${POOL}` });
+    await updateRecordEntry(recordsKv, pg.key, { ...pg.row, state: "accepted" }, pg.revision); // canonicalizer accepted it
+    await rejects("a drain over an accepted pool row with a MISSING EPW item + no-op reconciler fails closed (postcondition unmet)",
+      () => drainTargetForEndpoint(med, tgtB4.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: async () => {} }), "unavailable");
+    const epwSubj = epwSubject(SPACE, EP, POOL, { owner: CALLER.owner, actor: CALLER.actor, uid: "f".repeat(26), id: "acc001" });
+    const reconcileEnqueues = async () => { await registryStores(reg).js.publish(epwSubj, enc.encode(JSON.stringify({ item: 1 }))); };
+    const drained = await drainTargetForEndpoint(med, tgtB4.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: reconcileEnqueues });
+    c("…a reconciler that establishes the EPW item lets the drain reach quiescence (postcondition met)", drained.passes >= 1 && drained.reconciledAcceptedEpf >= 1, drained);
   }
 
   console.log("G. a proof never crosses endpoints or outlives its TTL");
