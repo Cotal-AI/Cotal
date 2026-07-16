@@ -15,7 +15,7 @@
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:seed` does that first.
  * Run: pnpm smoke:seed
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,21 +151,34 @@ check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAUL
   check("invalid stamp: --repair wrote a valid stamp", /^\d+\.\d+\.\d+/.test(gen), gen);
 }
 
+// ── 4c. a SYNTACTICALLY corrupt stamp (invalid JSON) does not wedge --repair/--reset ──────────────
+{
+  const cfg = track(freshCfg());
+  listNames(cfg);
+  writeFileSync(join(seedDir(cfg), "stamp.json"), "{ not json"); // readStamp() itself would throw
+  const rep = cotal(cfg, ["ext", "seed", "--repair"]);
+  check("corrupt-JSON stamp: --repair quarantines it and recovers (no wedge)", rep.status === 0, rep.stderr);
+  const stampGen = rep.status === 0 ? readJson(join(seedDir(cfg), "stamp.json")).generation : "";
+  check("corrupt-JSON stamp: a valid stamp is written", /^\d+\.\d+\.\d+/.test(stampGen), stampGen);
+}
+
 // ── 2b. a `{}` cursor with a missing on-disk package is repaired, not falsely reported success ────
 {
   const cfg = track(freshCfg());
   listNames(cfg);
-  // Tear a seeded connector: keep its manifest entry, delete its installed package, and leave an
-  // unactionable cursor. --repair must restore it (verify-all-torn), never clear the cursor + succeed.
+  // PARTIAL tear: keep the manifest entry AND package.json, delete only the built entry (dist/index.js),
+  // and leave an unactionable `{}` cursor. --repair must conservatively reinstall+verify every seeded
+  // built-in (a surviving package.json is NOT proof of integrity) — never clear the cursor + succeed.
   const pkgDir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
-  if (existsSync(pkgDir)) {
-    rmSync(pkgDir, { recursive: true, force: true });
+  const mainEntry = join(pkgDir, "dist", "index.js");
+  if (existsSync(mainEntry)) {
+    rmSync(mainEntry, { force: true }); // package.json survives; the built entry does not
     writeJson(join(seedDir(cfg), "reconcile.cursor.json"), {}); // parses, but names no package
     const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("unactionable cursor: --repair exits 0", rep.status === 0, rep.stderr);
-    check("unactionable cursor: the torn connector is actually restored on disk", existsSync(join(pkgDir, "package.json")));
+    check("partial tear: --repair exits 0", rep.status === 0, rep.stderr);
+    check("partial tear: the torn connector's entry file is actually restored", existsSync(mainEntry));
   } else {
-    check("unactionable cursor: hermes package present to tear", false, pkgDir);
+    check("partial tear: hermes main entry present to tear", false, mainEntry);
   }
 }
 
@@ -222,16 +235,22 @@ check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAUL
   check("ambiguous marker: auto boot fails loud (mid-flight, manual clear)", auto.status !== 0 && /mid-flight/i.test(auto.stderr), auto.stderr);
 }
 
-// ── 12. concurrent first boots do not collide or falsely report "interrupted" ────────────────────
+// ── 12. TRULY-PARALLEL first boots do not collide or falsely report "interrupted" ────────────────
 {
   const cfg = track(freshCfg());
-  const a = spawnSync("node", [BIN, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
-  // The second boot is launched while the first may still hold the lock; run back-to-back is enough to
-  // exercise the wait/no-op path deterministically here (true parallelism is covered by the manual
-  // fault suite). Both must succeed and the result must be exactly four.
-  const b = spawnSync("node", [BIN, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
-  check("concurrent boots: neither falsely reports 'interrupted'", !/interrupted/i.test((a.stderr ?? "") + (b.stderr ?? "")));
-  check("concurrent boots: exactly four connectors seeded", listNames(cfg).length === 4);
+  const boot = (): Promise<{ code: number; err: string }> =>
+    new Promise((resolve) => {
+      const p = spawn("node", [BIN, "ext", "list"], { env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+      let err = "";
+      p.stderr.on("data", (d) => (err += d.toString()));
+      p.on("close", (code) => resolve({ code: code ?? -1, err }));
+    });
+  // Launch several boots at once on a pristine prefix: exactly one seeds, the rest wait on the lock
+  // then no-op. None may collide, error, or falsely report "interrupted".
+  const results = await Promise.all([boot(), boot(), boot(), boot()]);
+  check("parallel boots: all exit 0 (one seeds, the rest wait then no-op)", results.every((r) => r.code === 0), results.map((r) => r.code));
+  check("parallel boots: none falsely reports 'interrupted'", !results.some((r) => /interrupted/i.test(r.err)));
+  check("parallel boots: exactly four connectors seeded (no double-seed)", listNames(cfg).length === 4);
 }
 
 for (const c of cleanup) rmSync(c, { recursive: true, force: true });

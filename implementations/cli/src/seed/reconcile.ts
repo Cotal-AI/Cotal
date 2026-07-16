@@ -1,8 +1,10 @@
-import { renameSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import {
   OFFICIAL_CONNECTORS,
+  extensionPackageDir,
   installedExtensionVersion,
   loadExtensionsManifest,
   quarantineExtensionsManifest,
@@ -122,11 +124,18 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
     }
   }
   const lock = acquireReconcileLock();
-  const releaseMutation = claimExtensionMutation();
   try {
-    return await runUnderLocks(mode, generation, lock.nonce);
+    // Claim the mutation lock INSIDE the reconcile lock's finally: if it throws (an operator `cotal
+    // ext` op holds it past the wait), the reconcile lock is still released, not leaked. The reconcile
+    // takes a modest bounded wait (a brief operator op shouldn't fail the boot-gate); operators
+    // themselves fail fast.
+    const releaseMutation = claimExtensionMutation({ waitMs: 30000 });
+    try {
+      return await runUnderLocks(mode, generation, lock.nonce);
+    } finally {
+      releaseMutation();
+    }
   } finally {
-    releaseMutation();
     lock.release();
   }
 }
@@ -155,8 +164,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` tells the
   // loop it must reconcile against ON-DISK truth, not a (now-quarantined) manifest.
   let manifestRebuilt = false;
+  let cursorQuarantined = false;
   if (mode === "repair" || mode === "reset") {
-    manifestRebuilt = prepareMaintenanceState(mode);
+    ({ manifestRebuilt, cursorQuarantined } = prepareMaintenanceState(mode));
   }
 
   // Health preamble — BEFORE the stamp fast path. A cursor means a prior reconcile was interrupted.
@@ -178,6 +188,11 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
 
   const stampGen = readStamp()?.generation;
   const repairTarget = mode === "repair" ? cursor?.package : undefined;
+  // An unknown/quarantined cursor is an interrupted install whose target we CANNOT identify. The
+  // conservative recovery (a torn npm copy may have left main intact but a required non-main artifact
+  // missing) is to force reinstall + verify every seeded built-in, never to infer integrity from a
+  // selected subset of files.
+  const repairAllSeeded = mode === "repair" && cursorQuarantined;
   const seeded: string[] = [];
   const refreshed: string[] = [];
   const removedKept: string[] = [];
@@ -199,12 +214,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       seeded.push(name);
     } else if (entry) {
       // Refresh policy: any --force; for connectors WE seeded (source === "seeded") a strictly-newer
-      // generation; and, on --repair, a seeded entry whose files are gone (TORN — the manifest records
-      // it but nothing is on disk), so a repair with an unactionable cursor still restores every torn
-      // built-in. An operator-managed official entry (no seeded marker) is never auto-refreshed on
-      // upgrade — only --force may replace it.
+      // generation; on an unknown-cursor --repair (repairAllSeeded) every seeded built-in; and on an
+      // ordinary --repair a seeded entry that is not fully intact on disk (a partial tear — main may
+      // survive while a required file is gone). An operator-managed official entry (no seeded marker)
+      // is never auto-refreshed on upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
-      const torn = mode === "repair" && isSeeded && !installedExtensionVersion(OFFICIAL_CONNECTORS[name]);
+      const torn = mode === "repair" && isSeeded && (repairAllSeeded || !isIntact(name));
       const refresh = mode === "force" || torn || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
         seedOne(name, generation, nonce, true);
@@ -237,11 +252,11 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
 }
 
 /** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of wedging
- *  on the same unreadable read. Returns true iff the manifest itself was quarantined — the caller then
- *  reconciles the built-ins against ON-DISK truth, since a quarantined manifest carries no reliable
- *  "removed" record. Third-party entries in an unrecoverable manifest are lost — reported, not
- *  silently dropped. */
-function prepareMaintenanceState(mode: Mode): boolean {
+ *  on the same unreadable read. `manifestRebuilt` ⇒ reconcile the built-ins against ON-DISK truth (a
+ *  quarantined manifest has no reliable "removed" record); `cursorQuarantined` ⇒ an unidentifiable
+ *  interrupted install (force reinstall every seeded built-in). Third-party entries in an
+ *  unrecoverable manifest are lost — reported, not silently dropped. */
+function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; cursorQuarantined: boolean } {
   let manifestRebuilt = false;
   try {
     loadExtensionsManifest();
@@ -255,13 +270,21 @@ function prepareMaintenanceState(mode: Mode): boolean {
       );
     }
   }
-  for (const aside of sanitizeCorruptCrashState()) console.error(c.dim(`quarantined a corrupt seed cursor → ${aside}`));
-  // A stamp whose generation is not valid semver (e.g. `0.bad.0`) parses fine but makes the refresh
-  // comparison throw — an auto boot then prescribes `--repair` and `--repair` re-throws the SAME error
-  // forever. Move it aside here so repair treats the prior generation as unknown (older), refreshes and
-  // verifies, and writes a fresh valid stamp.
-  const stamp = readStamp();
-  if (stamp && !isValidSemver(stamp.generation)) {
+  const cursorAside = sanitizeCorruptCrashState();
+  for (const aside of cursorAside) console.error(c.dim(`quarantined a corrupt seed cursor → ${aside}`));
+  // A stamp that is corrupt JSON, OR parses but is not valid semver (e.g. `0.bad.0`), makes the refresh
+  // comparison throw — an auto boot then prescribes `--repair` and `--repair`/`--reset` re-throw the
+  // SAME error forever (readStamp itself throws on corrupt JSON). Detect BOTH here, BEFORE any semver
+  // use, and move the stamp aside so repair treats the prior generation as unknown (older), refreshes
+  // and verifies, and writes a fresh valid stamp.
+  let stampBad = false;
+  try {
+    const stamp = readStamp();
+    stampBad = stamp !== undefined && !isValidSemver(stamp.generation);
+  } catch {
+    stampBad = true; // corrupt JSON
+  }
+  if (stampBad && existsSync(stampPath())) {
     const aside = `${stampPath()}.corrupt.${randomBytes(4).toString("hex")}`;
     renameSync(stampPath(), aside);
     console.error(c.dim(`quarantined an invalid version stamp → ${aside}`));
@@ -269,7 +292,7 @@ function prepareMaintenanceState(mode: Mode): boolean {
   if (mode === "reset") {
     for (const aside of quarantineCorruptSeedState()) console.error(c.dim(`quarantined corrupt seed state → ${aside}`));
   }
-  return manifestRebuilt;
+  return { manifestRebuilt, cursorQuarantined: cursorAside.length > 0 };
 }
 
 /** True iff `v` parses as a numeric-core semver (the only thing the refresh comparison can order). */
@@ -351,14 +374,38 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   }
 }
 
-/** Confirm a connector the reconcile claims to have (re)installed is actually recorded AND on disk —
- *  so `--repair` can never clear the cursor and stamp success over a half-installed prefix. */
+/** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk with its
+ *  entry file resolvable — so `--repair` can never clear the cursor and stamp success over a
+ *  half-installed prefix (a surviving package.json with a missing main is still broken). */
 function verifyInstalled(name: string): void {
   const pkg = OFFICIAL_CONNECTORS[name];
   const entry = installedEntry(name);
   if (!entry) throw new Error(`connector "${name}" (${pkg}) was expected in the manifest after seeding but is absent - rerun \`cotal ext seed --repair\``);
   if (!installedExtensionVersion(pkg))
     throw new Error(`connector "${name}" (${pkg}) is recorded but not installed on disk - rerun \`cotal ext seed --repair\``);
+  if (!mainEntryPresent(pkg))
+    throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
+}
+
+/** The package's declared main entry file exists on disk (`main`, else the CommonJS default). Used to
+ *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
+function mainEntryPresent(pkg: string): boolean {
+  const dir = extensionPackageDir(pkg);
+  let main = "index.js";
+  try {
+    const declared = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string }).main;
+    if (typeof declared === "string" && declared) main = declared;
+  } catch {
+    return false; // package.json unreadable ⇒ not intact
+  }
+  return existsSync(join(dir, main));
+}
+
+/** A seeded built-in is fully intact: recorded on disk (package.json + version) AND its main entry
+ *  file present. A partial tear (main gone, package.json kept) is NOT intact. */
+function isIntact(name: string): boolean {
+  const pkg = OFFICIAL_CONNECTORS[name];
+  return installedExtensionVersion(pkg) !== undefined && mainEntryPresent(pkg);
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {

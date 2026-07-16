@@ -9,13 +9,14 @@ import { acquireLock, extensionMutationLockPath } from "@cotal-ai/workspace";
  * can't interleave between children and strand a stale refresh decision; each seed child skips
  * claiming it (its parent already holds it — see `commands/ext.ts`).
  */
-export function claimExtensionMutation(): () => void {
+/** Claim the extension-prefix writer lock. `waitMs` defaults to 0 — an interactive operator `cotal
+ *  ext` fails FAST on a live holder ("retry once it finishes"), never a 5-minute wait; a dead owner is
+ *  still reclaimed. The reconcile passes a modest wait so a brief concurrent operator op doesn't fail
+ *  the boot-gate. */
+export function claimExtensionMutation(opts: { waitMs?: number } = {}): () => void {
   const held = acquireLock(extensionMutationLockPath(), {
     label: "a `cotal ext` mutation",
-    // Fail FAST on a live holder (the interactive-operator contract): a concurrent `cotal ext` is a
-    // "retry once it finishes", not a 5-minute wait. A dead owner is still reclaimed. (The reconcile
-    // takes the SAME lock for its whole run, so an operator command during a first-boot seed retries.)
-    waitMs: 0,
+    waitMs: opts.waitMs ?? 0,
     onTimeout: (owner) => new Error(`another \`cotal ext\` mutation is in progress (pid ${owner.pid}) - retry once it finishes`),
   });
   return () => held.release();
