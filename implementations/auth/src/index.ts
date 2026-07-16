@@ -11,6 +11,7 @@ export {
 } from "./callout.js";
 export {
   validateUserToken,
+  assertCredentialIdClaim,
   USER_TOKEN_VER,
   MAX_TOKEN_TTL_SEC,
   USER_TOKEN_VIEWS,
