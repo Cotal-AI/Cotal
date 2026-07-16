@@ -315,6 +315,51 @@ try {
     c("…a reconciler that establishes the EPW item lets the drain reach quiescence (postcondition met)", drained.passes >= 1 && drained.reconciledAcceptedEpf >= 1, drained);
   }
 
+  console.log("K. the round-8 fold: settled work quiesces, ref self-cert, multibyte detail");
+  {
+    // B4 residual (§13.6 predicate): EPW is a WorkQueue, so a SETTLED item's terminal wrk fact
+    // exists while its EPW entry is acked away. The drain must recognize `terminal wrk OR live
+    // EPW` as established and NEVER invoke reconciliation for settled work (a re-enqueue would
+    // re-arm it; an honest no-op reconciler must not fail the drain). The isolated tgtB4 now
+    // carries acc001 (live EPW, no wrk) and acc002 (terminal wrk, NO EPW item ever published:
+    // the acked-away end state).
+    const cK = { owner: CALLER.owner, actor: CALLER.actor, uid: "g".repeat(26) };
+    const POOL = "workpool";
+    const actB4r = await readRecordLeader(registryStores(reg).jsm, SPACE, `lifecycle.local.b4target`);
+    const tgtB4k = { owner: "local", actor: "b4target", lifecycleUid: (actB4r!.value as { lifecycleUid: string }).lifecycleUid };
+    const pk = await obtainEpfObligation(med, mkReq(cK), { target: tgtB4k, id: "acc002", fingerprint: fp("K"), sourceSeq: 5, route: `pool.${POOL}` });
+    await updateRecordEntry(recordsKv, pk.key, { ...pk.row, state: "accepted" }, pk.revision);
+    const wrkSubj = epfSubject(SPACE, EP, ["wrk", POOL, cK.owner, cK.actor, cK.uid, "acc002"]);
+    const wrkFact = { v: 1, disposition: "expired", pool: POOL, caller: { ...cK, id: "acc002" }, workExpiry: NOW - 1, ts: NOW };
+    if (!(await publishFactCreateOnly(registryStores(reg).js, wrkSubj, enc.encode(JSON.stringify(wrkFact)))).won) throw new Error("wrk forge lost");
+    const forbidRecon = async () => { throw new Error("reconciliation ran for SETTLED work (terminal wrk present)"); };
+    const drainedK = await drainTargetForEndpoint(med, tgtB4k.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: forbidRecon });
+    c("a settled pool row (terminal wrk, EPW acked away) quiesces WITHOUT reconciliation (13.6 predicate: wrk OR live EPW)",
+      drainedK.passes >= 1 && drainedK.reconciledAcceptedEpf >= 2, drainedK);
+
+    // Ref self-cert (§13.7): a policy-shaped row whose content matches the caller's pinned
+    // commitDigest but NOT its own key digest is corruption and refuses at obtain.
+    const corrupt = { corrupt: true };
+    const badKey = `policy.${EP}.${"a".repeat(64)}`;
+    await createRecordEntry(recordsKv, badKey, corrupt);
+    await rejects("a commit-value ref to a policy row whose content does not digest to its OWN key refuses (self-certification)",
+      () => obtainSelfObligation(med, mkReq({ ...CALLER, uid: "i".repeat(26) }), { target: tgtB4k, id: "cc0001", commit: { commitKey: `svc.${EP}.cc.status`, commitBaseRevision: 0, commitValue: { enc: "ref", key: badKey }, commitDigest: contractDigest(corrupt) } }), "failed-precondition");
+
+    // H1 coverage (the byte-cap fix): a MULTIBYTE settle reason emits a fact whose detail is
+    // UTF-8 byte-bounded, provable by parsing it back through core's validator.
+    const cM = { owner: CALLER.owner, actor: CALLER.actor, uid: "h".repeat(26) };
+    const mb = await obtainEpfObligation(med, mkReq(cM), { target: tgtB4k, id: "mb0001", fingerprint: fp("MB"), sourceSeq: 9, route: "effects" });
+    await settleEpfOrSelfObligation(med, mb.key, "é".repeat(300));
+    {
+      const decSubject = epfSubject(SPACE, EP, ["dec", cM.owner, cM.actor, cM.uid, "mb0001"]);
+      const factRaw = await readLastFact(await jetstreamManager(nc!), epfStreamName(SPACE), decSubject);
+      const fact = parseDecisionFact(factRaw, decSubject) as { decision: string; error?: { detail?: string } };
+      const detail = fact.error?.detail ?? "";
+      c("a multibyte settle reason emits a core-valid fact whose detail is UTF-8 byte-bounded (never split past 256 bytes)",
+        fact.decision === "rejected" && Buffer.byteLength(detail, "utf8") <= 256 && Buffer.byteLength(detail, "utf8") > 0, Buffer.byteLength(detail, "utf8"));
+    }
+  }
+
   console.log("G. a proof never crosses endpoints or outlives its TTL");
   const medOther = await openAdmissionMediator(nc, SPACE, "other", { now: () => clock, proofTtlMs: 1000 });
   const g2 = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "y".repeat(26) }), { target: tgt, id: "req0100", fingerprint: fp("p"), sourceSeq: 1, route: "effects" });

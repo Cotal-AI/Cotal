@@ -54,8 +54,9 @@ import {
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
   epfSubject, epfStreamName, epwSubject, epwStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
+  workTerminalSubject, parseWorkTerminalFact,
   contractDigest, parseEpSubject,
-  type RejectionFact, type DecisionFact,
+  type RejectionFact, type DecisionFact, type WorkItemRef,
   mintLifecycleUid, assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken,
 } from "@cotal-ai/core";
 import {
@@ -948,6 +949,14 @@ async function resolveCommitValue(med: MediatorInternals, intent: SelfCommitInte
     const read = await readRecordLeader(med.jsm, med.space, refKey);
     if (read === undefined)
       throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${refKey} does not exist; a recovery cannot resolve the promised value (SPEC 13.8)`);
+    // SELF-CERTIFY the referenced version against ITS OWN key digest (§13.7: every policy
+    // reader refuses a key/content mismatch), not only against the caller-pinned commitDigest
+    // below — a corrupted row whose content matches the caller's pin but not its key would
+    // otherwise launder a non-canonical version through the ref form.
+    const keyHex = refKey.split(".").pop()!;
+    const valueHex = contractDigest(read.value).slice("sha256:".length);
+    if (valueHex !== keyHex)
+      throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${refKey} resolves to content whose canonical digest is ${valueHex}, not the key's own digest; a policy version is self-certifying and a mismatch is corruption, refused (SPEC 13.7)`);
     value = read.value;
     bytes = enc.encode(JSON.stringify(read.value));
   }
@@ -1095,9 +1104,12 @@ export interface DrainResult {
 /** Verify an ACCEPTED epf row's route reached its durable postcondition before the drain counts
  *  it quiescent (§13.8 accept-side reconciliation). The drain OWNS the check so a presence-only
  *  reconciler cannot fake it: an `effects` route is established by its own acceptance decision
- *  fact (the row is accepted, so that fact exists); a `pool.<pool>` route requires the EPW item
- *  at the acceptance identity to EXIST (the enqueue landed). If it is missing (crash before
- *  enqueue), the injected reconciler repairs it and the drain RE-READS; still missing fails
+ *  fact (the row is accepted, so that fact exists); a `pool.<pool>` route is established by the
+ *  EXACT §13.6 reconciliation predicate: a VALIDATED terminal `wrk` fact (the item is SETTLED —
+ *  EPW is a WorkQueue, so a terminally-acked item is normally ABSENT, and settled work is never
+ *  re-enqueued) OR a live EPW entry at the acceptance identity (the enqueue landed and is in
+ *  flight). Only BOTH absent is the repairable crash-before-enqueue state: the injected
+ *  reconciler repairs it and the drain RE-READS both coordinates; still unestablished fails
  *  closed. */
 async function verifyAcceptedEpfRoute(
   med: MediatorInternals,
@@ -1108,14 +1120,23 @@ async function verifyAcceptedEpfRoute(
   if (row.route === "effects") return; // established by the acceptance decision fact
   const pool = row.route!.slice("pool.".length);
   const [cOwner, cActor, cUid, id] = key.split(".").slice(3); // [oblig, target, endpoint, cO, cA, cUid, id]
-  const subject = epwSubject(med.space, med.endpoint, pool, { owner: cOwner, actor: cActor, uid: cUid, id });
-  const established = async (): Promise<boolean> => (await readLastFact(med.jsm, epwStreamName(med.space), subject)) !== undefined;
+  const ref: WorkItemRef = { endpoint: med.endpoint, pool, acceptance: { owner: cOwner, actor: cActor, uid: cUid, id } };
+  const wrkSubject = workTerminalSubject(med.space, ref);
+  const itemSubject = epwSubject(med.space, med.endpoint, pool, ref.acceptance);
+  const established = async (): Promise<boolean> => {
+    const wrk = await readLastFact(med.jsm, epfStreamName(med.space), wrkSubject);
+    if (wrk !== undefined) {
+      parseWorkTerminalFact(wrk, wrkSubject, ref); // a garbled terminal never counts as settled
+      return true;
+    }
+    return (await readLastFact(med.jsm, epwStreamName(med.space), itemSubject)) !== undefined;
+  };
   if (await established()) return;
   if (reconciler === undefined)
-    throw new EpEnvelopeError("failed-precondition", `accepted pool obligation ${key} has no EPW item (its enqueue did not land) and no reconcileAcceptedRoute was given; a drain never declares quiescence over unmaterialized accepted work (SPEC 13.8)`);
+    throw new EpEnvelopeError("failed-precondition", `accepted pool obligation ${key} has no terminal wrk fact and no live EPW item (its enqueue did not land) and no reconcileAcceptedRoute was given; a drain never declares quiescence over unmaterialized accepted work (SPEC 13.8)`);
   await reconciler(row, key);
   if (!(await established()))
-    throw new EpEnvelopeError("unavailable", `the reconciler for accepted pool obligation ${key} did not establish its EPW item; the route is still unmaterialized and quiescence fails closed (SPEC 13.8)`);
+    throw new EpEnvelopeError("unavailable", `the reconciler for accepted pool obligation ${key} established neither a terminal wrk fact nor a live EPW item; the route is still unmaterialized and quiescence fails closed (SPEC 13.8)`);
 }
 
 /** Drain the rows a `counts` predicate SELECTS under `filter` to quiescence (§13.8): settle
