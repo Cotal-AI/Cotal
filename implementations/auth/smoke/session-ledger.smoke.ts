@@ -38,7 +38,7 @@ import {
   type LifecycleRegistry,
 } from "../src/index.js";
 // The gate/provisioning stand-ins + registry primitives are test-internal (not in the public index).
-import { writeEndpointGate, epgateKey } from "../src/session-ledger.js";
+import { writeEndpointGate, epgateKey, reconcileSessionForTakeover } from "../src/session-ledger.js";
 import { tryReserveUid, createGateFrozen, reopenGate } from "../src/lifecycle-registry.js";
 
 let ok = 0, fail = 0;
@@ -421,6 +421,43 @@ try {
     // STORE config: a mirror/MaxAge store is refused (proven at open by the shape check; here we
     // just confirm the primary store bound cleanly and is branded).
     c("the primary auth store bound cleanly (allow_direct=false, no MaxAge, not a mirror)", store.space === SPACE);
+  }
+
+  console.log("I. the round-3 fold: epgate grammar parity, session DEL markers, reconciler principals");
+  {
+    // The epgate principal must be a REAL owner-grammar principal — a dot-form-only value
+    // (`foo.bar`) would stage a session whose serving epcred row later refuses to parse,
+    // leaving a poisoned, unenumerable serving half.
+    const BADIID = "b".repeat(26);
+    await writeEndpointGate(kv, "badp", BADIID, { state: "open", generation: 1, processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1, principal: "foo.bar" });
+    await rejects("an epgate whose principal is dot-form but NOT owner-grammar (foo.bar) refuses at parse",
+      () => hooks.servingEpoch("badp", BADIID), "internal");
+    // The agent gate's STATE x KIND invariant applies to the endpoint family: a retired gate
+    // under a takeover kind is impossible persisted state.
+    await writeEndpointGate(kv, "badk", BADIID, { state: "retired", generation: 1, processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL, op: { opId: "o".repeat(26), kind: "takeover" } } as never);
+    await rejects("an epgate RETIRED under a takeover kind refuses at parse (impossible persisted state)",
+      () => hooks.servingEpoch("badk", BADIID), "internal");
+    // A malformed opId on the epgate op intent refuses (token grammar parity with the agent gate).
+    await writeEndpointGate(kv, "bado", BADIID, { state: "frozen", generation: 1, processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL, op: { opId: "not a token!", kind: "takeover" } } as never);
+    await rejects("an epgate op intent with a malformed opId refuses at parse",
+      () => hooks.servingEpoch("bado", BADIID), "internal");
+    // A DEL marker on a SESSION row is corruption, never absence: the read refuses loudly
+    // instead of letting a takeover reconciliation no-op over a live serving half.
+    const gDel = mkGrant(sid(44));
+    await redeemSession(gDel, PRESENTER, hooks);
+    await kv.delete(sessionLedgerKey(sid(44)));
+    await rejects("a DEL marker on session.<sid> refuses the ledger read (corruption, not absence)",
+      () => hooks.ledger.read(sid(44)), "failed-precondition");
+    // The takeover reconciler returns the serving row's CONNZ-evictable principal (the
+    // barrier's eviction set joins it) and is idempotent across re-runs.
+    const gRec = mkGrant(sid(45));
+    await redeemSession(gRec, PRESENTER, hooks);
+    const rec1 = await reconcileSessionForTakeover(store, hooks, sid(45));
+    c("the takeover reconciler returns the serving principal for the barrier's eviction set",
+      rec1.servingPrincipals.length === 1 && rec1.servingPrincipals[0] === SERVING_PRINCIPAL, rec1);
+    const rec2 = await reconcileSessionForTakeover(store, hooks, sid(45));
+    c("…idempotent: a re-run still returns it (a resumed barrier must re-evict)",
+      rec2.servingPrincipals.length === 1 && rec2.servingPrincipals[0] === SERVING_PRINCIPAL, rec2);
   }
 
   await nc.drain().catch(() => {});

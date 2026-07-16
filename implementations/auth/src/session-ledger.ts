@@ -51,6 +51,7 @@ import {
   endpointToken,
   assertLifecycleToken,
   parsePrincipalKey,
+  isPrincipalOwnerToken,
   sessionLedgerKey,
   assertSessionStateTransition,
   sweepSessionRow,
@@ -171,9 +172,16 @@ const isCasLoss = (e: unknown): boolean => {
  *  revision-pinned CAS for every transition, monotonic states enforced on the write path. */
 export function kvSessionLedger(kv: KV): SessionLedger {
   const readEntry = async (sessionId: string) => {
-    const entry = await kv.get(sessionLedgerKey(sessionId));
-    if (!entry || entry.operation !== "PUT") return undefined;
-    return { row: parseRow(entry.value, sessionLedgerKey(sessionId)), revision: entry.revision };
+    const key = sessionLedgerKey(sessionId);
+    const entry = await kv.get(key);
+    if (!entry) return undefined;
+    // A DEL/PURGE marker is CORRUPTION, never absence: session rows are terminal-state
+    // authority, never deleted (SPEC 13.6/13.12). Collapsing a marker into "no session" would
+    // let a deleted row's still-live serving credential silently survive a takeover
+    // reconciliation ("nothing to reconcile") and every sweep.
+    if (entry.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `the session row ${key} carries a ${entry.operation} marker; a session row is never deleted (corruption, not absence, SPEC 13.12)`);
+    return { row: parseRow(entry.value, key), revision: entry.revision };
   };
   return {
     async read(sessionId) {
@@ -290,8 +298,13 @@ function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
-  if (parsePrincipalKey(o.principal as string) === null)
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (SPEC 13.1)`);
+  // The serving principal must be a REAL owner-grammar principal (`u_…`/`local` + actor), the
+  // same boundary the ledger rows enforce — a dot-form-only check admits `foo.bar`, which
+  // stages/finalizes a session whose serving epcred row later refuses to parse, leaving an
+  // active session with a poisoned, unenumerable serving half (SPEC 13.1).
+  const principal = typeof o.principal === "string" ? parsePrincipalKey(o.principal) : null;
+  if (principal === null || !isPrincipalOwnerToken(principal.owner))
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (owner-grammar owner.actor, SPEC 13.1)`);
   if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);
   if (o.state === "open" && o.op !== undefined)
@@ -301,6 +314,18 @@ function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
     for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
     if (typeof op.opId !== "string" || !["activation", "takeover", "registration", "retirement"].includes(op.kind as string))
       throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent does not validate (SPEC 13.1)`);
+    // The agent gate's STATE x KIND and successor invariants apply to the endpoint family too
+    // (SPEC 13.1 per-kind transition sets): a retired gate belongs only to an activation orphan
+    // or a retirement, and only takeover/registration may stage a successor summary.
+    if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1) — impossible persisted state, refused`);
+    if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
+    try {
+      assertLifecycleToken(op.opId);
+    } catch {
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries a malformed opId (SPEC 13.1)`);
+    }
   }
   return o as unknown as EndpointGateRow;
 }
@@ -644,22 +669,47 @@ export async function closeSession(
  * `credential-ledger`'s `TakeoverDeps.reconcileSessionPair`): when a takeover or handle
  * revocation revokes a `cred.` row whose lineage names `session.<sessionId>`, this tears down
  * BOTH halves of that session so the SERVING half cannot outlive the barrier. It terminalizes
- * `session.<sessionId>` as `superseded` (the barrier's own terminal reason) and revokes both
- * ledger rows (the caller `cred.` and the serving `epcred.`). Idempotent: a session already
- * gone (or already reconciled) is a no-op; fail-closed if it cannot fully revoke both halves.
- * Live eviction of the serving connection is the endpoint's own barrier (D14) — this closes the
- * DENY-NEW substrate for the pair; the caller's live connection is evicted by the agent barrier.
+ * `session.<sessionId>` as `superseded` (the barrier's own terminal reason), revokes both
+ * ledger rows (the caller `cred.` and the serving `epcred.`), and RETURNS the serving row's
+ * CONNZ-attributable holder principal so the barrier can UNION it into its verified-eviction
+ * set (SPEC 13.6: both credentials revoked WITH eviction — the row alone leaves an
+ * already-connected serving session live). Idempotent: an already-reconciled session still
+ * returns its principals (a resumed barrier must still evict); fail-closed if it cannot fully
+ * revoke both halves. The barrier only ever names a session it read from a NEVER-DELETED
+ * credential row's lineage, and session rows are never deleted either, so TRUE ABSENCE here is
+ * corruption, never "nothing to reconcile".
  */
 export async function reconcileSessionForTakeover(
   store: SessionAuthStore,
   hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
   sessionId: string,
-): Promise<void> {
+): Promise<{ servingPrincipals: readonly string[] }> {
   assertStore(store);
-  if ((await hooks.ledger.read(sessionId)) === undefined) return; // idempotent: nothing to reconcile
+  const row = await hooks.ledger.read(sessionId);
+  if (row === undefined)
+    throw new EpEnvelopeError("failed-precondition", `session ${sessionId} is named by a live credential lineage but has no ledger row; session rows are never deleted, so a barrier cannot treat this as settled (corruption, SPEC 13.12)`);
   const res = await closeSession(store, hooks, { sessionId, closer: { kind: "operator" }, to: "superseded" });
   if (!res.fullyRevoked)
     throw new EpEnvelopeError("unavailable", `the takeover reconciliation of session ${sessionId} did not fully revoke both halves; the barrier fails closed (SPEC 13.1)`);
+  // The serving half's EVICTION TARGET: the epcred row's holderPrincipal (the serving
+  // instance's connection principal recorded at gate registration). Read AFTER the close so a
+  // just-revoked row still names it; the row parse enforces the principal grammar.
+  const servingKey = credLedgerKey(row.credServing);
+  const entry = await store.kv.get(servingKey);
+  if (entry !== null && entry !== undefined) {
+    if (entry.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `the serving credential row ${servingKey} of reconciled session ${sessionId} carries a ${entry.operation} marker; ledger rows are never deleted (corruption, SPEC 13.12)`);
+    const serving = parseLedgerRow(entry.value, servingKey);
+    return { servingPrincipals: [serving.holderPrincipal] };
+  }
+  // TRUE ABSENCE of the serving row is legitimate in exactly one shape: a redemption that
+  // crashed between its two stage writes never created it, and the sweep's terminal-row retry
+  // durably MARKED the never-staged id revoked (the fully-revoked proof). A credential that was
+  // never staged was never released, so no connection exists under it — nothing to evict.
+  // Anything else is corruption.
+  const after = await hooks.ledger.read(sessionId);
+  if (after !== undefined && after.revoked.serving) return { servingPrincipals: [] };
+  throw new EpEnvelopeError("failed-precondition", `the serving credential row ${servingKey} of reconciled session ${sessionId} does not exist and the session row carries no fully-revoked proof for it; ledger rows are never deleted (corruption, SPEC 13.12)`);
 }
 
 /** Enumerate `session.>` and run core's per-row sweep decision: expiry transitions + the
@@ -684,7 +734,8 @@ export async function sweepSessions(
   for await (const key of keys) {
     try {
       const entry = await kv.get(key);
-      if (!entry || entry.operation !== "PUT") continue;
+      if (!entry) continue;
+      if (entry.operation !== "PUT") { failed.push(key); continue; } // a deletion marker is corruption, reported, never skipped silently
       const row = parseRow(entry.value, key);
       if (await sweepSessionRow(row, hooks, opts)) acted++;
     } catch {

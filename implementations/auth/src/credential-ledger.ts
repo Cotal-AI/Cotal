@@ -368,18 +368,26 @@ function parseBysrcRow(raw: Uint8Array, key: string): BysrcRow {
 }
 
 /** What {@link stageAgentMint} durably staged, handed to {@link finalizeAgentMint}. BRANDED
- *  (WeakSet membership): only {@link stageAgentMint} produces one, so a hand-assembled or
+ *  (WeakMap membership): only {@link stageAgentMint} produces one, so a hand-assembled or
  *  mutated object (e.g. an empty `pins` array that would finalize with no gate proof) can never
- *  reach the touch-CAS. The pinned CAS is the fence; the brand is what stops a fake bypassing it. */
+ *  reach the touch-CAS. The finalize NEVER trusts fields read back from this object: the
+ *  authoritative pins/rowKey snapshot lives in the module-private WeakMap value (a
+ *  shallow-frozen public array left mutable pin OBJECTS a caller could rewrite to duplicate
+ *  the source-gate pin and skip the lifecycle gate). The public object is deep-frozen too,
+ *  but the snapshot is the authority. */
 export interface StagedAgentMint {
   readonly lifecycleUid: string;
   readonly credentialId: string;
   /** The observed lifecycle-gate + source-gate pins the finalize touch-CASes, keyed by KV key. */
-  readonly pins: ReadonlyArray<{ key: string; revision: number }>;
+  readonly pins: ReadonlyArray<{ readonly key: string; readonly revision: number }>;
   /** The staged row's own key (what a losing finalize revokes). */
   readonly rowKey: string;
 }
-const STAGED_MINTS = new WeakSet<StagedAgentMint>();
+interface StagedMintSnapshot {
+  pins: ReadonlyArray<{ key: string; revision: number }>;
+  rowKey: string;
+}
+const STAGED_MINTS = new WeakMap<StagedAgentMint, StagedMintSnapshot>();
 
 /**
  * Stage an AGENT-family mint (SPEC 13.1 mint protocol, steps observe + write-rows): observe
@@ -434,8 +442,14 @@ export async function stageAgentMint(
   };
   await createRowByteIdempotent(authKv, rowKey, row);
   for (const k of bysrcKeys) await createRowByteIdempotent(authKv, k, { ref: rowKey } satisfies BysrcRow);
-  const staged: StagedAgentMint = Object.freeze({ lifecycleUid: args.lifecycleUid, credentialId: args.credentialId, pins: Object.freeze(pins), rowKey });
-  STAGED_MINTS.add(staged);
+  // The AUTHORITATIVE snapshot is module-private (finalize reads only this, never the object's
+  // own fields); the public object is deep-frozen as well, so a strict-mode mutation throws.
+  const snapshot: StagedMintSnapshot = { pins: pins.map((p) => ({ ...p })), rowKey };
+  const staged: StagedAgentMint = Object.freeze({
+    lifecycleUid: args.lifecycleUid, credentialId: args.credentialId,
+    pins: Object.freeze(pins.map((p) => Object.freeze({ ...p }))), rowKey,
+  });
+  STAGED_MINTS.set(staged, snapshot);
   return staged;
 }
 
@@ -450,22 +464,26 @@ export async function stageAgentMint(
  */
 export async function finalizeAgentMint(reg: LifecycleRegistry, staged: StagedAgentMint): Promise<void> {
   const { authKv } = registryStores(reg);
-  // BRAND CHECK: only stageAgentMint mints a StagedAgentMint, so a hand-assembled/mutated object
-  // (e.g. an empty `pins` array that would finalize proving NO gate) never reaches the touch-CAS.
-  if (!STAGED_MINTS.has(staged))
+  // BRAND CHECK + AUTHORITATIVE SNAPSHOT: only stageAgentMint mints a StagedAgentMint, so a
+  // hand-assembled object never reaches the touch-CAS — and the pins/rowKey used below come
+  // from the module-private snapshot, never from fields the caller's object hands back (a
+  // mutated pin object could otherwise duplicate the source-gate pin and the dedup would skip
+  // the lifecycle gate entirely).
+  const snap = STAGED_MINTS.get(staged);
+  if (snap === undefined)
     throw new EpEnvelopeError("failed-precondition", "the staged mint was not produced by stageAgentMint(); a hand-assembled StagedAgentMint never authorizes a finalize (SPEC 13.12)");
-  if (staged.pins.length === 0)
-    throw new EpEnvelopeError("internal", `the staged mint for ${staged.rowKey} carries no gate pins; a finalize proves at least the lifecycle gate (SPEC 13.1)`);
+  if (snap.pins.length === 0)
+    throw new EpEnvelopeError("internal", `the staged mint for ${snap.rowKey} carries no gate pins; a finalize proves at least the lifecycle gate (SPEC 13.1)`);
   const byKey = new Map<string, number>();
-  for (const pin of staged.pins) {
+  for (const pin of snap.pins) {
     const seen = byKey.get(pin.key);
     if (seen !== undefined && seen !== pin.revision)
       throw new EpEnvelopeError("internal", `the gate ${pin.key} was observed at two revisions (${seen} vs ${pin.revision}); one observation feeds the pinned touch (SPEC 13.1)`);
     byKey.set(pin.key, pin.revision);
   }
   const lose = async (key: string, detail: string): Promise<never> => {
-    await markLedgerRowRevoked(authKv, staged.rowKey);
-    throw new EpEnvelopeError("permission-denied", `the mint for ${staged.rowKey} lost its fence on ${key} (${detail}); its row is revoked and nothing releases (SPEC 13.1)`);
+    await markLedgerRowRevoked(authKv, snap.rowKey);
+    throw new EpEnvelopeError("permission-denied", `the mint for ${snap.rowKey} lost its fence on ${key} (${detail}); its row is revoked and nothing releases (SPEC 13.1)`);
   };
   for (const key of [...byKey.keys()].sort()) {
     const revision = byKey.get(key)!;
@@ -553,9 +571,14 @@ export type EvictPrincipal = (principal: string) => Promise<EvictionResult>;
 /** The injected SESSION-PAIR reconciler (SPEC 13.1: a lifecycle barrier tears down BOTH halves
  *  of a session, not just the caller credential under `cred.<uid>.>`). For each distinct
  *  `session.<sessionId>` naming a revoked descendant, the barrier calls this to terminalize the
- *  `session.<sessionId>` row and revoke the paired serving `epcred.` row. Injected (not
- *  imported) so the credential ledger never depends on the session adapter. Idempotent. */
-export type ReconcileSessionPair = (sessionId: string) => Promise<void>;
+ *  `session.<sessionId>` row and revoke the paired serving `epcred.` row, and it RETURNS the
+ *  serving row's CONNZ-attributable holder principal(s) so the barrier can UNION them into its
+ *  verified-eviction set (SPEC 13.6: a takeover on either side revokes BOTH credentials WITH
+ *  eviction — a row-only revocation would leave an already-connected serving session live).
+ *  Injected (not imported) so the credential ledger never depends on the session adapter.
+ *  Idempotent: an already-reconciled session still returns its principals (a resumed barrier
+ *  must still evict). */
+export type ReconcileSessionPair = (sessionId: string) => Promise<{ servingPrincipals: readonly string[] }>;
 
 /** The barrier's injected capabilities. `reconcileSessionPair` is optional: a deployment with
  *  no sessions omits it, but a lifecycle that HAS session-derived credentials and omits it
@@ -659,6 +682,14 @@ export async function runAgentTakeoverBarrier(
       throw new EpEnvelopeError("failed-precondition", `lifecycle ${args.lifecycleUid} has no issuance gate; nothing to take over (SPEC 13.1)`);
     if (gate0.row.state !== "open" || gate0.row.generation < 1)
       throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${gate0.row.state}" at generation ${gate0.row.generation}; a takeover freezes an OPEN, mintable gate (another operation owns a frozen one, SPEC 13.1)`);
+    // COORDINATE-PAIR COHERENCE (SPEC 13.1): the head and gate reads above are two reads, and a
+    // COMPLETED foreign takeover can land between them, leaving a TORN pair (old epoch, new
+    // generation). An intent persisted from a torn pair freezes the winner's reopened gate,
+    // revokes the successor's rows, and then wedges forever on the foreign epoch stamp — so
+    // re-read the head and refuse any movement BEFORE the intent becomes durable.
+    const head2 = await readLifecycleHeadForOperation(reg, args.owner, args.actor);
+    if (head2 === undefined || head2.mapping.state !== "active" || head2.mapping.lifecycleUid !== args.lifecycleUid || head2.mapping.processEpoch !== head.mapping.processEpoch)
+      throw new EpEnvelopeError("conflict", `the head for "${args.owner}/${args.actor}" moved while this takeover captured its coordinates (epoch ${head.mapping.processEpoch} → ${head2 === undefined ? "gone" : `${head2.mapping.state}@${head2.mapping.processEpoch}`}); the captured pair is torn — re-read and re-decide with fresh coordinates (SPEC 13.1)`);
     const intent: TakeoverIntent = {
       kind: "takeover", lifecycleUid: args.lifecycleUid, owner: args.owner, actor: args.actor,
       fromEpoch: head.mapping.processEpoch, fromGeneration: gate0.row.generation,
@@ -679,6 +710,23 @@ export async function runAgentTakeoverBarrier(
     if (gate.row.state === "frozen") {
       if (gate.row.op?.opId !== opId)
         throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is frozen by operation ${gate.row.op?.opId ?? "<none>"}, not ${opId}; one barrier at a time (SPEC 13.1)`);
+      // Our own freeze — but before proceeding, prove the head is still OURS to advance: at the
+      // captured epoch (mid-barrier) or at +1 stamped with OUR opId (a resume after our own
+      // step-5 advance). Anything else is a freeze held over a FOREIGN completion (a torn-pair
+      // intent from a crashed pre-guard run): revoking/evicting under it would kill the
+      // winner's successor and the epoch CAS would wedge on the foreign stamp forever — so
+      // ABORT by reopening our own freeze (a takeover aborts by reopening, SPEC 13.1 per-kind
+      // exits) and refuse; rows a previous poisoned run already revoked stay revoked (never
+      // un-revoked) and their holder re-mints under the reopened gate.
+      const h = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);
+      if (h === undefined || h.mapping.state !== "active" || h.mapping.lifecycleUid !== intent.lifecycleUid)
+        throw new EpEnvelopeError("internal", `the head for "${intent.owner}/${intent.actor}" is ${h === undefined ? "gone" : `${h.mapping.state} at ${h.mapping.lifecycleUid}`} under this takeover's own freeze; a retirement cannot run inside a foreign freeze (corruption, SPEC 13.1)`);
+      const oursMidBarrier = h.mapping.processEpoch === intent.fromEpoch;
+      const oursAdvanced = h.mapping.processEpoch === intent.fromEpoch + 1 && h.mapping.lastTakeoverOpId === opId;
+      if (!oursMidBarrier && !oursAdvanced) {
+        await reopenGate(reg, { lifecycleUid: intent.lifecycleUid, revision: gate.revision, opId });
+        throw new EpEnvelopeError("conflict", `the takeover ${opId} of ${intent.lifecycleUid} held a freeze over a FOREIGN head movement (captured epoch ${intent.fromEpoch}, head at ${h.mapping.processEpoch} by ${h.mapping.lastTakeoverOpId ?? "<none>"}); the stale freeze was reopened and this operation lost — any rows it revoked re-mint under the reopened gate (SPEC 13.1)`);
+      }
       break; // our own freeze (fresh or resumed)
     }
     if (gate.row.state === "open" && gate.row.generation === intent.fromGeneration + 1) {
@@ -695,6 +743,15 @@ export async function runAgentTakeoverBarrier(
     }
     if (!(gate.row.state === "open" && gate.row.generation === intent.fromGeneration))
       throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is "${gate.row.state}" at generation ${gate.row.generation}, not this takeover's captured generation ${intent.fromGeneration} (or its +1); a foreign operation moved it (SPEC 13.1)`);
+    // HEAD GUARD, immediately before the freeze CAS (SPEC 13.1): the intent's coordinates are
+    // durable and may be STALE — if a foreign operation advanced the head since capture, this
+    // operation has already lost, and it must refuse WITHOUT moving the gate (a stale intent
+    // that freezes anyway revokes the winner's successor and wedges on the foreign epoch
+    // stamp). The gate CAS then serializes the residue: a foreign takeover completing after
+    // this read must first freeze the gate itself, which makes OUR freeze CAS lose and re-loop.
+    const headNow = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);
+    if (headNow === undefined || headNow.mapping.state !== "active" || headNow.mapping.lifecycleUid !== intent.lifecycleUid || headNow.mapping.processEpoch !== intent.fromEpoch)
+      throw new EpEnvelopeError("conflict", `the head for "${intent.owner}/${intent.actor}" is ${headNow === undefined ? "gone" : `${headNow.mapping.state}@epoch ${headNow.mapping.processEpoch} (uid ${headNow.mapping.lifecycleUid})`}, not this takeover's captured epoch ${intent.fromEpoch}; the intent is stale and this operation lost — the gate was not moved (SPEC 13.1)`);
     try {
       await freezeGate(reg, { lifecycleUid: intent.lifecycleUid, revision: gate.revision, op: { opId, kind: "takeover" } });
       break;
@@ -721,24 +778,30 @@ export async function runAgentTakeoverBarrier(
   // distinct `session.<sessionId>` naming a revoked descendant, terminalize `session.<sessionId>`
   // and revoke the paired serving `epcred.` row through the injected reconciler; a lifecycle
   // that HAS session-derived credentials but no reconciler fails loud (a live serving half
-  // would survive the takeover).
+  // would survive the takeover). The reconciler returns the serving rows' holder principals —
+  // they JOIN the verified-eviction set below (SPEC 13.6: both credentials revoked WITH
+  // eviction; a row-only revocation leaves an already-connected serving session live).
   const sessionIds = new Set<string>();
   for (const item of family)
     for (const member of item.row.sourceChain) {
       const parsed = parseSourceMember(member);
       if (parsed.kind === "session") sessionIds.add(parsed.sessionId);
     }
+  const servingPrincipals = new Set<string>();
   if (sessionIds.size > 0) {
     if (reconcileSessionPair === undefined)
       throw new EpEnvelopeError("failed-precondition", `lifecycle ${intent.lifecycleUid} has ${sessionIds.size} session-derived credential(s) but the barrier was given no session-pair reconciler; a takeover would leave the serving half live (SPEC 13.1)`);
-    for (const sid of [...sessionIds].sort()) await reconcileSessionPair(sid);
+    for (const sid of [...sessionIds].sort())
+      for (const p of (await reconcileSessionPair(sid)).servingPrincipals) servingPrincipals.add(p);
   }
 
   // 4. VERIFIED eviction of every holder principal — every enumerated row's holder (revoked
   // earlier runs included: their connections may still be live) PLUS the alias principal
-  // itself (the superseded process's own root connections). Fail-closed per principal.
+  // itself (the superseded process's own root connections) PLUS every session-serving
+  // principal the reconciliation surfaced. Fail-closed per principal.
   const principals = new Set<string>(family.map((f) => f.row.holderPrincipal));
   principals.add(`${intent.owner}.${intent.actor}`);
+  for (const p of servingPrincipals) principals.add(p);
   const evicted: string[] = [];
   for (const principal of [...principals].sort()) {
     const res = await evictPrincipal(principal);
@@ -820,11 +883,13 @@ export async function revokeHandleSource(
     }
     if ((await markLedgerRowRevoked(authKv, ref)) === "revoked") revokedRows++;
   }
-  // 3b. Tear down BOTH halves of any session-derived descendant (as the takeover barrier does).
+  // 3b. Tear down BOTH halves of any session-derived descendant (as the takeover barrier does),
+  // and JOIN the serving principals into the eviction set below (SPEC 13.6).
   if (sessionIds.size > 0) {
     if (reconcileSessionPair === undefined)
       throw new EpEnvelopeError("failed-precondition", `handle ${args.issuerKeyId}.${args.id} has ${sessionIds.size} session-derived descendant credential(s) but the revocation was given no session-pair reconciler (SPEC 13.1)`);
-    for (const sid of [...sessionIds].sort()) await reconcileSessionPair(sid);
+    for (const sid of [...sessionIds].sort())
+      for (const p of (await reconcileSessionPair(sid)).servingPrincipals) principals.add(p);
   }
   // 4. VERIFIED eviction of every descendant holder (SPEC 13.1: an already-connected descendant
   // credential is never silently left with live grants; acked only after this completes).

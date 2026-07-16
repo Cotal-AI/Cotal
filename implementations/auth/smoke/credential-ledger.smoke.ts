@@ -36,7 +36,7 @@ import {
   redeemSession, retrieveServingCredential, type SessionGrant,
 } from "@cotal-ai/core";
 import { openLifecycleRegistry, openLifecycleMappingReader, openSessionAuthStore, sessionRedemptionHooks } from "../src/index.js";
-import { activateLifecycle, observeGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
+import { activateLifecycle, observeGate, freezeGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { writeEndpointGate, reconcileSessionForTakeover } from "../src/session-ledger.js";
 import {
   stageAgentMint, finalizeAgentMint, enumerateAgentFamily,
@@ -86,6 +86,7 @@ accounts {
       { user: "auth", password: "pw" }
       { user: "local-victim", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
       { user: "local-victim2", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
+      { user: "local-victim3", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
     ]
   }
 }
@@ -93,7 +94,7 @@ accounts {
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
 
 let nc: NatsConnection | undefined, sysObserver: NatsConnection | undefined, sysEvictor: NatsConnection | undefined,
-  victim1: NatsConnection | undefined, victim2: NatsConnection | undefined;
+  victim1: NatsConnection | undefined, victim2: NatsConnection | undefined, servingConn: NatsConnection | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(`nats://auth:pw@127.0.0.1:${PORT}`); if (!up) await wait(100); }
@@ -334,8 +335,11 @@ try {
     // A fresh holder lifecycle (owner=local, actor=sessholder) + a serving endpoint instance.
     const actS = await activateLifecycle(reg, { owner: "local", actor: "sessholder", managerInstance: MGR });
     const uidH = actS.mapping.lifecycleUid;
-    const IID = "t".repeat(26), EP = "term", SPRIN = `u_${"e".repeat(26)}.term`;
+    // The serving principal is a REAL static conf user (`local-victim3` → CONNZ `local.victim3`)
+    // with a LIVE connection: the barrier must VERIFIED-evict it, not just revoke its row.
+    const IID = "t".repeat(26), EP = "term", SPRIN = "local.victim3";
     await writeEndpointGate(store.kv, EP, IID, { state: "open", generation: 1, processEpoch: 5, registrationRevision: 1, nameAuthorityRevision: 1, principal: SPRIN });
+    servingConn = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "local-victim3", pass: "pw", reconnect: false });
     const SID = `${"z".repeat(20)}0001`;
     const grant: SessionGrant = {
       v: 1, sessionId: SID, space: SPACE, endpoint: EP,
@@ -365,8 +369,69 @@ try {
     c("…the session row is TERMINAL (superseded) with both halves revoked+marked", sessRow.state === "superseded" && sessRow.revoked.caller && sessRow.revoked.serving, sessRow);
     const servingLedger = JSON.parse(dec.decode((await store.kv.get(`epcred.term.${IID}.${SID}.s`))!.value)) as { state: string };
     c("…the paired SERVING epcred row is revoked (the serving half cannot outlive the takeover)", servingLedger.state === "revoked", servingLedger);
+    // The LIVE serving connection is VERIFIED-evicted by the barrier (SPEC 13.6: both
+    // credentials revoked WITH eviction), not merely row-revoked.
+    c("…the barrier's eviction set INCLUDES the serving principal (from the reconciler)", resH.evictedPrincipals.includes(SPRIN), resH.evictedPrincipals);
+    let servingClosed = false;
+    try { servingClosed = await until(() => servingConn!.isClosed(), 3000); } catch { servingClosed = servingConn!.isClosed(); }
+    c("…and the LIVE serving connection is GONE after the holder takeover (verified eviction, not row-only)", servingClosed);
+    // The reconciler is idempotent AND still reports the principal on a re-run (a resumed
+    // barrier must still evict).
+    const again = await reconcile(SID);
+    c("…a re-run of the reconciler still returns the serving principal (resume must re-evict)", again.servingPrincipals.length === 1 && again.servingPrincipals[0] === SPRIN, again);
     await rejects("…and retrieveServingCredential now releases NOTHING (the session is terminal)",
       () => retrieveServingCredential(SID, { endpoint: EP, instanceId: IID, epoch: 5 }, hooks), "failed-precondition");
+    // TRUE ABSENCE of a named session row is CORRUPTION, never "nothing to reconcile" (rows are
+    // never deleted; treating absence as settled would silently spare a live serving half).
+    await rejects("a reconciler invoked for a session with NO ledger row refuses as corruption (absence is never settled)",
+      () => reconcileSessionForTakeover(store, hooks, `${"z".repeat(20)}0002`), "failed-precondition");
+  }
+
+  console.log("J. the torn-coordinate takeover wedge (a stale intent must never freeze the winner's gate)");
+  {
+    // The freelance BLOCKER: op B reads the head at epoch 1, a full takeover A completes
+    // (epoch 2, gate reopens at generation 2), then B reads the gate at 2 and persists the TORN
+    // intent (fromEpoch 1, fromGeneration 2). Pre-fix, B froze the winner's reopened gate,
+    // revoked the successor family, and wedged forever on the foreign epoch stamp.
+    const actW = await activateLifecycle(reg, { owner: "local", actor: "wedge", managerInstance: MGR });
+    const uidW = actW.mapping.lifecycleUid;
+    const opA2 = mintLifecycleUid(), opB = mintLifecycleUid(), opC = mintLifecycleUid();
+    const resA2 = await runAgentTakeoverBarrier(reg, { owner: "local", actor: "wedge", lifecycleUid: uidW, opId: opA2 }, { evictPrincipal: liveEvict });
+    c("the winner completes (epoch 2, generation 2)", resA2.toEpoch === 2 && resA2.toGeneration === 2);
+    // B's torn intent, hand-persisted exactly as the straddled capture would have written it.
+    await authKv.create(stageIntentKey(opB), enc.encode(JSON.stringify({ kind: "takeover", lifecycleUid: uidW, owner: "local", actor: "wedge", fromEpoch: 1, fromGeneration: 2 })));
+    await rejects("a TORN intent (old epoch, winner's generation) refuses BEFORE the freeze (the head guard sees the foreign epoch)",
+      () => resumeAgentTakeover(reg, opB, { evictPrincipal: liveEvict }), "conflict");
+    const gateW = await observeGate(reg, uidW);
+    c("…and the gate was NOT moved (still OPEN at the winner's generation 2 — no wedge, nothing revoked)",
+      gateW?.row.state === "open" && gateW?.row.generation === 2, gateW?.row);
+    // The pre-existing WEDGED shape (a pre-guard crash): the gate already frozen under a torn
+    // intent. The resume detects the foreign head movement UNDER its own freeze, ABORTS by
+    // reopening (a takeover aborts by reopening), and refuses — the lifecycle is not wedged.
+    await authKv.create(stageIntentKey(opC), enc.encode(JSON.stringify({ kind: "takeover", lifecycleUid: uidW, owner: "local", actor: "wedge", fromEpoch: 1, fromGeneration: 2 })));
+    await freezeGate(reg, { lifecycleUid: uidW, revision: gateW!.revision, op: { opId: opC, kind: "takeover" } });
+    await rejects("a gate ALREADY FROZEN under a torn intent aborts by reopening and refuses (unwedge, not permafreeze)",
+      () => resumeAgentTakeover(reg, opC, { evictPrincipal: liveEvict }), "conflict");
+    const gateW2 = await observeGate(reg, uidW);
+    c("…the aborted freeze REOPENED the gate (generation 3 — the successor re-mints, nothing is permanently frozen)",
+      gateW2?.row.state === "open" && gateW2?.row.generation === 3, gateW2?.row);
+  }
+
+  console.log("K. the staged-mint pins are deep-frozen and the finalize trusts only the module snapshot");
+  {
+    const actK = await activateLifecycle(reg, { owner: "local", actor: "pins", managerInstance: MGR });
+    const uidK = actK.mapping.lifecycleUid;
+    const stagedK = await stageAgentMint(reg, { lifecycleUid: uidK, credentialId: "pin00001", holderPrincipal: "local.pins", sourceChain: ["root"], exp: NOW + 60_000 });
+    c("every staged pin OBJECT is frozen (not just the array)", stagedK.pins.every((p) => Object.isFrozen(p)));
+    let mutationThrew = false;
+    try {
+      (stagedK.pins[0] as { key: string }).key = "gate.mutated";
+    } catch {
+      mutationThrew = true;
+    }
+    c("mutating a pin object THROWS (strict-mode write to a frozen object)", mutationThrew);
+    await finalizeAgentMint(reg, stagedK);
+    c("…and the untampered finalize still releases from the module-private snapshot", true);
   }
 
   await nc.drain().catch(() => {});
@@ -374,7 +439,7 @@ try {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
-  for (const conn of [victim1, victim2, sysObserver, sysEvictor]) { try { await conn?.close(); } catch { /* closed */ } }
+  for (const conn of [victim1, victim2, servingConn, sysObserver, sysEvictor]) { try { await conn?.close(); } catch { /* closed */ } }
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
