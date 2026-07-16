@@ -337,10 +337,23 @@ async function validateManifest(
   }
 }
 
+type RestorePass = "quarantine" | "target";
+
+/** Smoke hook: `COTAL_SMOKE_FAIL_RESTORE_STREAM=<stream>` fires on any pass; `<pass>:<stream>`
+ *  fires only on that pass (so the target pass is reachable after quarantine succeeded). */
+function smokeFailRestoreStream(pass: RestorePass, stream: string): boolean {
+  const spec = process.env.COTAL_SMOKE_FAIL_RESTORE_STREAM;
+  if (!spec) return false;
+  const separator = spec.indexOf(":");
+  if (separator < 0) return spec === stream;
+  return spec.slice(0, separator) === pass && spec.slice(separator + 1) === stream;
+}
+
 async function restoreStream(
   broker: IsolatedBroker,
   space: string,
   snapshotDir: string,
+  pass: RestorePass,
   stream: BackupManifest["streams"][number],
 ): Promise<void> {
   const initLogin = await broker.addLogin({
@@ -365,8 +378,8 @@ async function restoreStream(
     profile: "restore",
     scope: { operation: "upload", stream: stream.stream, deliverSubject: session.deliverSubject },
   });
-  if (process.env.COTAL_SMOKE_FAIL_RESTORE_STREAM === stream.stream)
-    throw new Error(`smoke-injected exact-ID chunk handoff timeout for ${stream.stream}`);
+  if (smokeFailRestoreStream(pass, stream.stream))
+    throw new Error(`smoke-injected exact-ID chunk handoff timeout for ${stream.stream} (${pass})`);
   const upload = await connectIsolatedBroker(broker, uploadLogin);
   const fd = openSync(join(snapshotDir, stream.snapshot), constants.O_RDONLY);
   try {
@@ -472,8 +485,13 @@ async function recreateCheckpoint(
     const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS);
     if (info.config.opt_start_seq !== expected.opt_start_seq || info.config.deliver_policy !== expected.deliver_policy)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} did not preserve its conservative checkpoint floor`);
-    if (info.ack_floor.stream_seq !== 0 || info.ack_floor.consumer_seq !== 0)
-      throw new Error(`${checkpoint.stream}/${checkpoint.name} was recreated with a non-zero native ACK floor`);
+    // A fresh by_start_sequence durable is BORN with a native stream floor of opt_start_seq - 1
+    // (verified against nats-server 2.14): that floor claims nothing delivered and replays
+    // everything from the conservative start. Anything else — a delivered count, or a floor beyond
+    // the born value — would silently skip pre-cut entries.
+    const bornFloor = (expected.opt_start_seq ?? 1) - 1;
+    if (info.ack_floor.stream_seq !== bornFloor || info.ack_floor.consumer_seq !== 0)
+      throw new Error(`${checkpoint.stream}/${checkpoint.name} was recreated with ack floor ${info.ack_floor.stream_seq}/${info.ack_floor.consumer_seq}; expected the born floor ${bornFloor}/0`);
   } finally {
     await nc.drain().catch(() => {});
   }
@@ -527,12 +545,13 @@ async function restoreAndValidate(
   space: string,
   staged: StagedArtifact,
   snapshotDir: string,
+  pass: RestorePass,
   onlyRegistry: boolean,
   checkpoints: readonly PersistentConsumerCheckpoint[],
   completeInfrastructure: boolean,
 ): Promise<void> {
   const wanted = onlyRegistry ? spaceBackupInventory(space).registry : spaceBackupInventory(space)[staged.manifest.selection];
-  for (const name of wanted) await restoreStream(broker, space, snapshotDir, staged.manifest.streams.find((entry) => entry.stream === name)!);
+  for (const name of wanted) await restoreStream(broker, space, snapshotDir, pass, staged.manifest.streams.find((entry) => entry.stream === name)!);
   for (const name of wanted)
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, 0);
   if (completeInfrastructure) await createOmittedInfrastructure(broker, space, onlyRegistry);
@@ -704,7 +723,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     try {
-      await restoreAndValidate(quarantineBroker, journal.space, artifact, artifact.directory, onlyRegistry, [], false);
+      await restoreAndValidate(quarantineBroker, journal.space, artifact, artifact.directory, "quarantine", onlyRegistry, [], false);
       // Re-derive every snapshot from the VALIDATED quarantine state. Only these sanitized bytes
       // may instantiate the real target; the archive-supplied snapshots never touch it.
       // Ownership precedes existence: the slot is journaled pending, created, then inode-upgraded.
@@ -751,7 +770,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
     });
     releaseMaintenanceLock(lock);
     lock = undefined as never;
-    await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, onlyRegistry, checkpoints, true);
+    await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
     await broker.stop();
     broker = undefined;
 
