@@ -34,6 +34,17 @@ function throws(label: string, fn: () => unknown) {
   }
 }
 
+async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegExp) {
+  try {
+    await fn();
+    console.error(`  ✗ FAIL: ${label} — expected rejection, got none`);
+    failed++;
+  } catch (err) {
+    const matches = !pattern || pattern.test((err as Error).message);
+    ok(label, matches);
+  }
+}
+
 function cleanup() {
   try {
     execFileSync("tmux", ["kill-session", "-t", SESSION], { stdio: "ignore" });
@@ -122,6 +133,32 @@ throws("old `<win>.0` index target is invalid under pane-base-index 1", () =>
 tmux.closeWindow(lay.windowId);
 ok("layout window closes by stable id", !tmux.windowAliveRef(lay.windowId));
 
+console.log("\n── authoritative exit wait ─────────────────────");
+
+const waitProbe = tmux.openWindow(SESSION, "wait-timeout", "sleep 30", "/tmp", { focus: false });
+await rejects(
+  "waitForPaneExit rejects when a live pane misses its bound",
+  () => tmux.waitForPaneExit(waitProbe.paneId, { timeoutMs: 30, pollMs: 5 }),
+  /did not exit within 30ms/,
+);
+await rejects(
+  "waitForPaneExit fails loud when tmux state is unknown",
+  async () => {
+    const path = process.env.PATH;
+    try {
+      process.env.PATH = "/definitely-not-a-real-path";
+      await tmux.waitForPaneExit(waitProbe.paneId, { timeoutMs: 30, pollMs: 5 });
+    } finally {
+      if (path === undefined) delete process.env.PATH;
+      else process.env.PATH = path;
+    }
+  },
+  /couldn't prove pane/,
+);
+tmux.closeWindow(waitProbe.windowId);
+await tmux.waitForPaneExit(waitProbe.paneId, { timeoutMs: 500 });
+ok("waitForPaneExit resolves after the pane is authoritatively absent", true);
+
 console.log("\n── regression: numeric session name (#131) ──────");
 
 // A default `tmux new` session is named "0". `new-window -t` takes a target-*window*, so a bare
@@ -150,6 +187,19 @@ if (numericPreexists) {
 console.log("\n── runtime ─────────────────────────────────────");
 
 const runtime = new TmuxRuntime(SESSION);
+const normalExit = runtime.spawn("exit-agent", {
+  command: process.execPath,
+  args: ["-e", "setTimeout(() => {}, 300)"],
+  env: {},
+}, "/tmp");
+const normalExitWindow = tmux.windowRefs(SESSION, "exit-agent")[0]!;
+execFileSync("tmux", ["set-option", "-w", "-t", normalExitWindow, "remain-on-exit", "on"], {
+  stdio: "ignore",
+});
+ok("runtime handle implements waitForExit", typeof normalExit.waitForExit === "function");
+await normalExit.waitForExit!();
+ok("waitForExit resolves on normal child exit with remain-on-exit", normalExit.status() === "exited");
+
 const SECRET_CANARY = "leak-canary-tmux-DO-NOT-LEAK";
 const handle = runtime.spawn("smoke-agent", {
   command: "sleep",
@@ -178,9 +228,9 @@ ok("interrupt() doesn't throw", true);
 throws("attach() throws", () => handle.attach());
 
 handle.stop({ graceful: false });
-await new Promise(r => setTimeout(r, 200));
+await handle.waitForExit!();
 ok("window gone after hard stop", !tmux.windowAlive(SESSION, "smoke-agent"));
-ok("handle.status() = exited after stop (id-based, survives rename)", handle.status() === "exited");
+ok("stop -> waitForExit proves the pane exited", handle.status() === "exited");
 
 console.log("\n── registry registration ────────────────────────");
 

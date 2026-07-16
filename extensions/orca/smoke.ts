@@ -24,13 +24,13 @@ function ok(label: string, cond: unknown, detail?: unknown): void {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitForExit(handle: { status(): "running" | "exited" }, timeoutMs = 8_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (handle.status() === "exited") return true;
-    await sleep(100);
+async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegExp): Promise<void> {
+  try {
+    await fn();
+    ok(`${label} (expected rejection)`, false);
+  } catch (err) {
+    ok(label, !pattern || pattern.test((err as Error).message), err);
   }
-  return false;
 }
 
 const secret = "leak-canary-orca-DO-NOT-LEAK";
@@ -96,6 +96,52 @@ if (process.platform !== "win32") {
     ok("terminal liveness matches stable ptyId", orca.terminalAlive(stableTerminal));
     ok("terminal liveness reuses the list snapshot", orca.terminalAlive(stableTerminal) && readFileSync(countFile, "utf8") === "1");
     ok("terminal resolution follows a rotated handle by stable ptyId", orca.currentTerminal(stableTerminal)?.handle === "term_rotated");
+
+    // Clear the short list cache before changing the stub's response contract.
+    orca.closeTerminal("term_rotated");
+    const waitList = '{ ok: true, result: { terminals: [{ handle: "term_wait", ptyId: "pty_wait", connected: true }] } }';
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[1] === "list") process.stdout.write(JSON.stringify(${waitList}));
+else if (args[1] === "wait") process.stdout.write(JSON.stringify({ ok: true, result: { wait: { handle: "term_wait", condition: "exit", satisfied: true, status: "exited", exitCode: 0 } } }));
+else process.stdout.write(JSON.stringify({ ok: false, error: { code: "terminal_not_found" } }));
+`,
+      { mode: 0o700 },
+    );
+    await orca.waitManagedTerminalExit({ handle: "term_wait", ptyId: "pty_wait" }, 100);
+    ok("provider-native terminal wait accepts an authoritative normal exit", true);
+
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[1] === "list") process.stdout.write(JSON.stringify(${waitList}));
+else { process.stdout.write(JSON.stringify({ ok: false, error: { code: "timeout", message: "timeout" } })); process.exit(1); }
+`,
+      { mode: 0o700 },
+    );
+    await rejects(
+      "provider-native terminal wait rejects timeout",
+      () => orca.waitManagedTerminalExit({ handle: "term_wait", ptyId: "pty_wait" }, 1_000),
+      /timeout/,
+    );
+
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[1] === "list") process.stdout.write(JSON.stringify(${waitList}));
+else { process.stderr.write("Orca runtime unavailable"); process.exit(2); }
+`,
+      { mode: 0o700 },
+    );
+    await rejects(
+      "provider-native terminal wait fails loud on unknown provider state",
+      () => orca.waitManagedTerminalExit({ handle: "term_wait", ptyId: "pty_wait" }, 20),
+      /runtime unavailable/,
+    );
 
     writeFileSync(
       stub,
@@ -170,7 +216,7 @@ const handle = runtime.spawn(
   process.cwd(),
 );
 
-ok("spawn returns an orca handle", handle.kind === "orca");
+ok("spawn returns an orca handle with waitForExit", handle.kind === "orca" && typeof handle.waitForExit === "function");
 ok("spawned terminal reports running", handle.status() === "running");
 
 if (process.platform !== "win32") {
@@ -197,8 +243,8 @@ if (process.platform !== "win32") {
 }
 
 handle.stop({ graceful: false });
-await sleep(500);
-ok("terminal reports exited after hard stop", handle.status() === "exited");
+await handle.waitForExit!();
+ok("stop -> waitForExit proves terminal exit", handle.status() === "exited");
 let staleInterruptThrew = false;
 try {
   handle.interrupt();
@@ -233,7 +279,8 @@ try {
   if (previousTmp === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = previousTmp;
 }
-ok("agent exit disconnects its Orca terminal without stop()", await waitForExit(shortHandle!));
+await shortHandle!.waitForExit!();
+ok("waitForExit resolves after normal agent exit without stop()", shortHandle!.status() === "exited");
 ok("spawned process runs from the exact nested cwd", readFileSync(cwdProof, "utf8") === realpathSync(nestedCwd));
 shortHandle!.stop({ graceful: false });
 rmSync(oddTmpRoot, { recursive: true, force: true });
