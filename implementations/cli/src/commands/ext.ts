@@ -7,6 +7,7 @@ import {
   cacheCommand,
   cacheExtension,
   cacheLocalProcess,
+  cmdSpawnSpec,
   extensionPackageDir,
   extensionLocalProcesses,
   extensionProvides,
@@ -88,8 +89,11 @@ function ourPackageDir(name: string): string {
 }
 
 function npm(args: string[], cwd: string): { status: number | null; output: string } {
-  const bin = process.platform === "win32" ? "npm.cmd" : "npm";
-  const r = spawnSync(bin, args, { cwd, encoding: "utf8" });
+  // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
+  // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
+  // line (shared with the manager's PtyRuntime launch).
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+  const r = spawnSync(file, spawnArgs, { cwd, encoding: "utf8", windowsVerbatimArguments });
   return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 }
 

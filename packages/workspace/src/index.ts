@@ -17,3 +17,4 @@ export * from "./preflight.js";
 export * from "./render.js";
 export * from "./renewal.js";
 export * from "./space.js";
+export * from "./win-cmd.js";
