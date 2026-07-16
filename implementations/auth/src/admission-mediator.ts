@@ -115,6 +115,7 @@ interface MediatorInternals {
   reader: LifecycleMappingReader;
   now: () => number;
   proofTtlMs: number;
+  enumConsumerName?: string;
 }
 const MEDIATORS = new WeakMap<AdmissionMediator, MediatorInternals>();
 
@@ -128,12 +129,15 @@ function internals(med: AdmissionMediator): MediatorInternals {
 /** Open the sealed per-endpoint admission mediator over the space's PRIMARY records store —
  *  shape-proved at bind exactly like every trusted consumer of that store (SPEC 13.12).
  *  `now`/`proofTtlMs` are probe seams; the proof TTL defaults to the §13.8 reference call
- *  deadline (15 s). */
+ *  deadline (15 s). `enumConsumerName` is the deterministic (endpoint, connId)-bound
+ *  enumeration consumer name a SCOPED mediator credential is grant-pinned to
+ *  (core `mediatorEnumConsumerName`); omitted, enumerations mint a per-run random name (the
+ *  executor-credential paths, whose grants are not name-pinned). */
 export async function openAdmissionMediator(
   nc: NatsConnection,
   space: string,
   endpoint: string,
-  opts: { now?: () => number; proofTtlMs?: number } = {},
+  opts: { now?: () => number; proofTtlMs?: number; enumConsumerName?: string } = {},
 ): Promise<AdmissionMediator> {
   const ep = endpointToken(endpoint);
   const bucket = recordsBucket(space);
@@ -157,6 +161,7 @@ export async function openAdmissionMediator(
   MEDIATORS.set(med, {
     space, endpoint: ep, recordsKv, jsm, js: jetstream(nc), reader,
     now: opts.now ?? Date.now, proofTtlMs: opts.proofTtlMs ?? 15_000,
+    enumConsumerName: opts.enumConsumerName,
   });
   return med;
 }
@@ -1043,10 +1048,15 @@ export async function enumerateObligationRows(
   handles: { jsm: JetStreamManager; js: JetStreamClient },
   space: string,
   filter: string,
+  opts: { consumerName?: string } = {},
 ): Promise<EnumeratedObligation[]> {
   const bucket = recordsBucket(space);
   const stream = `KV_${bucket}`;
-  const name = `obligscan_${mintLifecycleUid()}`;
+  // A SCOPED mediator credential is grant-pinned to one deterministic (endpoint, connId)-bound
+  // name whose own-name DELETE row makes the finally-delete effective, so the fixed name is
+  // reusable across filters; a concurrent enumeration under one pinned name fails loud (a
+  // create-config conflict or the under-delivery guard below), never a silent partial read.
+  const name = opts.consumerName ?? `obligscan_${mintLifecycleUid()}`;
   try {
     await handles.jsm.consumers.add(stream, {
       name, filter_subject: `$KV.${bucket}.${filter}`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject,
@@ -1082,7 +1092,7 @@ export async function enumerateObligationRows(
 }
 
 function enumerateObligations(med: MediatorInternals, filter: string): Promise<EnumeratedObligation[]> {
-  return enumerateObligationRows({ jsm: med.jsm, js: med.js }, med.space, filter);
+  return enumerateObligationRows({ jsm: med.jsm, js: med.js }, med.space, filter, { consumerName: med.enumConsumerName });
 }
 
 /** The injected ACCEPTED-EPF route reconciler (§13.8: a drain must complete accept-side

@@ -636,16 +636,30 @@ export function provisionerConsumerGrants(durables: PreCreatedDurable[]): string
   return rows;
 }
 
+/** The deterministic enumeration consumer NAME the mediator profile is pinned to, bound to
+ *  (endpoint, connId): one connection carries one name, so the profile's consumer rows are
+ *  name-LITERAL and can never read or disturb a foreign records-stream consumer by name.
+ *  Concurrent enumerations under one pinned name fail LOUD (a create-config conflict or the
+ *  drain's under-delivery guard), never silently share deliveries into a partial read. */
+export function mediatorEnumConsumerName(endpoint: string, connId: string): string {
+  return `medenum_${endpointToken(endpoint)}-${assertInboxConnId(connId)}`;
+}
+
 /** The ADMISSION MEDIATOR principal's rows (§13.9 matrix "Acceptance obligation", §13.8): the
  *  ONE writer of ITS endpoint's `oblig.` subtree (create-only winner + revision-pinned CAS;
  *  the target position is a principal wildcard, the endpoint token is LITERAL) plus the
  *  terminal-REJECTION publish on its own endpoint's create-only decision subjects, the fencing
  *  leader reads (records / EPF / EPW `STREAM.MSG.GET`), the §13.12 bind-time shape proof
  *  (records `STREAM.INFO`), and the per-run throwaway enumeration consumer whose CREATE row
- *  PINS the filter to the endpoint's own oblig subtree (any other filter is a different API
- *  subject and is denied). No `CONSUMER.DELETE` row exists: the enumeration consumer is
- *  collected by its own `inactive_threshold`, and a delete grant would reach every consumer of
- *  the records stream by name.
+ *  PINS both the NAME (deterministic, (endpoint, connId)-bound, {@link mediatorEnumConsumerName})
+ *  and the filter to the endpoint's own oblig subtree (any other name or filter is a different
+ *  API subject and is denied; narrower filters inside the subtree ride the `*` target token).
+ *  The `CONSUMER.DELETE` row is pinned to that SAME literal name: with a fixed name a prior
+ *  run's consumer (a different filter) would wedge the next create, so the profile deletes its
+ *  own throwaway consumer between runs; an own-name delete reaches no foreign consumer, unlike
+ *  the name-`*` delete row this builder refuses to mint. The reply inbox is connection-scoped
+ *  (`_INBOX_<connId>.>`, never the account-wide default): every JS API call is request/reply,
+ *  so an account-wide inbox would receive other principals' API replies.
  *
  *  D32 residuals, EXPLICIT (accepted only for this trusted per-endpoint profile): (1) the
  *  decision publish is payload-blind, so a compromised mediator can forge an ACCEPTANCE within
@@ -653,12 +667,13 @@ export function provisionerConsumerGrants(durables: PreCreatedDurable[]): string
  *  because rejection-only is not subject-expressible (both decisions MUST share the create-only
  *  decision subject for first-wins settlement); it can never forge beyond its endpoint. (2) the
  *  body-selected `STREAM.MSG.GET` fencing reads expose the records/EPF/EPW streams space-wide.
- *  (3) the enumeration consumer NAME is a full `*` token (the create's filter is pinned, but
- *  INFO/MSG.NEXT reach any records-stream consumer by name). */
-export function admissionMediatorGrants(space: string, endpoint: string, connId?: string): { publish: string[]; subscribe: string[] } {
+ *  The former third residual (a name-`*` consumer INFO/MSG.NEXT reach) is CLOSED by the
+ *  deterministic name pin. */
+export function admissionMediatorGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
   const e = endpointToken(endpoint);
   const stream = recordsKvStreamName(space);
   const obligFilter = `$KV.${recordsBucket(space)}.oblig.*.${e}.>`;
+  const enumName = mediatorEnumConsumerName(endpoint, connId);
   const publish = [
     obligFilter,
     `${spacePrefix(space)}.epf.${e}.dec.>`,
@@ -666,13 +681,13 @@ export function admissionMediatorGrants(space: string, endpoint: string, connId?
     `${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`,
     `${JSAPI}.STREAM.MSG.GET.${epwStreamName(space)}`,
     `${JSAPI}.STREAM.INFO.${stream}`,
-    `${JSAPI}.CONSUMER.CREATE.${stream}.*.${assertGrantFilter(obligFilter, "the mediator enumeration")}`,
-    `${JSAPI}.CONSUMER.INFO.${stream}.*`,
-    `${JSAPI}.CONSUMER.MSG.NEXT.${stream}.*`,
+    `${JSAPI}.CONSUMER.CREATE.${stream}.${enumName}.${assertGrantFilter(obligFilter, "the mediator enumeration")}`,
+    `${JSAPI}.CONSUMER.INFO.${stream}.${enumName}`,
+    `${JSAPI}.CONSUMER.MSG.NEXT.${stream}.${enumName}`,
+    `${JSAPI}.CONSUMER.DELETE.${stream}.${enumName}`,
     `${JSAPI}.INFO`,
   ];
-  const subscribe = connId !== undefined ? [`_INBOX_${assertInboxConnId(connId)}.>`] : [];
-  return { publish, subscribe };
+  return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
 
 /** The RETIREMENT CLEANER principal's rows (§13.9 matrix "Terminal pool cleanup", §13.1
@@ -682,10 +697,15 @@ export function admissionMediatorGrants(space: string, endpoint: string, connId?
  *  the create-only terminal `wrk` publish scoped to that pool. Plus the leader-served EPF
  *  `STREAM.MSG.GET` its terminal-observe and acceptance re-bind reads require — a STREAM-level
  *  grant whose read exposure is space-wide; that residual is EXPLICIT per D32 and accepted only
- *  for this trusted, bounded-lived, per-op profile. NO `epw.>` publish, NO consumer
- *  create/update/delete, NO raw stream DELETE. The profile is revoked and its principal
- *  cluster-verified-evicted by the barrier BEFORE any frontier records (§13.1). */
-export function retirementCleanerGrants(space: string, endpoint: string, pools: string[], connId?: string): { publish: string[]; subscribe: string[] } {
+ *  for this trusted, bounded-lived, per-op profile. The `wrk` publish carries the parallel
+ *  EXPLICIT write residual: it is payload-blind within the listed pools, so a compromised
+ *  cleaner can forge a terminal `wrk` fact for its own listed pools' LIVE work without the
+ *  code's `expired`/`retired` gating (work suppression / mis-settlement, the exact parallel of
+ *  the mediator's acceptance-forge), never beyond the listed pools. The reply inbox is
+ *  connection-scoped (`_INBOX_<connId>.>`, never the account-wide default). NO `epw.>` publish,
+ *  NO consumer create/update/delete, NO raw stream DELETE. The profile is revoked and its
+ *  principal cluster-verified-evicted by the barrier BEFORE any frontier records (§13.1). */
+export function retirementCleanerGrants(space: string, endpoint: string, pools: string[], connId: string): { publish: string[]; subscribe: string[] } {
   if (!Array.isArray(pools) || pools.length === 0)
     throw new Error("a retirement-cleaner grant lists at least one exact pool (SPEC 13.9: the op intent enumerates them; a poolless cleaner is no cleaner)");
   const e = endpointToken(endpoint);
@@ -695,6 +715,5 @@ export function retirementCleanerGrants(space: string, endpoint: string, pools: 
     publish.push(`${spacePrefix(space)}.epf.${e}.wrk.${assertPoolToken(pool)}.>`);
   }
   publish.push(`${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`, `${JSAPI}.INFO`);
-  const subscribe = connId !== undefined ? [`_INBOX_${assertInboxConnId(connId)}.>`] : [];
-  return { publish, subscribe };
+  return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
