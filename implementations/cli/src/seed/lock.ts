@@ -193,8 +193,25 @@ export function writeRecovery(obligation: RecoveryObligation): void {
   writeJsonAtomic(reconcileRecoveryPath(), obligation);
 }
 
+/** Read + SCHEMA-validate the recovery obligation. A parsed-but-malformed marker (`{}`, `null`, an
+ *  array, non-boolean fields, or an all-false obligation the writer never emits) is CORRUPT, not an
+ *  empty valid obligation — it must throw so `recoveryPending()` stays true and maintenance recovers
+ *  conservatively, never silently clearing the journal over still-damaged state. */
 export function readRecovery(): RecoveryObligation | undefined {
-  return readJsonFile<RecoveryObligation>(reconcileRecoveryPath());
+  const recovery = readJsonFile<RecoveryObligation>(reconcileRecoveryPath());
+  if (recovery === undefined) return undefined;
+  const shapeOk =
+    typeof recovery === "object" &&
+    recovery !== null &&
+    !Array.isArray(recovery) &&
+    (recovery.rebuildFromDisk === undefined || typeof recovery.rebuildFromDisk === "boolean") &&
+    (recovery.repairAllSeeded === undefined || typeof recovery.repairAllSeeded === "boolean");
+  if (!shapeOk || !(recovery.rebuildFromDisk === true || recovery.repairAllSeeded === true)) {
+    throw new Error(
+      `corrupt recovery journal ${reconcileRecoveryPath()}: expected { rebuildFromDisk?/repairAllSeeded?: boolean, at least one true } - repair with \`cotal ext seed --repair\` (or --reset)`,
+    );
+  }
+  return recovery;
 }
 
 /** True iff a recovery obligation is outstanding (any read failure counts — never silently ignored). */
