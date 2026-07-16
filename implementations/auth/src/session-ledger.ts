@@ -248,6 +248,12 @@ export interface EndpointGateRow {
   processEpoch: number;
   registrationRevision: number;
   nameAuthorityRevision: number;
+  /** The serving instance's CONNZ-attributable connection principal (`<owner>.<actor>`
+   *  dot-form) — the eviction target when the endpoint is taken over or a serving credential is
+   *  revoked (§13.1: eviction is BY PRINCIPAL). Recorded at endpoint registration; the serving
+   *  ledger rows (`epcred.`) copy it as their `holderPrincipal`, so the endpoint KEY identity
+   *  (`endpoint`) and the evictable principal stay disjoint. */
+  principal: string;
   op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
 }
 
@@ -280,10 +286,12 @@ function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
-  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "op"]);
+  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
+  if (parsePrincipalKey(o.principal as string) === null)
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (SPEC 13.1)`);
   if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);
   if (o.state === "open" && o.op !== undefined)
@@ -506,13 +514,18 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       // observation makes the pinned touch LOSE, and the redemption collects and refuses.
       const tp = signer.thumbprint(signer.current.kid);
       if (tp === undefined) throw new EpEnvelopeError("unavailable", `the current signing key ${signer.current.kid} has no resolvable thumbprint; staging fails closed (SPEC 13.10)`);
+      // The serving side's evictable principal is the endpoint instance's CONNZ-attributable
+      // connection principal, recorded on the endpoint gate (NOT the endpoint name, which CONNZ
+      // cannot KICK). The epcred key is built from the `endpoint` field, keeping the KEY identity
+      // and the eviction target disjoint (§13.1).
+      const { gate: servingGate } = await observeEndpointGate(kv, grant.endpoint, grant.serving.instanceId, `serving ${grant.endpoint}/${grant.serving.instanceId}`);
       const stage = async (id: string, party: "caller" | "serving") => {
         // The normative §13.1 row, in its party's family (a create loss is a RETRY over this
         // session's own deterministic ids — the one-use already fenced foreign sessions — so
         // byte-identical proceeds and foreign content refuses).
         const ledgerRow: CredentialLedgerRow = party === "caller"
           ? { credentialId: `${grant.sessionId}.c`, holderPrincipal: grant.holder.id, lifecycleUid: grant.holder.lifecycleUid, sourceChain: [`session.${grant.sessionId}`], state: "active", exp: grant.exp }
-          : { credentialId: `${grant.sessionId}.s`, holderPrincipal: grant.endpoint, lifecycleUid: grant.serving.instanceId, sourceChain: [`session.${grant.sessionId}`], state: "active", exp: grant.exp };
+          : { credentialId: `${grant.sessionId}.s`, holderPrincipal: servingGate.principal, lifecycleUid: grant.serving.instanceId, endpoint: grant.endpoint, sourceChain: [`session.${grant.sessionId}`], state: "active", exp: grant.exp };
         await createRowByteIdempotent(kv, credLedgerKey(id), ledgerRow);
         const pinRow: SessionStagePin = { v: 1, kind: "session", sessionId: grant.sessionId, party, kid: signer.current.kid, kidThumbprint: tp, exp: grant.exp };
         await createRowByteIdempotent(kv, stagePinKey(grant.sessionId, party), pinRow);
@@ -624,6 +637,29 @@ export async function closeSession(
     fullyRevoked = false;
   }
   return { transitioned, fullyRevoked };
+}
+
+/**
+ * The SESSION-PAIR reconciler a §13.1 lifecycle barrier injects (as
+ * `credential-ledger`'s `TakeoverDeps.reconcileSessionPair`): when a takeover or handle
+ * revocation revokes a `cred.` row whose lineage names `session.<sessionId>`, this tears down
+ * BOTH halves of that session so the SERVING half cannot outlive the barrier. It terminalizes
+ * `session.<sessionId>` as `superseded` (the barrier's own terminal reason) and revokes both
+ * ledger rows (the caller `cred.` and the serving `epcred.`). Idempotent: a session already
+ * gone (or already reconciled) is a no-op; fail-closed if it cannot fully revoke both halves.
+ * Live eviction of the serving connection is the endpoint's own barrier (D14) — this closes the
+ * DENY-NEW substrate for the pair; the caller's live connection is evicted by the agent barrier.
+ */
+export async function reconcileSessionForTakeover(
+  store: SessionAuthStore,
+  hooks: Pick<SessionRedemptionHooks, "ledger" | "revokeCredential">,
+  sessionId: string,
+): Promise<void> {
+  assertStore(store);
+  if ((await hooks.ledger.read(sessionId)) === undefined) return; // idempotent: nothing to reconcile
+  const res = await closeSession(store, hooks, { sessionId, closer: { kind: "operator" }, to: "superseded" });
+  if (!res.fullyRevoked)
+    throw new EpEnvelopeError("unavailable", `the takeover reconciliation of session ${sessionId} did not fully revoke both halves; the barrier fails closed (SPEC 13.1)`);
 }
 
 /** Enumerate `session.>` and run core's per-row sweep decision: expiry transitions + the

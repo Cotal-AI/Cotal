@@ -220,6 +220,12 @@ export interface LifecycleMapping {
   state: "active" | "retiring" | "retired";
   /** The public credential fingerprint + authority epoch — absent until the ledger slice. */
   currentCredentialId?: string;
+  /** The opId of the takeover operation that LAST advanced this epoch (SPEC 13.1: the epoch
+   *  advance and its op stamp are ONE CAS, so a completion is bound to exactly one operation).
+   *  A resuming barrier confirms the completed head carries ITS opId; a LOSING concurrent
+   *  takeover finds a foreign opId and refuses, never claiming the winner's completion. Absent
+   *  at initial activation (epoch 1), present from the first takeover. */
+  lastTakeoverOpId?: string;
   /** REQUIRED at `retiring` (the retirement operation's durable intent); absent otherwise. */
   op?: { opId: string; kind: "retirement" };
 }
@@ -243,19 +249,21 @@ function parseMapping(raw: Uint8Array, key: string, owner: string, actor: string
     throw new EpEnvelopeError("internal", `the lifecycle head ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} is not an object`);
-  const allowed = new Set(["owner", "actor", "lifecycleUid", "managerInstance", "processEpoch", "state", "currentCredentialId", "op"]);
+  const allowed = new Set(["owner", "actor", "lifecycleUid", "managerInstance", "processEpoch", "state", "currentCredentialId", "lastTakeoverOpId", "op"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (
     o.owner !== owner || o.actor !== actor ||
     typeof o.lifecycleUid !== "string" || typeof o.managerInstance !== "string" || o.managerInstance.length === 0 ||
     !uint(o.processEpoch) || o.processEpoch < 1 || typeof o.state !== "string" || !HEAD_STATES.has(o.state) ||
-    (o.currentCredentialId !== undefined && (typeof o.currentCredentialId !== "string" || o.currentCredentialId.length === 0))
+    (o.currentCredentialId !== undefined && (typeof o.currentCredentialId !== "string" || o.currentCredentialId.length === 0)) ||
+    (o.lastTakeoverOpId !== undefined && typeof o.lastTakeoverOpId !== "string")
   )
     throw new EpEnvelopeError("internal", `the lifecycle head ${key} does not validate (owner/actor/uid/epoch/state); a garbled or key-mismatched head never authorizes (SPEC 13.1/13.3)`);
   try {
     assertLifecycleToken(o.lifecycleUid);
+    if (o.lastTakeoverOpId !== undefined) assertLifecycleToken(o.lastTakeoverOpId);
   } catch {
-    throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries a malformed lifecycleUid "${String(o.lifecycleUid)}" (SPEC 13.1)`);
+    throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries a malformed lifecycleUid/lastTakeoverOpId (SPEC 13.1)`);
   }
   // The retirement op intent: REQUIRED at `retiring`, forbidden elsewhere; itself closed.
   if (o.state === "retiring") {
@@ -313,17 +321,48 @@ export async function readLifecycleHeadForOperation(
  *  exactly one, revision-pinned, only while the head is ACTIVE at the SAME uid. */
 export async function advanceEpochWithinTakeover(
   reg: LifecycleRegistry,
-  args: { owner: string; actor: string; lifecycleUid: string; fromEpoch: number },
+  args: { owner: string; actor: string; lifecycleUid: string; fromEpoch: number; opId: string },
 ): Promise<"advanced" | "already-advanced"> {
   const { recordsKv } = internals(reg);
   const cur = await readHeadCandidate(recordsKv, args.owner, args.actor);
   if (cur === undefined || cur.mapping.state !== "active" || cur.mapping.lifecycleUid !== args.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the takeover epoch advance for "${args.owner}/${args.actor}" requires an ACTIVE head at uid ${args.lifecycleUid}; found ${cur === undefined ? "no head" : `${cur.mapping.state} at ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
-  if (cur.mapping.processEpoch === args.fromEpoch + 1) return "already-advanced";
+  if (cur.mapping.processEpoch === args.fromEpoch + 1) {
+    // Idempotent ONLY for our OWN completed advance: the epoch stamp binds the completion to one
+    // op, so a LOSING concurrent takeover that captured the same fromEpoch finds a foreign opId
+    // and refuses, never claiming the winner's advance (SPEC 13.1).
+    if (cur.mapping.lastTakeoverOpId !== args.opId)
+      throw new EpEnvelopeError("conflict", `the head for "${args.owner}/${args.actor}" is at epoch ${args.fromEpoch + 1} advanced by operation ${cur.mapping.lastTakeoverOpId ?? "<none>"}, not ${args.opId}; a concurrent takeover won and this operation lost (SPEC 13.1)`);
+    return "already-advanced";
+  }
   if (cur.mapping.processEpoch !== args.fromEpoch)
     throw new EpEnvelopeError("failed-precondition", `the head for "${args.owner}/${args.actor}" is at epoch ${cur.mapping.processEpoch}, not the takeover's captured epoch ${args.fromEpoch} (or its +1); a foreign operation moved it (SPEC 13.1)`);
-  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...cur.mapping, processEpoch: args.fromEpoch + 1 }, cur.revision);
+  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...cur.mapping, processEpoch: args.fromEpoch + 1, lastTakeoverOpId: assertLifecycleToken(args.opId) }, cur.revision);
   return "advanced";
+}
+
+/** PACKAGE-INTERNAL: read a UID reservation's audit `{ owner, actor }` (the minting authority
+ *  recorded it at {@link tryReserveUid}). The credential ledger uses it to BIND a mint's
+ *  `holderPrincipal` to the reserved identity, so a trusted caller cannot ledger a row that
+ *  names a foreign principal for the barrier to evict. A DEL/PURGE marker refuses loudly. */
+export async function readUidReservation(
+  reg: LifecycleRegistry,
+  lifecycleUid: string,
+): Promise<{ owner: string; actor: string } | undefined> {
+  const { recordsKv } = internals(reg);
+  const entry = await recordsKv.get(uidKey(assertLifecycleToken(lifecycleUid)));
+  if (!entry) return undefined;
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the uid reservation for ${lifecycleUid} carries a ${entry.operation} marker; a reservation is never deleted (corruption, SPEC 13.12)`);
+  let o: unknown;
+  try {
+    o = JSON.parse(dec.decode(entry.value));
+  } catch {
+    throw new EpEnvelopeError("internal", `the uid reservation for ${lifecycleUid} is not JSON (SPEC 13.1)`);
+  }
+  if (!isRec(o) || typeof o.owner !== "string" || typeof o.actor !== "string" || o.owner.length === 0 || o.actor.length === 0)
+    throw new EpEnvelopeError("internal", `the uid reservation for ${lifecycleUid} does not carry a valid owner/actor audit (SPEC 13.1)`);
+  return { owner: o.owner, actor: o.actor };
 }
 
 // ---- the space-global UID reservation (records store) ----------------------------------------

@@ -57,6 +57,7 @@ const OWNER = `u_${"a".repeat(26)}`;
 const HOLDER_ID = `${OWNER}.cli`;
 const HOLDER_UID = "h".repeat(26);
 const SERVING_IID = "s".repeat(26);
+const SERVING_PRINCIPAL = `u_${"c".repeat(26)}.term`; // the serving instance's CONNZ-attributable principal
 const MGR = "mgr-1";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -124,7 +125,7 @@ try {
   await recordsKv.create(headKey, enc.encode(JSON.stringify(headRow(3))));
   await reopenGate(registry, { lifecycleUid: HOLDER_UID, revision: bornGate.revision, opId: actOp });
   const gateRaw = async () => (await kv.get(`gate.${HOLDER_UID}`))!;
-  await writeEndpointGate(kv, ENDPOINT, SERVING_IID, { state: "open", generation: 1, processEpoch: 7, registrationRevision: 1, nameAuthorityRevision: 1 });
+  await writeEndpointGate(kv, ENDPOINT, SERVING_IID, { state: "open", generation: 1, processEpoch: 7, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
 
   console.log("B. the happy redemption against the real store");
   const g1 = mkGrant(sid(1));
@@ -144,11 +145,11 @@ try {
     // The NORMATIVE §13.1 ledger rows exist in their party families, closed-schema, with the
     // session lineage; the implementation pins live in the stage. family, never under cred./epcred.
     const callerRow = JSON.parse(dec.decode((await kv.get(`cred.${HOLDER_UID}.${sid(1)}.c`))!.value)) as { holderPrincipal: string; lifecycleUid: string; sourceChain: string[]; state: string };
-    const servingRow = JSON.parse(dec.decode((await kv.get(`epcred.term.${SERVING_IID}.${sid(1)}.s`))!.value)) as { holderPrincipal: string; lifecycleUid: string; sourceChain: string[]; state: string };
+    const servingRow = JSON.parse(dec.decode((await kv.get(`epcred.term.${SERVING_IID}.${sid(1)}.s`))!.value)) as { holderPrincipal: string; lifecycleUid: string; endpoint: string; sourceChain: string[]; state: string };
     c("the caller's NORMATIVE ledger row sits under its holder lifecycle (cred.<uid>.<sid>.c, session lineage, active)",
       callerRow.holderPrincipal === HOLDER_ID && callerRow.lifecycleUid === HOLDER_UID && callerRow.sourceChain[0] === `session.${sid(1)}` && callerRow.state === "active", callerRow);
-    c("the serving NORMATIVE ledger row sits under its endpoint instance (epcred.<ep>.<iid>.<sid>.s)",
-      servingRow.holderPrincipal === ENDPOINT && servingRow.lifecycleUid === SERVING_IID && servingRow.sourceChain[0] === `session.${sid(1)}` && servingRow.state === "active", servingRow);
+    c("the serving NORMATIVE ledger row keys on its endpoint but its holderPrincipal is the CONNZ-evictable serving principal (not the endpoint name)",
+      servingRow.holderPrincipal === SERVING_PRINCIPAL && servingRow.endpoint === ENDPOINT && servingRow.lifecycleUid === SERVING_IID && servingRow.sourceChain[0] === `session.${sid(1)}` && servingRow.state === "active", servingRow);
     c("the kid/thumbprint pins ride the stage. family (stage.session.<sid>.c/.s), not a ledger prefix",
       (await kv.get(`stage.session.${sid(1)}.c`)) !== null && (await kv.get(`stage.session.${sid(1)}.s`)) !== null);
   }
@@ -365,7 +366,7 @@ try {
     const g = await createGateFrozen(registry, { lifecycleUid: selfUid, op: { opId: selfOp, kind: "activation" } });
     await recordsKv.create(recordAtomicKey(LIFECYCLE_HEAD, [selfOwner, "cli"]), enc.encode(JSON.stringify({ owner: selfOwner, actor: "cli", lifecycleUid: selfUid, managerInstance: MGR, processEpoch: 3, state: "active" })));
     await reopenGate(registry, { lifecycleUid: selfUid, revision: g.revision, opId: selfOp });
-    await writeEndpointGate(kv, ENDPOINT, selfUid, { state: "open", generation: 1, processEpoch: 3, registrationRevision: 1, nameAuthorityRevision: 1 });
+    await writeEndpointGate(kv, ENDPOINT, selfUid, { state: "open", generation: 1, processEpoch: 3, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
     const gSelf = mkGrant(sid(27), { holder: { id: `${selfOwner}.cli`, lifecycleUid: selfUid, processEpoch: 3 }, serving: { instanceId: selfUid, epoch: 3 }, subjects: { in: epsSubject(SPACE, ENDPOINT, sid(27), 3, "in"), out: epsSubject(SPACE, ENDPOINT, sid(27), 3, "out") } });
     const selfCred = await redeemSession(gSelf, { id: `${selfOwner}.cli`, lifecycleUid: selfUid }, hooks);
     c("a redemption sharing the holder-UID/serving-instanceId string redeems (disjoint gate families, no collision)",
@@ -405,7 +406,7 @@ try {
     // ENDPOINT COLLISION: the SAME instanceId under a DIFFERENT endpoint has a distinct epgate +
     // credential family (endpoint-qualified), so one endpoint's session never touches the other's.
     const OTHER_EP = "other";
-    await writeEndpointGate(kv, OTHER_EP, SERVING_IID, { state: "open", generation: 1, processEpoch: 7, registrationRevision: 1, nameAuthorityRevision: 1 });
+    await writeEndpointGate(kv, OTHER_EP, SERVING_IID, { state: "open", generation: 1, processEpoch: 7, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
     const gColl = mkGrant(sid(43), { endpoint: OTHER_EP, subjects: { in: epsSubject(SPACE, OTHER_EP, sid(43), 7, "in"), out: epsSubject(SPACE, OTHER_EP, sid(43), 7, "out") } });
     const collCred = await redeemSession(gColl, PRESENTER, hooks);
     const collServing = await retrieveServingCredential(sid(43), { endpoint: OTHER_EP, instanceId: SERVING_IID, epoch: 7 }, hooks);
@@ -413,7 +414,7 @@ try {
       collCred.id === `${HOLDER_UID}.${sid(43)}.c` && collServing.id === `other.${SERVING_IID}.${sid(43)}.s`, { collCred: collCred.id, collServing: collServing.id });
     // The epgate DEL-marker discipline: a deletion marker under the endpoint gate family is
     // corruption, never absence — the epoch read refuses loudly instead of yielding undefined.
-    await writeEndpointGate(kv, "delep", "d".repeat(26), { state: "open", generation: 1, processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1 });
+    await writeEndpointGate(kv, "delep", "d".repeat(26), { state: "open", generation: 1, processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
     await kv.delete(epgateKey("delep", "d".repeat(26)));
     await rejects("a DEL marker under epgate.<ep>.<iid> refuses the epoch read (corruption, not absence)",
       () => hooks.servingEpoch("delep", "d".repeat(26)), "failed-precondition");

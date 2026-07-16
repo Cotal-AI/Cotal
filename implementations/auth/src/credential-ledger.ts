@@ -32,11 +32,22 @@
  *    boundary is crash-resumable from the durable intent ({@link resumeAgentTakeover}), and
  *    only the SAME operation resumes it.
  *
- * Deny-new vs kill-live, stated once: the ledger row CAS *is* this deployment's deny-new
- * commit (rows live in a replicated, leader-served JetStream KV, and every connect/redeem
- * decision reads them leader-served, §13.12 `allow_direct=false`), and the injected verified
- * eviction is the cluster-wide kill-live with re-scan (core `evictDeniedPrincipal`: CONNZ scan
- * → per-server KICK → re-scan; partial scans fail closed).
+ * Deny-new vs kill-live, stated precisely (the two halves of revocation, §13.1):
+ *  - the ledger row CAS is the deny-new SUBSTRATE (rows live in a replicated, leader-served
+ *    JetStream KV, `allow_direct=false`, §13.12). The REDEEM arm is wired here: the session
+ *    release reads the normative row and refuses a `revoked` one, so a burned session
+ *    credential never re-releases. The CONNECT arm (the auth callout reading `cred.<uid>.<id>`
+ *    to refuse an OFFLINE credential's reconnect) is NOT wired in this slice: it needs the
+ *    ROOT credential ledgered (the head's `currentCredentialId`, which the activation saga
+ *    leaves absent until production issuance) and the presented credential to carry its id, so
+ *    it lands with production activation wiring. Until then, this barrier's deny-new covers the
+ *    REDEEM path and the LIVE connections it evicts; an offline root credential whose lifecycle
+ *    UID is preserved across takeover is NOT denied reconnect by the barrier alone (§13.1
+ *    requires takeover to FAIL LOUD where it cannot revoke + verified-evict, e.g. static
+ *    credentials — enforced at that connect-arm wiring, not here);
+ *  - the injected verified eviction is the cluster-wide kill-live with re-scan (core
+ *    `evictDeniedPrincipal`: CONNZ scan → per-server KICK → re-scan; partial scans fail
+ *    closed), which handles the LIVE half regardless of the connect-arm.
  *
  * SURFACE: NOTHING here is exported from the package index. The executor seam is the sealed
  * registry itself (constructed only over the minting authority's authenticated connection);
@@ -59,6 +70,7 @@ import {
 import {
   registryStores,
   readLifecycleHeadForOperation,
+  readUidReservation,
   observeGate,
   freezeGate,
   reopenGate,
@@ -149,15 +161,22 @@ export function stageIntentKey(opId: string): string {
 
 // ---- the normative ledger row (shared by the cred. and epcred. families) ----------------------
 
-/** The §13.1 credential-ledger row, closed. `lifecycleUid` is the HOLDER's identity component:
- *  the managed agent's lifecycle UID in the `cred.` family, the endpoint instance's
+/** The §13.1 credential-ledger row, closed. `lifecycleUid` is the HOLDER's KEY identity
+ *  component: the managed agent's lifecycle UID in the `cred.` family, the endpoint instance's
  *  `instanceId` in the `epcred.` family (SPEC 13.1: `instanceId` is to an endpoint what
- *  `lifecycleUid` is to a managed agent). `holderPrincipal` is who the barrier EVICTS: the
- *  `<owner>.<actor>` dot-form (agent family) or the endpoint principal (endpoint family). */
+ *  `lifecycleUid` is to a managed agent). `endpoint` is present ONLY in the `epcred.` family
+ *  (it forms the key there and is absent in `cred.`), so the KEY identity is never conflated
+ *  with the eviction target. `holderPrincipal` is who the barrier KICKs: ALWAYS a CONNZ-
+ *  attributable `<owner>.<actor>` dot-form (the caller principal in the `cred.` family; the
+ *  serving instance's own connection principal in the `epcred.` family, recorded from the
+ *  endpoint gate), NEVER the endpoint name (which CONNZ cannot attribute). */
 export interface CredentialLedgerRow {
   credentialId: string;
   holderPrincipal: string;
   lifecycleUid: string;
+  /** The endpoint NAME whose token forms the `epcred.` key; present iff this is an endpoint-
+   *  family row, absent in the `cred.` family (which the lifecycleUid keys). */
+  endpoint?: string;
   /** The FULL verified lineage at mint: `root` | `handle.<issuerKeyId>.<id>`… |
    *  `session.<sessionId>` (SPEC 13.1 — for a handle redemption EVERY handle in the presented
    *  chain, never only the leaf). */
@@ -178,7 +197,7 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
     throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not an object`);
-  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "sourceChain", "state", "exp"]);
+  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "sourceChain", "state", "exp"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (
     typeof o.credentialId !== "string" || typeof o.holderPrincipal !== "string" || typeof o.lifecycleUid !== "string" ||
@@ -188,21 +207,25 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
   try {
     assertSourceChain(o.sourceChain, `row ${key} sourceChain`);
     assertCredentialIdTail(o.credentialId, `row ${key} credentialId`);
+    // holderPrincipal is ALWAYS a CONNZ-attributable principal, in BOTH families (the barrier
+    // KICKs it; the endpoint name is NOT attributable and never sits here).
+    assertHolderPrincipal(o.holderPrincipal, `row ${key} holderPrincipal`);
   } catch (e) {
-    throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries a malformed lineage/id: ${(e as Error).message}`);
+    throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries a malformed lineage/id/holder: ${(e as Error).message}`);
   }
-  // KEY BINDING, per family: the row's own identity must rebuild its key exactly.
+  // KEY BINDING, per family: the row's own identity must rebuild its key exactly. The endpoint
+  // family keys on its own `endpoint` field (NOT holderPrincipal), so the key identity and the
+  // eviction target stay disjoint.
   let expected: string;
   if (key.startsWith("cred.")) {
-    try {
-      assertHolderPrincipal(o.holderPrincipal, `row ${key} holderPrincipal`);
-      expected = credRowKey(o.lifecycleUid, o.credentialId);
-    } catch (e) {
-      throw new EpEnvelopeError("internal", `the credential-ledger row ${key} does not validate for the agent family: ${(e as Error).message}`);
-    }
+    if (o.endpoint !== undefined)
+      throw new EpEnvelopeError("internal", `the agent-family row ${key} carries an endpoint field (that belongs to the epcred family, SPEC 13.1)`);
+    expected = credRowKey(o.lifecycleUid, o.credentialId);
   } else if (key.startsWith("epcred.")) {
+    if (typeof o.endpoint !== "string" || o.endpoint.length === 0)
+      throw new EpEnvelopeError("internal", `the endpoint-family row ${key} is missing its endpoint field (it forms the key, SPEC 13.1)`);
     try {
-      expected = epcredRowKey(o.holderPrincipal, o.lifecycleUid, o.credentialId);
+      expected = epcredRowKey(o.endpoint, o.lifecycleUid, o.credentialId);
     } catch (e) {
       throw new EpEnvelopeError("internal", `the credential-ledger row ${key} does not validate for the endpoint family: ${(e as Error).message}`);
     }
@@ -344,16 +367,19 @@ function parseBysrcRow(raw: Uint8Array, key: string): BysrcRow {
   return o as unknown as BysrcRow;
 }
 
-/** What {@link stageAgentMint} durably staged, handed to {@link finalizeAgentMint}. Plain data
- *  (every field re-validated at finalize); the fence is the pinned CAS, not this object. */
+/** What {@link stageAgentMint} durably staged, handed to {@link finalizeAgentMint}. BRANDED
+ *  (WeakSet membership): only {@link stageAgentMint} produces one, so a hand-assembled or
+ *  mutated object (e.g. an empty `pins` array that would finalize with no gate proof) can never
+ *  reach the touch-CAS. The pinned CAS is the fence; the brand is what stops a fake bypassing it. */
 export interface StagedAgentMint {
-  lifecycleUid: string;
-  credentialId: string;
+  readonly lifecycleUid: string;
+  readonly credentialId: string;
   /** The observed lifecycle-gate + source-gate pins the finalize touch-CASes, keyed by KV key. */
-  pins: Array<{ key: string; revision: number }>;
-  /** The staged row's own key plus its lineage index keys (what a losing finalize revokes). */
-  rowKey: string;
+  readonly pins: ReadonlyArray<{ key: string; revision: number }>;
+  /** The staged row's own key (what a losing finalize revokes). */
+  readonly rowKey: string;
 }
+const STAGED_MINTS = new WeakSet<StagedAgentMint>();
 
 /**
  * Stage an AGENT-family mint (SPEC 13.1 mint protocol, steps observe + write-rows): observe
@@ -373,6 +399,14 @@ export async function stageAgentMint(
   if (!uint(args.exp)) throw new EpEnvelopeError("failed-precondition", `exp ${JSON.stringify(args.exp)} is not a non-negative safe integer (SPEC 13.1)`);
   const chain = assertSourceChain(args.sourceChain, "sourceChain");
   const rowKey = credRowKey(args.lifecycleUid, args.credentialId);
+  // 0. BIND holderPrincipal to the UID's reserved identity (SPEC 13.1: the barrier evicts this
+  // principal, so a trusted caller cannot ledger a row that names a FOREIGN principal to KICK).
+  const reservation = await readUidReservation(reg, args.lifecycleUid);
+  if (reservation === undefined)
+    throw new EpEnvelopeError("permission-denied", `lifecycle ${args.lifecycleUid} has no uid reservation; a mint binds its holderPrincipal to the reserved identity (SPEC 13.1)`);
+  const boundPrincipal = `${reservation.owner}.${reservation.actor}`;
+  if (args.holderPrincipal !== boundPrincipal)
+    throw new EpEnvelopeError("permission-denied", `the mint's holderPrincipal "${args.holderPrincipal}" is not the reserved identity "${boundPrincipal}" for uid ${args.lifecycleUid}; the eviction target is derived from the reservation, never free-standing (SPEC 13.1)`);
   // 1. Observe the lifecycle gate: only an OPEN gate mints.
   const gate = await observeGate(reg, args.lifecycleUid);
   if (gate === undefined)
@@ -400,7 +434,9 @@ export async function stageAgentMint(
   };
   await createRowByteIdempotent(authKv, rowKey, row);
   for (const k of bysrcKeys) await createRowByteIdempotent(authKv, k, { ref: rowKey } satisfies BysrcRow);
-  return { lifecycleUid: args.lifecycleUid, credentialId: args.credentialId, pins, rowKey };
+  const staged: StagedAgentMint = Object.freeze({ lifecycleUid: args.lifecycleUid, credentialId: args.credentialId, pins: Object.freeze(pins), rowKey });
+  STAGED_MINTS.add(staged);
+  return staged;
 }
 
 /**
@@ -414,6 +450,12 @@ export async function stageAgentMint(
  */
 export async function finalizeAgentMint(reg: LifecycleRegistry, staged: StagedAgentMint): Promise<void> {
   const { authKv } = registryStores(reg);
+  // BRAND CHECK: only stageAgentMint mints a StagedAgentMint, so a hand-assembled/mutated object
+  // (e.g. an empty `pins` array that would finalize proving NO gate) never reaches the touch-CAS.
+  if (!STAGED_MINTS.has(staged))
+    throw new EpEnvelopeError("failed-precondition", "the staged mint was not produced by stageAgentMint(); a hand-assembled StagedAgentMint never authorizes a finalize (SPEC 13.12)");
+  if (staged.pins.length === 0)
+    throw new EpEnvelopeError("internal", `the staged mint for ${staged.rowKey} carries no gate pins; a finalize proves at least the lifecycle gate (SPEC 13.1)`);
   const byKey = new Map<string, number>();
   for (const pin of staged.pins) {
     const seen = byKey.get(pin.key);
@@ -508,6 +550,21 @@ export function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid: strin
  *  `evictPrincipal` capability for exactly this step). `verifiedGone` is the ONLY success. */
 export type EvictPrincipal = (principal: string) => Promise<EvictionResult>;
 
+/** The injected SESSION-PAIR reconciler (SPEC 13.1: a lifecycle barrier tears down BOTH halves
+ *  of a session, not just the caller credential under `cred.<uid>.>`). For each distinct
+ *  `session.<sessionId>` naming a revoked descendant, the barrier calls this to terminalize the
+ *  `session.<sessionId>` row and revoke the paired serving `epcred.` row. Injected (not
+ *  imported) so the credential ledger never depends on the session adapter. Idempotent. */
+export type ReconcileSessionPair = (sessionId: string) => Promise<void>;
+
+/** The barrier's injected capabilities. `reconcileSessionPair` is optional: a deployment with
+ *  no sessions omits it, but a lifecycle that HAS session-derived credentials and omits it
+ *  fails loud (a torn-down half would be left live). */
+export interface TakeoverDeps {
+  evictPrincipal: EvictPrincipal;
+  reconcileSessionPair?: ReconcileSessionPair;
+}
+
 /** The durable takeover intent at `stage.<opId>` — captured BEFORE the freeze, so a crashed
  *  barrier resumes the SAME operation from the SAME coordinates ({@link resumeAgentTakeover}). */
 export interface TakeoverIntent {
@@ -579,9 +636,10 @@ async function readTakeoverIntent(authKv: KV, opId: string): Promise<{ intent: T
 export async function runAgentTakeoverBarrier(
   reg: LifecycleRegistry,
   args: { owner: string; actor: string; lifecycleUid: string; opId: string },
-  evictPrincipal: EvictPrincipal,
+  deps: TakeoverDeps,
 ): Promise<TakeoverResult> {
   const { authKv } = registryStores(reg);
+  const { evictPrincipal, reconcileSessionPair } = deps;
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);
 
@@ -624,10 +682,15 @@ export async function runAgentTakeoverBarrier(
       break; // our own freeze (fresh or resumed)
     }
     if (gate.row.state === "open" && gate.row.generation === intent.fromGeneration + 1) {
-      // Our reopen already landed: verify the epoch landed too, then report the completed result.
+      // The gate reopened at OUR successor generation. Confirm the head shows a completed
+      // takeover AND that OUR opId is the one that advanced it: a LOSING concurrent takeover
+      // that captured the same (fromEpoch, fromGeneration) also lands here, and it MUST NOT
+      // claim the winner's completion (SPEC 13.1). The epoch stamp binds completion to one op.
       const head = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);
       if (head === undefined || head.mapping.state !== "active" || head.mapping.lifecycleUid !== intent.lifecycleUid || head.mapping.processEpoch !== intent.fromEpoch + 1)
         throw new EpEnvelopeError("internal", `the gate for ${intent.lifecycleUid} reopened at generation ${gate.row.generation} but the head does not show the completed takeover (SPEC 13.1) — inspect the operation ${opId}`);
+      if (head.mapping.lastTakeoverOpId !== opId)
+        throw new EpEnvelopeError("conflict", `the takeover of ${intent.lifecycleUid} at epoch ${intent.fromEpoch + 1} was completed by operation ${head.mapping.lastTakeoverOpId ?? "<none>"}, not ${opId}; a concurrent takeover won and this operation lost (SPEC 13.1)`);
       return { opId, lifecycleUid: intent.lifecycleUid, toEpoch: intent.fromEpoch + 1, toGeneration: intent.fromGeneration + 1, revokedRows: 0, evictedPrincipals: [] };
     }
     if (!(gate.row.state === "open" && gate.row.generation === intent.fromGeneration))
@@ -647,10 +710,28 @@ export async function runAgentTakeoverBarrier(
   const family = await enumerateAgentFamily(reg, intent.lifecycleUid);
 
   // 3. Revoke EVERY row (idempotent — a resumed barrier finds some already revoked). The row
-  // CAS is the deployment's deny-new commit (leader-served, replicated; module header).
+  // CAS is the deployment's deny-new SUBSTRATE (leader-served, replicated; module header).
   let revokedRows = 0;
   for (const item of family) {
     if ((await markLedgerRowRevoked(authKv, item.key)) === "revoked") revokedRows++;
+  }
+
+  // 3b. Reconcile BOTH halves of every session-derived credential (SPEC 13.1: a lifecycle
+  // barrier tears down the session, not just the caller half under `cred.<uid>.>`). For each
+  // distinct `session.<sessionId>` naming a revoked descendant, terminalize `session.<sessionId>`
+  // and revoke the paired serving `epcred.` row through the injected reconciler; a lifecycle
+  // that HAS session-derived credentials but no reconciler fails loud (a live serving half
+  // would survive the takeover).
+  const sessionIds = new Set<string>();
+  for (const item of family)
+    for (const member of item.row.sourceChain) {
+      const parsed = parseSourceMember(member);
+      if (parsed.kind === "session") sessionIds.add(parsed.sessionId);
+    }
+  if (sessionIds.size > 0) {
+    if (reconcileSessionPair === undefined)
+      throw new EpEnvelopeError("failed-precondition", `lifecycle ${intent.lifecycleUid} has ${sessionIds.size} session-derived credential(s) but the barrier was given no session-pair reconciler; a takeover would leave the serving half live (SPEC 13.1)`);
+    for (const sid of [...sessionIds].sort()) await reconcileSessionPair(sid);
   }
 
   // 4. VERIFIED eviction of every holder principal — every enumerated row's holder (revoked
@@ -667,8 +748,9 @@ export async function runAgentTakeoverBarrier(
   }
 
   // 5. The epoch head CAS — LAST among the containment steps (SPEC 13.1: no predecessor egress
-  // survives to publish under the old epoch once the successor's epoch exists). Idempotent.
-  await advanceEpochWithinTakeover(reg, { owner: intent.owner, actor: intent.actor, lifecycleUid: intent.lifecycleUid, fromEpoch: intent.fromEpoch });
+  // survives to publish under the old epoch once the successor's epoch exists). It STAMPS this
+  // op's id, so the completion is bound to exactly this operation. Idempotent for our own advance.
+  await advanceEpochWithinTakeover(reg, { owner: intent.owner, actor: intent.actor, lifecycleUid: intent.lifecycleUid, fromEpoch: intent.fromEpoch, opId });
 
   // 6. Reopen the gate at the successor's first mintable generation — the barrier's own final
   // step (SPEC 13.1: no credential of generation G is ever live when G+1 mints).
@@ -686,13 +768,13 @@ export async function runAgentTakeoverBarrier(
  *  decides WHICH operation a frozen gate belongs to; `{ opId, kind }` alone resumes
  *  deterministically). Re-runs {@link runAgentTakeoverBarrier} with the intent's own
  *  coordinates; a stranger's opId (no intent) is `not-found`. */
-export async function resumeAgentTakeover(reg: LifecycleRegistry, opId: string, evictPrincipal: EvictPrincipal): Promise<TakeoverResult> {
+export async function resumeAgentTakeover(reg: LifecycleRegistry, opId: string, deps: TakeoverDeps): Promise<TakeoverResult> {
   const { authKv } = registryStores(reg);
   const read = await readTakeoverIntent(authKv, assertLifecycleToken(opId));
   if (read === undefined)
     throw new EpEnvelopeError("not-found", `no operation intent exists at ${stageIntentKey(opId)}; there is nothing to resume (SPEC 13.1)`);
   const it = read.intent;
-  return runAgentTakeoverBarrier(reg, { owner: it.owner, actor: it.actor, lifecycleUid: it.lifecycleUid, opId }, evictPrincipal);
+  return runAgentTakeoverBarrier(reg, { owner: it.owner, actor: it.actor, lifecycleUid: it.lifecycleUid, opId }, deps);
 }
 
 // ---- handle revocation (the source-gate walk) ---------------------------------------------------
@@ -710,9 +792,10 @@ export async function resumeAgentTakeover(reg: LifecycleRegistry, opId: string, 
 export async function revokeHandleSource(
   reg: LifecycleRegistry,
   args: { issuerKeyId: string; id: string },
-  evictPrincipal: EvictPrincipal,
+  deps: TakeoverDeps,
 ): Promise<{ revokedRows: number; evictedPrincipals: string[] }> {
   const { authKv } = registryStores(reg);
+  const { evictPrincipal, reconcileSessionPair } = deps;
   // 1. Freeze FIRST (idempotent resume over an already-frozen gate).
   const gate = await observeSourceGate(reg, args);
   if (gate === undefined)
@@ -724,13 +807,24 @@ export async function revokeHandleSource(
   // 3. Revoke every indexed descendant row (the index names the row; the ROW is the authority).
   let revokedRows = 0;
   const principals = new Set<string>();
+  const sessionIds = new Set<string>();
   for (const { key, ref } of indexRows) {
     const entry = await authKv.get(ref);
     if (!entry || entry.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the lineage index ${key} names ${ref}, which ${!entry ? "does not exist" : `carries a ${entry.operation} marker`}; ledger rows are never deleted (corruption, SPEC 13.12)`);
     const row = parseLedgerRow(entry.value, ref);
     principals.add(row.holderPrincipal);
+    for (const member of row.sourceChain) {
+      const parsed = parseSourceMember(member);
+      if (parsed.kind === "session") sessionIds.add(parsed.sessionId);
+    }
     if ((await markLedgerRowRevoked(authKv, ref)) === "revoked") revokedRows++;
+  }
+  // 3b. Tear down BOTH halves of any session-derived descendant (as the takeover barrier does).
+  if (sessionIds.size > 0) {
+    if (reconcileSessionPair === undefined)
+      throw new EpEnvelopeError("failed-precondition", `handle ${args.issuerKeyId}.${args.id} has ${sessionIds.size} session-derived descendant credential(s) but the revocation was given no session-pair reconciler (SPEC 13.1)`);
+    for (const sid of [...sessionIds].sort()) await reconcileSessionPair(sid);
   }
   // 4. VERIFIED eviction of every descendant holder (SPEC 13.1: an already-connected descendant
   // credential is never silently left with live grants; acked only after this completes).

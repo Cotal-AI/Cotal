@@ -29,18 +29,21 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
+import { generateKeyPair, exportJWK, calculateJwkThumbprint, type CryptoKey } from "jose";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, mintLifecycleUid, epAuthBucket,
-  evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX,
+  evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX, epsSubject, sessionLedgerKey,
+  redeemSession, retrieveServingCredential, type SessionGrant,
 } from "@cotal-ai/core";
-import { openLifecycleRegistry } from "../src/index.js";
+import { openLifecycleRegistry, openLifecycleMappingReader, openSessionAuthStore, sessionRedemptionHooks } from "../src/index.js";
 import { activateLifecycle, observeGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
+import { writeEndpointGate, reconcileSessionForTakeover } from "../src/session-ledger.js";
 import {
   stageAgentMint, finalizeAgentMint, enumerateAgentFamily,
   createSourceGateOpen, observeSourceGate, freezeSourceGate, revokeHandleSource,
   runAgentTakeoverBarrier, resumeAgentTakeover,
   credRowKey, srcgateKey, stageIntentKey,
-  type EvictPrincipal,
+  type EvictPrincipal, type ReconcileSessionPair,
 } from "../src/credential-ledger.js";
 
 let ok = 0, fail = 0;
@@ -132,6 +135,14 @@ try {
     () => stageAgentMint(reg, { lifecycleUid: uid1, credentialId: "bad00001", holderPrincipal: "not-a-principal", sourceChain: ["root"], exp: NOW + 60_000 }), "failed-precondition");
   await rejects("an empty sourceChain refuses (the FULL lineage is required)",
     () => stageAgentMint(reg, { lifecycleUid: uid1, credentialId: "bad00002", holderPrincipal: "local.victim", sourceChain: [], exp: NOW + 60_000 }), "failed-precondition");
+  // holderPrincipal is BOUND to the uid's reserved identity (the barrier evicts it, so a trusted
+  // caller cannot ledger a row naming a FOREIGN principal to KICK).
+  await rejects("a mint whose holderPrincipal is a valid-but-FOREIGN principal (not the uid's reserved identity) refuses",
+    () => stageAgentMint(reg, { lifecycleUid: uid1, credentialId: "bad00003", holderPrincipal: "local.someoneelse", sourceChain: ["root"], exp: NOW + 60_000 }), "permission-denied");
+  // A hand-assembled StagedAgentMint (an empty-pins object that would finalize proving NO gate)
+  // never reaches the touch-CAS: only stageAgentMint mints a branded staged object.
+  await rejects("finalizeAgentMint refuses a hand-assembled StagedAgentMint (the brand is the fence, not the field shape)",
+    () => finalizeAgentMint(reg, { lifecycleUid: uid1, credentialId: "forged", pins: [], rowKey: credRowKey(uid1, "forged") } as never), "failed-precondition");
 
   console.log("B. source gates + lineage (bysrc) + the freeze-vs-finalize race");
   await createSourceGateOpen(reg, { issuerKeyId: "k1", id: "h1" });
@@ -173,7 +184,7 @@ try {
   victim1.closed().then(() => { v1Closed = true; }, () => { v1Closed = true; });
   c("the victim principal local.victim is live before the barrier", !victim1.isClosed());
   const op1 = mintLifecycleUid();
-  const res1 = await runAgentTakeoverBarrier(reg, { owner: "local", actor: "victim", lifecycleUid: uid1, opId: op1 }, liveEvict);
+  const res1 = await runAgentTakeoverBarrier(reg, { owner: "local", actor: "victim", lifecycleUid: uid1, opId: op1 }, { evictPrincipal: liveEvict });
   c("the barrier reports the successor coordinates (epoch 2, generation 2) and the revoked family",
     res1.toEpoch === 2 && res1.toGeneration === 2 && res1.revokedRows >= 2 && res1.evictedPrincipals.includes("local.victim"), res1);
   {
@@ -191,23 +202,23 @@ try {
     c("the durable operation intent persists at stage.<opId> (audit; never under a ledger prefix)", intent !== null && intent.operation === "PUT");
   }
   {
-    const again = await resumeAgentTakeover(reg, op1, liveEvict);
+    const again = await resumeAgentTakeover(reg, op1, { evictPrincipal: liveEvict });
     c("resuming the COMPLETED operation is idempotent (same coordinates, no second advance)",
       again.toEpoch === 2 && again.toGeneration === 2, again);
     const head = await readLifecycleHeadForOperation(reg, "local", "victim");
     c("…the epoch did not move again", head?.mapping.processEpoch === 2);
   }
   await rejects("a STRANGER's opId resumes nothing (no intent, not-found)",
-    () => resumeAgentTakeover(reg, mintLifecycleUid(), liveEvict), "not-found");
+    () => resumeAgentTakeover(reg, mintLifecycleUid(), { evictPrincipal: liveEvict }), "not-found");
   await rejects("an opId whose intent names a DIFFERENT lifecycle refuses (an opId resumes only its own operation)",
-    () => runAgentTakeoverBarrier(reg, { owner: "local", actor: "victim", lifecycleUid: "y".repeat(26), opId: op1 }, liveEvict), "permission-denied");
+    () => runAgentTakeoverBarrier(reg, { owner: "local", actor: "victim", lifecycleUid: "y".repeat(26), opId: op1 }, { evictPrincipal: liveEvict }), "permission-denied");
 
   console.log("D. the FAIL-CLOSED eviction path (gate stays frozen, epoch does not advance)");
   {
     const op2 = mintLifecycleUid();
     const failingEvict: EvictPrincipal = async (principal) => ({ principal, kicked: 0, remaining: 1, verifiedGone: false, scanComplete: true, note: "simulated partial eviction" });
     await rejects("a barrier whose eviction cannot VERIFY fails loud (unavailable)",
-      () => runAgentTakeoverBarrier(reg, { owner: "local", actor: "victim", lifecycleUid: uid1, opId: op2 }, failingEvict), "unavailable");
+      () => runAgentTakeoverBarrier(reg, { owner: "local", actor: "victim", lifecycleUid: uid1, opId: op2 }, { evictPrincipal: failingEvict }), "unavailable");
     const gate = await observeGate(reg, uid1);
     c("…the gate STAYS FROZEN under the failed operation (nothing mints)",
       gate !== undefined && gate.row.state === "frozen" && gate.row.op?.opId === op2, gate?.row);
@@ -215,7 +226,7 @@ try {
     c("…and the epoch did NOT advance (containment before authority)", head?.mapping.processEpoch === 2);
     await rejects("a mint under the frozen gate refuses (the barrier's bar holds while unresolved)",
       () => stageAgentMint(reg, { lifecycleUid: uid1, credentialId: "root0002", holderPrincipal: "local.victim", sourceChain: ["root"], exp: NOW + 60_000 }), "permission-denied");
-    const resumed = await resumeAgentTakeover(reg, op2, liveEvict);
+    const resumed = await resumeAgentTakeover(reg, op2, { evictPrincipal: liveEvict });
     c("resuming the SAME opId with working eviction completes the barrier (epoch 3, generation 3)",
       resumed.toEpoch === 3 && resumed.toGeneration === 3, resumed);
   }
@@ -230,7 +241,7 @@ try {
     const act2 = await activateLifecycle(reg, { owner: "local", actor: "victim2", managerInstance: MGR });
     const uid2 = act2.mapping.lifecycleUid;
     await finalizeAgentMint(reg, await stageAgentMint(reg, { lifecycleUid: uid2, credentialId: "hcred010", holderPrincipal: "local.victim2", sourceChain: ["handle.k1.h1"], exp: NOW + 60_000 }));
-    const walk = await revokeHandleSource(reg, { issuerKeyId: "k1", id: "h1" }, liveEvict);
+    const walk = await revokeHandleSource(reg, { issuerKeyId: "k1", id: "h1" }, { evictPrincipal: liveEvict });
     c("the walk froze the source gate, revoked the descendant, and verified eviction of its holder",
       walk.evictedPrincipals.includes("local.victim2"), walk);
     const dropped = await until(() => v2Closed || victim2!.isClosed(), 2500);
@@ -239,11 +250,11 @@ try {
     c("…the descendant row under the OTHER lifecycle is revoked (parent revocation reaches it via bysrc)", row.state === "revoked", row);
     const src = await observeSourceGate(reg, { issuerKeyId: "k1", id: "h1" });
     c("…the source gate is frozen forever (a revoked handle never mints again)", src?.row.state === "frozen", src?.row);
-    const resumeWalk = await revokeHandleSource(reg, { issuerKeyId: "k1", id: "h1" }, liveEvict);
+    const resumeWalk = await revokeHandleSource(reg, { issuerKeyId: "k1", id: "h1" }, { evictPrincipal: liveEvict });
     c("re-running the walk is idempotent (already-frozen gate resumes, rows already revoked)",
       resumeWalk.revokedRows === 0 && resumeWalk.evictedPrincipals.includes("local.victim2"), resumeWalk);
     await rejects("revoking a handle with NO source gate is not-found",
-      () => revokeHandleSource(reg, { issuerKeyId: "k1", id: "never" }, liveEvict), "not-found");
+      () => revokeHandleSource(reg, { issuerKeyId: "k1", id: "never" }, { evictPrincipal: liveEvict }), "not-found");
   }
 
   console.log("F. enumeration corruption fails LOUD (a partial or poisoned family read never proceeds)");
@@ -282,6 +293,80 @@ try {
     await authKv.put(srcgateKey("k3", "bad"), enc.encode("{\"state\":\"open\",\"extra\":1}"));
     await rejects("a garbled source gate refuses at observe (closed schema)",
       () => observeSourceGate(reg, { issuerKeyId: "k3", id: "bad" }), "internal");
+  }
+
+  console.log("H. the two-intent takeover race (a loser never claims the winner's completion)");
+  {
+    // Two takeover ops both capture the SAME (fromEpoch 1, fromGeneration 1) BEFORE either
+    // freezes. Persist the LOSER's intent at those coordinates FIRST, let the winner A run to
+    // completion (epoch 2, gen 2), then resume the loser: it sees the gate open at G+1 and the
+    // head at N+1, but the epoch stamp binds the completion to A's opId, so the loser refuses
+    // with conflict instead of falsely reporting success (SPEC 13.1).
+    const actR = await activateLifecycle(reg, { owner: "local", actor: "racer", managerInstance: MGR });
+    const uidR = actR.mapping.lifecycleUid;
+    const opA = mintLifecycleUid(), opLoser = mintLifecycleUid();
+    // The loser's intent, hand-persisted at the pre-takeover coordinates it captured (epoch 1,
+    // generation 1) — exactly what A also captured.
+    await authKv.create(stageIntentKey(opLoser), enc.encode(JSON.stringify({ kind: "takeover", lifecycleUid: uidR, owner: "local", actor: "racer", fromEpoch: 1, fromGeneration: 1 })));
+    // A wins and completes.
+    const resA = await runAgentTakeoverBarrier(reg, { owner: "local", actor: "racer", lifecycleUid: uidR, opId: opA }, { evictPrincipal: liveEvict });
+    c("the winner A completes the takeover (epoch 2, generation 2)", resA.toEpoch === 2 && resA.toGeneration === 2);
+    // The loser resumes at the winner's captured coordinates: gate open at gen 2 (= its
+    // fromGeneration+1), head epoch 2 (= its fromEpoch+1), but lastTakeoverOpId is A's.
+    await rejects("the LOSER resuming at the winner's captured (epoch 1, generation 1) refuses (the epoch stamp binds completion to the winning opId, no split-brain success)",
+      () => resumeAgentTakeover(reg, opLoser, { evictPrincipal: liveEvict }), "conflict");
+    const headAfter = await readLifecycleHeadForOperation(reg, "local", "racer");
+    c("…the head's lastTakeoverOpId is the WINNER's opId, not the loser's", headAfter?.mapping.lastTakeoverOpId === opA);
+  }
+
+  console.log("I. session-pair teardown + the epcred serving principal (SPEC 13.1: a lifecycle barrier tears down BOTH halves)");
+  {
+    // A holder lifecycle with a LIVE session: the barrier must revoke the caller cred row AND
+    // terminalize session.<sid> AND revoke the paired serving epcred row, else the serving half
+    // outlives the takeover. The serving epcred row's holderPrincipal is the CONNZ-evictable
+    // serving principal (from the endpoint gate), NOT the endpoint name.
+    const reader = await openLifecycleMappingReader(nc!, SPACE);
+    const store = await openSessionAuthStore(nc!, SPACE);
+    const { privateKey, publicKey } = await generateKeyPair("EdDSA", { extractable: true });
+    const thumb = await calculateJwkThumbprint(await exportJWK(publicKey));
+    const signer = { current: { kid: "k1", key: privateKey as CryptoKey }, resolve: (_k: string) => privateKey as CryptoKey, thumbprint: (_k: string) => thumb };
+    const hooks = sessionRedemptionHooks({ store, registry: reg, reader, signer, now: () => NOW + 10 });
+    // A fresh holder lifecycle (owner=local, actor=sessholder) + a serving endpoint instance.
+    const actS = await activateLifecycle(reg, { owner: "local", actor: "sessholder", managerInstance: MGR });
+    const uidH = actS.mapping.lifecycleUid;
+    const IID = "t".repeat(26), EP = "term", SPRIN = `u_${"e".repeat(26)}.term`;
+    await writeEndpointGate(store.kv, EP, IID, { state: "open", generation: 1, processEpoch: 5, registrationRevision: 1, nameAuthorityRevision: 1, principal: SPRIN });
+    const SID = `${"z".repeat(20)}0001`;
+    const grant: SessionGrant = {
+      v: 1, sessionId: SID, space: SPACE, endpoint: EP,
+      subjects: { in: epsSubject(SPACE, EP, SID, 5, "in"), out: epsSubject(SPACE, EP, SID, 5, "out") },
+      holder: { id: "local.sessholder", lifecycleUid: uidH, processEpoch: actS.mapping.processEpoch },
+      serving: { instanceId: IID, epoch: 5 }, window: 64, iat: NOW, exp: NOW + 60_000, nonce: "n".repeat(16),
+      issuer: { keyId: "k1" }, sig: "unused",
+    } as SessionGrant;
+    await redeemSession(grant, { id: "local.sessholder", lifecycleUid: uidH }, hooks);
+    {
+      const servingRow = JSON.parse(dec.decode((await store.kv.get(`epcred.term.${IID}.${SID}.s`))!.value)) as { holderPrincipal: string; endpoint: string };
+      c("the serving epcred row's holderPrincipal is the CONNZ-evictable serving principal (not the endpoint name)",
+        servingRow.holderPrincipal === SPRIN && servingRow.endpoint === EP, servingRow);
+    }
+    // A barrier over the holder with sessions but NO reconciler fails loud (and, fail-closed,
+    // leaves the gate frozen under its op — nothing mints while the session pair is unresolved).
+    const opTake = mintLifecycleUid();
+    await rejects("a takeover of a lifecycle WITH session-derived credentials but no reconciler fails loud",
+      () => runAgentTakeoverBarrier(reg, { owner: "local", actor: "sessholder", lifecycleUid: uidH, opId: opTake }, { evictPrincipal: liveEvict }), "failed-precondition");
+    c("…and the gate STAYS FROZEN under the failed op (nothing mints while the pair is unresolved)",
+      (await observeGate(reg, uidH))?.row.state === "frozen");
+    // RESUMING the SAME op with the reconciler wired completes the barrier and tears down BOTH halves.
+    const reconcile: ReconcileSessionPair = (sessionId) => reconcileSessionForTakeover(store, hooks, sessionId);
+    const resH = await resumeAgentTakeover(reg, opTake, { evictPrincipal: liveEvict, reconcileSessionPair: reconcile });
+    c("resuming the SAME op with the reconciler wired completes the barrier (epoch 2)", resH.toEpoch === 2);
+    const sessRow = JSON.parse(dec.decode((await store.kv.get(sessionLedgerKey(SID)))!.value)) as { state: string; revoked: { caller: boolean; serving: boolean } };
+    c("…the session row is TERMINAL (superseded) with both halves revoked+marked", sessRow.state === "superseded" && sessRow.revoked.caller && sessRow.revoked.serving, sessRow);
+    const servingLedger = JSON.parse(dec.decode((await store.kv.get(`epcred.term.${IID}.${SID}.s`))!.value)) as { state: string };
+    c("…the paired SERVING epcred row is revoked (the serving half cannot outlive the takeover)", servingLedger.state === "revoked", servingLedger);
+    await rejects("…and retrieveServingCredential now releases NOTHING (the session is terminal)",
+      () => retrieveServingCredential(SID, { endpoint: EP, instanceId: IID, epoch: 5 }, hooks), "failed-precondition");
   }
 
   await nc.drain().catch(() => {});
