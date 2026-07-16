@@ -13,4 +13,5 @@ export * from "./mesh-target.js";
 export * from "./preflight.js";
 export * from "./render.js";
 export * from "./renewal.js";
+export * from "./secret-store-fs.js";
 export * from "./space.js";
