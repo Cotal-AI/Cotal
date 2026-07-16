@@ -23,10 +23,10 @@ import {
   epfSubject, epfStreamName, readLastFact, parseDecisionFact,
 } from "@cotal-ai/core";
 import {
-  openLifecycleRegistry, openAdmissionMediator, obtainEpfObligation, obtainSelfObligation,
+  openLifecycleRegistry, openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation,
   acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
   readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
-  drainEndpointPolicy,
+  drainEndpointPolicy, type MediatedRequest,
 } from "../src/index.js";
 import { publishFactCreateOnly } from "@cotal-ai/core";
 import { activateLifecycle } from "../src/lifecycle-registry.js";
@@ -65,6 +65,10 @@ const EP = "term";
 const MGR = "mgr-1";
 const NOW = 1_700_000_000_000;
 const CALLER = { owner: "local", actor: "caller", uid: "u".repeat(26) };
+/** Build the BRANDED mediated request from an authenticated `epj` journal subject carrying the
+ *  caller triple (the coordinate identity is subject-derived, never a body field). */
+const mkReq = (cc: { owner: string; actor: string; uid: string }): MediatedRequest =>
+  mediatedRequestFromSubject(`cotal.${SPACE}.epj.${EP}.admit.${cc.owner}.${cc.actor}.${cc.uid}`);
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-medsmoke-"));
@@ -104,19 +108,19 @@ try {
   console.log("B. a target-bound epf obligation: create-fence, proof, join, settle (core-valid rejection)");
   const actT = await activateLifecycle(reg, { owner: "local", actor: "target", managerInstance: MGR });
   const tgt = { owner: "local", actor: "target", lifecycleUid: actT.mapping.lifecycleUid };
-  const got = await obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("A"), sourceSeq: 7, route: "effects" });
+  const got = await obtainEpfObligation(med, mkReq(CALLER), { target: tgt, id: "req0001", fingerprint: fp("A"), sourceSeq: 7, route: "effects" });
   c("a target-bound epf obtain wins its row (provisional, epf-class, pinned mappingRevision)",
     got.row.state === "provisional" && got.row.decision === "epf" && got.row.mappingRevision === actT.revision && !got.joined, got.row);
   assertAdmissionProof(med, got.proof, got.key);
   c("its proof validates against the mediator + obligation key", true);
-  const gotAgain = await obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("A"), sourceSeq: 9, route: "effects" });
+  const gotAgain = await obtainEpfObligation(med, mkReq(CALLER), { target: tgt, id: "req0001", fingerprint: fp("A"), sourceSeq: 9, route: "effects" });
   c("a redelivery with the same identity JOINS the winner (never a second obligation)", gotAgain.joined && gotAgain.key === got.key, { joined: gotAgain.joined });
   await rejects("a bad fingerprint shape refuses at obtain (must be sha256:<hex>, so the settle fact is core-valid)",
-    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0002", fingerprint: "fp1", sourceSeq: 1, route: "effects" }), "failed-precondition");
+    () => obtainEpfObligation(med, mkReq(CALLER), { target: tgt, id: "req0002", fingerprint: "fp1", sourceSeq: 1, route: "effects" }), "failed-precondition");
   await rejects("sourceSeq 0 refuses at obtain (a decision fact needs a positive sourceSeq)",
-    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0003", fingerprint: fp("z"), sourceSeq: 0, route: "effects" }), "failed-precondition");
+    () => obtainEpfObligation(med, mkReq(CALLER), { target: tgt, id: "req0003", fingerprint: fp("z"), sourceSeq: 0, route: "effects" }), "failed-precondition");
   await rejects("a mismatched fingerprint on the same acceptance key refuses (conflict, not a second row)",
-    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("DIFFERENT"), sourceSeq: 1, route: "effects" }), "conflict");
+    () => obtainEpfObligation(med, mkReq(CALLER), { target: tgt, id: "req0001", fingerprint: fp("DIFFERENT"), sourceSeq: 1, route: "effects" }), "conflict");
   const settled = await settleEpfOrSelfObligation(med, got.key, "the smoke drains it");
   c("settling an unresolved epf row publishes its terminal rejection", settled === "rejected");
   // The rejection fact is CORE-VALID (consume it through parseDecisionFact, not a cast) and lands
@@ -128,16 +132,16 @@ try {
     c("…the rejection fact PARSES via parseDecisionFact and is the caller's rejection", fact.decision === "rejected" && fact.caller.id === `${CALLER.owner}.${CALLER.actor}` && fact.caller.lifecycleUid === CALLER.uid, fact);
   }
   await rejects("a re-obtain on a settled acceptance key refuses (a settled identity never re-admits)",
-    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("A"), sourceSeq: 7, route: "effects" }), "failed-precondition");
+    () => obtainEpfObligation(med, mkReq(CALLER), { target: tgt, id: "req0001", fingerprint: fp("A"), sourceSeq: 7, route: "effects" }), "failed-precondition");
 
   console.log("C. the create-fence refuses a non-active target");
   await rejects("an epf obtain against an UNKNOWN target refuses (a non-current target admits nothing)",
-    () => obtainEpfObligation(med, { target: { owner: "local", actor: "ghost", lifecycleUid: "g".repeat(26) }, caller: CALLER, id: "req0009", fingerprint: fp("g"), sourceSeq: 1, route: "effects" }), "failed-precondition");
+    () => obtainEpfObligation(med, mkReq(CALLER), { target: { owner: "local", actor: "ghost", lifecycleUid: "g".repeat(26) }, id: "req0009", fingerprint: fp("g"), sourceSeq: 1, route: "effects" }), "failed-precondition");
 
   console.log("D. a self-class obligation: accept → guarded commit → terminal, and the post-create recheck");
   const recKey = `svc.${EP}.${"i".repeat(26)}.status`;
   const desired = { epoch: 2, state: "running", observedSpecRevision: 1 };
-  const selfGot = await obtainSelfObligation(med, { policy: true, caller: CALLER, id: "self0001", commit: { commitKey: recKey, commitBaseRevision: 0, ...commitOf(desired) } });
+  const selfGot = await obtainSelfObligation(med, mkReq(CALLER), { policy: true, id: "self0001", commit: { commitKey: recKey, commitBaseRevision: 0, ...commitOf(desired) } });
   c("a self obtain wins a self-class row pinning the complete commit intent + policyRevision",
     selfGot.row.decision === "self" && selfGot.row.policyRevision === policyV1.revision && selfGot.row.commit?.commitKey === recKey, selfGot.row);
   await acceptSelfObligation(med, selfGot.proof);
@@ -151,18 +155,18 @@ try {
   {
     const actM = await activateLifecycle(reg, { owner: "local", actor: "mover", managerInstance: MGR });
     const tgtM = { owner: "local", actor: "mover", lifecycleUid: actM.mapping.lifecycleUid };
-    const g1 = await obtainEpfObligation(med, { target: tgtM, caller: CALLER, id: "mv0001", fingerprint: fp("mv"), sourceSeq: 1, route: "effects" });
+    const g1 = await obtainEpfObligation(med, mkReq(CALLER), { target: tgtM, id: "mv0001", fingerprint: fp("mv"), sourceSeq: 1, route: "effects" });
     c("the mover obtain wins under the active head", g1.row.state === "provisional" && g1.row.mappingRevision === actM.revision);
     // Bump the mover head revision (same active mapping) so its pinned mappingRevision is stale.
     await updateRecordEntry(recordsKv, recordAtomicKey(LIFECYCLE_HEAD, ["local", "mover"]), { ...actM.mapping }, actM.revision);
     await rejects("a join whose pinned target head revision has moved refuses at the recheck (no proof issues)",
-      () => obtainEpfObligation(med, { target: tgtM, caller: CALLER, id: "mv0001", fingerprint: fp("mv"), sourceSeq: 1, route: "effects" }), "failed-precondition");
+      () => obtainEpfObligation(med, mkReq(CALLER), { target: tgtM, id: "mv0001", fingerprint: fp("mv"), sourceSeq: 1, route: "effects" }), "failed-precondition");
   }
 
   console.log("E. self recovery RE-APPLIES from pinned bytes, and SUPERSEDES a moved record");
   const recKey2 = `svc.${EP}.${"j".repeat(26)}.status`;
   const desired2 = { epoch: 3, state: "running", observedSpecRevision: 1 };
-  const selfGot2 = await obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "v".repeat(26) }, id: "self0002", commit: { commitKey: recKey2, commitBaseRevision: 0, ...commitOf(desired2) } });
+  const selfGot2 = await obtainSelfObligation(med, mkReq({ ...CALLER, uid: "v".repeat(26) }), { policy: true, id: "self0002", commit: { commitKey: recKey2, commitBaseRevision: 0, ...commitOf(desired2) } });
   await acceptSelfObligation(med, selfGot2.proof);
   let reappliedBytes: Uint8Array | undefined;
   const recovered2 = await recoverSelfObligation(med, selfGot2.key, { applyCommit: async (k, bytes) => { reappliedBytes = bytes; await applyCommit(recordsKv, k, bytes); } });
@@ -173,16 +177,16 @@ try {
   const recKey3 = `svc.${EP}.${"k".repeat(26)}.status`;
   await createRecordEntry(recordsKv, recKey3, { epoch: 1, state: "old", observedSpecRevision: 1 });
   const moved = await readRecordLeader(await jetstreamManager(nc), SPACE, recKey3);
-  const selfGot3 = await obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "s".repeat(26) }, id: "self0003", commit: { commitKey: recKey3, commitBaseRevision: (moved!.revision + 5), ...commitOf({ epoch: 9, state: "wanted", observedSpecRevision: 1 }) } });
+  const selfGot3 = await obtainSelfObligation(med, mkReq({ ...CALLER, uid: "s".repeat(26) }), { policy: true, id: "self0003", commit: { commitKey: recKey3, commitBaseRevision: (moved!.revision + 5), ...commitOf({ epoch: 9, state: "wanted", observedSpecRevision: 1 }) } });
   await acceptSelfObligation(med, selfGot3.proof);
   const recovered3 = await recoverSelfObligation(med, selfGot3.key, { applyCommit: async () => { throw new Error("must not re-apply a superseded commit"); } });
   c("recovering an accepted self row whose record moved PAST its base is superseded (never re-applies)", recovered3 === "superseded");
   // CROSS-PROCESS ACCEPT: a NEW mediator instance (a restarted writer) joins the provisional and accepts.
   const recKey4 = `svc.${EP}.${"m".repeat(26)}.status`;
   const commit4 = commitOf({ epoch: 4, state: "running", observedSpecRevision: 1 });
-  const selfGot4 = await obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "x".repeat(26) }, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
+  const selfGot4 = await obtainSelfObligation(med, mkReq({ ...CALLER, uid: "x".repeat(26) }), { policy: true, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
   const medReborn = await openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 1000 });
-  const rejoin = await obtainSelfObligation(medReborn, { policy: true, caller: { ...CALLER, uid: "x".repeat(26) }, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
+  const rejoin = await obtainSelfObligation(medReborn, mkReq({ ...CALLER, uid: "x".repeat(26) }), { policy: true, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
   c("a restarted writer (new mediator) JOINS its own provisional self obligation", rejoin.joined && rejoin.key === selfGot4.key);
   await acceptSelfObligation(medReborn, rejoin.proof);
   const rec4 = await recoverSelfObligation(medReborn, rejoin.key, { applyCommit: async (k, b) => applyCommit(recordsKv, k, b) });
@@ -191,11 +195,11 @@ try {
   console.log("F. stage → policy-scoped drain → promote, the pause, and the bound witness");
   const policyV2 = await publishPolicyVersion(reg, EP, { capacity: 20, v: 2 });
   // A TARGET-ONLY provisional that the policy drain must NOT touch (it is not policy-governed).
-  const targetOnly = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "t".repeat(26) }, id: "tonly001", fingerprint: fp("t"), sourceSeq: 3, route: "effects" });
+  const targetOnly = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "t".repeat(26) }), { target: tgt, id: "tonly001", fingerprint: fp("t"), sourceSeq: 3, route: "effects" });
   c("a target-only (no policy pin) provisional exists before the stage", targetOnly.row.policyRevision === undefined && targetOnly.row.mappingRevision !== undefined);
   await stagePolicySelector(reg, EP, policyV2.key);
   await rejects("a policy-admitted obtain PAUSES while a pendingPolicy is staged (the drain window)",
-    () => obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "w".repeat(26) }, id: "paused1", commit: { commitKey: `svc.${EP}.pw.status`, commitBaseRevision: 0, ...commitOf({ a: 1 }) } }), "failed-precondition");
+    () => obtainSelfObligation(med, mkReq({ ...CALLER, uid: "w".repeat(26) }), { policy: true, id: "paused1", commit: { commitKey: `svc.${EP}.pw.status`, commitBaseRevision: 0, ...commitOf({ a: 1 }) } }), "failed-precondition");
   c("…and readEnforcedPolicy itself refuses inside the drain window", await (async () => { try { await readEnforcedPolicy(med); return false; } catch (e) { return e instanceof EpEnvelopeError && e.code === "failed-precondition"; } })());
   const drain = await drainEndpointPolicy(med, drainDeps);
   c("the policy drain reaches quiescence (target-only row ignored, not settled)", drain.passes >= 1);
@@ -230,7 +234,7 @@ try {
   // State-aware proof: a self obtain's proof is INERT once a drain settles its row, even though
   // its brand/bind/expiry still look valid (state-blind assertAdmissionProof would pass).
   {
-    const sg = await obtainSelfObligation(med, { target: tgt, caller: { ...CALLER, uid: "q".repeat(26) }, id: "state01", commit: { commitKey: `svc.${EP}.st.status`, commitBaseRevision: 0, ...commitOf({ v: 1 }) } });
+    const sg = await obtainSelfObligation(med, mkReq({ ...CALLER, uid: "q".repeat(26) }), { target: tgt, id: "state01", commit: { commitKey: `svc.${EP}.st.status`, commitBaseRevision: 0, ...commitOf({ v: 1 }) } });
     assertAdmissionProof(med, sg.proof, sg.key); // structural check still passes
     await settleEpfOrSelfObligation(med, sg.key, "the smoke settles it before accept");
     await rejects("acceptSelfObligation refuses once a drain settled the row (state-aware proof, not state-blind)",
@@ -241,7 +245,7 @@ try {
   // Decision-winner bind: a decision fact on an obligation's coordinate carrying a FOREIGN
   // acceptance identity (different fingerprint) never silently settles the obligation.
   {
-    const dg = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "d".repeat(26) }, id: "bind01", fingerprint: fp("REAL"), sourceSeq: 5, route: "effects" });
+    const dg = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "d".repeat(26) }), { target: tgt, id: "bind01", fingerprint: fp("REAL"), sourceSeq: 5, route: "effects" });
     const decSubject = epfSubject(SPACE, EP, ["dec", CALLER.owner, CALLER.actor, "d".repeat(26), "bind01"]);
     // Hand-publish a rejection fact with a DIFFERENT fingerprint on the coordinate.
     const foreign = { v: 1, id: "bind01", decision: "rejected", fingerprint: fp("FOREIGN"), error: { code: "failed-precondition" }, caller: { id: `${CALLER.owner}.${CALLER.actor}`, lifecycleUid: "d".repeat(26) }, sourceSeq: 9, ts: NOW };
@@ -250,9 +254,28 @@ try {
       () => settleEpfOrSelfObligation(med, dg.key, "the smoke tries to settle"), "internal");
   }
 
+  console.log("I. the obligation identity is broker-derived, not a body field (B1 structural half)");
+  {
+    // A hand-assembled MediatedRequest (not from mediatedRequestFromSubject) never authorizes.
+    const forged: MediatedRequest = { endpoint: EP, caller: { owner: "local", actor: "caller", uid: "u".repeat(26) } };
+    await rejects("a hand-assembled request (bypassing the subject parser) refuses (identity is subject-derived)",
+      () => obtainEpfObligation(med, forged, { target: tgt, id: "forge1", fingerprint: fp("f"), sourceSeq: 1, route: "effects" }), "permission-denied");
+    // A request parsed from a FOREIGN endpoint's subject refuses at THIS endpoint's mediator.
+    const foreignReq = mediatedRequestFromSubject(`cotal.${SPACE}.epj.other.admit.local.caller.${"u".repeat(26)}`);
+    await rejects("a request whose subject names a DIFFERENT endpoint refuses (a mediator admits only its own endpoint)",
+      () => obtainEpfObligation(med, foreignReq, { target: tgt, id: "foreign1", fingerprint: fp("f"), sourceSeq: 1, route: "effects" }), "permission-denied");
+    // A non-request/journal subject refuses at construction.
+    rejectsSync("a non-request subject refuses at mediatedRequestFromSubject (only request/journal carry an authenticated caller)",
+      () => mediatedRequestFromSubject(`cotal.${SPACE}.epf.${EP}.dec.whatever`), "failed-precondition");
+    // The obligation KEY carries the SUBJECT's caller triple, proving the coordinate is
+    // subject-derived (the id is the only caller-chosen token).
+    const idg = await obtainEpfObligation(med, mkReq({ owner: "local", actor: "caller", uid: "n".repeat(26) }), { target: tgt, id: "subj001", fingerprint: fp("s"), sourceSeq: 1, route: "effects" });
+    c("the obligation key embeds the SUBJECT-derived caller triple", idg.key === `oblig.${tgt.lifecycleUid}.${EP}.local.caller.${"n".repeat(26)}.subj001`, idg.key);
+  }
+
   console.log("G. a proof never crosses endpoints or outlives its TTL");
   const medOther = await openAdmissionMediator(nc, SPACE, "other", { now: () => clock, proofTtlMs: 1000 });
-  const g2 = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "y".repeat(26) }, id: "req0100", fingerprint: fp("p"), sourceSeq: 1, route: "effects" });
+  const g2 = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "y".repeat(26) }), { target: tgt, id: "req0100", fingerprint: fp("p"), sourceSeq: 1, route: "effects" });
   rejectsSync("a proof issued by endpoint A refuses at endpoint B's mediator", () => assertAdmissionProof(medOther, g2.proof, g2.key), "permission-denied");
   clock += 2000; // past the 1000ms TTL
   rejectsSync("an expired proof refuses (the current obligation state is re-checked, never the stale proof)", () => assertAdmissionProof(med, g2.proof, g2.key), "deadline-exceeded");

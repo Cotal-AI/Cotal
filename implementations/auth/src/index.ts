@@ -122,11 +122,11 @@ export {
 // publication, and the govern-head stage/drain/promote selector. The obtain/settle/recover/
 // drain entry points are the public seam; the row/proof internals stay module-private.
 export {
-  openAdmissionMediator, obtainEpfObligation, obtainSelfObligation,
+  openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation,
   acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
   readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
   drainEndpointPolicy, drainTargetForEndpoint,
-  type AdmissionMediator, type AdmissionIdentity, type AdmissionProof, type ObtainedObligation,
+  type AdmissionMediator, type MediatedRequest, type AdmissionOp, type AdmissionProof, type ObtainedObligation,
   type ObligationRow, type ObligationState, type CommitValue, type SelfCommitIntent,
   type PolicySelector, type DrainResult, type DrainQuiescence, type ApplyCommit, type ReconcileAcceptedRoute,
 } from "./admission-mediator.js";

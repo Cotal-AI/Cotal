@@ -54,9 +54,9 @@ import {
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
   epfSubject, epfStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
-  contractDigest,
+  contractDigest, parseEpSubject,
   type RejectionFact, type DecisionFact,
-  mintLifecycleUid, assertLifecycleToken, assertIdToken, assertBoundedOwner, endpointToken, assertPoolToken,
+  mintLifecycleUid, assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken,
 } from "@cotal-ai/core";
 import {
   assertAuthorityStreamShape, registryStores, openLifecycleMappingReader, readLifecycleMappingLeader,
@@ -188,21 +188,53 @@ export interface ObligationRow {
   commit?: SelfCommitIntent;
 }
 
-/** The §13.8 acceptance identity: the target (a lifecycle UID or the `ep` sentinel), the
- *  broker-authenticated caller triple, and the caller-chosen request id. The endpoint token is
- *  NEVER an argument — it is the sealed mediator's own identity. */
-export interface AdmissionIdentity {
-  /** The target lifecycle this admission binds work to; omitted = the `ep` sentinel. */
+/** A BRANDED mediated request (§13.8: "derives the coordinate from the broker-authenticated
+ *  request subject, never a body field"). The endpoint and caller triple come ONLY from parsing
+ *  an authenticated request/journal subject through {@link mediatedRequestFromSubject}; a caller
+ *  can never hand-assemble one, so the obligation coordinate's identity is structurally the
+ *  broker-authenticated identity, not a body-supplied `caller`. */
+export interface MediatedRequest {
+  readonly endpoint: string;
+  readonly caller: { readonly owner: string; readonly actor: string; readonly uid: string };
+}
+const MEDIATED_REQUESTS = new WeakSet<MediatedRequest>();
+
+/** Build the branded mediated request from the RAW authenticated request subject the broker
+ *  delivered (an `ep`-plane request or an `epj`-plane journal submission). Core's
+ *  {@link parseEpSubject} extracts the endpoint + caller triple STRUCTURALLY from the subject;
+ *  a malformed subject, or one that is not a request/journal, refuses. The `id` (the
+ *  caller-chosen request id, §13.4) is NOT in the subject and stays an explicit operation
+ *  argument; everything that identifies WHO the caller is comes from here. */
+export function mediatedRequestFromSubject(subject: string): MediatedRequest {
+  const parsed = parseEpSubject(subject);
+  if (parsed === null || (parsed.plane !== "request" && parsed.plane !== "journal"))
+    throw new EpEnvelopeError("failed-precondition", `the admission request subject ${JSON.stringify(subject)} is not an authenticated request/journal subject; the obligation identity derives from the subject, never a body field (SPEC 13.8)`);
+  const c = parsed.caller;
+  const req: MediatedRequest = Object.freeze({ endpoint: parsed.endpoint, caller: Object.freeze({ owner: c.owner, actor: c.actor, uid: c.uid }) });
+  MEDIATED_REQUESTS.add(req);
+  return req;
+}
+
+function assertMediatedRequest(med: MediatorInternals, request: MediatedRequest): void {
+  if (!MEDIATED_REQUESTS.has(request))
+    throw new EpEnvelopeError("permission-denied", "the admission request was not derived from an authenticated subject via mediatedRequestFromSubject(); a hand-assembled caller identity never authorizes (SPEC 13.8/13.12)");
+  if (request.endpoint !== med.endpoint)
+    throw new EpEnvelopeError("permission-denied", `the admission request is for endpoint "${request.endpoint}", not this mediator's "${med.endpoint}"; a mediator admits only its own endpoint's requests (SPEC 13.8/13.9)`);
+}
+
+/** The operation coordinates NOT carried by the authenticated identity: the target lifecycle
+ *  this admission binds to (omitted = the `ep` sentinel), whether it pins the enforced policy
+ *  (§13.6), and the caller-chosen request id (§13.4, a body field, legitimately caller-supplied
+ *  because it identifies the REQUEST, not WHO the caller is). At least one of target/policy. */
+export interface AdmissionOp {
   target?: { owner: string; actor: string; lifecycleUid: string };
-  /** Pin the endpoint's enforced admission policy (§13.6). At least one of target/policy. */
   policy?: boolean;
-  caller: { owner: string; actor: string; uid: string };
   id: string;
 }
 
-function obligationKey(med: MediatorInternals, ident: AdmissionIdentity): string {
-  const target = ident.target === undefined ? OBLIGATION_EP_SENTINEL : assertLifecycleToken(ident.target.lifecycleUid, "target lifecycleUid");
-  return recordAtomicKey(OBLIGATION, [target, med.endpoint, ident.caller.owner, ident.caller.actor, ident.caller.uid, ident.id]);
+function obligationKey(med: MediatorInternals, request: MediatedRequest, op: AdmissionOp): string {
+  const target = op.target === undefined ? OBLIGATION_EP_SENTINEL : assertLifecycleToken(op.target.lifecycleUid, "target lifecycleUid");
+  return recordAtomicKey(OBLIGATION, [target, med.endpoint, request.caller.owner, request.caller.actor, request.caller.uid, op.id]);
 }
 
 const OBLIGATION_STATES = new Set<string>(["provisional", "accepted", "rejected", "terminal"]);
@@ -499,22 +531,22 @@ async function readTargetCurrency(
   return { mappingRevision: head.revision };
 }
 
-async function readPins(med: MediatorInternals, ident: AdmissionIdentity): Promise<CurrencyPins> {
-  if (ident.target === undefined && ident.policy !== true)
+async function readPins(med: MediatorInternals, op: AdmissionOp): Promise<CurrencyPins> {
+  if (op.target === undefined && op.policy !== true)
     throw new EpEnvelopeError("failed-precondition", "an admission pins at least one currency coordinate: a target lifecycle or the enforced policy (SPEC 13.8)");
   const pins: CurrencyPins = {};
-  if (ident.target !== undefined) pins.mappingRevision = (await readTargetCurrency(med, ident.target)).mappingRevision;
-  if (ident.policy === true) pins.policyRevision = (await readPolicyCurrency(med)).revision;
+  if (op.target !== undefined) pins.mappingRevision = (await readTargetCurrency(med, op.target)).mappingRevision;
+  if (op.policy === true) pins.policyRevision = (await readPolicyCurrency(med)).revision;
   return pins;
 }
 
 /** The post-create RECHECK (§13.8 step 2): the SAME coordinates, and the row's own pins must
  *  still be current. Movement between the create and here leaves the row as inert debt. */
-async function recheckPins(med: MediatorInternals, ident: AdmissionIdentity, row: ObligationRow): Promise<void> {
+async function recheckPins(med: MediatorInternals, op: AdmissionOp, row: ObligationRow): Promise<void> {
   if (row.mappingRevision !== undefined) {
-    if (ident.target === undefined)
+    if (op.target === undefined)
       throw new EpEnvelopeError("failed-precondition", "the winning obligation is target-bound but this join presents no target; the full pinned identity must match (SPEC 13.8)");
-    const cur = await readTargetCurrency(med, ident.target);
+    const cur = await readTargetCurrency(med, op.target);
     if (cur.mappingRevision !== row.mappingRevision)
       throw new EpEnvelopeError("failed-precondition", `the target head moved (revision ${cur.mappingRevision} vs pinned ${row.mappingRevision}); the proof can never issue and the obligation is inert debt for the drain (SPEC 13.8)`);
   }
@@ -595,17 +627,16 @@ export interface ObtainedObligation {
 
 async function obtainObligation(
   med: MediatorInternals,
-  ident: AdmissionIdentity,
+  request: MediatedRequest,
+  op: AdmissionOp,
   build: (pins: CurrencyPins, opId: string) => ObligationRow,
   join: (winner: ObligationRow) => void,
 ): Promise<ObtainedObligation> {
-  assertBoundedOwner(ident.caller.owner, "caller owner");
-  assertBoundedOwner(ident.caller.actor, "caller actor");
-  assertLifecycleToken(ident.caller.uid, "caller uid");
-  assertIdToken(ident.id, "id");
-  const key = obligationKey(med, ident);
+  assertMediatedRequest(med, request); // the caller identity is broker-authenticated, not a body field
+  assertIdToken(op.id, "id");
+  const key = obligationKey(med, request, op);
   // Step 1: the create-fence currency reads, IMMEDIATELY before the create.
-  const pins = await readPins(med, ident);
+  const pins = await readPins(med, op);
   const opId = mintLifecycleUid();
   const fresh = build(pins, opId);
   let row: ObligationRow;
@@ -632,7 +663,7 @@ async function obtainObligation(
   // Step 2: proof issuance is a post-create currency recheck. Movement settles our OWN
   // provisional through its decision coordinate and refuses.
   try {
-    await recheckPins(med, ident, row);
+    await recheckPins(med, op, row);
   } catch (e) {
     if (row.state === "provisional") {
       try {
@@ -650,7 +681,8 @@ async function obtainObligation(
  *  fixed HERE, by the trusted operation kind. */
 export async function obtainEpfObligation(
   med: AdmissionMediator,
-  args: AdmissionIdentity & { fingerprint: string; sourceSeq: number; route: string },
+  request: MediatedRequest,
+  args: AdmissionOp & { fingerprint: string; sourceSeq: number; route: string },
 ): Promise<ObtainedObligation> {
   const i = internals(med);
   // The fingerprint and sourceSeq must satisfy CORE's own fact validators up front (§13.4): the
@@ -662,6 +694,7 @@ export async function obtainEpfObligation(
   if (args.route.startsWith("pool.")) assertPoolToken(args.route.slice("pool.".length));
   return obtainObligation(
     i,
+    request,
     args,
     (pins, opId) => ({ state: "provisional", decision: "epf", opId, ...pins, fingerprint: args.fingerprint, sourceSeq: args.sourceSeq, route: args.route }),
     (winner) => {
@@ -677,7 +710,8 @@ export async function obtainEpfObligation(
  *  restart-status CAS, §13.6/§13.8). The COMPLETE commit intent is pinned at obtain. */
 export async function obtainSelfObligation(
   med: AdmissionMediator,
-  args: AdmissionIdentity & { commit: SelfCommitIntent },
+  request: MediatedRequest,
+  args: AdmissionOp & { commit: SelfCommitIntent },
 ): Promise<ObtainedObligation> {
   const i = internals(med);
   const cm = args.commit;
@@ -686,6 +720,7 @@ export async function obtainSelfObligation(
   parseCommitValue(cm.commitValue, "<obtain>");
   return obtainObligation(
     i,
+    request,
     args,
     (pins, opId) => ({ state: "provisional", decision: "self", opId, ...pins, commit: { commitKey: cm.commitKey, commitBaseRevision: cm.commitBaseRevision, commitValue: cm.commitValue, commitDigest: cm.commitDigest } }),
     (winner) => {
