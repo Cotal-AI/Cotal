@@ -71,7 +71,9 @@ check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAUL
 // ── 1. first-run auto-seed + state files ─────────────────────────────────────────────────────────
 {
   const cfg = track(freshCfg());
-  const names = listNames(cfg);
+  const first = cotal(cfg, ["ext", "list"]); // the auto-seed boot; surface its output if it fails
+  const names = ["claude", "opencode", "hermes", "pi"].filter((n) => first.stdout.includes(`connector:${n}`));
+  if (names.length !== 4) console.log(`[diag] auto-seed status=${first.status}\n--stdout--\n${first.stdout}\n--stderr--\n${first.stderr}`);
   check("auto-seed: all four built-ins seeded on first command", names.length === 4, names);
   const sd = seedDir(cfg);
   check("auto-seed: authority/witness/stamp written", ["authority.json", "witness.json", "stamp.json"].every((f) => existsSync(join(sd, f))));
