@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, provenance } from "@cotal-ai/workspace";
+import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
+import { materializeExtension } from "../ext-loader.js";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
@@ -236,15 +237,23 @@ async function pickConnectors(
   return new Set(picked as string[]);
 }
 
-/** The Claude Code plugin install, as a step (spinner + failure handling + handoff). */
-function claudePluginStep(): Step {
+/** The Claude Code plugin install, as a step (spinner + failure handling + handoff). Exported for the
+ *  setup-failloud smoke (removed-connector skip vs broken-connector throw). */
+export function claudePluginStep(): Step {
   return {
     name: "claude-plugin",
     title: "Install the Claude Code plugin",
     explain: "Lets a Claude Code session join the web and wake on peer messages.",
     context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
     async run() {
-      installClaudePlugin();
+      // The claude connector is a seeded/`ext add`ed plugin now, not a static import. Only a GENUINE
+      // removal (absent from the manifest) skips the plugin; a present-but-broken connector (version
+      // skew, incompatible core, missing entry, import throw) must fail loud through runSteps with the
+      // real repair diagnostic, never be misreported as a deliberate removal.
+      if (!manifestExtensionNames("connector").includes("claude"))
+        return "claude connector not installed - skipping the plugin (re-add it: cotal ext add @cotal-ai/connector-claude-code)";
+      const claude = await materializeExtension<Connector>({ kind: "connector", name: "claude" });
+      installClaudePlugin(claude);
       return "cotal@cotal-mesh (local scope)";
     },
   };
@@ -330,9 +339,9 @@ async function readyCard(cwd: string): Promise<void> {
 /** Materialize a stable plugin marketplace under ~/.cotal/claude-plugin (surviving
  *  npx cache eviction) and install the plugin from it. The marketplace name must stay
  *  `cotal-mesh` (the connector's channel ref `plugin:cotal@cotal-mesh` depends on it). */
-function installClaudePlugin(): void {
-  const { pluginRoot } = registry.resolve<Connector>("connector", "claude");
-  if (!pluginRoot) throw new Error('the registered "claude" connector ships no plugin assets');
+function installClaudePlugin(claudeConnector: Connector): void {
+  const { pluginRoot } = claudeConnector;
+  if (!pluginRoot) throw new Error('the "claude" connector ships no plugin assets');
   for (const f of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"]) {
     if (!existsSync(join(pluginRoot, f))) {
       throw new Error(
@@ -404,13 +413,19 @@ function writeDemoAgent(path: string, body: string): void {
 
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
  *  then the user's to shape. Unlike the demo team it's never refreshed (seed-if-absent), so any
- *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy. */
+ *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy.
+ *
+ *  Read scope is split intentionally: the ACTIVE set (`subscribe`) is just `general`, so a fresh
+ *  agent isn't firehosed every channel on the mesh at boot, while the read ACL (`allowSubscribe:
+ *  [">"]`) still PERMITS it to read anything — it just has to `cotal_join` a channel to start
+ *  receiving it. (`subscribe: [">"]` would auto-subscribe to every channel, the old behavior.) */
 const DEFAULT_AGENT = `---
 name: default_agent
 role: default
 description: An agent on the mesh
 tags: []
-subscribe: [">"]
+subscribe: [general]
+allowSubscribe: [">"]
 allowPublish: [">"]
 capabilities: [spawn]
 ---

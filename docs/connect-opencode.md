@@ -73,6 +73,9 @@ in-process plugin does everything.
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
   from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting).
+- **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
+  a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
+  owned by the connector. Quiet-channel `@mention`s still drive a turn.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector

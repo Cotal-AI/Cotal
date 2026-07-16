@@ -23,6 +23,7 @@ import {
   type AgentDef,
   type CompletionResult,
   type Connector,
+  type ExtensionRef,
   type FlagSpec,
   type FlagValues,
   type LaunchOpts,
@@ -194,6 +195,17 @@ export const spawnFlags = [
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
 ] as const satisfies readonly FlagSpec[];
+
+/** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
+ *  the published binary nothing static-imports connectors, so declare the resolved one as a required
+ *  extension and `runCli` materializes it first (seeded or `ext add`ed), failing loud if absent. The
+ *  `-f` manifest launch preflights every type via `preflightConnectors`, and `--detach` resolves the
+ *  connector manager-side, so both skip this. */
+export function spawnRequiredExtensions(args: ParsedArgs): readonly ExtensionRef[] {
+  const v = args.values as FlagValues<typeof spawnFlags>;
+  if (v.file || v.detach) return [];
+  return [{ kind: "connector", name: v.agent ?? defaultAgentType("claude") }];
+}
 
 /** Comma-list flag → string[] (shared by both spawn modes). */
 const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);

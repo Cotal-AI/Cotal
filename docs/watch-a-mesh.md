@@ -60,13 +60,17 @@ that step was skipped, run `cotal ext add @cotal-ai/web` and the `web` command a
 
 ```bash
 cotal web --space main                       # opens http://cotal.localhost:7799/
+cotal web --space main --detach              # background; stop with cotal down web
 cotal web --space main --port 8080 --no-open
 cotal web --space main --creds ./admin.creds # use a cred you minted yourself
 ```
 
 Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from the registry),
-`--port` (default `7799`), `--no-open` (skip auto-launching the browser), `--creds` (override the
-self-minted cred). It binds loopback only. The branded URL `http://cotal.localhost:7799/` resolves
+`--port` (default `7799`), `--detach` (run in the background), `--no-open` (skip auto-launching the
+browser), `--creds` (override the self-minted cred). It binds loopback only. Detached mode waits for
+the real HTTP server before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
+`cotal down web` or bare `cotal down`. It requires a recorded mesh root; after `cotal up` records the
+mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
 to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
 so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address.
 

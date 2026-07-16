@@ -20,15 +20,18 @@ npm run build                    # syncs docs, then builds to dist/
 
 ## Agent-native surface
 
-Every feature below is generated at build time or served at the edge — no manual
-upkeep.
+Every feature below is generated at build time, served at the edge, or drift-guarded
+by `scripts/check-dist.mjs`.
 
 | Endpoint | Source |
 | --- | --- |
 | `/llms.txt`, `/llms-full.txt`, `/llms-small.txt` | [`starlight-llms-txt`](https://github.com/delucis/starlight-llms-txt) plugin |
 | `/<page>.md` (raw Markdown per page) | `src/pages/[...slug].md.ts` |
 | `<link rel="alternate" type="text/markdown">` in each page head | `src/components/Head.astro` |
-| `Accept: text/markdown` on a canonical URL → Markdown + `x-markdown-tokens` | `functions/_middleware.ts` (Cloudflare Pages) |
+| `Accept: text/markdown` on a canonical URL → Markdown + `x-markdown-tokens` (on `/` it returns the `/llms.txt` index) | `functions/_middleware.ts` (Cloudflare Pages) |
+| `Link` headers on the homepage (`service-doc`, `describedby`; RFC 8288) | `functions/_middleware.ts` |
+| `/robots.txt` (wildcard crawl rules, Content Signals, sitemap pointer) | `public/robots.txt` |
+| `/.well-known/agent-skills/` (Agent Skills + discovery index with sha256 digests) | `public/.well-known/agent-skills/` + `scripts/sync-docs.mjs` |
 | `/docs-for-agents` (human/agent-readable guide to the above) | `src/content/docs/docs-for-agents.mdx` |
 
 Verify locally against the real Pages runtime:

@@ -17,8 +17,9 @@ import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core"
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "attnsmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

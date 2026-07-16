@@ -27,8 +27,9 @@ import {
   ROTATION_RENEWED_TTL_SEC,
   STANDING_RENEWABLE_TTL_SEC,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -115,13 +116,18 @@ try {
   const expired = newIdentity();
   const expiredCreds = await mintCreds(auth, expired, "probe", { expiresAt: now - 1 });
   check("expired copied cred is broker-denied on connect", await tryConnect(expiredCreds, expired.id) === "rejected");
-  // D5 slice 6: the probe CLASSIFIES credential death — an expired cred on a LIVE broker is
-  // "stale-auth" (repair: doctor auth), never conflated with "wrong creds" or "mesh down".
-  // Give the probe a generous connect budget: the default 1s doctor timeout can be beaten by a slow
-  // CI/Windows TCP+auth round-trip, misclassifying a provably-expired cred as "unreachable". The
-  // classification (expired -> stale-auth) is what's under test here, not connect latency.
-  const staleProbe = await probeConnect(SERVERS, { creds: expiredCreds, timeoutMs: 8000 });
+  // D5 slice 6: the probe CLASSIFIES credential death — a provably-expired cred is "stale-auth"
+  // (repair: doctor auth), never conflated with "wrong creds" or "mesh down". The classification
+  // reads the cred's own JWT exp LOCALLY, so it does not depend on the connect outcome — it can't be
+  // flaked by a slow CI/Windows handshake racing the broker's rejection against the socket close.
+  const staleProbe = await probeConnect(SERVERS, { creds: expiredCreds });
   check("probeConnect classifies an expired cred as stale-auth (the structured diagnostic)", !staleProbe.ok && staleProbe.reason === "stale-auth", staleProbe);
+  // Reachability-independent BY CONSTRUCTION: the same expired cred against a broker that never
+  // answers is still stale-auth (the dead cred is the actionable truth). This is the exact scenario
+  // that used to flake — a bare transport failure instead of a clean AuthorizationError — and it now
+  // resolves deterministically on every OS regardless of connect latency.
+  const deadProbe = await probeConnect("nats://127.0.0.1:1", { creds: expiredCreds, timeoutMs: 500 });
+  check("probeConnect classifies an expired cred as stale-auth even when unreachable (the flake, killed)", !deadProbe.ok && deadProbe.reason === "stale-auth", deadProbe);
 
   const fresh = newIdentity();
   const freshCreds = await mintCreds(auth, fresh, "probe", { expiresInSeconds: 60 });

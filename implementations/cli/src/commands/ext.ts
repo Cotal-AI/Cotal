@@ -1,16 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
   cacheCommand,
   cacheExtension,
   cacheLocalProcess,
+  bindExtensionPeers,
+  cmdSpawnSpec,
   extensionPackageDir,
   extensionLocalProcesses,
-  extensionMutationLockPath,
-  extensionMutationLockState,
   extensionProvides,
   extensionsDir,
   extensionsManifestPath,
@@ -19,6 +19,7 @@ import {
   installedExtensionVersion,
   loadExtensionsManifest,
   provenance,
+  RESERVED_CONNECTOR_NAMES,
   saveExtensionsManifest,
   type InstalledExtension,
   type LocalProcess,
@@ -27,6 +28,19 @@ import {
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
+import { claimExtensionMutation } from "../lib/ext-mutation.js";
+import { runSeed } from "../seed/reconcile.js";
+import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
+import { seedStoreDir } from "../seed/paths.js";
+
+/** Classify a `cotal ext add` spec as a local path (vs a registry name). A path is a relative `.`/`./`/
+ *  `.\` spec or an absolute one on the NATIVE platform — POSIX `/…`, Windows drive `C:\…` / `C:/…`, or
+ *  UNC `\\…`. A POSIX-only test misclassified a Windows absolute path (it starts with a drive letter,
+ *  not `/`) as a registry name, which broke first-run seeding on Windows (the seed-store spec is always
+ *  absolute). `absolute` is injectable so the classification is unit-testable for both platforms. */
+export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAbsolute): boolean {
+  return spec.startsWith(".") || absolute(spec);
+}
 
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
@@ -49,32 +63,24 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === "add" && rest[0]) return add(rest[0]);
   if (sub === "remove" && rest[0]) return remove(rest[0]);
   if (sub === "list" && !rest.length) return list();
-  console.error(c.red("usage: cotal ext <add <npm-package> | remove <name> | list>"));
+  if (sub === "seed" && !rest.length) {
+    const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
+    return runSeed({ repair, reset, force });
+  }
+  console.error(c.red("usage: cotal ext <add <npm-package> | remove <name> | list | seed [--repair|--reset|--force]>"));
   process.exit(1);
 }
 
-/** Resolve the running binary's @cotal-ai/core package dir — the ONE core instance every
- *  extension must share. Resolved from this module's own import graph (so dev workspace links
- *  and installed node_modules both work) by walking up from the package's resolved ENTRY to the
- *  directory holding its package.json — the `exports` maps don't expose "./package.json",
- *  so the subpath can't be resolved directly. NOTE: resolution runs from @cotal-ai/cli's graph,
- *  so only shared packages the CLI itself carries (core, workspace) are linkable today; an
- *  extension peering any other @cotal-ai/* package fails its add loudly. */
-function ourPackageDir(name: string): string {
-  let dir = dirname(fileURLToPath(import.meta.resolve(name)));
-  for (;;) {
-    const pj = join(dir, "package.json");
-    if (existsSync(pj) && (JSON.parse(readFileSync(pj, "utf8")) as { name?: string }).name === name) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) throw new Error(`couldn't locate ${name}'s package root from its resolved entry`);
-    dir = parent;
-  }
-}
-
 function npm(args: string[], cwd: string): { status: number | null; output: string } {
-  const bin = process.platform === "win32" ? "npm.cmd" : "npm";
-  const r = spawnSync(bin, args, { cwd, encoding: "utf8" });
-  return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+  // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
+  // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
+  // line (shared with the manager's PtyRuntime launch).
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+  const r = spawnSync(file, spawnArgs, { cwd, encoding: "utf8", windowsVerbatimArguments });
+  // Fold r.error (a spawn failure — ENOENT, EINVAL, …) into the output: it is the ONLY signal when a
+  // launch fails before the child runs (status null, empty stdio), so it can't produce a blank error.
+  const output = `${r.error ? `spawn error: ${r.error.message}\n` : ""}${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+  return { status: r.status, output };
 }
 
 /** Import an installed extension package (its declared entry) so it self-registers. */
@@ -98,81 +104,38 @@ async function importExtension(pkg: string): Promise<void> {
 /** Rebuild each installed package's private links after npm mutates the shared prefix. Keeping the
  * links inside the owning package prevents a later sibling add/remove from pruning its peers. */
 function linkExtensionPeers(packages: string[], operationPkg: string): void {
-  for (const owner of packages) {
-    let meta: { peerDependencies?: Record<string, string> };
-    try {
-      meta = JSON.parse(readFileSync(join(extensionPackageDir(owner), "package.json"), "utf8"));
-    } catch (e) {
-      throw new Error(`${operationPkg} cannot preserve installed extension ${owner}'s shared peers: ${(e as Error).message}`);
-    }
-    for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
-      let src: string;
-      try {
-        src = ourPackageDir(peer);
-      } catch {
-        throw new Error(`${operationPkg}: ${owner} peer-depends on ${peer}, which this cotal binary does not carry - the peer can't be linked`);
-      }
-      const dest = join(extensionPackageDir(owner), "node_modules", ...peer.split("/"));
-      try {
-        rmSync(dest, { recursive: true, force: true });
-        mkdirSync(dirname(dest), { recursive: true });
-        symlinkSync(src, dest, "junction");
-      } catch (e) {
-        throw new Error(`${operationPkg} could not link ${peer} for ${owner}: ${(e as Error).message}`);
-      }
-      provenance.wrote(`${peer} link (${owner} → this CLI's copy)`, dest);
-    }
-  }
-}
-
-/** Serialize prefix mutations. A dead owner's lock is reclaimed; a live owner fails loud. */
-function claimExtensionMutation(): () => void {
-  const lock = extensionMutationLockPath();
-  mkdirSync(dirname(lock), { recursive: true });
-  for (;;) {
-    let fd: number;
-    try {
-      fd = openSync(lock, "wx", 0o600);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const status = extensionMutationLockState();
-      if (status.state === "absent") continue; // raced with the owner's cleanup
-      if (status.state === "active")
-        throw new Error(`another \`cotal ext\` mutation is in progress (pid ${status.owner})`);
-      rmSync(lock, { force: true });
-      continue;
-    }
-    try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      try {
-        if (readFileSync(lock, "utf8").trim() === String(process.pid)) rmSync(lock, { force: true });
-      } catch { /* already reclaimed/removed */ }
-    };
-  }
+  for (const link of bindExtensionPeers(packages, operationPkg, { force: true }))
+    provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
 async function add(spec: string): Promise<void> {
   const dir = extensionsDir();
-  mkdirSync(dir, { recursive: true });
-  if (!existsSync(join(dir, "package.json"))) {
-    writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
-    provenance.wrote("extensions prefix", join(dir, "package.json"));
-  }
-
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
-  const isPath = /^(\.|\/)/.test(spec);
+  const isPath = isPathSpec(spec);
   const resolved = isPath ? resolve(spec) : spec;
   // The installed NAME is known BEFORE npm runs — never recovered afterwards by diffing the prefix
   // dependencies (a heuristic that binds to the wrong key if the prefix ever drifted, and that made
   // re-adding an installed extension impossible).
   const pkg = packageNameFromSpec(resolved, isPath);
-  const releaseMutation = claimExtensionMutation();
+  // A seed child runs UNDER the reconcile's mutation lock (its parent already holds it for the whole
+  // run); claiming again would deadlock against the parent's live PID. It skips the claim, records a
+  // liveness marker (so a post-crash repair won't race it), and stamps its entry `source:"seeded"`.
+  // Authenticated: only an `ext add` whose marker matches the LIVE reconcile lock AND whose spec is a
+  // staged official-connector path qualifies — a forged `COTAL_EXT_SEEDING` can't skip the lock.
+  const seeding = isAuthenticSeedChild() && isPath && resolved.startsWith(seedStoreDir() + sep);
+  const releaseMutation = seeding ? () => {} : claimExtensionMutation();
+  // Upgrade the parent's pending marker to a live one carrying this child's PID, as the first act — so
+  // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
+  if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
+    mkdirSync(dir, { recursive: true });
+    if (!existsSync(join(dir, "package.json"))) {
+      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
+      provenance.wrote("extensions prefix", join(dir, "package.json"));
+    }
     await addTransaction();
   } finally {
+    if (seeding) clearChildMarker();
     releaseMutation();
   }
 
@@ -211,6 +174,7 @@ async function add(spec: string): Promise<void> {
   };
   const interrupted = (): void => {
     restore();
+    if (seeding) clearChildMarker();
     releaseMutation();
     process.exit(130);
   };
@@ -291,6 +255,11 @@ async function add(spec: string): Promise<void> {
   if (!contributed.length) {
     fail(pkg, `imported cleanly but registered no extensions in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
   }
+  // `cotal` is reserved (the binary's own name — there is no runtime alias anymore); a connector must
+  // never claim it, or `--agent cotal` would be ambiguous with the CLI.
+  const reserved = contributed.find((ext) => ext.kind === "connector" && RESERVED_CONNECTOR_NAMES.includes(ext.name));
+  if (reserved) fail(pkg, `contributes connector "${reserved.name}", which is a reserved name - a connector cannot be named ${RESERVED_CONNECTOR_NAMES.join(", ")}`);
+
   // Builtin collisions can't happen here (registry.register throws on a duplicate, surfacing as
   // failed-to-import above, naming the extension). OTHER installed extensions are invisible to the
   // registry during this add (they aren't imported), so their CACHED names are checked explicitly —
@@ -310,6 +279,7 @@ async function add(spec: string): Promise<void> {
     pkg,
     version,
     spec: resolved,
+    ...(seeding ? { source: "seeded" as const } : {}),
     provides: contributed.map(cacheExtension),
     commands: commands.map(cacheCommand),
     localProcesses: localProcesses.map(cacheLocalProcess),

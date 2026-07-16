@@ -88,7 +88,8 @@ The published binary also loads **operator-installed extensions**: `cotal ext ad
 <npm-package>` installs into a cotal-owned prefix, imports once so the package
 self-registers, then caches every contributed `kind:name`. Command metadata is cached for
 `--help`/completion; running a command or requesting a provider imports its owner lazily and
-uses the live object. Version skew or a stranded link fails loudly with instructions to re-add.
+uses the live object. Before that first import, the loader rebinds shared peers to the current
+host under the extension-prefix lock; version skew or an unbindable peer fails loudly.
 The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca runtimes use this mechanism.
 Runtime resolution stays registry-driven and open-ended: a name with no registered/installed
 provider fails loud (never a fallback), and a third-party runtime installs under its own package

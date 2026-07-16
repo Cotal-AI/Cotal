@@ -119,6 +119,9 @@ endpoint methods; those go into `core`, generalized.
 
 ## Conventions
 
+- **Never fix an issue you could not reproduce.** Reproduce the failure (live, not just in
+  reasoning or a unit simulation) before writing a fix; the repro is also the only proof the
+  fix works. If you can't reproduce it, report that and stop, don't ship a guess.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
   not explicitly requested or clearly needed.

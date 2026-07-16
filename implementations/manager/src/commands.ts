@@ -61,11 +61,15 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // `.cotal/manager.log` for a detached `cotal up` daemon).
   let mgr: Manager;
   try {
+    // The published-binary supervisor resolves connectors from the operator manifest (seeded +
+    // `ext add`ed), NOT from static imports — `bin/cotal.ts` no longer registers any. A direct
+    // library `Manager` keeps the registry-only default (opt-in preserved).
     mgr = new Manager({
       space,
       servers: server,
       runtime,
       consolePort,
+      installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
     });

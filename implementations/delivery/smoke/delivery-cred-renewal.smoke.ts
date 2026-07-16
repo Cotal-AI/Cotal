@@ -38,8 +38,9 @@ import {
   setupSpaceStreams,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
@@ -103,6 +104,9 @@ try {
   daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
+    // This harness runs the delivery daemon DIRECTLY (not via `up`), so its first-real-command seed
+    // would run four npm installs and delay lease-ready; the daemon needs no connectors, so opt out.
+    env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   daemon.stdout!.on("data", (d: Buffer) => { output += d.toString(); });
   daemon.stderr!.on("data", (d: Buffer) => { output += d.toString(); });

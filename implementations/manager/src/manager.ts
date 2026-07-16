@@ -34,7 +34,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -119,6 +119,10 @@ export interface ManagerOptions {
   resumeAttemptId?: string;
   /** Fsynced coordinator evidence recovered after commit but before finalize. */
   resumeDurableCommitToken?: string;
+  /** Resolve connectors from the installed `cotal ext` manifest (lazy import + live-remove honored),
+   *  as the published binary does. A library composition leaves this off and resolves only what its
+   *  composition root imported — a direct `new Manager()` never implicitly reads the machine manifest. */
+  installedExtensions?: boolean;
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
@@ -333,6 +337,8 @@ export class Manager {
   private readonly servers: string | undefined;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  /** See {@link ManagerOptions.installedExtensions}. */
+  private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
@@ -388,6 +394,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
@@ -1646,8 +1653,28 @@ export class Manager {
     );
   }
 
+  /** Resolve a connector by agent type. Library composition (installedExtensions off) → a registry
+   *  hit, exactly as before (the composition root imported what it wants). The published binary gates
+   *  on MANIFEST membership FIRST — so a live `cotal ext remove` is honored even though the registry
+   *  still holds a connector imported earlier this session — then returns the registry hit or lazily
+   *  imports the providing package (transactional + single-flight, via the workspace primitive).
+   *  Fail-loud with an install hint; no fallback. */
+  private async resolveConnector(name: string): Promise<Connector> {
+    if (!this.installedExtensions) return registry.resolve<Connector>("connector", name);
+    if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
+    const already = registry.all<Connector>("connector").find((c) => c.name === name);
+    return already ?? materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name) });
+  }
+
+  /** Connector names the manager can spawn WITHOUT importing: the manifest on the published binary,
+   *  else whatever a composition root registered. Drives the `models` catalog enumeration. */
+  private connectorNames(): string[] {
+    return this.installedExtensions ? manifestExtensionNames("connector") : registry.all<Connector>("connector").map((c) => c.name);
+  }
+
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
-   *  local model-list API reports `supported:false` rather than blocking the manager. */
+   *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
+   *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
   private async opModels(args: Record<string, unknown>): Promise<ControlReply> {
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
@@ -1672,7 +1699,7 @@ export class Manager {
     if (requested) {
       let connector: Connector;
       try {
-        connector = registry.resolve<Connector>("connector", requested);
+        connector = await this.resolveConnector(requested);
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -1680,7 +1707,21 @@ export class Manager {
       return result.error ? { ok: false, error: result.error } : { ok: true, data: result };
     }
 
-    return { ok: true, data: await Promise.all(registry.all<Connector>("connector").map(one)) };
+    // Enumerate from the manifest (published binary) so a connector that fails to import still gets
+    // a row — `registry.all` can't list one that never registered. Each resolves lazily; an import
+    // failure becomes an `error:` catalog row and never blocks the healthy ones.
+    const catalogs = await Promise.all(
+      this.connectorNames().map(async (name): Promise<ConnectorModelCatalog> => {
+        let connector: Connector;
+        try {
+          connector = await this.resolveConnector(name);
+        } catch (e) {
+          return { agent: name, supported: false, models: [], error: (e as Error).message };
+        }
+        return one(connector);
+      }),
+    );
+    return { ok: true, data: catalogs };
   }
 
   /** The owner-domain bound on `ps`/`status` metadata: on a USER mesh, a privileged-tier caller
@@ -1783,7 +1824,19 @@ export class Manager {
       const refErr = this.nameError(ref);
       if (refErr) return { ok: false, error: refErr };
     }
-    const agent = opts.agent ?? defaultAgentType("cotal");
+    const agent = opts.agent ?? defaultAgentType(DEFAULT_CONNECTOR);
+
+    // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
+    // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span
+    // below so that span stays fully SYNCHRONOUS and atomic. On the manifest binary this also honors a
+    // live `cotal ext remove`: a removed connector is rejected here even if an earlier spawn already
+    // imported it. A broken/missing connector fails loud here with a clear name + install hint.
+    let connector: Connector;
+    try {
+      connector = await this.resolveConnector(agent);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
 
     // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
     // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
@@ -1807,15 +1860,9 @@ export class Manager {
         return { ok: false, error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
     }
 
-    // Connector + harness preflight before reserving a slot or minting — a missing connector or a
-    // missing `claude`/`opencode` binary fails here with a clear name, not obscurely at process
-    // spawn. No fallback. All synchronous, so the reserve gate stays atomic.
-    let connector: Connector;
-    try {
-      connector = registry.resolve<Connector>("connector", agent);
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
+    // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
+    // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
+    // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
     const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
     if (missing.length)
       return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };

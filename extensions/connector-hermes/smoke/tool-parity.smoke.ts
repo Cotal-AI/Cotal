@@ -5,7 +5,7 @@
  * that the artifact the plugin actually consumes (a JSON file) is well-formed.
  *   - same tool names, same order, as cotalToolSpecs;
  *   - every descriptor carries a JSON-Schema *object* for its parameters;
- *   - cotal_inbox is read-only (no params), so a tool call can't race per-turn delivery;
+ *   - cotal_inbox has no params and pulls only quiet traffic, so it can't race automatic delivery;
  *   - the whole list round-trips through JSON (it's written to COTAL_TOOLS_FILE).
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
@@ -27,7 +27,7 @@ assert.deepEqual(descNames, specNames, "hermes tool descriptors drifted from cot
 const inbox = descriptors.find((d) => d.name === "cotal_inbox");
 assert.ok(inbox, "cotal_inbox missing from the descriptors");
 const inboxProps = (inbox!.parameters as { properties?: Record<string, unknown> }).properties ?? {};
-assert.equal(Object.keys(inboxProps).length, 0, "cotal_inbox must be read-only (no params)");
+assert.equal(Object.keys(inboxProps).length, 0, "cotal_inbox must expose no params on Hermes");
 
 for (const d of descriptors) {
   assert.equal(

@@ -4,8 +4,8 @@ description: How AI agents and tools can consume Cotal's documentation as struct
 ---
 
 Cotal is a protocol for AI agents, so its documentation is built to be read by them:
-every docs page is available as clean Markdown (the landing page is the one exception),
-with machine-readable indexes, so nothing has to be scraped out of HTML.
+every docs page is available as clean Markdown, with machine-readable indexes, so
+nothing has to be scraped out of HTML.
 
 ## Task dispatch
 
@@ -39,8 +39,13 @@ treat [roadmap](/roadmap/) content as shipped behavior.
 | [`/llms.txt`](/llms.txt) | Curated index of the docs, with links to the sets below. |
 | [`/llms-full.txt`](/llms-full.txt) | Every page concatenated into one file, for bulk indexing or vectorization. |
 | [`/llms-small.txt`](/llms-small.txt) | A compact subset for small context windows. |
+| [`/.well-known/agent-skills/index.json`](/.well-known/agent-skills/index.json) | Agent Skills discovery index: installable skills with sha256 digests. Ships `cotal-setup`, the setup runbook as a skill. |
+| [`/robots.txt`](/robots.txt) | Crawl policy: everything here may be crawled, indexed, and used as model input (Content Signals all `yes`). |
 
-These follow the [llms.txt convention](https://llmstxt.org/).
+The text sets follow the [llms.txt convention](https://llmstxt.org/); the skills index
+follows the [Agent Skills Discovery RFC](https://github.com/cloudflare/agent-skills-discovery-rfc).
+The homepage also carries `Link` response headers (RFC 8288) pointing at `/llms.txt`
+and the message schema.
 
 ## Any page as Markdown
 
@@ -60,6 +65,8 @@ curl -H "Accept: text/markdown" https://docs.cotal.ai/spec/
 
 Both return the same Markdown. The Markdown response includes an
 `x-markdown-tokens` header so an agent can budget context before ingesting.
+On the landing page (`/`), which has no Markdown twin of its own,
+`Accept: text/markdown` returns the [`/llms.txt`](/llms.txt) index.
 
 Every HTML page also advertises its Markdown twin in `<head>`:
 

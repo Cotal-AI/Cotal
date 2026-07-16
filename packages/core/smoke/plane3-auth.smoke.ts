@@ -29,16 +29,20 @@ import {
   newIdentity,
   setupSpaceStreams,
   DEV_OWNER,
+  chatSubject,
   inboxStream,
+  parsePrincipalKey,
   dinboxSubject,
   dlvSubject,
   dlvDurable,
   dlvStream,
   type Delivery,
+  type CotalMessage,
   type MessageMeta,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promise<boolean> => {
@@ -145,7 +149,9 @@ try {
     channels: ["general"], heartbeatMs: 500, ttlMs: 2000,
   });
   const got: { ch?: string; text: string; kind: string; durable: boolean }[] = [];
+  const agentErrors: string[] = [];
   a.on("error", (e: Error) => console.error("  ! alice", e.message));
+  a.on("error", (e: Error) => agentErrors.push(e.message));
   a.on("message", (m, d: Delivery, meta: MessageMeta) => {
     got.push({
       ch: m.channel, kind: meta.kind, durable: d.durable,
@@ -170,6 +176,69 @@ try {
   check("delivered on the right channel (review)", h?.ch === "review");
   check("kind=channel (path-derived from the DELIVER durable, not a header — SPEC §4)", h?.kind === "channel");
   check("durable:true (real JetStream backstop ack, coalesces with any live copy)", h?.durable === true);
+
+  // The payload channel is advisory. A raw publisher cannot relabel a #review post as #general to
+  // bypass connector attention after fan-out: Plane-3 carries the subject-derived channel in its
+  // versioned DLV frame and the agent surfaces that value.
+  const posterPrincipal = parsePrincipalKey(poster.card.id);
+  if (!posterPrincipal) throw new Error(`poster has no principal: ${poster.card.id}`);
+  const mismatch: CotalMessage = {
+    id: randomUUID(),
+    ts: Date.now(),
+    space,
+    from: poster.card,
+    channel: "general",
+    parts: [{ kind: "text", text: "plane3-subject-wins" }],
+  };
+  const posterJs = (poster as unknown as {
+    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
+  }).js;
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify(mismatch),
+    { msgID: mismatch.id },
+  );
+  check("Plane-3 surfaces the subject-authenticated channel, not the payload label", await until(() =>
+    got.some((g) => g.text === "plane3-subject-wins" && g.ch === "review")), got);
+
+  // Upgrade safety: an already-persisted pre-envelope DLV body has no authenticated original channel.
+  // It must terminate loudly rather than use its payload label for automatic connector injection.
+  const legacy: CotalMessage = {
+    id: randomUUID(),
+    ts: Date.now(),
+    space,
+    from: poster.card,
+    channel: "general",
+    parts: [{ kind: "text", text: "legacy-unversioned-dlv" }],
+  };
+  const dlvJs = (dlv as unknown as {
+    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
+  }).js;
+  await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id), JSON.stringify(legacy), { msgID: legacy.id });
+  check("unversioned persisted DLV entries terminate loudly", await until(() =>
+    agentErrors.some((message) => message.includes("unauthenticated or unversioned DLV entry terminated"))));
+  check("an unversioned DLV entry never reaches the application", !got.some((g) => g.text === "legacy-unversioned-dlv"));
+
+  // A subject-authenticated publisher can still send a schema-invalid CHAT body. The trusted writer
+  // marks its DLV frame, but the recipient must terminate that one poison entry and keep pumping.
+  const malformedId = randomUUID();
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify({
+      id: malformedId,
+      ts: Date.now(),
+      space,
+      from: poster.card,
+      channel: "review",
+      parts: null,
+    }),
+    { msgID: malformedId },
+  );
+  check("a marked DLV frame with a malformed message terminates", await until(() =>
+    agentErrors.some((message) => message.includes("malformed versioned DLV entry terminated"))));
+  await poster.multicast("after-malformed-dlv", { channel: "review" });
+  check("a malformed marked DLV entry does not stop later durable delivery", await until(() =>
+    got.some((g) => g.text === "after-malformed-dlv")), got);
 
   // a second post arrives too (steady-state fan-out, seq > activationFence)
   await poster.multicast("second", { channel: "review" });

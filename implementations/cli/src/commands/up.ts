@@ -82,7 +82,8 @@ import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
+import { renderDetachedSummary } from "../lib/up-report.js";
+import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
 import { managerHasDeliveryMarker, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -577,7 +578,7 @@ export async function up(args: ParsedArgs): Promise<void> {
 
   if (values.detach) {
     const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
-    const { pid, source, authService, controlPlane } = await startMeshDetached({
+    const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
       server,
       storeDir: values["store-dir"],
       space: values.space,
@@ -606,7 +607,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       skipPostStart: Boolean(resumeAttempt),
     });
     console.log(c.dim(`Started nats-server (${source}).`));
-    console.log(c.green(`✓ mesh running in the background (pid ${pid}) - stop with: cotal down`));
+    console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager })));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
     // A user mesh whose auth service never became ready is recorded + running (a re-`cotal up`
@@ -1388,7 +1389,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     process.exit(1);
   }
   // Connectors + their required binaries must exist before any mutation (no fallback).
-  const conn = preflightConnectors(prepared);
+  const conn = await preflightConnectors(prepared);
   if (conn) {
     console.error(c.red(`✗ connector preflight failed: ${conn}`));
     process.exit(1);
@@ -1551,7 +1552,7 @@ export interface DetachOpts {
  */
 export async function startMeshDetached(
   opts: DetachOpts = {},
-): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean }> {
+): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean; delivery: boolean; manager: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
   const useAuth = !opts.open;
   const space = opts.space ?? resolveSpace(process.cwd());
@@ -1620,7 +1621,15 @@ export async function startMeshDetached(
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
   });
-  return { server, pid: child.pid ?? 0, source, controlPlane, authService: svc.ok };
+  return {
+    server,
+    pid: child.pid ?? 0,
+    source,
+    controlPlane,
+    authService: svc.ok,
+    delivery: useAuth && deliveryUp(),
+    manager: managerUp(),
+  };
 }
 
 /** THE FLIP, open-boot edition: `--open` must never boot a credless broker over a root whose

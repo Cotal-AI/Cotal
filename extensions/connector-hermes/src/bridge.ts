@@ -92,7 +92,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
    *  adapter's `delivered` (see below), so a turn that never surfaces a message redelivers it. */
   const pump = (): void => {
     if (!adapter || awaitingId) return;
-    const pending = agent.peekInbox();
+    const pending = agent.peekInbox("automatic");
     if (!pending.length) return;
     const next = pending[0];
     awaitingId = next.id;
@@ -110,12 +110,12 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     else if (target.peerId) await agent.dm(target.peerId, text);
   };
 
-  /** Run a cotal_* tool by name against the shared specs. cotal_inbox is forced read-only (peek)
-   *  so a tool call never races the connector's per-turn delivery ack. */
+  /** Run a cotal_* tool by name against the shared specs. cotal_inbox consumes only pull-only
+   *  quiet traffic, so it cannot race the connector's automatic per-turn delivery ack. */
   const onTool = async (name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
     const spec = specs.get(name);
     if (!spec) throw new Error(`unknown cotal tool: ${name}`);
-    const a = name === "cotal_inbox" ? { peek: true } : (args ?? {});
+    const a = name === "cotal_inbox" ? { scope: "pull-only" } : (args ?? {});
     const r = await spec.run(agent, config, a);
     return { text: r.text, isError: !!r.isError };
   };
@@ -135,7 +135,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
           // long turn can already have evicted our in-flight item; draining the front then would
           // mis-ack a newer, unsurfaced message (losing it). If the front is no longer ours, the
           // overflow already acked it — just resync and let pump() surface the new front.
-          if (agent.peekInbox()[0]?.id === awaitingId) agent.drainInbox(1);
+          agent.drainInboxIds([awaitingId]);
           awaitingId = undefined;
           pump();
         }
