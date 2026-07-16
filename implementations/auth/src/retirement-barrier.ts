@@ -419,13 +419,24 @@ async function cleanEndpointPools(
   } catch (e) {
     cleanerError = e;
   }
-  // The cleaner fence (§13.1): deny-new (revoke the credential) THEN kill-live (verified
-  // eviction of the cleaner's own principal) — unconditionally, before the barrier proceeds OR
-  // fails outward.
-  await deps.retireCleanerCredential(bind);
+  // The cleaner fence (§13.1): deny-new (revoke the credential) AND kill-live (verified eviction
+  // of the cleaner's own principal), on the success AND the failure path. A revoke that THROWS
+  // must NOT skip the live eviction, or the bounded-lived cleaner connection survives the failed
+  // barrier: attempt the revoke, capture its failure, then ALWAYS run the verified kill-live.
+  // The verified eviction is the load-bearing half (the connection is dead even if the deny-new
+  // revoke failed); a revoke failure still fails the barrier loud afterward so no frontier
+  // records while the credential may live, and the resume re-runs the whole fence.
+  let retireError: unknown;
+  try {
+    await deps.retireCleanerCredential(bind);
+  } catch (e) {
+    retireError = e;
+  }
   const res = await deps.evictPrincipal(bind.principal);
   if (res.verifiedGone !== true)
     throw new EpEnvelopeError("unavailable", `the retirement barrier could not VERIFY eviction of the cleaner principal ${bind.principal} (kicked ${res.kicked}, remaining ${res.remaining}, scanComplete ${res.scanComplete}${res.note ? `; ${res.note}` : ""}); no frontier may record over a live cleaner (SPEC 13.1)`);
+  if (retireError !== undefined)
+    throw new EpEnvelopeError("unavailable", `the cleaner principal ${bind.principal} was verified-evicted (kill-live done) but revoking its credential (deny-new) failed; the barrier fails closed so no frontier records while the credential may live, and the resume re-runs the fence (SPEC 13.1): ${(retireError as Error)?.message ?? String(retireError)}`);
   if (cleanerError !== undefined) throw cleanerError;
 }
 
@@ -537,17 +548,28 @@ export async function runAgentRetirementBarrier(
   // BOTH the endpoint discovery and the final quiescence check; the injected per-endpoint drain
   // is mechanics. Every writer that observed the pre-retiring mapping is settled HERE, before
   // the cleaner runs and before any frontier closes.
+  // Discovery counts EVERY non-terminal row: a provisional to settle, an accepted SELF to drive
+  // terminal, AND an accepted EPF whose route reconciliation must be VERIFIED before frontiers
+  // close (an accepted-before-enqueue crash leaves an accepted EPF row with no provisional or
+  // self beside it; skipping its endpoint would close frontiers over never-enqueued accepted
+  // work the cleaner cannot repair). drainTargetForEndpoint drains its whole target prefix to
+  // quiescence (settling provisionals, driving accepted-self terminal, and running
+  // verifyAcceptedEpfRoute for every accepted-EPF row), so once every endpoint that carries a
+  // non-terminal row has had its drain RUN, the target is quiescent. `rejected`/`terminal` rows
+  // are already settled. New rows cannot appear (the head is `retiring`, so every obtain fails
+  // its currency read), which is why re-enumeration converges.
   const drainedEndpoints: string[] = [];
   for (let pass = 1; ; pass++) {
     const rows = await enumerateObligationRows({ jsm, js }, space, `oblig.${intent.lifecycleUid}.>`);
-    const unsettled = rows.filter((r) => r.row.state === "provisional" || (r.row.state === "accepted" && r.row.decision === "self"));
-    if (unsettled.length === 0) break;
+    const nonTerminal = rows.filter((r) => r.row.state === "provisional" || r.row.state === "accepted");
+    const endpoints = [...new Set(nonTerminal.map((r) => r.key.split(".")[2]))].sort();
+    const undrained = endpoints.filter((ep) => !drainedEndpoints.includes(ep));
+    if (undrained.length === 0) break; // every endpoint with a non-terminal row is drained + route-verified
     if (pass > 4)
-      throw new EpEnvelopeError("unavailable", `the obligation drain for ${intent.lifecycleUid} did not reach quiescence in ${pass - 1} passes (${unsettled.length} unsettled row(s), first ${unsettled[0].key}); investigate before retiring (SPEC 13.8)`);
-    const endpoints = [...new Set(unsettled.map((r) => r.key.split(".")[2]))].sort();
-    for (const ep of endpoints) {
+      throw new EpEnvelopeError("unavailable", `the obligation drain for ${intent.lifecycleUid} did not reach quiescence in ${pass - 1} passes (${undrained.length} undrained endpoint(s), first ${undrained[0]}); investigate before retiring (SPEC 13.8)`);
+    for (const ep of undrained) {
       await deps.drainTargetObligations(ep, intent.lifecycleUid);
-      if (!drainedEndpoints.includes(ep)) drainedEndpoints.push(ep);
+      drainedEndpoints.push(ep);
     }
   }
 

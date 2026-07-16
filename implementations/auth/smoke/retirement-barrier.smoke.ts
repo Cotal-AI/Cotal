@@ -110,6 +110,8 @@ try {
   const acceptPoolItem = async (args: {
     endpoint: string; caller: { owner: string; actor: string; uid: string }; id: string;
     target?: { owner: string; actor: string; lifecycleUid: string }; workExpiry: number; sourceSeq: number;
+    /** Write the acceptance decision fact but NOT the EPW item (the crash-before-enqueue state). */
+    skipEnqueue?: boolean;
   }): Promise<void> => {
     const from = { id: `${args.caller.owner}.${args.caller.actor}`, name: "c" };
     const request: Record<string, unknown> = {
@@ -127,7 +129,8 @@ try {
     const subject = epfSubject(SPACE, args.endpoint, ["dec", args.caller.owner, args.caller.actor, args.caller.uid, args.id]);
     parseDecisionFact(fact, subject); // the forge must be core-valid or the probe proves nothing
     if (!(await publishFactCreateOnly(js, subject, enc.encode(JSON.stringify(fact)))).won) throw new Error(`acceptance forge lost on ${subject}`);
-    await js.publish(epwSubject(SPACE, args.endpoint, POOL, { ...args.caller, id: args.id }), enc.encode(JSON.stringify({ item: args.id })));
+    if (args.skipEnqueue !== true)
+      await js.publish(epwSubject(SPACE, args.endpoint, POOL, { ...args.caller, id: args.id }), enc.encode(JSON.stringify({ item: args.id })));
   };
 
   const events: string[] = [];
@@ -302,6 +305,71 @@ try {
   {
     const gate = await observeGate(reg, uid5);
     c("…and the gate stays frozen (fail-closed, the terminal never lands over a foreign frontier)", gate!.row.state === "frozen");
+  }
+
+  console.log("D. the drain discovers an ACCEPTED-EPF-ONLY target (no provisional/self beside it)");
+  {
+    // The reachable state the critic flagged: a canonicalizer accepted a pool-routed EPF row and
+    // crashed BEFORE the enqueue, so retirement starts with ONLY that accepted EPF row. The
+    // barrier's endpoint discovery must include it, or it closes frontiers without running the
+    // accept-side route reconciliation. A drain fake that records the endpoint it was asked to
+    // drain proves discovery reached it; the injected reconciler establishes the EPW item so the
+    // route postcondition is met.
+    const act6 = await activateLifecycle(reg, { owner: "local", actor: "acconly", managerInstance: MGR });
+    const uid6 = act6.mapping.lifecycleUid;
+    const tgt6 = { owner: "local", actor: "acconly", lifecycleUid: uid6 };
+    const cAcc = { owner: "local", actor: "caller", uid: "k".repeat(26) };
+    const ao = await obtainEpfObligation(meds[EP], mkReq(EP, cAcc), { target: tgt6, id: "ao0001", fingerprint: fp("ao0001"), sourceSeq: 12, route: `pool.${POOL}` });
+    await updateRecordEntry(recordsKv, ao.key, { ...ao.row, state: "accepted" }, ao.revision); // accepted, EPW never enqueued (crash before enqueue)
+    // The canonicalizer's acceptance decision fact exists (it wrote it before crashing); only the
+    // EPW enqueue is missing. The reconciler is what recovers the enqueue.
+    await acceptPoolItem({ endpoint: EP, caller: cAcc, id: "ao0001", target: tgt6, workExpiry: NOW + 100_000, sourceSeq: 12, skipEnqueue: true });
+    const drainedEps: string[] = [];
+    const reconEnqueue = async () => { await js.publish(epwSubject(SPACE, EP, POOL, { ...cAcc, id: "ao0001" }), enc.encode(JSON.stringify({ item: "ao0001" }))); };
+    const deps6: RetirementDeps = {
+      ...mkDeps({ guardUid: uid6 }),
+      drainTargetObligations: async (endpoint, targetUid) => {
+        drainedEps.push(endpoint);
+        await drainTargetForEndpoint(meds[endpoint as keyof typeof meds], targetUid, { reconcileAcceptedRoute: reconEnqueue });
+      },
+    };
+    const res6 = await runAgentRetirementBarrier(reg, {
+      owner: "local", actor: "acconly", lifecycleUid: uid6, opId: "6".repeat(26),
+      endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+    }, deps6);
+    c("the barrier DISCOVERS and drains an accepted-EPF-only endpoint before the cleaner/frontiers (accept-side reconciliation runs)",
+      drainedEps.includes(EP) && res6.drainedEndpoints.includes(EP), { drainedEps, reported: res6.drainedEndpoints });
+    const head = await readLifecycleHeadForOperation(reg, "local", "acconly");
+    c("…and the barrier completes to retired (the accepted-EPF route was verified, not skipped)", head!.mapping.state === "retired");
+  }
+
+  console.log("E. the cleaner kill-live runs even if the credential revoke throws");
+  {
+    // The reachable failure: retireCleanerCredential (an injected deployment op over a bounded-
+    // lived cred) throws on a broker/API outage while the cleaner connection is still live. The
+    // fence must still verified-evict the cleaner principal, then fail the barrier loud.
+    const act7 = await activateLifecycle(reg, { owner: "local", actor: "revfail", managerInstance: MGR });
+    const uid7 = act7.mapping.lifecycleUid;
+    let evictedCleaner = false;
+    let liveConn: NatsConnection | undefined;
+    const deps7: RetirementDeps = {
+      ...mkDeps({ guardUid: uid7 }),
+      openCleaner: async (): Promise<PoolCleanerBind> => {
+        liveConn = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "local-cleaner", pass: "pw", reconnect: false });
+        cleanerConns.push(liveConn);
+        return { jsm: await jetstreamManager(liveConn), js: jetstream(liveConn), principal: "local.cleaner" };
+      },
+      retireCleanerCredential: async () => { throw new Error("simulated revoke outage"); },
+      evictPrincipal: async (p) => { const r = await liveEvict(p); if (p === "local.cleaner") evictedCleaner = true; return r; },
+    };
+    await rejects("the barrier fails loud when the cleaner-credential revoke (deny-new) throws",
+      () => runAgentRetirementBarrier(reg, {
+        owner: "local", actor: "revfail", lifecycleUid: uid7, opId: "5".repeat(26),
+        endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      }, deps7), "unavailable");
+    c("…but the cleaner principal was STILL verified-evicted (kill-live is not skipped by a deny-new failure)", evictedCleaner);
+    c("…the live cleaner connection is dead, and no frontier recorded (fail-closed)",
+      await until(() => liveConn?.isClosed() === true) && (await recordsKv.get(frontierKeyOf(uid7))) === null);
   }
 
   await nc.drain().catch(() => {});
