@@ -28,23 +28,28 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "seeded-connectors": "node scripts/copy-seeded-connectors.mjs",
+    "prepack": "node scripts/copy-seeded-connectors.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
     "@cotal-ai/cli": "workspace:*",
-    "@cotal-ai/connector-claude-code": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
-    "@cotal-ai/connector-hermes": "workspace:*",
-    "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/delivery": "workspace:*",
     "@cotal-ai/manager": "workspace:*",
-    "@cotal-ai/pi": "workspace:*",
     "@cotal-ai/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "@cotal-ai/connector-claude-code": "workspace:*",
+    "@cotal-ai/connector-hermes": "workspace:*",
+    "@cotal-ai/connector-opencode": "workspace:*",
+    "@cotal-ai/pi": "workspace:*"
   },
   "files": [
     "dist",
+    "seeded-connectors",
     "README.md",
     "LICENSE"
   ],

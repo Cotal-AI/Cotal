@@ -7,8 +7,9 @@
 import { renameSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { ensureDirNoSymlink, registry, type ChannelConfig, type ChannelRegistryFile, type Connector, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { ensureDirNoSymlink, type ChannelConfig, type ChannelRegistryFile, type Connector, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 import { resolveOnPath } from "@cotal-ai/workspace";
+import { materializeExtension } from "../../ext-loader.js";
 import type { PreparedManifest } from "./preflight.js";
 import type { PreparedAgent } from "./prepare.js";
 import type { ResolvedChannel } from "./model.js";
@@ -116,17 +117,18 @@ export function channelsSeed(channels: ResolvedChannel[]): ChannelRegistryFile {
   return { channels: out };
 }
 
-/** Preflight the connectors: every distinct connector type must be registered and have its required
- *  binaries on PATH — fail before any mutation (no fallback). Returns an error sentence, or "". */
-export function preflightConnectors(prepared: PreparedManifest): string {
+/** Preflight the connectors: MATERIALIZE every distinct connector type from the manifest (seeded or
+ *  `ext add`ed — nothing static-imports them on the published binary) and require its binaries on
+ *  PATH. Fail before any mutation (no fallback). Returns an error sentence, or "". */
+export async function preflightConnectors(prepared: PreparedManifest): Promise<string> {
   const types = [...new Set(prepared.agents.map((a) => a.agentType))];
   const problems: string[] = [];
   for (const type of types) {
     let connector: Connector;
     try {
-      connector = registry.resolve<Connector>("connector", type);
-    } catch {
-      problems.push(`unknown connector "${type}" (no such agent type registered)`);
+      connector = await materializeExtension<Connector>({ kind: "connector", name: type });
+    } catch (e) {
+      problems.push((e as Error).message);
       continue;
     }
     const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));

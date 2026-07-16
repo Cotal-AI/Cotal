@@ -36,7 +36,10 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home };
+// Isolate this THIRD-PARTY extension suite from built-in-connector seeding (its own suite covers
+// that): with the opt-out set, a fresh prefix stays empty so the add/remove/manifest assertions below
+// speak only about the fixture packages.
+const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
@@ -168,26 +171,30 @@ ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]
 
 // -- E: failed adds are loud + rolled back ---------------------------------------------------------
 {
+  // The mutation lock is now a JSON owner FILE (the shared advisory-lock primitive), not a bare PID
+  // string. A LIVE owner blocks (fail-fast: "mutation is in progress"); a dead owner is reclaimed; an
+  // unreadable path (a stray directory) fails loud fast rather than busy-spinning.
   const mutationLock = join(configDir, "cotal", ".extensions.lock");
-  writeFileSync(mutationLock, String(process.pid));
+  const ownerFile = (pid: number) => JSON.stringify({ pid, nonce: "smoke", ts: 1 });
+  writeFileSync(mutationLock, ownerFile(process.pid)); // a live owner (this process)
   const locked = cotal(["ext", "add", fixture("cotal-ext-locked", GOOD.replace('name: "hello-ext"', 'name: "locked-ext"'))]);
   ok("concurrent extension mutation fails loud", locked.status === 1 && /mutation is in progress/.test(locked.stderr), locked.stderr);
   const lockedRun = cotal(["hello-ext"]);
   ok("lazy extension import refuses a concurrent prefix mutation", lockedRun.status === 1 && /install\/remove is in progress/.test(lockedRun.stderr), lockedRun.stderr);
   rmSync(mutationLock, { force: true });
 
-  const deadOwner = spawnSync(realNode, ["-e", ""], { encoding: "utf8" }).pid;
-  writeFileSync(mutationLock, String(deadOwner));
+  const deadOwner = spawnSync(realNode, ["-e", ""], { encoding: "utf8" }).pid ?? 2147483646;
+  writeFileSync(mutationLock, ownerFile(deadOwner));
   const staleRun = cotal(["hello-ext", "stale-lock"]);
   ok("lazy extension import ignores a dead owner's stale mutation lock", staleRun.status === 0 && /hello stale-lock/.test(staleRun.stdout), staleRun.stdout + staleRun.stderr);
   const staleClaim = cotal(["ext", "remove", "not-installed"]);
   ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 1 && /no installed extension/.test(staleClaim.stderr) && !existsSync(mutationLock), staleClaim.stderr);
 
-  mkdirSync(mutationLock);
+  mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
   const unreadableStarted = Date.now();
   const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], 3_000);
   const unreadableElapsed = Date.now() - unreadableStarted;
-  ok("an unreadable mutation lock fails loud instead of busy-spinning", unreadable.status === 1 && /can't read extension mutation lock/.test(unreadable.stderr) && unreadableElapsed < 3_000, unreadable.stderr + ` (${unreadableElapsed}ms)`);
+  ok("an unreadable mutation lock fails loud instead of busy-spinning", unreadable.status === 1 && /unreadable/.test(unreadable.stderr) && unreadableElapsed < 3_000, unreadable.stderr + ` (${unreadableElapsed}ms)`);
   rmSync(mutationLock, { recursive: true, force: true });
 
   const priorManifest = readFileSync(manifestPath, "utf8");

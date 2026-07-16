@@ -45,7 +45,9 @@ try {
   const tail = appendedLogTail(logPath, Buffer.byteLength(old));
   assert.ok(Buffer.byteLength(tail) <= 4096, "attempt diagnostics are capped at 4096 bytes");
   assert.equal(tail.includes("old-attempt"), false, "attempt diagnostics exclude historical bytes");
-  assert.equal(statSync(logPath).mode & 0o777, 0o600, "fixture log is private");
+  // POSIX-only: Windows' fs does not honor mode bits (the file reads back 0o666), so 0o600 privacy is
+  // a POSIX concept there — Windows scopes access via ACLs instead. Assert it only where it applies.
+  if (process.platform !== "win32") assert.equal(statSync(logPath).mode & 0o777, 0o600, "fixture log is private");
 
   assert.ok(child.pid, "fixture child has a pid");
   for (let i = 0; i < 100 && !existsSync(readyPath); i++) await sleep(10);
