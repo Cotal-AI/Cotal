@@ -485,11 +485,12 @@ async function recreateCheckpoint(
     const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS);
     if (info.config.opt_start_seq !== expected.opt_start_seq || info.config.deliver_policy !== expected.deliver_policy)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} did not preserve its conservative checkpoint floor`);
-    // A fresh by_start_sequence durable is BORN with a native stream floor of opt_start_seq - 1
-    // (verified against nats-server 2.14): that floor claims nothing delivered and replays
-    // everything from the conservative start. Anything else — a delivered count, or a floor beyond
-    // the born value — would silently skip pre-cut entries.
-    const bornFloor = (expected.opt_start_seq ?? 1) - 1;
+    // A fresh durable is BORN with a native stream floor of effectiveStart - 1, where the
+    // effective start is its opt_start_seq or, for DeliverAll over a truncated WorkQueue (TASK),
+    // the stream's first_seq (verified against nats-server 2.14). That floor claims nothing
+    // delivered and replays everything still in the stream. Anything else — a delivered count, or
+    // a floor beyond the born value — would silently skip pre-cut entries.
+    const bornFloor = Math.max(expected.opt_start_seq ?? 1, checkpoint.streamState.first_seq || 1) - 1;
     if (info.ack_floor.stream_seq !== bornFloor || info.ack_floor.consumer_seq !== 0)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} was recreated with ack floor ${info.ack_floor.stream_seq}/${info.ack_floor.consumer_seq}; expected the born floor ${bornFloor}/0`);
   } finally {
