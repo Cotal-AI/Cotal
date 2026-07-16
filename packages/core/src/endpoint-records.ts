@@ -130,6 +130,51 @@ export const UID_RESERVATION: RecordKindDef = {
   mediation: "mediated",
 };
 
+/** The fixed sentinel target token for an admission with no target lifecycle (§13.7/§13.8). */
+export const OBLIGATION_EP_SENTINEL = "ep";
+
+/** The §13.8 TARGET-INDEXED ACCEPTANCE OBLIGATION (§13.7): one atomic unsplit key per
+ *  acceptance identity, `oblig.<targetUid>.<endpoint>.<cOwner>.<cActor>.<cUid>.<id>` — the ONE
+ *  durable serialization coordinate on which a durable acceptance/start contends with its
+ *  authority head's movement (no cross-stream CAS exists). Target-first, so a retirement
+ *  barrier enumerates `oblig.<targetUid>.>`; an admission under policy with NO target lifecycle
+ *  keys the row with the fixed sentinel target token `ep` (which the §13.1 UID grammar can
+ *  never produce), excluded from retirement drains and included in the endpoint's policy drain
+ *  via `oblig.*.<endpoint>.>`. Create-only winner, monotonic value states
+ *  (`provisional → accepted → terminal` | `provisional → rejected`), NEVER-DELETED. Writer:
+ *  the admission mediator ONLY (§13.9; the canonicalizer holds no raw `oblig.` grant). */
+export const OBLIGATION: RecordKindDef = {
+  kind: "oblig",
+  qualifiers: [
+    { name: "targetUid", assert: (v) => (v === OBLIGATION_EP_SENTINEL ? v : assertLifecycleToken(v, "targetUid")) },
+    qEndpoint, qOwner("cOwner"), qOwner("cActor"), qUid("cUid"), qId("id"),
+  ],
+  split: false,
+  writers: { spec: "admission-mediator", status: "admission-mediator" },
+  mediation: "mediated",
+};
+
+/** The §13.6 IMMUTABLE ADMISSION-POLICY VERSION (§13.7): `policy.<endpoint>.<digest-hex>` — one
+ *  atomic unsplit key per policy version, create-only, NEVER-DELETED, never overwritten.
+ *  `<digest-hex>` is the SHA-256 hex of the record's canonical value bytes, so the key is
+ *  SELF-CERTIFYING: a reader re-digests the value it read and refuses a mismatch. The govern
+ *  head's `enforcedPolicyKey`/`pendingPolicyKey` name keys of exactly this kind, which is what
+ *  keeps both the enforced and the pending policy readable through a mutation's whole drain
+ *  window (§13.6). Writer: the provisioner registration path ONLY (§13.9). */
+export const POLICY_VERSION: RecordKindDef = {
+  kind: "policy",
+  qualifiers: [qEndpoint, {
+    name: "digestHex",
+    assert: (v) => {
+      if (!/^[0-9a-f]{64}$/.test(v)) throw new Error(`policy digest ${JSON.stringify(v)} is not 64 lowercase hex chars (SPEC 13.7)`);
+      return v;
+    },
+  }],
+  split: false,
+  writers: { spec: "provisioner-registration", status: "provisioner-registration" },
+  mediation: "mediated",
+};
+
 /** The endpoint-wide GOVERNANCE HEAD (§13.7 "a self-published descriptor cannot strip, forge,
  *  or downgrade a governed annotation"): `govern.<endpoint>` — ONE atomic unsplit key holding
  *  the endpoint's MONOTONIC (append-only) BINDING governed-trait imposition per command, plus
@@ -221,7 +266,7 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
 };
 
 const registry = new Map<string, RecordKindDef[]>();
-for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD]) {
+for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION]) {
   const list = registry.get(def.kind) ?? [];
   list.push(def);
   registry.set(def.kind, list);

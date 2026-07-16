@@ -108,8 +108,10 @@ function readerInternals(rd: LifecycleMappingReader): { space: string; jsm: JetS
   return i;
 }
 
-/** The bucket-config fields the shape proofs inspect (wire names, per the JetStream API). */
-interface AuthorityStreamCfg {
+/** The bucket-config fields the shape proofs inspect (wire names, per the JetStream API).
+ *  PACKAGE-INTERNAL (with {@link assertAuthorityStreamShape}) for the sibling trusted-path
+ *  modules; never re-exported from the package index. */
+export interface AuthorityStreamCfg {
   allow_direct?: boolean;
   retention?: string;
   max_age?: number;
@@ -127,7 +129,7 @@ interface AuthorityStreamCfg {
  *  authority key's latest row the moment an unrelated key is written). A store that cannot be
  *  proved never serves. (A per-subject cap is NOT a vector: NATS keeps at least the latest value
  *  per subject for any cap ≥ 1, and 0/-1 mean unlimited, so no setting drops a key's own row.) */
-function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: string): void {
+export function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: string): void {
   if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
     throw new EpEnvelopeError("failed-precondition", `the store ${bucket} is a mirror/sourced stream; a follower copy cannot serve authority reads or CAS (SPEC 13.12) — bind the primary`);
   // A KV bucket is Limits-retention by construction, but the backing stream config is what

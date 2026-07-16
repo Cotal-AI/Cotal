@@ -117,3 +117,16 @@ export {
   readLifecycleMappingLeader, lifecycleProcessEpochReader,
   type LifecycleRegistry, type LifecycleMappingReader, type LifecycleMapping, type EpGateRow,
 } from "./lifecycle-registry.js";
+// The D13 (4) admission mediator + admission-policy coordinate (SPEC 13.6/13.8/13.9): the
+// per-endpoint sealed mediator over the `oblig.` prefix, the immutable `policy` version
+// publication, and the govern-head stage/drain/promote selector. The obtain/settle/recover/
+// drain entry points are the public seam; the row/proof internals stay module-private.
+export {
+  openAdmissionMediator, obtainEpfObligation, obtainSelfObligation,
+  acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof,
+  readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
+  drainEndpointPolicy, drainTargetForEndpoint,
+  type AdmissionMediator, type AdmissionIdentity, type AdmissionProof, type ObtainedObligation,
+  type ObligationRow, type ObligationState, type CommitValue, type SelfCommitIntent,
+  type PolicySelector, type DrainResult, type DrainQuiescence, type ApplyCommit,
+} from "./admission-mediator.js";
