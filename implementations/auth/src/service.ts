@@ -49,10 +49,12 @@ import { createIdpBridge, type IdpBridge } from "./idp.js";
 import type { UserTokenView, ValidatedUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
-import { authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
-import { openLifecycleRegistry } from "./lifecycle-registry.js";
+import { observeGate, openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
+import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import {
   AGENT_BEARER_TTL_SEC,
   ledgerAclResolver,
@@ -115,6 +117,10 @@ export async function openAuthAuthorityPlane(opts: {
   dir: string;
   dataAccount: { pub: string; signingSeed: string };
   log: (line: string) => void;
+  /** SMOKE-ONLY eviction override for the barrier executor's boot resume. Production
+   *  compositions never set this: the real capability is the delivery daemon's
+   *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminEvictor}). */
+  probeEvictor?: EvictPrincipal;
 }): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
@@ -133,6 +139,34 @@ export async function openAuthAuthorityPlane(opts: {
     await writer.close();
     throw e;
   }
+  // The BARRIER EXECUTOR: the third self-minted connection, with its own registry bind — the
+  // mint writer stays the minimal issuance credential ("barriers are NOT this credential's
+  // job") and the barrier's enumeration-consumer/stage-write authority lives here alone.
+  let barrier;
+  let barrierReg;
+  try {
+    barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
+    barrierReg = await openLifecycleRegistry(barrier.nc, space);
+  } catch (e) {
+    await barrier?.close();
+    await reader.close();
+    await writer.close();
+    throw e;
+  }
+  const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ space, server, dataAccount, log });
+  // Boot crash-resume BEFORE the plane answers anything (SPEC 13.1): finish every takeover this
+  // executor owes from its durable intents. A garbled intent store fails the boot (we cannot
+  // know what we owe); an individual resume failure is LOUD but non-fatal — that alias stays
+  // frozen (nothing mints for it, fail-closed) while every other alias keeps working, and a
+  // later restart re-drives it.
+  try {
+    await resumeOpenOperations(barrierReg, evictPrincipal, log);
+  } catch (e) {
+    await barrier.close();
+    await reader.close();
+    await writer.close();
+    throw e;
+  }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   return {
     authorizeConnect: async (t) => {
@@ -142,9 +176,36 @@ export async function openAuthAuthorityPlane(opts: {
     mintConnectCredential: (args) => ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` }),
     close: async () => {
       await reader.close();
+      await barrier.close();
       await writer.close();
     },
   };
+}
+
+/**
+ * Boot crash-resume (SPEC 13.1): enumerate the durable operation intents and finish every
+ * barrier this executor OWES — an intent is owed exactly when its gate is still FROZEN by that
+ * opId (completed and lost operations leave their intent behind by design and are skipped).
+ * A frozen TAKEOVER resumes through {@link resumeAgentTakeover}; session-derived descendants
+ * fail loud inside the barrier until the session reconciler is wired (the #29 trigger slice).
+ * A frozen RETIREMENT is named loudly and left frozen: its deps (the exact-pool cleaner bind)
+ * are the trigger slice's wiring, and a frozen gate is already the fail-closed posture.
+ */
+async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: EvictPrincipal, log: (line: string) => void): Promise<void> {
+  for (const it of await enumerateOperationIntents(reg)) {
+    const gate = await observeGate(reg, it.lifecycleUid);
+    if (gate === undefined || gate.row.state !== "frozen" || gate.row.op?.opId !== it.opId) continue;
+    if (it.kind === "retirement") {
+      log(`auth-barrier: lifecycle ${it.lifecycleUid} is frozen by retirement ${it.opId}; retirement deps are not wired in this executor yet (#29 trigger slice) - the alias stays frozen (fail-closed)`);
+      continue;
+    }
+    try {
+      const r = await resumeAgentTakeover(reg, it.opId, { evictPrincipal });
+      log(`auth-barrier: resumed takeover ${it.opId} for ${it.lifecycleUid} (epoch ${r.toEpoch}, ${r.revokedRows} row(s) revoked, ${r.evictedPrincipals.length} principal(s) verified-evicted)`);
+    } catch (e) {
+      log(`auth-barrier: resuming takeover ${it.opId} for ${it.lifecycleUid} FAILED (${e instanceof Error ? e.message : String(e)}) - the gate stays frozen and nothing mints for this alias until a resume succeeds (fail-closed)`);
+    }
+  }
 }
 
 /** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`

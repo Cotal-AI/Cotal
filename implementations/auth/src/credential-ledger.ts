@@ -518,6 +518,21 @@ export interface EnumeratedRow {
  * report a family it did not actually cover.
  */
 async function enumerateLedgerPrefix(reg: LifecycleRegistry, prefix: string): Promise<EnumeratedRow[]> {
+  const entries = await scanPrefixLastPerSubject(reg, prefix);
+  return entries.map((e) => {
+    if (e.op === "DEL" || e.op === "PURGE")
+      throw new EpEnvelopeError("failed-precondition", `the ledger key ${e.key} carries a ${e.op} marker; ledger rows are revoked, never deleted — the enumeration refuses (corruption, SPEC 13.12)`);
+    return { key: e.key, row: parseLedgerRow(e.data, e.key), revision: e.seq };
+  });
+}
+
+/** The raw point-in-time scan behind {@link enumerateLedgerPrefix} and
+ *  {@link enumerateOperationIntents}: the per-run throwaway LastPerSubject pull consumer, with NO
+ *  marker/parse policy (each caller owns its own fail-loud contract over the returned entries). */
+async function scanPrefixLastPerSubject(
+  reg: LifecycleRegistry,
+  prefix: string,
+): Promise<{ key: string; data: Uint8Array; seq: number; op: string | undefined }[]> {
   const { space, jsm, js } = registryStores(reg);
   const bucket = epAuthBucket(space);
   const stream = `KV_${bucket}`;
@@ -531,7 +546,7 @@ async function enumerateLedgerPrefix(reg: LifecycleRegistry, prefix: string): Pr
   } catch (e) {
     throw new EpEnvelopeError("unavailable", `creating the barrier's enumeration consumer on ${stream} failed; the barrier fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
   }
-  const out: EnumeratedRow[] = [];
+  const out: { key: string; data: Uint8Array; seq: number; op: string | undefined }[] = [];
   try {
     const consumer = await js.consumers.get(stream, name);
     let pending = (await consumer.info()).num_pending;
@@ -541,11 +556,7 @@ async function enumerateLedgerPrefix(reg: LifecycleRegistry, prefix: string): Pr
       let got = 0;
       for await (const m of iter) {
         got++;
-        const key = m.subject.slice(`$KV.${bucket}.`.length);
-        const op = m.headers?.get("KV-Operation");
-        if (op === "DEL" || op === "PURGE")
-          throw new EpEnvelopeError("failed-precondition", `the ledger key ${key} carries a ${op} marker; ledger rows are revoked, never deleted — the enumeration refuses (corruption, SPEC 13.12)`);
-        out.push({ key, row: parseLedgerRow(m.data, key), revision: m.seq });
+        out.push({ key: m.subject.slice(`$KV.${bucket}.`.length), data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
       }
       if (got < want)
         throw new EpEnvelopeError("unavailable", `the barrier's enumeration under ${prefix} under-delivered (${got}/${want}); a partial family read never proceeds (SPEC 13.1)`);
@@ -560,6 +571,52 @@ async function enumerateLedgerPrefix(reg: LifecycleRegistry, prefix: string): Pr
 /** Enumerate a lifecycle's FULL descendant family `cred.<lifecycleUid>.>` (SPEC 13.1). */
 export function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid: string): Promise<EnumeratedRow[]> {
   return enumerateLedgerPrefix(reg, `cred.${assertLifecycleToken(lifecycleUid)}.`);
+}
+
+/** A durable operation intent under `stage.<opId>` (SINGLE segment: the session release pins
+ *  live at `stage.session.<sid>.<c|s>` and are not operations). */
+export interface OperationIntentRef {
+  opId: string;
+  kind: "takeover" | "retirement";
+  lifecycleUid: string;
+}
+
+/**
+ * Enumerate every durable OPERATION intent `stage.<opId>` (SPEC 13.1) — the boot-resume
+ * discovery: a barrier executor that crashed mid-operation finds what it may owe here (whether
+ * an intent is actually OWED is the gate's call: only a gate still frozen by that opId is —
+ * completed and lost operations leave their intent behind by design). Multi-segment `stage.`
+ * keys (the session release pins) are not operations and are skipped; a single-segment intent
+ * that carries a DEL/PURGE marker, fails to parse, or names an unknown kind THROWS — an intent
+ * is never deleted while resumable, and garbled trusted-path state never drives a barrier.
+ */
+export async function enumerateOperationIntents(reg: LifecycleRegistry): Promise<OperationIntentRef[]> {
+  const entries = await scanPrefixLastPerSubject(reg, "stage.");
+  const out: OperationIntentRef[] = [];
+  for (const e of entries) {
+    const opId = e.key.slice("stage.".length);
+    if (opId.includes(".")) continue; // session release pins etc. — not operation intents
+    if (e.op === "DEL" || e.op === "PURGE")
+      throw new EpEnvelopeError("failed-precondition", `the operation intent ${e.key} carries a ${e.op} marker; an intent is never deleted while resumable (corruption, SPEC 13.12)`);
+    let o: unknown;
+    try {
+      o = JSON.parse(dec.decode(e.data));
+    } catch {
+      throw new EpEnvelopeError("internal", `the operation intent ${e.key} is not JSON (SPEC 13.1)`);
+    }
+    if (!isRec(o) || (o.kind !== "takeover" && o.kind !== "retirement"))
+      throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries an unknown kind ${isRec(o) ? JSON.stringify(o.kind ?? null) : "(not an object)"} (closed set, SPEC 13.1)`);
+    if (typeof o.lifecycleUid !== "string")
+      throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries no lifecycleUid (SPEC 13.1)`);
+    let uid: string;
+    try {
+      uid = assertLifecycleToken(o.lifecycleUid);
+    } catch {
+      throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries a malformed lifecycleUid (SPEC 13.1)`);
+    }
+    out.push({ opId, kind: o.kind, lifecycleUid: uid });
+  }
+  return out;
 }
 
 // ---- the takeover barrier (SPEC 13.1: freeze → revoke → verified-evict → epoch CAS → reopen) ----

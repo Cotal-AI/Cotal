@@ -82,6 +82,60 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   };
 }
 
+/**
+ * The BARRIER EXECUTOR's scoped credential grant (SPEC 13.9): the lifecycle-barrier surface —
+ * exactly what the takeover barrier (and its retirement sibling) reaches through the sealed
+ * registry, on its OWN connection so the latency-sensitive mint writer never carries barrier
+ * authority (its own doc pins "barriers are NOT this credential's job"):
+ *
+ *  - `STREAM.INFO` on both stores (the registry's §13.12 bind proof), `STREAM.MSG.GET` on both
+ *    (leader-served gate/cred/intent and head reads), and records `DIRECT.GET` (reads that only
+ *    feed revision-pinned CASes — the mint writer's own discipline).
+ *  - The per-run THROWAWAY enumeration consumer on the auth stream (SPEC 13.9: the barrier's
+ *    LastPerSubject point-in-time family scan): CREATE/INFO/MSG.NEXT/DELETE, never a standing
+ *    durable. Scoped to the AUTH stream only — no consumer authority on records.
+ *  - `$KV` writes on EXACTLY the barrier keys: auth `gate.` (the freeze/reopen CAS), `cred.`
+ *    (the family revokes), `stage.` (the durable operation intent), and records `lifecycle.`
+ *    (the containment/epoch head CASes). No `bysrc.`/`uid.` (a barrier never mints), no
+ *    `srcgate.`/`session.` (handle revocation and session reconcile are injected seams, not
+ *    this credential's job).
+ *
+ * Named residuals (D32 class, not pretend-confined): the stream-wide body-selected `MSG.GET`
+ * metadata read and the caller-selected-reply injection class ride this profile like its
+ * siblings; and the `$KV` prefixes span every uid (broker ACLs cannot scope "only the family
+ * you are containing") — the executor IS the barrier authority, and that authority is exactly
+ * what it holds.
+ */
+export function authorityBarrierGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const auth = `KV_${epAuthBucket(space)}`;
+  const records = `KV_${recordsBucket(space)}`;
+  // Same connId hygiene as its siblings: the only untrusted subject-forming input goes through
+  // the shared inbox grammar so it can never widen the scoped inbox.
+  const inbox = assertInboxConnId(connId);
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.INFO.${auth}`,
+      `$JS.API.STREAM.INFO.${records}`,
+      `$JS.API.STREAM.MSG.GET.${auth}`,
+      `$JS.API.STREAM.MSG.GET.${records}`,
+      `$JS.API.DIRECT.GET.${records}`,
+      `$JS.API.DIRECT.GET.${records}.>`,
+      `$JS.API.CONSUMER.CREATE.${auth}`,
+      `$JS.API.CONSUMER.CREATE.${auth}.>`,
+      `$JS.API.CONSUMER.DURABLE.CREATE.${auth}.>`,
+      `$JS.API.CONSUMER.INFO.${auth}.>`,
+      `$JS.API.CONSUMER.DELETE.${auth}.>`,
+      `$JS.API.CONSUMER.MSG.NEXT.${auth}.>`,
+      `$KV.${epAuthBucket(space)}.gate.>`,
+      `$KV.${epAuthBucket(space)}.cred.>`,
+      `$KV.${epAuthBucket(space)}.stage.>`,
+      `$KV.${recordsBucket(space)}.lifecycle.>`,
+    ],
+    subscribe: [`_INBOX_${inbox}.>`],
+  };
+}
+
 export interface AuthorityClientOpts {
   server: string;
   space: string;
