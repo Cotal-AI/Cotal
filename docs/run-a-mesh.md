@@ -116,6 +116,45 @@ It is deliberately **not** an agent tool: agents cannot wipe the record
 --force` deletes the on-disk JetStream store outright, and `cotal clean all --force`
 also resets the space identity ([CLI reference](cli.md#clean)).
 
+## Offline backup
+
+For a coherent durable cut, preserve the whole stack first, then create the artifact while it stays
+down:
+
+```bash
+cotal down --preserve-state
+cotal backup create ./space-backup        # full by default
+# later: deliberately resume the unchanged source
+cotal up --detach
+# or, from another preserved cut, restore before the normal listener opens
+cotal up --restore ./space-backup --detach
+```
+
+Use `--store-dir` on both preservation and backup for a custom JetStream store. `registry` is the
+only partial selection (`backup create ... --only registry`; `up --restore ... --restore-only
+registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
+does not contain credentials or trust secrets. Backup/restore in every auth mode — open included —
+uses isolated, operation-specific maintenance logins; normal agent credentials cannot enter that
+listener. Full
+restore requires the same space and exact current local trust continuity, recreates conservative
+consumer checkpoints bound to their snapshot stream sequence state, and resumes retained agents under
+their original principals. The trust commitment includes the cryptographically validated full
+operator/system/data-account root chain as well as static/user authority state. A registry-only
+restore completes canonical empty infrastructure but leaves retained agents stopped because their
+DM/DLV/TASK/ACL state is outside that selection. Authenticated restore validates the complete space
+trust bundle before staging or changing the preserved store. Interrupted ordinary resume retries the
+same durable attempt after its prior listener is stopped. Restore re-entry can recover a surviving normal listener
+only when its attempt nonce, NATS server name, process owner, endpoint, and target-store identity all
+match the fsynced proof. A provably dead uncommitted owner is retired under lock and replaced with a
+fresh attempt-bound listener; an occupied foreign listener or ambiguous owner is never adopted. The
+manager commit validates while retained cleanup is still suppressed; the CLI durably records its
+attempt-bound 64-hex token in `manager-committed` / `resume-committed` before `finalizeResume` can
+release suppression. A retry from either committed state goes straight to exact-token finalization;
+failure preserves the committed gate and retained cleanup suppression. Missing commit evidence,
+interrupted finalization, a live recorded endpoint despite missing pidfiles, or ambiguous proof fails closed. See the [CLI
+backup and restore contract](cli.md#backup-and-restore) for artifact, checkpoint, fallback,
+disaster-consent, and degraded-recovery details.
+
 ## Personas from the CLI
 
 `cotal personas` manages the local catalog offline: `list` (`--running` overlays live
