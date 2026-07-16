@@ -28,7 +28,7 @@ import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { runSeed } from "../seed/reconcile.js";
-import { isAuthenticSeedChild, writeChildMarker, clearChildMarker } from "../seed/lock.js";
+import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { seedStoreDir } from "../seed/paths.js";
 
 /**
@@ -154,7 +154,9 @@ async function add(spec: string): Promise<void> {
   // staged official-connector path qualifies — a forged `COTAL_EXT_SEEDING` can't skip the lock.
   const seeding = isAuthenticSeedChild() && isPath && resolved.startsWith(seedStoreDir() + sep);
   const releaseMutation = seeding ? () => {} : claimExtensionMutation();
-  if (seeding) writeChildMarker();
+  // Upgrade the parent's pending marker to a live one carrying this child's PID, as the first act — so
+  // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
+  if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
     await addTransaction();
   } finally {

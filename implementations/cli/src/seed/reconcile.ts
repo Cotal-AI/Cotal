@@ -14,10 +14,12 @@ import {
   acquireReconcileLock,
   clearChildMarker,
   clearCursor,
-  liveSeedChildPid,
   readCursor,
   reconcileLockActive,
+  sanitizeCorruptCrashState,
+  seedChildStatus,
   writeCursor,
+  writePendingChildMarker,
 } from "./lock.js";
 import {
   ensureWitness,
@@ -102,12 +104,17 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
       // A cursor + a LIVE lock holder ⇒ a reconcile is in flight: fall through and WAIT on the lock,
       // then re-check the fast path (it will have stamped). A cursor + no live holder ⇒ it crashed.
       if (!reconcileLockActive()) {
-        const child = liveSeedChildPid();
-        if (child !== undefined)
-          throw new Error(`a connector seed child (pid ${child}) is still installing - retry once it finishes`);
+        const child = seedChildStatus();
+        if (child.kind === "live")
+          throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
+        if (child.kind === "ambiguous")
+          throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         throw new Error("a previous connector seed was interrupted - run `cotal ext seed --repair`");
       }
-    } else if (readWitness() && authorityIntact() && readStamp()?.generation === generation) {
+    } else if (!reconcileLockActive() && readWitness() && authorityIntact() && readStamp()?.generation === generation) {
+      // Steady state AND no reconcile in flight. A live lock with a current stamp means another
+      // process is mid-`--force`/refresh; fall through to wait on it rather than racing past into the
+      // command while it mutates the prefix.
       return NOOP;
     }
   }
@@ -133,15 +140,20 @@ function authorityIntact(): boolean {
 
 async function runUnderLocks(mode: Mode, generation: string, nonce: string): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
-  // installer) is mutating it — reclaiming the lock does not stop that process.
-  const orphan = liveSeedChildPid();
-  if (orphan !== undefined)
-    throw new Error(`a connector seed child (pid ${orphan}) is still installing - retry once it finishes`);
+  // installer) is mutating it — reclaiming the lock does not stop that process. An ambiguous marker
+  // (pending with a dead parent, or corrupt) is fail-loud: we cannot prove no installer is running.
+  const child = seedChildStatus();
+  if (child.kind === "live")
+    throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
+  if (child.kind === "ambiguous")
+    throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it and retry`);
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
-  // file(s) aside so the reads below (and the commit) can't wedge on them.
+  // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` tells the
+  // loop it must reconcile against ON-DISK truth, not a (now-quarantined) manifest.
+  let manifestRebuilt = false;
   if (mode === "repair" || mode === "reset") {
-    prepareMaintenanceState(mode);
+    manifestRebuilt = prepareMaintenanceState(mode);
   }
 
   // Health preamble — BEFORE the stamp fast path. A cursor means a prior reconcile was interrupted.
@@ -193,8 +205,15 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
         verifyInstalled(name);
         refreshed.push(name);
       }
+    } else if (manifestRebuilt && installedExtensionVersion(OFFICIAL_CONNECTORS[name])) {
+      // The manifest was corrupt and quarantined, but this connector is STILL on disk: its entry was
+      // lost with the manifest, not removed. Re-seed it to rebuild the record (a quarantined manifest
+      // carries no reliable "removed" fact — only on-disk presence can distinguish the two).
+      seedOne(name, generation, nonce, true);
+      verifyInstalled(name);
+      refreshed.push(name);
     } else {
-      removedKept.push(name); // seeded before, deliberately removed → leave removed
+      removedKept.push(name); // seeded before, deliberately removed (or absent on disk) → leave removed
     }
   }
 
@@ -211,23 +230,30 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
   return { noop: false, seeded, refreshed, removedKept };
 }
 
-/** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of
- *  wedging on the same unreadable read. Third-party manifest entries in an unrecoverable manifest are
- *  lost by the quarantine — reported, not silently dropped. */
-function prepareMaintenanceState(mode: Mode): void {
+/** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of wedging
+ *  on the same unreadable read. Returns true iff the manifest itself was quarantined — the caller then
+ *  reconciles the built-ins against ON-DISK truth, since a quarantined manifest carries no reliable
+ *  "removed" record. Third-party entries in an unrecoverable manifest are lost — reported, not
+ *  silently dropped. */
+function prepareMaintenanceState(mode: Mode): boolean {
+  let manifestRebuilt = false;
   try {
     loadExtensionsManifest();
   } catch {
     const aside = quarantineExtensionsManifest();
-    if (aside)
+    if (aside) {
+      manifestRebuilt = true;
       console.error(
         c.red(`quarantined a corrupt extensions manifest → ${aside}`) +
           c.dim(" (any third-party extensions it recorded must be `cotal ext add`ed again)"),
       );
+    }
   }
+  for (const aside of sanitizeCorruptCrashState()) console.error(c.dim(`quarantined a corrupt seed cursor → ${aside}`));
   if (mode === "reset") {
     for (const aside of quarantineCorruptSeedState()) console.error(c.dim(`quarantined corrupt seed state → ${aside}`));
   }
+  return manifestRebuilt;
 }
 
 /**
@@ -283,12 +309,15 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writeCursor({ nonce, package: name, phase: "copy" });
   const storePath = stageSeedPayload(generation, name, { force });
   writeCursor({ nonce, package: name, phase: "add" });
+  // Record intent to spawn BEFORE the spawn, so the orphan window never opens ownerless: a repair
+  // after a parent SIGKILL sees this pending marker and fails loud rather than racing the installer.
+  writePendingChildMarker(nonce);
   const [bin, ...argv] = selfArgv();
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
     encoding: "utf8",
     env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
-  clearChildMarker(); // the child clears its own marker on exit; drop any stale one defensively
+  clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
   if (r.stdout) process.stdout.write(r.stdout);
   if (r.status !== 0) {
     const tail = `${r.stderr ?? ""}`.trim().split("\n").slice(-8).join("\n");
@@ -330,8 +359,14 @@ interface Semver {
 function parseSemver(v: string): Semver {
   const core = v.split("+")[0];
   const dash = core.indexOf("-");
-  const release = (dash >= 0 ? core.slice(0, dash) : core).split(".").map((s) => Number(s) || 0);
   const pre = dash >= 0 ? core.slice(dash + 1).split(".") : [];
+  // Fail loud on a non-numeric release segment rather than coercing it to 0 (which would silently
+  // mis-order versions). The generation is a real package.json version and the stamp is one we wrote,
+  // so a non-semver core here means corrupt state → `cotal ext seed --repair`/`--reset`.
+  const release = (dash >= 0 ? core.slice(0, dash) : core).split(".").map((s) => {
+    if (!/^\d+$/.test(s)) throw new Error(`invalid version "${v}" (release segment "${s}" is not numeric) - repair with \`cotal ext seed --repair\` (or --reset)`);
+    return Number(s);
+  });
   return { rel: [release[0] ?? 0, release[1] ?? 0, release[2] ?? 0], pre };
 }
 

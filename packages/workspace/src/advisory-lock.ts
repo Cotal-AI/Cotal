@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 /**
  * A machine-local, crash-safe advisory file lock, shared by every serialized workstation mutation
@@ -9,17 +9,27 @@ import { dirname, join } from "node:path";
  * read-side probe). One primitive so ownership, liveness, and reclaim are decided identically
  * everywhere.
  *
- * The lock is a DIRECTORY (`mkdir` is the portable atomic create-exclusive — no empty-file window a
- * racer could misread as stale), with the fully-written owner record in `owner.json` beside it
- * (temp-then-rename, so a reader never sees a half-written owner). Liveness is the owner PID being
- * alive AND, where the OS makes it cheap (Linux `/proc`, macOS/BSD `ps`), its process-start token
- * still matching — so a PID reused by an unrelated process is NOT mistaken for the original holder.
- * A dead owner is reclaimed; a live one is waited on up to a bound, then fails loud (never a silent
- * infinite deadlock, and never a stolen active lock). Release removes the lock only while it still
- * carries our nonce, so a lock reclaimed out from under us is never deleted by our own release.
+ * Correctness rests on two invariants that together defeat the empty-lock and reclaim-ABA races:
+ *
+ *  1. **No canonical lock is ever visible before its complete owner record.** The owner JSON is
+ *     written to a unique temp file and `link()`ed onto the canonical path — an atomic create-if-absent
+ *     that either publishes the fully-written record or fails `EEXIST`. There is no `mkdir`-then-write
+ *     window a racer could misread as stale, and the canonical file is immutable once created (nobody
+ *     rewrites it; it is only removed by a reclaimer).
+ *  2. **Reclaim is serialized by a sentinel.** A stale lock is removed only by the process that first
+ *     wins a `.reclaim` sentinel (same atomic `link` claim). While it holds the sentinel it re-checks
+ *     the exact owner+inode and unlinks ONLY that generation, then releases. Because the canonical file
+ *     blocks any new publish while it exists, no `inspect→unlink` can ever target a later generation,
+ *     and two reclaimers can never both remove. A dead sentinel holder is fail-loud (manual cleanup),
+ *     never a recursive unsafe reclaim.
+ *
+ * Liveness is the owner PID being alive AND, where the OS makes it cheap (Linux `/proc`, macOS/BSD
+ * `ps`), its process-start token still matching. When the token is unobtainable the lock is treated as
+ * active/unknown (bounded-wait → fail loud), NEVER reclaimed on the missing token alone; only a
+ * PID-dead owner is reclaimable.
  */
 
-/** The fully-written owner record published inside the lock dir. */
+/** The fully-written owner record published inside the canonical lock file. */
 export interface LockOwner {
   readonly pid: number;
   /** Best-effort process-start token (PID-reuse guard); absent where the OS makes it unobtainable. */
@@ -51,15 +61,6 @@ export interface AcquireOptions {
   readonly pollMs?: number;
   /** The loud error thrown when the wait bound elapses with the lock still live-held. */
   readonly onTimeout?: (owner: LockOwner) => Error;
-}
-
-const OWNER_FILE = "owner.json";
-/** How long a dir-exists-but-owner-absent state is tolerated as a mid-acquire window before it is
- *  judged a crash between `mkdir` and the owner write (→ stale, reclaim). */
-const ACQUIRE_GRACE_MS = 1500;
-
-function ownerPath(dir: string): string {
-  return join(dir, OWNER_FILE);
 }
 
 /** A best-effort, OS-cheap process-start token used ONLY to detect PID reuse. Undefined ⇒ the check
@@ -103,38 +104,45 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Inspect a lock dir: absent, stale (dead/aborted owner), or active with the live owner record. */
-export function inspectLock(dir: string): LockInspection {
+function readOwner(path: string): { owner?: LockOwner; ino?: number } | undefined {
   let raw: string;
   try {
-    raw = readFileSync(ownerPath(dir), "utf8");
+    raw = readFileSync(path, "utf8");
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    // ENOENT: no owner file (no lock, or a dir mid-acquire / crashed between mkdir and the owner
-    // write). ENOTDIR: the lock path is a plain file — a legacy or torn lock — reclaim it.
-    if (code === "ENOENT" || code === "ENOTDIR") {
-      let pathExists = true;
-      try {
-        statSync(dir);
-      } catch (se) {
-        if ((se as NodeJS.ErrnoException).code === "ENOENT") pathExists = false;
-      }
-      return pathExists ? { state: "stale" } : { state: "absent" };
-    }
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw e;
   }
-  let owner: LockOwner;
+  let ino: number | undefined;
   try {
-    owner = JSON.parse(raw) as LockOwner;
+    ino = statSync(path).ino;
   } catch {
-    return { state: "stale" }; // torn owner record
+    /* raced removal */
   }
-  if (typeof owner.pid !== "number" || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.nonce !== "string") {
+  try {
+    return { owner: JSON.parse(raw) as LockOwner, ino };
+  } catch {
+    return { ino }; // torn/legacy content
+  }
+}
+
+/** Inspect a lock file: absent, stale (dead/aborted owner or torn record), or active with the owner. */
+export function inspectLock(path: string): LockInspection {
+  const found = readOwner(path);
+  if (found === undefined) return { state: "absent" };
+  const owner = found.owner;
+  if (
+    !owner ||
+    typeof owner.pid !== "number" ||
+    !Number.isInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    typeof owner.nonce !== "string"
+  ) {
     return { state: "stale" };
   }
   if (!pidAlive(owner.pid)) return { state: "stale" };
-  // PID is alive — but is it still the SAME process? A recorded start token that no longer matches
-  // means the PID was recycled: the original owner is gone (stale), not this unrelated process.
+  // PID alive — but is it still the SAME process? A recorded start token that no longer matches means
+  // the PID was recycled: the original owner is gone (stale). A token we simply cannot obtain is NOT
+  // grounds to reclaim — the live PID keeps the lock active/unknown.
   if (owner.start !== undefined) {
     const now = processStartToken(owner.pid);
     if (now !== undefined && now !== owner.start) return { state: "stale" };
@@ -142,27 +150,68 @@ export function inspectLock(dir: string): LockInspection {
   return { state: "active", owner };
 }
 
-function writeOwner(dir: string, owner: LockOwner): void {
-  const tmp = join(dir, `.${OWNER_FILE}.${randomBytes(6).toString("hex")}.tmp`);
-  writeFileSync(tmp, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: "wx" });
-  renameSync(tmp, ownerPath(dir));
+/** Publish `content` at `path` iff nothing is there — atomic (temp write + hard link). Returns true on
+ *  success, false if the path already exists. */
+function publishAtomic(path: string, content: string): boolean {
+  const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+  writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
+  try {
+    linkSync(tmp, path);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort temp cleanup */
+    }
+  }
 }
 
-/** Reclaim a lock judged stale, but re-confirm the owner is still not live right before removal — so
- *  a reclaimer never deletes a lock another racer has meanwhile reacquired. */
-function reclaimStale(dir: string): void {
-  if (inspectLock(dir).state === "active") return; // someone reacquired — do not remove a live lock
-  rmSync(dir, { recursive: true, force: true });
+/** Serialized reclaim of a stale canonical lock at `path`, via a `.reclaim` sentinel that only one
+ *  reclaimer can hold. Under the sentinel the exact stale generation is re-confirmed and removed. A
+ *  live sentinel is waited on; a dead sentinel holder fails loud (never a recursive unsafe reclaim). */
+function reclaimStale(path: string, inspectedIno: number | undefined): void {
+  const sentinel = `${path}.reclaim`;
+  const mine = JSON.stringify({ pid: process.pid, start: processStartToken(process.pid), nonce: randomBytes(8).toString("hex"), ts: Date.now() });
+  if (!publishAtomic(sentinel, mine)) {
+    // Someone else is reclaiming (or crashed mid-reclaim).
+    const held = inspectLock(sentinel);
+    if (held.state === "active") return; // a live reclaimer owns it — let the caller retry acquisition
+    throw new Error(
+      `a lock reclaim was interrupted and its sentinel remains (${sentinel}) - if no cotal process is running, remove it and retry`,
+    );
+  }
+  try {
+    // Under the sentinel the canonical file is immutable (publish is blocked while it exists), so a
+    // re-inspect that is still stale AND the same inode is exactly the generation we set out to reclaim.
+    const found = readOwner(path);
+    if (found === undefined) return; // already gone
+    const state = inspectLock(path).state;
+    if (state === "active") return; // reacquired under us (should not happen while it exists) — leave it
+    if (inspectedIno !== undefined && found.ino !== undefined && found.ino !== inspectedIno) return; // a different generation
+    unlinkSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  } finally {
+    try {
+      unlinkSync(sentinel);
+    } catch {
+      /* released */
+    }
+  }
 }
 
 /**
- * Acquire the lock at `dir`. Returns a handle whose {@link HeldLock.release} removes it (idempotent,
- * nonce-guarded). Reclaims a dead owner; waits up to `waitMs` on a live one, then throws.
+ * Acquire the lock at `path`. Returns a handle whose {@link HeldLock.release} removes it (idempotent,
+ * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live one, then throws.
  */
-export function acquireLock(dir: string, opts: AcquireOptions = {}): HeldLock {
+export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
   const waitMs = opts.waitMs ?? 300000;
   const pollMs = opts.pollMs ?? 200;
-  mkdirSync(dirname(dir), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true });
   const nonce = randomBytes(12).toString("hex");
   const owner: LockOwner = {
     pid: process.pid,
@@ -171,82 +220,60 @@ export function acquireLock(dir: string, opts: AcquireOptions = {}): HeldLock {
     ts: Date.now(),
     ...(opts.label ? { label: opts.label } : {}),
   };
-
+  const content = `${JSON.stringify(owner)}\n`;
   const deadline = Date.now() + waitMs;
-  let graceUntil = 0;
+
   for (;;) {
-    try {
-      mkdirSync(dir); // atomic create-exclusive: EEXIST ⇒ already held
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const found = inspectLock(dir);
-      if (found.state === "absent") continue; // raced with the holder's release
-      if (found.state === "stale") {
-        // A dir-without-owner may be a live holder mid-acquire; tolerate it briefly before reclaiming.
-        const ownerMissing = readOwnerRaw(dir) === undefined;
-        if (ownerMissing) {
-          if (graceUntil === 0) graceUntil = Date.now() + ACQUIRE_GRACE_MS;
-          if (Date.now() < graceUntil) {
-            sleepSync(Math.min(pollMs, 100));
-            continue;
+    if (publishAtomic(path, content)) {
+      let released = false;
+      return {
+        nonce,
+        release() {
+          if (released) return;
+          released = true;
+          const found = readOwner(path);
+          if (found?.owner?.nonce === nonce) {
+            try {
+              unlinkSync(path);
+            } catch {
+              /* already reclaimed */
+            }
           }
-        }
-        reclaimStale(dir);
-        graceUntil = 0;
-        continue;
-      }
-      // Live holder — wait up to the bound, then fail loud.
-      if (Date.now() >= deadline) {
-        throw (opts.onTimeout?.(found.owner)) ??
-          new Error(
-            `${opts.label ?? "a lock"} is held by a live process (pid ${found.owner.pid}) and did not release within ${Math.round(waitMs / 1000)}s - retry, or if it is wedged, remove ${dir}`,
-          );
-      }
-      sleepSync(pollMs);
+        },
+      };
+    }
+    // Held — inspect and either wait (live) or reclaim (dead).
+    const found = readOwner(path);
+    const inspection = inspectLock(path);
+    if (inspection.state === "absent") continue; // raced with a release
+    if (inspection.state === "stale") {
+      reclaimStale(path, found?.ino);
+      sleepSync(Math.min(pollMs, 50));
       continue;
     }
-    // We created the dir — publish our fully-written owner record before returning.
-    try {
-      writeOwner(dir, owner);
-    } catch (e) {
-      rmSync(dir, { recursive: true, force: true });
-      throw e;
+    if (Date.now() >= deadline) {
+      throw (opts.onTimeout?.(inspection.owner)) ??
+        new Error(
+          `${opts.label ?? "a lock"} is held by a live process (pid ${inspection.owner.pid}) and did not release within ${Math.round(waitMs / 1000)}s - retry, or if it is wedged, remove ${path}`,
+        );
     }
-    let released = false;
-    return {
-      nonce,
-      release() {
-        if (released) return;
-        released = true;
-        const raw = readOwnerRaw(dir);
-        if (raw === undefined) return; // already reclaimed
-        try {
-          if ((JSON.parse(raw) as LockOwner).nonce === nonce) rmSync(dir, { recursive: true, force: true });
-        } catch {
-          /* torn/foreign owner — not ours to remove */
-        }
-      },
-    };
+    sleepSync(pollMs);
   }
 }
 
-function readOwnerRaw(dir: string): string | undefined {
-  try {
-    return readFileSync(ownerPath(dir), "utf8");
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
-    throw e;
-  }
+/** True when a live process currently holds the lock at `path` (used by read-side probes). */
+export function lockIsActive(path: string): boolean {
+  return inspectLock(path).state === "active";
 }
 
-/** True when a live process currently holds the lock at `dir` (used by read-side probes). */
-export function lockIsActive(dir: string): boolean {
-  return inspectLock(dir).state === "active";
-}
-
-/** The owning PID of a live lock at `dir`, else undefined (used for diagnostics). */
-export function liveLockOwnerPid(dir: string): number | undefined {
-  const found = inspectLock(dir);
+/** The owning PID of a live lock at `path`, else undefined (used for diagnostics). */
+export function liveLockOwnerPid(path: string): number | undefined {
+  const found = inspectLock(path);
   return found.state === "active" ? found.owner.pid : undefined;
+}
+
+/** Force-remove a lock path and any reclaim sentinel (operator recovery for a wedged lock). */
+export function breakLock(path: string): void {
+  rmSync(path, { force: true });
+  rmSync(`${path}.reclaim`, { force: true });
 }
