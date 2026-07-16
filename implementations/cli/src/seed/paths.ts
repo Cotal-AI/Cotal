@@ -46,7 +46,8 @@ export function stampPath(): string {
   return join(seedDir(), "stamp.json");
 }
 
-/** The reconcile-wide lock (nonce-bearing, O_EXCL, dead-owner reclaim). */
+/** The reconcile-wide lock DIRECTORY (shared advisory-lock primitive: atomic `mkdir` publish, PID +
+ *  process-start liveness, bounded wait, dead-owner reclaim). */
 export function reconcileLockPath(): string {
   return join(seedDir(), "reconcile.lock");
 }
@@ -55,6 +56,13 @@ export function reconcileLockPath(): string {
  *  (SIGKILL) run leaves behind, so the next boot fails loud instead of silently proceeding. */
 export function reconcileCursorPath(): string {
   return join(seedDir(), "reconcile.cursor.json");
+}
+
+/** The seed-child liveness marker `{pid, start, ts}`: a validated `ext add` seed child writes it
+ *  before it mutates the prefix and clears it on exit, so a reclaim/repair after a parent SIGKILL can
+ *  refuse to race an orphaned child that is still installing. */
+export function reconcileChildPath(): string {
+  return join(seedDir(), "reconcile.child.json");
 }
 
 /** The durable seed store root: `<config>/cotal/seed/store`. */

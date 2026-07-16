@@ -164,7 +164,8 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 | Path | What it is |
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
-| `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache |
+| `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
+| `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 
-For how `cotal setup` populates the machine state and the plugin, see
-[setup internals](setup-internals.md).
+For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
+seeded as removable extensions, see [setup internals](setup-internals.md).

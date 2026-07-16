@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
 
 /**
@@ -11,9 +11,12 @@ import { seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
  */
 
 /** Everything except a nested `node_modules` (npm resolves deps fresh; peers are junction-linked by
- *  the `ext add` path) and VCS metadata. Keeps the dev copy from dragging a huge symlinked tree. */
-function payloadFilter(src: string): boolean {
-  return !src.includes(`${sep}node_modules${sep}`) && !src.endsWith(`${sep}node_modules`) && !src.includes(`${sep}.git${sep}`);
+ *  the `ext add` path) and VCS metadata. The exclusion is RELATIVE to the payload root — a published
+ *  connector lives UNDER `.../node_modules/cotal-ai/seeded-connectors/<name>`, so matching
+ *  `node_modules` anywhere in the absolute path would reject the root itself and copy nothing. */
+function payloadFilter(root: string, from: string): boolean {
+  const segments = relative(root, from).split(sep);
+  return !segments.includes("node_modules") && !segments.includes(".git");
 }
 
 /**
@@ -31,7 +34,7 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   rmSync(staging, { recursive: true, force: true });
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dirname(dest), { recursive: true });
-  cpSync(src, staging, { recursive: true, filter: payloadFilter });
+  cpSync(src, staging, { recursive: true, filter: (from) => payloadFilter(src, from) });
   renameSync(staging, dest); // atomic within the store: the final path only ever holds a complete payload
   return dest;
 }

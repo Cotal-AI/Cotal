@@ -1,3 +1,5 @@
+import { existsSync, renameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import {
   authorityBackupPath,
   authorityPath,
@@ -35,20 +37,44 @@ export interface Stamp {
   readonly generation: string;
 }
 
+/** Every seed-state file is schema-validated on read: a syntactically-valid but wrong-shaped file is
+ *  as dangerous as corrupt JSON (a truncated authority would resurrect removed connectors), so it is
+ *  rejected the same way — loud, with the repair hint — never silently treated as a smaller set. */
+function validate<T>(path: string, value: T | undefined, ok: (v: unknown) => boolean): T | undefined {
+  if (value === undefined) return undefined;
+  if (!ok(value)) throw new Error(`corrupt seed state ${path}: unexpected shape - repair with \`cotal ext seed --repair\` (or --reset)`);
+  return value;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((s) => typeof s === "string");
+}
+
 export function readAuthority(): Authority | undefined {
-  return readJsonFile<Authority>(authorityPath());
+  return validate(authorityPath(), readJsonFile<Authority>(authorityPath()), (v) => isStringArray((v as Authority).everSeeded));
 }
 
 export function readAuthorityBackup(): Authority | undefined {
-  return readJsonFile<Authority>(authorityBackupPath());
+  return validate(authorityBackupPath(), readJsonFile<Authority>(authorityBackupPath()), (v) => isStringArray((v as Authority).everSeeded));
 }
 
 export function readWitness(): Witness | undefined {
-  return readJsonFile<Witness>(witnessPath());
+  return validate(witnessPath(), readJsonFile<Witness>(witnessPath()), (v) => (v as Witness).initialized === true && typeof (v as Witness).firstGeneration === "string");
 }
 
 export function readStamp(): Stamp | undefined {
-  return readJsonFile<Stamp>(stampPath());
+  return validate(stampPath(), readJsonFile<Stamp>(stampPath()), (v) => typeof (v as Stamp).generation === "string");
+}
+
+/** The ever-seeded set unioned with its monotonic backup. A live authority that lost ids (a truncated
+ *  or partially-corrupt write that still parsed) can only SHRINK the set; the backup is a superset, so
+ *  unioning it on read means a deliberately-removed connector is never resurrected by such a loss.
+ *  Returns undefined only when BOTH are absent (the genuinely-lost case the caller must fail loud on). */
+export function everSeededUnion(): Set<string> | undefined {
+  const live = readAuthority()?.everSeeded;
+  const backup = readAuthorityBackup()?.everSeeded;
+  if (live === undefined && backup === undefined) return undefined;
+  return new Set([...(live ?? []), ...(backup ?? [])]);
 }
 
 /**
@@ -80,4 +106,29 @@ export function writeStamp(generation: string): void {
 export function recoverAuthorityFromBackup(): Set<string> | undefined {
   const backup = readAuthorityBackup();
   return backup ? new Set(backup.everSeeded) : undefined;
+}
+
+/** Move aside any seed-state file that no longer reads/validates, so a `--reset` can rebuild clean
+ *  state instead of wedging when a commit helper re-reads the same corrupt file. Returns the
+ *  quarantine paths (for reporting). `--reset` overwrites authority/backup/witness/stamp anyway; this
+ *  just guarantees the pre-write reads (e.g. {@link ensureWitness}) can't throw on a corrupt one. */
+export function quarantineCorruptSeedState(): string[] {
+  const readers: Array<[string, () => unknown]> = [
+    [authorityPath(), readAuthority],
+    [authorityBackupPath(), readAuthorityBackup],
+    [witnessPath(), readWitness],
+    [stampPath(), readStamp],
+  ];
+  const quarantined: string[] = [];
+  for (const [path, read] of readers) {
+    if (!existsSync(path)) continue;
+    try {
+      read();
+    } catch {
+      const aside = `${path}.corrupt.${randomBytes(4).toString("hex")}`;
+      renameSync(path, aside);
+      quarantined.push(aside);
+    }
+  }
+  return quarantined;
 }

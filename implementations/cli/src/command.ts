@@ -9,6 +9,7 @@ import {
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
+import { isAuthenticSeedChild } from "./seed/lock.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -62,9 +63,9 @@ function commandHelp(cmd: Command): void {
  *  - `ext seed [--repair|--reset|--force]` is dispatched HERE, before the manifest overlay, so repair
  *    survives a corrupt manifest.
  *  - every other real command reconciles first (so `npm i -g cotal-ai && cotal ext list` shows the
- *    four, and a first-command `ext add` still seeds), EXCEPT completion/help and a seed CHILD — a
- *    process carrying `COTAL_EXT_SEEDING=1` whose command is `ext add`/`ext seed` (the marker, not an
- *    `ext`-subcommand allowlist, is what breaks the recursive-reconcile deadlock).
+ *    four, and a first-command `ext add` still seeds), EXCEPT completion/help and an AUTHENTIC seed
+ *    CHILD — an `ext add` whose `COTAL_EXT_SEEDING` nonce + parent PID match the live reconcile lock
+ *    (a forged marker no longer skips, so it can't bypass the recursive-reconcile guard or the lock).
  */
 async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
   const [name, sub] = argv;
@@ -83,7 +84,8 @@ function skipAutoReconcile(argv: string[]): boolean {
   const [name, sub] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
-  if (process.env.COTAL_EXT_SEEDING === "1" && name === "ext" && (sub === "add" || sub === "seed")) return true;
+  if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
+  if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   return false;
 }
 

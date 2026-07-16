@@ -1,21 +1,20 @@
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
-import { dirname } from "node:path";
-import { reconcileCursorPath, reconcileLockPath, readJsonFile, writeJsonAtomic } from "./paths.js";
+import { rmSync } from "node:fs";
+import { acquireLock, inspectLock, processStartToken, type HeldLock } from "@cotal-ai/workspace";
+import { reconcileChildPath, reconcileCursorPath, reconcileLockPath, readJsonFile, writeJsonAtomic } from "./paths.js";
 
 /**
  * The reconcile-wide lock and the crash cursor.
  *
  * ONE lock guards a whole reconcile (not each `ext add` child) so an operator `ext add`/`remove`
- * cannot interleave between seed children and strand a half-applied refresh decision. It is
- * nonce-bearing and acquired atomically (O_EXCL): the nonce defeats PID reuse — a reclaimed lock
- * re-created by another process carries a different nonce, so our release only removes a lock still
- * ours. A dead owner (ESRCH) is reclaimed; a live one fails loud.
+ * cannot interleave between seed children and strand a half-applied refresh decision. It rides the
+ * shared crash-safe advisory-lock primitive (atomic `mkdir` publish so a racer never misreads an
+ * empty file as stale; PID + process-start liveness so a recycled PID isn't mistaken for the holder;
+ * a bounded wait on a live holder rather than a false "interrupted"; nonce-guarded release).
  *
  * The cursor is the SIGKILL floor: before each connector mutation the reconcile journals
- * `{nonce, package, phase}`, and clears it only after the stamp commits. A crash mid-reconcile
- * leaves the cursor behind, so the next boot's health preamble sees a partial reconcile and fails
- * loud (naming the package) instead of silently proceeding on a torn prefix.
+ * `{nonce, package, phase}`, and clears it only after the stamp commits. A crash mid-reconcile leaves
+ * the cursor behind; the next boot distinguishes a LIVE reconcile (lock still actively held → wait)
+ * from a DEAD one (lock stale + cursor present → fail loud, `--repair`).
  */
 
 export interface ReconcileLock {
@@ -23,73 +22,38 @@ export interface ReconcileLock {
   release(): void;
 }
 
-type LockOwner = { readonly pid: number; readonly nonce: string } | "absent" | "stale";
-
-function inspectLock(path: string): LockOwner {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "absent";
-    throw e;
-  }
-  let owner: { pid?: unknown; nonce?: unknown };
-  try {
-    owner = JSON.parse(raw);
-  } catch {
-    return "stale"; // a torn/empty lock file left by a crash between create and write
-  }
-  const pid = owner.pid;
-  const nonce = owner.nonce;
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || typeof nonce !== "string") return "stale";
-  try {
-    process.kill(pid, 0);
-    return { pid, nonce };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return "stale";
-    if (code === "EPERM") return { pid, nonce }; // owned by another user but alive
-    throw e;
-  }
+/** Acquire the reconcile lock, waiting (bounded) on a live reconcile and reclaiming a dead owner's.
+ *  A reconcile installs four connectors via npm, so the wait bound is generous. */
+export function acquireReconcileLock(): ReconcileLock {
+  const held: HeldLock = acquireLock(reconcileLockPath(), {
+    label: "a connector reconcile",
+    waitMs: 300000,
+    onTimeout: (owner) =>
+      new Error(
+        `another connector reconcile has held the lock for over 5 minutes (pid ${owner.pid}) - retry once it finishes, or \`cotal ext seed --repair\` if it is wedged`,
+      ),
+  });
+  return { nonce: held.nonce, release: () => held.release() };
 }
 
-/** Acquire the reconcile lock, reclaiming a dead owner's. Throws (loud) if a live reconcile holds it. */
-export function acquireReconcileLock(): ReconcileLock {
-  const path = reconcileLockPath();
-  mkdirSync(dirname(path), { recursive: true });
-  const nonce = randomBytes(12).toString("hex");
-  for (;;) {
-    let fd: number;
-    try {
-      fd = openSync(path, "wx", 0o600);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const owner = inspectLock(path);
-      if (owner === "absent") continue; // raced with the owner's release
-      if (owner === "stale") {
-        rmSync(path, { force: true }); // dead owner — reclaim
-        continue;
-      }
-      throw new Error(
-        `another connector reconcile is in progress (pid ${owner.pid}) - retry once it finishes, or \`cotal ext seed --repair\` if it died`,
-      );
-    }
-    try {
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, nonce }));
-    } finally {
-      closeSync(fd);
-    }
-    let released = false;
-    return {
-      nonce,
-      release() {
-        if (released) return;
-        released = true;
-        const owner = inspectLock(path);
-        if (owner !== "absent" && owner !== "stale" && owner.nonce === nonce) rmSync(path, { force: true });
-      },
-    };
-  }
+/** True while a LIVE process holds the reconcile lock (distinguishes an in-flight reconcile from a
+ *  crashed one when a cursor is present). */
+export function reconcileLockActive(): boolean {
+  return inspectLock(reconcileLockPath()).state === "active";
+}
+
+/**
+ * True iff THIS process is a genuine seed child: it carries `COTAL_EXT_SEEDING=<nonce>` +
+ * `COTAL_EXT_SEEDING_PARENT=<pid>`, and a LIVE reconcile actually holds the lock under exactly that
+ * PID and nonce. A user cannot forge this to skip the mutation lock for an arbitrary `ext add` — the
+ * bare-`=1` bypass is gone; the marker must match the live lock the parent published.
+ */
+export function isAuthenticSeedChild(): boolean {
+  const nonce = process.env.COTAL_EXT_SEEDING;
+  const parent = Number(process.env.COTAL_EXT_SEEDING_PARENT);
+  if (!nonce || nonce === "1" || !Number.isInteger(parent) || parent <= 0) return false;
+  const found = inspectLock(reconcileLockPath());
+  return found.state === "active" && found.owner.pid === parent && found.owner.nonce === nonce;
 }
 
 /** The mid-reconcile journal: which package is being mutated, in which phase, under which lock nonce. */
@@ -109,4 +73,37 @@ export function readCursor(): ReconcileCursor | undefined {
 
 export function clearCursor(): void {
   rmSync(reconcileCursorPath(), { force: true });
+}
+
+/** A seed child's liveness marker: its PID + process-start token, written before it mutates. */
+export interface ChildMarker {
+  readonly pid: number;
+  readonly start?: string;
+  readonly ts: number;
+}
+
+export function writeChildMarker(): void {
+  writeJsonAtomic(reconcileChildPath(), { pid: process.pid, start: processStartToken(process.pid), ts: Date.now() });
+}
+
+export function clearChildMarker(): void {
+  rmSync(reconcileChildPath(), { force: true });
+}
+
+/** The PID of a still-alive seed child (parent SIGKILL'd mid-install → orphan), else undefined. A
+ *  reused PID is NOT treated as the child: the recorded start token must still match. */
+export function liveSeedChildPid(): number | undefined {
+  const marker = readJsonFile<ChildMarker>(reconcileChildPath());
+  if (!marker || typeof marker.pid !== "number") return undefined;
+  try {
+    process.kill(marker.pid, 0);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ESRCH") return undefined;
+    // EPERM ⇒ alive under another user; fall through to the start-token check.
+  }
+  if (marker.start !== undefined) {
+    const now = processStartToken(marker.pid);
+    if (now !== undefined && now !== marker.start) return undefined; // recycled PID
+  }
+  return marker.pid;
 }

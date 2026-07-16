@@ -63,18 +63,9 @@ importers:
       '@cotal-ai/cli':
         specifier: workspace:*
         version: link:../implementations/cli
-      '@cotal-ai/connector-claude-code':
-        specifier: workspace:*
-        version: link:../extensions/connector-claude-code
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../extensions/connector-core
-      '@cotal-ai/connector-hermes':
-        specifier: workspace:*
-        version: link:../extensions/connector-hermes
-      '@cotal-ai/connector-opencode':
-        specifier: workspace:*
-        version: link:../extensions/connector-opencode
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../packages/core
@@ -84,12 +75,22 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
-      '@cotal-ai/pi':
-        specifier: workspace:*
-        version: link:../extensions/pi
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace
+    devDependencies:
+      '@cotal-ai/connector-claude-code':
+        specifier: workspace:*
+        version: link:../extensions/connector-claude-code
+      '@cotal-ai/connector-hermes':
+        specifier: workspace:*
+        version: link:../extensions/connector-hermes
+      '@cotal-ai/connector-opencode':
+        specifier: workspace:*
+        version: link:../extensions/connector-opencode
+      '@cotal-ai/pi':
+        specifier: workspace:*
+        version: link:../extensions/pi
 
   examples/01-lateral-coordination:
     dependencies:

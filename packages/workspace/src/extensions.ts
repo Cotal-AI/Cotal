@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 import type { Command, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
+import { inspectLock } from "./advisory-lock.js";
 import { localProcessPath, type LocalProcess } from "./local-process.js";
 
 /**
@@ -63,6 +65,8 @@ export function extensionsManifestPath(): string {
   return join(extensionsDir(), "extensions.json");
 }
 
+/** The extension-prefix writer lock — a lock DIRECTORY (see {@link inspectLock}: `mkdir` is the
+ *  portable atomic create-exclusive, with no empty-file window a racer could misread as stale). */
 export function extensionMutationLockPath(): string {
   return join(dirname(extensionsDir()), ".extensions.lock");
 }
@@ -71,29 +75,11 @@ export type ExtensionMutationLockState =
   | { readonly state: "absent" | "stale" }
   | { readonly state: "active"; readonly owner: number };
 
-/** Inspect the extension-prefix writer lock. Permission denial means the owner may still be live;
- * only ESRCH proves that a recorded owner is gone. */
+/** Inspect the extension-prefix writer lock via the shared advisory-lock primitive (PID liveness +
+ *  process-start identity + torn-record handling all decided in one place). */
 export function extensionMutationLockState(): ExtensionMutationLockState {
-  const lock = extensionMutationLockPath();
-  let raw: string;
-  try {
-    raw = readFileSync(lock, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent" };
-    throw new Error(`can't read extension mutation lock ${lock}: ${(e as Error).message}`);
-  }
-
-  const owner = Number(raw.trim());
-  if (!Number.isInteger(owner) || owner <= 0) return { state: "stale" };
-  try {
-    process.kill(owner, 0);
-    return { state: "active", owner };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return { state: "stale" };
-    if (code === "EPERM") return { state: "active", owner };
-    throw new Error(`can't check extension mutation lock owner ${owner}: ${(e as Error).message}`);
-  }
+  const found = inspectLock(extensionMutationLockPath());
+  return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
 /** Load the manifest. Missing file → no extensions. A CORRUPT file is a loud error (never treat
@@ -112,9 +98,25 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   return m;
 }
 
+/** Persist the manifest atomically (temp-then-rename, exclusive temp): a SIGKILL mid-write can never
+ *  truncate the live manifest into corrupt JSON that would then vanish every installed extension. */
 export function saveExtensionsManifest(m: ExtensionsManifest): void {
-  mkdirSync(extensionsDir(), { recursive: true });
-  writeFileSync(extensionsManifestPath(), `${JSON.stringify(m, null, 2)}\n`);
+  const dir = extensionsDir();
+  mkdirSync(dir, { recursive: true });
+  const path = extensionsManifestPath();
+  const tmp = join(dir, `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`, { flag: "wx" });
+  renameSync(tmp, path);
+}
+
+/** Move a corrupt/unreadable manifest aside so a `--reset`/`--repair` can rebuild a clean one instead
+ *  of wedging on the same unreadable read. Returns the quarantine path, or undefined if none existed. */
+export function quarantineExtensionsManifest(): string | undefined {
+  const path = extensionsManifestPath();
+  if (!existsSync(path)) return undefined;
+  const aside = `${path}.corrupt.${randomBytes(4).toString("hex")}`;
+  renameSync(path, aside);
+  return aside;
 }
 
 /** Strip a live {@link Command} down to its serializable display surface for the cache. */
