@@ -35,6 +35,7 @@ import { jwt } from "better-auth/plugins/jwt";
 import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
+import { pickFreePort } from "./_free-port.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-ua-home-"));
 process.env.COTAL_HOME = home;
@@ -60,7 +61,7 @@ const until = async (cond: () => boolean, ms = 8000): Promise<boolean> => {
   return cond();
 };
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `ua-launch-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";

@@ -21,12 +21,13 @@ import {
   ensureDefaultDeliveryClass, validateChannelConfig,
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-// Fresh random port per run: a fixed port means a single leaked broker (from a crashed/failed prior
-// run) collides with — or serves stale JetStream state to — every subsequent run, which reads as a
-// flaky gate. Randomizing isolates each run even if teardown ever leaks. Paired with an await-exit in
+// Fresh OS-assigned port per run: a fixed port means a single leaked broker (from a crashed/failed
+// prior run) collides with — or serves stale JetStream state to — every subsequent run, which reads
+// as a flaky gate. A fresh port isolates each run even if teardown ever leaks. Paired with an await-exit in
 // `finally` (a SIGKILLed child does not release the socket synchronously) so a clean run never leaks.
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "chansmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
