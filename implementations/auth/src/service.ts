@@ -39,14 +39,20 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { isReachable, type ParsedArgs } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { ensureAuthorityStores, isReachable, type ParsedArgs } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, type IdpBridge } from "./idp.js";
-import type { UserTokenView } from "./token.js";
+import type { UserTokenView, ValidatedUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
+import { authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader } from "./authority-client.js";
+import { authorizeConnectCredential } from "./connect-reader.js";
+import { ensureRootCredential } from "./root-credential.js";
+import { openLifecycleRegistry } from "./lifecycle-registry.js";
 import {
   AGENT_BEARER_TTL_SEC,
   ledgerAclResolver,
@@ -79,6 +85,67 @@ const FAILED_EXCHANGE_PER_MIN = 30;
 const BAD_CAP_PER_MIN = 30;
 
 type Values = Record<string, string | undefined>;
+
+/** The service's AUTHORITY PLANE (R1, SPEC 13.1): the two self-minted data-account connections
+ *  behind (a) the composed connect authorizer — the file-ledger arm PLUS the credential deny-new
+ *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
+ *  ensure both exchange arms stamp `act.credentialId` from. */
+export interface AuthAuthorityPlane {
+  authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
+  mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  close(): Promise<void>;
+}
+
+/**
+ * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
+ * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
+ * the MINT WRITER connects first and ensures both authority stores exist with their normative
+ * shape ({@link ensureAuthorityStores}; the reader's bind proof requires them), then the
+ * lifecycle registry binds (its own §13.12 shape proof), then the supervised CONNECT READER
+ * binds + proves. Any failure throws — the daemon refuses to come up rather than serving
+ * connects it cannot credential-check (no file-only fallback).
+ *
+ * These are STATIC data-account users (signed by the data-account signing key), so they never
+ * transit the auth callout — the callout cannot deadlock on its own reader.
+ */
+export async function openAuthAuthorityPlane(opts: {
+  server: string;
+  space: string;
+  /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
+  dir: string;
+  dataAccount: { pub: string; signingSeed: string };
+  log: (line: string) => void;
+}): Promise<AuthAuthorityPlane> {
+  const { server, space, dataAccount, log } = opts;
+  const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
+  let registry;
+  try {
+    await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
+    registry = await openLifecycleRegistry(writer.nc, space);
+  } catch (e) {
+    await writer.close();
+    throw e;
+  }
+  let reader;
+  try {
+    reader = await openSupervisedConnectReader({ server, space, dataAccount, log });
+  } catch (e) {
+    await writer.close();
+    throw e;
+  }
+  const fileArm = ledgerAuthorizeConnect(opts.dir);
+  return {
+    authorizeConnect: async (t) => {
+      fileArm(t);
+      await authorizeConnectCredential(reader.current(), t, Date.now);
+    },
+    mintConnectCredential: (args) => ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` }),
+    close: async () => {
+      await reader.close();
+      await writer.close();
+    },
+  };
+}
 
 /** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`
  *  (loopback HTTP port; default ephemeral). All persisted material must already exist in the
@@ -113,6 +180,16 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   if (!(await isReachable(server, { creds: callout.calloutCreds })))
     throw new Error(`auth-service: can't reach the broker at ${server} with the callout creds - is the mesh up (with the callout account preloaded)?`);
 
+  // ---- The authority plane (R1): stores ensured + registry + supervised reader, BEFORE the
+  // callout exists — a connect must never be answered without the credential arm bound.
+  const plane = await openAuthAuthorityPlane({
+    server,
+    space,
+    dir,
+    dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+    log: (l) => console.error(l),
+  });
+
   // ---- Plane 2: the callout, on its own callout-account connection ----
   const nc: NatsConnection = await connect({
     servers: server,
@@ -125,7 +202,7 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     space,
     token: { key: issuer.localKeySet(), issuer: issuer.issuer },
-    authorizeActor: ledgerAuthorizeConnect(dir),
+    authorizeActor: plane.authorizeConnect,
     permissionsFor: calloutPermissions(ledgerAclResolver(dir)),
     log: (l) => console.error(l),
   });
@@ -140,11 +217,12 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
     spaceSecret: ownerSecret,
     issuer,
     authorizeActor: ledgerAuthorizeGrant(dir),
+    mintConnectCredential: plane.mintConnectCredential,
   });
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps, space, dir }));
+  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps, space, dir, mintConnectCredential: plane.mintConnectCredential }));
   await new Promise<void>((resolvePort, reject) => {
     http.once("error", reject);
     http.listen(port, "127.0.0.1", () => resolvePort());
@@ -160,6 +238,7 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   const stop = async () => {
     clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
     http.close();
+    await plane.close().catch(() => {});
     await nc.close().catch(() => {});
     process.exit(0);
   };
@@ -187,6 +266,9 @@ interface HandlerCtx {
   space: string;
   /** The provider state dir — the AGENT grant type reads its ledger rows fresh per exchange. */
   dir: string;
+  /** The authority plane's root-credential ensure — the agent-exchange arm stamps from it (the
+   *  human arm stamps inside the bridge). */
+  mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
 /** Route one HTTP request. Local-only surface: /jwks (public keys, cacheable), /exchange (IdP JWT →
@@ -255,6 +337,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
           return send(400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
         try {
           const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
+          if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
+            throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
+          // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
+          // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
+          // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
+          const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
           const token = await ctx.issuer.issue({
             owner,
             space: ctx.space,
@@ -266,6 +354,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
             // still-unexpired bearer dies at the alias's respawn instead of minting the
             // successor's broker authority.
             lifecycleUid: grant.lifecycleUid,
+            credentialId,
             ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
           });
           const { exp } = decodeJwt(token);

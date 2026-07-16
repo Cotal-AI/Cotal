@@ -70,6 +70,13 @@ export interface CreateIdpBridgeOpts {
    *  it get? MUST return an {@link ActorGrant} object to allow; throw to deny. There is no
    *  allow-by-default — a hook that returns anything else fails the exchange. */
   authorizeActor: (owner: string, actor: string) => ActorGrant | Promise<ActorGrant>;
+  /** The ROOT-credential ensure (R1, SPEC 13.1): returns the incarnation's live root credential
+   *  id, minting it release-last on first exchange; throws to deny. Its result rides
+   *  `act.credentialId`, which the connect arm requires against the LIVE `cred.` row. PRODUCTION
+   *  composition MUST wire this (the auth service does): a bridge without it mints CLAIMLESS
+   *  bearers, which the production connect arm refuses outright — fail-closed, but useless. Left
+   *  optional only for compositions that bring their own connect authority (tests, probes). */
+  mintConnectCredential?: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
 /** A successful exchange: the minted bearer plus what a caller needs to cache/refresh it. */
@@ -177,6 +184,13 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       if (idpRemaining <= 0)
         throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
       const ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
+      // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
+      // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
+      // bearer bytes are signed, so the row the connect arm requires is durable before any
+      // bearer naming it exists. Views included: EVERY bearer carries the claim.
+      const credentialId = opts.mintConnectCredential
+        ? await opts.mintConnectCredential({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid })
+        : undefined;
       const token = await opts.issuer.issue({
         owner,
         space: opts.space,
@@ -184,6 +198,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         scope: grant.scope,
         parent: grant.parent,
         lifecycleUid: grant.lifecycleUid,
+        credentialId,
         view: req.view,
         ttlSec,
       });

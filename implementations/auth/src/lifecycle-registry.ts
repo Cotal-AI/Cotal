@@ -346,6 +346,35 @@ export async function advanceEpochWithinTakeover(
   return "advanced";
 }
 
+/**
+ * The issuance path's head CAS stamping the incarnation's ROOT credential (SPEC 13.1: the head's
+ * `currentCredentialId` is what the connect arm's root-path equality check reads, so a superseded
+ * root issuance is denied even while its old row still reads active). The mint protocol's
+ * RELEASE-LAST final step: the active `cred.` row is durable and its gate finalize has won BEFORE
+ * this runs, and the bearer bytes release only after it.
+ *
+ * ABSENT → value ONLY (idempotent for the SAME value): a head that already names a DIFFERENT root
+ * credential REFUSES — flipping `currentCredentialId` without the full family revoke would leave
+ * the old root's descendants connectable under the leaf check, so root ROTATION is exclusively a
+ * barrier's job (takeover/retirement), never this seam's. Revision-pinned; ACTIVE at the SAME uid
+ * only; a foreign head movement between the caller's read and this CAS loses fail-closed.
+ */
+export async function setCurrentRootCredential(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; credentialId: string },
+): Promise<void> {
+  const { recordsKv } = internals(reg);
+  if (typeof args.credentialId !== "string" || args.credentialId.length === 0)
+    throw new EpEnvelopeError("failed-precondition", "setCurrentRootCredential requires a credentialId");
+  const cur = await readHeadCandidate(recordsKv, args.owner, args.actor);
+  if (cur === undefined || cur.mapping.state !== "active" || cur.mapping.lifecycleUid !== args.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", `stamping the root credential for "${args.owner}/${args.actor}" requires an ACTIVE head at uid ${args.lifecycleUid}; found ${cur === undefined ? "no head" : `${cur.mapping.state} at ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
+  if (cur.mapping.currentCredentialId === args.credentialId) return; // our own completed stamp
+  if (cur.mapping.currentCredentialId !== undefined)
+    throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" already names root credential ${cur.mapping.currentCredentialId}; rotating it takes the full family-revoke barrier, never a bare head flip (the old root's descendants would stay connectable under the leaf check, SPEC 13.1)`);
+  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...cur.mapping, currentCredentialId: args.credentialId }, cur.revision);
+}
+
 /** The retirement barrier's head CONTAINMENT CAS (SPEC 13.1: `active → retiring`, bound to the
  *  retirement operation's durable intent — from this point every currency seam yields no current
  *  mapping and no current epoch, and the alias is NOT replaceable). PACKAGE-INTERNAL for the
@@ -697,6 +726,102 @@ export async function activateLifecycle(
   // 4. Reopen the gate at its first mintable generation — the saga's LAST step.
   await reopenGate(reg, { lifecycleUid, revision: gate.revision, opId });
   return { mapping, revision, opId };
+}
+
+/**
+ * Activate the alias `(owner, actor)` AT THE CALLER'S uid — the production ISSUANCE activation
+ * (SPEC 13.1). The grant row already minted the incarnation's uid and every bearer's
+ * lifecycle-equality is bound to it, so a fresh reservation ({@link activateLifecycle}) would
+ * strand the grant. Same saga order (reserve → gate frozen → head CAS → reopen LAST) with
+ * ADOPT-instead-of-burn resume semantics: a reservation or frozen ACTIVATION gate already carried
+ * by OUR alias at this uid is a prior attempt's durable progress and is adopted — burning the
+ * grant's uid would permanently brick the grant — and a CAS loss to a SIBLING (same alias, same
+ * uid) converges on the winner's state instead of refusing.
+ *
+ * Returns with the head ACTIVE at `lifecycleUid` and the issuance gate OPEN. Refuses loudly: an
+ * active head at a DIFFERENT uid (`already-exists` — retiring a live predecessor is the takeover
+ * barrier's job, which production issuance does not run in R1), a retiring head, a reservation
+ * held by a FOREIGN alias, a foreign-operation freeze, and a terminally retired gate.
+ */
+export async function activateLifecycleAtUid(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; managerInstance: string },
+): Promise<void> {
+  const { recordsKv } = internals(reg);
+  const { owner, actor, lifecycleUid } = args;
+  assertLifecycleToken(lifecycleUid);
+  if (typeof args.managerInstance !== "string" || args.managerInstance.length === 0)
+    throw new EpEnvelopeError("failed-precondition", "activateLifecycleAtUid requires a managerInstance (the minting authority)");
+  const current = await readHeadCandidate(recordsKv, owner, actor);
+  if (current !== undefined && current.mapping.state === "active" && current.mapping.lifecycleUid !== lifecycleUid)
+    throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is active at uid ${current.mapping.lifecycleUid}, not this grant's ${lifecycleUid}; retiring a live predecessor is the takeover barrier's job and production issuance does not run it (R1) - despawn/retire the predecessor first, or grant a fresh actor name (SPEC 13.1)`);
+  if (current !== undefined && current.mapping.state === "retiring")
+    throw new EpEnvelopeError("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`);
+  const headIsOurs = current !== undefined && current.mapping.state === "active"; // same uid, by the guard above
+
+  // 1. The uid reservation: win it, or adopt a prior attempt's — SAME alias only.
+  if (!headIsOurs && (await tryReserveUid(reg, lifecycleUid, { owner, actor, mintedBy: args.managerInstance })) === "burned") {
+    const res = await readUidReservation(reg, lifecycleUid);
+    if (res === undefined || res.owner !== owner || res.actor !== actor)
+      throw new EpEnvelopeError("permission-denied", `uid ${lifecycleUid} is reserved by ${res ? `"${res.owner}/${res.actor}"` : "an unreadable reservation"}, not "${owner}/${actor}"; a grant's uid is never adopted across aliases (SPEC 13.1)`);
+  }
+
+  // 2. The activation gate: create frozen, or adopt OUR prior attempt's frozen activation gate
+  //    (the reservation above already binds this uid to this alias, so any activation freeze on
+  //    it is this alias's own activation). A retry loop absorbs the sibling-race CAS losses.
+  for (let attempt = 0; ; attempt++) {
+    if (attempt > 4)
+      throw new EpEnvelopeError("unavailable", `activation for "${owner}/${actor}" at uid ${lifecycleUid} keeps losing its gate/head CASes to concurrent movement; re-read and re-decide (SPEC 13.1)`);
+    let gate = await observeGate(reg, lifecycleUid);
+    let opId: string;
+    if (gate === undefined) {
+      try {
+        gate = await createGateFrozen(reg, { lifecycleUid, op: { opId: mintLifecycleUid(), kind: "activation" } });
+      } catch (e) {
+        if (isCasLoss(e)) continue; // a sibling created it; re-observe and adopt
+        throw e;
+      }
+      opId = gate.row.op!.opId;
+    } else if (gate.row.state === "frozen") {
+      if (gate.row.op?.kind !== "activation")
+        throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a barrier is in flight - issuance activation neither adopts nor overrides it (SPEC 13.1)`);
+      opId = gate.row.op.opId;
+    } else if (gate.row.state === "retired") {
+      throw new EpEnvelopeError("permission-denied", `uid ${lifecycleUid} has a terminally retired issuance gate; a burned uid never re-activates - re-grant the actor for a fresh incarnation (SPEC 13.1)`);
+    } else {
+      // Open gate: the saga writes the head BEFORE its reopen, so an open gate with the head
+      // active at our uid is a COMPLETED activation; anything else is foreign movement.
+      const head = await readHeadCandidate(recordsKv, owner, actor);
+      if (head !== undefined && head.mapping.state === "active" && head.mapping.lifecycleUid === lifecycleUid) return;
+      throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${lifecycleUid} is open but the head for "${owner}/${actor}" is ${head === undefined ? "absent" : `${head.mapping.state} at ${head.mapping.lifecycleUid}`}; an activation reopens only AFTER its head CAS - this is foreign movement or corruption, refuse (SPEC 13.1/13.12)`);
+    }
+
+    // 3. The head CAS (create-only for virgin; revision-pinned over a retired predecessor). A
+    //    loss converges if the sibling won for the SAME uid, refuses on a foreign winner.
+    if (!headIsOurs) {
+      const mapping: LifecycleMapping = { owner, actor, lifecycleUid, managerInstance: args.managerInstance, processEpoch: 1, state: "active" };
+      try {
+        if (current === undefined) await createRecordEntry(recordsKv, headKey(owner, actor), mapping);
+        else await updateRecordEntry(recordsKv, headKey(owner, actor), mapping, current.revision);
+      } catch (e) {
+        if (!isCasLoss(e)) throw e;
+        const head = await readHeadCandidate(recordsKv, owner, actor);
+        if (!(head !== undefined && head.mapping.state === "active" && head.mapping.lifecycleUid === lifecycleUid))
+          throw new EpEnvelopeError("conflict", `activation for "${owner}/${actor}" at uid ${lifecycleUid} lost the head CAS to a foreign movement (now ${head === undefined ? "absent" : `${head.mapping.state} at ${head.mapping.lifecycleUid}`}); re-grant raced this exchange - re-exchange (SPEC 13.1)`);
+      }
+    }
+
+    // 4. Reopen the gate — the saga's LAST step. A loss to the sibling's reopen is convergence.
+    try {
+      await reopenGate(reg, { lifecycleUid, revision: gate.revision, opId });
+      return;
+    } catch (e) {
+      const g = await observeGate(reg, lifecycleUid);
+      if (g !== undefined && g.row.state === "open") return; // the sibling finished it
+      if (e instanceof EpEnvelopeError && e.code === "conflict") continue; // revision moved; re-observe
+      throw e;
+    }
+  }
 }
 
 /**

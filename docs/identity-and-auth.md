@@ -96,14 +96,19 @@ files to hand out, and revoking a grant actually bites.
 any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
 revocation bites here too) → a local exchange turns it into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints
-a scoped credential on the spot. The operator grants access with
+a scoped credential on the spot. Every bearer also names a **root credential** row in the
+space's credential ledger, proved live at each connect, so revoking that one credential
+bites at the very next connect. The operator grants access with
 `cotal actor grant <actor> --sub <their id>`; a bare grant is the full envelope (all
 channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
 
 **One auth service per space** hosts both halves: the NATS auth callout and the loopback
 token exchange. It starts with the broker, is torn down by `cotal down`, and is the only
-standing holder of the data-account signing key; the operator seed never enters it. If it
+standing holder of the data-account signing key; the operator seed never enters it. It
+also owns the space's two authority stores (lifecycle records and the credential ledger),
+provisions them at boot, and refuses connects it cannot credential-check against them;
+there is no fallback path. If it
 dies while the broker lives, re-running `cotal up` heals it, and a boot whose auth
 service never became ready exits non-zero, so automation never reads a dead identity
 plane as success.

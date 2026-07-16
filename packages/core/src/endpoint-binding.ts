@@ -16,6 +16,7 @@ import {
   StorageType,
   type ConsumerConfig,
   type JetStreamManager,
+  type StreamConfig,
 } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
 import type { Kvm } from "@nats-io/kv";
@@ -200,19 +201,45 @@ export async function createEndpointStreams(
     deny_delete: true,
     deny_purge: true,
   });
-  // Records KV — per-key CAS; rows are never deleted. deny_delete/deny_purge close stream-API
-  // erasure as defense in depth (a raw KV subject grant can still emit a DEL marker, which every
-  // reader treats as corruption). Fenced reads stay leader-served STREAM.MSG.GET (§13.9).
+  await ensureAuthorityStores(jsm, kvm, space);
+}
+
+/**
+ * Ensure the two per-space AUTHORITY stores exist with their normative shape (§13.12):
+ *
+ *  - **Records KV** (`cotal_records_<space>`) — per-key CAS; rows are never deleted.
+ *    deny_delete/deny_purge close stream-API erasure as defense in depth (a raw KV subject grant
+ *    can still emit a DEL marker, which every reader treats as corruption); rollups off. Fenced
+ *    reads stay leader-served STREAM.MSG.GET (§13.9).
+ *  - **Auth KV** (`cotal_auth_<space>`) — leader-served only (`allow_direct=false`); per-key TTL
+ *    machinery on (`cred.`/`bysrc.` rows), NO bucket age.
+ *
+ * Create-or-verify, so it is safe at EVERY authority-daemon boot (not only first setup): a fresh
+ * space gets both stores created; an existing store is verified against the exact flags above and
+ * a drift FAILS LOUD naming the store — a drifted authority store is an operator error, never
+ * silently adopted (§13.12: the flags are load-bearing for deny-new and the barrier CAS fences).
+ */
+export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
   const recordBucket = recordsBucket(space);
-  await kvm.create(recordBucket, { allow_direct: true });
   const recordStream = `KV_${recordBucket}`;
-  const recordConfig = (await jsm.streams.info(recordStream)).config;
-  await jsm.streams.update(recordStream, { ...recordConfig, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });
-  // Auth KV — leader-served only; per-key TTL machinery on (cred./bysrc. rows), NO bucket age.
-  await kvm.create(epAuthBucket(space), {
-    allow_direct: false,
-    markerTTL: EP_AUTH_MARKER_TTL_MS,
-  });
+  try {
+    await kvm.create(recordBucket, { allow_direct: true });
+    const recordConfig = (await jsm.streams.info(recordStream)).config;
+    await jsm.streams.update(recordStream, { ...recordConfig, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });
+  } catch (e) {
+    // Not "already exists" (kvm.create surfaces a config-mismatch stream-add error) → verify below.
+    const cfg = (await jsm.streams.info(recordStream).catch(() => { throw e; })).config;
+    if (cfg.allow_direct !== true || cfg.allow_rollup_hdrs !== false || cfg.deny_delete !== true || cfg.deny_purge !== true)
+      throw new Error(`the records store ${recordBucket} exists with a drifted shape (allow_direct=${String(cfg.allow_direct)}, allow_rollup_hdrs=${String(cfg.allow_rollup_hdrs)}, deny_delete=${String(cfg.deny_delete)}, deny_purge=${String(cfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  }
+  const authBucket = epAuthBucket(space);
+  try {
+    await kvm.create(authBucket, { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS });
+  } catch (e) {
+    const cfg = (await jsm.streams.info(`KV_${authBucket}`).catch(() => { throw e; })).config as StreamConfig & { allow_msg_ttl?: boolean };
+    if (cfg.allow_direct !== false || cfg.allow_msg_ttl !== true)
+      throw new Error(`the auth store ${authBucket} exists with a drifted shape (allow_direct=${String(cfg.allow_direct)}, allow_msg_ttl=${String(cfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  }
 }
 
 // ---- §13.9 consumer-name grammar (normative; dash-form, collision-free by construction) ----

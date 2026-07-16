@@ -99,7 +99,15 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, JWKS_MAX_AGE_SEC } from "./service.js";
+export { runAuthService, openAuthAuthorityPlane, JWKS_MAX_AGE_SEC, type AuthAuthorityPlane } from "./service.js";
+// The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
+// shape-proved reader, and the pure connect-credential check the production composition runs.
+// The WRITE side (authority-client, root-credential, activateLifecycleAtUid) stays
+// package-internal — the sealed plane is its only production door; smokes import the modules.
+export {
+  authConnectReaderGrants, openConnectReader, authorizeConnectCredential,
+  type ConnectReader,
+} from "./connect-reader.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
