@@ -92,12 +92,49 @@ export interface AuthProvider extends Extension {
    */
   actorScope(opts: { dir: string; owner: string; actor: string }): Promise<string[] | undefined>;
   /**
+   * Read-only OFFLINE continuity commitment for this space's existing user-auth trust state. The
+   * provider defines `scheme`; `value` is safe to place in a backup manifest and MUST commit to the
+   * account identity, owner derivation, IdP/issuer pins, and every interactive + managed authority
+   * row. Missing or malformed state throws. This method must never create, repair, rotate, or mint.
+   */
+  trustFingerprint(opts: { dir: string; space: string }): Promise<AuthTrustFingerprint>;
+  /**
+   * Validate that retained managed-agent material still names the SAME live principal and authority
+   * row. This is the resume path: it must reuse the supplied token/sentinel, never call
+   * {@link grantAgent}, rotate a token, create a row, or provision a replacement identity.
+   */
+  validateRetainedAgent(opts: {
+    dir: string;
+    space: string;
+    owner: string;
+    actor: string;
+    actorToken: string;
+    sentinelCreds: string;
+  }): Promise<RetainedAgentAuthority>;
+  /**
    * Registry name of the provider's self-registered {@link Command} that prints ONE fresh agent
    * bearer to stdout and exits (flags: `--dir <state-dir> --space <space> --owner <o> --actor <a>
    * --token-file <path>`). A long-lived agent endpoint execs it per refresh — the exchange
    * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
    * runtime only runs an argv and reads a line. */
   readonly agentBearerCommand: string;
+}
+
+/** Provider-defined, versioned manifest-safe commitment. Callers compare both fields exactly. */
+export interface AuthTrustFingerprint {
+  scheme: string;
+  value: string;
+}
+
+/** Existing managed row returned after retained secret + sentinel validation. */
+export interface RetainedAgentAuthority {
+  owner: string;
+  actor: string;
+  scope: string[];
+  allowSubscribe: string[];
+  allowPublish: string[];
+  role?: string;
+  parent?: string;
 }
 
 /** The ONE registered auth provider, or a thrown sentence naming the fix. More than one registered
