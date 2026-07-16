@@ -171,12 +171,8 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   if (!pkg) return stub; // not a stub — already live
   const ext = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
   if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
-  await importInstalledExtension(ext);
-  const live = registry.all<Command>("command").find((cm) => cm.name === stub.name);
-  if (!live) {
-    throw new Error(`extension ${pkg} imported but did not register "${stub.name}" - its cache is stale; re-add it: \`cotal ext add ${ext.spec}\``);
-  }
-  return live;
+  await importInstalledExtension(ext, { kind: "command", name: stub.name }); // throws if the import doesn't advertise the stubbed command
+  return registry.resolve<Command>("command", stub.name);
 }
 
 /** Resolve a provider, lazily importing the installed package that advertised it when necessary.

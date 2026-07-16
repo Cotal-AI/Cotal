@@ -28,18 +28,20 @@ function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error 
   return new Error(`extension ${pkg}@${ext.version} failed to import: ${message}${compatibility} - reinstall it: \`cotal ext add ${ext.spec}\``);
 }
 
-/** Process-wide single-flight serializer: two `import()`s must not run against a shared registry
- *  before-image, or a rolled-back load would discard the other's registrations. */
+/** Process-wide single-flight serializer: two `import()`s must not share a staging/validation window,
+ *  so their advertised-key checks can't interleave. */
 let loadChain: Promise<void> = Promise.resolve();
 
 /**
- * Verify the pin, resolve the entry, and import the package TRANSACTIONALLY: a package that
- * registers a key and then throws (e.g. a rejected top-level await) leaves NO resolvable keys — the
- * registry is restored to its pre-import snapshot. Serialized so concurrent loads never share a
- * before-image.
+ * Verify the pin, resolve the entry, and import the package TRANSACTIONALLY and INVISIBLY. The
+ * import's self-registrations are STAGED (never resolvable while it runs); they publish atomically
+ * only after `advertised` is confirmed present among them. A package that registers a key then throws
+ * (a rejected top-level await) commits NOTHING; a package that imports cleanly but never advertises
+ * the requested provider commits NONE of its registrations. Serialized so concurrent loads never
+ * share a validation window.
  */
-export async function importInstalledExtension(ext: InstalledExtension): Promise<void> {
-  const run = loadChain.then(() => loadOne(ext));
+export async function importInstalledExtension(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
+  const run = loadChain.then(() => loadOne(ext, advertised));
   loadChain = run.then(
     () => undefined,
     () => undefined, // keep the chain alive so one load's failure doesn't wedge the next
@@ -47,7 +49,7 @@ export async function importInstalledExtension(ext: InstalledExtension): Promise
   return run;
 }
 
-async function loadOne(ext: InstalledExtension): Promise<void> {
+async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
   const mutation = extensionMutationLockState();
   if (mutation.state === "active")
     throw new Error(`extension install/remove is in progress (pid ${mutation.owner}) - retry after the active \`cotal ext\` command finishes`);
@@ -70,13 +72,22 @@ async function loadOne(ext: InstalledExtension): Promise<void> {
     const d = dot as Record<string, string>;
     entry = d.import ?? d.default ?? entry;
   } else if (typeof meta.exports === "string") entry = meta.exports;
-  const snap = registry.snapshot();
+  let staged: Extension[];
   try {
-    await import(pathToFileURL(join(dir, entry)).href); // self-registers into OUR registry (core is linked)
+    // The import self-registers into OUR registry (core is linked); runStaged keeps those
+    // registrations invisible until we've validated them, so a throw discards the stage untouched.
+    ({ staged } = await registry.runStaged(() => import(pathToFileURL(join(dir, entry)).href)));
   } catch (e) {
-    registry.restore(snap);
-    throw importFailure(pkg, ext, e);
+    throw importFailure(pkg, ext, e); // stage discarded; nothing reached the live registry
   }
+  // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
+  // registrations (never leave a package's other keys live when its advertised one is absent).
+  if (!staged.some((r) => r.kind === advertised.kind && r.name === advertised.name)) {
+    throw new Error(
+      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - re-add it: \`cotal ext add ${ext.spec}\``,
+    );
+  }
+  registry.commitStaged(staged);
 }
 
 /**
@@ -111,10 +122,6 @@ export async function materializeFromManifest<T extends Extension = Extension>(
       opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
     );
   }
-  await importInstalledExtension(ext);
-  try {
-    return registry.resolve<T>(ref.kind, ref.name);
-  } catch {
-    throw new Error(`extension ${ext.pkg} imported but did not register ${ref.kind} "${ref.name}" - re-add it: \`cotal ext add ${ext.spec}\``);
-  }
+  await importInstalledExtension(ext, ref); // throws if the package doesn't advertise ref; else ref is now committed
+  return registry.resolve<T>(ref.kind, ref.name);
 }
