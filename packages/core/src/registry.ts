@@ -77,6 +77,12 @@ export class Registry {
     staged.forEach((ext, i) => this.#byKey.set(keys[i], ext));
   }
 
+  /** Whether a committed extension exists for kind + name (staged registrations are invisible here,
+   *  like {@link resolve}). A boolean probe that never throws. */
+  has(kind: string, name: string): boolean {
+    return this.#byKey.has(`${kind}:${name}`);
+  }
+
   /** Resolve one extension by kind + name. Unknown throws. Staged (uncommitted) registrations are
    *  invisible here; only committed ones resolve. */
   resolve<T extends Extension>(kind: T["kind"], name: string): T {

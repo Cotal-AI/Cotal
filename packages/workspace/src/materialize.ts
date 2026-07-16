@@ -50,6 +50,12 @@ export async function importInstalledExtension(ext: InstalledExtension, advertis
 }
 
 async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
+  // Idempotent: if a prior load (a concurrent first call now serialized ahead of us on loadChain, or an
+  // earlier one) already published the advertised provider, we're done. Re-import()ing an
+  // already-evaluated module is a cache hit with NO registration side effects, so its stage would be
+  // empty and wrongly read as "did not register"; the live check short-circuits that. commitStaged
+  // publishes ALL of a package's keys, so a sibling ref requested concurrently is live here too.
+  if (registry.has(advertised.kind, advertised.name)) return;
   const mutation = extensionMutationLockState();
   if (mutation.state === "active")
     throw new Error(`extension install/remove is in progress (pid ${mutation.owner}) - retry after the active \`cotal ext\` command finishes`);
