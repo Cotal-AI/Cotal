@@ -343,6 +343,50 @@ export async function advanceEpochWithinTakeover(
   return "advanced";
 }
 
+/** The retirement barrier's head CONTAINMENT CAS (SPEC 13.1: `active → retiring`, bound to the
+ *  retirement operation's durable intent — from this point every currency seam yields no current
+ *  mapping and no current epoch, and the alias is NOT replaceable). PACKAGE-INTERNAL for the
+ *  barrier only (no public retire seam exists); idempotent for the barrier's crash-resume. */
+export async function beginHeadRetirementWithinBarrier(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; opId: string },
+): Promise<"retiring" | "already-retiring"> {
+  const { recordsKv } = internals(reg);
+  const cur = await readHeadCandidate(recordsKv, args.owner, args.actor);
+  if (cur === undefined || cur.mapping.lifecycleUid !== args.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", `the retirement of uid ${args.lifecycleUid} requires the head for "${args.owner}/${args.actor}" to name it; found ${cur === undefined ? "no head" : `uid ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
+  if (cur.mapping.state === "retiring") {
+    if (cur.mapping.op?.opId !== args.opId)
+      throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" is retiring under operation ${cur.mapping.op?.opId ?? "<none>"}, not ${args.opId}; one retirement at a time, and a stranger never advances it (SPEC 13.1)`);
+    return "already-retiring";
+  }
+  if (cur.mapping.state !== "active")
+    throw new EpEnvelopeError("failed-precondition", `the head for "${args.owner}/${args.actor}" is "${cur.mapping.state}", not active; only an active head enters retirement containment (a completed terminal is decided at the gate, never re-entered here, SPEC 13.1)`);
+  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...cur.mapping, state: "retiring", op: { opId: assertLifecycleToken(args.opId), kind: "retirement" } }, cur.revision);
+  return "retiring";
+}
+
+/** The retirement barrier's TERMINAL head CAS (`retiring → retired`, op-pinned) — the barrier's
+ *  LAST step (SPEC 13.1: `retired` ASSERTS completed cleanup, which is what makes the alias
+ *  replaceable). The op intent is dropped (it belongs to `retiring` only); idempotence at
+ *  `retired` is decided by the CALLER against the gate's terminal op (the retired head itself
+ *  carries no retirement stamp). PACKAGE-INTERNAL for the barrier only. */
+export async function completeHeadRetirementWithinBarrier(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; opId: string },
+): Promise<"retired" | "already-retired"> {
+  const { recordsKv } = internals(reg);
+  const cur = await readHeadCandidate(recordsKv, args.owner, args.actor);
+  if (cur === undefined || cur.mapping.lifecycleUid !== args.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", `the retirement terminal for uid ${args.lifecycleUid} requires the head for "${args.owner}/${args.actor}" to name it; found ${cur === undefined ? "no head" : `uid ${cur.mapping.lifecycleUid}`} — a replaced head is settled at the gate, never here (SPEC 13.1)`);
+  if (cur.mapping.state === "retired") return "already-retired";
+  if (cur.mapping.state !== "retiring" || cur.mapping.op?.opId !== args.opId)
+    throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" is ${cur.mapping.state === "retiring" ? `retiring under operation ${cur.mapping.op?.opId ?? "<none>"}` : `"${cur.mapping.state}"`}, not retiring under ${args.opId}; only the containing operation terminalizes its own retirement (SPEC 13.1)`);
+  const { op: _op, ...rest } = cur.mapping;
+  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...rest, state: "retired" }, cur.revision);
+  return "retired";
+}
+
 /** PACKAGE-INTERNAL: read a UID reservation's audit `{ owner, actor }` (the minting authority
  *  recorded it at {@link tryReserveUid}). The credential ledger uses it to BIND a mint's
  *  `holderPrincipal` to the reserved identity, so a trusted caller cannot ledger a row that

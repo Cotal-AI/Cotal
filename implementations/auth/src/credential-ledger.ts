@@ -646,6 +646,58 @@ async function readTakeoverIntent(authKv: KV, opId: string): Promise<{ intent: T
 }
 
 /**
+ * The shared CONTAINMENT core of the lifecycle barriers (SPEC 13.1: takeover and terminal
+ * retirement run the SAME revoke + verified-evict discipline over the SAME family):
+ * point-in-time enumeration of `cred.<lifecycleUid>.>` → revoke EVERY row (idempotent — a
+ * resumed barrier finds some already revoked; the row CAS is the deny-new SUBSTRATE, module
+ * header) → reconcile BOTH halves of every session-derived credential (the reconciler
+ * terminalizes `session.<sessionId>` and revokes the paired serving `epcred.` row, returning
+ * the serving holders; a lifecycle that HAS session-derived credentials but no reconciler
+ * fails loud — the serving half would be left live) → VERIFIED cluster-wide eviction of every
+ * enumerated holder principal (revoked earlier runs included: their connections may still be
+ * live), the alias principal itself, and every session-serving principal. Fail-closed per
+ * principal: anything but `verifiedGone` throws and the calling barrier's gate stays frozen.
+ * PACKAGE-INTERNAL: both barriers reach it through the sealed registry only.
+ */
+export async function containLifecycleFamily(
+  reg: LifecycleRegistry,
+  args: { owner: string; actor: string; lifecycleUid: string; barrier: "takeover" | "retirement" },
+  deps: TakeoverDeps,
+): Promise<{ revokedRows: number; evictedPrincipals: string[] }> {
+  const { authKv } = registryStores(reg);
+  const { evictPrincipal, reconcileSessionPair } = deps;
+  const family = await enumerateAgentFamily(reg, args.lifecycleUid);
+  let revokedRows = 0;
+  for (const item of family) {
+    if ((await markLedgerRowRevoked(authKv, item.key)) === "revoked") revokedRows++;
+  }
+  const sessionIds = new Set<string>();
+  for (const item of family)
+    for (const member of item.row.sourceChain) {
+      const parsed = parseSourceMember(member);
+      if (parsed.kind === "session") sessionIds.add(parsed.sessionId);
+    }
+  const servingPrincipals = new Set<string>();
+  if (sessionIds.size > 0) {
+    if (reconcileSessionPair === undefined)
+      throw new EpEnvelopeError("failed-precondition", `lifecycle ${args.lifecycleUid} has ${sessionIds.size} session-derived credential(s) but the ${args.barrier} barrier was given no session-pair reconciler; the serving half would be left live (SPEC 13.1)`);
+    for (const sid of [...sessionIds].sort())
+      for (const p of (await reconcileSessionPair(sid)).servingPrincipals) servingPrincipals.add(p);
+  }
+  const principals = new Set<string>(family.map((f) => f.row.holderPrincipal));
+  principals.add(`${args.owner}.${args.actor}`);
+  for (const p of servingPrincipals) principals.add(p);
+  const evicted: string[] = [];
+  for (const principal of [...principals].sort()) {
+    const res = await evictPrincipal(principal);
+    if (res.verifiedGone !== true)
+      throw new EpEnvelopeError("unavailable", `the ${args.barrier} barrier could not VERIFY eviction of principal ${principal} (kicked ${res.kicked}, remaining ${res.remaining}, scanComplete ${res.scanComplete}${res.note ? `; ${res.note}` : ""}); the gate stays frozen (SPEC 13.1)`);
+    evicted.push(principal);
+  }
+  return { revokedRows, evictedPrincipals: evicted };
+}
+
+/**
  * Run the FULL takeover issuance barrier for a managed-agent lifecycle (SPEC 13.1, in the
  * normative order — see the module header). Idempotent/crash-resumable: every step re-checks
  * durable state, so calling it again with the SAME `opId` (directly or via
@@ -662,7 +714,6 @@ export async function runAgentTakeoverBarrier(
   deps: TakeoverDeps,
 ): Promise<TakeoverResult> {
   const { authKv } = registryStores(reg);
-  const { evictPrincipal, reconcileSessionPair } = deps;
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);
 
@@ -751,54 +802,12 @@ export async function runAgentTakeoverBarrier(
     }
   }
 
-  // 2. Point-in-time enumeration of the lifecycle's FULL descendant family (post-freeze: a
-  // mint that won its fence wrote its rows before the freeze, so this scan sees them; a mint
-  // that lost never released).
-  const family = await enumerateAgentFamily(reg, intent.lifecycleUid);
-
-  // 3. Revoke EVERY row (idempotent — a resumed barrier finds some already revoked). The row
-  // CAS is the deployment's deny-new SUBSTRATE (leader-served, replicated; module header).
-  let revokedRows = 0;
-  for (const item of family) {
-    if ((await markLedgerRowRevoked(authKv, item.key)) === "revoked") revokedRows++;
-  }
-
-  // 3b. Reconcile BOTH halves of every session-derived credential (SPEC 13.1: a lifecycle
-  // barrier tears down the session, not just the caller half under `cred.<uid>.>`). For each
-  // distinct `session.<sessionId>` naming a revoked descendant, terminalize `session.<sessionId>`
-  // and revoke the paired serving `epcred.` row through the injected reconciler; a lifecycle
-  // that HAS session-derived credentials but no reconciler fails loud (a live serving half
-  // would survive the takeover). The reconciler returns the serving rows' holder principals —
-  // they JOIN the verified-eviction set below (SPEC 13.6: both credentials revoked WITH
-  // eviction; a row-only revocation leaves an already-connected serving session live).
-  const sessionIds = new Set<string>();
-  for (const item of family)
-    for (const member of item.row.sourceChain) {
-      const parsed = parseSourceMember(member);
-      if (parsed.kind === "session") sessionIds.add(parsed.sessionId);
-    }
-  const servingPrincipals = new Set<string>();
-  if (sessionIds.size > 0) {
-    if (reconcileSessionPair === undefined)
-      throw new EpEnvelopeError("failed-precondition", `lifecycle ${intent.lifecycleUid} has ${sessionIds.size} session-derived credential(s) but the barrier was given no session-pair reconciler; a takeover would leave the serving half live (SPEC 13.1)`);
-    for (const sid of [...sessionIds].sort())
-      for (const p of (await reconcileSessionPair(sid)).servingPrincipals) servingPrincipals.add(p);
-  }
-
-  // 4. VERIFIED eviction of every holder principal — every enumerated row's holder (revoked
-  // earlier runs included: their connections may still be live) PLUS the alias principal
-  // itself (the superseded process's own root connections) PLUS every session-serving
-  // principal the reconciliation surfaced. Fail-closed per principal.
-  const principals = new Set<string>(family.map((f) => f.row.holderPrincipal));
-  principals.add(`${intent.owner}.${intent.actor}`);
-  for (const p of servingPrincipals) principals.add(p);
-  const evicted: string[] = [];
-  for (const principal of [...principals].sort()) {
-    const res = await evictPrincipal(principal);
-    if (res.verifiedGone !== true)
-      throw new EpEnvelopeError("unavailable", `the takeover barrier could not VERIFY eviction of principal ${principal} (kicked ${res.kicked}, remaining ${res.remaining}, scanComplete ${res.scanComplete}${res.note ? `; ${res.note}` : ""}); the gate stays frozen and the epoch does not advance (SPEC 13.1)`);
-    evicted.push(principal);
-  }
+  // 2-4. The shared containment core (enumerate → revoke → session reconcile → verified evict):
+  // post-freeze, a mint that won its fence wrote its rows before the freeze, so the scan sees
+  // them; a mint that lost never released.
+  const { revokedRows, evictedPrincipals: evicted } = await containLifecycleFamily(
+    reg, { owner: intent.owner, actor: intent.actor, lifecycleUid: intent.lifecycleUid, barrier: "takeover" }, deps,
+  );
 
   // 5. The epoch head CAS — LAST among the containment steps (SPEC 13.1: no predecessor egress
   // survives to publish under the old epoch once the successor's epoch exists). It STAMPS this

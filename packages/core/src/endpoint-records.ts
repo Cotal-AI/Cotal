@@ -175,6 +175,21 @@ export const POLICY_VERSION: RecordKindDef = {
   mediation: "mediated",
 };
 
+/** The §13.1 PER-STREAM RETIREMENT FRONTIERS (§13.7): `frontier.<lifecycleUid>` — ONE atomic
+ *  unsplit key per retired lifecycle, create-only, NEVER-DELETED, written by the terminal
+ *  retirement barrier AFTER the obligation drain, the pool cleaner, and the cleaner-credential
+ *  revoke+evict, and BEFORE the gate/head terminals (§13.1 order). The value records the
+ *  retirement `opId` and each bounded stream's last sequence at retirement — the cutoffs that
+ *  bound the predecessor's half-open interval `(activationFrontier, retirementFrontier]`; they
+ *  are never a successor's start (a successor captures its OWN activation frontier). */
+export const RETIREMENT_FRONTIER: RecordKindDef = {
+  kind: "frontier",
+  qualifiers: [qUid("lifecycleUid")],
+  split: false,
+  writers: { spec: "minting-authority", status: "minting-authority" },
+  mediation: "mediated",
+};
+
 /** The endpoint-wide GOVERNANCE HEAD (§13.7 "a self-published descriptor cannot strip, forge,
  *  or downgrade a governed annotation"): `govern.<endpoint>` — ONE atomic unsplit key holding
  *  the endpoint's MONOTONIC (append-only) BINDING governed-trait imposition per command, plus
@@ -266,7 +281,7 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
 };
 
 const registry = new Map<string, RecordKindDef[]>();
-for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION]) {
+for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION, RETIREMENT_FRONTIER]) {
   const list = registry.get(def.kind) ?? [];
   list.push(def);
   registry.set(def.kind, list);

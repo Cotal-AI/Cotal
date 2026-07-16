@@ -140,7 +140,7 @@ function assertSafeInt(v: unknown, what: string): number {
 
 /** Execution coordinates (sourceSeq/attempt/fencingToken) are POSITIVE at issue, parse, and
  *  commit — symmetrically. Zero is reserved for the worker-less never-leased expiry sentinel;
- *  admitting it anywhere else would durably poison the terminal rail (parseTerminal refuses
+ *  admitting it anywhere else would durably poison the terminal rail (parseWorkTerminalFact refuses
  *  zero coordinates, so a zero-coordinate settle could never be projected). */
 function assertPositiveInt(v: unknown, what: string): number {
   if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1)
@@ -413,7 +413,10 @@ export async function leaseWorkItem(
 }
 
 /** A pool item's cached terminal fact (`epf.<e>.wrk.<pool>.<acceptance>`), DERIVED from the
- *  settled lease. Create-only CAS per item; the first terminal wins forever. */
+ *  settled lease — except `retired`, which the §13.1 retirement barrier's exact-pool cleaner
+ *  writes for an item whose acceptance targets the retiring lifecycle (never from a lease; the
+ *  owner's credentials are already revoked). Create-only CAS per item; the first terminal wins
+ *  forever. */
 export type WorkTerminalFact =
   | {
       v: 1; disposition: "committed"; pool: string; caller: EpCaller & { id: string };
@@ -423,16 +426,24 @@ export type WorkTerminalFact =
   | {
       v: 1; disposition: "expired"; pool: string; caller: EpCaller & { id: string };
       workExpiry: number; ts: number;
+    }
+  | {
+      v: 1; disposition: "retired"; pool: string; caller: EpCaller & { id: string };
+      /** The retirement operation that settled the item and the retiring target it re-bound the
+       *  item to through its acceptance decision (§13.9 cleaner row: the `epw` subject carries
+       *  no target, so the binding is recorded here). */
+      opId: string; targetUid: string; ts: number;
     };
 
 /** Validate a terminal fact fully AND bind it to the subject it was read from (§13.4): a garbled
  *  or mis-subjected fact never counts as authoritative settlement (which would suppress all
- *  future leasing). */
-function parseTerminal(raw: unknown, subject: string, ref: WorkItemRef): WorkTerminalFact {
+ *  future leasing). Exported as the shared codec: the retirement cleaner (§13.1), which holds no
+ *  pool-owner context, validates the winners it reads through this same seam. */
+export function parseWorkTerminalFact(raw: unknown, subject: string, ref: WorkItemRef): WorkTerminalFact {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `work terminal fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  if (o.v !== 1 || (o.disposition !== "committed" && o.disposition !== "expired"))
+  if (o.v !== 1 || (o.disposition !== "committed" && o.disposition !== "expired" && o.disposition !== "retired"))
     throw new EpEnvelopeError("internal", `work terminal fact on ${subject} has an unknown version/disposition (SPEC 13.6)`);
   if (o.pool !== ref.pool)
     throw new EpEnvelopeError("internal", `work terminal fact on ${subject} names pool ${JSON.stringify(o.pool)}, not ${ref.pool}; a mis-subjected fact never authorizes (SPEC 13.4)`);
@@ -455,6 +466,18 @@ function parseTerminal(raw: unknown, subject: string, ref: WorkItemRef): WorkTer
       worker: parseWorker(o.worker, subject), outcome: o.outcome, ts: o.ts,
     };
   }
+  if (o.disposition === "retired") {
+    assertClosedKeys(o, ["v", "disposition", "pool", "caller", "opId", "targetUid", "ts"], `retired terminal fact on ${subject}`);
+    if (typeof o.opId !== "string" || typeof o.targetUid !== "string")
+      throw new EpEnvelopeError("internal", `retired terminal fact on ${subject} carries no op/target binding (SPEC 13.1)`);
+    try {
+      assertLifecycleToken(o.opId, "retired terminal opId");
+      assertLifecycleToken(o.targetUid, "retired terminal targetUid");
+    } catch (e) {
+      throw new EpEnvelopeError("internal", `retired terminal fact on ${subject} carries a malformed op/target binding: ${(e as Error).message} (SPEC 13.1)`);
+    }
+    return { v: 1, disposition: "retired", pool: ref.pool, caller: ref.acceptance, opId: o.opId, targetUid: o.targetUid, ts: o.ts };
+  }
   assertClosedKeys(o, ["v", "disposition", "pool", "caller", "workExpiry", "ts"], `expired terminal fact on ${subject}`);
   if (typeof o.workExpiry !== "number" || !Number.isSafeInteger(o.workExpiry) || o.workExpiry < 0)
     throw new EpEnvelopeError("internal", `expired terminal fact on ${subject} has no valid workExpiry (SPEC 13.6)`);
@@ -468,7 +491,7 @@ export async function readWorkTerminal(ctx: WorkPoolContext, itemRef: WorkItemRe
   const ref = snapshotRef(itemRef);
   const subject = workTerminalSubject(ctx.space, ref);
   const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
-  return raw === undefined ? undefined : parseTerminal(raw, subject, ref);
+  return raw === undefined ? undefined : parseWorkTerminalFact(raw, subject, ref);
 }
 
 /** Build the terminal fact a settled lease derives. */

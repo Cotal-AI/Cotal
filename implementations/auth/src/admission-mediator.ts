@@ -1017,7 +1017,8 @@ async function recoverSelfCore(
 
 // ---- the drains (§13.8: enumerate → settle → re-enumerate → quiescence) -----------------------
 
-interface EnumeratedObligation {
+/** One enumerated obligation (its key, parsed row, and store revision). */
+export interface EnumeratedObligation {
   key: string;
   row: ObligationRow;
   revision: number;
@@ -1025,13 +1026,20 @@ interface EnumeratedObligation {
 
 /** Point-in-time enumeration of an obligation filter via a per-run throwaway LastPerSubject
  *  PULL consumer (§13.9; the credential ledger's exact pattern). Markers and parse failures
- *  abort LOUD: a drain that skipped either would declare quiescence over rows it never read. */
-async function enumerateObligations(med: MediatorInternals, filter: string): Promise<EnumeratedObligation[]> {
-  const bucket = recordsBucket(med.space);
+ *  abort LOUD: a drain that skipped either would declare quiescence over rows it never read.
+ *  PACKAGE-INTERNAL beyond the mediator: the §13.1 retirement barrier enumerates the
+ *  target-wide `oblig.<targetUid>.>` (its endpoint discovery + its own quiescence re-check)
+ *  over the executor's authenticated handles, never through a per-endpoint mediator. */
+export async function enumerateObligationRows(
+  handles: { jsm: JetStreamManager; js: JetStreamClient },
+  space: string,
+  filter: string,
+): Promise<EnumeratedObligation[]> {
+  const bucket = recordsBucket(space);
   const stream = `KV_${bucket}`;
   const name = `obligscan_${mintLifecycleUid()}`;
   try {
-    await med.jsm.consumers.add(stream, {
+    await handles.jsm.consumers.add(stream, {
       name, filter_subject: `$KV.${bucket}.${filter}`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject,
       mem_storage: true, inactive_threshold: 30_000_000_000,
     });
@@ -1040,7 +1048,7 @@ async function enumerateObligations(med: MediatorInternals, filter: string): Pro
   }
   const out: EnumeratedObligation[] = [];
   try {
-    const consumer = await med.js.consumers.get(stream, name);
+    const consumer = await handles.js.consumers.get(stream, name);
     let pending = (await consumer.info()).num_pending;
     while (pending > 0) {
       const want = Math.min(pending, 256);
@@ -1059,9 +1067,13 @@ async function enumerateObligations(med: MediatorInternals, filter: string): Pro
       pending -= got;
     }
   } finally {
-    try { await med.jsm.consumers.delete(stream, name); } catch { /* per-run consumer; inactive_threshold collects it */ }
+    try { await handles.jsm.consumers.delete(stream, name); } catch { /* per-run consumer; inactive_threshold collects it */ }
   }
   return out;
+}
+
+function enumerateObligations(med: MediatorInternals, filter: string): Promise<EnumeratedObligation[]> {
+  return enumerateObligationRows({ jsm: med.jsm, js: med.js }, med.space, filter);
 }
 
 /** The injected ACCEPTED-EPF route reconciler (§13.8: a drain must complete accept-side
