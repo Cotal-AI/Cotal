@@ -897,10 +897,16 @@ sufficient *authority* identity on this surface. Two further identity components
   Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,
-  state: active | retiring | retired, currentCredentialId?, op? }` (closed schema; the
+  state: active | retiring | retired, currentCredentialId?, lastTakeoverOpId?, op? }` (closed
+  schema; the
   embedded `owner`/`actor` MUST equal the key's alias tokens, so a key-mismatched row
   never authorizes; `currentCredentialId` is absent until the credential ledger releases
-  a root under the reopened gate; `op` is required at `retiring` and forbidden elsewhere)
+  a root under the reopened gate; `lastTakeoverOpId` is the opId of the takeover operation
+  that LAST advanced `processEpoch` (the epoch advance and this stamp are ONE head CAS, so a
+  completion is bound to exactly one operation: a resuming barrier confirms the completed head
+  carries ITS opId, and a LOSING concurrent takeover that captured the same pre-takeover
+  coordinates finds a foreign opId and refuses, never claiming the winner's completion; absent
+  until the first takeover); `op` is required at `retiring` and forbidden elsewhere)
   under the alias's **CAS head key** (§13.7:
   the **unsplit** `lifecycle.<owner>.<actor>` head key HOLDS this mapping as one atomic
   record, the single authoritative current mapping and the only source of `mappingRevision`,
@@ -1033,10 +1039,18 @@ barrier's own final step, so no credential of generation `G` is ever live when g
 **Endpoint instances use a disjoint gate family, distinguished by explicit prefix and
 never by token arity**: the endpoint issuance gate is `epgate.<endpoint>.<instanceId>`,
 `{ state: open | frozen | retired, generation, processEpoch, registrationRevision,
-nameAuthorityRevision, op? }` (the endpoint fence coordinates of §13.5/§13.7), and
+nameAuthorityRevision, principal, op? }` (the endpoint fence coordinates of §13.5/§13.7, plus
+`principal`: the serving instance's own CONNZ-attributable connection principal, recorded at
+registration), and
 endpoint-derived credentials ledger under `epcred.<endpoint>.<instanceId>.<credentialId>`
 with the same row schema, mint protocol, gate discipline, and never-delete rules as
-`cred.`/`gate.`. The `cred.`/`epcred.` families hold ONLY conformant ledger rows:
+`cred.`/`gate.`. **`holderPrincipal` is ALWAYS a CONNZ-attributable `<owner>.<actor>` in
+BOTH families** (the barrier KICKs it; an endpoint NAME is not attributable and never sits
+there): in `cred.` it is the caller principal; in `epcred.` it is the serving instance's own
+connection principal, copied from the endpoint gate's `principal`, while the endpoint NAME that
+forms the `epcred.` KEY is a SEPARATE row field, so the key identity and the eviction target
+stay disjoint (an `epcred` row that put the endpoint name in `holderPrincipal` could never be
+KICKed). The `cred.`/`epcred.` families hold ONLY conformant ledger rows:
 implementation staging, half-minted state, and tombstone fences live in a distinct
 `stage.` family, never under a ledger prefix a barrier enumerates.
 
@@ -1924,15 +1938,25 @@ the acceptance is in flight is the §13.8 obligation row, not the carried value.
 `govern.<endpoint>` (§13.7, the endpoint's registration linearization point). To make the
 enforced policy MACHINE-SELECTABLE by any second implementer (not inferable from prose), the
 govern head value carries a normative **policy selector**: `{ enforcedPolicyKey (the exact
-records key of the `spec.activation` record currently governing, e.g.
-`svc.<endpoint>.<instanceId>.spec`), enforcedPolicyRevision (that record's STORE revision),
-pendingPolicyKey?, pendingPolicyRevision? }`. A canonicalizer reads govern leader-served,
-follows `enforcedPolicyKey`, and re-proves it is still at `enforcedPolicyRevision`, with no
-per-instance guesswork; `policyRevision` throughout this section IS `enforcedPolicyRevision`.
+records key of the `spec.activation` record currently governing), enforcedPolicyRevision (that
+record's STORE revision), pendingPolicyKey?, pendingPolicyRevision? }`. A canonicalizer reads
+govern leader-served, follows `enforcedPolicyKey`, and re-proves it is still at
+`enforcedPolicyRevision`, with no per-instance guesswork; `policyRevision` throughout this
+section IS `enforcedPolicyRevision`. **`enforcedPolicyKey` MUST name an IMMUTABLE,
+REVISION-ADDRESSED policy record, not a mutable per-instance slot** (a bare
+`svc.<endpoint>.<instanceId>.spec` overwritten on every re-registration is disqualified: the
+records bucket keeps history 1, so once a mutation overwrites it the OLD `enforcedPolicyRevision`
+can no longer be read, and the drain window's claim that "the old policy keeps governing" would
+be unbacked). Publish each policy version at its own never-overwritten key (e.g.
+`svc.<endpoint>.<instanceId>.spec.<contentDigest>` or a versioned policy family), so BOTH the
+enforced and the pending revisions stay readable throughout the drain; a deployment that cannot
+provide an immutable policy key MUST pause admission during the mutation rather than claim the
+old value remains readable.
 A policy mutation is a re-registration under the frozen registration gate that lands in TWO
 fenced govern-head CAS steps (§13.9): (1) **stage** records the new registration as
-`pendingPolicy{Key,Revision}` while `enforcedPolicy...` still points at the OLD record, so
-the old policy keeps governing; (2) **promote**, only after the mutation has **drained the
+`pendingPolicy{Key,Revision}` (a NEW immutable policy key) while `enforcedPolicy...` still
+points at the OLD immutable record, so
+the old policy keeps governing and stays readable; (2) **promote**, only after the mutation has **drained the
 endpoint's unresolved obligations to quiescence** (§13.8: enumerate `oblig.*.<endpoint>.>`,
 settle every unresolved row pinning an older `enforcedPolicyRevision` through its decision
 coordinate, re-enumerate until none remain), moves `pendingPolicy...` into `enforcedPolicy...`
@@ -1942,7 +1966,8 @@ policy it did not pin, and the stage/drain/promote order is a durable, resumable
 sequence, never an implied transaction. The **restart-status commit is the same two-coordinate
 class**: before its status CAS the supervisor obtains a `self`-class obligation (§13.8)
 through the same mediator, pinning the `enforcedPolicyRevision` its thresholds were read
-under AND the complete commit intent `{ commitKey, commitBaseRevision, commitDigest }` of the
+under AND the complete commit intent `{ commitKey, commitBaseRevision, commitValue, commitDigest }`
+of the
 status record it will write; the status CAS is authorized only while that obligation is
 `accepted`, so a policy or lifecycle movement settles the obligation and the delayed commit
 loses a CAS, and a crash after `accepted` is finished deterministically from the pinned
@@ -2205,13 +2230,18 @@ client code). The discovery protocol itself is versioned additively under `proto
   (`mappingRevision` iff target-bound, `policyRevision` iff policy-admitted; at least one
   present); an `epf`-class row (a canonical acceptance) adds `{ fingerprint, sourceSeq,
   route }`; a `self`-class row (a guarded record commit, e.g. the restart-status CAS,
-  §13.6) adds the COMPLETE commit intent `{ commitKey, commitBaseRevision, commitDigest }`,
-  the exact record key its accepted state authorizes, the store revision of that record the
-  commit CASes FROM, and a collision-resistant digest of the value it commits, so a crashed
-  writer's commit is deterministically finishable from the row alone (below). The
+  §13.6) adds the COMPLETE commit intent `{ commitKey, commitBaseRevision, commitValue,
+  commitDigest }`: the exact record key its accepted state authorizes, the store revision of
+  that record the commit CASes FROM, the CANONICAL BYTES it commits (or an immutable
+  proposal key resolving them, never only a digest, because a digest cannot reconstruct the
+  value a crash recovery must re-write), and a collision-resistant digest OF `commitValue` for cheap
+  landed/not-landed comparison. A crashed writer's commit is thus deterministically
+  finishable from the row alone (below). The
   `decision` class is fixed by the TRUSTED operation kind, never caller-selectable. A
-  create loser leader-reads the winner: the same coordinate + fingerprint + route (or
-  `commitKey`) is a retry/join that ADOPTS the winner's pinned identity; any
+  create loser leader-reads the winner: the FULL pinned identity must match to join (an
+  `epf`-class row on coordinate + fingerprint + route; a `self`-class row on the ENTIRE commit
+  intent `commitKey` + `commitBaseRevision` + `commitDigest`, so two different desired values
+  or base revisions never join under one `commitKey`); any
   mismatch is `conflict`, never a second obligation. (2) **Proof issuance is a post-create
   currency recheck, and admission is proof-gated**: after winning or joining the create,
   the mediator leader-reads the SAME coordinates AGAIN, and only if the target head is
@@ -2246,12 +2276,14 @@ client code). The discovery protocol itself is versioned additively under `proto
   (the writer's `provisional → accepted` CAS and the drain's rejection contend on the ONE
   row, exactly one wins, and a delayed guarded commit finds its authority gone). An
   `accepted` `self`-class row is NOT stuck and does NOT block quiescence: because the row
-  pins the complete commit intent `{ commitKey, commitBaseRevision, commitDigest }`, either
+  pins the complete commit intent `{ commitKey, commitBaseRevision, commitValue, commitDigest }`,
+  either
   the writer's own resume OR a drain reconciler drives it `accepted → terminal`
-  deterministically. Read the record at `commitKey`: if it already carries `commitDigest`
+  deterministically. Read the record at `commitKey`: if its value digests to `commitDigest`
   the commit landed, CAS the row `accepted → terminal`; if it is still at
-  `commitBaseRevision` the commit did not run, idempotently apply it (the pinned value's
-  digest is `commitDigest`) then CAS the row terminal; if the record has moved PAST
+  `commitBaseRevision` the commit did not run, re-apply it by CASing `commitValue` (the pinned
+  BYTES, not merely their digest) at `commitBaseRevision` then CAS the row terminal; if the
+  record has moved PAST
   `commitBaseRevision` to a foreign value the intended commit can never land (the guarded
   CAS would lose), so CAS the row straight to `terminal` as superseded. Quiescence therefore
   means NO `provisional` and NO un-driven `accepted` `self`-class rows remain: an accepted
@@ -3087,7 +3119,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-07-15 | **v0.4 amendment (folds into the in-flight §13 revision below): lifecycle and admission fences.** Three-state lifecycle head (`active | retiring | retired`; currency only at `active`; `mappingRevision` = the head key's store revision), space-global never-deleted UID reservation (`uid.<lifecycleUid>`), per-kind issuance-gate operation intents and their allowed-transition sets, the locked terminal barrier order (obligation drain to quiescence before the exact-pool cleaner, both before frontiers), the §13.8 authority-head reservation/drain protocol (create-fence + proof-gated admission + per-class decision coordinates + writer≠target reclamation), the endpoint-wide admission-policy coordinate (the governance head + `policyRevision`) with drain-gated policy enforcement, the `ep` sentinel for untargeted admissions, and bind-time store shape proofs (§13.12). Refined per the re-verify round: the govern head's NORMATIVE policy selector `{ enforcedPolicyKey, enforcedPolicyRevision, pendingPolicy… }` with a stage/drain/promote mutation order (so the enforced policy is machine-selectable during the drain window), the `self`-class obligation's complete commit intent `{ commitKey, commitBaseRevision, commitDigest }` with deterministic `accepted → terminal` recovery (an accepted-but-uncommitted row never blocks quiescence), the retirement barrier's cleaner-credential revoke + verified-eviction BEFORE any frontier records, the LIMITS-retention bind-time proof (a non-Limits authority store deletes rows on consumer ack), and the runtime gate parse rejecting impossible `retired`-under-takeover/registration state. |
+| 2026-07-15 | **v0.4 amendment (folds into the in-flight §13 revision below): lifecycle and admission fences.** Three-state lifecycle head (`active | retiring | retired`; currency only at `active`; `mappingRevision` = the head key's store revision), space-global never-deleted UID reservation (`uid.<lifecycleUid>`), per-kind issuance-gate operation intents and their allowed-transition sets, the locked terminal barrier order (obligation drain to quiescence before the exact-pool cleaner, both before frontiers), the §13.8 authority-head reservation/drain protocol (create-fence + proof-gated admission + per-class decision coordinates + writer≠target reclamation), the endpoint-wide admission-policy coordinate (the governance head + `policyRevision`) with drain-gated policy enforcement, the `ep` sentinel for untargeted admissions, and bind-time store shape proofs (§13.12). Refined per the re-verify round: the govern head's NORMATIVE policy selector `{ enforcedPolicyKey, enforcedPolicyRevision, pendingPolicy… }` with a stage/drain/promote mutation order (so the enforced policy is machine-selectable during the drain window), the `self`-class obligation's complete commit intent `{ commitKey, commitBaseRevision, commitValue, commitDigest }` (the pinned BYTES, not just a digest) with deterministic `accepted → terminal` recovery and full-intent create-join (an accepted-but-uncommitted row never blocks quiescence), the retirement barrier's cleaner-credential revoke + verified-eviction BEFORE any frontier records, the LIMITS-retention bind-time proof (a non-Limits authority store deletes rows on consumer ack), and the runtime gate parse rejecting impossible `retired`-under-takeover/registration state. A second re-verify round added: the head's `lastTakeoverOpId` (the epoch advance stamps the completing op, so a losing concurrent takeover never claims the winner's completion), the immutable revision-addressed admission-policy key (a mutable per-instance slot loses the old revision under history 1 during the drain), the `epgate.principal` and the rule that a ledger row's `holderPrincipal` is ALWAYS a CONNZ-attributable principal (the endpoint NAME forms the `epcred.` key in a separate field, never the eviction target), and the lifecycle barrier's session-pair teardown (a takeover revoking a `session.`-derived credential terminalizes the session and revokes the paired serving row). |
 | 2026-07-10 | **v0.4 binding revision: endpoint control surface (§13).** One standardized typed surface for every endpoint (manager, delivery, wrapped third-party servers): class/instance/scatter rails with per-command broker enforcement and an authorization-mode gradient, lifecycle identity (recyclable alias + never-reused lifecycle UID + fenced process epoch, §13.1, §2/§6/§8 extensions), versioned envelope with structured errors and signed slots, three delivery contracts (ephemeral, split-key records, untrusted submissions → mediated canonical facts), verbs call/cast/watch/claim/scatter (claim owner-mediated: workers hold no pool grant), composites (action, checkpoint, guard, capability handle with redemption-pinned `handle`-mode targets, session, virtual endpoints), content-addressed cluster contracts + governed traits + describe, the ownership matrix (incl. exact reader/consumer/ack rows and pinned consumer-name grammars), takeover/retirement revoke-and-evict barriers over the full ledgered credential family (credential ledger, §13.1), mediated timer arming (request/armed/fire split with a scheduler-origin fire check), poison quarantine facts, an epoch-pinned record-write ingress plane (`epr`), a single-message digest-subject contract store (`epc`), pre-created pull-only reader consumers (no dynamic reader creates: a create's delivery target is body-set and unconfined), an alias CAS head for lifecycle activation, and receipts and trust anchors. **Hard cut:** deletes the v0 `ctl` rail, `ControlRequest`/`ControlReply`, the `self`/`manager`/`admin`/`delivery-admin` tiers, and the reserved `control.<instance>` subject. `protocolVersion` targets `0.4` at migration completion; `1.0` stays reserved as a later stability declaration. |
 | 2026-07-07 | Documentation revision, no wire change: layered authority statement (schema authoritative for shapes, prose for semantics), document-snapshot policy and this change log (§11), reciprocal links to the informative docs. |
 | 2026-07-03 | **v0.3 binding revision: owner+actor identity.** The wire identity becomes the two-token principal `(owner, actor)`: subjects carry the sender as `<owner>.<actor>`, and grants, durables, presence, and `from.id` re-key onto the pair (§2, §3, §6, §8, §9). The connection nkey remains only the transport credential (the per-connection reply inbox). Adds the per-user-auth authorization grammar and the owner-token format (§2, §9). Supersedes the single-id grammar. |
