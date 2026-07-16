@@ -94,7 +94,10 @@ function npm(args: string[], cwd: string): { status: number | null; output: stri
   // line (shared with the manager's PtyRuntime launch).
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
   const r = spawnSync(file, spawnArgs, { cwd, encoding: "utf8", windowsVerbatimArguments });
-  return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+  // Fold r.error (a spawn failure — ENOENT, EINVAL, …) into the output: it is the ONLY signal when a
+  // launch fails before the child runs (status null, empty stdio), so it can't produce a blank error.
+  const output = `${r.error ? `spawn error: ${r.error.message}\n` : ""}${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+  return { status: r.status, output };
 }
 
 /** Import an installed extension package (its declared entry) so it self-registers. */
