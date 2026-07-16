@@ -11,12 +11,14 @@
  *  - a forged `COTAL_EXT_SEEDING` gets no seed-child treatment
  *  - an ambiguous (pending, dead-parent) child marker is fail-loud
  *  - concurrent first boots do not collide or falsely report "interrupted"
+ *  - the binary invoked through a bin SYMLINK (how every global install runs) still resolves its
+ *    generation and payloads
  *
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:seed` does that first.
  * Run: pnpm smoke:seed
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { defaultAgentType } from "@cotal-ai/workspace";
@@ -329,6 +331,31 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   check("parallel boots: all exit 0 (one seeds, the rest wait then no-op)", results.every((r) => r.code === 0), results.map((r) => r.code));
   check("parallel boots: none falsely reports 'interrupted'", !results.some((r) => /interrupted/i.test(r.err)));
   check("parallel boots: exactly four connectors seeded (no double-seed)", listNames(cfg).length === 4);
+}
+
+// ── the GLOBAL-INSTALL shape: the binary reached through a bin SYMLINK ────────────────────────────
+// `npm i -g cotal-ai` publishes `<prefix>/bin/cotal` as a symlink INTO the package, and Node leaves
+// `process.argv[1]` pointing at the symlink, whose own parents hold no `package.json` and no
+// `seeded-connectors/`. Every other case here spawns the real `dist/cotal.js` (an entry that happens to
+// sit inside the package), so this is the only one that covers how an installed binary is actually run.
+// Skipped on Windows: npm publishes `.cmd`/`.ps1` shims there that exec the real path, so the symlink
+// shape does not exist, and unprivileged `symlinkSync` is EPERM regardless.
+if (process.platform !== "win32") {
+  const cfg = track(freshCfg());
+  const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
+  const link = join(linkDir, "cotal");
+  symlinkSync(BIN, link);
+  const r = spawnSync("node", [link, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const out = r.stdout ?? "";
+  const names = ["claude", "opencode", "hermes", "pi"].filter((n) => out.includes(`connector:${n}`));
+  if (names.length !== 4) console.log(`[diag] symlinked boot status=${r.status}\n--stdout--\n${out}\n--stderr--\n${r.stderr}`);
+  check("symlinked bin: boot resolves the generation (no 'cannot determine' fail)", !/cannot determine the seed generation/.test(r.stderr ?? ""), r.stderr);
+  check("symlinked bin: all four built-ins seeded", names.length === 4, names);
+  // The generation must be the cotal-ai VERSION, i.e. resolved through the link into the package —
+  // not some unrelated `package.json` found by walking up out of the link's own directory.
+  const version = readJson(join(REPO, "bin", "package.json")).version;
+  check("symlinked bin: generation is the cotal-ai version (walked from the real path)", readJson(join(seedDir(cfg), "stamp.json")).generation === version, version);
+  check("symlinked bin: payloads copied into that generation's durable store", existsSync(join(seedDir(cfg), "store", version)));
 }
 
 for (const c of cleanup) rmSync(c, { recursive: true, force: true });

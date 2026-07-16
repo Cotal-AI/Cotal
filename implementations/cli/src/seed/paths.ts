@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
@@ -83,16 +83,26 @@ export function seedStorePath(generation: string, name: string): string {
   return join(seedStoreDir(), generation, name);
 }
 
+/** Resolve package-manager bin symlinks before looking for package-owned files. */
+function entryScript(): string {
+  const entry = process.argv[1];
+  if (!entry) throw new Error("cannot resolve the cotal entry script: no entry script (process.argv[1])");
+  try {
+    return realpathSync(entry);
+  } catch (e) {
+    throw new Error(`cannot resolve the cotal entry script ${entry}: ${(e as Error).message}`);
+  }
+}
+
 /**
  * The seed generation: this `cotal-ai` binary's version. Ties a reconcile-refresh to the shipped
  * payload changing — including the bundled `connector-core`, so a `cotal-ai` upgrade re-seeds the
  * connectors that carry version-coupled behavior (e.g. the v0.4 lifecycle parse). Read from the
- * nearest `package.json` above the entry script (`cotal-ai` published, or `bin/package.json` in a
- * dev `tsx bin/cotal.ts` run). Fails loud if unreadable — a generation-less seed can't gate refresh.
+ * nearest `package.json` above the {@link entryScript} (`cotal-ai` published, or `bin/package.json` in
+ * a dev `tsx bin/cotal.ts` run). Fails loud if unreadable — a generation-less seed can't gate refresh.
  */
 export function seedGeneration(): string {
-  const entry = process.argv[1];
-  if (!entry) throw new Error("cannot determine the seed generation: no entry script (process.argv[1])");
+  const entry = entryScript();
   let dir = dirname(entry);
   for (;;) {
     const pj = join(dir, "package.json");
@@ -116,15 +126,16 @@ function repoRootFromHere(): string {
 /**
  * The shipped payload directory for one built-in connector — the source the reconcile copies into the
  * durable store. Dev resolves `extensions/<pkg-dir>` from this module's location (NEVER `cwd`);
- * published resolves `<cotal-ai>/seeded-connectors/<name>` beside the entry (the `bin` prepublish
- * copy). Fails loud if neither carries a `package.json` — a build missing its seeded connectors.
+ * published resolves `<cotal-ai>/seeded-connectors/<name>` beside the {@link entryScript} (the `bin`
+ * prepublish copy). Fails loud if neither carries a `package.json` — a build missing its seeded
+ * connectors.
  */
 export function shippedSourceDir(name: string): string {
   const pkg = OFFICIAL_CONNECTORS[name];
   if (!pkg) throw new Error(`"${name}" is not a first-party connector; only ${SEED_BUILTINS.join(", ")} are seeded`);
   const devDir = join(repoRootFromHere(), "extensions", pkg.split("/")[1]);
   if (existsSync(join(devDir, "package.json"))) return devDir;
-  const pubDir = join(dirname(process.argv[1] ?? ""), "..", "seeded-connectors", name);
+  const pubDir = join(dirname(entryScript()), "..", "seeded-connectors", name);
   if (existsSync(join(pubDir, "package.json"))) return pubDir;
   throw new Error(
     `no shipped payload for connector "${name}" (looked in ${devDir} and ${pubDir}) - this cotal-ai build is missing its seeded connectors`,

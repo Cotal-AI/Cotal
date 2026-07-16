@@ -6,7 +6,9 @@
  *  - the `cotal-ai` tarball ships the `seeded-connectors/<name>` payloads (prepack) with concrete deps
  *  - a first command on the installed binary seeds all four built-ins from those bundled payloads
  *    (`shippedSourceDir` published branch), installing each from the durable store under the isolated
- *    config (never a repo path)
+ *    config (never a repo path). Driven through the `.bin/cotal` SYMLINK npm publishes, the way a user
+ *    reaches an installed binary: `process.argv[1]` is then the link, whose parents hold no
+ *    `package.json` and no `seeded-connectors/`, so only resolving it reaches the payloads
  *  - each connector registers into THE BINARY'S single `@cotal-ai/core` (ext add asserts this; a
  *    dual-core install would fail it), recorded `source:"seeded"`
  *
@@ -14,7 +16,7 @@
  * Run: pnpm smoke:seed-tarball:live
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -71,13 +73,18 @@ try {
   });
   check("npm install of the tarball closure succeeded", install.status === 0, install.stderr?.split("\n").slice(-6).join("\n"));
 
-  const bin = join(prefix, "node_modules", "cotal-ai", "dist", "cotal.js");
-  check("installed binary present", existsSync(bin));
+  const packageBin = join(prefix, "node_modules", "cotal-ai", "dist", "cotal.js");
+  check("installed binary present", existsSync(packageBin));
   check("seeded-connectors present in the installed package", existsSync(join(prefix, "node_modules", "cotal-ai", "seeded-connectors")));
   check("single @cotal-ai/core hoisted in the prefix", existsSync(join(prefix, "node_modules", "@cotal-ai", "core")));
 
   console.log("seeding from the published layout …");
-  const list = spawnSync("node", [bin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const npmBin = join(prefix, "node_modules", ".bin", "cotal");
+  const invokedBin = process.platform === "win32" ? packageBin : npmBin;
+  if (process.platform !== "win32") {
+    check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
+  }
+  const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "hermes", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
