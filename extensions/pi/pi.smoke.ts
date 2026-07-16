@@ -475,7 +475,9 @@ for (const assistant of [
   driver.bind(host);
   driver.onSessionStart(ctx);
   const details = host.sent[0]!.details;
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  // Wait well past the 5ms watchdog so it has reliably FIRED before the assertion — a 10ms wait races
+  // the 5ms timer on Windows' coarse (~15ms) granularity, where both round to the same tick.
+  await new Promise((resolve) => setTimeout(resolve, 120));
   ok(driver.state === "held" && mesh.drained.length === 0, "watchdog expiry holds without acknowledgement");
   mesh.items.push(item("new"));
   driver.onIncoming();
