@@ -365,6 +365,8 @@ async function restoreStream(
     profile: "restore",
     scope: { operation: "upload", stream: stream.stream, deliverSubject: session.deliverSubject },
   });
+  if (process.env.COTAL_SMOKE_FAIL_RESTORE_STREAM === stream.stream)
+    throw new Error(`smoke-injected exact-ID chunk handoff timeout for ${stream.stream}`);
   const upload = await connectIsolatedBroker(broker, uploadLogin);
   const fd = openSync(join(snapshotDir, stream.snapshot), constants.O_RDONLY);
   try {

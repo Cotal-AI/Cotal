@@ -298,12 +298,17 @@ async function snapshotStream(
   const name = snapshotFileName(stream);
   const write = writer.writeFile(name, "snapshot", queue.iterable, stream);
   void write.catch((error) => queue.close(error instanceof Error ? error : new Error(String(error))));
+  let sunkChunks = 0;
   try {
     const metadata = await downloadStreamSnapshot(nc, stream, {
       deliverSubject,
       timeoutMs: OPERATION_TIMEOUT_MS,
       checkMessages: true,
-      onChunk: (chunk) => queue.push(chunk),
+      onChunk: (chunk) => {
+        if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "chunk" && ++sunkChunks === 1)
+          throw new Error("smoke-injected failure at the first snapshot chunk");
+        return queue.push(chunk);
+      },
     });
     validateCanonicalBackupStreamConfig(space, stream, metadata.config);
     queue.close();
@@ -407,13 +412,19 @@ export async function backup(args: ParsedArgs): Promise<void> {
     } finally {
       await inspect.drain().catch(() => {});
     }
+    if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "initiation")
+      throw new Error("smoke-injected failure at snapshot initiation");
     const files: BackupFileRecord[] = [];
     const streams: BackupStreamRecord[] = [];
     for (const stream of spaceBackupInventory(ready.space)[selected]) {
       const snapshot = await snapshotStream(writer, broker, ready.space, stream);
       files.push(snapshot.file);
       streams.push(snapshot.stream);
+      if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "close")
+        throw new Error("smoke-injected failure after snapshot close");
     }
+    if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "manifest")
+      throw new Error("smoke-injected failure before manifest publication");
     const checkpointName = "checkpoints.json";
     files.push(await writer.writeFile(checkpointName, "checkpoints", `${JSON.stringify(selected === "full" ? checkpoints : [], null, 2)}\n`));
     writer.publish({
