@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -30,6 +30,15 @@ import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { seedStoreDir } from "../seed/paths.js";
+
+/** Classify a `cotal ext add` spec as a local path (vs a registry name). A path is a relative `.`/`./`/
+ *  `.\` spec or an absolute one on the NATIVE platform — POSIX `/…`, Windows drive `C:\…` / `C:/…`, or
+ *  UNC `\\…`. A POSIX-only test misclassified a Windows absolute path (it starts with a drive letter,
+ *  not `/`) as a registry name, which broke first-run seeding on Windows (the seed-store spec is always
+ *  absolute). `absolute` is injectable so the classification is unit-testable for both platforms. */
+export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAbsolute): boolean {
+  return spec.startsWith(".") || absolute(spec);
+}
 
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
@@ -140,12 +149,8 @@ async function add(spec: string): Promise<void> {
     provenance.wrote("extensions prefix", join(dir, "package.json"));
   }
 
-  // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd. Match
-  // POSIX (`.`, `/`) AND Windows (`\`, a `C:\`/`C:/` drive-absolute) paths — a Windows absolute path
-  // starts with a drive letter, not `/`, so a POSIX-only test would treat it as a registry name (which
-  // broke seeding on Windows, where the seed-store spec is always `C:\…`). A registry name never has a
-  // `<letter>:<slash>` prefix (colons are invalid in package names).
-  const isPath = /^(\.|\/|\\|[A-Za-z]:[\\/])/.test(spec);
+  // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
+  const isPath = isPathSpec(spec);
   const resolved = isPath ? resolve(spec) : spec;
   // The installed NAME is known BEFORE npm runs — never recovered afterwards by diffing the prefix
   // dependencies (a heuristic that binds to the wrong key if the prefix ever drifted, and that made

@@ -18,8 +18,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { defaultAgentType } from "@cotal-ai/workspace";
+import { isPathSpec } from "../src/commands/ext.js";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -67,6 +68,15 @@ const track = <T extends string>(c: T): T => (cleanup.push(c), c);
 // ── defaultAgentType (unit) ──────────────────────────────────────────────────────────────────────
 check("defaultAgentType defaults to claude", defaultAgentType("claude", {}) === "claude");
 check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAULT_AGENT: "opencode" }) === "opencode");
+
+// ── isPathSpec (unit, cross-platform) — the seed-store spec is an ABSOLUTE path on both platforms ──
+// Injected win32/posix isAbsolute so the classification is proven for Windows drive/UNC paths on any CI.
+check("path spec: Windows drive-absolute (the Windows seed-store spec) classifies as a path", isPathSpec("C:\\Users\\r\\cotal\\seed\\store\\0.1.0\\claude", win32.isAbsolute));
+check("path spec: Windows UNC classifies as a path", isPathSpec("\\\\server\\share\\ext", win32.isAbsolute));
+check("path spec: POSIX absolute (the POSIX seed-store spec) classifies as a path", isPathSpec("/home/r/.config/cotal/seed/store/0.1.0/claude", posix.isAbsolute));
+check("path spec: relative classifies as a path", isPathSpec("./local-ext", posix.isAbsolute) && isPathSpec(".\\local-ext", win32.isAbsolute));
+check("path spec: a registry name is NOT a path (scoped)", !isPathSpec("@cotal-ai/connector-x", win32.isAbsolute) && !isPathSpec("@cotal-ai/connector-x", posix.isAbsolute));
+check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("connector-x@1.2.3", win32.isAbsolute) && !isPathSpec("connector-x@1.2.3", posix.isAbsolute));
 
 // ── 1. first-run auto-seed + state files ─────────────────────────────────────────────────────────
 {
