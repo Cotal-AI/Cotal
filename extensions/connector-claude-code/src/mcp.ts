@@ -203,11 +203,12 @@ async function main(): Promise<void> {
   // One wake-nudge path, shared by incoming messages and the Stop→idle flush. It stays a stable
   // function gated on a *mutable* `channelActive` flag (flipped true only after the MCP
   // handshake confirms the client speaks claude/channel — see below). If it fires before then it
-  // simply no-ops; a *buffered* message waits in the inbox and is drained at the next
-  // UserPromptSubmit, so nothing is lost. This only ever *wakes* a turn (drainInbox and the focus
-  // ingest ack-drop are the ack sites). One exception: a focus @mention's body was already
-  // ack-dropped at ingest (not buffered), so a missed mention-wake is recoverable only by an
-  // explicit cotal_inbox pull (recall) — there is no buffered copy to drain.
+  // simply no-ops; the post-handshake reconcile below retries once, and an unacked durable copy's
+  // redelivery re-enters the normal `incoming` policy path. A buffered message also drains at the
+  // next UserPromptSubmit. This only ever *wakes* a turn (drainInbox and the focus ingest ack-drop
+  // are the ack sites). One exception: a focus @mention's body was already ack-dropped at ingest
+  // (not buffered), so a missed mention-wake is recoverable only by an explicit cotal_inbox pull
+  // (recall) — there is no buffered copy to drain.
   let channelActive = false;
   const nudge = (item?: InboxItem, pullHint?: string): void => {
     if (!channelActive) return;
@@ -260,6 +261,12 @@ async function main(): Promise<void> {
   process.stderr.write(
     `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
   );
+
+  // Reconcile once after the capability gate opens: messages may have buffered while the mesh
+  // connected in parallel with the MCP handshake. Claude currently exposes no handler-ready ack,
+  // so this is best-effort; durable redelivery supplies the later retry event if the host still
+  // drops this notification during its asynchronous channel registration window.
+  if (agent.pendingWake() > 0) nudge();
 
   process.stderr.write(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,

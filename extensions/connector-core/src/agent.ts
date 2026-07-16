@@ -111,9 +111,10 @@ function sleep(ms: number): Promise<void> {
  * Connecting is resilient: {@link start} kicks off a background retry loop so the
  * MCP server is responsive immediately even if the mesh isn't up yet.
  *
- * Emits `"incoming"` (InboxItem) after each message is buffered, so a push layer
- * (the channel) can deliver it immediately; `"mention-wake"` (InboxItem) when a `focus`-mode
- * agent is @-mentioned on a channel — the body was acked-and-dropped (not buffered), so this
+ * Emits `"incoming"` (InboxItem) when a message is buffered or an unacked durable copy
+ * redelivers, so a push layer can apply its normal delivery policy again; `"mention-wake"`
+ * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
+ * acked-and-dropped (not buffered), so this
  * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
  * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
  * endpoint faults.
@@ -293,10 +294,15 @@ export class MeshAgent extends EventEmitter {
     // transition window. There, if the DURABLE copy arrived first and a LIVE copy lands second,
     // overwriting with the live no-op would leave the durable copy uncommitted → JS redelivers it → it
     // double-surfaces. So only a durable delivery may replace the stored handle; a live duplicate is
-    // dropped as-is.
+    // dropped as-is. A durable duplicate also re-announces the still-pending item through the
+    // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
+    // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
     const existing = this.inbox.find((p) => p.item.id === m.id);
     if (existing) {
-      if (delivery.durable) existing.ack = delivery.ack;
+      if (delivery.durable) {
+        existing.ack = delivery.ack;
+        this.emit("incoming", existing.item);
+      }
       return;
     }
     if (!meta)

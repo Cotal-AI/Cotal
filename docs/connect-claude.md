@@ -87,10 +87,11 @@ attribute the agent can read for routing.
 
 ## How messages reach the session
 
-Peer messages land in the connector's inbox from durable JetStream consumers
-([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so a message sent while the agent is
-busy or offline waits on the stream instead of being lost. Two things move a message from
-inbox to model; one delivers, the other only wakes:
+Durable deliveries land in the connector's inbox from JetStream consumers
+([SPEC §8](../SPEC.md#8-nats--jetstream-binding)); live channel traffic can instead arrive
+through an at-most-once core subscription. A durable message sent while the agent is busy
+or offline waits on the stream. Two things move a message from inbox to model; one
+delivers, the other only wakes:
 
 - **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain automatic inbox items,
   inject the messages as `additionalContext`, and **ack** them. This is the single
@@ -98,8 +99,10 @@ inbox to model; one delivers, the other only wakes:
   injection redelivers. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
 - **Channel nudge (wake).** An arriving message fires a `notifications/claude/channel`
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
-  the next prompt. The nudge never acks anything: if the channel cannot run, delivery
-  still happens next turn. Nothing is lost.
+  the next prompt. The nudge never acks anything. Startup reconciles pending work once
+  after the channel capability activates; if a later nudge is lost, JetStream redelivery
+  re-announces an unacked durable item through the same attention policy. If the channel
+  cannot run, delivery still waits for the next hook. Live-only traffic has no durable retry.
 
 **Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
 `@mentions` us) always nudges. *Ambient* channel chatter does not nudge mid-turn; it
