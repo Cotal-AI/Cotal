@@ -1,7 +1,7 @@
 import { existsSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "@cotal-ai/workspace";
-import { SEED_BUILTINS, reconcileChildPath, reconcileCursorPath, reconcileLockPath, readJsonFile, writeJsonAtomic } from "./paths.js";
+import { SEED_BUILTINS, reconcileChildPath, reconcileCursorPath, reconcileLockPath, reconcileRecoveryPath, readJsonFile, writeJsonAtomic } from "./paths.js";
 
 /**
  * The reconcile-wide lock and the crash cursor.
@@ -163,6 +163,39 @@ function pidAliveMatching(pid: number, start: string | undefined): boolean {
     if (now !== undefined && now !== start) return false; // recycled PID
   }
   return true;
+}
+
+/**
+ * The durable maintenance-recovery obligation. A `--repair`/`--reset` writes it BEFORE it
+ * destructively quarantines a corrupt manifest/cursor, and clears it only at the final commit — so a
+ * SIGKILL after the quarantine but before the reinstalls is not forgotten: the next boot fails loud
+ * and the next repair re-derives the same obligation (rebuild the built-ins from on-disk truth, and/or
+ * reinstall+verify every seeded built-in) instead of stamping success over missing connectors.
+ */
+export interface RecoveryObligation {
+  readonly rebuildFromDisk?: boolean;
+  readonly repairAllSeeded?: boolean;
+}
+
+export function writeRecovery(obligation: RecoveryObligation): void {
+  writeJsonAtomic(reconcileRecoveryPath(), obligation);
+}
+
+export function readRecovery(): RecoveryObligation | undefined {
+  return readJsonFile<RecoveryObligation>(reconcileRecoveryPath());
+}
+
+/** True iff a recovery obligation is outstanding (any read failure counts — never silently ignored). */
+export function recoveryPending(): boolean {
+  try {
+    return readRecovery() !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+export function clearRecovery(): void {
+  rmSync(reconcileRecoveryPath(), { force: true });
 }
 
 /** Quarantine a CORRUPT (unparseable) crash CURSOR aside, so a `--repair`/`--reset` read of it can't

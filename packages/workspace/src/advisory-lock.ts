@@ -66,6 +66,11 @@ export interface AcquireOptions {
 /** A best-effort, OS-cheap process-start token used ONLY to detect PID reuse. Undefined ⇒ the check
  *  is skipped for that platform and the bounded wait is the sole backstop (never a hard dependency). */
 export function processStartToken(pid: number): string | undefined {
+  // Windows has no cheap, STABLE start token here: `/proc` is absent and a `ps` on PATH (MSYS/Git)
+  // returns inconsistent output between calls, which would make the SAME live lock read differently
+  // from the acquirer vs a reader and be misjudged stale. Per the no-token rule, return undefined so a
+  // live PID keeps the lock active/unknown (bounded-wait is the backstop) rather than a false reclaim.
+  if (process.platform === "win32") return undefined;
   try {
     // Linux: /proc/<pid>/stat field 22 (starttime). comm (field 2) may hold spaces/parens, so parse
     // after the final ')': the remainder begins at field 3 (state), so starttime is index 19.

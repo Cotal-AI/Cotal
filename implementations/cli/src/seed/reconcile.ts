@@ -18,12 +18,16 @@ import {
   acquireReconcileLock,
   clearChildMarker,
   clearCursor,
+  clearRecovery,
   readCursor,
+  readRecovery,
   reconcileLockActive,
+  recoveryPending,
   sanitizeCorruptCrashState,
   seedChildStatus,
   writeCursor,
   writePendingChildMarker,
+  writeRecovery,
 } from "./lock.js";
 import {
   ensureWitness,
@@ -104,16 +108,17 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
   // crashed reconcile is caught before the stamp is trusted.
   if (mode === "auto") {
     const cursor = readCursor();
-    if (cursor) {
-      // A cursor + a LIVE lock holder ⇒ a reconcile is in flight: fall through and WAIT on the lock,
-      // then re-check the fast path (it will have stamped). A cursor + no live holder ⇒ it crashed.
+    // A crash cursor OR an outstanding maintenance-recovery obligation means a seed/repair was
+    // interrupted. A LIVE lock holder ⇒ it is in flight: fall through and WAIT on the lock, then
+    // re-check the fast path (it will have stamped). No live holder ⇒ it crashed → fail loud.
+    if (cursor || recoveryPending()) {
       if (!reconcileLockActive()) {
         const child = seedChildStatus();
         if (child.kind === "live")
           throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
         if (child.kind === "ambiguous")
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
-        throw new Error("a previous connector seed was interrupted - run `cotal ext seed --repair`");
+        throw new Error("a previous connector seed or repair was interrupted - run `cotal ext seed --repair`");
       }
     } else if (readWitness() && authorityIntact() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -161,16 +166,19 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it and retry`);
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
-  // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` tells the
-  // loop it must reconcile against ON-DISK truth, not a (now-quarantined) manifest.
+  // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
+  // against ON-DISK truth (a quarantined manifest has no reliable "removed" record); `repairAllSeeded`
+  // ⇒ an unidentifiable interrupted install → reinstall every seeded built-in. Both obligations are
+  // journaled durably by prepareMaintenanceState (recovery marker) so a repair SIGKILL after the
+  // quarantine still honors them on the next run.
   let manifestRebuilt = false;
-  let cursorQuarantined = false;
+  let repairAllSeeded = false;
   if (mode === "repair" || mode === "reset") {
-    ({ manifestRebuilt, cursorQuarantined } = prepareMaintenanceState(mode));
+    ({ manifestRebuilt, repairAllSeeded } = prepareMaintenanceState(mode));
   }
 
-  // Health preamble — BEFORE the stamp fast path. A cursor means a prior reconcile was interrupted.
-  // In repair mode it is kept (it names the package to re-install) and cleared only at the final commit.
+  // Health preamble — BEFORE the stamp fast path. A cursor OR a recovery obligation means a prior
+  // seed/repair was interrupted. In maintenance mode they are kept and cleared only at the final commit.
   const cursor = readCursor();
   if (cursor) {
     if (mode === "auto")
@@ -179,20 +187,17 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       );
     console.error(c.dim(`recovering from an interrupted seed (package "${cursor.package}") …`));
   }
+  if (mode === "auto" && !cursor && recoveryPending())
+    throw new Error("a previous connector repair was interrupted - run `cotal ext seed --repair`");
 
   const everSeeded = resolveEverSeeded(mode, generation);
 
   // Stamp fast path under the lock: a competing boot may have reconciled while we waited. Only when no
-  // cursor is outstanding (an interrupted run must proceed to re-install, not short-circuit).
-  if (mode === "auto" && !cursor && readWitness() && readStamp()?.generation === generation) return NOOP;
+  // cursor or recovery obligation is outstanding (an interrupted run must proceed, not short-circuit).
+  if (mode === "auto" && !cursor && !recoveryPending() && readWitness() && readStamp()?.generation === generation) return NOOP;
 
   const stampGen = readStamp()?.generation;
   const repairTarget = mode === "repair" ? cursor?.package : undefined;
-  // An unknown/quarantined cursor is an interrupted install whose target we CANNOT identify. The
-  // conservative recovery (a torn npm copy may have left main intact but a required non-main artifact
-  // missing) is to force reinstall + verify every seeded built-in, never to infer integrity from a
-  // selected subset of files.
-  const repairAllSeeded = mode === "repair" && cursorQuarantined;
   const seeded: string[] = [];
   const refreshed: string[] = [];
   const removedKept: string[] = [];
@@ -238,12 +243,15 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     }
   }
 
-  // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor and GC old stores. The
-  // cursor is cleared only here, so an interruption anywhere above is still a detectable partial run.
+  // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
+  // and GC old stores. The cursor and recovery marker are cleared only here, so an interruption
+  // anywhere above (including a repair that quarantined then died mid-reinstall) is still a detectable,
+  // recoverable partial run on the next boot.
   writeAuthority(everSeeded);
   ensureWitness(generation);
   writeStamp(generation);
   clearCursor();
+  clearRecovery();
   gcSeedStore(
     generation,
     loadExtensionsManifest().extensions.map((e) => e.spec),
@@ -252,26 +260,56 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
 }
 
 /** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of wedging
- *  on the same unreadable read. `manifestRebuilt` ⇒ reconcile the built-ins against ON-DISK truth (a
- *  quarantined manifest has no reliable "removed" record); `cursorQuarantined` ⇒ an unidentifiable
- *  interrupted install (force reinstall every seeded built-in). Third-party entries in an
- *  unrecoverable manifest are lost — reported, not silently dropped. */
-function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; cursorQuarantined: boolean } {
-  let manifestRebuilt = false;
-  try {
-    loadExtensionsManifest();
-  } catch {
+ *  on the same unreadable read, and DURABLY journal the resulting obligation BEFORE the destructive
+ *  quarantine — so a repair SIGKILL'd after the quarantine but before the reinstalls doesn't forget it.
+ *  `manifestRebuilt` ⇒ reconcile the built-ins against ON-DISK truth; `repairAllSeeded` ⇒ reinstall +
+ *  verify every seeded built-in (an unidentifiable interrupted install). Both are UNIONED with any
+ *  obligation a prior crashed maintenance already recorded. Third-party entries in an unrecoverable
+ *  manifest are lost — reported, not silently dropped. */
+function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repairAllSeeded: boolean } {
+  // Re-derive from BOTH a prior crashed maintenance's durable obligation and the current on-disk state.
+  const prior = (() => {
+    try {
+      return readRecovery();
+    } catch {
+      return { rebuildFromDisk: true, repairAllSeeded: true }; // corrupt marker ⇒ recover conservatively
+    }
+  })();
+  let manifestRebuilt = prior?.rebuildFromDisk ?? false;
+  let repairAllSeeded = prior?.repairAllSeeded ?? false;
+
+  const manifestCorrupt = (() => {
+    try {
+      loadExtensionsManifest();
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+  const cursorCorrupt = (() => {
+    try {
+      readCursor();
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+  manifestRebuilt = manifestRebuilt || manifestCorrupt;
+  repairAllSeeded = repairAllSeeded || cursorCorrupt;
+
+  // Persist the obligation BEFORE any destructive quarantine below, so a crash in between still leaves
+  // a durable record the next run honors.
+  if (manifestRebuilt || repairAllSeeded) writeRecovery({ rebuildFromDisk: manifestRebuilt, repairAllSeeded });
+
+  if (manifestCorrupt) {
     const aside = quarantineExtensionsManifest();
-    if (aside) {
-      manifestRebuilt = true;
+    if (aside)
       console.error(
         c.red(`quarantined a corrupt extensions manifest → ${aside}`) +
           c.dim(" (any third-party extensions it recorded must be `cotal ext add`ed again)"),
       );
-    }
   }
-  const cursorAside = sanitizeCorruptCrashState();
-  for (const aside of cursorAside) console.error(c.dim(`quarantined a corrupt seed cursor → ${aside}`));
+  for (const aside of sanitizeCorruptCrashState()) console.error(c.dim(`quarantined a corrupt seed cursor → ${aside}`));
   // A stamp that is corrupt JSON, OR parses but is not valid semver (e.g. `0.bad.0`), makes the refresh
   // comparison throw — an auto boot then prescribes `--repair` and `--repair`/`--reset` re-throw the
   // SAME error forever (readStamp itself throws on corrupt JSON). Detect BOTH here, BEFORE any semver
@@ -292,7 +330,7 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; cursor
   if (mode === "reset") {
     for (const aside of quarantineCorruptSeedState()) console.error(c.dim(`quarantined corrupt seed state → ${aside}`));
   }
-  return { manifestRebuilt, cursorQuarantined: cursorAside.length > 0 };
+  return { manifestRebuilt, repairAllSeeded };
 }
 
 /** True iff `v` parses as a numeric-core semver (the only thing the refresh comparison can order). */

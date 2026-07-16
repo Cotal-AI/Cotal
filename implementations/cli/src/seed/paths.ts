@@ -65,6 +65,14 @@ export function reconcileChildPath(): string {
   return join(seedDir(), "reconcile.child.json");
 }
 
+/** The durable maintenance-recovery obligation `{rebuildFromDisk?, repairAllSeeded?}`: a `--repair`/
+ *  `--reset` writes it BEFORE it destructively quarantines a corrupt manifest/cursor, so a SIGKILL
+ *  after the quarantine but before the reinstalls doesn't forget that the built-ins must be rebuilt
+ *  from disk (or all reinstalled). Cleared only at the final commit. */
+export function reconcileRecoveryPath(): string {
+  return join(seedDir(), "reconcile.recovery.json");
+}
+
 /** The durable seed store root: `<config>/cotal/seed/store`. */
 export function seedStoreDir(): string {
   return join(seedDir(), "store");
