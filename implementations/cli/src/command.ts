@@ -84,6 +84,7 @@ function skipAutoReconcile(argv: string[]): boolean {
   const [name, sub] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
+  if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true; // explicit operator opt-out (still allows `ext seed`)
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   return false;

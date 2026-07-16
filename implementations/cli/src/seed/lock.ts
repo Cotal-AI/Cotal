@@ -1,7 +1,7 @@
 import { existsSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "@cotal-ai/workspace";
-import { reconcileChildPath, reconcileCursorPath, reconcileLockPath, readJsonFile, writeJsonAtomic } from "./paths.js";
+import { SEED_BUILTINS, reconcileChildPath, reconcileCursorPath, reconcileLockPath, readJsonFile, writeJsonAtomic } from "./paths.js";
 
 /**
  * The reconcile-wide lock and the crash cursor.
@@ -69,8 +69,20 @@ export function writeCursor(cursor: ReconcileCursor): void {
   writeJsonAtomic(reconcileCursorPath(), cursor);
 }
 
+/** Read + SCHEMA-validate the cursor: a torn write, or a parsed-but-malformed one (missing/invalid
+ *  nonce, a non-official package, an unknown phase — e.g. `{}`) is corrupt, never a silent "no target"
+ *  that lets a repair clear the journal and report success while a connector is still torn. */
 export function readCursor(): ReconcileCursor | undefined {
-  return readJsonFile<ReconcileCursor>(reconcileCursorPath());
+  const cursor = readJsonFile<ReconcileCursor>(reconcileCursorPath());
+  if (cursor === undefined) return undefined;
+  if (
+    typeof cursor.nonce !== "string" ||
+    !SEED_BUILTINS.includes(cursor.package) ||
+    (cursor.phase !== "copy" && cursor.phase !== "add")
+  ) {
+    throw new Error(`corrupt seed cursor ${reconcileCursorPath()}: unexpected shape - repair with \`cotal ext seed --repair\` (or --reset)`);
+  }
+  return cursor;
 }
 
 export function clearCursor(): void {
@@ -162,7 +174,7 @@ export function sanitizeCorruptCrashState(): string[] {
   const path = reconcileCursorPath();
   if (existsSync(path)) {
     try {
-      readJsonFile(path);
+      readCursor(); // schema-validating read: catches torn JSON AND parsed-but-malformed (e.g. `{}`)
     } catch {
       const dest = `${path}.corrupt.${randomBytes(4).toString("hex")}`;
       renameSync(path, dest);

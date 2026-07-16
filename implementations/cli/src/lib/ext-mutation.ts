@@ -12,6 +12,10 @@ import { acquireLock, extensionMutationLockPath } from "@cotal-ai/workspace";
 export function claimExtensionMutation(): () => void {
   const held = acquireLock(extensionMutationLockPath(), {
     label: "a `cotal ext` mutation",
+    // Fail FAST on a live holder (the interactive-operator contract): a concurrent `cotal ext` is a
+    // "retry once it finishes", not a 5-minute wait. A dead owner is still reclaimed. (The reconcile
+    // takes the SAME lock for its whole run, so an operator command during a first-boot seed retries.)
+    waitMs: 0,
     onTimeout: (owner) => new Error(`another \`cotal ext\` mutation is in progress (pid ${owner.pid}) - retry once it finishes`),
   });
   return () => held.release();

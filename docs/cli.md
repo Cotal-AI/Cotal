@@ -592,7 +592,9 @@ command of each boot, so you rarely call it):
 
 The default connector for a bare `cotal spawn` (no `--agent`) is `claude`; set `COTAL_DEFAULT_AGENT`
 (e.g. `opencode`) to change it. An `--agent` naming a removed connector fails loud with the exact
-`cotal ext add` to restore it.
+`cotal ext add` to restore it. Set `COTAL_SKIP_CONNECTOR_SEED=1` to turn off the automatic first-run
+seed/refresh entirely (for a controlled or offline setup that manages connectors by hand); `cotal ext
+seed` still runs on request.
 
 ## completion
 

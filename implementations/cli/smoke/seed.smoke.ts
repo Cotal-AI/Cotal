@@ -138,6 +138,37 @@ check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAUL
   check("on-disk rebuild: connectors still on disk are rebuilt, not reported removed", listNames(cfg).length === 4);
 }
 
+// ── 4b. an invalid version stamp does not make --repair loop forever (semver fail-loud + recover) ─
+{
+  const cfg = track(freshCfg());
+  listNames(cfg);
+  writeJson(join(seedDir(cfg), "stamp.json"), { generation: "0.bad.0" }); // parses as JSON, not as semver
+  const auto = cotal(cfg, ["ext", "list"]);
+  check("invalid stamp: auto boot fails loud (prescribes --repair)", auto.status !== 0 && /repair/i.test(auto.stderr), auto.stderr);
+  const rep = cotal(cfg, ["ext", "seed", "--repair"]);
+  check("invalid stamp: --repair recovers instead of re-emitting the same error (no loop)", rep.status === 0, rep.stderr);
+  const gen = readJson(join(seedDir(cfg), "stamp.json")).generation;
+  check("invalid stamp: --repair wrote a valid stamp", /^\d+\.\d+\.\d+/.test(gen), gen);
+}
+
+// ── 2b. a `{}` cursor with a missing on-disk package is repaired, not falsely reported success ────
+{
+  const cfg = track(freshCfg());
+  listNames(cfg);
+  // Tear a seeded connector: keep its manifest entry, delete its installed package, and leave an
+  // unactionable cursor. --repair must restore it (verify-all-torn), never clear the cursor + succeed.
+  const pkgDir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
+  if (existsSync(pkgDir)) {
+    rmSync(pkgDir, { recursive: true, force: true });
+    writeJson(join(seedDir(cfg), "reconcile.cursor.json"), {}); // parses, but names no package
+    const rep = cotal(cfg, ["ext", "seed", "--repair"]);
+    check("unactionable cursor: --repair exits 0", rep.status === 0, rep.stderr);
+    check("unactionable cursor: the torn connector is actually restored on disk", existsSync(join(pkgDir, "package.json")));
+  } else {
+    check("unactionable cursor: hermes package present to tear", false, pkgDir);
+  }
+}
+
 // ── 8. truncated authority never resurrects a removed connector ──────────────────────────────────
 {
   const cfg = track(freshCfg());

@@ -109,7 +109,12 @@ function readOwner(path: string): { owner?: LockOwner; ino?: number } | undefine
   try {
     raw = readFileSync(path, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    // A directory (EISDIR) or an unreadable file (EACCES/EPERM) where a lock file belongs is not a
+    // holder we can reason about — fail loud fast, never busy-spin trying to reclaim it.
+    if (code === "EISDIR" || code === "EACCES" || code === "EPERM")
+      throw new Error(`advisory lock path ${path} is unreadable (${code}) - remove the stray file or directory there and retry`);
     throw e;
   }
   let ino: number | undefined;
@@ -177,12 +182,14 @@ function reclaimStale(path: string, inspectedIno: number | undefined): void {
   const sentinel = `${path}.reclaim`;
   const mine = JSON.stringify({ pid: process.pid, start: processStartToken(process.pid), nonce: randomBytes(8).toString("hex"), ts: Date.now() });
   if (!publishAtomic(sentinel, mine)) {
-    // Someone else is reclaiming (or crashed mid-reclaim).
-    const held = inspectLock(sentinel);
-    if (held.state === "active") return; // a live reclaimer owns it — let the caller retry acquisition
-    throw new Error(
-      `a lock reclaim was interrupted and its sentinel remains (${sentinel}) - if no cotal process is running, remove it and retry`,
-    );
+    // Lost the sentinel race. Only a STALE (dead-owner) sentinel is fail-loud — a live one is a
+    // reclaim in progress and an absent one is a reclaim that just finished; both mean "let the acquire
+    // loop retry", never "proceed to unlink" (an EEXIST loser must not fall through to remove G1).
+    if (inspectLock(sentinel).state === "stale")
+      throw new Error(
+        `a lock reclaim was interrupted and its sentinel remains (${sentinel}) - if no cotal process is running, remove it and retry`,
+      );
+    return; // active or absent — retry acquisition
   }
   try {
     // Under the sentinel the canonical file is immutable (publish is blocked while it exists), so a

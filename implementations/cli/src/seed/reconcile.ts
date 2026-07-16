@@ -1,4 +1,6 @@
+import { renameSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   OFFICIAL_CONNECTORS,
   installedExtensionVersion,
@@ -9,7 +11,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { SEED_BUILTINS, seedGeneration } from "./paths.js";
+import { SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -111,10 +113,11 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         throw new Error("a previous connector seed was interrupted - run `cotal ext seed --repair`");
       }
-    } else if (!reconcileLockActive() && readWitness() && authorityIntact() && readStamp()?.generation === generation) {
-      // Steady state AND no reconcile in flight. A live lock with a current stamp means another
-      // process is mid-`--force`/refresh; fall through to wait on it rather than racing past into the
-      // command while it mutates the prefix.
+    } else if (readWitness() && authorityIntact() && readStamp()?.generation === generation && !reconcileLockActive()) {
+      // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
+      // it is the linearization point: a `--force` that link-publishes the lock during the slower
+      // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
+      // racing past into the command while it mutates the prefix.
       return NOOP;
     }
   }
@@ -195,11 +198,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       everSeeded.add(name);
       seeded.push(name);
     } else if (entry) {
-      // Refresh policy: any --force; and, for connectors WE seeded (source === "seeded"), a
-      // strictly-newer generation. An operator-managed official entry (a manual `ext add` at a chosen
-      // version, no seeded marker) is NEVER auto-refreshed on upgrade — only --force may replace it.
+      // Refresh policy: any --force; for connectors WE seeded (source === "seeded") a strictly-newer
+      // generation; and, on --repair, a seeded entry whose files are gone (TORN — the manifest records
+      // it but nothing is on disk), so a repair with an unactionable cursor still restores every torn
+      // built-in. An operator-managed official entry (no seeded marker) is never auto-refreshed on
+      // upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
-      const refresh = mode === "force" || (isSeeded && isStrictlyNewer(generation, stampGen));
+      const torn = mode === "repair" && isSeeded && !installedExtensionVersion(OFFICIAL_CONNECTORS[name]);
+      const refresh = mode === "force" || torn || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
         seedOne(name, generation, nonce, true);
         verifyInstalled(name);
@@ -250,10 +256,30 @@ function prepareMaintenanceState(mode: Mode): boolean {
     }
   }
   for (const aside of sanitizeCorruptCrashState()) console.error(c.dim(`quarantined a corrupt seed cursor → ${aside}`));
+  // A stamp whose generation is not valid semver (e.g. `0.bad.0`) parses fine but makes the refresh
+  // comparison throw — an auto boot then prescribes `--repair` and `--repair` re-throws the SAME error
+  // forever. Move it aside here so repair treats the prior generation as unknown (older), refreshes and
+  // verifies, and writes a fresh valid stamp.
+  const stamp = readStamp();
+  if (stamp && !isValidSemver(stamp.generation)) {
+    const aside = `${stampPath()}.corrupt.${randomBytes(4).toString("hex")}`;
+    renameSync(stampPath(), aside);
+    console.error(c.dim(`quarantined an invalid version stamp → ${aside}`));
+  }
   if (mode === "reset") {
     for (const aside of quarantineCorruptSeedState()) console.error(c.dim(`quarantined corrupt seed state → ${aside}`));
   }
   return manifestRebuilt;
+}
+
+/** True iff `v` parses as a numeric-core semver (the only thing the refresh comparison can order). */
+function isValidSemver(v: string): boolean {
+  try {
+    parseSemver(v);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
