@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.11.6
+
+### Patch Changes
+
+- 7b24953: Rebind extension peer links to the current Cotal host before lazy import, allowing global installs and source worktrees to share one extension prefix. Keep the Hermes launcher self-contained so it does not resolve a mutable host peer after launch.
+  - @cotal-ai/core@0.11.6
+
 ## 0.11.5
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @cotal-ai/manager
 
+## 0.11.6
+
+### Patch Changes
+
+- Updated dependencies [7b24953]
+  - @cotal-ai/workspace@0.11.6
+  - @cotal-ai/core@0.11.6
+
 ## 0.11.5
 
 ### Patch Changes
