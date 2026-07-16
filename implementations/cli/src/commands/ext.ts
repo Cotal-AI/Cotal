@@ -140,8 +140,12 @@ async function add(spec: string): Promise<void> {
     provenance.wrote("extensions prefix", join(dir, "package.json"));
   }
 
-  // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
-  const isPath = /^(\.|\/)/.test(spec);
+  // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd. Match
+  // POSIX (`.`, `/`) AND Windows (`\`, a `C:\`/`C:/` drive-absolute) paths — a Windows absolute path
+  // starts with a drive letter, not `/`, so a POSIX-only test would treat it as a registry name (which
+  // broke seeding on Windows, where the seed-store spec is always `C:\…`). A registry name never has a
+  // `<letter>:<slash>` prefix (colons are invalid in package names).
+  const isPath = /^(\.|\/|\\|[A-Za-z]:[\\/])/.test(spec);
   const resolved = isPath ? resolve(spec) : spec;
   // The installed NAME is known BEFORE npm runs — never recovered afterwards by diffing the prefix
   // dependencies (a heuristic that binds to the wrong key if the prefix ever drifted, and that made
@@ -153,8 +157,6 @@ async function add(spec: string): Promise<void> {
   // Authenticated: only an `ext add` whose marker matches the LIVE reconcile lock AND whose spec is a
   // staged official-connector path qualifies — a forged `COTAL_EXT_SEEDING` can't skip the lock.
   const seeding = isAuthenticSeedChild() && isPath && resolved.startsWith(seedStoreDir() + sep);
-  if (!seeding && process.env.COTAL_SEED_DEBUG && process.env.COTAL_EXT_SEEDING && process.env.COTAL_EXT_SEEDING !== "1")
-    console.error(`[seed-debug] authentic=${isAuthenticSeedChild()} isPath=${isPath} startsWith=${resolved.startsWith(seedStoreDir() + sep)} resolved=${resolved} storeDir=${seedStoreDir()}`);
   const releaseMutation = seeding ? () => {} : claimExtensionMutation();
   // Upgrade the parent's pending marker to a live one carrying this child's PID, as the first act — so
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.

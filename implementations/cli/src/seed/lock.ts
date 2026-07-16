@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "@cotal-ai/workspace";
 import { SEED_BUILTINS, reconcileChildPath, reconcileCursorPath, reconcileLockPath, reconcileRecoveryPath, readJsonFile, writeJsonAtomic } from "./paths.js";
@@ -55,19 +55,7 @@ export function isAuthenticSeedChild(): boolean {
   const parent = Number(process.env.COTAL_EXT_SEEDING_PARENT);
   if (!nonce || nonce === "1" || !Number.isInteger(parent) || parent <= 0) return false;
   const found = inspectLock(reconcileLockPath());
-  const ok = found.state === "active" && found.owner.pid === parent && found.owner.nonce === nonce;
-  if (!ok && process.env.COTAL_SEED_DEBUG) {
-    let raw = "<unreadable>";
-    try {
-      raw = readFileSync(reconcileLockPath(), "utf8").slice(0, 200);
-    } catch (e) {
-      raw = `<${(e as Error).message}>`;
-    }
-    process.stderr.write(
-      `[auth-debug] parent=${parent} nonce=${nonce.slice(0, 8)} lock=${reconcileLockPath()} state=${found.state} owner=${found.state === "active" ? JSON.stringify(found.owner) : "n/a"} raw=${raw}\n`,
-    );
-  }
-  return ok;
+  return found.state === "active" && found.owner.pid === parent && found.owner.nonce === nonce;
 }
 
 /** The mid-reconcile journal: which package is being mutated, in which phase, under which lock nonce. */
