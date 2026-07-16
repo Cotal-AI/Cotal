@@ -11,7 +11,8 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +24,8 @@ process.env.COTAL_HOME = home;
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
-const { getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { isReachable } = await import("@cotal-ai/core");
+const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -76,6 +78,37 @@ try {
   check("a corrupt/empty pidfile does not block", liveMeshProcess(guarded) === undefined);
   rmSync(guarded, { recursive: true, force: true });
 
+  const reachableRoot = meshRoot();
+  const listener = createServer((socket) => socket.write('INFO {"server_id":"live-clean-smoke"}\r\n'));
+  await new Promise<void>((resolveListen) => listener.listen(0, "127.0.0.1", resolveListen));
+  const address = listener.address();
+  assert.ok(address && typeof address === "object");
+  const reachableCanonicalRoot = realpathSync.native(reachableRoot);
+  recordMesh({
+    space: "reachable-clean",
+    server: `nats://127.0.0.1:${address.port}`,
+    root: reachableCanonicalRoot,
+    mode: "open",
+    ts: "2026-07-14T00:00:00.000Z",
+  });
+  check("reachable cleanup fixture is recorded", loadMeshes().some((mesh) => mesh.root === reachableCanonicalRoot));
+  check("reachable cleanup fixture serves NATS INFO", await isReachable(`nats://127.0.0.1:${address.port}`));
+  const reachableCwd = process.cwd();
+  process.chdir(reachableRoot);
+  try {
+    check("reachable cleanup fixture resolves as the active root", findCotalRoot() === reachableCanonicalRoot, findCotalRoot());
+    await assert.rejects(
+      () => clean({ positionals: ["store"], values: { force: true }, raw: [] }),
+      /recorded mesh endpoint .* is reachable/,
+    );
+  } finally {
+    process.chdir(reachableCwd);
+    await new Promise<void>((resolveClose, rejectClose) => listener.close((error) => error ? rejectClose(error) : resolveClose()));
+    removeMesh("reachable-clean");
+  }
+  check("a reachable recorded broker blocks cleanup even without a pidfile", existsSync(join(reachableRoot, ".cotal", "nats")));
+  rmSync(reachableRoot, { recursive: true, force: true });
+
   // --- `store` removes exactly the JetStream store -------------------------------------------
   const storeRoot = meshRoot();
   const removedStore = removeLocalState(storeRoot, { includeAuth: false });
@@ -99,10 +132,21 @@ try {
   // --- `--store-dir` override + already-clean no-op ------------------------------------------
   const customRoot = meshRoot();
   const customStore = mkdtempSync(join(tmpdir(), "cotal-store-"));
+  mkdirSync(join(customStore, "jetstream"));
   writeFileSync(join(customStore, "stream.dat"), "x");
   const removedCustom = removeLocalState(customRoot, { includeAuth: false, storeDir: customStore });
   check("--store-dir: removes the OVERRIDE dir, not .cotal/nats", !existsSync(customStore) && existsSync(join(customRoot, ".cotal", "nats")));
   check("--store-dir: reports the explicit path", removedCustom.some((r) => r.includes(customStore)));
+  assert.throws(
+    () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
+    /unsafe store cleanup target/,
+  );
+  const controlTree = join(customRoot, ".cotal", "manifests");
+  mkdirSync(join(controlTree, "jetstream"), { recursive: true });
+  assert.throws(
+    () => removeLocalState(customRoot, { includeAuth: false, storeDir: controlTree }),
+    /unsafe store cleanup target/,
+  );
   rmSync(customRoot, { recursive: true, force: true });
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));

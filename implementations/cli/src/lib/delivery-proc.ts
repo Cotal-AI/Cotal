@@ -17,7 +17,7 @@ import { ensureManager, managerHasDeliveryMarker, managerUp, stopManager } from 
 const PID_PATH = () => cotalPath("delivery.pid");
 const CREDS_PATH = () => cotalPath("delivery.creds");
 
-type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string };
+type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string };
 
 function alive(pid: number): boolean {
   try {
