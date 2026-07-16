@@ -123,7 +123,7 @@ export {
 // drain entry points are the public seam; the row/proof internals stay module-private.
 export {
   openAdmissionMediator, obtainEpfObligation, obtainSelfObligation,
-  acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof,
+  acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
   readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
   drainEndpointPolicy, drainTargetForEndpoint,
   type AdmissionMediator, type AdmissionIdentity, type AdmissionProof, type ObtainedObligation,

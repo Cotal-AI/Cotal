@@ -54,8 +54,8 @@ import {
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
   epfSubject, epfStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
-  contractDigest, rawDigest,
-  type RejectionFact,
+  contractDigest,
+  type RejectionFact, type DecisionFact,
   mintLifecycleUid, assertLifecycleToken, assertIdToken, assertBoundedOwner, endpointToken, assertPoolToken,
 } from "@cotal-ai/core";
 import {
@@ -74,6 +74,9 @@ const DIGEST_SCALAR_RE = /^sha256:[0-9a-f]{64}$/;
 /** The §13.4 error-detail bound: `parseDecisionFact` rejects a longer detail, so a rejection the
  *  mediator publishes must fit it or core would refuse the mediator's own fact. */
 const MAX_ERROR_DETAIL = 256;
+/** The proof TTL ceiling (§13.8: a proof is bounded-lived; 60 s is 4x the reference call
+ *  deadline, headroom for a slow admission without letting a proof outlive its state). */
+const MAX_PROOF_TTL_MS = 60_000;
 const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
 /** The CANONICAL content digest of a JSON value, `<hex>` (no prefix) for a `policy` key segment.
  *  Uses core's RFC-8785 canonicalizer (`contractDigest` = `sha256:<hex over I-JSON>`), so
@@ -135,8 +138,11 @@ export async function openAdmissionMediator(
   }
   assertAuthorityStreamShape(cfg, bucket);
   const reader = await openLifecycleMappingReader(nc, space);
-  if (opts.proofTtlMs !== undefined && (!Number.isSafeInteger(opts.proofTtlMs) || opts.proofTtlMs <= 0))
-    throw new EpEnvelopeError("failed-precondition", `proofTtlMs ${JSON.stringify(opts.proofTtlMs)} is not a positive safe integer`);
+  // The proof TTL is CAPPED to the reference call-deadline ceiling (§13.8: a proof is
+  // bounded-lived, and an effectively-unbounded TTL would let a stale proof outlive the state
+  // it was issued against). A larger value fails loud rather than being silently clamped.
+  if (opts.proofTtlMs !== undefined && (!Number.isSafeInteger(opts.proofTtlMs) || opts.proofTtlMs <= 0 || opts.proofTtlMs > MAX_PROOF_TTL_MS))
+    throw new EpEnvelopeError("failed-precondition", `proofTtlMs ${JSON.stringify(opts.proofTtlMs)} is not a positive safe integer within the ${MAX_PROOF_TTL_MS} ms bound (a proof is bounded-lived, SPEC 13.8)`);
   const med: AdmissionMediator = Object.freeze({ space, endpoint: ep });
   MEDIATORS.set(med, {
     space, endpoint: ep, recordsKv, jsm, js: jetstream(nc), reader,
@@ -540,8 +546,10 @@ function mintProof(med: MediatorInternals, key: string, opId: string): Admission
   return proof;
 }
 
-/** Validate a presented proof against THIS mediator and obligation key: branded, unexpired,
- *  same space/endpoint (§13.8: endpoint A can never replay endpoint B's proof). */
+/** The STRUCTURAL proof check: branded, unexpired, same space/endpoint/key (§13.8: endpoint A
+ *  can never replay endpoint B's proof). This is the fast pre-check; the AUTHORITATIVE gate that
+ *  admission requires is {@link verifyAdmissionProof}, which ALSO re-reads the CURRENT obligation
+ *  state (§13.8: a drained or settled row leaves a locally-valid-looking proof inert). */
 export function assertAdmissionProof(med: AdmissionMediator, proof: AdmissionProof, obligationKey: string): void {
   const i = internals(med);
   if (!PROOFS.has(proof))
@@ -552,6 +560,25 @@ export function assertAdmissionProof(med: AdmissionMediator, proof: AdmissionPro
     throw new EpEnvelopeError("permission-denied", `the admission proof binds ${proof.obligationKey}, not ${obligationKey} (SPEC 13.8)`);
   if (i.now() >= proof.exp)
     throw new EpEnvelopeError("deadline-exceeded", `the admission proof for ${obligationKey} expired; re-obtain through the mediator (the CURRENT obligation state is re-checked, SPEC 13.8)`);
+}
+
+/** The COMPLETE proof gate (§13.8: "checked against the CURRENT obligation state"): the
+ *  structural check PLUS a leader-read of the row confirming it still exists, carries the
+ *  proof's opId, and is NOT settled (rejected/terminal). A proof whose row a drain settled after
+ *  issuance is refused here even though its brand/bind/expiry still look valid, so admission is
+ *  proof-gated on live state, never on stale possession. Every effect the proof authorizes (the
+ *  EPF acceptance publish, the self-class accept) gates on THIS, not the structural check alone. */
+export async function verifyAdmissionProof(med: AdmissionMediator, proof: AdmissionProof, obligationKey: string): Promise<ObligationRow> {
+  const i = internals(med);
+  assertAdmissionProof(med, proof, obligationKey);
+  const cur = await readObligationLeader(i, obligationKey);
+  if (cur === undefined)
+    throw new EpEnvelopeError("failed-precondition", `the obligation ${obligationKey} no longer exists; a proof never authorizes over a vanished row (SPEC 13.8)`);
+  if (cur.row.opId !== proof.opId)
+    throw new EpEnvelopeError("permission-denied", `the obligation ${obligationKey} is held by operation ${cur.row.opId}, not the proof's ${proof.opId}; a superseded operation's proof never admits (SPEC 13.8)`);
+  if (cur.row.state === "rejected" || cur.row.state === "terminal")
+    throw new EpEnvelopeError("failed-precondition", `the obligation ${obligationKey} is ${cur.row.state}; its proof is stale (a drain or a foreign settle resolved it) and never admits (SPEC 13.8)`);
+  return cur.row;
 }
 
 // ---- obtain (§13.8 step 1 + 2: create-fence, join, recheck, proof) ----------------------------
@@ -717,6 +744,7 @@ async function settleObligation(
   const existing = await readLastFact(med.jsm, stream, subject);
   if (existing !== undefined) {
     const fact = parseDecisionFact(existing, subject);
+    assertDecisionMatchesRow(fact, row, key); // the fact on this coordinate must be THIS obligation's identity
     const to = fact.decision === "accepted" ? "accepted" : "rejected";
     await advanceRowSettled(med, key, row, revision, to);
     return to;
@@ -738,12 +766,24 @@ async function settleObligation(
     const winner = await readLastFact(med.jsm, stream, subject);
     if (winner === undefined) throw new EpEnvelopeError("internal", `the decision subject ${subject} rejected our create but reads empty; fail closed (SPEC 13.4)`);
     const fact = parseDecisionFact(winner, subject);
+    assertDecisionMatchesRow(fact, row, key);
     const to = fact.decision === "accepted" ? "accepted" : "rejected";
     await advanceRowSettled(med, key, row, revision, to);
     return to;
   }
   await advanceRowSettled(med, key, row, revision, "rejected");
   return "rejected";
+}
+
+/** A decision fact found on an obligation's coordinate MUST be THIS obligation's acceptance
+ *  identity (§13.4/§13.8): the caller-scoped subject can only bear one first-wins decision, so a
+ *  fact whose fingerprint (or, for an acceptance, route) differs from the row is a foreign
+ *  identity on the same coordinate — never allowed to silently advance this row. Fail loud. */
+function assertDecisionMatchesRow(fact: DecisionFact, row: ObligationRow, key: string): void {
+  if (fact.fingerprint !== row.fingerprint)
+    throw new EpEnvelopeError("internal", `the decision fact on ${key}'s coordinate pins fingerprint ${fact.fingerprint}, not this obligation's ${row.fingerprint}; a foreign acceptance identity never settles this obligation (SPEC 13.4/13.8)`);
+  if (fact.decision === "accepted" && fact.route !== row.route)
+    throw new EpEnvelopeError("internal", `the acceptance fact on ${key}'s coordinate pins route ${fact.route}, not this obligation's ${row.route} (SPEC 13.4/13.8)`);
 }
 
 async function advanceRowSettled(med: MediatorInternals, key: string, row: ObligationRow, revision: number, to: "accepted" | "rejected"): Promise<void> {
@@ -786,12 +826,14 @@ function assertObligationOfEndpoint(med: MediatorInternals, key: string): void {
  *  (§13.8 step 3: the guarded commit is authorized only while the row is `accepted`). */
 export async function acceptSelfObligation(med: AdmissionMediator, proof: AdmissionProof): Promise<{ revision: number }> {
   const i = internals(med);
-  assertAdmissionProof(med, proof, proof.obligationKey);
+  // The state-aware proof gate (§13.8): re-reads the CURRENT row (opId + not-settled), so a
+  // drain that settled the row after the proof issued refuses the accept here.
+  const row = await verifyAdmissionProof(med, proof, proof.obligationKey);
+  if (row.decision !== "self")
+    throw new EpEnvelopeError("failed-precondition", `the obligation ${proof.obligationKey} is epf-class; only a self-class row advances on itself (SPEC 13.8)`);
   const cur = await readObligationLeader(i, proof.obligationKey);
   if (cur === undefined)
     throw new EpEnvelopeError("not-found", `no obligation exists at ${proof.obligationKey} (SPEC 13.8)`);
-  if (cur.row.decision !== "self")
-    throw new EpEnvelopeError("failed-precondition", `the obligation ${proof.obligationKey} is epf-class; only a self-class row advances on itself (SPEC 13.8)`);
   if (cur.row.state === "accepted") return { revision: cur.revision }; // the writer's own resume
   if (cur.row.state !== "provisional")
     throw new EpEnvelopeError("failed-precondition", `the obligation ${proof.obligationKey} is ${cur.row.state}; a settled row never re-accepts (the drain won the one-row CAS, SPEC 13.8)`);

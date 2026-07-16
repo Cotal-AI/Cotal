@@ -24,10 +24,11 @@ import {
 } from "@cotal-ai/core";
 import {
   openLifecycleRegistry, openAdmissionMediator, obtainEpfObligation, obtainSelfObligation,
-  acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof,
+  acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
   readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
   drainEndpointPolicy,
 } from "../src/index.js";
+import { publishFactCreateOnly } from "@cotal-ai/core";
 import { activateLifecycle } from "../src/lifecycle-registry.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import type { CommitValue } from "../src/admission-mediator.js";
@@ -221,6 +222,33 @@ try {
   await stagePolicySelector(reg, EP, policyV1.key);
   await rejects("a hand-assembled drain witness never authorizes a promote",
     () => promotePolicySelector(reg, EP, { space: SPACE, endpoint: EP, pendingPolicyKey: policyV1.key, pendingPolicyRevision: policyV1.revision, mutationOpId: "x".repeat(26), governStageRevision: 1 } as never), "failed-precondition");
+
+  console.log("H. the round-6 fold: state-aware proof, TTL cap, decision-winner bind");
+  // TTL cap: an unbounded proof TTL is refused at open.
+  await rejects("an over-cap proofTtlMs is refused (a proof is bounded-lived)",
+    () => openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 10 * 60_000 }), "failed-precondition");
+  // State-aware proof: a self obtain's proof is INERT once a drain settles its row, even though
+  // its brand/bind/expiry still look valid (state-blind assertAdmissionProof would pass).
+  {
+    const sg = await obtainSelfObligation(med, { target: tgt, caller: { ...CALLER, uid: "q".repeat(26) }, id: "state01", commit: { commitKey: `svc.${EP}.st.status`, commitBaseRevision: 0, ...commitOf({ v: 1 }) } });
+    assertAdmissionProof(med, sg.proof, sg.key); // structural check still passes
+    await settleEpfOrSelfObligation(med, sg.key, "the smoke settles it before accept");
+    await rejects("acceptSelfObligation refuses once a drain settled the row (state-aware proof, not state-blind)",
+      () => acceptSelfObligation(med, sg.proof), "failed-precondition");
+    await rejects("verifyAdmissionProof refuses a settled row's proof directly",
+      () => verifyAdmissionProof(med, sg.proof, sg.key), "failed-precondition");
+  }
+  // Decision-winner bind: a decision fact on an obligation's coordinate carrying a FOREIGN
+  // acceptance identity (different fingerprint) never silently settles the obligation.
+  {
+    const dg = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "d".repeat(26) }, id: "bind01", fingerprint: fp("REAL"), sourceSeq: 5, route: "effects" });
+    const decSubject = epfSubject(SPACE, EP, ["dec", CALLER.owner, CALLER.actor, "d".repeat(26), "bind01"]);
+    // Hand-publish a rejection fact with a DIFFERENT fingerprint on the coordinate.
+    const foreign = { v: 1, id: "bind01", decision: "rejected", fingerprint: fp("FOREIGN"), error: { code: "failed-precondition" }, caller: { id: `${CALLER.owner}.${CALLER.actor}`, lifecycleUid: "d".repeat(26) }, sourceSeq: 9, ts: NOW };
+    await publishFactCreateOnly(registryStores(reg).js, decSubject, enc.encode(JSON.stringify(foreign)));
+    await rejects("a foreign-fingerprint decision fact on the coordinate NEVER settles the obligation (fail loud)",
+      () => settleEpfOrSelfObligation(med, dg.key, "the smoke tries to settle"), "internal");
+  }
 
   console.log("G. a proof never crosses endpoints or outlives its TTL");
   const medOther = await openAdmissionMediator(nc, SPACE, "other", { now: () => clock, proofTtlMs: 1000 });
