@@ -38,6 +38,7 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<vo
   });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+const throwsSync = (fn: () => unknown): boolean => { try { fn(); return false; } catch { return true; } };
 
 const space = `rdacl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -67,6 +68,16 @@ async function denied(fn: () => Promise<unknown>): Promise<"allowed" | "denied">
 let writer: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 let readerClient: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 try {
+  // ---- connId subject-hygiene: the grant builders route connId through assertInboxConnId, so a
+  //      wildcard/metacharacter/dotted value can never widen the scoped `_INBOX_<connId>.>` grant.
+  const okId = "abcd1234efgh";
+  check("the reader grant builds a scoped inbox for a well-formed connId", authConnectReaderGrants(space, okId).subscribe[0] === `_INBOX_${okId}.>`);
+  check("the writer grant builds a scoped inbox for a well-formed connId", authorityWriterGrants(space, okId).subscribe.includes(`_INBOX_${okId}.>`));
+  for (const bad of [">", "*", "a.b", "", "x"]) {
+    check(`reader grant REFUSES a subject-unsafe connId ${JSON.stringify(bad)}`, throwsSync(() => authConnectReaderGrants(space, bad)));
+    check(`writer grant REFUSES a subject-unsafe connId ${JSON.stringify(bad)}`, throwsSync(() => authorityWriterGrants(space, bad)));
+  }
+
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`nats-server did not come up on ${PORT}`);

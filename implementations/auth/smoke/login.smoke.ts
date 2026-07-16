@@ -146,6 +146,7 @@ const idpJwt = await fetchIdpJwt(base, session.token);
     idp: { issuer: origin, audience: origin, key: pinnedJwksResolver(`${base}/jwks`) },
     space: SPACE, spaceSecret: SECRET, issuer,
     authorizeActor: () => ({ scope: ["chat"], lifecycleUid: mintLifecycleUid() }),
+    mintConnectCredential: async () => "root0001", // R1: the v0.4 bridge requires the mint hook
   });
   const { token, owner } = await bridge.exchange(idpJwt, { actor: "agent_1" });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE });

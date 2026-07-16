@@ -8,9 +8,11 @@
  *   FIRST) → gate finalize CAS → head `currentCredentialId` CAS LAST → only then does the caller
  *   sign/release the bearer bytes.
  *
- * A crash anywhere in that order leaves nothing exported: a row without the head stamp was never
- * carried by any bearer (root connects check head equality), and the retry mints a FRESH
- * credential id — a partially-released id is NEVER re-exported.
+ * Crash recovery splits on WHERE the crash landed (the single norm, detailed under INCARNATION-WIDE
+ * below): a PRE-head crash (an active `cred.` row the head never stamped) was carried by no bearer
+ * — root connects check head equality — so the retry mints a FRESH id and the orphan row is never
+ * exported; a POST-head crash re-exports the SAME already-stamped id, which is correct because that
+ * id IS the incarnation's live root. There is exactly one root credential per incarnation.
  *
  * NO ROTATION LIVES HERE: an existing head stamp is returned (after proving its row still active
  * and unexpired) or refused loudly — flipping a head's root credential without the full
@@ -18,6 +20,17 @@
  * so a revoked/expired root credential and a uid transition (same-alias re-grant/respawn while
  * the predecessor incarnation is live) both REFUSE the exchange and name the barrier gap (R1:
  * production issuance runs no takeover/retirement barrier).
+ *
+ * ROOT IS INCARNATION-WIDE (SPEC 13.1, ratified 2026-07-16): ONE root credential per incarnation,
+ * re-stamped (the same id returned) on every exchange for the incarnation's whole 90d life — NOT
+ * a fresh id per exchange. This is deliberate and is what makes revocation total: one
+ * `cred.<uid>.<credid>` row revoke denies EVERY bearer of the incarnation at once (they all carry
+ * that id). It also removes the "unobserved fresh-credential release" ambiguity a per-exchange
+ * model had: a crash after the head CAS (with the bearer bytes possibly released) re-exports the
+ * SAME id on the next exchange, which is CORRECT — that id genuinely IS the incarnation's live
+ * root, so there is nothing loose to revoke-and-evict. The only crash pin left is the PRE-head
+ * one (an active-but-unstamped row is denied by head equality; the head-CAS loser revokes its
+ * never-exported row). Rotation of the incarnation's root remains exclusively a barrier's job.
  */
 import { EpEnvelopeError, mintLifecycleUid } from "@cotal-ai/core";
 import {

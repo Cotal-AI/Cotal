@@ -247,6 +247,7 @@ const bridge = createIdpBridge({
   issuer,
   idp: { issuer: IDP_ISS, audience: IDP_ISS, key: idpKeys.publicKey as CryptoKey },
   authorizeActor: () => ({ scope: grantScope, lifecycleUid: grantUid }),
+  mintConnectCredential: async () => "root0001", // R1: the v0.4 bridge requires the mint hook
 });
 {
   // The MINT boundary refuses a uid-less grant (a pre-cut row cannot mint a bearer of ANY shape,
@@ -257,6 +258,7 @@ const bridge = createIdpBridge({
     issuer,
     idp: { issuer: IDP_ISS, audience: IDP_ISS, key: idpKeys.publicKey as CryptoKey },
     authorizeActor: () => ({ scope: ["spawn", "admin"] }),
+    mintConnectCredential: async () => "root0001", // R1: the v0.4 bridge requires the mint hook
   });
   await rejects(
     "a grant row without a lifecycleUid cannot mint (view exchange)",

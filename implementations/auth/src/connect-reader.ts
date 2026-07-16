@@ -19,7 +19,7 @@
  */
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError, epAuthBucket, recordsBucket } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, epAuthBucket, recordsBucket } from "@cotal-ai/core";
 import { assertAuthorityStreamShape, openLifecycleMappingReader, readLifecycleMappingLeader, type LifecycleMappingReader } from "./lifecycle-registry.js";
 import { credRowKey, parseLedgerRow, type CredentialLedgerRow } from "./credential-ledger.js";
 import type { ValidatedUserToken } from "./token.js";
@@ -41,7 +41,10 @@ import type { ValidatedUserToken } from "./token.js";
 export function authConnectReaderGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const auth = `KV_${epAuthBucket(space)}`;
   const records = `KV_${recordsBucket(space)}`;
-  if (!connId) throw new EpEnvelopeError("failed-precondition", "the connect reader grant requires a connection id for its scoped inbox (SPEC 13.9)");
+  // `connId` is the ONLY untrusted subject-forming interpolant (the space-derived stream names are
+  // trusted boot config); route it through the same grammar the sibling mediator/cleaner builders
+  // use, so a `>`/`*`/dotted value can never widen the scoped inbox to an account-wide subscribe.
+  const inbox = assertInboxConnId(connId);
   return {
     publish: [
       "$JS.API.INFO",
@@ -50,7 +53,7 @@ export function authConnectReaderGrants(space: string, connId: string): { publis
       `$JS.API.STREAM.MSG.GET.${auth}`,
       `$JS.API.STREAM.MSG.GET.${records}`,
     ],
-    subscribe: [`_INBOX_${connId}.>`],
+    subscribe: [`_INBOX_${inbox}.>`],
   };
 }
 

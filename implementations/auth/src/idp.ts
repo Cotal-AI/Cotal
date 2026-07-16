@@ -72,11 +72,16 @@ export interface CreateIdpBridgeOpts {
   authorizeActor: (owner: string, actor: string) => ActorGrant | Promise<ActorGrant>;
   /** The ROOT-credential ensure (R1, SPEC 13.1): returns the incarnation's live root credential
    *  id, minting it release-last on first exchange; throws to deny. Its result rides
-   *  `act.credentialId`, which the connect arm requires against the LIVE `cred.` row. PRODUCTION
-   *  composition MUST wire this (the auth service does): a bridge without it mints CLAIMLESS
-   *  bearers, which the production connect arm refuses outright — fail-closed, but useless. Left
-   *  optional only for compositions that bring their own connect authority (tests, probes). */
-  mintConnectCredential?: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+   *  `act.credentialId`, which the connect arm requires against the LIVE `cred.` row. REQUIRED and
+   *  construction-validated (like {@link authorizeActor}): a bridge that could mint a CLAIMLESS
+   *  bearer is a silent-degrade hazard — in ANY composition that wires this public bridge without
+   *  the v0.4 deny-new arm, a claimless bearer means the credential-liveness check has nothing to
+   *  bite and deny-new never engages at all. The public v0.4 mint API therefore MUST NOT be able
+   *  to emit a claimless shape whose safety depends on a separate component being wired. A
+   *  genuinely different connect-authority model gets its own explicit constructor that still
+   *  emits a conformant credential id. (`validateUserToken` stays tolerant of an absent claim so
+   *  the CONNECT boundary owns the signed deny-new denial for pre-cut/forged tokens.) */
+  mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
 /** A successful exchange: the minted bearer plus what a caller needs to cache/refresh it. */
@@ -141,6 +146,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
   if (!opts.idp.key) throw new Error("idp bridge: idp.key (the pinned JWKS resolver / public key) is required");
   if (typeof opts.authorizeActor !== "function")
     throw new Error("idp bridge: an authorizeActor ledger hook is required - there is no allow-by-default");
+  if (typeof opts.mintConnectCredential !== "function")
+    throw new Error("idp bridge: a mintConnectCredential hook is required (SPEC 13.1, R1) - the v0.4 bridge must stamp every bearer's incarnation root credential; a claimless mint would silently disable deny-new in any composition without the connect arm");
   return {
     exchange: async (idpToken, req) => {
       assertValidOwnerToken(req.actor);
@@ -187,10 +194,9 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
       // bearer bytes are signed, so the row the connect arm requires is durable before any
-      // bearer naming it exists. Views included: EVERY bearer carries the claim.
-      const credentialId = opts.mintConnectCredential
-        ? await opts.mintConnectCredential({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid })
-        : undefined;
+      // bearer naming it exists. Views included: EVERY bearer carries the claim. The hook is
+      // required at construction, so this never mints a claimless bearer.
+      const credentialId = await opts.mintConnectCredential({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
       const token = await opts.issuer.issue({
         owner,
         space: opts.space,

@@ -121,6 +121,15 @@ try {
   const bearer1 = await issuer.issue({ owner: OWNER, space, actor: "worker", scope: [], lifecycleUid: uid1, credentialId: credid1 });
   check("HAPPY: a bearer carrying the stamped credential CONNECTS", (await tryConnect(bearer1)) === "connected");
 
+  // POST-SUCCESSFUL-HEAD crash re-export (incarnation-wide root, ratified): after the head's
+  // current-root CAS succeeded (and the bearer bytes possibly released), a crash + re-exchange
+  // re-stamps the SAME id and it connects — that id IS the incarnation's live root, nothing loose
+  // to revoke. This is the ratified model, distinct from a per-exchange fresh-id design.
+  const reExchanged = await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 });
+  check("POST-HEAD CRASH: re-exchange re-stamps the SAME incarnation root id", reExchanged === credid1, reExchanged);
+  check("POST-HEAD CRASH: a bearer minted from the re-stamped id CONNECTS (re-export is by design)",
+    (await tryConnect(await issuer.issue({ owner: OWNER, space, actor: "worker", scope: [], lifecycleUid: uid1, credentialId: reExchanged }))) === "connected");
+
   const claimless = await issuer.issue({ owner: OWNER, space, actor: "worker", scope: [], lifecycleUid: uid1 });
   check("CLAIMLESS: a bearer without act.credentialId is DENIED (the hard cut)", (await tryConnect(claimless)) === "denied");
 

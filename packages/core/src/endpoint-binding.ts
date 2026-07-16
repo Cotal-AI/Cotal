@@ -220,26 +220,44 @@ export async function createEndpointStreams(
  * silently adopted (§13.12: the flags are load-bearing for deny-new and the barrier CAS fences).
  */
 export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
+  // CREATE-IF-ABSENT then UNCONDITIONALLY VERIFY: `Kvm.create` opens an existing stream WITHOUT
+  // comparing its config (a drifted pre-existing stream is the NORMAL success path, not an error),
+  // so the create call proves nothing. Both the just-created and the pre-existing store flow
+  // through the SAME final `streams.info` + full normative verify — a drifted authority store is
+  // an operator error, never silently adopted (§13.12: the flags + store-binding are load-bearing
+  // for deny-new and the barrier CAS fences).
   const recordBucket = recordsBucket(space);
   const recordStream = `KV_${recordBucket}`;
-  try {
+  if (await jsm.streams.info(recordStream).catch(() => undefined) === undefined) {
     await kvm.create(recordBucket, { allow_direct: true });
     const recordConfig = (await jsm.streams.info(recordStream)).config;
     await jsm.streams.update(recordStream, { ...recordConfig, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });
-  } catch (e) {
-    // Not "already exists" (kvm.create surfaces a config-mismatch stream-add error) → verify below.
-    const cfg = (await jsm.streams.info(recordStream).catch(() => { throw e; })).config;
-    if (cfg.allow_direct !== true || cfg.allow_rollup_hdrs !== false || cfg.deny_delete !== true || cfg.deny_purge !== true)
-      throw new Error(`the records store ${recordBucket} exists with a drifted shape (allow_direct=${String(cfg.allow_direct)}, allow_rollup_hdrs=${String(cfg.allow_rollup_hdrs)}, deny_delete=${String(cfg.deny_delete)}, deny_purge=${String(cfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
   }
+  const recordCfg = (await jsm.streams.info(recordStream)).config;
+  if (recordCfg.allow_direct !== true || recordCfg.allow_rollup_hdrs !== false || recordCfg.deny_delete !== true || recordCfg.deny_purge !== true)
+    throw new Error(`the records store ${recordBucket} has a drifted shape (allow_direct=${String(recordCfg.allow_direct)}, allow_rollup_hdrs=${String(recordCfg.allow_rollup_hdrs)}, deny_delete=${String(recordCfg.deny_delete)}, deny_purge=${String(recordCfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  assertAuthorityStoreBinding(recordCfg, recordBucket);
+
   const authBucket = epAuthBucket(space);
-  try {
+  const authStream = `KV_${authBucket}`;
+  if (await jsm.streams.info(authStream).catch(() => undefined) === undefined)
     await kvm.create(authBucket, { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS });
-  } catch (e) {
-    const cfg = (await jsm.streams.info(`KV_${authBucket}`).catch(() => { throw e; })).config as StreamConfig & { allow_msg_ttl?: boolean };
-    if (cfg.allow_direct !== false || cfg.allow_msg_ttl !== true)
-      throw new Error(`the auth store ${authBucket} exists with a drifted shape (allow_direct=${String(cfg.allow_direct)}, allow_msg_ttl=${String(cfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
-  }
+  const authCfg = (await jsm.streams.info(authStream)).config as StreamConfig & { allow_msg_ttl?: boolean };
+  if (authCfg.allow_direct !== false || authCfg.allow_msg_ttl !== true)
+    throw new Error(`the auth store ${authBucket} has a drifted shape (allow_direct=${String(authCfg.allow_direct)}, allow_msg_ttl=${String(authCfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  assertAuthorityStoreBinding(authCfg, authBucket);
+}
+
+/** The store-BINDING half of the verify (SPEC 13.12): a stream wearing an authority bucket's name
+ *  must BE that KV bucket — exactly the one `$KV.<bucket>.>` subject (an extra captured subject
+ *  would put foreign bodies inside every body-selected MSG.GET grant on the stream) and durable
+ *  file storage (a memory store forgets fences and revocations on restart). */
+function assertAuthorityStoreBinding(cfg: StreamConfig, bucket: string): void {
+  const expected = `$KV.${bucket}.>`;
+  if (!Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== expected)
+    throw new Error(`the store ${bucket} does not carry exactly the subject ${expected} (got ${JSON.stringify(cfg.subjects)}); a stream that captures anything else is not this KV bucket - reprovision it (SPEC 13.12)`);
+  if (cfg.storage !== "file")
+    throw new Error(`the store ${bucket} has storage ${JSON.stringify(cfg.storage)}, not file; a non-durable authority store forgets fences and revocations on restart - reprovision it (SPEC 13.12)`);
 }
 
 // ---- §13.9 consumer-name grammar (normative; dash-form, collision-free by construction) ----

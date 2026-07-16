@@ -18,15 +18,16 @@
  *
  * RENEWAL IS A FAIL-CLOSED BOUNDARY: each connection authenticates with a SHORT-exp user JWT over
  * a stable nkey, re-minted in-process at half-life; the broker disconnects the connection at JWT
- * expiry and the reconnect presents the freshest mint. A renewal-mint failure leaves the expiring
- * JWT in place, so the broker downs the connection at exp and it STAYS down (the reconnect loop
- * keeps presenting a dead JWT, logged loudly) — a downed reader denies every connect; it never
- * serves on a lapsed credential and there is no file-only fallback.
+ * expiry and the reconnect presents the freshest mint. A renewal-mint failure fires
+ * {@link AuthorityClientOpts.onRenewalFailure} IMMEDIATELY — the supervised reader downs itself
+ * on it (unproved + connection closed), so connects DENY from the moment the renewal fails, not
+ * only when the old credential eventually expires. A downed reader never comes back without a
+ * service restart; there is no file-only fallback.
  */
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, epAuthBucket, newIdentity, recordsBucket } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, epAuthBucket, newIdentity, recordsBucket } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -56,7 +57,9 @@ export const AUTHORITY_CLIENT_TTL_SEC = 15 * 60;
 export function authorityWriterGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const auth = `KV_${epAuthBucket(space)}`;
   const records = `KV_${recordsBucket(space)}`;
-  if (!connId) throw new EpEnvelopeError("failed-precondition", "the authority writer grant requires a connection id for its scoped inbox (SPEC 13.9)");
+  // Same connId hygiene as authConnectReaderGrants: the only untrusted subject-forming input goes
+  // through the shared inbox grammar so it can never widen the scoped inbox.
+  const inbox = assertInboxConnId(connId);
   return {
     publish: [
       "$JS.API.INFO",
@@ -75,7 +78,7 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
       `$KV.${recordsBucket(space)}.lifecycle.>`,
       `$KV.${recordsBucket(space)}.uid.>`,
     ],
-    subscribe: [`_INBOX_${connId}.>`],
+    subscribe: [`_INBOX_${inbox}.>`],
   };
 }
 
@@ -89,6 +92,14 @@ export interface AuthorityClientOpts {
    *  the credential BEFORE the first connect. */
   grants: (connId: string) => { publish: string[]; subscribe: string[] };
   log: (line: string) => void;
+  /** Fired the moment a renewal mint REJECTS (after the loud log). The supervised reader wires
+   *  this to down itself immediately — renewal failure is a fail-closed boundary NOW, never
+   *  "at the old credential's eventual expiry". */
+  onRenewalFailure?: () => void;
+  /** SMOKE-ONLY renewal probe: override the half-life interval and/or force every renewal mint
+   *  to reject deterministically (the mint is a local signing operation with no natural failure
+   *  to inject). Production compositions never set this. */
+  probeRenewal?: { intervalMs: number; fail?: boolean };
 }
 
 export interface AuthorityClient {
@@ -117,12 +128,19 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
     );
   let currentJwt = await mint();
+  const renew = async (): Promise<string> => {
+    if (opts.probeRenewal?.fail) throw new Error("probe-forced renewal failure");
+    return mint();
+  };
   const renewal = setInterval(() => {
-    void mint().then(
+    void renew().then(
       (jwt) => { currentJwt = jwt; },
-      (e) => opts.log(`${opts.label}: credential renewal FAILED (${(e as Error)?.message ?? String(e)}) - the connection dies at its current expiry and stays down (fail-closed)`),
+      (e) => {
+        opts.log(`${opts.label}: credential renewal FAILED (${(e as Error)?.message ?? String(e)}) - failing closed NOW (fail-closed renewal boundary)`);
+        opts.onRenewalFailure?.();
+      },
     );
-  }, (AUTHORITY_CLIENT_TTL_SEC / 2) * 1000);
+  }, opts.probeRenewal?.intervalMs ?? (AUTHORITY_CLIENT_TTL_SEC / 2) * 1000);
   let nc: NatsConnection;
   try {
     nc = await connect({
@@ -165,24 +183,37 @@ export async function openSupervisedConnectReader(
   opts: Omit<AuthorityClientOpts, "grants" | "label">,
 ): Promise<SupervisedConnectReader> {
   const label = `cotal:auth-reader:${opts.space}`;
-  const client = await openAuthorityClient({ ...opts, label, grants: (connId) => authConnectReaderGrants(opts.space, connId) });
   let reader: ConnectReader | undefined;
+  let closed = false;
+  let client: AuthorityClient | undefined;
+  client = await openAuthorityClient({
+    ...opts,
+    label,
+    grants: (connId) => authConnectReaderGrants(opts.space, connId),
+    // Renewal failure is a fail-closed boundary NOW: down the reader the instant a remint
+    // rejects, so connects DENY immediately instead of riding the old credential to its expiry.
+    onRenewalFailure: () => {
+      reader = undefined;
+      opts.log(`${label}: credential renewal failed - reader downed NOW, connects deny until the service restarts (fail-closed)`);
+      if (!closed) void client?.close();
+    },
+  });
+  const c = client;
   try {
-    reader = await openConnectReader(client.nc, opts.space);
+    reader = await openConnectReader(c.nc, opts.space);
   } catch (e) {
-    await client.close();
+    await c.close();
     throw e;
   }
-  let closed = false;
   void (async () => {
-    for await (const s of client.nc.status()) {
+    for await (const s of c.nc.status()) {
       if (closed) break;
       if (s.type === "disconnect" || s.type === "error") {
         reader = undefined;
         opts.log(`${label}: connection lost (${s.type}) - connects DENY until the rebind shape proof passes`);
       } else if (s.type === "reconnect") {
         try {
-          reader = await openConnectReader(client.nc, opts.space);
+          reader = await openConnectReader(c.nc, opts.space);
           opts.log(`${label}: rebound and shape-proved; connect reads resume`);
         } catch (e) {
           reader = undefined;
@@ -200,7 +231,7 @@ export async function openSupervisedConnectReader(
     close: async () => {
       closed = true;
       reader = undefined; // a closed reader refuses immediately, not on the next status event
-      await client.close();
+      await c.close();
     },
   };
 }

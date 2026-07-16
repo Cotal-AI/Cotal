@@ -122,6 +122,8 @@ export interface AuthorityStreamCfg {
   max_bytes?: number;
   mirror?: unknown;
   sources?: unknown;
+  subjects?: unknown;
+  storage?: string;
 }
 
 /** Prove an authority store's stream shape at bind (SPEC 13.12): PRIMARY (never a
@@ -147,6 +149,17 @@ export function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: stri
     throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries a finite global message cap (max_msgs ${cfg.max_msgs}); under discard-old it silently evicts never-deleted authority keys (SPEC 13.12) — reprovision`);
   if (typeof cfg.max_bytes === "number" && cfg.max_bytes >= 0)
     throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries a finite global byte cap (max_bytes ${cfg.max_bytes}); under discard-old it silently evicts never-deleted authority keys (SPEC 13.12) — reprovision`);
+  // STORE-BINDING (SPEC 13.12): the stream must BE the claimed KV bucket, not merely wear its
+  // name — exactly the one `$KV.<bucket>.>` subject (an extra captured subject would put foreign
+  // bodies inside every body-selected MSG.GET grant on this stream, breaking the metadata-only
+  // residual claim) and durable file storage (a memory authority store forgets every fence and
+  // revocation on broker restart). Both are REQUIRED, not skipped-when-absent: every caller
+  // proves a real `streams.info` config, and an absent field here is an unproved store.
+  const expectedSubject = `$KV.${bucket}.>`;
+  if (!Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== expectedSubject)
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} does not carry exactly the subject ${expectedSubject} (got ${JSON.stringify(cfg.subjects)}); a stream that captures anything else is not this KV bucket, and its body-selected reads are not bounded to authority metadata (SPEC 13.12) — reprovision`);
+  if (cfg.storage !== "file")
+    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} has storage ${JSON.stringify(cfg.storage)}, not file; a non-durable authority store forgets fences and revocations on restart (SPEC 13.12) — reprovision`);
 }
 
 /** Open the minting authority's sealed lifecycle registry: binds the space's primary records

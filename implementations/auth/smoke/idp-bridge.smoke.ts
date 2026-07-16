@@ -96,6 +96,11 @@ check("BA /token returns a JWT for the session", tokenRes.status === 200 && type
 // The bridge, wired exactly as an operator would: pinned resolver on BA's real JWKS endpoint.
 const cotalKey = await generateSigningKey();
 const cotalIssuer = createUserTokenIssuer({ issuer: "https://auth.cotal.test", key: cotalKey });
+// A deterministic root-credential mint stub (R1): the bridge REQUIRES the hook, but these Plane-1
+// exchange tests never run the connect arm, so a fixed grammar-valid id is enough to prove the
+// claim rides through issue↔validate. `credCalls` lets a test assert the hook is actually invoked.
+const credCalls: Array<{ owner: string; actor: string; lifecycleUid: string }> = [];
+const mintStub = async (a: { owner: string; actor: string; lifecycleUid: string }): Promise<string> => { credCalls.push(a); return "root0001"; };
 const hookCalls: Array<{ owner: string; actor: string }> = [];
 const hookUid = mintLifecycleUid();
 const bridge = createIdpBridge({
@@ -103,6 +108,7 @@ const bridge = createIdpBridge({
   space: SPACE,
   spaceSecret: SECRET,
   issuer: cotalIssuer,
+  mintConnectCredential: mintStub,
   authorizeActor: (owner, actor) => {
     hookCalls.push({ owner, actor });
     if (actor === "denied_agent") throw new Error("ledger: actor not authorized for this owner");
@@ -121,6 +127,8 @@ check("minted bearer round-trips validateUserToken with the full principal",
   v.owner === expectedOwner && v.space === SPACE && v.act.actor === "agent_1");
 check("scope + parent came from the LEDGER HOOK, server-authored",
   v.act.scope?.join() === "chat" && v.act.parent === `${expectedOwner}.spawner_1` && hookCalls[0]?.owner === expectedOwner);
+check("the bearer carries the root credential id from the mint hook (R1: every v0.4 bearer is credential-bound)",
+  v.credentialId === "root0001" && credCalls.some((c) => c.owner === expectedOwner && c.actor === "agent_1" && typeof c.lifecycleUid === "string"));
 check("re-login is deterministic (same sub → same owner)",
   (await bridge.exchange(idpJwt, { actor: "agent_2" })).owner === expectedOwner);
 {
@@ -166,6 +174,7 @@ const synth = createIdpBridge({
   space: SPACE,
   spaceSecret: SECRET,
   issuer: cotalIssuer,
+  mintConnectCredential: mintStub,
   authorizeActor: () => ({ lifecycleUid: mintLifecycleUid() }),
 });
 
@@ -181,6 +190,7 @@ check("a scopeless grant mints a scopeless bearer (explicit allow, no scope)",
   const uidless = createIdpBridge({
     idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey },
     space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer,
+    mintConnectCredential: mintStub,
     authorizeActor: () => ({}),
   });
   let refused = false;
@@ -238,6 +248,7 @@ await rejects("a missing sub is rejected",
   const badGrant = createIdpBridge({
     idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey },
     space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer,
+    mintConnectCredential: mintStub,
     authorizeActor: () => null as never,
   });
   await rejects("a hook returning a non-object is a DENY (no allow-by-default)",
@@ -252,7 +263,11 @@ await rejects("a missing idp.audience pin fails at construction",
 await rejects("a missing idp.key fails at construction",
   () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: undefined as never }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "key");
 await rejects("a missing authorizeActor hook fails at construction",
-  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: undefined as never }), "hook");
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: undefined as never, mintConnectCredential: mintStub }), "hook");
+// R1: the mint hook is REQUIRED at construction — a public bridge that could mint a claimless
+// bearer would silently disable deny-new in any composition without the connect arm.
+await rejects("a missing mintConnectCredential hook fails at construction (v0.4 never mints claimless)",
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({ lifecycleUid: mintLifecycleUid() }), mintConnectCredential: undefined as never }), "mintConnectCredential");
 
 // The derivation encoding is INJECTIVE: a '|'-straddling issuer/sub pair cannot collide.
 check("derivation encoding is injective — ('a','b|c') and ('a|b','c') derive different owners",
