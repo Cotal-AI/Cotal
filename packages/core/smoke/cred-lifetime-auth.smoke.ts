@@ -27,8 +27,9 @@ import {
   ROTATION_RENEWED_TTL_SEC,
   STANDING_RENEWABLE_TTL_SEC,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = (s: string) => new TextEncoder().encode(s);

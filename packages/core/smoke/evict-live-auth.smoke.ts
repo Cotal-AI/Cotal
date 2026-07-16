@@ -27,7 +27,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
@@ -42,24 +41,7 @@ import {
   createUserTokenIssuer, generateSigningKey,
   deriveOwnerToken, grantActor, revokeActor, ledgerAclResolver, ledgerAuthorizeConnect,
 } from "@cotal-ai/auth";
-
-const pickFreePort = async (): Promise<number> =>
-  await new Promise((resolve, reject) => {
-    const s = createServer();
-    s.once("error", reject);
-    s.listen(0, "127.0.0.1", () => {
-      const a = s.address();
-      if (!a || typeof a === "string") {
-        s.close();
-        reject(new Error("failed to choose free port"));
-        return;
-      }
-      s.close((err) => {
-        if (err) reject(err);
-        else resolve(a.port);
-      });
-    });
-  });
+import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
