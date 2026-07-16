@@ -41,7 +41,7 @@
  */
 import type { KV } from "@nats-io/kv";
 import { Kvm } from "@nats-io/kv";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, type CryptoKey } from "jose";
 import {
@@ -50,6 +50,7 @@ import {
   epsSubject,
   endpointToken,
   assertLifecycleToken,
+  mintLifecycleUid,
   parsePrincipalKey,
   isPrincipalOwnerToken,
   sessionLedgerKey,
@@ -92,7 +93,10 @@ export interface SessionAuthStore {
   kv: KV;
   space: string;
 }
-const AUTH_STORES = new WeakSet<SessionAuthStore>();
+/** The store's JetStream handles for the marker-preserving sweep enumeration (a bucket's own
+ *  `kv.keys()` FILTERS DEL/PURGE, so a tombstone can only be seen through a raw stream read).
+ *  Module-private, keyed off the branded store. */
+const AUTH_STORES = new WeakMap<SessionAuthStore, { jsm: JetStreamManager; js: JetStreamClient }>();
 function assertStore(store: SessionAuthStore): void {
   if (!AUTH_STORES.has(store))
     throw new EpEnvelopeError("failed-precondition", `the session auth store was not constructed by openSessionAuthStore(); a hand-assembled {kv, space} never authorizes — the space bond is constructed, not asserted (SPEC 13.12)`);
@@ -124,7 +128,7 @@ export async function openSessionAuthStore(nc: NatsConnection, space: string): P
   if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
     throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is a mirror/sourced stream; a follower copy cannot serve read-your-writes authority reads (§13.1) — bind the primary`);
   const store: SessionAuthStore = { kv, space };
-  AUTH_STORES.add(store);
+  AUTH_STORES.set(store, { jsm: await jetstreamManager(nc), js: jetstream(nc) });
   return store;
 }
 
@@ -730,17 +734,66 @@ export async function sweepSessions(
     throw new EpEnvelopeError("failed-precondition", `the sweep margin ${JSON.stringify(opts.marginMs)} is not a non-negative safe integer (SPEC 13.6)`);
   let acted = 0;
   const failed: string[] = [];
-  const keys = await kv.keys("session.>");
-  for await (const key of keys) {
+  // A bucket's own `kv.keys()`/`kv.watch()` FILTERS DEL/PURGE markers before yielding (the
+  // installed @nats-io/kv skips them), so a tombstoned session key would be INVISIBLE to a
+  // keys-based sweep and its still-live credential rows would never be reported. Enumerate the
+  // raw backing stream with a per-run LastPerSubject consumer that PRESERVES the KV-Operation
+  // header, so a deletion marker is SEEN and reported as corruption (never silently skipped).
+  for (const item of await enumerateSessionEntries(store)) {
+    if (item.op === "DEL" || item.op === "PURGE") { failed.push(item.key); continue; } // a marker is corruption, reported, never invisible
     try {
-      const entry = await kv.get(key);
-      if (!entry) continue;
-      if (entry.operation !== "PUT") { failed.push(key); continue; } // a deletion marker is corruption, reported, never skipped silently
-      const row = parseRow(entry.value, key);
+      const row = parseRow(item.data, item.key);
       if (await sweepSessionRow(row, hooks, opts)) acted++;
     } catch {
-      failed.push(key); // one poison row never blocks the rest of the bucket's containment
+      failed.push(item.key); // one poison row never blocks the rest of the bucket's containment
     }
   }
   return { acted, failed };
+}
+
+/** One raw enumerated `session.>` entry, WITH its KV operation (so the sweep sees markers a
+ *  bucket's own key/watch enumeration would filter out). */
+interface RawSessionEntry {
+  key: string;
+  op: string | undefined;
+  data: Uint8Array;
+}
+
+/** Point-in-time enumeration of `session.>` via a per-run throwaway LastPerSubject PULL consumer
+ *  that includes DEL/PURGE markers (the credential-ledger enumeration pattern). Bounded to the
+ *  snapshot at creation; the consumer is deleted per run. */
+async function enumerateSessionEntries(store: SessionAuthStore): Promise<RawSessionEntry[]> {
+  const internals = AUTH_STORES.get(store)!;
+  const bucket = epAuthBucket(store.space);
+  const stream = `KV_${bucket}`;
+  const name = `sesssweep_${mintLifecycleUid()}`;
+  const prefix = `$KV.${bucket}.session.`;
+  try {
+    await internals.jsm.consumers.add(stream, {
+      name, filter_subject: `${prefix}>`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject,
+      mem_storage: true, inactive_threshold: 30_000_000_000,
+    });
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `creating the session sweep's enumeration consumer on ${stream} failed; the sweep fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
+  }
+  const out: RawSessionEntry[] = [];
+  try {
+    const consumer = await internals.js.consumers.get(stream, name);
+    let pending = (await consumer.info()).num_pending;
+    while (pending > 0) {
+      const want = Math.min(pending, 256);
+      const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
+      let got = 0;
+      for await (const m of iter) {
+        got++;
+        out.push({ key: m.subject.slice(`$KV.${bucket}.`.length), op: m.headers?.get("KV-Operation") || undefined, data: m.data });
+      }
+      if (got < want)
+        throw new EpEnvelopeError("unavailable", `the session sweep's enumeration under session.> under-delivered (${got}/${want}); a partial read never proceeds (SPEC 13.6)`);
+      pending -= got;
+    }
+  } finally {
+    try { await internals.jsm.consumers.delete(stream, name); } catch { /* per-run consumer; inactive_threshold collects it */ }
+  }
+  return out;
 }

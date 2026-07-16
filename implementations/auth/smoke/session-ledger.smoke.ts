@@ -448,6 +448,14 @@ try {
     await kv.delete(sessionLedgerKey(sid(44)));
     await rejects("a DEL marker on session.<sid> refuses the ledger read (corruption, not absence)",
       () => hooks.ledger.read(sid(44)), "failed-precondition");
+    // …AND the SWEEP must SEE that marker (fact-3/distsys HIGH: a bucket's kv.keys() FILTERS
+    // DEL/PURGE, so a keys-based sweep would never encounter the tombstone; the marker-preserving
+    // LastPerSubject enumeration reports it in `failed`, never silently skips it).
+    {
+      const swept = await sweepSessions(store, hooks, { now: clock.t });
+      c("the sweep SEES a tombstoned session key and reports it as failed (not filtered away by kv.keys)",
+        swept.failed.includes(sessionLedgerKey(sid(44))), swept.failed);
+    }
     // The takeover reconciler returns the serving row's CONNZ-evictable principal (the
     // barrier's eviction set joins it) and is idempotent across re-runs.
     const gRec = mkGrant(sid(45));
