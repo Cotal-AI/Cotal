@@ -2,7 +2,10 @@
  * The D13 (4) admission-mediator smoke (SPEC §13.6/§13.8/§13.9): the create-fence + proof-gated
  * admission over a LIVE broker, the per-class decision coordinates (epf + self), self-class
  * crash recovery (landed / re-apply / superseded), and the immutable-policy stage → drain →
- * promote cycle with the drain-window admission pause.
+ * promote cycle with the drain-window pause. Includes the round-5 fold coverage: the
+ * revision/space/opId-bound drain witness, the policy-scoped drain (target-only rows survive),
+ * accepted-EPF route reconciliation before quiescence, post-create recheck movement, and
+ * cross-process accept.
  *
  * Runs against a real nats-server with JetStream (no callout needed: the mediator is a trusted
  * writer over the records store). Broker killed by exact PID; never pkill nats-server.
@@ -11,13 +14,13 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  isReachable, EpEnvelopeError, createEndpointStreams, recordAtomicKey, GOVERN_HEAD,
-  createRecordEntry, updateRecordEntry, readRecordLeader, epfSubject, epfStreamName, readLastFact,
+  isReachable, EpEnvelopeError, createEndpointStreams, recordAtomicKey, GOVERN_HEAD, LIFECYCLE_HEAD,
+  createRecordEntry, updateRecordEntry, readRecordLeader, contractDigest,
+  epfSubject, epfStreamName, readLastFact, parseDecisionFact,
 } from "@cotal-ai/core";
 import {
   openLifecycleRegistry, openAdmissionMediator, obtainEpfObligation, obtainSelfObligation,
@@ -36,12 +39,27 @@ const rejects = async (n: string, fn: () => Promise<unknown> | unknown, code?: s
     c(n, code === undefined || (e instanceof EpEnvelopeError && e.code === code), `code ${(e as EpEnvelopeError).code ?? (e as Error).message}`);
   }
 };
+const rejectsSync = (n: string, fn: () => unknown, code?: string): void => {
+  try { fn(); c(n, false, "no throw"); } catch (e) { c(n, code === undefined || (e instanceof EpEnvelopeError && e.code === code), `code ${(e as EpEnvelopeError).code ?? (e as Error).message}`); }
+};
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const sha256hex = (b: Uint8Array): string => createHash("sha256").update(b).digest("hex");
+/** A wire fingerprint = the canonical digest of a distinguishing object (sha256:<hex>, the shape
+ *  core's fact validators accept). */
+const fp = (tag: string): string => contractDigest({ fp: tag });
+/** A self commit intent from a record value: digest is the canonical value digest; bytes are a
+ *  b64u JSON encoding of the value (the applier parses them). */
+const commitOf = (value: unknown): { commitValue: CommitValue; commitDigest: string } => ({
+  commitValue: { enc: "b64u", bytes: Buffer.from(enc.encode(JSON.stringify(value))).toString("base64url") },
+  commitDigest: contractDigest(value),
+});
+const applyCommit = async (recordsKv: import("@nats-io/kv").KV, k: string, bytes: Uint8Array): Promise<void> => {
+  await createRecordEntry(recordsKv, k, JSON.parse(dec.decode(bytes)));
+};
 
 const SPACE = "medsmoke";
+const SPACE_B = "medsmokeb";
 const EP = "term";
 const MGR = "mgr-1";
 const NOW = 1_700_000_000_000;
@@ -64,111 +82,149 @@ try {
   if (!up) throw new Error("broker did not come up");
   nc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "auth", pass: "pw" });
   await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE);
+  await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE_B);
   const reg = await openLifecycleRegistry(nc, SPACE);
   const { recordsKv } = registryStores(reg);
   let clock = NOW;
   const med = await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, proofTtlMs: 1000 });
+  const drainDeps = { applyCommit: (k: string, b: Uint8Array) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: async () => {} };
 
-  console.log("A. the govern head + immutable policy version (publish is content-addressed + idempotent)");
+  console.log("A. the govern head + immutable content-addressed policy version");
   const policyV1 = await publishPolicyVersion(reg, EP, { capacity: 10, v: 1 });
-  c("a published policy version keys on its own value digest (self-certifying)", policyV1.key === `policy.${EP}.${policyV1.digestHex}` && policyV1.digestHex.length === 64);
-  const policyV1again = await publishPolicyVersion(reg, EP, { capacity: 10, v: 1 });
-  c("re-publishing identical bytes is idempotent (same key, same revision)", policyV1again.key === policyV1.key && policyV1again.revision === policyV1.revision);
-  // Enforce v1 by CASing the selector onto the govern head directly (the registration path owns
-  // this; the smoke seeds it).
+  c("a published policy version keys on its own canonical value digest (self-certifying)", policyV1.key === `policy.${EP}.${policyV1.digestHex}` && policyV1.digestHex.length === 64);
+  // RFC-8785: property ORDER does not change the key (a conforming impl content-addresses the same).
+  const policyV1reordered = await publishPolicyVersion(reg, EP, { v: 1, capacity: 10 });
+  c("re-publishing the same value with reordered keys lands on the SAME key (canonical, order-insensitive)", policyV1reordered.key === policyV1.key && policyV1reordered.revision === policyV1.revision);
   const govKey = recordAtomicKey(GOVERN_HEAD, [EP]);
   await createRecordEntry(recordsKv, govKey, { commands: {}, enforcedPolicyKey: policyV1.key, enforcedPolicyRevision: policyV1.revision });
   const enforced = await readEnforcedPolicy(med);
   c("the mediator reads the enforced policy leader-served + self-certified", (enforced.policy as { capacity: number }).capacity === 10 && enforced.revision === policyV1.revision);
 
-  console.log("B. a target-bound epf obligation: create-fence, proof, join, settle");
+  console.log("B. a target-bound epf obligation: create-fence, proof, join, settle (core-valid rejection)");
   const actT = await activateLifecycle(reg, { owner: "local", actor: "target", managerInstance: MGR });
   const tgt = { owner: "local", actor: "target", lifecycleUid: actT.mapping.lifecycleUid };
-  const got = await obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: "fp1", sourceSeq: 7, route: "effects" });
+  const got = await obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("A"), sourceSeq: 7, route: "effects" });
   c("a target-bound epf obtain wins its row (provisional, epf-class, pinned mappingRevision)",
     got.row.state === "provisional" && got.row.decision === "epf" && got.row.mappingRevision === actT.revision && !got.joined, got.row);
   assertAdmissionProof(med, got.proof, got.key);
   c("its proof validates against the mediator + obligation key", true);
-  // A byte-identical retry JOINS the same winner (same fingerprint + route).
-  const gotAgain = await obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: "fp1", sourceSeq: 9, route: "effects" });
+  const gotAgain = await obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("A"), sourceSeq: 9, route: "effects" });
   c("a redelivery with the same identity JOINS the winner (never a second obligation)", gotAgain.joined && gotAgain.key === got.key, { joined: gotAgain.joined });
-  // A DIFFERENT fingerprint on the same key is a conflict.
+  await rejects("a bad fingerprint shape refuses at obtain (must be sha256:<hex>, so the settle fact is core-valid)",
+    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0002", fingerprint: "fp1", sourceSeq: 1, route: "effects" }), "failed-precondition");
+  await rejects("sourceSeq 0 refuses at obtain (a decision fact needs a positive sourceSeq)",
+    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0003", fingerprint: fp("z"), sourceSeq: 0, route: "effects" }), "failed-precondition");
   await rejects("a mismatched fingerprint on the same acceptance key refuses (conflict, not a second row)",
-    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: "DIFFERENT", sourceSeq: 1, route: "effects" }), "conflict");
-  // Settle it through the decision coordinate (a rejection); a re-obtain then refuses.
+    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("DIFFERENT"), sourceSeq: 1, route: "effects" }), "conflict");
   const settled = await settleEpfOrSelfObligation(med, got.key, "the smoke drains it");
   c("settling an unresolved epf row publishes its terminal rejection", settled === "rejected");
-  // The rejection fact lands on the EPF decision subject keyed by the CALLER TRIPLE + id (NOT the
-  // endpoint token): read it back at exactly that subject and confirm it is the caller's rejection.
+  // The rejection fact is CORE-VALID (consume it through parseDecisionFact, not a cast) and lands
+  // on the caller-triple decision subject (proving the key offset).
   {
     const decSubject = epfSubject(SPACE, EP, ["dec", CALLER.owner, CALLER.actor, CALLER.uid, "req0001"]);
     const factRaw = await readLastFact(await jetstreamManager(nc!), epfStreamName(SPACE), decSubject);
-    const fact = factRaw as { decision?: string; caller?: { id?: string; lifecycleUid?: string } } | undefined;
-    c("…the rejection fact is on the caller-triple decision subject (proves the key is parsed at the right offset)",
-      fact?.decision === "rejected" && fact?.caller?.id === `${CALLER.owner}.${CALLER.actor}` && fact?.caller?.lifecycleUid === CALLER.uid, fact);
+    const fact = parseDecisionFact(factRaw, decSubject); // throws if the mediator emitted a core-invalid fact
+    c("…the rejection fact PARSES via parseDecisionFact and is the caller's rejection", fact.decision === "rejected" && fact.caller.id === `${CALLER.owner}.${CALLER.actor}` && fact.caller.lifecycleUid === CALLER.uid, fact);
   }
   await rejects("a re-obtain on a settled acceptance key refuses (a settled identity never re-admits)",
-    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: "fp1", sourceSeq: 7, route: "effects" }), "failed-precondition");
+    () => obtainEpfObligation(med, { target: tgt, caller: CALLER, id: "req0001", fingerprint: fp("A"), sourceSeq: 7, route: "effects" }), "failed-precondition");
 
   console.log("C. the create-fence refuses a non-active target");
   await rejects("an epf obtain against an UNKNOWN target refuses (a non-current target admits nothing)",
-    () => obtainEpfObligation(med, { target: { owner: "local", actor: "ghost", lifecycleUid: "g".repeat(26) }, caller: CALLER, id: "req0009", fingerprint: "fp", sourceSeq: 1, route: "effects" }), "failed-precondition");
+    () => obtainEpfObligation(med, { target: { owner: "local", actor: "ghost", lifecycleUid: "g".repeat(26) }, caller: CALLER, id: "req0009", fingerprint: fp("g"), sourceSeq: 1, route: "effects" }), "failed-precondition");
 
-  console.log("D. a self-class obligation: accept → guarded commit → terminal, and the drain-race");
+  console.log("D. a self-class obligation: accept → guarded commit → terminal, and the post-create recheck");
   const recKey = `svc.${EP}.${"i".repeat(26)}.status`;
-  const desired = enc.encode(JSON.stringify({ epoch: 2, state: "running", observedSpecRevision: 1 }));
-  const commit: CommitValue = { enc: "b64u", bytes: Buffer.from(desired).toString("base64url") };
-  const selfGot = await obtainSelfObligation(med, {
-    policy: true, caller: CALLER, id: "self0001",
-    commit: { commitKey: recKey, commitBaseRevision: 0, commitValue: commit, commitDigest: sha256hex(desired) },
-  });
+  const desired = { epoch: 2, state: "running", observedSpecRevision: 1 };
+  const selfGot = await obtainSelfObligation(med, { policy: true, caller: CALLER, id: "self0001", commit: { commitKey: recKey, commitBaseRevision: 0, ...commitOf(desired) } });
   c("a self obtain wins a self-class row pinning the complete commit intent + policyRevision",
     selfGot.row.decision === "self" && selfGot.row.policyRevision === policyV1.revision && selfGot.row.commit?.commitKey === recKey, selfGot.row);
   await acceptSelfObligation(med, selfGot.proof);
-  // Under the accepted row, run the guarded commit (create-only the status record), then recover
-  // drives the row to terminal (it reads the record digests to the intent = LANDED).
-  await createRecordEntry(recordsKv, recKey, JSON.parse(dec.decode(desired)));
+  await createRecordEntry(recordsKv, recKey, desired);
   const recovered = await recoverSelfObligation(med, selfGot.key, { applyCommit: async () => { throw new Error("should not re-apply a landed commit"); } });
   c("recovering an accepted self row whose commit LANDED drives it to terminal (landed)", recovered === "landed");
+  // POST-CREATE RECHECK MOVEMENT: a target-bound obtain whose target head moves between the create
+  // and the recheck settles its own provisional and refuses (no proof issues). Model it: obtain
+  // wins + pins the head revision, then the head moves (a revision bump), then a JOINing obtain
+  // rechecks the moved head and refuses.
+  {
+    const actM = await activateLifecycle(reg, { owner: "local", actor: "mover", managerInstance: MGR });
+    const tgtM = { owner: "local", actor: "mover", lifecycleUid: actM.mapping.lifecycleUid };
+    const g1 = await obtainEpfObligation(med, { target: tgtM, caller: CALLER, id: "mv0001", fingerprint: fp("mv"), sourceSeq: 1, route: "effects" });
+    c("the mover obtain wins under the active head", g1.row.state === "provisional" && g1.row.mappingRevision === actM.revision);
+    // Bump the mover head revision (same active mapping) so its pinned mappingRevision is stale.
+    await updateRecordEntry(recordsKv, recordAtomicKey(LIFECYCLE_HEAD, ["local", "mover"]), { ...actM.mapping }, actM.revision);
+    await rejects("a join whose pinned target head revision has moved refuses at the recheck (no proof issues)",
+      () => obtainEpfObligation(med, { target: tgtM, caller: CALLER, id: "mv0001", fingerprint: fp("mv"), sourceSeq: 1, route: "effects" }), "failed-precondition");
+  }
 
-  console.log("E. self-class recovery RE-APPLIES a crashed-before-commit intent from the pinned bytes");
+  console.log("E. self recovery RE-APPLIES from pinned bytes, and SUPERSEDES a moved record");
   const recKey2 = `svc.${EP}.${"j".repeat(26)}.status`;
-  const desired2 = enc.encode(JSON.stringify({ epoch: 3, state: "running", observedSpecRevision: 1 }));
-  const selfGot2 = await obtainSelfObligation(med, {
-    policy: true, caller: { ...CALLER, uid: "v".repeat(26) }, id: "self0002",
-    commit: { commitKey: recKey2, commitBaseRevision: 0, commitValue: { enc: "b64u", bytes: Buffer.from(desired2).toString("base64url") }, commitDigest: sha256hex(desired2) },
-  });
+  const desired2 = { epoch: 3, state: "running", observedSpecRevision: 1 };
+  const selfGot2 = await obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "v".repeat(26) }, id: "self0002", commit: { commitKey: recKey2, commitBaseRevision: 0, ...commitOf(desired2) } });
   await acceptSelfObligation(med, selfGot2.proof);
-  // The writer CRASHED before its commit: the record does not exist. Recovery re-applies the
-  // pinned bytes then terminalizes.
-  let applied: Uint8Array | undefined;
-  const recovered2 = await recoverSelfObligation(med, selfGot2.key, { applyCommit: async (k, bytes) => { applied = bytes; await createRecordEntry(recordsKv, k, JSON.parse(dec.decode(bytes))); } });
-  c("recovering an accepted self row whose commit DID NOT run re-applies the pinned bytes (re-applied)", recovered2 === "re-applied" && applied !== undefined && sha256hex(applied!) === sha256hex(desired2));
+  let reappliedBytes: Uint8Array | undefined;
+  const recovered2 = await recoverSelfObligation(med, selfGot2.key, { applyCommit: async (k, bytes) => { reappliedBytes = bytes; await applyCommit(recordsKv, k, bytes); } });
+  c("recovering an accepted self row whose commit DID NOT run re-applies the pinned bytes (re-applied)", recovered2 === "re-applied" && reappliedBytes !== undefined);
   const written = await readRecordLeader(await jetstreamManager(nc), SPACE, recKey2);
   c("…and the re-applied record is exactly the pinned value", written !== undefined && (written.value as { epoch: number }).epoch === 3);
+  // SUPERSEDED: the record already moved PAST the commit's base revision to a foreign value.
+  const recKey3 = `svc.${EP}.${"k".repeat(26)}.status`;
+  await createRecordEntry(recordsKv, recKey3, { epoch: 1, state: "old", observedSpecRevision: 1 });
+  const moved = await readRecordLeader(await jetstreamManager(nc), SPACE, recKey3);
+  const selfGot3 = await obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "s".repeat(26) }, id: "self0003", commit: { commitKey: recKey3, commitBaseRevision: (moved!.revision + 5), ...commitOf({ epoch: 9, state: "wanted", observedSpecRevision: 1 }) } });
+  await acceptSelfObligation(med, selfGot3.proof);
+  const recovered3 = await recoverSelfObligation(med, selfGot3.key, { applyCommit: async () => { throw new Error("must not re-apply a superseded commit"); } });
+  c("recovering an accepted self row whose record moved PAST its base is superseded (never re-applies)", recovered3 === "superseded");
+  // CROSS-PROCESS ACCEPT: a NEW mediator instance (a restarted writer) joins the provisional and accepts.
+  const recKey4 = `svc.${EP}.${"m".repeat(26)}.status`;
+  const commit4 = commitOf({ epoch: 4, state: "running", observedSpecRevision: 1 });
+  const selfGot4 = await obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "x".repeat(26) }, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
+  const medReborn = await openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 1000 });
+  const rejoin = await obtainSelfObligation(medReborn, { policy: true, caller: { ...CALLER, uid: "x".repeat(26) }, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
+  c("a restarted writer (new mediator) JOINS its own provisional self obligation", rejoin.joined && rejoin.key === selfGot4.key);
+  await acceptSelfObligation(medReborn, rejoin.proof);
+  const rec4 = await recoverSelfObligation(medReborn, rejoin.key, { applyCommit: async (k, b) => applyCommit(recordsKv, k, b) });
+  c("…and the reborn writer drives its accepted obligation to terminal", rec4 === "re-applied");
 
-  console.log("F. the immutable-policy stage → drain → promote cycle with the drain-window pause");
+  console.log("F. stage → policy-scoped drain → promote, the pause, and the bound witness");
   const policyV2 = await publishPolicyVersion(reg, EP, { capacity: 20, v: 2 });
+  // A TARGET-ONLY provisional that the policy drain must NOT touch (it is not policy-governed).
+  const targetOnly = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "t".repeat(26) }, id: "tonly001", fingerprint: fp("t"), sourceSeq: 3, route: "effects" });
+  c("a target-only (no policy pin) provisional exists before the stage", targetOnly.row.policyRevision === undefined && targetOnly.row.mappingRevision !== undefined);
   await stagePolicySelector(reg, EP, policyV2.key);
-  // While a pending policy is staged, a policy-admitted obtain PAUSES (create-fence refusal).
   await rejects("a policy-admitted obtain PAUSES while a pendingPolicy is staged (the drain window)",
-    () => obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "w".repeat(26) }, id: "paused1", commit: { commitKey: `svc.${EP}.x.status`, commitBaseRevision: 0, commitValue: { enc: "b64u", bytes: "" }, commitDigest: sha256hex(new Uint8Array()) } }), "failed-precondition");
-  c("…and readEnforcedPolicy itself refuses inside the drain window (no admission judged against a half-mutated policy)", await (async () => { try { await readEnforcedPolicy(med); return false; } catch (e) { return e instanceof EpEnvelopeError && e.code === "failed-precondition"; } })());
-  // Drain to quiescence, then promote under the branded witness.
-  const drain = await drainEndpointPolicy(med, { applyCommit: async () => { throw new Error("no accepted self rows expected"); } });
-  c("the policy drain reaches quiescence", drain.passes >= 1);
+    () => obtainSelfObligation(med, { policy: true, caller: { ...CALLER, uid: "w".repeat(26) }, id: "paused1", commit: { commitKey: `svc.${EP}.pw.status`, commitBaseRevision: 0, ...commitOf({ a: 1 }) } }), "failed-precondition");
+  c("…and readEnforcedPolicy itself refuses inside the drain window", await (async () => { try { await readEnforcedPolicy(med); return false; } catch (e) { return e instanceof EpEnvelopeError && e.code === "failed-precondition"; } })());
+  const drain = await drainEndpointPolicy(med, drainDeps);
+  c("the policy drain reaches quiescence (target-only row ignored, not settled)", drain.passes >= 1);
+  c("…the target-only provisional SURVIVES the policy drain (still provisional, not burned)",
+    (await (async () => { const r = await readRecordLeader(await jetstreamManager(nc!), SPACE, targetOnly.key); return (r?.value as { state?: string })?.state; })()) === "provisional");
+  // A cross-space witness reuse refuses (attack A): the SAME content-addressed policy staged in
+  // space B, promoted with space A's witness.
+  {
+    const regB = await openLifecycleRegistry(nc!, SPACE_B);
+    const kvB = registryStores(regB).recordsKv;
+    const pV2b = await publishPolicyVersion(regB, EP, { capacity: 20, v: 2 });
+    const pV1b = await publishPolicyVersion(regB, EP, { capacity: 10, v: 1 });
+    await createRecordEntry(kvB, recordAtomicKey(GOVERN_HEAD, [EP]), { commands: {}, enforcedPolicyKey: pV1b.key, enforcedPolicyRevision: pV1b.revision });
+    await stagePolicySelector(regB, EP, pV2b.key);
+    await rejects("space A's drain witness cannot promote space B's identical staged mutation (cross-space refuse)",
+      () => promotePolicySelector(regB, EP, drain.quiescence), "permission-denied");
+  }
   const promoted = await promotePolicySelector(reg, EP, drain.quiescence);
   c("promote moves pending → enforced (v2 now governs)", promoted.enforcedPolicyKey === policyV2.key && promoted.enforcedPolicyRevision === policyV2.revision);
-  const enforced2 = await readEnforcedPolicy(med);
-  c("…and the mediator now admits again under the new enforced policy (capacity 20)", (enforced2.policy as { capacity: number }).capacity === 20);
-  // A hand-assembled quiescence witness never authorizes a promote.
+  c("…and the mediator admits again under the new enforced policy (capacity 20)", ((await readEnforcedPolicy(med)).policy as { capacity: number }).capacity === 20);
+  await rejects("the CONSUMED witness cannot promote a second time (a witness authorizes exactly one promote)",
+    () => promotePolicySelector(reg, EP, drain.quiescence), "failed-precondition");
+  // A hand-assembled witness never authorizes a promote.
   await stagePolicySelector(reg, EP, policyV1.key);
   await rejects("a hand-assembled drain witness never authorizes a promote",
-    () => promotePolicySelector(reg, EP, { endpoint: EP, pendingPolicyKey: policyV1.key } as never), "failed-precondition");
+    () => promotePolicySelector(reg, EP, { space: SPACE, endpoint: EP, pendingPolicyKey: policyV1.key, pendingPolicyRevision: policyV1.revision, mutationOpId: "x".repeat(26), governStageRevision: 1 } as never), "failed-precondition");
 
   console.log("G. a proof never crosses endpoints or outlives its TTL");
   const medOther = await openAdmissionMediator(nc, SPACE, "other", { now: () => clock, proofTtlMs: 1000 });
-  const g2 = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "y".repeat(26) }, id: "req0100", fingerprint: "fp", sourceSeq: 1, route: "effects" });
+  const g2 = await obtainEpfObligation(med, { target: tgt, caller: { ...CALLER, uid: "y".repeat(26) }, id: "req0100", fingerprint: fp("p"), sourceSeq: 1, route: "effects" });
   rejectsSync("a proof issued by endpoint A refuses at endpoint B's mediator", () => assertAdmissionProof(medOther, g2.proof, g2.key), "permission-denied");
   clock += 2000; // past the 1000ms TTL
   rejectsSync("an expired proof refuses (the current obligation state is re-checked, never the stale proof)", () => assertAdmissionProof(med, g2.proof, g2.key), "deadline-exceeded");
@@ -182,10 +238,6 @@ try {
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
-}
-
-function rejectsSync(n: string, fn: () => unknown, code?: string): void {
-  try { fn(); c(n, false, "no throw"); } catch (e) { c(n, code === undefined || (e instanceof EpEnvelopeError && e.code === code), `code ${(e as EpEnvelopeError).code ?? (e as Error).message}`); }
 }
 
 console.log(fail === 0 ? `\nADMISSION MEDIATOR SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nADMISSION MEDIATOR SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);

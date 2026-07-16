@@ -45,7 +45,6 @@
  * orchestration (D13 (5)) consume {@link drainTargetForEndpoint}; the production canonicalizer
  * wiring rides the EPF slice.
  */
-import { createHash } from "node:crypto";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -55,6 +54,7 @@ import {
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
   epfSubject, epfStreamName, publishFactCreateOnly, readLastFact, parseDecisionFact,
+  contractDigest, rawDigest,
   type RejectionFact,
   mintLifecycleUid, assertLifecycleToken, assertIdToken, assertBoundedOwner, endpointToken, assertPoolToken,
 } from "@cotal-ai/core";
@@ -67,8 +67,20 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+/** Every `*Digest` scalar on the wire is `sha256:<hex>` (§13.7/§13.8), the shape core's own fact
+ *  validators and canonicalizer emit; the mediator stores and compares that shape end to end and
+ *  strips the prefix only at a raw-hash boundary. */
+const DIGEST_SCALAR_RE = /^sha256:[0-9a-f]{64}$/;
+/** The §13.4 error-detail bound: `parseDecisionFact` rejects a longer detail, so a rejection the
+ *  mediator publishes must fit it or core would refuse the mediator's own fact. */
+const MAX_ERROR_DETAIL = 256;
 const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
-const sha256hex = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+/** The CANONICAL content digest of a JSON value, `<hex>` (no prefix) for a `policy` key segment.
+ *  Uses core's RFC-8785 canonicalizer (`contractDigest` = `sha256:<hex over I-JSON>`), so
+ *  publication is insensitive to property order and a second implementation that content-
+ *  addresses the same policy lands on the SAME key; also validates the value is I-JSON (throws
+ *  otherwise), so a non-canonicalizable policy is refused before any create. */
+const canonicalDigestHex = (value: unknown): string => contractDigest(value).slice("sha256:".length);
 
 // ---- the sealed per-endpoint mediator ---------------------------------------------------------
 
@@ -189,7 +201,11 @@ function obligationKey(med: MediatorInternals, ident: AdmissionIdentity): string
 
 const OBLIGATION_STATES = new Set<string>(["provisional", "accepted", "rejected", "terminal"]);
 const ROUTE_RE = /^(effects|pool\.[a-z0-9_-]{1,64})$/;
-const DIGEST_HEX_RE = /^[0-9a-f]{64}$/;
+const DIGEST_HEX_RE = /^[0-9a-f]{64}$/; // the `policy.<endpoint>.<digest-hex>` KEY segment is bare hex (§13.7)
+/** The submission fingerprint core's `parseDecisionFact` accepts — a `sha256:<hex>` scalar (the
+ *  same shape `submissionFingerprint` emits). A row whose fingerprint is not this cannot settle
+ *  through a core-conformant rejection fact, so it is refused at obtain, never persisted. */
+const FINGERPRINT_RE = DIGEST_SCALAR_RE;
 
 function parseCommitValue(v: unknown, key: string): CommitValue {
   if (!isRec(v)) throw new EpEnvelopeError("internal", `the obligation ${key} carries a non-object commitValue (SPEC 13.8)`);
@@ -229,8 +245,8 @@ export function parseObligationRow(raw: Uint8Array, key: string): ObligationRow 
   if (o.decision === "epf") {
     if (o.commit !== undefined)
       throw new EpEnvelopeError("internal", `the obligation ${key} is epf-class but carries a self-class commit intent (SPEC 13.8)`);
-    if (typeof o.fingerprint !== "string" || o.fingerprint.length === 0 || !uint(o.sourceSeq) || typeof o.route !== "string" || !ROUTE_RE.test(o.route))
-      throw new EpEnvelopeError("internal", `the obligation ${key} is epf-class without a valid { fingerprint, sourceSeq, route } (SPEC 13.8)`);
+    if (typeof o.fingerprint !== "string" || !FINGERPRINT_RE.test(o.fingerprint) || !uint(o.sourceSeq) || o.sourceSeq < 1 || typeof o.route !== "string" || !ROUTE_RE.test(o.route))
+      throw new EpEnvelopeError("internal", `the obligation ${key} is epf-class without a valid { fingerprint (sha256:<hex>), sourceSeq (>=1), route } (SPEC 13.4/13.8)`);
   } else {
     if (o.fingerprint !== undefined || o.sourceSeq !== undefined || o.route !== undefined)
       throw new EpEnvelopeError("internal", `the obligation ${key} is self-class but carries epf-class fields (SPEC 13.8)`);
@@ -238,8 +254,8 @@ export function parseObligationRow(raw: Uint8Array, key: string): ObligationRow 
       throw new EpEnvelopeError("internal", `the obligation ${key} is self-class without its commit intent (SPEC 13.8)`);
     const cm = o.commit as Record<string, unknown>;
     for (const k of Object.keys(cm)) if (!["commitKey", "commitBaseRevision", "commitValue", "commitDigest"].includes(k)) throw new EpEnvelopeError("internal", `the obligation ${key} commit intent carries the unknown field "${k}" (closed schema, SPEC 13.8)`);
-    if (typeof cm.commitKey !== "string" || cm.commitKey.length === 0 || !uint(cm.commitBaseRevision) || typeof cm.commitDigest !== "string" || !DIGEST_HEX_RE.test(cm.commitDigest))
-      throw new EpEnvelopeError("internal", `the obligation ${key} commit intent does not validate (SPEC 13.8)`);
+    if (typeof cm.commitKey !== "string" || cm.commitKey.length === 0 || !uint(cm.commitBaseRevision) || typeof cm.commitDigest !== "string" || !DIGEST_SCALAR_RE.test(cm.commitDigest))
+      throw new EpEnvelopeError("internal", `the obligation ${key} commit intent does not validate (commitDigest is sha256:<hex>, SPEC 13.8)`);
     parseCommitValue(cm.commitValue, key);
   }
   return o as unknown as ObligationRow;
@@ -280,19 +296,19 @@ function parseSelector(head: Record<string, unknown>, key: string): PolicySelect
   return sel;
 }
 
-/** Publish ONE immutable policy version (§13.7 `policy.<endpoint>.<digest-hex>`): the key is
- *  the SHA-256 of the exact stored value bytes, so publication is content-addressed and
- *  idempotent — re-publishing the same value lands on the same key; an existing key whose
- *  bytes do not digest to it is corruption. Provisioner-registration authority (§13.9): takes
- *  the sealed registry, not the mediator. */
+/** Publish ONE immutable policy version (§13.7 `policy.<endpoint>.<digest-hex>`): the key is the
+ *  RFC-8785 CANONICAL content digest of the value (property-order-insensitive, so a conforming
+ *  second implementation content-addresses the same policy to the same key), so publication is
+ *  content-addressed and idempotent; an existing key whose value does not re-digest to it is
+ *  corruption. Provisioner-registration authority (§13.9): takes the sealed registry, not the
+ *  mediator. */
 export async function publishPolicyVersion(
   reg: LifecycleRegistry,
   endpoint: string,
   value: unknown,
 ): Promise<{ key: string; revision: number; digestHex: string }> {
   const { recordsKv } = registryStores(reg);
-  const bytes = enc.encode(JSON.stringify(value));
-  const digestHex = sha256hex(bytes);
+  const digestHex = canonicalDigestHex(value); // throws on non-I-JSON before any create
   const key = recordAtomicKey(POLICY_VERSION, [endpoint, digestHex]);
   try {
     const revision = await createRecordEntry(recordsKv, key, value);
@@ -302,8 +318,8 @@ export async function publishPolicyVersion(
     const existing = await recordsKv.get(key);
     if (!existing || existing.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the policy version ${key} carries a ${existing?.operation ?? "missing"} marker; policy versions are never deleted (corruption, SPEC 13.12)`);
-    if (sha256hex(existing.value) !== digestHex)
-      throw new EpEnvelopeError("internal", `the policy version ${key} exists with bytes that do not digest to its own key; a self-certifying key never lies (corruption, SPEC 13.7)`);
+    if (canonicalDigestHex(JSON.parse(dec.decode(existing.value))) !== digestHex)
+      throw new EpEnvelopeError("internal", `the policy version ${key} exists with a value that does not canonically digest to its own key; a self-certifying key never lies (corruption, SPEC 13.7)`);
     return { key, revision: existing.revision, digestHex };
   }
 }
@@ -326,25 +342,21 @@ async function readPolicyVersionCertified(
   const read = await readRecordLeader(jsm, space, key);
   if (read === undefined)
     throw new EpEnvelopeError("failed-precondition", `the policy version ${key} does not exist; the selector names a published immutable version only (SPEC 13.6)`);
-  if (sha256hex(enc.encode(JSON.stringify(read.value))) !== digestHex)
-    throw new EpEnvelopeError("internal", `the policy version ${key} does not digest to its own key; a self-certifying key never lies (corruption, SPEC 13.7)`);
+  if (canonicalDigestHex(read.value) !== digestHex)
+    throw new EpEnvelopeError("internal", `the policy version ${key} does not canonically digest to its own key; a self-certifying key never lies (corruption, SPEC 13.7)`);
   return read;
 }
 
-async function readGovernHeadRaw(recordsKv: KV, endpoint: string): Promise<{ head: Record<string, unknown>; revision: number } | undefined> {
+/** LEADER-SERVED govern-head read (§13.9: every govern read that fences a stage/promote/drain
+ *  decision is leader-served `STREAM.MSG.GET`, never a follower Direct Get, or a multi-server
+ *  stage/promote could act on a stale selector). `readRecordLeader` refuses a DEL/PURGE marker
+ *  as corruption. Returns the head object + its store revision (the stage/promote CAS pins it). */
+async function readGovernHeadRaw(jsm: JetStreamManager, space: string, endpoint: string): Promise<{ head: Record<string, unknown>; revision: number } | undefined> {
   const key = recordAtomicKey(GOVERN_HEAD, [endpoint]);
-  const entry = await recordsKv.get(key);
-  if (!entry) return undefined;
-  if (entry.operation !== "PUT")
-    throw new EpEnvelopeError("failed-precondition", `the govern head ${key} carries a ${entry.operation} marker; the head is never deleted (corruption, SPEC 13.7)`);
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(entry.value));
-  } catch {
-    throw new EpEnvelopeError("internal", `the govern head ${key} is not JSON (SPEC 13.7)`);
-  }
-  if (!isRec(o)) throw new EpEnvelopeError("internal", `the govern head ${key} is not an object`);
-  return { head: o, revision: entry.revision };
+  const read = await readRecordLeader(jsm, space, key);
+  if (read === undefined) return undefined;
+  if (!isRec(read.value)) throw new EpEnvelopeError("internal", `the govern head ${key} is not an object`);
+  return { head: read.value, revision: read.revision };
 }
 
 /** STAGE a policy mutation (§13.6 step 1, provisioner authority): verify the NEW immutable
@@ -356,31 +368,43 @@ export async function stagePolicySelector(
   reg: LifecycleRegistry,
   endpoint: string,
   policyKey: string,
-): Promise<{ pendingPolicyKey: string; pendingPolicyRevision: number; governRevision: number }> {
+): Promise<{ pendingPolicyKey: string; pendingPolicyRevision: number; mutationOpId: string; governRevision: number }> {
   const { recordsKv, jsm, space } = registryStores(reg);
   const ep = endpointToken(endpoint);
   const version = await readPolicyVersionCertified(jsm, space, ep, policyKey);
   const govKey = recordAtomicKey(GOVERN_HEAD, [ep]);
-  const cur = await readGovernHeadRaw(recordsKv, ep);
+  const cur = await readGovernHeadRaw(jsm, space, ep);
   const head: Record<string, unknown> = cur === undefined ? { commands: {} } : { ...cur.head };
   parseSelector(head, govKey);
   if (head.pendingPolicyKey !== undefined)
     throw new EpEnvelopeError("conflict", `the govern head ${govKey} already stages pending policy ${String(head.pendingPolicyKey)}; one mutation at a time — promote or abandon it first (SPEC 13.6)`);
+  // A UNIQUE mutation opId stamped on the head binds this exact stage: a drain witness carries it,
+  // and a later re-stage (a NEW opId) invalidates any witness from an earlier stage, even for the
+  // same content-addressed policy key (the freelance's stage→drain→promote→re-stage→reuse attack).
+  const mutationOpId = mintLifecycleUid();
   head.pendingPolicyKey = policyKey;
   head.pendingPolicyRevision = version.revision;
+  head.pendingMutationOpId = mutationOpId;
   const governRevision = cur === undefined
     ? await createRecordEntry(recordsKv, govKey, head)
     : await updateRecordEntry(recordsKv, govKey, head, cur.revision);
-  return { pendingPolicyKey: policyKey, pendingPolicyRevision: version.revision, governRevision };
+  return { pendingPolicyKey: policyKey, pendingPolicyRevision: version.revision, mutationOpId, governRevision };
 }
 
 /** The BRANDED drain-quiescence witness {@link drainEndpointPolicy} mints: proof that the
- *  endpoint's obligation prefix enumerated quiescent while THIS pending selector was staged.
- *  {@link promotePolicySelector} accepts nothing else (a promote without the drain would
- *  enforce a policy against rows it never settled, SPEC 13.6). */
+ *  endpoint's POLICY-PINNED obligations enumerated quiescent for THIS exact staged mutation.
+ *  {@link promotePolicySelector} accepts nothing else, and binds it to the exact
+ *  `(space, endpoint, pendingKey, pendingRevision, mutationOpId, governStageRevision)` so a
+ *  witness cannot be replayed across spaces (the same content-addressed key elsewhere), across
+ *  re-stages (a new mutationOpId), or against a moved govern head (the promote CASes from
+ *  `governStageRevision`). A promote CONSUMES the witness (§13.6). */
 export interface DrainQuiescence {
+  readonly space: string;
   readonly endpoint: string;
   readonly pendingPolicyKey: string;
+  readonly pendingPolicyRevision: number;
+  readonly mutationOpId: string;
+  readonly governStageRevision: number;
 }
 const QUIESCENCE = new WeakSet<DrainQuiescence>();
 
@@ -392,27 +416,35 @@ export async function promotePolicySelector(
   endpoint: string,
   quiescence: DrainQuiescence,
 ): Promise<{ enforcedPolicyKey: string; enforcedPolicyRevision: number }> {
-  const { recordsKv } = registryStores(reg);
+  const { recordsKv, jsm, space } = registryStores(reg);
   const ep = endpointToken(endpoint);
   if (!QUIESCENCE.has(quiescence))
     throw new EpEnvelopeError("failed-precondition", "the promote was not given a drain-minted quiescence witness; a hand-assembled witness never authorizes (SPEC 13.6/13.12)");
+  if (quiescence.space !== space)
+    throw new EpEnvelopeError("permission-denied", `the quiescence witness belongs to space "${quiescence.space}", not "${space}"; a witness never crosses spaces (SPEC 13.6)`);
   if (quiescence.endpoint !== ep)
     throw new EpEnvelopeError("permission-denied", `the quiescence witness belongs to endpoint "${quiescence.endpoint}", not "${ep}" (SPEC 13.6)`);
   const govKey = recordAtomicKey(GOVERN_HEAD, [ep]);
-  const cur = await readGovernHeadRaw(recordsKv, ep);
+  const cur = await readGovernHeadRaw(jsm, space, ep); // leader-served fence
   if (cur === undefined)
     throw new EpEnvelopeError("failed-precondition", `the govern head ${govKey} does not exist; nothing is staged (SPEC 13.6)`);
+  // Bind to the EXACT staged mutation: the head must still carry the witness's pending key AND
+  // the witness's mutation opId AND be at the witness's captured store revision. A re-stage
+  // (new opId, moved revision), a clear/restage, or a foreign promote in between all fail here,
+  // and the CAS from that exact revision is the final serialization.
   const sel = parseSelector(cur.head, govKey);
   if (sel.pendingPolicyKey === undefined)
     throw new EpEnvelopeError("failed-precondition", `the govern head ${govKey} stages no pending policy; nothing to promote (SPEC 13.6)`);
-  if (sel.pendingPolicyKey !== quiescence.pendingPolicyKey)
-    throw new EpEnvelopeError("failed-precondition", `the quiescence witness covers pending ${quiescence.pendingPolicyKey}, but the head stages ${sel.pendingPolicyKey}; drain again under the current stage (SPEC 13.6)`);
+  if (sel.pendingPolicyKey !== quiescence.pendingPolicyKey || sel.pendingPolicyRevision !== quiescence.pendingPolicyRevision || cur.head.pendingMutationOpId !== quiescence.mutationOpId || cur.revision !== quiescence.governStageRevision)
+    throw new EpEnvelopeError("conflict", `the govern head ${govKey} moved since the witness was minted (staged ${String(sel.pendingPolicyKey)}@${String(sel.pendingPolicyRevision)} op ${String(cur.head.pendingMutationOpId)} rev ${cur.revision}, witness ${quiescence.pendingPolicyKey}@${quiescence.pendingPolicyRevision} op ${quiescence.mutationOpId} rev ${quiescence.governStageRevision}); drain again under the current stage (SPEC 13.6)`);
   const head: Record<string, unknown> = { ...cur.head };
   head.enforcedPolicyKey = sel.pendingPolicyKey;
   head.enforcedPolicyRevision = sel.pendingPolicyRevision;
   delete head.pendingPolicyKey;
   delete head.pendingPolicyRevision;
+  delete head.pendingMutationOpId;
   await updateRecordEntry(recordsKv, govKey, head, cur.revision);
+  QUIESCENCE.delete(quiescence); // consume: a witness authorizes exactly ONE promote
   return { enforcedPolicyKey: sel.pendingPolicyKey!, enforcedPolicyRevision: sel.pendingPolicyRevision! };
 }
 
@@ -594,8 +626,12 @@ export async function obtainEpfObligation(
   args: AdmissionIdentity & { fingerprint: string; sourceSeq: number; route: string },
 ): Promise<ObtainedObligation> {
   const i = internals(med);
-  if (typeof args.fingerprint !== "string" || args.fingerprint.length === 0 || !uint(args.sourceSeq) || typeof args.route !== "string" || !ROUTE_RE.test(args.route))
-    throw new EpEnvelopeError("failed-precondition", "an epf-class obtain requires { fingerprint, sourceSeq, route } (route: effects | pool.<pool>, SPEC 13.8)");
+  // The fingerprint and sourceSeq must satisfy CORE's own fact validators up front (§13.4): the
+  // mediator settles an unresolved row by publishing a terminal RejectionFact carrying exactly
+  // these, and `parseDecisionFact` requires a `sha256:<hex>` fingerprint and a positive sourceSeq
+  // — a row that could not settle through a core-conformant fact is refused before it exists.
+  if (typeof args.fingerprint !== "string" || !FINGERPRINT_RE.test(args.fingerprint) || !uint(args.sourceSeq) || args.sourceSeq < 1 || typeof args.route !== "string" || !ROUTE_RE.test(args.route))
+    throw new EpEnvelopeError("failed-precondition", "an epf-class obtain requires { fingerprint (sha256:<hex>), sourceSeq (>=1), route (effects | pool.<pool>) } (SPEC 13.4/13.8)");
   if (args.route.startsWith("pool.")) assertPoolToken(args.route.slice("pool.".length));
   return obtainObligation(
     i,
@@ -618,8 +654,8 @@ export async function obtainSelfObligation(
 ): Promise<ObtainedObligation> {
   const i = internals(med);
   const cm = args.commit;
-  if (!isRec(cm) || typeof cm.commitKey !== "string" || cm.commitKey.length === 0 || !uint(cm.commitBaseRevision) || typeof cm.commitDigest !== "string" || !DIGEST_HEX_RE.test(cm.commitDigest))
-    throw new EpEnvelopeError("failed-precondition", "a self-class obtain requires the complete commit intent { commitKey, commitBaseRevision, commitValue, commitDigest } (SPEC 13.8)");
+  if (!isRec(cm) || typeof cm.commitKey !== "string" || cm.commitKey.length === 0 || !uint(cm.commitBaseRevision) || typeof cm.commitDigest !== "string" || !DIGEST_SCALAR_RE.test(cm.commitDigest))
+    throw new EpEnvelopeError("failed-precondition", "a self-class obtain requires the complete commit intent { commitKey, commitBaseRevision, commitValue, commitDigest (sha256:<hex>) } (SPEC 13.8)");
   parseCommitValue(cm.commitValue, "<obtain>");
   return obtainObligation(
     i,
@@ -687,9 +723,12 @@ async function settleObligation(
   }
   const toks = key.split(".");
   const [cOwner, cActor, cUid, id] = toks.slice(3); // [oblig, target, endpoint, cOwner, cActor, cUid, id]
+  // The detail is BOUNDED to the §13.4 error-detail limit: `parseDecisionFact` rejects a longer
+  // one, so the mediator's own rejection fact must fit or core would refuse to read it back.
+  const detail = `settled by the admission mediator: ${why}`.slice(0, MAX_ERROR_DETAIL);
   const rejection: RejectionFact = {
     v: 1, id, decision: "rejected", fingerprint: row.fingerprint!,
-    error: { code: "failed-precondition", detail: `settled by the admission mediator: ${why} (SPEC 13.8)` },
+    error: { code: "failed-precondition", detail },
     caller: { id: `${cOwner}.${cActor}`, lifecycleUid: cUid },
     sourceSeq: row.sourceSeq!, ts: med.now(),
   };
@@ -769,21 +808,31 @@ export async function acceptSelfObligation(med: AdmissionMediator, proof: Admiss
  *  a principal that holds it (the mediator's own grant is the obligation family, §13.9). */
 export type ApplyCommit = (commitKey: string, valueBytes: Uint8Array, baseRevision: number) => Promise<void>;
 
-/** Resolve a commit intent's value bytes (§13.8): decode `b64u`, or leader-read the immutable
- *  `ref` key and take its raw stored bytes; either way VERIFY against `commitDigest` BEFORE
- *  returning (a ref whose bytes do not digest to the intent refuses, fail-closed). */
+/** Resolve a commit intent's value bytes (§13.8): decode `b64u` (a JSON encoding of the
+ *  committed value), or leader-read the immutable `ref` key's value; either way VERIFY the
+ *  value's CANONICAL digest equals `commitDigest` BEFORE returning (a ref or byte blob that does
+ *  not canonically digest to the intent refuses, fail-closed). Returns bytes {@link ApplyCommit}
+ *  parses into the record value; the digest is over the canonical VALUE, not the raw bytes, so
+ *  a non-canonical storage stringify never breaks the comparison (§13.8, RFC-8785). */
 async function resolveCommitBytes(med: MediatorInternals, intent: SelfCommitIntent): Promise<Uint8Array> {
+  let value: unknown;
   let bytes: Uint8Array;
   if (intent.commitValue.enc === "b64u") {
     bytes = new Uint8Array(Buffer.from(intent.commitValue.bytes, "base64url"));
+    try {
+      value = JSON.parse(dec.decode(bytes));
+    } catch {
+      throw new EpEnvelopeError("internal", `the b64u commit bytes for ${intent.commitKey} are not JSON; a recovery never writes non-JSON (SPEC 13.8)`);
+    }
   } else {
     const read = await readRecordLeader(med.jsm, med.space, intent.commitValue.key);
     if (read === undefined)
-      throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${intent.commitValue.key} does not exist; a recovery cannot resolve the promised bytes (SPEC 13.8)`);
+      throw new EpEnvelopeError("failed-precondition", `the commit-value ref ${intent.commitValue.key} does not exist; a recovery cannot resolve the promised value (SPEC 13.8)`);
+    value = read.value;
     bytes = enc.encode(JSON.stringify(read.value));
   }
-  if (sha256hex(bytes) !== intent.commitDigest)
-    throw new EpEnvelopeError("internal", `the resolved commit bytes do not digest to the pinned commitDigest; a recovery never writes unverified bytes (SPEC 13.8)`);
+  if (contractDigest(value) !== intent.commitDigest)
+    throw new EpEnvelopeError("internal", `the resolved commit value does not canonically digest to the pinned commitDigest; a recovery never writes unverified bytes (SPEC 13.8)`);
   return bytes;
 }
 
@@ -813,10 +862,23 @@ async function recoverSelfCore(
     throw new EpEnvelopeError("failed-precondition", `the obligation ${obligationKey} is ${cur.row.decision}/${cur.row.state}; recovery drives ACCEPTED self-class rows only (a provisional settles through the drain, SPEC 13.8)`);
   const intent = cur.row.commit!;
   const record = await readRecordLeader(i.jsm, i.space, intent.commitKey);
+  // The terminal CAS is idempotent under concurrency (distsys H3): two recoveries, or a drain
+  // reconciler racing the writer's own resume, both drive `accepted → terminal`. On a lost CAS,
+  // re-read: already terminal is SUCCESS, still accepted (a foreign advance bumped the revision)
+  // retries once at the fresh revision, anything else is a real conflict.
   const terminal = async (): Promise<void> => {
-    await updateRecordEntry(i.recordsKv, obligationKey, { ...cur.row, state: "terminal" }, cur.revision);
+    try {
+      await updateRecordEntry(i.recordsKv, obligationKey, { ...cur.row, state: "terminal" }, cur.revision);
+    } catch (e) {
+      if (!isCasLoss(e)) throw e;
+      const after = await readObligationLeader(i, obligationKey);
+      if (after === undefined) throw new EpEnvelopeError("internal", `the obligation ${obligationKey} vanished mid-terminalize (corruption, SPEC 13.12)`);
+      if (after.row.state === "terminal") return;
+      if (after.row.state === "accepted") { await updateRecordEntry(i.recordsKv, obligationKey, { ...after.row, state: "terminal" }, after.revision); return; }
+      throw new EpEnvelopeError("conflict", `the obligation ${obligationKey} is ${after.row.state} while terminalizing; re-read and re-decide (SPEC 13.8)`);
+    }
   };
-  if (record !== undefined && sha256hex(enc.encode(JSON.stringify(record.value))) === intent.commitDigest) {
+  if (record !== undefined && contractDigest(record.value) === intent.commitDigest) {
     await terminal();
     return "landed";
   }
@@ -882,27 +944,41 @@ async function enumerateObligations(med: MediatorInternals, filter: string): Pro
   return out;
 }
 
+/** The injected ACCEPTED-EPF route reconciler (§13.8: a drain must complete accept-side
+ *  reconciliation — enqueue/goal/effect/terminal — for an accepted EPF row before it declares
+ *  quiescence; an accepted decision whose route never materialized would otherwise be lost or
+ *  execute PAST the barrier). Idempotent; drives THIS row's route to durable establishment. */
+export type ReconcileAcceptedRoute = (row: ObligationRow, key: string) => Promise<void>;
+
 /** What one drain pass acted on. */
 export interface DrainResult {
   passes: number;
   settledProvisional: number;
   recoveredSelf: number;
-  /** Accepted epf rows seen (informational: they do not block quiescence, §13.8). */
-  acceptedEpf: number;
+  /** Accepted epf rows whose route reconciliation this drain drove (they do not BLOCK quiescence
+   *  — their route facts track them — but their accept-side reconciliation MUST run first). */
+  reconciledAcceptedEpf: number;
 }
 
+/** Drain the rows a `counts` predicate SELECTS under `filter` to quiescence (§13.8): settle
+ *  every counted provisional through its decision coordinate, drive every counted accepted
+ *  self-class row to terminal, and run the injected route reconciler for every counted accepted
+ *  EPF row; re-enumerate until a pass finds no counted provisional or accepted-self left. A row
+ *  the predicate does NOT count is skipped (a policy drain must not settle a target-only row it
+ *  does not govern). */
 async function drainFilter(
   med: MediatorInternals,
   filter: string,
   why: string,
-  deps: { applyCommit?: ApplyCommit } = {},
+  counts: (row: ObligationRow) => boolean,
+  deps: { applyCommit?: ApplyCommit; reconcileAcceptedRoute?: ReconcileAcceptedRoute } = {},
 ): Promise<DrainResult> {
-  let settledProvisional = 0, recoveredSelf = 0, acceptedEpf = 0;
+  let settledProvisional = 0, recoveredSelf = 0, reconciledAcceptedEpf = 0;
   for (let pass = 1; pass <= 8; pass++) {
     const rows = await enumerateObligations(med, filter);
     let unsettled = 0;
-    acceptedEpf = 0;
     for (const item of rows) {
+      if (!counts(item.row)) continue; // not this drain's concern (e.g. a target-only row in a policy drain)
       if (item.row.state === "provisional") {
         unsettled++;
         assertObligationOfEndpoint(med, item.key);
@@ -915,31 +991,64 @@ async function drainFilter(
         await recoverSelfCore(med, item.key, { applyCommit: deps.applyCommit });
         recoveredSelf++;
       } else if (item.row.state === "accepted") {
-        acceptedEpf++;
+        // Accepted EPF: run accept-side route reconciliation BEFORE declaring quiescence (an
+        // accepted decision whose enqueue/effect/goal never landed must not be silently
+        // declared quiescent). It does not block quiescence (its route facts track it), but the
+        // reconciler MUST run — synchronously, each pass, so the quiescent pass has reconciled
+        // every counted accepted EPF row.
+        if (deps.reconcileAcceptedRoute === undefined)
+          throw new EpEnvelopeError("failed-precondition", `the drain found an ACCEPTED epf obligation ${item.key} but was given no reconcileAcceptedRoute; accept-side reconciliation is required before quiescence (SPEC 13.8)`);
+        await deps.reconcileAcceptedRoute(item.row, item.key);
+        reconciledAcceptedEpf++;
       }
     }
-    // RE-ENUMERATE (§13.8): quiescence is declared only by an enumeration that finds no
-    // unsettled row — never by having settled everything a PREVIOUS enumeration saw.
-    if (unsettled === 0) return { passes: pass, settledProvisional, recoveredSelf, acceptedEpf };
+    // RE-ENUMERATE (§13.8): quiescence is declared only by an enumeration that finds no counted
+    // provisional or un-driven accepted-self row — never by having settled a PREVIOUS enumeration.
+    if (unsettled === 0) return { passes: pass, settledProvisional, recoveredSelf, reconciledAcceptedEpf };
   }
   throw new EpEnvelopeError("unavailable", `the drain under ${filter} did not reach quiescence in 8 passes; admission traffic is outrunning it — investigate before promoting or retiring (SPEC 13.8)`);
 }
 
-/** The POLICY drain (§13.6): the endpoint's whole obligation family (`oblig.*.<endpoint>.>`,
- *  sentinel rows included). Run AFTER {@link stagePolicySelector} (new policy-admitted proofs
- *  are paused, so the drain converges); mints the branded quiescence witness
- *  {@link promotePolicySelector} requires. */
+/** The POLICY drain (§13.6): settles ONLY the obligations pinned to the OLD enforced policy
+ *  revision (the one being replaced), across the endpoint's whole prefix. Target-only rows and
+ *  rows pinned to a different revision are NOT this drain's concern (settling them would burn a
+ *  target-bound acceptance the policy movement does not govern, and target-only traffic would
+ *  block convergence). Run AFTER {@link stagePolicySelector} (new policy-admitted proofs are
+ *  paused, so no new old-revision row appears and the drain converges); RE-READS the govern head
+ *  after draining to confirm the stage did not move, then mints the exact-revision-bound
+ *  quiescence witness {@link promotePolicySelector} consumes. */
 export async function drainEndpointPolicy(
   med: AdmissionMediator,
-  deps: { applyCommit?: ApplyCommit } = {},
+  deps: { applyCommit?: ApplyCommit; reconcileAcceptedRoute?: ReconcileAcceptedRoute } = {},
 ): Promise<DrainResult & { quiescence: DrainQuiescence }> {
   const i = internals(med);
-  const gov = await readGovernHeadRaw(i.recordsKv, i.endpoint);
-  const sel = gov === undefined ? {} : parseSelector(gov.head, recordAtomicKey(GOVERN_HEAD, [i.endpoint]));
-  if (sel.pendingPolicyKey === undefined)
+  const govKey = recordAtomicKey(GOVERN_HEAD, [i.endpoint]);
+  const gov = await readGovernHeadRaw(i.jsm, i.space, i.endpoint);
+  if (gov === undefined)
+    throw new EpEnvelopeError("failed-precondition", `endpoint "${i.endpoint}" has no govern head; the policy drain runs inside a stage → drain → promote mutation (SPEC 13.6)`);
+  const sel = parseSelector(gov.head, govKey);
+  if (sel.pendingPolicyKey === undefined || typeof gov.head.pendingMutationOpId !== "string")
     throw new EpEnvelopeError("failed-precondition", `endpoint "${i.endpoint}" stages no pending policy; the policy drain runs inside a stage → drain → promote mutation (SPEC 13.6)`);
-  const result = await drainFilter(i, `oblig.*.${i.endpoint}.>`, `the enforced policy for "${i.endpoint}" is moving (stage → drain → promote)`, deps);
-  const quiescence: DrainQuiescence = Object.freeze({ endpoint: i.endpoint, pendingPolicyKey: sel.pendingPolicyKey });
+  if (sel.enforcedPolicyRevision === undefined)
+    throw new EpEnvelopeError("failed-precondition", `endpoint "${i.endpoint}" enforces no policy to drain from; a first policy has nothing to migrate (SPEC 13.6)`);
+  const retiringRevision = sel.enforcedPolicyRevision;
+  const mutationOpId = gov.head.pendingMutationOpId;
+  const result = await drainFilter(
+    i, `oblig.*.${i.endpoint}.>`,
+    `the enforced policy for "${i.endpoint}" is moving (stage → drain → promote)`,
+    (row) => row.policyRevision === retiringRevision, // ONLY rows pinned to the OLD enforced revision
+    deps,
+  );
+  // Confirm the stage did not move under us (a concurrent clear/re-stage): the witness binds the
+  // EXACT current govern revision + mutation opId; the promote CASes from it.
+  const after = await readGovernHeadRaw(i.jsm, i.space, i.endpoint);
+  const afterSel = after === undefined ? {} : parseSelector(after.head, govKey);
+  if (after === undefined || afterSel.pendingPolicyKey !== sel.pendingPolicyKey || afterSel.pendingPolicyRevision !== sel.pendingPolicyRevision || after.head.pendingMutationOpId !== mutationOpId)
+    throw new EpEnvelopeError("conflict", `the pending policy for "${i.endpoint}" moved during its drain (op ${mutationOpId}); re-stage and drain again (SPEC 13.6)`);
+  const quiescence: DrainQuiescence = Object.freeze({
+    space: i.space, endpoint: i.endpoint, pendingPolicyKey: sel.pendingPolicyKey,
+    pendingPolicyRevision: sel.pendingPolicyRevision!, mutationOpId, governStageRevision: after.revision,
+  });
   QUIESCENCE.add(quiescence);
   return { ...result, quiescence };
 }
@@ -950,8 +1059,10 @@ export async function drainEndpointPolicy(
 export async function drainTargetForEndpoint(
   med: AdmissionMediator,
   targetUid: string,
-  deps: { applyCommit?: ApplyCommit } = {},
+  deps: { applyCommit?: ApplyCommit; reconcileAcceptedRoute?: ReconcileAcceptedRoute } = {},
 ): Promise<DrainResult> {
   const i = internals(med);
-  return drainFilter(i, `oblig.${assertLifecycleToken(targetUid, "targetUid")}.${i.endpoint}.>`, `the target lifecycle ${targetUid} is retiring`, deps);
+  // A retirement drains EVERY row bound to the target (the prefix is target-scoped and excludes
+  // the `ep` sentinel), regardless of policy pin — a retiring target admits nothing new either way.
+  return drainFilter(i, `oblig.${assertLifecycleToken(targetUid, "targetUid")}.${i.endpoint}.>`, `the target lifecycle ${targetUid} is retiring`, () => true, deps);
 }

@@ -128,5 +128,5 @@ export {
   drainEndpointPolicy, drainTargetForEndpoint,
   type AdmissionMediator, type AdmissionIdentity, type AdmissionProof, type ObtainedObligation,
   type ObligationRow, type ObligationState, type CommitValue, type SelfCommitIntent,
-  type PolicySelector, type DrainResult, type DrainQuiescence, type ApplyCommit,
+  type PolicySelector, type DrainResult, type DrainQuiescence, type ApplyCommit, type ReconcileAcceptedRoute,
 } from "./admission-mediator.js";
