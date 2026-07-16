@@ -272,13 +272,25 @@ export async function up(args: ParsedArgs): Promise<void> {
   // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
   // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
   // auth service's pid is space-scoped so no other space's daemon can ever be hit.
-  const stop = () => { stopDelivery(); stopManager(); stopAuthService(space); child.kill("SIGTERM"); };
+  // stopDelivery is async (its creds delete goes through the secret store); the rest of the teardown
+  // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
+  // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
+  const stop = () => {
+    void stopDelivery()
+      .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
+      .then(() => {
+        stopManager();
+        stopAuthService(space);
+        child.kill("SIGTERM");
+      });
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
-  child.on("exit", (code) => {
-    stopDelivery();
+  child.on("exit", async (code) => {
+    // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
+    await stopDelivery().catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     stopManager();
     stopAuthService(space);
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space

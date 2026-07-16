@@ -1,5 +1,5 @@
 import { readFileSync, rmSync } from "node:fs";
-import { join, dirname, isAbsolute, normalize, resolve, sep } from "node:path";
+import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, type SecretStore } from "@cotal-ai/core";
 
 /**
@@ -26,19 +26,22 @@ export class FsSecretStore implements SecretStore {
 
   constructor(root: string) {
     if (!root) throw new Error("FsSecretStore: root is required");
-    this.root = normalize(resolve(root)); // absolutize so keys are cwd-independent, no trailing sep
+    this.root = normalize(resolve(root)); // absolutize so keys are cwd-independent
   }
 
   /** Resolve a logical key to an absolute path strictly UNDER `root`, fail-closed: reject empty,
    *  NUL, absolute keys, the root itself (`.`), and any key that normalizes outside the root
-   *  (`..` traversal). A malformed key must never read or clobber a path outside the store's tree. */
+   *  (`..` traversal). Containment is checked via `path.relative`, not a `root + sep` prefix —
+   *  the prefix form breaks at a filesystem-root base (`/` doubles the separator and rejects
+   *  every key). A malformed key must never read or clobber a path outside the store's tree. */
   private resolve(key: string): string {
     if (!key || key.includes("\0"))
       throw new Error(`FsSecretStore: invalid key ${JSON.stringify(key)}`);
     if (isAbsolute(key))
       throw new Error(`FsSecretStore: key must be relative, got ${JSON.stringify(key)}`);
     const abs = normalize(join(this.root, key));
-    if (abs === this.root || !abs.startsWith(this.root + sep))
+    const rel = relative(this.root, abs);
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
       throw new Error(`FsSecretStore: key must name a file under the root: ${JSON.stringify(key)}`);
     return abs;
   }
