@@ -134,9 +134,13 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = ["stop"] as const;
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
  *  UNTARGETED; the child-owner ceiling is the authenticated caller's own owner, carried by the
- *  pinned caller triple. The other three act on an EXISTING agent, so they ride owner mode. */
+ *  pinned caller triple. `despawn` (terminal) and `attach` (interactive) act on an EXISTING agent,
+ *  so they ride owner mode. Owner-mode `stop` is DELIBERATELY ABSENT: on the v0.3 surface a named
+ *  stop and a despawn both free-slot + deprovision, so an owner-mode `stop` would be a wire synonym
+ *  of `despawn` (distsys) — one owner-mode terminal command keeps the vocabulary single. Self-`stop`
+ *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt. */
 export const SPAWN_CREATE_COMMANDS = ["spawn"] as const;
-export const SPAWN_OWNER_LIFECYCLE_COMMANDS = ["stop", "despawn", "attach"] as const;
+export const SPAWN_OWNER_LIFECYCLE_COMMANDS = ["despawn", "attach"] as const;
 
 /** `describe` on ALL endpoints (Appendix B / §13.9 "describe by default"): the ONE
  *  subject-wildcard request form in the caller grammar,
