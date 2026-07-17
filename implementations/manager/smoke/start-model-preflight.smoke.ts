@@ -424,10 +424,9 @@ registry.register(recNoResumeCon);
   check("lease-loss: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
 }
 
-// 11 — BEST-EFFORT STOP ON REAP (#159 B2, review round 5): the per-agent stop paths (despawn/self-stop/reap)
-// call stopHandle() then freeSlot(); a throwing runtime hard-stop must not abort that cleanup or (in
-// reapChildrenOf) the reap of later siblings. stopHandle is now the best-effort chokepoint. Inject a parent
-// + two children (the FIRST child's stop throws), reap the parent, and assert every child is stopped + freed.
+// 11 — AUTHORITATIVE REAP: a throwing runtime hard-stop must not abort later siblings, but a recursive
+// reap may not free either slot without waitForExit proof. These legacy fake handles have no wait contract,
+// so both descendants stay inventoried rather than being declared gone while they may still live.
 {
   const stopped: string[] = [];
   const handle = (name: string, throws: boolean): AgentHandle => ({
@@ -443,7 +442,7 @@ registry.register(recNoResumeCon);
   agents.set("childR2", mk("childR2", "idC2", "idP", false));
   (mgr as unknown as { reapChildrenOf: (id: string) => void }).reapChildrenOf("idP");
   check("round5: a throwing child stop doesn't abort reap of siblings", stopped.includes("childR1") && stopped.includes("childR2"), stopped);
-  check("round5: both children freed despite the throwing stop", !agents.has("childR1") && !agents.has("childR2"), [...agents.keys()]);
+  check("recursive reap retains children without authoritative exit proof", agents.has("childR1") && agents.has("childR2"), [...agents.keys()]);
 }
 
 // 12 — UNCERTAIN READINESS (#159 B1): when neither presence nor exit is observed within the backstop, the

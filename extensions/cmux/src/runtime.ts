@@ -100,7 +100,13 @@ export class CmuxRuntime implements Runtime {
     return {
       name,
       kind: "cmux",
-      status: () => "running",
+      status: () => {
+        try {
+          return cmux.workspaceState(workspace);
+        } catch {
+          return "running";
+        }
+      },
       stop: (opts) => {
         if (opts?.graceful === false) {
           cmux.closeWorkspace(workspace);
@@ -125,6 +131,7 @@ export class CmuxRuntime implements Runtime {
           }
         }, GRACE_MS);
       },
+      waitForExit: () => cmux.waitForWorkspaceExit(workspace),
       interrupt: () => {
         cmux.sendKey("ctrl+c", { workspace });
       },

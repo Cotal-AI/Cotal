@@ -250,7 +250,15 @@ export async function readChannelRegistry(opts: {
           continue;
         }
         const cfg = await readChannelConfig(kv, key);
-        if (cfg) channels[key] = cfg;
+        // Channel tokens such as `__proto__` are valid. Define an own data property instead of
+        // invoking Object.prototype setters, while preserving the reader's normal-object shape.
+        if (cfg)
+          Object.defineProperty(channels, key, {
+            value: cfg,
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
       }
     } catch (e) {
       // No channel bucket yet ⇒ empty registry, not an error (and not an over-privileged auto-create).

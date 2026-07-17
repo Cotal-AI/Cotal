@@ -3,21 +3,21 @@ import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } 
 import {
   DEFAULT_SERVER,
   mintCreds,
-  mkSecretDir,
   newIdentity,
   waitForDeliveryLease,
-  writeSecretFile,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
 import { ensureManager, managerHasDeliveryMarker, managerUp, stopManager } from "./manager-proc.js";
 
 const PID_PATH = () => cotalPath("delivery.pid");
-const CREDS_PATH = () => cotalPath("delivery.creds");
+// The daemon's cred goes through the secret-store seam; the shared key (== the filename, so the
+// file stays `.cotal/delivery.creds`) comes from workspace — never a hand-copied literal.
+const credsStore = () => workspaceSecretStore(findCotalRoot());
 
-type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string };
+type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string };
 
 function alive(pid: number): boolean {
   try {
@@ -105,8 +105,9 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   const space = o.space ?? resolveSpace(process.cwd());
   const server = o.server ?? DEFAULT_SERVER;
   if (!deliveryUp()) {
-    mkSecretDir(cotalPath()); // harden .cotal/ before the cred lands (born under a private ACL, no race)
-    writeSecretFile(CREDS_PATH(), creds);
+    // The store's put hardens `.cotal/` first (the cred is born under a private ACL, no race) and
+    // lands it atomically — same path and bytes as before the seam.
+    await credsStore().put(DELIVERY_CREDS_KEY, creds);
     startDeliveryDetached({ ...o, space, server });
   }
   // ALWAYS wait for the daemon to be READY (lease flipped ready AFTER it bound ctl.delivery) before
@@ -119,20 +120,27 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   return { running: true };
 }
 
-/** Stop the detached delivery daemon if we started one, and drop its creds file. */
-export function stopDelivery(): void {
-  rmSync(CREDS_PATH(), { force: true });
-  const p = PID_PATH();
-  if (!existsSync(p)) return;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  if (Number.isFinite(pid)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      /* already gone */
+/** Stop the detached delivery daemon if we started one, and drop its creds from the store. The pid
+ *  kill runs even if the creds delete fails (finally) — a delete error must never leave the daemon
+ *  alive to outlive the teardown and reattach to a restarted broker; the error still propagates
+ *  after the kill so the caller can surface it. */
+export async function stopDelivery(): Promise<void> {
+  try {
+    await credsStore().delete(DELIVERY_CREDS_KEY);
+  } finally {
+    const p = PID_PATH();
+    if (existsSync(p)) {
+      const pid = Number(readFileSync(p, "utf8").trim());
+      if (Number.isFinite(pid)) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          /* already gone */
+        }
+      }
+      rmSync(p);
     }
   }
-  rmSync(p);
 }
 
 /** Bring up the control plane in the correct cutover order: OLD-manager preflight → delivery daemon

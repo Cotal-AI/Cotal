@@ -1,8 +1,14 @@
 import { execFileSync } from "node:child_process";
 
+const EXIT_WAIT_MS = 8_000;
+const EXIT_POLL_MS = 100;
+const EXIT_PROBE_MS = 1_000;
+
 // Inside a cmux surface the CLI isn't on $PATH; cmux exports its absolute path here.
 // Fall back to "cmux" for non-bundled installs (e.g. a Homebrew cmux on PATH).
-const CMUX_BIN = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
+function cmuxBin(): string {
+  return process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
+}
 
 /**
  * The one place that knows the cmux CLI. Thin wrappers over `cmux <subcommand>`
@@ -10,11 +16,12 @@ const CMUX_BIN = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
  * manager's cmux runtime and by example launchers — so no raw `cmux` calls live
  * anywhere else.
  */
-function cmux(args: string[]): string {
-  return execFileSync(CMUX_BIN, args, { encoding: "utf8" }).trim();
+function cmux(args: string[], opts: { timeoutMs?: number } = {}): string {
+  return execFileSync(cmuxBin(), args, { encoding: "utf8", timeout: opts.timeoutMs }).trim();
 }
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const WORKSPACE_REF = /workspace:\d+/g;
 
 /** A terminal target — a workspace (tab) or a specific surface, by id/ref. */
 export interface Target {
@@ -32,7 +39,7 @@ function targetArgs(t?: Target): string[] {
 /** True if a cmux app is reachable (`cmux ping`). */
 export function available(): boolean {
   try {
-    execFileSync(CMUX_BIN, ["ping"], { stdio: "ignore" });
+    execFileSync(cmuxBin(), ["ping"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -85,6 +92,46 @@ export function listWorkspaces(): string[] {
     return cmux(["list-workspaces"]).split("\n").map((l) => l.trim()).filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+export type WorkspaceState = "running" | "exited";
+
+/** Authoritative workspace state from a successful cmux inventory query. The workspace is the
+ * lifecycle boundary cmux owns: closing it tears down its terminal surface and child process.
+ * Socket/provider failures throw rather than masquerading as an empty inventory. */
+export function workspaceState(workspace: string): WorkspaceState {
+  let output: string;
+  try {
+    output = cmux(["--id-format", "both", "list-workspaces"], { timeoutMs: EXIT_PROBE_MS });
+  } catch (err) {
+    throw new Error(`cmux: couldn't prove workspace ${workspace} exited: ${(err as Error).message}`, {
+      cause: err,
+    });
+  }
+  const ids = output
+    .split("\n")
+    .flatMap((line) => [line.match(UUID)?.[0], ...(line.match(WORKSPACE_REF) ?? [])]);
+  return ids.includes(workspace) ? "running" : "exited";
+}
+
+/** Bounded polling over cmux's authoritative workspace inventory. */
+export async function waitForWorkspaceExit(
+  workspace: string,
+  opts: {
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? EXIT_WAIT_MS;
+  const pollMs = opts.pollMs ?? EXIT_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (workspaceState(workspace) === "exited") return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0)
+      throw new Error(`cmux: workspace ${workspace} did not close within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
   }
 }
 

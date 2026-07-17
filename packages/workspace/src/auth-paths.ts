@@ -19,13 +19,28 @@ export function authDir(root: string): string {
   return join(root, ".cotal", "auth");
 }
 
+/** THE per-space path/key segment — the single guarded encoder every space-keyed surface consumes
+ *  (this state dir AND the auth secret-store key builders). `encodeURIComponent` keeps any real
+ *  name one flat segment (`a/b` → `a%2Fb`) but leaves dots alone, so `.`/`..`/empty would alias a
+ *  parent (`auth/..` normalizes OUT of the space's own segment) — refused HERE, before any path is
+ *  built or state touched. Two independently-guarded encoders were the defect generator (one gains
+ *  a rule the other doesn't); keep exactly one. */
+export function spaceSegment(space: string): string {
+  if (!space) throw new Error("a space name is required");
+  const enc = encodeURIComponent(space);
+  if (enc === "." || enc === "..")
+    throw new Error(`"${space}" cannot name a space - its state would escape the space's own segment`);
+  return enc;
+}
+
 /** The SPACE-SCOPED user-auth state dir (`<root>/.cotal/auth/<space>`) — the one layout fact the
  *  workstation layer owns about user auth: the auth provider persists its material under this dir
  *  (opaque to us), and its EXISTENCE marks the space as user-auth-enabled on disk. Space-keyed now
  *  so multi-space-per-root is a caller change, never an on-disk migration; a (broker, space) key
- *  later extends the same shape. */
+ *  later extends the same shape. Fails loud on a degenerate space (see {@link spaceSegment}) —
+ *  BEFORE any caller can mutate at an aliased path. */
 export function userAuthStateDir(root: string, space: string): string {
-  return join(authDir(root), encodeURIComponent(space));
+  return join(authDir(root), spaceSegment(space));
 }
 
 /** Find the project's `.cotal/` by walking up from `start` (like git finds `.git`), returning the

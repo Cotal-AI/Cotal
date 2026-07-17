@@ -26,6 +26,7 @@ import {
   serverFlag,
   spaceFlag,
   userAuthStateDir,
+  workspaceSecretStore,
   type LocalProcess,
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
@@ -147,7 +148,7 @@ async function printTarget(
     const stateDir = userAuthStateDir(target.root, target.space);
     let st: UserAuthStatus | undefined;
     try {
-      st = await resolveAuthProvider().userStatus({ dir: stateDir, space: target.space, actor: CLI_USER_ACTOR });
+      st = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(target.root), dir: stateDir, space: target.space, actor: CLI_USER_ACTOR });
     } catch (e) {
       row("login", c.dim((e as Error).message));
     }
@@ -207,6 +208,7 @@ async function liveSnapshot(target: ReturnType<typeof resolveMeshTarget>): Promi
  *  machine's signed-in, ledger-granted login (bearer + sentinel — the flip forbids a status mint). */
 async function userLiveSnapshot(target: ReturnType<typeof resolveMeshTarget>, stateDir: string): Promise<void> {
   const { bearer, sentinelCreds } = await resolveAuthProvider().userCredentials({
+    store: workspaceSecretStore(target.root),
     dir: stateDir,
     space: target.space,
     actor: CLI_USER_ACTOR,

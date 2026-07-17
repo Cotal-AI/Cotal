@@ -13,7 +13,8 @@ import.
 - **`Runtime` (`tmux`)** — each agent gets its own window in a shared per-space tmux session
   (`cotal-<space>`). Spawned unfocused; switch to `session:name` to watch it. Env is isolated
   (`env -i`) so the tmux server's environment doesn't reach agents. Graceful stop types `/exit`
-  then kills the window; hard stop kills immediately.
+  then kills the window; hard stop kills immediately. Exit waits poll the stable pane id and honor
+  tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
 
 - **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration
   (e.g. `cotal setup`). Detects the current session from `$TMUX`; must be called from inside

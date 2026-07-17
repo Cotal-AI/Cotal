@@ -20,6 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/views.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

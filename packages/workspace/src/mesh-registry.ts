@@ -111,19 +111,31 @@ export function removeMesh(space: string): void {
   rmSync(meshFile(space), { force: true });
 }
 
-/** Drop every registry entry recorded for THIS project root (realpath-canonical, so symlinked
- *  roots like macOS /var match), releasing the `current` pointer per removed entry. The root is
- *  the only sound key for a local teardown (`cotal down` / `cotal clean all`): an OPEN mesh has
- *  no auth material, so resolving its space NAME falls back to the default space and would
- *  delete an unrelated mesh's entry. Returns the removed space names. */
+/** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was
+ *  run under, so the same directory reaches us by several names: a symlinked root (macOS `/var` →
+ *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps
+ *  the short form there rather than expanding it. realpath collapses both. Falls back to `resolve`
+ *  for a root that no longer exists on disk. */
+function canonicalRoot(p: string): string {
+  try { return realpathSync.native(p); } catch { return resolve(p); }
+}
+
+/** Every registry entry recorded for THIS project root, matched {@link canonicalRoot}-wise so a
+ *  differently-spelled root still matches. The root is the only sound key for a local operation on
+ *  an OPEN mesh, which has no auth material to resolve its space NAME from — that would fall back
+ *  to the default space and hit an unrelated mesh's entry. Anything comparing a live root against
+ *  the registry must go through here: a raw `===` silently misses, which for a safety check (e.g.
+ *  `cotal clean`'s reachable-broker refusal) reads as "no mesh recorded" and lets it proceed. */
+export function meshesForRoot(root: string): MeshEntry[] {
+  const rootKey = canonicalRoot(root);
+  return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
+}
+
+/** Drop every registry entry recorded for THIS project root, releasing the `current` pointer per
+ *  removed entry (on `cotal down` / `cotal clean all`). Returns the removed space names. */
 export function removeMeshesByRoot(root: string): string[] {
-  const canonical = (p: string): string => {
-    try { return realpathSync.native(p); } catch { return resolve(p); }
-  };
-  const rootKey = canonical(root);
   const removed: string[] = [];
-  for (const m of loadMeshes()) {
-    if (canonical(m.root) !== rootKey) continue;
+  for (const m of meshesForRoot(root)) {
     removeMesh(m.space);
     if (getCurrent() === m.space) clearCurrent();
     removed.push(m.space);

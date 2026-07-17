@@ -1,5 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -11,53 +10,87 @@ import {
   newIdentity,
   type MembershipFeedHandle,
   type ParsedArgs,
+  type SecretStore,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
-/** Default location of the pre-minted scoped `delivery` creds the daemon loads (the CLI's
- *  `ensureDelivery` mints it once from the signer and writes it here, then launches the daemon WITHOUT
- *  signer access). A container mounts it read-only and passes `--creds`. */
-function deliveryCredsPath(): string {
-  return join(findCotalRoot(), ".cotal", "delivery.creds");
+/** Re-exported for hosted compositions: the {@link SecretStore} key a store injected into
+ *  {@link runDelivery} must hold the cred under. Defined once in workspace (the key↔filename
+ *  convention is the workspace layout's) so the writer, the renewal owner, and this reader can
+ *  never drift apart. */
+export { DELIVERY_CREDS_KEY };
+
+type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean };
+
+/** Where the daemon's pre-minted cred lives — exactly ONE source, resolved up front: an injected
+ *  {@link SecretStore} (a hosted composition), an explicit `--creds <file>` (e.g. a read-only
+ *  container mount) as an FS store over that exact file, or the default workstation location.
+ *  With an injected store the store is the ONLY credential source: every local-source flag
+ *  (`--creds`, `--dev-mint`) is rejected loudly at this boundary — and it runs BEFORE any ambient
+ *  read in `runDelivery` — so a hosted composition can never cross back into workstation trust
+ *  material (a creds file, the local signer), not even for a space label. `where` is the human
+ *  label used in error messages so a local operator still sees a path, not an abstract key. */
+function resolveCredsStore(v: Values, injected?: SecretStore): CredsSource {
+  if (injected) {
+    const local = ["creds", "dev-mint"].filter((f) => v[f] !== undefined);
+    if (local.length)
+      throw new Error(
+        `delivery: ${local.map((f) => `--${f}`).join(" and ")} cannot be combined with an injected secret store — the store is the cred's only source`,
+      );
+    return { store: injected, key: DELIVERY_CREDS_KEY, where: `secret-store key "${DELIVERY_CREDS_KEY}"`, injected: true };
+  }
+  if (v.creds !== undefined) {
+    const p = resolve(v.creds);
+    return { store: new FsSecretStore(dirname(p)), key: basename(p), where: p, injected: false };
+  }
+  const root = findCotalRoot();
+  return { store: workspaceSecretStore(root), key: DELIVERY_CREDS_KEY, where: join(root, ".cotal", DELIVERY_CREDS_KEY), injected: false };
 }
 
-/** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED file (`--creds` or the
- *  default `.cotal/delivery.creds`, written by the CLI's `ensureDelivery` setup helper) and NEVER touches
- *  the signer: this runtime does not load `.cotal/auth`. Returned as `{ initial, source }`: the SOURCE
- *  is the D5 slice-5 class-2 reload seam — the endpoint re-invokes it at 75% of each JWT's lifetime, so
- *  the daemon renews from the renewal-owner-re-signed file without a restart or a signal. Adoption is
- *  IDEMPOTENT on an unchanged file while its cred is still ahead of the renewal point (explicit reload
- *  may race the backstop); past it, an unchanged file is a MISSED remint, surfaced loudly with the
- *  exact repair — never a silent ride to expiry. A standalone dev run
- *  with no creds file can opt into `--dev-mint`, which loads the local signer and self-remints a scoped
- *  `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production contract. */
-async function loadDeliveryCreds(v: Values): Promise<{ initial: string; source: () => Promise<string> }> {
-  const path = v.creds ?? deliveryCredsPath();
-  if (existsSync(path)) {
-    const initial = readFileSync(path, "utf8");
+/** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED cred through the
+ *  {@link SecretStore} seam ({@link resolveCredsStore}; locally the CLI's `ensureDelivery` setup helper
+ *  wrote it) and NEVER touches the signer: this runtime does not load `.cotal/auth`. Returned as
+ *  `{ initial, source }`: the SOURCE is the D5 slice-5 class-2 reload seam — the endpoint re-invokes it
+ *  at 75% of each JWT's lifetime, so the daemon renews from the renewal-owner-re-signed store entry
+ *  without a restart or a signal. Adoption is IDEMPOTENT on an unchanged value while its cred is still
+ *  ahead of the renewal point (explicit reload may race the backstop); past it, an unchanged value is a
+ *  MISSED remint, surfaced loudly with the exact repair — never a silent ride to expiry. A standalone
+ *  dev run with no stored cred can opt into `--dev-mint`, which loads the local signer and self-remints
+ *  a scoped `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production
+ *  contract. */
+async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial: string; source: () => Promise<string> }> {
+  const { store, key, where } = src;
+  const initial = await store.get(key);
+  if (initial !== undefined) {
     let last: string | undefined; // set by the FIRST source call (the endpoint's initial fetch)
     return {
       initial,
       source: async () => {
-        const content = readFileSync(path, "utf8");
+        const content = await store.get(key);
+        if (content === undefined)
+          throw new Error(`delivery: the scoped delivery cred is gone (${where}) — restore it (locally: re-run \`cotal up\`) before the current JWT expires`);
         if (last !== undefined && content === last) {
-          // Unchanged file: adoption is IDEMPOTENT while the cred is still ahead of its renewal
+          // Unchanged value: adoption is IDEMPOTENT while the cred is still ahead of its renewal
           // point (the explicit reload may race the 75% backstop that just adopted the same
-          // re-sign — both succeeding is correct). Past the renewal point an unchanged file is a
+          // re-sign — both succeeding is correct). Past the renewal point an unchanged value is a
           // MISSED remint: fail loud with the exact repair, never a silent ride to expiry.
           const { iat, exp } = credsClaims(content);
           if (typeof exp === "number" && typeof iat === "number" && Date.now() / 1000 < iat + 0.75 * (exp - iat)) return content;
-          throw new Error(`${path} still holds the previous cred — the renewal owner has not re-signed it (the manager re-signs + reloads every half-TTL); run \`cotal doctor auth --fix\`, or restart the mesh's manager, before this JWT expires`);
+          throw new Error(`${where} still holds the previous cred — the renewal owner has not re-signed it (the manager re-signs + reloads every half-TTL); run \`cotal doctor auth --fix\`, or restart the mesh's manager, before this JWT expires`);
         }
         last = content;
         return content;
       },
     };
   }
+  if (src.injected)
+    throw new Error(
+      `delivery: no cred in the injected secret store under key "${DELIVERY_CREDS_KEY}" — the hosted composition must put it before starting the daemon (local sources are never consulted when a store is injected)`,
+    );
   if (v["dev-mint"] !== undefined) {
     const auth = loadSpaceAuth(authDir(findCotalRoot()));
     if (!auth) throw new Error("delivery --dev-mint: no .cotal/auth here to mint from");
@@ -67,7 +100,7 @@ async function loadDeliveryCreds(v: Values): Promise<{ initial: string; source: 
     return { initial, source: () => mintCreds(auth, identity, "delivery") };
   }
   throw new Error(
-    `delivery: no scoped creds at ${path}. Launch via \`cotal setup\`/\`cotal go\` (the setup helper mints + writes it), or pass --creds <file>; for a standalone dev run use --dev-mint.`,
+    `delivery: no scoped creds at ${where}. Launch via \`cotal setup\`/\`cotal go\` (the setup helper mints + writes it), or pass --creds <file>; for a standalone dev run use --dev-mint.`,
   );
 }
 
@@ -81,8 +114,15 @@ async function loadDeliveryCreds(v: Values): Promise<{ initial: string; source: 
  * (no signer in the daemon's trust boundary) — minting is the CLI setup helper's job (or `--dev-mint`
  * for standalone dev). N=1 only — `shards > 1` (or a non-zero shard) is HARD-REJECTED (the partition
  * seam ships, operating sharded delivery is deferred to the channel-prefix grammar; see core-sub-fabric.md).
+ *
+ * `store` is the hosted-composition seam: a closed composition root calls this export directly and
+ * injects its own {@link SecretStore} (KMS/Vault…) holding the cred under {@link DELIVERY_CREDS_KEY};
+ * the registered `deliver` command passes none and gets the workstation FS store (or `--creds`).
+ * Injection currently covers the daemon READ path only: the renewal owner's write side
+ * (`remintDaemonCreds(root, store?)`) accepts the same store but is not yet threaded through the
+ * manager, so hosted end-to-end renewal on an injected store is NOT wired yet.
  */
-export async function runDelivery(args: ParsedArgs): Promise<void> {
+export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promise<void> {
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -92,11 +132,15 @@ export async function runDelivery(args: ParsedArgs): Promise<void> {
         "The partition() seam ships but operating shards>1 needs the channel-prefix grammar — see core-sub-fabric.md.",
     );
 
+  // Resolve the cred source FIRST — before the ambient space derivation below — so an injected
+  // store rejects local-source flags before anything can read the workstation signer.
+  const credsSrc = resolveCredsStore(v, store);
+
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
   const space = v.space ?? (v["dev-mint"] !== undefined ? loadSpaceAuth(authDir(findCotalRoot()))?.space : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
   const server = v.server ?? DEFAULT_SERVER;
-  const creds = await loadDeliveryCreds(v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
   if (!(await isReachable(server, { creds: latestCreds }))) {

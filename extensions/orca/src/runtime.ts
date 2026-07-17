@@ -157,6 +157,7 @@ export class OrcaRuntime implements Runtime {
           }
         }, GRACE_MS);
       },
+      waitForExit: () => orca.waitManagedTerminalExit(terminal),
       interrupt: () => {
         try {
           orca.sendTerminal(current().handle, { interrupt: true });

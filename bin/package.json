@@ -45,7 +45,9 @@
     "@cotal-ai/connector-claude-code": "workspace:*",
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
-    "@cotal-ai/pi": "workspace:*"
+    "@cotal-ai/pi": "workspace:*",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
   },
   "files": [
     "dist",
