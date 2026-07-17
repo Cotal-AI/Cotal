@@ -37,6 +37,8 @@ const cfg: AgentConfig = {
 
 const agent = new MeshAgent(cfg);
 agent.on("error", () => {});
+const incoming = new Map<string, number>();
+agent.on("incoming", (item) => incoming.set(item.id, (incoming.get(item.id) ?? 0) + 1));
 
 const meta: MessageMeta = { historical: false, kind: "channel" };
 const msg = (id: string): CotalMessage => ({
@@ -60,6 +62,7 @@ try {
     agent.ep.emit("message", msg("m1"), mkDelivery(true, dc), meta);
     agent.ep.emit("message", msg("m1"), mkDelivery(false, lc), meta); // same id, live second
     check("durable-first/live-second: single inbox entry (no double-surface)", agent.inboxCount() === 1);
+    check("durable-first/live-second: a live duplicate does not re-announce", incoming.get("m1") === 1, incoming.get("m1"));
     const items = agent.drainInbox();
     check("durable-first/live-second: exactly one surfaced", items.length === 1);
     check("durable-first/live-second: the DURABLE ack committed, the live no-op did NOT overwrite it", dc.n === 1 && lc.n === 0, { dc, lc });
@@ -72,6 +75,7 @@ try {
     agent.ep.emit("message", msg("m2"), mkDelivery(false, lc), meta);
     agent.ep.emit("message", msg("m2"), mkDelivery(true, dc), meta); // durable second
     check("live-first/durable-second: single inbox entry", agent.inboxCount() === 1);
+    check("live-first/durable-second: the durable pending duplicate re-announces through incoming", incoming.get("m2") === 2, incoming.get("m2"));
     agent.drainInbox();
     check("live-first/durable-second: the DURABLE ack committed (upgraded from the live no-op)", dc.n === 1 && lc.n === 0, { dc, lc });
   }
@@ -83,6 +87,7 @@ try {
     agent.ep.emit("message", msg("m3"), mkDelivery(true, first), meta);
     agent.ep.emit("message", msg("m3"), mkDelivery(true, second), meta); // redelivery, fresh handle
     check("durable redelivery: single inbox entry", agent.inboxCount() === 1);
+    check("durable redelivery: the pending item re-announces through incoming", incoming.get("m3") === 2, incoming.get("m3"));
     agent.drainInbox();
     check("durable redelivery: the FRESHEST durable handle is committed", second.n === 1 && first.n === 0, { first, second });
   }
@@ -92,8 +97,20 @@ try {
     agent.ep.emit("message", msg("m4"), mkDelivery(false, { n: 0 }), meta);
     agent.ep.emit("message", msg("m4"), mkDelivery(false, { n: 0 }), meta);
     check("two live copies: single inbox entry (deduped)", agent.inboxCount() === 1);
+    check("two live copies: the duplicate does not re-announce", incoming.get("m4") === 1, incoming.get("m4"));
     const items = agent.drainInbox();
     check("two live copies: exactly one surfaced", items.length === 1);
+  }
+
+  // Durable retry reuses the existing receive-time lane; it must not turn quiet ambient into an
+  // automatic wake merely because JetStream supplied another delivery opportunity.
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "quiet_redelivery", quiet: ["ch"] });
+    a2.on("error", () => {});
+    a2.ep.emit("message", msg("quiet-redelivery"), mkDelivery(true, { n: 0 }), meta);
+    a2.ep.emit("message", msg("quiet-redelivery"), mkDelivery(true, { n: 0 }), meta);
+    check("quiet durable redelivery remains pull-only", a2.inboxCount("automatic") === 0 && a2.inboxCount("pull-only") === 1);
+    check("quiet durable redelivery remains non-waking", a2.pendingWake() === 0);
   }
 
   // ── Case 5 — live FIRST, DRAINED/surfaced, durable SECOND (the post-drain trap) ──
