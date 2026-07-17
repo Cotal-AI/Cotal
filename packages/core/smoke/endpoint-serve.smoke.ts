@@ -881,6 +881,10 @@ try {
     c("epScatterService freezes from the LIVE registry and completes over both instances",
       s1.complete === true && s1.replies.size === 2 && s1.churn.length === 0 && s1.missing.length === 0 && s1.invalid.length === 0,
       JSON.stringify({ complete: s1.complete, replies: s1.replies.size, churn: s1.churn, missing: s1.missing, invalid: s1.invalid }));
+    // distsys BLOCKING 2: the FREEZE is charged against the ONE deadline. A stalled enumeration is
+    // deadline-exceeded within the budget, never a scatter that silently overruns it.
+    await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
+      () => epScatterService(nc, jsm, { keys: () => new Promise(() => { /* never settles */ }) } as never, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)
