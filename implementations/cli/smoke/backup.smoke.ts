@@ -35,9 +35,14 @@ try {
     }],
     checkpoints: checkpoints.path,
   }, [snapshot, checkpoints]);
-  assert.equal(statSync(destination).mode & 0o777, 0o700);
-  for (const file of ["stream-a.snap", "checkpoints.json", "manifest.json"])
-    assert.equal(statSync(join(destination, file)).mode & 0o777, 0o600, `${file} is private`);
+  // POSIX mode bits only: on Windows the create mode is a no-op (Node honors just the read-only
+  // bit) and privacy comes from the NTFS ACL `createArtifactWriter` sets via `hardenPrivate`, which
+  // fails closed — reaching here at all is the win32 proof. `icacls` output is not asserted.
+  if (process.platform !== "win32") {
+    assert.equal(statSync(destination).mode & 0o777, 0o700);
+    for (const file of ["stream-a.snap", "checkpoints.json", "manifest.json"])
+      assert.equal(statSync(join(destination, file)).mode & 0o777, 0o600, `${file} is private`);
+  }
   assert.throws(() => createArtifactWriter(destination), /already exists/);
   const originalManifest = readFileSync(join(destination, "manifest.json"), "utf8");
 

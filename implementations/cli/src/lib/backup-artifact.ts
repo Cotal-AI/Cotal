@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  chmodSync,
   closeSync,
   constants,
   fstatSync,
@@ -19,10 +18,11 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type {
-  BackupStreamState,
-  PersistentConsumerCheckpoint,
-  SpaceBackupSelection,
+import {
+  hardenPrivate,
+  type BackupStreamState,
+  type PersistentConsumerCheckpoint,
+  type SpaceBackupSelection,
 } from "@cotal-ai/core";
 import type { MaintenanceAuthMode, StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
@@ -114,7 +114,10 @@ export function createArtifactWriter(destination: string): ArtifactWriter {
   }
   let identity: { dev: bigint; ino: bigint };
   try {
-    chmodSync(directory, 0o700);
+    // The artifact holds whole-stream snapshots (chat, DMs) — the most sensitive bytes we write.
+    // `hardenPrivate` reasserts 0700 on POSIX and sets the win32 ACL, where the create mode above is
+    // a no-op; the dir grant is inheritable, so every file written below is born private too.
+    hardenPrivate(directory, "dir");
     fsyncDirectory(dirname(directory));
     const stat = lstatSync(directory, { bigint: true });
     identity = { dev: stat.dev, ino: stat.ino };
@@ -293,7 +296,7 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const parentIdentity = { dev: parentStat.dev, ino: parentStat.ino };
   const directory = join(parentPath, `.cotal-restore-stage-${randomUUID()}`);
   mkdirSync(directory, { mode: 0o700 });
-  chmodSync(directory, 0o700);
+  hardenPrivate(directory, "dir"); // staged snapshots are the same secret bytes — private on win32 too
   const identityStat = lstatSync(directory, { bigint: true });
   const identity = { dev: identityStat.dev, ino: identityStat.ino };
   try {
