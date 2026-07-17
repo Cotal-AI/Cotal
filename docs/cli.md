@@ -33,6 +33,7 @@ runtimes ship this way.
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
 | Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
+| Set up & lifecycle | [`backup`](#backup-and-restore) | Create an offline full-space or registry-only artifact from a preserved cut |
 | Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
 | Set up & lifecycle | [`meshes`](#meshes-use-status) | List the running meshes on this machine |
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
@@ -47,7 +48,7 @@ runtimes ship this way.
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
-| Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry (replay, description, instructions) |
+| Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
@@ -89,6 +90,7 @@ maintainers, [setup internals](setup-internals.md).
 
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
 
@@ -99,6 +101,9 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | — | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
+| `--restore <dir>` | — | Restore a completed offline backup before exposing the normal listener |
+| `--restore-only registry` | artifact selection | Restore only the registry component |
+| `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
@@ -124,6 +129,7 @@ without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
 ```bash
 cotal down
+cotal down --preserve-state [--store-dir <dir>]
 cotal down manager [delivery auth web nats ...]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 ```
@@ -133,6 +139,8 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--file <cotal.yaml>`, `-f` | — | Tear down this manifest's deploy |
 | `--run <id>` | — | Tear down one `spawn -f` run by id |
 | `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
+| `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
+| `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 
 Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
@@ -141,12 +149,24 @@ the broker running, and `cotal down web` is available when the web extension is 
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
 
-`down` never deletes on-disk state; that is [`clean`](#clean).
+Normal `down` remains destructive at the logical identity/durable layer. `--preserve-state` is a
+different maintenance transition: it suppresses leave/deprovision cleanup, persists the manager's
+same-principal resume inventory, stops the entire stack without removing run/auth artifacts, and
+publishes a stable inode-bound cut only after every recorded process is proven stopped and the exact
+recorded NATS endpoint is unreachable. A missing or stale broker pidfile never counts as stopped. The
+attempt is bound durably before the manager is fenced, the resume document and attempt-bound
+`cut-intent` are fsynced before manager commit, and the manager's commitment itself is journaled
+(`cut-committed`) before any process stops. A retry after a crash at any of those boundaries reuses
+the exact recorded attempt and finishes the remaining stop and endpoint proofs idempotently, without
+needing the (by then intentionally dead) manager. A partial cut never publishes `ready`. It cannot
+be combined with component names, manifest teardown, or `--dry-run`.
 
 ## clean
 
 ```bash
 cotal clean <history|store|all> --force
+cotal clean restore-attempt --attempt <id> --force
+cotal clean restore-fallback --attempt <id> --force
 ```
 
 | Flag | Default | Meaning |
@@ -155,6 +175,7 @@ cotal clean <history|store|all> --force
 | `--dms` | off | `history`: also clear DM history |
 | `--store-dir <dir>` | `.cotal/nats` | `store`/`all`: JetStream store directory |
 | `--force` | — | Required: destructive, no prompting |
+| `--attempt <id>` | — | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
 
 One configurable cleanup verb; every target requires `--force`.
 
@@ -168,9 +189,111 @@ One configurable cleanup verb; every target requires `--force`.
   registry entry; the next `cotal up` mints a fresh identity.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
-alive (run `cotal down` first). Personas (`.cotal/agents`) and logs are never touched. A custom
+alive or any same-root recorded broker endpoint remains reachable (run `cotal down` first). Personas
+(`.cotal/agents`) and logs are never touched. A custom
 store location is not recorded anywhere, so `--store-dir` must repeat whatever the mesh was
-launched with.
+launched with. Custom cleanup targets must contain either the Cotal store-generation marker or a
+real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
+are always refused.
+
+`store` and `all` also refuse every maintenance journal state. After a healthy committed restore,
+`restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
+never deletes the active target, requires both the exact attempt id and `--force`, and retires the
+completed restore journal so a later `down --preserve-state` can start a new backup cycle.
+
+## backup and restore
+
+```bash
+cotal down --preserve-state [--store-dir <dir>]
+cotal backup create <dir> [--only full|registry] [--store-dir <dir>]
+cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
+```
+
+Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
+store match, no live recorded process, and an unreachable exact endpoint from the recorded cut.
+That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
+is still refused. It claims the cut, reflink/copies the stopped source to a
+private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
+independent parent/deadline watchdog. It validates the canonical stream and pull-consumer inventory,
+writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
+checkpoints separately. The original store is never opened by the backup broker, and the stack is
+not restarted implicitly. Artifact destinations must not overlap the preserved source or maintenance
+attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
+preserved source, or the maintenance attempt tree.
+
+`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, and
+validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
+feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor
+ledger files are excluded. Artifacts are exclusively created `0700`; snapshot/checkpoint files and
+the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
+directory is trusted operator input: hashes detect corruption, not malicious rewriting.
+
+Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
+It requires the same space and existing trust state. The whole pre-commit window holds a journaled
+liveness claim (coordinator, watchdogs, brokers, absolute deadline): ordinary `up` and a repeated
+`up --restore` refuse while the claim is live, and a stale attempt is recovered only after the
+deadline has elapsed and every recorded owner is proven dead — automatically by a retried
+`up --restore`, or explicitly with `cotal clean restore-attempt --attempt <id> --force`. Nothing
+ever rolls back a live attempt. A registry-only artifact restores as registry-only whether or not
+`--restore-only registry` is passed; omitted infrastructure is always created and the exact
+post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
+resumes only the exact recorded source store and runtime; a contradicting `--store-dir` or
+`--runtime` fails in preflight. Authenticated restores validate the complete
+space trust bundle before staging, including nkeys, seed matches, JWTs, signers, and space binding;
+full restores commit to the validated operator, system-account, data-account, and active-signer root
+chain in addition to the static/user authority fingerprint. The composed commitment is revalidated
+immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
+Same-path restores atomically retain the old
+source at the journaled fallback path; alternate targets retain it in place; a missing canonical
+source needs explicit `--accept-missing-source`. Quarantine and target restores use current canonical
+configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
+commit-intent immediately before the normal listener starts. Archive bytes never instantiate the real
+target: after quarantine validation, every stream is re-snapshotted from the validated quarantine
+state into attempt-owned sanitized files, and the target is restored solely from those. Before that boundary, failure rolls back
+the attempt-owned target; after it, ambiguity preserves both stores and records forward-repair
+recourse. The cooperative maintenance lock excludes Cotal commands, not arbitrary raw NATS processes.
+
+Bootstrap brokers in every auth mode — including open — mount the store under a local account with
+random operation-specific logins only, each carrying the exact per-phase subject permission matrix;
+normal static credentials and user-auth sentinel/bearer connections are rejected, and no auth
+service or callout starts. Open mode differs only in its account label, never in authority. Inventory, each stream snapshot,
+restore initiation, exact upload id, validation, and each checkpoint recreation use separate exact
+authorities. Every checkpoint carries the source stream's message/first/last sequence state and must
+match its snapshot record before mutation; core then derives and validates the only allowed start
+policy. TASK is not a CLI exception: the same core checkpoint API recreates its canonical `DeliverAll`
+WorkQueue durable because acknowledged tasks are absent from retention and NATS forbids a
+start-sequence policy there. Registry-only restore creates every omitted canonical stream and transient
+bucket on the isolated target before the normal listener is exposed. It deliberately does not resume
+retained agents or recreate their DM/DLV/TASK/ACL state; their identity material stays retained and
+stopped rather than being reprovisioned into a partial restore.
+
+After listener readiness, the manager starts attempt-bound, validates retained credentials/tokens
+without granting or reprovisioning, and resumes the exact persisted principals under cleanup
+suppression. Registry-only restore uses the same flow with an empty agent set. `commitResume` is an
+idempotent validation barrier only: success must be `awaitingFinalize` with an attempt-bound 64-hex
+commit token and does not release suppression. Under the workspace lock, the CLI first fsyncs that
+exact evidence as `manager-committed` (restore) or `resume-committed` (ordinary resume), then calls
+token-bound `finalizeResume`; only an `active` response for the exact token releases suppression. The
+CLI records the same token in finalization evidence before a restore becomes `active`, or before an
+ordinary resume retires and consumes the marker. Re-entry from either committed state skips the prior
+idempotent activation/commit phases, retries finalization with the durable token, and finishes the
+workspace transition. Failure before finalization preserves the committed state and cleanup
+suppression; it is not rewritten through a degraded transition. Re-entry between any two earlier
+boundaries reuses the same attempt and may retry the idempotent phases without deleting retained state. A missing or
+changed per-agent dependency is a named fail-closed result; the journal becomes degraded and remains
+available for forward repair. A retry from `resume-intent`,
+`resume-active`, or `resume-degraded` reuses the same attempt and inventory after the prior listener is
+proven stopped. Every normal restore listener has an unguessable attempt-bound NATS server name. The
+CLI fsyncs its exact name/nonce, canonical endpoint, process owner, and generation-bound target identity
+immediately after spawn. Re-entry accepts a surviving listener only when its INFO server name, live PID
+record, endpoint, and target identity all match that proof; degraded restore repair then moves through
+the guarded workspace transition only after manager commit. If an uncommitted bound owner is provably
+dead, recovery retires that exact proof under the maintenance lock and binds a fresh listener for the
+same attempt, endpoint, and target with a new nonce and server name. A live foreign/mismatched listener
+or ambiguous owner is preserved and refused, never adopted by reachability alone. A reconstructed
+commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
+record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
+restore only when its details prove manager commit and its exact recorded listener is dead.
 
 ## meshes, use, status
 
@@ -379,8 +502,9 @@ cotal channels default --replay | --no-replay
 Inspects and edits the channel registry: replay policy, description, and joiner instructions. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
 [Channels and permissions](channels-and-permissions.md). On a user-auth mesh, `list` rides your
-own login as is; `set` and `default` edit the registry over a short-lived channel-writer view,
-which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+own login as is; `set` and `default` edit the registry over a short-lived
+channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+
 
 ## history
 

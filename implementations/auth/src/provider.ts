@@ -18,6 +18,7 @@ import { assertUserAuthInfo, homeCotalDir, type UserAuthInfo } from "@cotal-ai/w
 import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
+import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
 import {
   ensureCalloutAuth,
   ensureIssuer,
@@ -228,6 +229,14 @@ export const cotalAuthProvider: AuthProvider = {
   async actorScope({ dir, owner, actor }) {
     const row = findActorUnified(dir, owner, actor);
     return row ? [...row.scope] : undefined;
+  },
+
+  async trustFingerprint({ dir, space }) {
+    return userAuthTrustFingerprint(dir, space);
+  },
+
+  async validateRetainedAgent(opts) {
+    return validateRetainedManagedAgent(opts);
   },
 
   agentBearerCommand: "agent-bearer",

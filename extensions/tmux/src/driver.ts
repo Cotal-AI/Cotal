@@ -3,6 +3,10 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const EXIT_WAIT_MS = 8_000;
+const EXIT_POLL_MS = 100;
+const EXIT_PROBE_MS = 1_000;
+
 /** True if tmux is installed and reachable on PATH. */
 export function available(): boolean {
   try {
@@ -72,6 +76,52 @@ export function windowAliveRef(windowId: string): boolean {
       .includes(windowId);
   } catch {
     return false;
+  }
+}
+
+export type PaneState = "running" | "exited";
+
+/** Authoritative process state for a stable pane ID. A successful full-server listing that no
+ * longer contains the pane proves exit; `pane_dead=1` also handles `remain-on-exit` configurations.
+ * Provider/permission failures throw instead of turning uncertainty into a false exit. */
+export function paneState(paneId: string): PaneState {
+  try {
+    const panes = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: EXIT_PROBE_MS,
+    });
+    for (const line of panes.split("\n")) {
+      const [id, dead] = line.trim().split(/\s+/);
+      if (id === paneId) return dead === "1" ? "exited" : "running";
+    }
+    return "exited";
+  } catch (err) {
+    const e = err as { stderr?: unknown; message?: unknown };
+    const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
+    // No tmux server means no pane can still exist. Other failures (including permission/socket
+    // errors) are unknown and must fail the preservation cut closed.
+    if (/no server running/i.test(message)) return "exited";
+    throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${message.trim()}`, { cause: err });
+  }
+}
+
+/** Bounded polling over tmux's authoritative pane inventory. */
+export async function waitForPaneExit(
+  paneId: string,
+  opts: {
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? EXIT_WAIT_MS;
+  const pollMs = opts.pollMs ?? EXIT_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (paneState(paneId) === "exited") return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`tmux: pane ${paneId} did not exit within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
   }
 }
 
