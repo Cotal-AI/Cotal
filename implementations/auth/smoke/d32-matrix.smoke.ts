@@ -40,6 +40,28 @@ const S = "d32m", EP = "manager", EPJ = "jobsrv", CONN = "ibxconn0123456789";
 const UID = "u".repeat(26);
 const cap: EpCapability = { endpoint: EP, command: "spawn", target: { mode: "owner", tOwner: "u_abc" }, journal: true };
 
+// C6 (critic + fact): cross-principal disjointness needs a real NATS-pattern INTERSECTION, not
+// exact string equality (a broadened `epf.<e>.goal.>` SUBSUMES a narrower `…goal.*.*.*.*.bind`
+// while never string-equalling it) nor a substring deny (an open ancestor `epf.<e>.>` covers
+// `.dec.`/`.quar.` without containing the substring). `subjectsOverlap` is true when SOME concrete
+// subject matches both patterns: token-walk where `>` (tail) matches any non-empty remainder, `*`
+// matches one token, literals must be equal. The subject's optional ` queue` suffix is stripped.
+function subjectsOverlap(a: string, b: string): boolean {
+  const ta = a.split(" ")[0].split("."), tb = b.split(" ")[0].split(".");
+  const walk = (x: string[], y: string[]): boolean => {
+    if (x.length === 0 && y.length === 0) return true;
+    if (x.length === 0 || y.length === 0) return false;
+    if (x[0] === ">" || y[0] === ">") return true; // tail wildcard, both remainders non-empty here
+    if (x[0] === "*" || y[0] === "*" || x[0] === y[0]) return walk(x.slice(1), y.slice(1));
+    return false;
+  };
+  return walk(ta, tb);
+}
+// A positively-enumerated set of DESTRUCTIVE JetStream verbs no data-plane principal may hold:
+// `$JS.` alone is NOT proof of non-write authority (STREAM.PURGE / STREAM.DELETE / STREAM.MSG.DELETE
+// are all `$JS.` and destroy stored rows), so the audit rejects them by shape, not by prefix (fact).
+const DESTRUCTIVE_JS = /\$JS\.API\.(STREAM\.PURGE|STREAM\.DELETE|STREAM\.MSG\.DELETE)\./;
+
 // ---- the REVIEWED matrix fixture: principal -> exact emitted rows -----------------------------
 // Regenerate deliberately when a row legitimately changes; a drift here is the audit firing.
 const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
@@ -301,18 +323,27 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   c("body-selected Direct-Get exists ONLY as the auth path's records pair (every other tail fully qualified)", bad.length === 0, bad);
 }
 
-// (2d) cross-principal namespace disjointness on the EPF fact families.
+// (2d) cross-principal namespace disjointness on the EPF fact families — by real pattern
+// INTERSECTION (C6), so a broadened fixture that SUBSUMES a foreign family fails the audit.
 {
   const canonSubjects = gen["canonicalizer"].publish.filter((r) => r.startsWith("cotal."));
   const commitSubjects = gen["commit"].publish.filter((r) => r.startsWith("cotal."));
-  const overlap = canonSubjects.filter((r) => commitSubjects.includes(r));
-  c("the canonicalizer's subject rows and the commit principal's are disjoint (dec/quar/bind vs the five commit families)",
-    overlap.length === 0 && commitSubjects.every((r) => !r.includes(".dec.") && !r.includes(".quar.")), overlap);
+  const overlaps = canonSubjects.flatMap((a) => commitSubjects.filter((b) => subjectsOverlap(a, b)).map((b) => `${a} ∩ ${b}`));
+  c("the canonicalizer's subject rows and the commit principal's do not INTERSECT (dec/quar/bind vs the five commit families; subsumption caught, not just exact dupes)",
+    overlaps.length === 0, overlaps);
+  // The commit families must not COVER a canonicalizer decision subject either (an open ancestor
+  // `epf.<e>.>` would subsume `.dec.`/`.quar.` without containing the substring).
+  const decQuar = [`cotal.${S}.epf.${EPJ}.dec.x`, `cotal.${S}.epf.${EPJ}.quar.x`];
+  c("no commit row COVERS a canonicalizer dec/quar decision subject (ancestor-subsumption caught)",
+    decQuar.every((d) => !commitSubjects.some((r) => subjectsOverlap(r, d))), commitSubjects);
   c("per-kind record writers stay disjoint (svc vs goal full-tail filters)",
     JSON.stringify(gen["recw-svc"]) !== JSON.stringify(gen["recw-goal"])
-    && gen["recw-svc"].publish.every((r) => !r.includes(".goal.")));
+    && !gen["recw-svc"].publish.some((r) => subjectsOverlap(r, `cotal.${S}.epf.${EPJ}.goal.x.x.x.x.bind`)));
   c("the cleaner holds NO write authority (no subject publish, no $KV, no wrk) and the executor carries it instead",
     gen["cleaner"].publish.every((r) => r.startsWith("$JS.")) && gen["barrier-executor"].publish.some((r) => r.includes(".wrk.")));
+  // C6 (fact): $JS. is not proof of non-write — NO principal may hold a destructive stream verb.
+  const destructive = allRows.filter(({ row }) => DESTRUCTIVE_JS.test(row)).map(({ principal, row }) => `${principal}: ${row}`);
+  c("NO principal holds a destructive JetStream stream verb (STREAM.PURGE / STREAM.DELETE / STREAM.MSG.DELETE)", destructive.length === 0, destructive);
 }
 
 // ---- 3. the minted UNTRUSTED profiles hold nothing on control-surface resources ---------------

@@ -523,8 +523,11 @@ try {
       const row = parseLedgerRow(stored!.value, `epcred.${EP}.${IID}.${digestId}`);
       c("revoke marks the staged row revoked (monotonic, never deleted)", row.state === "revoked");
     }
-    await seam.revoke(mkRow({ credentialId: `sha256-${"f".repeat(64)}` }) as never);
-    c("revoking a never-staged row is idempotent (the abort path re-revokes safely)", true);
+    // fact M7: revoke runs only after a successful stage, so an ABSENT row is vanished never-delete
+    // ledger state (corruption), not a never-staged idempotence case; it must fail LOUD, not be
+    // hidden. (A re-revoke of an ALREADY-revoked staged row stays idempotent - proven above.)
+    await rejects("revoking a NEVER-STAGED (absent) row fails loud (corruption, not idempotent abort)",
+      () => seam.revoke(mkRow({ credentialId: `sha256-${"f".repeat(64)}` }) as never), "failed-precondition");
   }
 
   await nc.drain().catch(() => {});

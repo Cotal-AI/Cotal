@@ -360,13 +360,19 @@ async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string,
   return { pin: { key, revision: entry.revision }, gate };
 }
 
-/** The PRODUCTION serve-issuance gate (§13.1) over the durable endpoint families: core's serve
- *  mint (`mintCreds`, profile `endpoint-serve`) fences its release on the
- *  `epgate.<endpoint>.<instanceId>` key and stages its per-JWT row under
- *  `epcred.<endpoint>.<instanceId>.<credentialId>` — the SAME observe/stage/commit/revoke
- *  protocol the in-memory smoke seam models, over the real KV. This closes the recorded
- *  D13/D14 durable-key gate: the endpoint-qualified families are normative (SPEC 13.9/13.12)
- *  and the serve mint fence stops being fake-only.
+/** The durable serve-issuance gate (§13.1) over the durable endpoint families — the real-KV
+ *  implementation of core's `EpIssuanceGate` seam: core's serve mint (`mintCreds`, profile
+ *  `endpoint-serve`) fences its release on the `epgate.<endpoint>.<instanceId>` key and stages
+ *  its per-JWT row under `epcred.<endpoint>.<instanceId>.<credentialId>` — the SAME
+ *  observe/stage/commit/revoke protocol the in-memory smoke seam models, over the real KV.
+ *
+ *  NOT YET WIRED to a production mint path (fact H3): today its only caller is the session-ledger
+ *  smoke. Wiring the endpoint-family authority connection that mints serve credentials — with the
+ *  matching `epgate.>`/`epcred.>` grants, the freeze/enumerate/revoke barrier half, and
+ *  stale-credential reconnect denial — is the post-D14 daemon-composition slice; the standing
+ *  writer/barrier connections carry neither `epgate.>` nor `epcred.>` today. This module provides
+ *  the durable seam so that wiring is a composition, not a rewrite. It closes the recorded
+ *  D13/D14 durable-KEY gate (the endpoint-qualified families are normative, SPEC 13.9/13.12).
  *
  *  Mapping to the NORMATIVE closed row schema (§13.1): the staged row's
  *  identity/lineage/state/exp become the CredentialLedgerRow (`lifecycleUid` is the endpoint
@@ -434,10 +440,11 @@ export function kvServeIssuanceGate(store: SessionAuthStore, args: { endpoint: s
       }
     },
     revoke: async (row: EpServeLedgerRow) => {
-      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
-      const entry = await kv.get(rowKey);
-      if (!entry) return; // a never-staged row re-revokes successfully (idempotent abort path)
-      await markLedgerRowRevoked(kv, rowKey);
+      // `revoke` runs ONLY after a successful `stage` (finalizeServeIssuance's non-win cleanup), so
+      // the row MUST exist. Route straight through markLedgerRowRevoked, which is idempotent on an
+      // already-revoked row and FAILS LOUD on an absent/DEL row: a vanished never-delete ledger row
+      // is corruption, never a "never staged" idempotence case, and must not be hidden (fact M7).
+      await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
     },
   };
 }
