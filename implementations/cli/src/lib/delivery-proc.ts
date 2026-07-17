@@ -73,7 +73,9 @@ export function startDeliveryDetached(o: Opts = {}): number {
     "--server",
     o.server ?? DEFAULT_SERVER,
   ];
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd] });
+  // Internal child re-exec (the `up` that reached here already seeded); the delivery daemon does not
+  // launch agents, so it skips the connector seed on boot (a direct `cotal deliver` still seeds).
+  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
   writeFileSync(PID_PATH(), String(child.pid));

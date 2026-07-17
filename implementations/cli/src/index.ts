@@ -8,7 +8,7 @@ import { meshes } from "./commands/meshes.js";
 import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
-import { spawn, spawnComplete, spawnFlags } from "./commands/spawn.js";
+import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions } from "./commands/spawn.js";
 import { attach, attachFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
@@ -48,8 +48,13 @@ const baseCommands: Command[] = [
     name: "ext",
     group: "Setup",
     summary: "operator-installed extensions - add commands, runtimes, and local process providers",
-    usage: "ext <add <npm-package> | remove <name> | list>",
-    positionals: "<add <npm-package> | remove <name> | list>",
+    usage: "ext <add <npm-package> | remove <name> | list | seed [--repair|--reset|--force]>",
+    positionals: "<add <npm-package> | remove <name> | list | seed>",
+    flags: [
+      { name: "repair", type: "boolean", description: "seed: recover a lost ever-seeded authority from its durable backup" },
+      { name: "reset", type: "boolean", description: "seed: discard the authority and re-seed all built-in connectors (resurrects removed ones)" },
+      { name: "force", type: "boolean", description: "seed: re-seed the built-in connectors even when the stamp is current or a downgrade" },
+    ],
     run: ext,
   },
   {
@@ -268,6 +273,7 @@ const baseCommands: Command[] = [
     flags: spawnFlags,
     run: spawn,
     complete: spawnComplete,
+    requiredExtensions: spawnRequiredExtensions,
   },
   {
     kind: "command",

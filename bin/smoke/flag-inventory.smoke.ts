@@ -57,10 +57,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
-      "file:string:f", "model:string", "name:string", "no-transcript:boolean", "opt:string",
-      "prompt:string", "resume:string", "role:string", "runtime:string", "server:string",
-      "share-tools:string", "space:string", "subscribe:string", "transcript:boolean",
-      "variant:string",
+      "file:string:f", "live-only:boolean", "model:string", "name:string", "no-transcript:boolean",
+      "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
+      "server:string", "share-tools:string", "space:string", "subscribe:string",
+      "transcript:boolean", "variant:string",
     ],
     positionals: true,
   },
@@ -73,7 +73,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: [], positionals: true },
-  ext: { flags: [], positionals: true },
+  ext: { flags: ["force:boolean", "repair:boolean", "reset:boolean"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
     flags: ["allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string", "signer:boolean"],

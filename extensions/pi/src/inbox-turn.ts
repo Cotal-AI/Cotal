@@ -1,4 +1,4 @@
-import type { ExactDrainResult, InboxItem, InboxScope } from "@cotal-ai/connector-core";
+import type { ExactDrainResult, InboxItem, InboxScope } from "./inbox-types.js";
 
 export interface InboxSource {
   peekInbox(scope?: InboxScope): InboxItem[];

@@ -1,5 +1,27 @@
 # @cotal-ai/workspace
 
+## 0.11.6
+
+### Patch Changes
+
+- 7b24953: Rebind extension peer links to the current Cotal host before lazy import, allowing global installs and source worktrees to share one extension prefix. Keep the Hermes launcher self-contained so it does not resolve a mutable host peer after launch.
+  - @cotal-ai/core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 1935221: Ship the built-in agent connectors (claude, opencode, hermes, pi) as removable `cotal ext` plugins. They are seeded on first run through the same `ext add` path a third party uses, resolved lazily per spawn, and deletable with `cotal ext remove`; they are no longer hardcoded imports or dependencies of `cotal-ai`.
+- Updated dependencies [1935221]
+- Updated dependencies [5634ae4]
+  - @cotal-ai/core@0.11.4
+
 ## 0.11.3
 
 ### Patch Changes

@@ -12,7 +12,7 @@
  *     flows. The reference tail-drop block only exercises a CONCRETE channel pattern, never the
  *     wildcard pattern-match form.
  *
- * Spins up its OWN nats-server on a RANDOM port and tears it down with await-exit, so it never
+ * Spins up its OWN nats-server on an OS-assigned free port and tears it down with await-exit, so it never
  * collides with brokers from concurrent test runs.
  * Run: pnpm smoke:wildcard-backfill
  */
@@ -25,11 +25,12 @@ import {
   CotalEndpoint, seedChannelRegistry, isReachable,
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-// Fresh random port per run: a fixed port lets a leaked broker from a crashed prior run serve stale
-// JetStream state to the next run (reads as a flaky gate). Randomizing isolates each run even if
-// teardown ever leaks; the await-exit in `finally` keeps a clean run from ever leaking.
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+// Fresh OS-assigned port per run: a fixed port lets a leaked broker from a crashed prior run serve
+// stale JetStream state to the next run (reads as a flaky gate). A fresh port isolates each run even
+// if teardown ever leaks; the await-exit in `finally` keeps a clean run from ever leaking.
+const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "wbksmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

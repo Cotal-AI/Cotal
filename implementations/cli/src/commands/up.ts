@@ -410,7 +410,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     process.exit(1);
   }
   // Connectors + their required binaries must exist before any mutation (no fallback).
-  const conn = preflightConnectors(prepared);
+  const conn = await preflightConnectors(prepared);
   if (conn) {
     console.error(c.red(`✗ connector preflight failed: ${conn}`));
     process.exit(1);

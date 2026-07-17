@@ -137,7 +137,8 @@ const until = async (cond: () => boolean, ms = 8000): Promise<boolean> => {
 };
 
 const SELF = process.argv[1]; // this smoke file — the bearer/auth-service re-exec target (matches the manager's argv[1])
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const { pickFreePort } = await import("./_free-port.js");
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `uspawn-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";

@@ -1,7 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Command, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
+import { inspectLock } from "./advisory-lock.js";
 import { localProcessPath, type LocalProcess } from "./local-process.js";
 
 /**
@@ -39,6 +42,9 @@ export interface InstalledExtension {
   readonly version: string;
   /** The spec the operator passed to `ext add` (registry range, file:, tarball…) — for re-adds. */
   readonly spec: string;
+  /** `"seeded"` iff installed by the built-in-connector reconcile (not an operator `ext add`). Keys
+   *  refresh-gating and import-failure hints on the marker rather than trusting the spec path. */
+  readonly source?: "seeded";
   /** Every registry contribution made by the package. Older command-only manifests omit this; the
    *  loader derives `command:<name>` entries from `commands` for compatibility. */
   readonly provides?: readonly ExtensionRef[];
@@ -60,6 +66,7 @@ export function extensionsManifestPath(): string {
   return join(extensionsDir(), "extensions.json");
 }
 
+/** The extension-prefix writer lock. See {@link inspectLock} for its atomic publish/reclaim rules. */
 export function extensionMutationLockPath(): string {
   return join(dirname(extensionsDir()), ".extensions.lock");
 }
@@ -68,29 +75,11 @@ export type ExtensionMutationLockState =
   | { readonly state: "absent" | "stale" }
   | { readonly state: "active"; readonly owner: number };
 
-/** Inspect the extension-prefix writer lock. Permission denial means the owner may still be live;
- * only ESRCH proves that a recorded owner is gone. */
+/** Inspect the extension-prefix writer lock via the shared advisory-lock primitive (PID liveness +
+ *  process-start identity + torn-record handling all decided in one place). */
 export function extensionMutationLockState(): ExtensionMutationLockState {
-  const lock = extensionMutationLockPath();
-  let raw: string;
-  try {
-    raw = readFileSync(lock, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent" };
-    throw new Error(`can't read extension mutation lock ${lock}: ${(e as Error).message}`);
-  }
-
-  const owner = Number(raw.trim());
-  if (!Number.isInteger(owner) || owner <= 0) return { state: "stale" };
-  try {
-    process.kill(owner, 0);
-    return { state: "active", owner };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return { state: "stale" };
-    if (code === "EPERM") return { state: "active", owner };
-    throw new Error(`can't check extension mutation lock owner ${owner}: ${(e as Error).message}`);
-  }
+  const found = inspectLock(extensionMutationLockPath());
+  return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
 /** Load the manifest. Missing file → no extensions. A CORRUPT file is a loud error (never treat
@@ -109,9 +98,25 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   return m;
 }
 
+/** Persist the manifest atomically (temp-then-rename, exclusive temp): a SIGKILL mid-write can never
+ *  truncate the live manifest into corrupt JSON that would then vanish every installed extension. */
 export function saveExtensionsManifest(m: ExtensionsManifest): void {
-  mkdirSync(extensionsDir(), { recursive: true });
-  writeFileSync(extensionsManifestPath(), `${JSON.stringify(m, null, 2)}\n`);
+  const dir = extensionsDir();
+  mkdirSync(dir, { recursive: true });
+  const path = extensionsManifestPath();
+  const tmp = join(dir, `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`, { flag: "wx" });
+  renameSync(tmp, path);
+}
+
+/** Move a corrupt/unreadable manifest aside so a `--reset`/`--repair` can rebuild a clean one instead
+ *  of wedging on the same unreadable read. Returns the quarantine path, or undefined if none existed. */
+export function quarantineExtensionsManifest(): string | undefined {
+  const path = extensionsManifestPath();
+  if (!existsSync(path)) return undefined;
+  const aside = `${path}.corrupt.${randomBytes(4).toString("hex")}`;
+  renameSync(path, aside);
+  return aside;
 }
 
 /** Strip a live {@link Command} down to its serializable display surface for the cache. */
@@ -164,6 +169,77 @@ export function extensionProvides(ext: InstalledExtension): readonly ExtensionRe
 /** The installed package's on-disk root inside the prefix. */
 export function extensionPackageDir(pkg: string): string {
   return join(extensionsDir(), "node_modules", pkg);
+}
+
+export interface BoundExtensionPeer {
+  readonly owner: string;
+  readonly peer: string;
+  readonly source: string;
+  readonly destination: string;
+}
+
+/** Locate a shared package in this host's module graph. */
+function hostPackageDir(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.resolve(name)));
+  for (;;) {
+    const pj = join(dir, "package.json");
+    if (existsSync(pj) && (JSON.parse(readFileSync(pj, "utf8")) as { name?: string }).name === name) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error(`couldn't locate ${name}'s package root from its resolved entry`);
+    dir = parent;
+  }
+}
+
+/** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock. */
+export function bindExtensionPeers(
+  owners: readonly string[],
+  operationPkg: string,
+  opts: { force?: boolean } = {},
+): readonly BoundExtensionPeer[] {
+  const planned: BoundExtensionPeer[] = [];
+  for (const owner of owners) {
+    let meta: { peerDependencies?: Record<string, string> };
+    try {
+      meta = JSON.parse(readFileSync(join(extensionPackageDir(owner), "package.json"), "utf8"));
+    } catch (e) {
+      throw new Error(`${operationPkg} cannot preserve installed extension ${owner}'s shared peers: ${(e as Error).message}`);
+    }
+    for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
+      let source: string;
+      try {
+        source = realpathSync(hostPackageDir(peer));
+      } catch {
+        throw new Error(`${operationPkg}: ${owner} peer-depends on ${peer}, which this cotal binary does not carry - the peer can't be linked`);
+      }
+      planned.push({
+        owner,
+        peer,
+        source,
+        destination: join(extensionPackageDir(owner), "node_modules", ...peer.split("/")),
+      });
+    }
+  }
+
+  const bound: BoundExtensionPeer[] = [];
+  for (const link of planned) {
+    let current: string | undefined;
+    try {
+      current = realpathSync(link.destination);
+    } catch {
+      // Missing and dangling links are both repaired below.
+    }
+    if (!opts.force && current === link.source) continue;
+    try {
+      rmSync(link.destination, { recursive: true, force: true });
+      mkdirSync(dirname(link.destination), { recursive: true });
+      symlinkSync(link.source, link.destination, "junction");
+      if (realpathSync(link.destination) !== link.source) throw new Error("the resulting link resolves to a different package");
+    } catch (e) {
+      throw new Error(`${operationPkg} could not link ${link.peer} for ${link.owner}: ${(e as Error).message}`);
+    }
+    bound.push(link);
+  }
+  return bound;
 }
 
 /** The installed package's CURRENT version, read from disk (undefined when not installed). */
