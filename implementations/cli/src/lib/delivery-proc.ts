@@ -17,7 +17,7 @@ const PID_PATH = () => cotalPath("delivery.pid");
 // file stays `.cotal/delivery.creds`) comes from workspace — never a hand-copied literal.
 const credsStore = () => workspaceSecretStore(findCotalRoot());
 
-type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string };
+type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string };
 
 function alive(pid: number): boolean {
   try {

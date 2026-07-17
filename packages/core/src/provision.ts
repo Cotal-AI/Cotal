@@ -69,6 +69,12 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import { credsClaims, type Identity } from "./identity.js";
+import {
+  backupProfilePermissions,
+  restoreProfilePermissions,
+  type BackupPermissionScope,
+  type RestorePermissionScope,
+} from "./backup.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
 export type Profile =
@@ -80,6 +86,8 @@ export type Profile =
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "operator"
   | "purger"
+  | "backup"
+  | "restore"
   | "delivery"
   | "membership-rw"
   // PR 1.5 — the CLI-surface profiles that finish scoping (and DELETE) the former allow-all `manager`.
@@ -142,6 +150,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
+  backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
+  restore: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline restore initiation or exact-ID upload phase, memory-only" },
   probe: { class: "one-shot", defaultTtlSeconds: 60, note: "connect-only preflight" },
   "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
   "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },
@@ -362,6 +372,10 @@ export interface MintOpts {
   expiresInSeconds?: number;
   /** Absolute JWT `exp` timestamp in seconds. Used by cutover/test code that needs already-expired creds. */
   expiresAt?: number;
+  /** `backup` profile only: one discriminated inspector or snapshot phase. */
+  backup?: BackupPermissionScope;
+  /** `restore` profile only: one discriminated initiate, upload, validate, or checkpoint phase. */
+  restore?: RestorePermissionScope;
 }
 
 /** Compute a minted credential's `{ exp? }` from an explicit override or the centralized matrix
@@ -562,6 +576,14 @@ export function permissionsFor(
     return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
+  if (profile === "backup") {
+    if (!opts.backup) throw new Error("permissionsFor: backup requires opts.backup");
+    return backupProfilePermissions(space, pr.connId, opts.backup);
+  }
+  if (profile === "restore") {
+    if (!opts.restore) throw new Error("permissionsFor: restore requires opts.restore");
+    return restoreProfilePermissions(space, pr.connId, opts.restore);
+  }
   if (profile === "operator") return operatorPermissions(space, pr); // human-CLI client (send/dm/ask) (closure (ii))
   if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight (PR 1.5)
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
@@ -1034,6 +1056,7 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
 function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier = CONTROL_ADMIN): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
+  const DLVKV = `KV_${deliveryBucket(space)}`;
   // Read verbs for a KV bucket SCANNED/WATCHED via an ordered consumer (presence, channel registry, and
   // the membership feed — `readMembership` enumerates keys via `kv.keys()`): existence + kv.get (both
   // STREAM.MSG.GET and keyed DIRECT.GET forms) + the ordered consumer. NO `$KV.<bucket>` publish → no write.
@@ -1059,6 +1082,7 @@ function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier
         ...kvScan(CHKV), // channel registry read (readChannelRegistry + classifyChannels)
         ...kvScan(MSHIP), // membership FEED read (readMembership → detectUnmanagedActors) — the membership_ bucket
         ...kvPointRead(MGRKV), // manager-singleton lease keyed read (waitManagerReady) — point-get, NO write, NO watch
+        ...kvPointRead(DLVKV), // delivery-lease keyed read (preserve-state quiescence proof) — point-get, NO write, NO watch
         "$JS.FC.>", // ordered-consumer flow control
         // ONE control tier — launch + ps readiness. Static operator deploy creds ride CONTROL_ADMIN
         // (the historical shape); the user-mode `deployer` VIEW rides CONTROL_PRIVILEGED so the

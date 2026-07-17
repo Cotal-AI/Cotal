@@ -38,6 +38,9 @@ export interface AgentHandle {
    *  leaves the mesh on its own) before ensuring the process/tab is gone; otherwise
    *  it's a hard, immediate kill. */
   stop(opts?: { graceful?: boolean }): void;
+  /** Resolve only after the runtime has authoritatively proved the process/window/workspace is gone.
+   * Optional during the preservation rollout; a manager maintenance cut must fail closed when absent. */
+  waitForExit?(): Promise<void>;
   interrupt(): void;
   /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
    *  you attach to natively). */

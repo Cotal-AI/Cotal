@@ -132,6 +132,16 @@ export class PtyRuntime implements Runtime {
         proc.kill("SIGTERM");
         setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
       },
+      waitForExit: () => alive
+        ? new Promise<void>((resolve) => {
+            const done = (): void => {
+              exitSubs.delete(done);
+              resolve();
+            };
+            exitSubs.add(done);
+            if (!alive) done();
+          })
+        : Promise.resolve(),
       interrupt: () => {
         if (alive) proc.write("\x03");
       },

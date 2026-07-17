@@ -9,6 +9,7 @@ export * from "./official-connectors.js";
 export * from "./extensions.js";
 export * from "./materialize.js";
 export * from "./local-process.js";
+export * from "./maintenance.js";
 export * from "./flags.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";

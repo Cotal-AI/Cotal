@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -12,6 +13,7 @@ import {
   connectorServers,
   deprovisionAgent,
   firstFreeName,
+  idFromCreds,
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
@@ -20,6 +22,7 @@ import {
   parsePrincipalKey,
   parseShareSelection,
   principalKey,
+  probeConnect,
   provisionAgent,
   provisionAgentDurables,
   registry,
@@ -32,7 +35,7 @@ import {
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
 import { agentAuthState, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
+import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -43,6 +46,7 @@ import { AttachEndpoint } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
+import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
@@ -65,6 +69,9 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+/** A hard preservation stop should settle quickly. The manager still waits and reports a partial
+ * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
+const PRESERVE_STOP_TIMEOUT_MS = 10_000;
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
@@ -93,6 +100,10 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
   return Promise.race([p.finally(() => clearTimeout(timer)), timeout]);
 }
 
+function sameStrings(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  return JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...(b ?? [])].sort());
+}
+
 export interface ManagerOptions {
   space: string;
   servers?: string;
@@ -102,10 +113,104 @@ export interface ManagerOptions {
   workspaceRoot?: string;
   /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
   consolePort?: number;
+  /** Internal/test override for the preservation child-exit deadline. */
+  preserveStopTimeoutMs?: number;
+  /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
+  resumeAttemptId?: string;
+  /** Fsynced coordinator evidence recovered after commit but before finalize. */
+  resumeDurableCommitToken?: string;
   /** Resolve connectors from the installed `cotal ext` manifest (lazy import + live-remove honored),
    *  as the published binary does. A library composition leaves this off and resolves only what its
    *  composition root imported — a direct `new Manager()` never implicitly reads the machine manifest. */
   installedExtensions?: boolean;
+}
+
+export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
+
+export type ManagerResumeIdentity =
+  | { mode: "open"; id: string }
+  | { mode: "static"; id: string; credential: { kind: "file"; path: string; sha256: string } }
+  | {
+      mode: "user";
+      owner: string;
+      actor: string;
+      actorToken: { kind: "file"; path: string; sha256: string };
+      sentinelCredential: { kind: "file"; path: string; sha256: string };
+      health: { kind: "file"; path: string };
+    };
+
+export interface ManagerResumeAgent {
+  space: string;
+  name: string;
+  role?: string;
+  identity: ManagerResumeIdentity;
+  launch: {
+    connector: string;
+    runtime: string;
+    cwd: string;
+    source:
+      | { kind: "persona"; ref: string; configPath: string; configSha256: string }
+      | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
+    model?: string;
+    variant?: string;
+    subscribe?: string[];
+    allowSubscribe: string[];
+    allowPublish?: string[];
+    capabilities?: string[];
+    transcript: boolean;
+    shareTools?: string;
+    /** Original connector fork source, not a captured id for the currently running host session. */
+    forkSource?: string;
+    /** Values are deliberately not persisted: connector launch options are opaque and may be secrets. */
+    unresolvedLaunchOptionKeys?: string[];
+  };
+  /** Host-local files that must survive the maintenance cut, including `.cotal/run` artifacts. */
+  dependencies: string[];
+  spawner: string;
+  /** User-auth ledger delegation parent; distinct from manager process-ownership spawner. */
+  authorityParent?: string;
+  startedAt: string;
+}
+
+export interface ManagerResumeInventory {
+  version: "cotal-manager-resume/v1";
+  space: string;
+  createdAt: string;
+  agents: ManagerResumeAgent[];
+}
+
+export interface ManagerPreserveFailure {
+  name: string;
+  id: string;
+  error: string;
+}
+
+export interface ManagerPreserveResult {
+  ok: boolean;
+  attemptId: string;
+  state: Exclude<ManagerMaintenanceState, "active">;
+  inventory: ManagerResumeInventory;
+  failures: ManagerPreserveFailure[];
+}
+
+export interface ManagerPreservationPlan {
+  ok: boolean;
+  attemptId: string;
+  state: "prepared" | "preserved";
+  inventory: ManagerResumeInventory;
+  failures: ManagerPreserveFailure[];
+}
+
+export interface ManagerPreserveOptions {
+  attemptId: string;
+  /** Must verify the coordinator's locked attempt and durably fsync the inventory before resolving. */
+  persistInventory(inventory: ManagerResumeInventory): Promise<void>;
+}
+
+export interface ManagerResumeResult {
+  ok: boolean;
+  agents: Array<{ name: string; reply: ControlReply }>;
+  error?: string;
 }
 
 /** A spawn request, typed. The control-plane `start` op parses one of these out of an
@@ -165,6 +270,30 @@ export interface StartAgentOpts {
    *  workspaceRoot. Lets different agents run in different repos/folders. A relative path is
    *  resolved against the manager's workspace root. Omitted → the agent uses workspaceRoot. */
   cwd?: string;
+  /** Internal resolved-manifest provenance used by the preservation inventory. */
+  launchRef?: { runId: string; requested: string; hash: string };
+}
+
+interface ManagedLaunch {
+  source: ManagerResumeAgent["launch"]["source"];
+  cwd: string;
+  model?: string;
+  variant?: string;
+  subscribe?: string[];
+  allowSubscribe: string[];
+  allowPublish?: string[];
+  capabilities?: string[];
+  transcript: boolean;
+  shareTools?: string;
+  forkSource?: string;
+  unresolvedLaunchOptionKeys?: string[];
+}
+
+interface PreparedResume {
+  spec: LaunchSpec;
+  id?: string;
+  creds?: string;
+  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 }
 
 interface ManagedAgent {
@@ -184,6 +313,7 @@ interface ManagedAgent {
    *  or the manager's own id for roster/pre-spawn. Non-forgeable — set by `handle()`. The spawner
    *  ledger (P4b) keys own-children despawn + reap-on-parent-exit off this. */
   spawner: string;
+  authorityParent?: string;
   startedAt: number;
   handle: AgentHandle;
   /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
@@ -191,6 +321,9 @@ interface ManagedAgent {
    *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
    *  kill that would deny the agent its clean mesh-leave. */
   control?: { path: string; token: string };
+  launch: ManagedLaunch;
+  /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
+  suppressCleanup?: boolean;
 }
 
 /**
@@ -207,6 +340,7 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
+  private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
@@ -231,6 +365,29 @@ export class Manager {
   private leaseTimer?: ReturnType<typeof setInterval>;
   /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
+  private maintenanceState: ManagerMaintenanceState = "active";
+  private lifecycleInFlight = 0;
+  private lifecycleDrainWaiters: Array<() => void> = [];
+  private preservationTask?: Promise<ManagerPreserveResult>;
+  private preparationTask?: Promise<ManagerPreservationPlan>;
+  private preservationGeneration = 0;
+  private preservationAttemptId?: string;
+  private preservationStarted = false;
+  private preservationFailures: ManagerPreserveFailure[] = [];
+  private unverifiedStops: Array<{ name: string; id: string; handle: AgentHandle; authoritative?: boolean; error?: string }> = [];
+  private preservationInventory?: ManagerResumeInventory;
+  private resumeAttemptId?: string;
+  private resumeInventoryDigest?: string;
+  private resumeInventory?: ManagerResumeInventory;
+  private resumeTask?: Promise<ManagerResumeResult>;
+  private resumeResult?: ManagerResumeResult;
+  private resumeRequired = false;
+  private resumeAwaitingCommit = false;
+  private resumeCommitted = false;
+  private resumeCommitTask?: Promise<ControlReply>;
+  private resumeFinalized = false;
+  private resumeDurableCommitToken?: string;
+  private readonly resumedAgentNames = new Set<string>();
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -239,8 +396,18 @@ export class Manager {
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
+    this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
+    if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
+      throw new Error("resumeAttemptId must be a safe token (letters, digits, _, -; max 128)");
+    if (opts.resumeDurableCommitToken && !/^[a-f0-9]{64}$/.test(opts.resumeDurableCommitToken))
+      throw new Error("resumeDurableCommitToken must be a lowercase 32-byte token");
+    if (opts.resumeDurableCommitToken && !opts.resumeAttemptId)
+      throw new Error("resumeDurableCommitToken requires resumeAttemptId");
+    this.resumeAttemptId = opts.resumeAttemptId;
+    this.resumeRequired = opts.resumeAttemptId !== undefined;
+    this.resumeDurableCommitToken = opts.resumeDurableCommitToken;
     this.attach = new AttachEndpoint(
-      (name) => this.agents.get(name)?.handle,
+      (name) => this.maintenanceState === "active" && !this.resumeRequired ? this.agents.get(name)?.handle : undefined,
       () => this.list(),
       // Initial /feed replay for a connecting console: the current peer roster.
       () => [{ event: "roster", data: this.ep?.getRoster() ?? [] }],
@@ -376,6 +543,8 @@ export class Manager {
    *  (no responder) is recorded honestly: the daemon's 75% source re-read remains the adoption backstop.
    *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
   private async renewDaemonCreds(): Promise<void> {
+    const release = this.beginLifecycle();
+    if (!release) return;
     try {
       const results = await remintDaemonCreds(this.workspaceRoot);
       const resigned = results.filter((r) => r.ok);
@@ -394,7 +563,354 @@ export class Manager {
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
     } catch (e) {
       console.error(`! credential renewal pass failed: ${(e as Error).message}`);
+    } finally {
+      release();
     }
+  }
+
+  /** Admit one lifecycle/control operation while active. The synchronous increment is the fence:
+   * preserveState flips state before its first await, so work is either counted or rejected. */
+  private beginLifecycle(resumeOperation = false): (() => void) | undefined {
+    if (this.maintenanceState !== "active" || (this.resumeRequired && !resumeOperation)) return undefined;
+    this.lifecycleInFlight++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.releaseLifecycle();
+    };
+  }
+
+  private releaseLifecycle(): void {
+    this.lifecycleInFlight--;
+    if (this.lifecycleInFlight !== 0) return;
+    const waiters = this.lifecycleDrainWaiters;
+    this.lifecycleDrainWaiters = [];
+    for (const wake of waiters) wake();
+  }
+
+  /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
+   * even where the ordinary control reply remains fire-and-forget. */
+  private trackDeprovision(a: { id: string; name: string; userOwner?: string }, context = ""): void {
+    this.lifecycleInFlight++;
+    void this.deprovision(a)
+      .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
+      .finally(() => this.releaseLifecycle());
+  }
+
+  private async awaitLifecycleDrain(): Promise<void> {
+    if (this.lifecycleInFlight === 0) return;
+    await new Promise<void>((resolve) => this.lifecycleDrainWaiters.push(resolve));
+  }
+
+  private maintenanceError(): string {
+    if (this.resumeRequired) return `manager is waiting for resume attempt ${this.resumeAttemptId}; ordinary lifecycle/control work is fenced`;
+    return `manager is in ${this.maintenanceState} mode; new lifecycle/control work is fenced`;
+  }
+
+  /** Fence and build the inventory without stopping a child. The coordinator must durably persist
+   * this exact plan before calling commitPreservation with the same attempt id. */
+  preparePreservation(attemptId: string): Promise<ManagerPreservationPlan> {
+    if (!attemptId.trim()) return Promise.reject(new Error("preservation attemptId is required"));
+    if (this.preservationAttemptId && this.preservationAttemptId !== attemptId)
+      return Promise.reject(new Error(`manager is fenced for preservation attempt ${this.preservationAttemptId}; refusing different attempt ${attemptId}`));
+    if (this.maintenanceState === "preserved" && this.preservationInventory)
+      return Promise.resolve({ ok: true, attemptId, state: "preserved", inventory: this.preservationInventory, failures: [] });
+    if (this.preparationTask) return this.preparationTask;
+    if (this.maintenanceState === "active") {
+      // The fence lands before any await. Accepted work has already incremented lifecycleInFlight.
+      this.maintenanceState = "preserving";
+      this.preservationAttemptId = attemptId;
+      this.preservationGeneration++;
+      if (this.credRenewTimer) {
+        clearInterval(this.credRenewTimer);
+        this.credRenewTimer = undefined;
+      }
+    }
+    const generation = this.preservationGeneration;
+    const task = this.runPreparation(attemptId, generation);
+    let wrapped!: Promise<ManagerPreservationPlan>;
+    wrapped = task.finally(() => {
+      if (this.preservationGeneration === generation && this.preparationTask === wrapped)
+        this.preparationTask = undefined;
+    });
+    this.preparationTask = wrapped;
+    return wrapped;
+  }
+
+  private assertPreservationGeneration(attemptId: string, generation: number): void {
+    if (this.preservationAttemptId !== attemptId || this.preservationGeneration !== generation)
+      throw new Error(`preservation attempt ${attemptId} was abandoned before preparation completed`);
+  }
+
+  private async runPreparation(attemptId: string, generation: number): Promise<ManagerPreservationPlan> {
+    await this.awaitLifecycleDrain();
+    this.assertPreservationGeneration(attemptId, generation);
+    const inventory = this.preservationInventory ?? {
+      version: "cotal-manager-resume/v1",
+      space: this.space,
+      createdAt: new Date().toISOString(),
+      agents: [...this.agents.values()].map((a) => this.resumeEntry(a)),
+    } satisfies ManagerResumeInventory;
+    const failures: ManagerPreserveFailure[] = [];
+    for (const entry of inventory.agents) {
+      const error = this.inventoryReferenceError(entry);
+      if (error) failures.push({
+        name: entry.name,
+        id: entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id,
+        error,
+      });
+    }
+    const unverifiedStops = this.unverifiedStops.filter((stopped) => {
+      try {
+        if (!stopped.authoritative && stopped.handle.status() === "exited") return false;
+      } catch { /* fail closed below */ }
+      failures.push({
+        name: stopped.name,
+        id: stopped.id,
+        error: stopped.error ?? `an earlier stop on runtime "${stopped.handle.kind}" cannot prove the child is gone`,
+      });
+      return true;
+    });
+    this.assertPreservationGeneration(attemptId, generation);
+    // The prepared inventory must round-trip through the EXACT resume control parser (schema and
+    // byte cap) NOW, before any child stops: a cut that cannot resume must fail at prepare time,
+    // never after listener exposure.
+    try {
+      parseResumeControlArgs({ attemptId, inventory });
+    } catch (e) {
+      failures.push({ name: "<inventory>", id: attemptId, error: `prepared inventory would be rejected at resume: ${(e as Error).message}` });
+    }
+    this.preservationInventory = inventory;
+    this.preservationFailures = failures;
+    this.unverifiedStops = unverifiedStops;
+    return {
+      ok: failures.length === 0,
+      attemptId,
+      state: "prepared",
+      inventory,
+      failures: [...failures],
+    };
+  }
+
+  /** Stop children only after the coordinator has persisted the prepared inventory. Same-attempt
+   * retries are idempotent; a different attempt is refused. */
+  commitPreservation(attemptId: string): Promise<ManagerPreserveResult> {
+    if (!this.preservationAttemptId || this.preservationAttemptId !== attemptId)
+      return Promise.reject(new Error(`preservation attempt ${attemptId} was not prepared by this manager`));
+    if (!this.preservationInventory)
+      return Promise.reject(new Error(`preservation attempt ${attemptId} has no prepared inventory`));
+    if (this.preservationFailures.length)
+      return Promise.resolve({
+        ok: false,
+        attemptId,
+        state: "preserving",
+        inventory: this.preservationInventory,
+        failures: [...this.preservationFailures],
+      });
+    if (this.maintenanceState === "preserved")
+      return Promise.resolve({ ok: true, attemptId, state: "preserved", inventory: this.preservationInventory, failures: [] });
+    if (this.preservationTask) return this.preservationTask;
+    this.preservationStarted = true;
+    this.preservationTask = this.runPreservation(attemptId).finally(() => {
+      this.preservationTask = undefined;
+    });
+    return this.preservationTask;
+  }
+
+  /** Recover an abandoned prepare before any child stop. Once commit begins, preservation is
+   * irreversible and remains fenced until the coordinator records failure/recourse. */
+  abortPreservation(attemptId: string): void {
+    if (this.preservationAttemptId !== attemptId)
+      throw new Error(`preservation attempt ${attemptId} is not the active manager attempt`);
+    if (this.preparationTask || this.lifecycleInFlight > 0)
+      throw new Error(`preservation attempt ${attemptId} is still preparing or draining accepted lifecycle work and cannot be aborted`);
+    if (this.preservationStarted || this.preservationTask || this.maintenanceState === "preserved")
+      throw new Error(`preservation attempt ${attemptId} has begun stopping children and cannot return to active mode`);
+    this.preservationGeneration++;
+    this.maintenanceState = "active";
+    this.preservationAttemptId = undefined;
+    this.preservationInventory = undefined;
+    this.preservationFailures = [];
+    if (this.auth && !this.credRenewTimer) {
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer.unref?.();
+    }
+    // Exit watchers were suppressed while the fence stood: reconcile every child that died during
+    // preparation now, or its slot/credential footprint would linger unreaped after the abort.
+    for (const agent of [...this.agents.values()]) {
+      try {
+        if (agent.handle.status() === "exited") this.onAgentExit(agent);
+      } catch { /* status unavailable - the exit watcher fires again on real exit */ }
+    }
+  }
+
+  /** In-process convenience that preserves the crash barrier by awaiting durable persistence between
+   * prepare and commit. Wire callers use the explicit two-phase admin operations. */
+  async preserveState(opts: ManagerPreserveOptions): Promise<ManagerPreserveResult> {
+    const plan = await this.preparePreservation(opts.attemptId);
+    if (!plan.ok)
+      return { ok: false, attemptId: opts.attemptId, state: "preserving", inventory: plan.inventory, failures: plan.failures };
+    await opts.persistInventory(plan.inventory);
+    return this.commitPreservation(opts.attemptId);
+  }
+
+  private async runPreservation(attemptId: string): Promise<ManagerPreserveResult> {
+    const failures: ManagerPreserveFailure[] = [];
+    for (const a of [...this.agents.values()]) a.suppressCleanup = true;
+    await Promise.all(
+      [...this.agents.values()].map(async (a) => {
+        try {
+          // A preservation cut must not run the connector's logical leave/cleanup hooks.
+          a.handle.stop({ graceful: false });
+        } catch (e) {
+          failures.push({ name: a.name, id: a.id, error: `stop failed: ${(e as Error).message}` });
+          return;
+        }
+        try {
+          await this.awaitHandleExit(a.handle);
+          if (this.agents.get(a.name) === a) this.agents.delete(a.name);
+        } catch (e) {
+          failures.push({ name: a.name, id: a.id, error: (e as Error).message });
+        }
+      }),
+    );
+
+    if (failures.length === 0) this.maintenanceState = "preserved";
+    return {
+      ok: failures.length === 0,
+      attemptId,
+      state: this.maintenanceState === "preserved" ? "preserved" : "preserving",
+      inventory: this.preservationInventory!,
+      failures,
+    };
+  }
+
+  private async awaitHandleExit(handle: AgentHandle): Promise<void> {
+    if (!handle.waitForExit)
+      throw new Error(`runtime "${handle.kind}" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);
+    if (handle.status() === "exited") return;
+    await withTimeout(
+      handle.waitForExit(),
+      this.preserveStopTimeoutMs,
+      `child did not exit within ${this.preserveStopTimeoutMs}ms`,
+    );
+    if (handle.status() !== "exited")
+      throw new Error(`runtime "${handle.kind}" reported exit completion but status is still running`);
+  }
+
+  private inventoryReferenceError(entry: ManagerResumeAgent): string | undefined {
+    if (entry.launch.source.kind === "manifest" && !entry.launch.source.runId)
+      return "resolved manifest launch has no retained runId";
+    if (entry.launch.unresolvedLaunchOptionKeys?.length)
+      return `imperative launch options have no non-secret durable source (${entry.launch.unresolvedLaunchOptionKeys.join(", ")})`;
+    if (!entry.dependencies.some((path) => resolve(path) === resolve(entry.launch.source.configPath)))
+      return `launch config is not declared as a retained dependency: ${entry.launch.source.configPath}`;
+    if (entry.launch.source.kind === "manifest" && entry.launch.source.runId) {
+      const specPath = join(this.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
+      if (!entry.dependencies.some((path) => resolve(path) === resolve(specPath)))
+        return `manifest source is not declared as a retained dependency: ${specPath}`;
+    }
+    const required = [...entry.dependencies];
+    if (entry.identity.mode === "static") required.push(entry.identity.credential.path);
+    if (entry.identity.mode === "user") {
+      required.push(entry.identity.actorToken.path, entry.identity.sentinelCredential.path);
+    }
+    for (const path of required) {
+      try {
+        const st = lstatSync(path);
+        if (!st.isFile() || st.isSymbolicLink()) return `retained reference is not a regular non-symlink file: ${path}`;
+      } catch (e) {
+        return `retained reference unavailable: ${path} (${(e as Error).message})`;
+      }
+    }
+    if (process.platform !== "win32") {
+      const secrets = entry.identity.mode === "static"
+        ? [entry.identity.credential.path]
+        : entry.identity.mode === "user"
+          ? [entry.identity.actorToken.path, entry.identity.sentinelCredential.path]
+          : [];
+      for (const path of secrets)
+        if ((lstatSync(path).mode & 0o077) !== 0) return `retained identity file is not private (expected 0600): ${path}`;
+    }
+    try {
+      if (this.fileDigest(entry.launch.source.configPath) !== entry.launch.source.configSha256)
+        return `launch config changed since it became effective: ${entry.launch.source.configPath}`;
+      if (entry.identity.mode === "static" && this.fileDigest(entry.identity.credential.path) !== entry.identity.credential.sha256)
+        return `retained credential changed after the cut: ${entry.identity.credential.path}`;
+      if (entry.identity.mode === "user" &&
+          (this.fileDigest(entry.identity.actorToken.path) !== entry.identity.actorToken.sha256 ||
+           this.fileDigest(entry.identity.sentinelCredential.path) !== entry.identity.sentinelCredential.sha256))
+        return `retained user identity files changed after the cut for ${entry.name}`;
+      if (entry.launch.source.kind === "manifest" && entry.launch.source.runId) {
+        const specPath = join(this.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
+        if (!entry.launch.source.manifestSha256 || this.fileDigest(specPath) !== entry.launch.source.manifestSha256)
+          return `manifest source changed since it became effective: ${specPath}`;
+      }
+    } catch (e) {
+      return `retained reference cannot be hashed: ${(e as Error).message}`;
+    }
+    return undefined;
+  }
+
+  private fileDigest(path: string): string {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  }
+
+  private fileDigestOrEmpty(path: string): string {
+    try { return this.fileDigest(path); } catch { return ""; }
+  }
+
+  private resumeEntry(a: ManagedAgent): ManagerResumeAgent {
+    const principal = a.userOwner
+      ? parsePrincipalKey(a.id)
+      : { owner: DEV_OWNER, actor: a.id };
+    if (!principal) throw new Error(`managed agent ${a.name} has an invalid principal ${a.id}`);
+    const credsDir = join(authDir(this.workspaceRoot), "creds");
+    const staticCredsPath = join(credsDir, `${a.name}.creds`);
+    const actorTokenPath = join(credsDir, `${a.name}.actor-token`);
+    const sentinelPath = join(credsDir, `${a.name}.sentinel.creds`);
+    const identity: ManagerResumeIdentity = a.userOwner
+      ? {
+          mode: "user",
+          owner: principal.owner,
+          actor: principal.actor,
+          actorToken: { kind: "file", path: actorTokenPath, sha256: this.fileDigestOrEmpty(actorTokenPath) },
+          sentinelCredential: { kind: "file", path: sentinelPath, sha256: this.fileDigestOrEmpty(sentinelPath) },
+          health: { kind: "file", path: join(credsDir, `${a.name}.auth-health.json`) },
+        }
+      : this.auth
+        ? { mode: "static", id: principal.actor, credential: { kind: "file", path: staticCredsPath, sha256: this.fileDigestOrEmpty(staticCredsPath) } }
+        : { mode: "open", id: principal.actor };
+    const dependencies = [a.launch.source.configPath];
+    if (a.launch.source.kind === "manifest" && a.launch.source.runId)
+      dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
+    return {
+      space: this.space,
+      name: a.name,
+      role: a.role,
+      identity,
+      launch: {
+        connector: a.agent,
+        runtime: a.handle.kind,
+        cwd: a.launch.cwd,
+        source: a.launch.source,
+        model: a.launch.model,
+        variant: a.launch.variant,
+        subscribe: a.launch.subscribe,
+        allowSubscribe: a.launch.allowSubscribe,
+        allowPublish: a.launch.allowPublish,
+        capabilities: a.launch.capabilities,
+        transcript: a.launch.transcript,
+        shareTools: a.launch.shareTools,
+        forkSource: a.launch.forkSource,
+        unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
+      },
+      dependencies,
+      spawner: a.spawner,
+      authorityParent: a.authorityParent,
+      startedAt: new Date(a.startedAt).toISOString(),
+    };
   }
 
   /** Tear down every managed agent's footprint — the shared teardown for EVERY manager-exit path (#159
@@ -416,16 +932,42 @@ export class Manager {
     }
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
-      managed.map((a) =>
+      managed.filter((a) => !a.suppressCleanup).map((a) =>
         this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
   }
 
+  private async stopRetainedAgentsOnExit(): Promise<void> {
+    const managed = [...this.agents.values()];
+    for (const a of managed) a.suppressCleanup = true;
+    const failures: string[] = [];
+    await Promise.all(managed.map(async (a) => {
+      try {
+        a.handle.stop({ graceful: false });
+      } catch (e) {
+        failures.push(`${a.name}: stop failed: ${(e as Error).message}`);
+      }
+      try {
+        await this.awaitHandleExit(a.handle);
+        if (this.agents.get(a.name) === a) this.agents.delete(a.name);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
+      }
+    }));
+    if (failures.length)
+      throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
+  }
+
   async stop(): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
-    await this.teardownManagedAgents(); // reap agents BEFORE releasing the lease/endpoints (#159 B2)
+    if (this.maintenanceState === "active" && !this.resumeRequired) {
+      await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)
+    } else {
+      // A signal after a partial preservation must never fall back into destructive teardown.
+      await this.stopRetainedAgentsOnExit();
+    }
     await this.ep.releaseManagerLease(this.leaseRevision);
     await this.ep.stop();
     await this.attach.stop();
@@ -436,15 +978,18 @@ export class Manager {
    *  with the new holder, and exit. We deliberately do NOT re-acquire (a replacement may already be live
    *  while we'd still be serving) and do NOT release the key — it now belongs to that replacement. */
   private async renewLease(): Promise<void> {
-    if (!this.leaseInfo || this.leaseRevision === undefined) return;
     try {
+      if (!this.leaseInfo || this.leaseRevision === undefined) return;
       this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
     } catch (e) {
       console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) - shutting down to avoid two managers serving it`);
       if (this.leaseTimer) clearInterval(this.leaseTimer);
       // Tear down our managed agents' footprints too (#159 B2) — this exit path leaks them otherwise. Do
       // NOT release the lease key (it may belong to the replacement holder). Best-effort, like ep/attach.
-      try { await this.teardownManagedAgents(); } catch { /* best effort */ }
+      try {
+        if (this.maintenanceState === "active" && !this.resumeRequired) await this.teardownManagedAgents();
+        else await this.stopRetainedAgentsOnExit();
+      } catch { /* best effort */ }
       try { await this.ep.stop(); } catch { /* best effort */ }
       try { await this.attach.stop(); } catch { /* best effort */ }
       process.exit(1);
@@ -452,6 +997,172 @@ export class Manager {
   }
 
   private async handle(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {
+    if (req.op === "finalizeResume") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: "finalizeResume is admin-only; not allowed on this control subject" };
+      let args: { attemptId: string; durableCommitToken: string };
+      try {
+        args = parseResumeFinalizeArgs(req.args);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      if (!this.resumeAttemptId || this.resumeAttemptId !== args.attemptId)
+        return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId ?? "<none>"}, not ${args.attemptId}` };
+      if (!this.resumeCommitted || !this.resumeDurableCommitToken)
+        return { ok: false, error: `resume attempt ${args.attemptId} has no successful commit to finalize` };
+      if (this.resumeDurableCommitToken !== args.durableCommitToken)
+        return { ok: false, error: `resume attempt ${args.attemptId} durable commit token does not match` };
+      if (this.resumeFinalized) return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
+      const inventory = this.resumeInventory;
+      if (!inventory)
+        return { ok: false, error: `resume attempt ${args.attemptId} has no bound inventory` };
+      let inactive: string[];
+      try {
+        inactive = this.resumeLivenessErrors(inventory, this.ep.getRoster());
+      } catch (e) {
+        return { ok: false, error: `resume attempt ${args.attemptId} cannot verify live principals at finalize: ${(e as Error).message}` };
+      }
+      if (inactive.length)
+        return { ok: false, error: `resume attempt ${args.attemptId} is not live at finalize: ${inactive.join("; ")}` };
+      for (const entry of this.resumeInventory?.agents ?? []) {
+        const managed = this.agents.get(entry.name);
+        if (managed) managed.suppressCleanup = false;
+      }
+      this.resumeFinalized = true;
+      this.resumeRequired = false;
+      return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
+    }
+    if (req.op === "commitResume") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: "commitResume is admin-only; not allowed on this control subject" };
+      let attemptId: string;
+      try {
+        attemptId = parseResumeCommitArgs(req.args).attemptId;
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      if (!this.resumeAttemptId || this.resumeAttemptId !== attemptId)
+        return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId ?? "<none>"}, not ${attemptId}` };
+      if (this.resumeCommitted)
+        return {
+          ok: true,
+          data: {
+            attemptId,
+            state: this.resumeFinalized ? "active" : "awaitingFinalize",
+            durableCommitToken: this.resumeDurableCommitToken,
+          },
+        };
+      if (this.resumeCommitTask) return this.resumeCommitTask;
+      const task = this.commitResumeActivation(attemptId);
+      this.resumeCommitTask = task;
+      try {
+        return await task;
+      } finally {
+        if (this.resumeCommitTask === task) this.resumeCommitTask = undefined;
+      }
+    }
+    if (req.op === "resumePreserved") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: "resumePreserved is admin-only; not allowed on this control subject" };
+      try {
+        const args = parseResumeControlArgs(req.args);
+        const inventoryDigest = createHash("sha256").update(JSON.stringify(args.inventory)).digest("hex");
+        if (!this.resumeAttemptId)
+          return { ok: false, error: "resumePreserved requires a manager started with --resume-attempt" };
+        if (this.resumeAttemptId !== args.attemptId)
+          return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId}, not ${args.attemptId}` };
+        if (this.resumeInventoryDigest && this.resumeInventoryDigest !== inventoryDigest)
+          return { ok: false, error: `resume attempt ${args.attemptId} is already bound to a different inventory` };
+        if (!this.resumeInventoryDigest) {
+          this.resumeInventoryDigest = inventoryDigest;
+          this.resumeInventory = args.inventory;
+        }
+        if (!this.resumeTask && !this.resumeResult) {
+          this.resumeTask = this.resumePreserved(args.inventory).then((result) => {
+            if (result.ok || this.resumedAgentNames.size > 0) this.resumeResult = result;
+            return result;
+          }).finally(() => {
+            this.resumeTask = undefined;
+          });
+        }
+        const result = this.resumeResult ?? await this.resumeTask!;
+        const data = { attemptId: args.attemptId, state: result.ok ? "awaitingCommit" : "degraded", ...result };
+        return result.ok
+          ? { ok: true, data }
+          : { ok: false, data, error: result.error ?? "retained-agent resume failed" };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "preparePreservation" || req.op === "commitPreservation" || req.op === "abortPreservation") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: `${req.op} is admin-only; not allowed on this control subject` };
+      if (this.resumeRequired) return { ok: false, error: this.maintenanceError() };
+      const attemptId = String(req.args?.attemptId ?? "").trim();
+      if (!attemptId) return { ok: false, error: `${req.op} requires attemptId` };
+      try {
+        if (req.op === "abortPreservation") {
+          this.abortPreservation(attemptId);
+          return { ok: true, data: { attemptId, state: "active" } };
+        }
+        const result = req.op === "preparePreservation"
+          ? await this.preparePreservation(attemptId)
+          : await this.commitPreservation(attemptId);
+        return result.ok
+          ? { ok: true, data: result }
+          : {
+              ok: false,
+              data: result,
+              error: `preservation incomplete: ${result.failures.map((f) => `${f.name}: ${f.error}`).join("; ")}`,
+            };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    const release = this.beginLifecycle();
+    if (!release) return { ok: false, error: this.maintenanceError() };
+    try {
+      return await this.handleActive(req, tier);
+    } finally {
+      release();
+    }
+  }
+
+  private async commitResumeActivation(attemptId: string): Promise<ControlReply> {
+    if (!this.resumeAwaitingCommit || !this.resumeResult?.ok)
+      return { ok: false, error: `resume attempt ${attemptId} has no successful activation to commit` };
+    const inventory = this.resumeInventory;
+    if (!inventory)
+      return { ok: false, error: `resume attempt ${attemptId} has no bound inventory` };
+    const authority = await Promise.all(inventory.agents.map(async (entry) => {
+      try {
+        await this.validateRetainedAuthority(entry);
+        return undefined;
+      } catch (e) {
+        return `${entry.name}: ${(e as Error).message}`;
+      }
+    }));
+    const drift = authority.filter((error): error is string => error !== undefined);
+    if (drift.length)
+      return { ok: false, error: `resume attempt ${attemptId} retained authority changed before commit: ${drift.join("; ")}` };
+    let inactive: string[];
+    try {
+      inactive = this.resumeLivenessErrors(inventory, this.ep.getRoster());
+    } catch (e) {
+      return { ok: false, error: `resume attempt ${attemptId} cannot verify live principals: ${(e as Error).message}` };
+    }
+    if (inactive.length)
+      return { ok: false, error: `resume attempt ${attemptId} is not live at commit: ${inactive.join("; ")}` };
+    this.resumeAwaitingCommit = false;
+    this.resumeCommitted = true;
+    this.resumeDurableCommitToken ??= randomBytes(32).toString("hex");
+    return {
+      ok: true,
+      data: { attemptId, state: "awaitingFinalize", durableCommitToken: this.resumeDurableCommitToken },
+    };
+  }
+
+  private async handleActive(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {
     const args = req.args ?? {};
     // `req.from.id` is non-forgeable in auth mode: serveControl rejects any request whose payload
     // `from.id` doesn't match the subject sender (endpoint.ts). In open mode there are no creds, so
@@ -546,6 +1257,47 @@ export class Manager {
     return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
   }
 
+  private resumeLivenessErrors(inventory: ManagerResumeInventory, roster: Presence[]): string[] {
+    const inactive: string[] = [];
+    const expectedNames = new Set(inventory.agents.map((entry) => entry.name));
+    for (const name of this.resumedAgentNames)
+      if (!expectedNames.has(name)) inactive.push(`${name} is not part of the bound inventory`);
+    for (const entry of inventory.agents) {
+      const managed = this.agents.get(entry.name);
+      if (!managed) {
+        inactive.push(`${entry.name} is no longer managed`);
+        continue;
+      }
+      const expectedId = entry.identity.mode === "user"
+        ? principalKey(entry.identity.owner, entry.identity.actor).key
+        : entry.identity.id;
+      const expectedPrincipal = entry.identity.mode === "user"
+        ? expectedId
+        : principalKey(DEV_OWNER, entry.identity.id).key;
+      if (managed.id !== expectedId || this.managedPrincipal(managed) !== expectedPrincipal) {
+        inactive.push(`${entry.name} no longer holds retained principal ${expectedPrincipal}`);
+        continue;
+      }
+      if (managed.handle.name !== entry.name || managed.handle.kind !== entry.launch.runtime) {
+        inactive.push(`${entry.name} is not attached to its exact retained ${entry.launch.runtime} handle`);
+        continue;
+      }
+      try {
+        if (managed.handle.status() !== "running") {
+          inactive.push(`${entry.name} runtime is not running`);
+          continue;
+        }
+      } catch (e) {
+        inactive.push(`${entry.name} runtime status failed: ${(e as Error).message}`);
+        continue;
+      }
+      if (!roster.some((presence) =>
+        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline"))
+        inactive.push(`${entry.name} principal ${expectedPrincipal} is not exactly present`);
+    }
+    return inactive;
+  }
+
   /** Self-despawn (P2b): stop the managed agent whose id == the authenticated caller. The
    *  no-name self-op can only ever resolve to the caller's OWN managed entry (ids are unique
    *  per spawn + non-forgeable in auth mode), never a peer — so it's structurally incapable of
@@ -556,7 +1308,7 @@ export class Manager {
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
     this.stopHandle(target, graceful);
-    this.freeSlot(target, true); // self-despawn is rate-floored (recycle churn)
+    this.trackStoppedHandle(target, true);
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
 
@@ -584,6 +1336,48 @@ export class Manager {
     } catch (e) {
       console.error(`stop ${a.name} (${a.id}): ${(e as Error).message}`);
     }
+  }
+
+  /** Keep an accepted stop inside the lifecycle drain until the runtime proves the child is gone,
+   * so a maintenance prepare can never fence ahead of a child that is still dying.
+   *
+   * An operator-accepted stop frees its slot at once: `stop` replying ✓ means `ps` no longer lists
+   * the agent. That cannot omit a still-live child from a cut, because runPreparation drains the
+   * lifecycle BEFORE it reads the roster — the exit proof below is what closes the race, not the
+   * slot lingering. A recursive reap (`requireAuthoritativeExit`) instead keeps the slot until the
+   * wait proves exit: nobody asked for those children to be gone, so they stay managed until the
+   * runtime says otherwise, and a runtime that cannot prove exit records an unverified stop. */
+  private trackStoppedHandle(a: ManagedAgent, floor: boolean, requireAuthoritativeExit = false): void {
+    if (!a.handle.waitForExit) {
+      // Preserve ordinary external-runtime stop behavior, but retain enough evidence for a later
+      // maintenance prepare to fail if that runtime still cannot prove the surface disappeared.
+      this.unverifiedStops.push({
+        name: a.name,
+        id: a.id,
+        handle: a.handle,
+        authoritative: requireAuthoritativeExit,
+        error: requireAuthoritativeExit
+          ? `recursive reap cannot prove exit on runtime "${a.handle.kind}" (AgentHandle.waitForExit is not implemented)`
+          : undefined,
+      });
+      if (requireAuthoritativeExit) return;
+      this.freeSlot(a, floor, true);
+      return;
+    }
+    if (!requireAuthoritativeExit) this.freeSlot(a, floor, true);
+    this.lifecycleInFlight++;
+    void this.awaitHandleExit(a.handle)
+      .then(() => this.freeSlot(a, floor, true)) // no-op once an accepted stop already freed it
+      .catch((e) => {
+        this.unverifiedStops.push({
+          name: a.name,
+          id: a.id,
+          handle: a.handle,
+          authoritative: true,
+          error: `accepted stop could not prove exit: ${(e as Error).message}`,
+        });
+      })
+      .finally(() => this.releaseLifecycle());
   }
 
   /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
@@ -701,7 +1495,7 @@ export class Manager {
    *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
    *  covered (P4c). Floor self + own-child despawn and natural exit; NEVER admin despawn (operator
    *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
-  private freeSlot(a: ManagedAgent, floor: boolean): void {
+  private freeSlot(a: ManagedAgent, floor: boolean, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     this.agents.delete(a.name);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
@@ -709,8 +1503,8 @@ export class Manager {
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
     // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
-    void this.deprovision(a).catch((e) =>
-      console.error(`deprovision ${a.name} (${a.id}): ${(e as Error).message}`));
+    if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
+      this.trackDeprovision(a);
   }
 
   /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
@@ -760,15 +1554,16 @@ export class Manager {
     );
   }
 
-  /** Reap a parent's children on its exit (P4b): stop + free every agent whose `spawner` is the
-   *  exited agent's id, so orphans don't ratchet the ceiling shut. Recursive — a reaped child's
-   *  own children are reaped too. Exit-driven, so each freed slot is rate-floored like a despawn. */
+  /** Reap a parent's children on its exit (P4b). Every descendant remains managed until the runtime's
+   * authoritative wait proves exit; the wait participates in the lifecycle drain, so preservation can
+   * never omit a child that may still be alive. Recursive descendants are scheduled before their parent
+   * slot can disappear. */
   private reapChildrenOf(parentId: string): void {
     for (const child of [...this.agents.values()]) {
       if (child.spawner !== parentId) continue;
+      this.reapChildrenOf(this.managedPrincipal(child));
       this.stopHandle(child, false);
-      this.freeSlot(child, true);
-      this.reapChildrenOf(child.id);
+      this.trackStoppedHandle(child, true, true);
     }
   }
 
@@ -776,8 +1571,11 @@ export class Manager {
    *  (rate-floored — exit-driven churn counts) and reap any children it spawned. Idempotent via
    *  freeSlot's identity guard, so a later graceful-stop SIGKILL firing exit again is a no-op. */
   private onAgentExit(a: ManagedAgent): void {
+    // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
+    // trigger normal deprovision/reap while the cut is being formed.
+    if (this.maintenanceState !== "active") return;
     this.freeSlot(a, true);
-    this.reapChildrenOf(a.id);
+    this.reapChildrenOf(this.managedPrincipal(a));
   }
 
   /** Agent names become `.cotal/agents/<name>.md` paths and mesh identities, so they must be bare
@@ -1001,7 +1799,7 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner), caller);
+    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner, runId), caller);
     if (reply.ok)
       // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
       // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
@@ -1016,6 +1814,16 @@ export class Manager {
    *  defaulting to the manager's own id for roster/pre-spawn — recorded for the spawner
    *  ledger (own-children despawn + reap-on-parent-exit). */
   async startAgent(opts: StartAgentOpts, spawner?: string): Promise<ControlReply> {
+    const release = this.beginLifecycle();
+    if (!release) return { ok: false, error: this.maintenanceError() };
+    try {
+      return await this.startAgentActive(opts, spawner);
+    } finally {
+      release();
+    }
+  }
+
+  private async startAgentActive(opts: StartAgentOpts, spawner?: string): Promise<ControlReply> {
     // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
     // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
     // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
@@ -1220,6 +2028,11 @@ export class Manager {
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
       // agent shares the workspace root (the prior, unchanged behavior).
       const cwd = opts.cwd ? resolve(this.workspaceRoot, opts.cwd) : this.workspaceRoot;
+      const configSha256 = this.fileDigest(configPath);
+      const manifestPath = opts.launchRef
+        ? join(this.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
+        : undefined;
+      const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
       const spec = connector.buildLaunch({
         space: this.space,
         name,
@@ -1262,9 +2075,39 @@ export class Manager {
         id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
         ...(userLaunch ? { userOwner } : { seed: identity.seed }),
         spawner: spawner ?? this.ep.ref().id,
+        authorityParent: userLaunch && spawner && parsePrincipalKey(spawner) ? spawner : undefined,
         startedAt: Date.now(),
         handle,
         control: spec.control,
+        launch: {
+          source: opts.resolved
+            ? {
+                kind: "manifest",
+                runId: opts.launchRef?.runId,
+                requested: opts.launchRef?.requested ?? opts.resolved.name,
+                hash: opts.launchRef?.hash ?? opts.resolved.hash,
+                configPath,
+                configSha256,
+                manifestSha256,
+              }
+            : { kind: "persona", ref, configPath, configSha256 },
+          cwd,
+          model,
+          variant,
+          subscribe,
+          allowSubscribe,
+          allowPublish,
+          capabilities,
+          transcript,
+          shareTools: opts.shareTools,
+          forkSource: opts.resume,
+          // Opaque values may contain secrets. Preserve only their keys and require the referenced
+          // persona/manifest to resolve the values again; imperative overrides have no safe payload.
+          unresolvedLaunchOptionKeys:
+            opts.launchOptions && Object.keys(opts.launchOptions).length
+              ? Object.keys(opts.launchOptions).sort()
+              : undefined,
+        },
       };
       this.agents.set(name, managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
@@ -1294,10 +2137,367 @@ export class Manager {
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
         const orphan = provisioned;
-        void this.deprovision(orphan).catch((e) =>
-          console.error(`deprovision (orphaned spawn) ${orphan.name}: ${(e as Error).message}`));
+        this.trackDeprovision(orphan, "(orphaned spawn)");
       }
     }
+  }
+
+  /** Preflight the whole inventory before launching its first process, then adopt each exact retained
+   * principal without provisioning. A later runtime launch failure is reported per-agent, but malformed
+   * or missing inventory material can never produce a partially resumed set. */
+  async resumePreserved(
+    inventory: ManagerResumeInventory,
+  ): Promise<ManagerResumeResult> {
+    const release = this.beginLifecycle(true);
+    if (!release) return { ok: false, agents: [], error: this.maintenanceError() };
+    const batchReservations: string[] = [];
+    try {
+      if (inventory.version !== "cotal-manager-resume/v1")
+        return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
+      if (inventory.space !== this.space)
+        return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
+      const seen = new Set<string>();
+      const principals = new Set<string>();
+      await this.ep.waitForPresenceSnapshot();
+      const livePrincipals = new Set(this.ep.getRoster()
+        .filter((presence) => presence.status !== "offline")
+        .map((presence) => presence.card.id));
+      if (this.agents.size + this.reserved.size + this.coolingCount() + inventory.agents.length > MAX_AGENTS)
+        return { ok: false, agents: [], error: `resume inventory would exceed manager capacity (${MAX_AGENTS})` };
+      for (const entry of inventory.agents) {
+        if (seen.has(entry.name))
+          return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
+        seen.add(entry.name);
+        let principal: string;
+        try {
+          principal = entry.identity.mode === "user"
+            ? principalKey(entry.identity.owner, entry.identity.actor).key
+            : principalKey(DEV_OWNER, entry.identity.id).key;
+        } catch (e) {
+          return { ok: false, agents: [], error: `invalid retained principal for ${entry.name}: ${(e as Error).message}` };
+        }
+        if (principals.has(principal))
+          return { ok: false, agents: [], error: `resume inventory contains duplicate principal "${principal}"` };
+        principals.add(principal);
+        if (livePrincipals.has(principal))
+          return { ok: false, agents: [], error: `retained principal "${principal}" is already live and this runtime cannot authoritatively adopt it` };
+        if (this.agents.has(entry.name) || this.reserved.has(entry.name))
+          return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
+      }
+      for (const entry of inventory.agents) {
+        this.reserved.add(entry.name);
+        batchReservations.push(entry.name);
+      }
+      const prepared = new Map<string, PreparedResume>();
+      const preflight: Array<{ name: string; reply: ControlReply }> = [];
+      for (const entry of inventory.agents) {
+        const reply = await this.resumePreservedAgent(entry, true, true, prepared);
+        preflight.push({ name: entry.name, reply });
+      }
+      const preflightFailures = preflight.filter(({ reply }) => !reply.ok);
+      if (preflightFailures.length)
+        return {
+          ok: false,
+          agents: preflight,
+          error: `${preflightFailures.length} retained agent${preflightFailures.length === 1 ? "" : "s"} failed preflight`,
+        };
+      const agents: Array<{ name: string; reply: ControlReply }> = [];
+      for (let i = 0; i < inventory.agents.length; i++) {
+        const entry = inventory.agents[i];
+        const reply = await this.resumePreservedAgent(entry, false, true, prepared);
+        agents.push({ name: entry.name, reply });
+        if (!reply.ok) {
+          for (const skipped of inventory.agents.slice(i + 1))
+            agents.push({ name: skipped.name, reply: { ok: false, error: `not launched because ${entry.name} failed` } });
+          return { ok: false, agents, error: reply.error };
+        }
+      }
+      if (this.resumeAttemptId) this.resumeAwaitingCommit = true;
+      return { ok: true, agents };
+    } finally {
+      for (const name of batchReservations) this.reserved.delete(name);
+      release();
+    }
+  }
+
+  /** Re-read every retained identity input and its current authority without provisioning. This runs
+   * during whole-inventory preflight, immediately before each individual spawn, and at commit. */
+  private async validateRetainedAuthority(
+    entry: ManagerResumeAgent,
+  ): Promise<Pick<PreparedResume, "id" | "creds" | "userAuth">> {
+    const referenceError = this.inventoryReferenceError(entry);
+    if (referenceError) throw new Error(`retained agent ${entry.name}: ${referenceError}`);
+    if (entry.identity.mode === "open") {
+      if (this.auth || this.userMode)
+        throw new Error(`retained agent ${entry.name} is open-mode but the current manager is authenticated`);
+      return { id: entry.identity.id };
+    }
+    if (entry.identity.mode === "static") {
+      if (!this.auth || this.userMode)
+        throw new Error(`retained agent ${entry.name} is static-auth but the current manager is not`);
+      const expected = resolve(authDir(this.workspaceRoot), "creds", `${entry.name}.creds`);
+      if (resolve(entry.identity.credential.path) !== expected)
+        throw new Error(`retained credential reference for ${entry.name} is not the manager-owned path ${expected}`);
+      let credentialText: string;
+      try {
+        const st = lstatSync(expected);
+        if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
+        credentialText = readFileSync(expected, "utf8");
+        const actual = idFromCreds(credentialText);
+        if (actual !== entry.identity.id)
+          throw new Error(`retained credential identity ${actual} does not match inventory principal ${entry.identity.id}`);
+      } catch (e) {
+        throw new Error(`retained credential for ${entry.name} is unusable: ${(e as Error).message}`);
+      }
+      const accepted = await this.probeStaticCredential(credentialText);
+      if (!accepted.ok)
+        throw new Error(`retained credential for ${entry.name} is not accepted by the current broker (${accepted.reason})`);
+      return { id: entry.identity.id, creds: expected };
+    }
+    if (!this.userMode)
+      throw new Error(`retained agent ${entry.name} is user-auth but the current manager is not`);
+    try {
+      const provider = resolveAuthProvider();
+      const actorToken = readFileSync(entry.identity.actorToken.path, "utf8");
+      const sentinelCreds = readFileSync(entry.identity.sentinelCredential.path, "utf8");
+      const adopted = await provider.validateRetainedAgent({
+        store: workspaceSecretStore(this.workspaceRoot),
+        dir: userAuthStateDir(this.workspaceRoot, this.space),
+        space: this.space,
+        owner: entry.identity.owner,
+        actor: entry.identity.actor,
+        actorToken,
+        sentinelCreds,
+      });
+      if (adopted.owner !== entry.identity.owner || adopted.actor !== entry.identity.actor)
+        throw new Error(`auth provider returned a replacement principal; expected ${entry.identity.owner}.${entry.identity.actor}`);
+      if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
+          !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
+          !sameStrings(adopted.scope, entry.launch.capabilities) ||
+          adopted.role !== entry.role || adopted.parent !== entry.authorityParent)
+        throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} no longer matches the inventory`);
+      return {
+        userAuth: {
+          owner: entry.identity.owner,
+          actor: entry.identity.actor,
+          sentinelCredsPath: entry.identity.sentinelCredential.path,
+          bearerCmd: [
+            process.execPath,
+            ...process.execArgv,
+            process.argv[1],
+            provider.agentBearerCommand,
+            "--dir", userAuthStateDir(this.workspaceRoot, this.space),
+            "--space", this.space,
+            "--owner", entry.identity.owner,
+            "--actor", entry.identity.actor,
+            "--token-file", entry.identity.actorToken.path,
+            "--health-file", entry.identity.health.path,
+          ],
+        },
+      };
+    } catch (e) {
+      throw new Error(`retained user principal ${entry.identity.owner}.${entry.identity.actor} could not be reused: ${(e as Error).message}`);
+    }
+  }
+
+  /** Validate/relaunch one retained inventory entry. Called only through resumePreserved so all
+   * records pass the same preflight before the first child is exposed. */
+  private async resumePreservedAgent(
+    entry: ManagerResumeAgent,
+    preflightOnly = false,
+    batchReserved = false,
+    prepared?: Map<string, PreparedResume>,
+  ): Promise<ControlReply> {
+    const release = this.beginLifecycle(batchReserved);
+    if (!release) return { ok: false, error: this.maintenanceError() };
+    try {
+      if (entry.space !== this.space)
+        return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
+      if (entry.launch.runtime !== this.runtime.kind)
+        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", current manager uses "${this.runtime.kind}"` };
+      const nameErr = this.nameError(entry.name);
+      if (nameErr) return { ok: false, error: nameErr };
+      if (this.agents.has(entry.name) || (!batchReserved && this.reserved.has(entry.name)))
+        return { ok: false, error: `retained agent "${entry.name}" is already managed or reserved; same-principal resume never auto-numbers` };
+      if (!batchReserved && this.agents.size + this.reserved.size + this.coolingCount() >= MAX_AGENTS)
+        return { ok: false, error: `at capacity (${MAX_AGENTS} agents incl. in-flight + cooling); same-principal resume refused` };
+      const cached = prepared?.get(entry.name);
+      if (!preflightOnly && cached) {
+        try {
+          // Do not trust the earlier batch preflight across another agent's sequential readiness wait.
+          await this.validateRetainedAuthority(entry);
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+        return this.launchPreparedResume(entry, cached, batchReserved);
+      }
+      try {
+        const cwd = lstatSync(entry.launch.cwd);
+        if (!cwd.isDirectory() || cwd.isSymbolicLink())
+          return { ok: false, error: `retained cwd is not a real directory: ${entry.launch.cwd}` };
+      } catch (e) {
+        return { ok: false, error: `retained cwd unavailable: ${entry.launch.cwd} (${(e as Error).message})` };
+      }
+
+      let connector: Connector;
+      try {
+        connector = registry.resolve<Connector>("connector", entry.launch.connector);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
+      if (missing.length)
+        return { ok: false, error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
+      if (entry.launch.variant && !connector.supportsModelVariant)
+        return { ok: false, error: `${connector.name} connector does not support model variants (variant)` };
+
+      let launchOptions: Record<string, unknown> | undefined;
+      if (entry.launch.source.kind === "manifest") {
+        const launchSource = entry.launch.source;
+        if (!launchSource.runId)
+          return { ok: false, error: `retained manifest launch for ${entry.name} has no runId; refusing to guess a .cotal/run source` };
+        let spec: MeshLaunchAgent | undefined;
+        try {
+          const source = launchSpecForRun(this.workspaceRoot, launchSource.runId);
+          if (source.space !== this.space)
+            return { ok: false, error: `retained launch spec space "${source.space}" does not match manager space "${this.space}"` };
+          spec = source.agents.find((a) => a.name === launchSource.requested);
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+        if (!spec || spec.hash !== launchSource.hash)
+          return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
+        launchOptions = spec.launchOptions;
+      } else {
+        try {
+          launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      }
+
+      let authority: Pick<PreparedResume, "id" | "creds" | "userAuth">;
+      try {
+        authority = await this.validateRetainedAuthority(entry);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+
+      try {
+        const mcpServers = connectorServers(
+          loadCotalConfig(this.workspaceRoot),
+          entry.launch.connector,
+          parseShareSelection(entry.launch.shareTools),
+        );
+        const spec = connector.buildLaunch({
+          space: this.space,
+          name: entry.name,
+          role: entry.role,
+          id: authority.id,
+          creds: authority.creds,
+          userAuth: authority.userAuth,
+          servers: this.servers,
+          configPath: entry.launch.source.configPath,
+          model: entry.launch.model,
+          variant: entry.launch.variant,
+          launchOptions,
+          resume: entry.launch.forkSource,
+          subscribe: entry.launch.subscribe,
+          allowSubscribe: entry.launch.allowSubscribe,
+          allowPublish: entry.launch.allowPublish,
+          capabilities: entry.launch.capabilities,
+          transcript: entry.launch.transcript,
+          mcpServers,
+          workspaceRoot: this.workspaceRoot,
+        });
+        const value = { spec, ...authority } satisfies PreparedResume;
+        prepared?.set(entry.name, value);
+        if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };
+        return this.launchPreparedResume(entry, value, batchReserved);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    } finally {
+      release();
+    }
+  }
+
+  private async launchPreparedResume(
+    entry: ManagerResumeAgent,
+    prepared: PreparedResume,
+    batchReserved: boolean,
+  ): Promise<ControlReply> {
+    if (!batchReserved) this.reserved.add(entry.name);
+    try {
+      const handle = this.runtime.spawn(entry.name, prepared.spec, entry.launch.cwd);
+      const managed: ManagedAgent = {
+        name: entry.name,
+        role: entry.role,
+        agent: entry.launch.connector,
+        id: entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id,
+        userOwner: entry.identity.mode === "user" ? entry.identity.owner : undefined,
+        spawner: entry.spawner,
+        authorityParent: entry.authorityParent,
+        startedAt: Date.now(),
+        handle,
+        control: prepared.spec.control,
+        launch: {
+          source: entry.launch.source,
+          cwd: entry.launch.cwd,
+          model: entry.launch.model,
+          variant: entry.launch.variant,
+          subscribe: entry.launch.subscribe,
+          allowSubscribe: entry.launch.allowSubscribe,
+          allowPublish: entry.launch.allowPublish,
+          capabilities: entry.launch.capabilities,
+          transcript: entry.launch.transcript,
+          shareTools: entry.launch.shareTools,
+          forkSource: entry.launch.forkSource,
+        },
+        suppressCleanup: true,
+      };
+      this.agents.set(entry.name, managed);
+      if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
+      const readiness = await this.awaitReadiness(managed);
+      if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
+      if (!readiness.ok) {
+        this.watchExit(managed);
+        this.watchResumeAdoption(managed);
+        return { ok: false, error: readiness.detail };
+      }
+      if (!this.resumeAttemptId) managed.suppressCleanup = false;
+      this.watchExit(managed);
+      if (this.agents.get(managed.name) !== managed)
+        return { ok: false, error: `${managed.name} exited immediately after same-principal readiness` };
+      return {
+        ok: true,
+        data: { name: managed.name, role: managed.role, agent: managed.agent, id: managed.id, mode: handle.kind, resumed: true },
+      };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    } finally {
+      if (!batchReserved) this.reserved.delete(entry.name);
+    }
+  }
+
+  private probeStaticCredential(creds: string) {
+    return probeConnect(this.servers ?? DEFAULT_SERVER, { creds, timeoutMs: 5_000 });
+  }
+
+  /** An uncertain resume remains non-destructive until exact-principal presence arrives later. */
+  private watchResumeAdoption(a: ManagedAgent): void {
+    const wanted = this.managedPrincipal(a);
+    const onPresence = (): void => {
+      if (this.agents.get(a.name) !== a) {
+        this.ep.off("presence", onPresence);
+        return;
+      }
+      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline")) return;
+      if (!this.resumeRequired) a.suppressCleanup = false;
+      this.ep.off("presence", onPresence);
+    };
+    this.ep.on("presence", onPresence);
+    onPresence();
   }
 
   /** #159 B1: wait for a detached launch to reach a REAL outcome before replying — never a liveness-
@@ -1423,7 +2623,7 @@ export class Manager {
     if (denied) return { ok: false, error: denied };
     const graceful = args.graceful !== false;
     this.stopHandle(a, graceful);
-    this.freeSlot(a, !admin); // own-child despawn is rate-floored; admin emergency-kill is not
+    this.trackStoppedHandle(a, !admin);
     return { ok: true, data: { name, stopped: true, graceful } };
   }
 

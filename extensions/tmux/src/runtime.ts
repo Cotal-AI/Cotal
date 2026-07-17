@@ -53,14 +53,20 @@ export class TmuxRuntime implements Runtime {
     const command = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
     // Key the whole lifecycle off the STABLE window ID (@N), not `session:name`. tmux can rename
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
-    const { windowId } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
+    const { windowId, paneId } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
     if (spec.confirm) scheduleConfirm(windowId);
 
     return {
       name,
       kind: "tmux",
-      status: () => (tmux.windowAliveRef(windowId) ? "running" : "exited"),
+      status: () => {
+        try {
+          return tmux.paneState(paneId);
+        } catch {
+          return "running";
+        }
+      },
       stop: (opts) => {
         if (opts?.graceful === false) return tmux.closeWindow(windowId);
         // Graceful: type `/exit` so the Claude session shuts down cleanly (its SessionEnd
@@ -82,6 +88,7 @@ export class TmuxRuntime implements Runtime {
           }
         }, GRACE_MS);
       },
+      waitForExit: () => tmux.waitForPaneExit(paneId),
       interrupt: () => {
         tmux.sendKey("C-c", windowId);
       },

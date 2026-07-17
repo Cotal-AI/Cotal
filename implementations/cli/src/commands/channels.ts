@@ -23,7 +23,7 @@ import { c } from "../ui.js";
  */
 export async function channels(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
-  const values = args.values as { server?: string; space?: string; creds?: string; replay?: boolean; "no-replay"?: boolean; window?: string; desc?: string; instructions?: string };
+  const values = args.values as ChannelsValues;
   // Validate the subcommand BEFORE connecting, so a typo (or a bare `cotal channels`) prints usage,
   // not "no mesh running" — the same validate-first order as `history`.
   const sub = positionals[0];
@@ -83,6 +83,17 @@ export async function channels(args: ParsedArgs): Promise<void> {
     default:
       return usage();
   }
+}
+
+export interface ChannelsValues {
+  server?: string;
+  space?: string;
+  creds?: string;
+  replay?: boolean;
+  "no-replay"?: boolean;
+  window?: string;
+  desc?: string;
+  instructions?: string;
 }
 
 function printRegistry(reg: ChannelRegistryFile): void {

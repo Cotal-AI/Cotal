@@ -18,6 +18,8 @@ import.
 - Forces Orca CLI lifecycle calls to the local runtime by removing ambient remote-runtime selectors.
 - Uses Orca terminal handles for status, interrupt, and close. Watching is native: switch to the
   Orca tab rather than `cotal attach`.
+- Waits for exit through Orca's bounded native `terminal wait --for exit`, following handle rotation
+  by stable PTY id and failing closed on timeout or an unreachable runtime.
 - Contributes a `Runtime` only, not a `TerminalLayout` provider for setup layouts.
 
 Orca must open terminals with a POSIX-compatible shell that supports `exec` and single-quoted

@@ -25,6 +25,7 @@ import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
 import { endpoints } from "./commands/endpoints.js";
+import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -103,23 +104,37 @@ const baseCommands: Command[] = [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
       { name: "run", type: "string", value: "<id>", description: "tear down one `spawn -f` run by id" },
       { name: "dry-run", type: "boolean", description: "print what would stop, mutate nothing" },
+      { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
+      { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },
     ],
     run: down,
     complete: downComplete,
   },
   {
     kind: "command",
+    name: "backup",
+    group: "Mesh",
+    summary: "create an offline full-space or registry-only backup from a preserved cut",
+    usage: "backup create <dir> [--only full|registry] [--store-dir <dir>]",
+    positionals: "create <dir>",
+    flags: backupFlags,
+    run: backup,
+    complete: backupComplete,
+  },
+  {
+    kind: "command",
     name: "clean",
     group: "Mesh",
     summary:
-      "configurable cleanup - `history` purges the live backlog; `store`/`all` wipe the stopped mesh's local state",
+      "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
     usage:
-      "clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>]",
-    positionals: "<history|store|all>",
+      "clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | clean restore-fallback --attempt <id> --force",
+    positionals: "<history|store|all|restore-fallback>",
     flags: [
       ...targetFlags,
       { name: "dms", type: "boolean", description: "history: also clear DM history" },
       { name: "store-dir", type: "string", value: "<dir>", description: "store/all: JetStream store directory (default .cotal/nats)" },
+      { name: "attempt", type: "string", value: "<id>", description: "restore-fallback: matching committed restore attempt" },
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
     ],
     run: clean,
@@ -216,7 +231,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "channels",
     group: "Messaging",
-    summary: "inspect/set the channel registry (replay policy, description, instructions)",
+    summary: "inspect or set the channel registry",
     usage:
       "channels <list | set <name> [--replay|--no-replay] [--desc <s>] [--instructions <s>] | default --replay|--no-replay>",
     positionals: "<list | set <name> | default>",
