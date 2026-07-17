@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -17,7 +17,6 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
-  mkSecretDir,
   newIdentity,
   parsePrincipalKey,
   parseShareSelection,
@@ -28,13 +27,12 @@ import {
   registry,
   resolveAuthProvider,
   saveAgentFile,
-  writeSecretFile,
   subjectMatches,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { agentAuthState, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -866,21 +864,18 @@ export class Manager {
       ? parsePrincipalKey(a.id)
       : { owner: DEV_OWNER, actor: a.id };
     if (!principal) throw new Error(`managed agent ${a.name} has an invalid principal ${a.id}`);
-    const credsDir = join(authDir(this.workspaceRoot), "creds");
-    const staticCredsPath = join(credsDir, `${a.name}.creds`);
-    const actorTokenPath = join(credsDir, `${a.name}.actor-token`);
-    const sentinelPath = join(credsDir, `${a.name}.sentinel.creds`);
+    const files = agentSecretFilePaths(this.workspaceRoot, a.name);
     const identity: ManagerResumeIdentity = a.userOwner
       ? {
           mode: "user",
           owner: principal.owner,
           actor: principal.actor,
-          actorToken: { kind: "file", path: actorTokenPath, sha256: this.fileDigestOrEmpty(actorTokenPath) },
-          sentinelCredential: { kind: "file", path: sentinelPath, sha256: this.fileDigestOrEmpty(sentinelPath) },
-          health: { kind: "file", path: join(credsDir, `${a.name}.auth-health.json`) },
+          actorToken: { kind: "file", path: files.actorToken, sha256: this.fileDigestOrEmpty(files.actorToken) },
+          sentinelCredential: { kind: "file", path: files.sentinelCreds, sha256: this.fileDigestOrEmpty(files.sentinelCreds) },
+          health: { kind: "file", path: files.health },
         }
       : this.auth
-        ? { mode: "static", id: principal.actor, credential: { kind: "file", path: staticCredsPath, sha256: this.fileDigestOrEmpty(staticCredsPath) } }
+        ? { mode: "static", id: principal.actor, credential: { kind: "file", path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) } }
         : { mode: "open", id: principal.actor };
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
@@ -1419,20 +1414,19 @@ export class Manager {
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
     const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
-    const credsDir = join(authDir(this.workspaceRoot), "creds");
-    const tokenPath = join(credsDir, `${name}.actor-token`);
-    const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
-    const healthPath = join(credsDir, `${name}.auth-health.json`);
+    // LOCAL composition, hardcoded: until the manager's entry is store-threaded (the same
+    // later slice as its renewal-owner store, with/after the membership-rw reader migration),
+    // a pure-KMS hosted manager CANNOT read the callout material this grant needs — hosted
+    // user-mode spawn via the manager is UNAVAILABLE, not silently degraded, until then.
+    const secrets = workspaceSecretStore(this.workspaceRoot);
+    const files = agentSecretFilePaths(this.workspaceRoot, name);
+    const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = files;
     try {
       // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
       // the spawner's own grant), so a refused delegation exits here having touched nothing beyond
       // the ledger: no durables, no broker footprint, nothing for a corrected respawn to race.
       const grant = await provider.grantAgent({
-        // LOCAL composition, hardcoded: until the manager's entry is store-threaded (the same
-        // later slice as its renewal-owner store, with/after the membership-rw reader migration),
-        // a pure-KMS hosted manager CANNOT read the callout material this grant needs — hosted
-        // user-mode spawn via the manager is UNAVAILABLE, not silently degraded, until then.
-        store: workspaceSecretStore(this.workspaceRoot),
+        store: secrets,
         dir,
         space: this.space,
         owner,
@@ -1453,9 +1447,13 @@ export class Manager {
           role: opts.role,
         }),
       );
-      mkSecretDir(credsDir);
-      writeSecretFile(tokenPath, grant.actorToken);
-      writeSecretFile(sentinelPath, grant.sentinelCreds);
+      // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
+      // sentinel handoff read FILES, so materialize both at the canonical paths (under the local
+      // FS composition, a byte-identical rewrite of the keys' own locations).
+      await secrets.put(agentActorTokenKey(name), grant.actorToken);
+      await secrets.put(agentSentinelCredsKey(name), grant.sentinelCreds);
+      await materializeSecretToFile(secrets, agentActorTokenKey(name), tokenPath);
+      await materializeSecretToFile(secrets, agentSentinelCredsKey(name), sentinelPath);
       rmSync(healthPath, { force: true }); // a fresh start opens a fresh health window
       const bearerCmd = [
         // The manager's own invocation prefix (node + loader flags + the cotal entry) — the agent
@@ -1481,6 +1479,8 @@ export class Manager {
       // may respawn the moment it reads the refusal, and a detached teardown would race (and
       // delete) that fresh spawn's just-provisioned durables.
       await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+      await secrets.delete(agentActorTokenKey(name)).catch(() => {});
+      await secrets.delete(agentSentinelCredsKey(name)).catch(() => {});
       rmSync(tokenPath, { force: true });
       rmSync(sentinelPath, { force: true });
       rmSync(healthPath, { force: true });
@@ -1521,18 +1521,24 @@ export class Manager {
    *  delivery surface a stale copy could use. */
   private async deprovision(a: { id: string; name: string; userOwner?: string }): Promise<void> {
     if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
-    // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
+    // Drop the local creds FIRST + unconditionally — a usable identity on disk, useless for a
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
-    rmSync(join(authDir(this.workspaceRoot), "creds", `${a.name}.creds`), { force: true });
+    // Migrated kinds: the store delete is the authoritative removal; the rmSync clears the FS
+    // materialization (a byte-identical no-op under the local composition, real once the manager
+    // is store-threaded onto a non-FS store).
+    const secrets = workspaceSecretStore(this.workspaceRoot);
+    const files = agentSecretFilePaths(this.workspaceRoot, a.name);
+    await secrets.delete(agentCredsKey(a.name));
+    rmSync(files.creds, { force: true });
     if (a.userOwner) {
       // USER MODE: this teardown IS revocation, not just footprint reduction — the ledger row is
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
       // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
       // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      const credsDir = join(authDir(this.workspaceRoot), "creds");
-      for (const f of [`${a.name}.actor-token`, `${a.name}.sentinel.creds`, `${a.name}.auth-health.json`])
-        rmSync(join(credsDir, f), { force: true });
+      await secrets.delete(agentActorTokenKey(a.name));
+      await secrets.delete(agentSentinelCredsKey(a.name));
+      for (const f of [files.actorToken, files.sentinelCreds, files.health]) rmSync(f, { force: true });
       try {
         await resolveAuthProvider().revokeAgent({
           dir: userAuthStateDir(this.workspaceRoot, this.space),
@@ -2011,9 +2017,13 @@ export class Manager {
             capabilities,
           }),
         );
-        credsPath = join(authDir(this.workspaceRoot), "creds", `${name}.creds`);
-        mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
-        writeSecretFile(credsPath, creds);
+        // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
+        // file path, so the cred must exist as a file regardless of the store behind the seam.
+        // LOCAL composition, hardcoded, same posture as provisionUserAgent's grant store above.
+        const secrets = workspaceSecretStore(this.workspaceRoot);
+        credsPath = agentSecretFilePaths(this.workspaceRoot, name).creds;
+        await secrets.put(agentCredsKey(name), creds);
+        await materializeSecretToFile(secrets, agentCredsKey(name), credsPath);
         provisioned = { id: identity.id, name }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
@@ -2235,14 +2245,19 @@ export class Manager {
     if (entry.identity.mode === "static") {
       if (!this.auth || this.userMode)
         throw new Error(`retained agent ${entry.name} is static-auth but the current manager is not`);
-      const expected = resolve(authDir(this.workspaceRoot), "creds", `${entry.name}.creds`);
+      const expected = resolve(agentSecretFilePaths(this.workspaceRoot, entry.name).creds);
       if (resolve(entry.identity.credential.path) !== expected)
         throw new Error(`retained credential reference for ${entry.name} is not the manager-owned path ${expected}`);
       let credentialText: string;
       try {
+        // The lstat guards the FS MATERIALIZATION the child will read at launch; the identity check
+        // runs on the store's value — the source of truth (byte-identical here, the local FS
+        // composition resolves the key to this same path).
         const st = lstatSync(expected);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
-        credentialText = readFileSync(expected, "utf8");
+        const stored = await workspaceSecretStore(this.workspaceRoot).get(agentCredsKey(entry.name));
+        if (stored === undefined) throw new Error("the credential is not in the secret store");
+        credentialText = stored;
         const actual = idFromCreds(credentialText);
         if (actual !== entry.identity.id)
           throw new Error(`retained credential identity ${actual} does not match inventory principal ${entry.identity.id}`);
@@ -2258,10 +2273,20 @@ export class Manager {
       throw new Error(`retained agent ${entry.name} is user-auth but the current manager is not`);
     try {
       const provider = resolveAuthProvider();
-      const actorToken = readFileSync(entry.identity.actorToken.path, "utf8");
-      const sentinelCreds = readFileSync(entry.identity.sentinelCredential.path, "utf8");
+      // Mirror the static branch's expected-path equality: the store reads below are keyed by
+      // NAME, so a retained record aimed at a foreign path would otherwise pass its digest checks
+      // there while a different secret gets validated here. Canonical paths only.
+      const files = agentSecretFilePaths(this.workspaceRoot, entry.name);
+      if (resolve(entry.identity.actorToken.path) !== resolve(files.actorToken) ||
+          resolve(entry.identity.sentinelCredential.path) !== resolve(files.sentinelCreds))
+        throw new Error(`retained identity references are not the manager-owned paths under ${agentCredsDir(this.workspaceRoot)}`);
+      const secrets = workspaceSecretStore(this.workspaceRoot);
+      const actorToken = await secrets.get(agentActorTokenKey(entry.name));
+      const sentinelCreds = await secrets.get(agentSentinelCredsKey(entry.name));
+      if (actorToken === undefined || sentinelCreds === undefined)
+        throw new Error("the retained actor token / sentinel credential is not in the secret store");
       const adopted = await provider.validateRetainedAgent({
-        store: workspaceSecretStore(this.workspaceRoot),
+        store: secrets,
         dir: userAuthStateDir(this.workspaceRoot, this.space),
         space: this.space,
         owner: entry.identity.owner,
@@ -2752,7 +2777,7 @@ export class Manager {
       // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
       // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
       const health = a.userOwner
-        ? agentAuthState(join(authDir(this.workspaceRoot), "creds", `${a.name}.auth-health.json`))
+        ? agentAuthState(agentSecretFilePaths(this.workspaceRoot, a.name).health)
         : undefined;
       return {
         name: a.name,

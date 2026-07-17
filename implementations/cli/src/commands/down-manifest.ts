@@ -22,11 +22,13 @@ import {
   isReachable,
   mintCreds,
   newIdentity,
+  parsePrincipalKey,
   realDirNoSymlink,
+  resolveAuthProvider,
   subjectMatches,
   unlinkFileNoFollow,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
+import { agentActorTokenKey, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
@@ -188,12 +190,29 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   //      NOT retained (retaining would re-trigger every retry → a permanently un-downable ledger);
   //    - unverifiable (null: symlink/corrupt) → left in place, reported, NOT retained (same trap; a
   //      symlink isn't a cred we wrote) — surfaced loudly so a genuine stale cred isn't silent;
-  //    - id matches but UNLINK THROWS → OUR cred, a recoverable FS error → retained so a retry finishes.
+  //    - id matches but the DELETE THROWS → OUR cred, a recoverable store/FS error → retained so a
+  //      retry finishes.
   const unresolvedCredIds = new Set<string>();
+  const secrets = workspaceSecretStore(root);
   for (const cp of credPaths) {
     if (unresolvedIds.has(cp.id)) continue; // remote-unresolved agent keeps its cred (still in use / retry)
-    const sub = credSubject(cp.path);
-    if (sub === undefined) continue; // no cred file — proven absent
+    // Which plane provisioned this agent? The ledgered id says: a user-mode launch records the
+    // owner+actor PRINCIPAL key, a static launch the bare nkey id. A user-mode agent's standing
+    // authority is <name>.actor-token + <name>.sentinel.creds + its provider grant row — never
+    // <name>.creds — so the static-only sweep below would read it as "proven absent" and let the
+    // ledger die with the mint authority standing (the crashed-manager residual).
+    const principal = parsePrincipalKey(cp.id);
+    if (principal && principal.owner.startsWith("u_") && principal.actor === cp.name) {
+      await teardownUserModeAuthority(root, ledger.space, cp, principal.owner, secrets, liveById, unresolvedCredIds);
+      continue;
+    }
+    // The no-follow lstat gate below keeps guarding the FS MATERIALIZATION (a symlink is tamper
+    // evidence, not a cred we wrote); the VALUE the id check runs on comes through the seam — the
+    // source of truth (byte-identical under the local FS composition), as does the delete.
+    const gate = credMaterializationGate(cp.path);
+    if (gate === "absent") continue; // no cred file — proven absent
+    const raw = gate === "ok" ? await secrets.get(agentCredsKey(cp.name)) : undefined;
+    const sub = gate === "suspect" || raw === undefined ? null : credSubject(raw);
     if (sub === null) {
       console.error(c.yellow(`  ! ${cp.name} creds: unreadable/unverifiable - left in place (resolve by hand if it's a stale cred)`));
       continue;
@@ -203,10 +222,12 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
       continue;
     }
     try {
-      if (unlinkFileNoFollow(cp.path)) console.log(c.dim(`  • removed creds for ${cp.name}`));
+      await secrets.delete(agentCredsKey(cp.name));
+      unlinkFileNoFollow(cp.path); // clear the materialization (locally the delete above WAS it)
+      console.log(c.dim(`  • removed creds for ${cp.name}`));
     } catch (e) {
       console.error(c.yellow(`  ! ${cp.name} creds: ${(e as Error).message} - retained for retry`));
-      unresolvedCredIds.add(cp.id); // OUR id-verified cred, unlink failed (recoverable) → keep the record
+      unresolvedCredIds.add(cp.id); // OUR id-verified cred, delete failed (recoverable) → keep the record
     }
   }
 
@@ -254,16 +275,74 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
  *  belongs to the recorded agent before `down -f` deletes it. Returns `undefined` if the file is
  *  absent, or `null` if it can't be verified (symlink / not a regular file / no JWT / unparseable) so
  *  the caller fails closed and leaves it. */
-function credSubject(path: string): string | undefined | null {
-  let raw: string;
+/** The user-mode half of local authority cleanup for one RESOLVED ledger entry: revoke OUR grant
+ *  row first (owner+actor-keyed, so it can only ever touch this ledger's principal — standing MINT
+ *  authority even when the secret files are gone, e.g. a manager that crashed mid-deprovision),
+ *  then delete the actor-token + sentinel pair through the seam. The static branch's `sub !== id`
+ *  protection has no content analog here (the token is an opaque secret, the sentinel is
+ *  per-space), so the reuse guard is the LIVE roster: a different id holding this name means the
+ *  name-keyed files are the successor's materialization — left in place (a same-owner successor
+ *  shares OUR principal id and is caught upstream as unresolved-live). Any failure retains the
+ *  ledger row for a retry, like the static delete path; a user-mode entry with NO registered auth
+ *  provider is a broken composition and fails into retention, never a silent skip. */
+async function teardownUserModeAuthority(
+  root: string,
+  space: string,
+  cp: { requested: string; name: string; id: string; path: string },
+  owner: string,
+  secrets: ReturnType<typeof workspaceSecretStore>,
+  liveById: Map<string, { name: string; id: string }>,
+  unresolvedCredIds: Set<string>,
+): Promise<void> {
+  const files = agentSecretFilePaths(root, cp.name);
+  const tokenGate = credMaterializationGate(files.actorToken);
+  const sentinelGate = credMaterializationGate(files.sentinelCreds);
+  try {
+    // Revoke FIRST and unconditionally for a resolved entry — the grant row is standing MINT
+    // authority keyed to OUR owner+actor, independent of whatever is (or isn't) on disk. A
+    // suspect materialization must never shield the row: completion may only ever delete the
+    // ledger once no standing authority remains (the round-2 panel gate).
+    await resolveAuthProvider().revokeAgent({ dir: userAuthStateDir(root, space), owner, actor: cp.name });
+    if (tokenGate === "suspect" || sentinelGate === "suspect") {
+      // Tamper evidence (symlink/irregular/unstatable): the files stay for the operator, and —
+      // deliberately — the entry is NOT retained (retaining would re-trigger every retry, the
+      // permanently-undownable-ledger trap the static dispositions narrowed). With the row
+      // revoked, nothing standing survives the ledger's deletion.
+      console.error(c.yellow(`  ! ${cp.name} user-mode secrets: unreadable/unverifiable - files left in place (resolve by hand); the grant row IS revoked, no standing authority remains`));
+      return;
+    }
+    const foreign = [...liveById.values()].some((r) => r.name === cp.name && r.id !== cp.id);
+    if (foreign) {
+      console.log(c.yellow(`  ~ ${cp.name}: a different live agent holds this name - its secret files are left in place (our grant row is revoked)`));
+    } else if (tokenGate === "ok" || sentinelGate === "ok") {
+      await secrets.delete(agentActorTokenKey(cp.name));
+      await secrets.delete(agentSentinelCredsKey(cp.name));
+      unlinkFileNoFollow(files.actorToken); // the materializations (locally the deletes above WERE them)
+      unlinkFileNoFollow(files.sentinelCreds);
+      rmSync(files.health, { force: true });
+      console.log(c.dim(`  • removed user-mode authority for ${cp.name} (grant row + token + sentinel)`));
+    } else {
+      console.log(c.dim(`  • ${cp.name}: user-mode secrets already gone; grant row revoked`));
+    }
+  } catch (e) {
+    console.error(c.yellow(`  ! ${cp.name} user-mode teardown: ${(e as Error).message} - retained for retry`));
+    unresolvedCredIds.add(cp.id);
+  }
+}
+
+/** No-follow gate over a cred's FS materialization: "absent" (proven gone), "suspect" (symlink /
+ *  irregular / unstattable — tamper evidence, never something we wrote), or "ok". */
+function credMaterializationGate(path: string): "absent" | "suspect" | "ok" {
   try {
     const st = lstatSync(path);
-    if (st.isSymbolicLink() || !st.isFile()) return null;
-    raw = readFileSync(path, "utf8");
+    return st.isSymbolicLink() || !st.isFile() ? "suspect" : "ok";
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    return null;
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "suspect";
   }
+}
+
+/** The nkey subject of a creds VALUE (its user JWT's `sub`), or null if unparseable. */
+function credSubject(raw: string): string | null {
   const jwt = raw.split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3);
   if (!jwt) return null;
   try {

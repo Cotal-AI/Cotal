@@ -53,6 +53,9 @@ function meshRoot(): string {
   mkdirSync(join(dot, "nats", "jetstream"), { recursive: true });
   writeFileSync(join(dot, "nats", "jetstream", "stream.dat"), "x");
   mkdirSync(join(dot, "auth", "creds"), { recursive: true });
+  // One spawned agent's standing secrets (all three migrated kinds) + its non-secret health file.
+  for (const f of ["worker.creds", "worker.actor-token", "worker.sentinel.creds", "worker.auth-health.json"])
+    writeFileSync(join(dot, "auth", "creds", f), "x");
   writeFileSync(join(dot, "auth", "auth.json"), JSON.stringify({ space: "demo" }));
   mkdirSync(join(dot, "agents"), { recursive: true });
   writeFileSync(join(dot, "agents", "default.md"), "# default\n");
@@ -118,6 +121,7 @@ try {
   const removedStore = await removeLocalState(storeRoot, { includeAuth: false });
   check("store: removes the JetStream store", removedStore.some((r) => r.includes("nats")) && !existsSync(join(storeRoot, ".cotal", "nats")));
   check("store: auth + derived creds survive", existsSync(join(storeRoot, ".cotal", "auth", "auth.json")) && existsSync(join(storeRoot, ".cotal", "delivery.creds")));
+  check("store: per-agent standing secrets survive", existsSync(join(storeRoot, ".cotal", "auth", "creds", "worker.creds")));
   check("store: personas survive", existsSync(join(storeRoot, ".cotal", "agents", "default.md")));
   rmSync(storeRoot, { recursive: true, force: true });
 
@@ -127,6 +131,10 @@ try {
   const removedAll = await removeLocalState(allRoot, { includeAuth: true });
   check("all: removes store + auth", !existsSync(join(allRoot, ".cotal", "nats")) && !existsSync(join(allRoot, ".cotal", "auth")));
   for (const f of DERIVED) check(`all: removes derived ${f}`, !existsSync(join(allRoot, ".cotal", f)));
+  // The per-agent kinds go through the SEAM (reported as store keys), never the raw auth rm —
+  // the same migrated-kind discipline as delivery.creds; the health file falls to the raw rm.
+  for (const k of ["auth/creds/worker.creds", "auth/creds/worker.actor-token", "auth/creds/worker.sentinel.creds"])
+    check(`all: sweeps ${k} through the seam`, removedAll.includes(`.cotal/${k}`), removedAll);
   check("all: sweeps stale pidfiles", !existsSync(join(allRoot, ".cotal", "nats.pid")));
   check("all: sweeps run/ launch artifacts", !existsSync(join(allRoot, ".cotal", "run")));
   check("all: personas survive", existsSync(join(allRoot, ".cotal", "agents", "default.md")));
