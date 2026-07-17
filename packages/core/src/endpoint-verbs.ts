@@ -23,8 +23,9 @@ import {
   EpEnvelopeError, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock,
 } from "./endpoint-envelope.js";
+import type { KV } from "@nats-io/kv";
 import type { CompiledContract } from "./schema-profile.js";
-import type { FrozenInstance } from "./endpoint-service.js";
+import { freezeExpectedSet, registrationReconciler, serviceEpochReader, type FrozenInstance } from "./endpoint-service.js";
 
 // ---- shared request construction ---------------------------------------------------------------
 
@@ -651,4 +652,46 @@ export async function epScatter(
   // replies.size), no missing, and NO observed invalid frame (fail-loud: an invalid is not clean).
   result.complete = result.missing.length === 0 && result.invalid.length === 0 && result.replies.size === frozen.size;
   return result;
+}
+
+// ---- the registry-wired caller entry points (§13.5) ---------------------------------------------
+
+/**
+ * Scatter one command to the LIVE class (§13.5), registry-wired end to end: freeze the expected
+ * set from the service registry, publish once on the `all` rail, and reconcile registration
+ * currency post-T through the SAME registry handle — the full §13.5 sequence behind one call.
+ * `kv` is the records store the caller's §13.9 read grant covers (the same handle
+ * {@link freezeExpectedSet} documents); every freeze/reconcile refusal (`failed-precondition`
+ * on an empty or unreadable registry, `internal` on malformed mediated-writer state) and every
+ * gather classification passes through unchanged. The hooks stay public: a caller composing its
+ * own freeze (a pinned set, a test harness) uses {@link epScatter} directly.
+ */
+export async function epScatterService(
+  nc: NatsConnection,
+  kv: KV,
+  space: string,
+  op: EpVerbOp,
+  opts: { deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number },
+): Promise<EpScatterResult> {
+  const expected = await freezeExpectedSet(kv, op.endpoint);
+  return epScatter(nc, space, op, { ...opts, expected, reconcileRegistration: registrationReconciler(kv, op.endpoint, expected) });
+}
+
+/**
+ * Call one command with the registry-wired currency check (§13.2): on the `one` rail the queue
+ * winner's epoch is verified against a fresh read of its `svc….status` through
+ * {@link serviceEpochReader} over the caller's §13.9 read grant; the `inst` rail pins its
+ * incarnation up front and needs no read, so the hook is not wired there. Every {@link epCall}
+ * refusal passes through unchanged (a superseded winner is `expired`; an unregistered or
+ * never-converged responder is the read's own `failed-precondition`, never mislabeled staleness).
+ */
+export async function epCallService(
+  nc: NatsConnection,
+  kv: KV,
+  space: string,
+  route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number },
+  op: EpVerbOp,
+  opts: { deadlineMs: number },
+): Promise<EpAttributedReply> {
+  return epCall(nc, space, route, op, route.mode === "one" ? { ...opts, currentEpoch: serviceEpochReader(kv, op.endpoint) } : opts);
 }

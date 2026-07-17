@@ -23,6 +23,7 @@ import {
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
+import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -746,6 +747,65 @@ export async function freezeExpectedSet(kv: KV, endpoint: string): Promise<Froze
   if (frozen.length === 0)
     throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances; an empty registry is never an empty scatter success (SPEC 13.5)`);
   return frozen;
+}
+
+/** The PRODUCTION `reconcileRegistration` hook for {@link epScatter} (§13.5): a bounded post-T
+ *  read of every frozen slot's CURRENT `svc….spec` key over the SAME §13.9 read grant the
+ *  freeze ran under. Per slot: a live spec is `{ registered: true, registrationRevision }` (the
+ *  key's CURRENT store revision — an advance past the frozen value is what the gather classifies
+ *  as `registration` churn); an absent or deleted spec is the EXPLICIT `{ registered: false }`
+ *  verdict (a mid-scatter deregistration, §13.5: not churn). Only the spec KEY is read — the
+ *  reconcile compares registration currency, not liveness, so the merged status read (and its
+ *  stabilization loops) would add latency for nothing. A malformed spec fails loud (`internal`,
+ *  §13.9 mediated-writer state); an unreadable registry normalizes to `failed-precondition`
+ *  exactly like the freeze (§13.5: never a fabricated verdict). */
+export function registrationReconciler(
+  kv: KV,
+  endpoint: string,
+  frozen: readonly FrozenInstance[],
+): () => Promise<Map<string, EpRegistrationState>> {
+  const name = endpointToken(endpoint); // grammar up front: a malformed endpoint never reaches the read
+  void name;
+  return async () => {
+    const verdicts = new Map<string, EpRegistrationState>();
+    for (const slot of frozen) {
+      let entry;
+      try {
+        entry = await kv.get(recordSpecKey(RECORD_KINDS.svc, [endpoint, slot.instanceId]));
+      } catch (err) {
+        const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable during the scatter reconcile; an unreadable registry is failed-precondition, never a fabricated verdict (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
+        (wrapped as Error & { cause?: unknown }).cause = err;
+        throw wrapped;
+      }
+      if (!entry || entry.operation !== "PUT") {
+        verdicts.set(slot.instanceId, { registered: false });
+        continue;
+      }
+      parseServiceSpec(decodeJson(entry.value, `svc spec for ${endpoint}/${slot.instanceId}`), { endpoint }); // malformed registry state fails LOUD (§13.9)
+      verdicts.set(slot.instanceId, { registered: true, registrationRevision: entry.revision });
+    }
+    return verdicts;
+  };
+}
+
+/** The PRODUCTION `currentEpoch` hook for {@link epCall} on the `one` rail (§13.2): reads the
+ *  answering instance's CURRENT `svc….status` epoch from the registry over the caller's §13.9
+ *  read grant. An unregistered instance or one that never converged (no status) has no current
+ *  epoch to verify a queue winner against and refuses `failed-precondition` — the read's OWN
+ *  failure, which {@link epCall} deliberately never mislabels as responder staleness. A stale
+ *  projection does not refuse: `epoch` advances only through a takeover's status write, so the
+ *  freshest status epoch is the currency answer even while a re-registration's projection
+ *  catches up (§13.5: revision advances never move the epoch). */
+export function serviceEpochReader(kv: KV, endpoint: string): (instanceId: string) => Promise<number> {
+  endpointToken(endpoint);
+  return async (instanceId: string) => {
+    const rec = await readRecord(kv, RECORD_KINDS.svc, [endpoint, instanceId]);
+    if (!rec)
+      throw new EpEnvelopeError("failed-precondition", `no registered spec for "${endpoint}/${instanceId}"; a \`one\` responder outside the registry has no current epoch to verify (SPEC 13.2)`);
+    if (!rec.status)
+      throw new EpEnvelopeError("failed-precondition", `"${endpoint}/${instanceId}" is registered but never converged (no status); there is no current epoch to verify the queue winner against (SPEC 13.2)`);
+    return parseServiceStatus(rec.status.value).epoch;
+  };
 }
 
 // ---- serve-credential authorization (§13.9 "Serve grants") -------------------------------------

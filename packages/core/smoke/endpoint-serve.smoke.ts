@@ -25,15 +25,17 @@ import {
   openRecordsBucket,
   parseServiceSpec, parseServiceStatus, assertServiceNameAuthority,
   registerServiceInstance, writeServiceStatus, freezeExpectedSet,
+  registrationReconciler, serviceEpochReader,
+  epCallService, epScatterService, epScatter,
   authorizeServeGrant, assertServeGrantAuthorized,
   SERVICE_READY, SERVICE_EXITED,
   serveEndpoint,
   compileContract, contractDigest, VOID_SCHEMA,
   parseClusterDocument, verifyClusterManifest, verifyClusterRoot,
-  epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, RECORD_KINDS,
+  epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, recordStatusKey, RECORD_KINDS,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
   type EpCommandDef, type DescribeAnswer, type EpServeGrant, type CompiledContract,
-  type EpIssuanceBarrier,
+  type EpIssuanceBarrier, type EpVerbOp,
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 
@@ -845,6 +847,65 @@ try {
   const rr = replies.shift();
   c("the MIXED endpoint's EPHEMERAL rail serves (journal siblings do not block construction or serving)", rr?.reply.ok === true, JSON.stringify(rr?.reply));
   await srvMixed.stop();
+
+  // ---- the registry-wired caller entry points (§13.5/§13.2): production hooks end to end ----
+  {
+    const EPC = "clsvc";
+    const regCA = await reg(kv, { spec: { endpoint: EPC, owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+    await writeServiceStatus(kv, { endpoint: EPC, instanceId: IID_A, epoch: 3, readProcessEpoch: () => 3, status: { epoch: 3, state: SERVICE_READY, observedSpecRevision: regCA.registrationRevision } });
+    const regCB = await reg(kv, { spec: { endpoint: EPC, owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 } }, instanceId: IID_B, registrant: asOp, authority });
+    await writeServiceStatus(kv, { endpoint: EPC, instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regCB.registrationRevision } });
+    const grantCA = await authorizeServeGrant(kv, { space: SPACE, endpoint: EPC, instanceId: IID_A, epoch: 3, holder: asOp, authority, readProcessEpoch: () => 3, readClusterArtifact });
+    const grantCB = await authorizeServeGrant(kv, { space: SPACE, endpoint: EPC, instanceId: IID_B, epoch: 1, holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact });
+    const srvCA = serveEndpoint(nc, SPACE, grantCA, commandsFor("A"), scoped, { resolveTarget });
+    const srvCB = serveEndpoint(nc, SPACE, grantCB, commandsFor("B"), scoped, { resolveTarget });
+    await nc.flush();
+    const opC = (command: string): EpVerbOp => ({ endpoint: EPC, command, contract: { input: argsContract, output: outContract }, caller, args: { name: "x" } });
+
+    // one rail: the queue winner's currency verified against the LIVE registry status epoch
+    const c1 = await epCallService(nc, kv, SPACE, { mode: "one" }, opC("status"), { deadlineMs: 4000 });
+    c("epCallService verifies the `one` winner against the live registry epoch (production reader wired)",
+      c1.reply.ok === true
+      && ((c1.responder.instanceId === IID_A && c1.responder.epoch === 3) || (c1.responder.instanceId === IID_B && c1.responder.epoch === 1)),
+      JSON.stringify(c1.responder));
+    const epochOf = serviceEpochReader(kv, EPC);
+    c("serviceEpochReader answers the CURRENT registry epoch per instance",
+      (await epochOf(IID_A)) === 3 && (await epochOf(IID_B)) === 1);
+    await rejects("serviceEpochReader refuses an UNREGISTERED instance (the read's own failure, never mislabeled staleness)",
+      () => epochOf("z".repeat(26)), "failed-precondition");
+
+    // scatter: freeze -> gather -> production reconcile, one call
+    const s1 = await epScatterService(nc, kv, SPACE, opC("status"), { deadlineMs: 4000 });
+    c("epScatterService freezes from the LIVE registry and completes over both instances",
+      s1.complete === true && s1.replies.size === 2 && s1.churn.length === 0 && s1.missing.length === 0 && s1.invalid.length === 0,
+      JSON.stringify({ complete: s1.complete, replies: s1.replies.size, churn: s1.churn, missing: s1.missing, invalid: s1.invalid }));
+
+    // a REAL mid-scatter re-registration: the production reconciler observes the revision
+    // advance the reply rail cannot see and classifies `registration` churn (§13.5)
+    const frozen1 = await freezeExpectedSet(kv, EPC);
+    const regCB2 = await reg(kv, { spec: { endpoint: EPC, owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 } }, instanceId: IID_B, registrant: asOp, authority });
+    const s2 = await epScatter(nc, SPACE, opC("status"), { deadlineMs: 4000, expected: frozen1, reconcileRegistration: registrationReconciler(kv, EPC, frozen1) });
+    c("a mid-scatter re-registration is `registration` churn through the PRODUCTION reconciler (counted reply dropped)",
+      s2.complete === false && s2.churn.some((x) => x.instanceId === IID_B && x.reason === "registration")
+      && s2.replies.has(IID_A) && !s2.replies.has(IID_B),
+      JSON.stringify({ complete: s2.complete, churn: s2.churn, replies: [...s2.replies.keys()] }));
+
+    // a REAL mid-scatter deregistration: the explicit registered:false verdict — a departure
+    // does NOT invalidate the reply the departed instance already gave (§13.5)
+    await writeServiceStatus(kv, { endpoint: EPC, instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regCB2.registrationRevision } });
+    const frozen2 = await freezeExpectedSet(kv, EPC);
+    c("(setup) the re-converged freeze holds both instances again", frozen2.length === 2);
+    await kv.delete(recordSpecKey(RECORD_KINDS.svc, [EPC, IID_B]));
+    await kv.delete(recordStatusKey(RECORD_KINDS.svc, [EPC, IID_B]));
+    const s3 = await epScatter(nc, SPACE, opC("status"), { deadlineMs: 4000, expected: frozen2, reconcileRegistration: registrationReconciler(kv, EPC, frozen2) });
+    c("a mid-scatter DEREGISTRATION keeps the departed instance's valid reply counted (explicit registered:false, not churn)",
+      s3.complete === true && s3.replies.size === 2 && s3.churn.length === 0,
+      JSON.stringify({ complete: s3.complete, replies: [...s3.replies.keys()], churn: s3.churn }));
+
+    await srvCA.stop();
+    await srvCB.stop();
+    replies.length = 0;
+  }
 
   await replySub.drain();
   await nc.close();
