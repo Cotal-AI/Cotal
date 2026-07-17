@@ -70,7 +70,7 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
-import { epCallerGrantRows, epServeGrantRows, type EpCapability } from "./endpoint-grants.js";
+import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants } from "./endpoint-binding.js";
 import { rawDigest } from "./canonical.js";
@@ -860,16 +860,24 @@ export function permissionsFor(
     // broker-enforced half of the tier split; the manager's per-op checks stay on top of it.
     pubAllow.push(controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor));
   }
-  // v0.4 endpoint rails (SPEC §13.9 caller rows) — default-deny: only minted capabilities produce
-  // rows, each pinning the full caller triple (§13.1 lifecycle UID included; the nonce is the only
-  // wildcard token) plus the caller's own exact-arity reply-rail read.
-  const epSub: string[] = [];
+  // v0.4 endpoint rails (SPEC §13.9 caller rows). EVERY agent gets the Appendix-B BASELINE set
+  // (wildcard describe + delivery join/leave/list + self-mode lifecycle + the reply rail), keyed
+  // on the SAME lifecycle uid as the agent's durables; the spawn capability adds the owner-mode
+  // manager lifecycle set. Beyond the baseline stays default-deny: only minted capabilities
+  // produce rows, each pinning the full caller triple (§13.1 lifecycle UID included; the nonce
+  // is the only wildcard token).
+  const epCaller = { owner: pr.owner, actor: pr.actor, uid };
+  const baseline = epBaselineGrantRows(space, epCaller);
+  pubAllow.push(...baseline.pub);
+  const epSub: string[] = [...baseline.sub];
+  if (opts.capabilities?.includes("spawn"))
+    pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);
   if (opts.endpointCapabilities?.length) {
     if (!opts.lifecycleUid)
       throw new Error("permissionsFor: endpointCapabilities require a lifecycleUid - the caller triple pins it at mint time (SPEC 13.1/13.2)");
     const rows = epCallerGrantRows(space, opts.endpointCapabilities, { owner: pr.owner, actor: pr.actor, uid: opts.lifecycleUid });
     pubAllow.push(...rows.pub);
-    epSub.push(...rows.sub);
+    for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
   }
   // Explicit create-deny (defense-in-depth over default-deny) on the two streams whose
   // create-time filter_subject is the attack surface — DM (private content) and TASK

@@ -111,6 +111,66 @@ export function epCallerGrantRows(
   return { pub, sub: caps.length ? [epCallerReplyGrantRow(space, caller)] : [] };
 }
 
+// ---- the Appendix-B BASELINE capability set (SPEC Appendix B "Agent", §13.9 agent row) ------------
+// "every agent gets the baseline set (`describe` on all endpoints; the delivery endpoint's durable
+// join/leave/list commands; self-targeted lifecycle commands with authz-mode `self`); the `spawn`
+// capability adds the manager endpoint's lifecycle commands with authz-mode `owner`". The v0.4
+// command NAMES map the served v0.3 ops 1:1: ctl.delivery durableJoin/durableLeave/listMemberships
+// → delivery `join`/`leave`/`list` (untargeted: they act on the caller's own memberships, carried
+// by the pinned caller triple, no target block); the self-service control tier serves exactly
+// no-name self `stop` → manager `stop` with mode `self`; the privileged tier's spawn/stop/despawn/
+// attach → the owner-mode spawn set. These names become the served v0.4 endpoint surfaces when the
+// daemons register them; minting them ahead of serving is default-deny-safe (an unserved request
+// form is a no-responder, never authority).
+
+/** The delivery endpoint's baseline command names (Appendix B: "durable join/leave/list"). */
+export const BASELINE_DELIVERY_ENDPOINT = "delivery";
+export const BASELINE_DELIVERY_COMMANDS = ["join", "leave", "list"] as const;
+/** The manager endpoint's self-lifecycle baseline (the v0.3 self-service tier serves exactly
+ *  no-name self stop) and the spawn-capability owner-mode lifecycle set. */
+export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = ["stop"] as const;
+export const SPAWN_LIFECYCLE_COMMANDS = ["spawn", "stop", "despawn", "attach"] as const;
+
+/** `describe` on ALL endpoints (Appendix B / §13.9 "describe by default"): the ONE
+ *  subject-wildcard request form in the caller grammar,
+ *  `ep.one.*.describe.<cO>.<cA>.<cUid>.*` — the endpoint token is the wildcard, the command is
+ *  the literal reserved `describe`, and the caller triple stays pinned. DELIBERATELY not an
+ *  {@link EpCapability} (whose endpoint is a validated literal): a wildcard-endpoint capability
+ *  would generalize to arbitrary commands, and the baseline is the only place the wildcard form
+ *  is normative. Untargeted only — describe is constructed untargeted on every serve
+ *  (§13.7), so no authz/target block ever appears in the row. */
+export function epDescribeAllGrantRow(space: string, caller: EpCaller): string {
+  return `${spacePrefix(space)}.ep.one.*.describe.${callerBlock(caller)}.*`;
+}
+
+/** The baseline {@link EpCapability} set every agent holds (Appendix B) beyond the wildcard
+ *  describe row: delivery join/leave/list (untargeted) + self-mode lifecycle. */
+export function baselineCallerCapabilities(): EpCapability[] {
+  return [
+    ...BASELINE_DELIVERY_COMMANDS.map((command) => ({ endpoint: BASELINE_DELIVERY_ENDPOINT, command })),
+    ...BASELINE_SELF_LIFECYCLE_COMMANDS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, target: { mode: "self" } as const })),
+  ];
+}
+
+/** The `spawn` capability's addition (Appendix B): the manager endpoint's lifecycle commands
+ *  with authz-mode `owner`, target owner pinned to the CALLER's own owner (§13.2: an
+ *  owner-mode standing mint never names a foreign owner). */
+export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
+  return SPAWN_LIFECYCLE_COMMANDS.map((command) => ({
+    endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+    target: { mode: "owner", tOwner: callerOwner } as EpTarget,
+  }));
+}
+
+/** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability
+ *  rollup into `pub.allow`, and the caller's reply rail into `sub.allow` — ALWAYS present (the
+ *  baseline implies the reply read even when no per-capability rows are minted). */
+export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: string[]; sub: string[] } {
+  const base = epCallerGrantRows(space, baselineCallerCapabilities(), caller);
+  return { pub: [epDescribeAllGrantRow(space, caller), ...base.pub], sub: [epCallerReplyGrantRow(space, caller)] };
+}
+
 /** One registered command's serve-subscribe rows (§13.9 "Serve subscribe"), per registered
  *  command and never a cross-command `>`:
  *   - class rail: `"ep.one.<endpoint>.<command>.> <queue>"` — QUEUE-QUALIFIED ONLY (the NATS

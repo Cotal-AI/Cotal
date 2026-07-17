@@ -338,8 +338,19 @@ for (const [profile, rows] of Object.entries(untrusted)) {
   const kvWrites = rows.pub.filter((r) => r.startsWith("$KV.cotal_records_d32m") || r.startsWith("$KV.cotal_auth_d32m"));
   c(`${profile}: no records/auth KV write rows`, kvWrites.length === 0, kvWrites);
 }
-c("the agent's control-surface reach is exactly its caller rows (request/journal publish + own reply rail)",
-  untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r))
+// The agent's ep reach = its minted caller rows PLUS the normative Appendix-B baseline
+// (wildcard describe + delivery join/leave/list + self-mode stop), pinned EXACTLY here so a
+// widened baseline (or a stray extra row) fails this audit, not just the grants smoke.
+const BASELINE_PUB = [
+  `cotal.${S}.ep.one.*.describe.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.delivery.join.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.delivery.leave.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.delivery.list.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
+];
+c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
+  untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r) || BASELINE_PUB.includes(r))
+  && BASELINE_PUB.every((r) => untrusted.agent.pub.includes(r))
   && untrusted.agent.sub.filter((r) => r.includes(".ep.reply.")).every((r) => gen["caller"].subscribe.includes(r)));
 
 console.log(fail === 0 ? `\nD32 MATRIX AUDIT OK ✅  (${ok} passed, ${fail} failed)` : `\nD32 MATRIX AUDIT FAILED ❌  (${ok} passed, ${fail} failed)`);

@@ -13,6 +13,7 @@ import {
   createSpaceAuth, mintCreds, newIdentity,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
+  epBaselineGrantRows, spawnCallerCapabilities,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
 
@@ -62,6 +63,26 @@ c("caller bundle: request + journal pub, reply-rail sub",
   bundle.pub.length === 2 && bundle.sub.length === 1 && bundle.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("empty capability set mints nothing", JSON.stringify(epCallerGrantRows("demo", [], caller)) === '{"pub":[],"sub":[]}');
 
+// ── the Appendix-B baseline set ──
+const baseline = epBaselineGrantRows("demo", caller);
+c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
+  baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
+c("baseline: delivery join/leave/list untargeted + manager stop self-mode, nothing else",
+  baseline.pub.length === 5
+  && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`),
+  JSON.stringify(baseline.pub));
+c("baseline: the reply rail is ALWAYS granted (no capability required)",
+  baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
+c("baseline: no journal rows (the baseline is ephemeral request forms only)",
+  baseline.pub.every((r) => !r.includes(".epj.")));
+c("the spawn set: owner-mode manager lifecycle, target owner pinned to the caller's own",
+  spawnCallerCapabilities("u_abc").length === 4
+  && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
+  === `cotal.demo.ep.one.manager.spawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.stop.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*`);
+
 // ── serve rows against the §13.9 matrix forms ──
 c("serve subscribe: queue-qualified class rail + plain scatter + exact instance, per command",
   epServeSubscribeRows("demo", "com.acme.deploy", IID, "run").join("|")
@@ -100,8 +121,26 @@ c("minted JWT carries the request row", withCaps.pub.allow.includes(`cotal.epg.e
 c("minted JWT carries the journal row", withCaps.pub.allow.includes(`cotal.epg.epj.manager.spawn.owner.u_abc.u_abc.cli.${UID}`));
 c("minted JWT carries the reply-rail read", withCaps.sub.allow.includes(`cotal.epg.ep.reply.*.*.*.u_abc.cli.${UID}.*`));
 const without = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID }));
-c("default-deny: no ep rows without capabilities",
-  ![...without.pub.allow, ...without.sub.allow].some((r) => r.includes(".ep.") || r.includes(".epj.")));
+const BASELINE_PUB = [
+  `cotal.epg.ep.one.*.describe.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.delivery.join.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.delivery.leave.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.delivery.list.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
+];
+c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop), nothing wider",
+  JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
+  === JSON.stringify([...BASELINE_PUB].sort()),
+  JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));
+c("no-capability mint carries the baseline reply-rail read (and only that ep sub row)",
+  without.sub.allow.filter((r) => r.includes(".ep.")).join("|") === `cotal.epg.ep.reply.*.*.*.u_abc.cli.${UID}.*`);
+c("no-capability mint carries NO journal rows and NO owner/child/ledger-mode rows",
+  ![...without.pub.allow].some((r) => r.includes(".epj.") || r.includes(".owner.") || r.includes(".child.") || r.includes(".ledger.")));
+const withSpawn = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID, capabilities: ["spawn"] }));
+c("the spawn capability adds the owner-mode manager lifecycle set to the minted JWT",
+  ["spawn", "stop", "despawn", "attach"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`)));
+c("without the spawn capability none of the owner-mode lifecycle rows appear",
+  !without.pub.allow.some((r) => r.includes(".owner.")));
 let threw = false;
 try {
   await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, endpointCapabilities: [spawnCap] });
