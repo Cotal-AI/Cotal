@@ -1,5 +1,19 @@
 # @cotal-ai/manager
 
+## 0.12.0
+
+### Patch Changes
+
+- be66729: Add offline full-space and registry-only backup, preservation cuts, authenticated operation-isolated
+  restore, conservative checkpoint recreation, same-principal resume, and explicit fallback cleanup.
+  Remove the incomplete channel export surface.
+- 4e0e641: Add the pluggable `SecretStore` seam (core `get`/`put`/`delete` contract + filesystem default) and route the durable hosted secret kinds through it: the delivery daemon creds and the auth store's callout account, issuer keys, owner secret, and service-key projection. Local `cotal up` is unchanged (the workspace `.cotal`-rooted filesystem store lands byte-for-byte on the existing paths); a hosted composition injects its own backend via `runAuthService`/`runDelivery`. `AuthProvider` methods now take a caller-composed `store`, and the new required `deprovisionSecrets` plus `clean all`'s seam-first ordering make a full local reset safe against split authority.
+- Updated dependencies [be66729]
+- Updated dependencies [47d2584]
+- Updated dependencies [4e0e641]
+  - @cotal-ai/core@0.12.0
+  - @cotal-ai/workspace@0.12.0
+
 ## 0.11.6
 
 ### Patch Changes
