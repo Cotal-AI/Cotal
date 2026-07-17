@@ -96,7 +96,11 @@ try {
   const reachableCwd = process.cwd();
   process.chdir(reachableRoot);
   try {
-    check("reachable cleanup fixture resolves as the active root", findCotalRoot() === reachableCanonicalRoot, findCotalRoot());
+    // The recorded root is canonical; the ACTIVE root is whatever spelling cwd hands back — the same
+    // directory under an 8.3 short name on Windows (`C:\Users\RUNNER~1\…`). The refusal below must
+    // hold across that mismatch, which is what makes this a regression test for canonical matching
+    // and not just a happy-path check: a raw `===` reads as "no mesh recorded" and cleans anyway.
+    check("reachable cleanup fixture resolves as the active root", realpathSync.native(findCotalRoot()) === reachableCanonicalRoot, findCotalRoot());
     await assert.rejects(
       () => clean({ positionals: ["store"], values: { force: true }, raw: [] }),
       /recorded mesh endpoint .* is reachable/,

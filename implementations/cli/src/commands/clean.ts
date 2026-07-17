@@ -6,7 +6,7 @@ import {
   acquireMaintenanceLock,
   cleanupRestoreFallback,
   localProcessPath,
-  loadMeshes,
+  meshesForRoot,
   readMaintenanceJournal,
   releaseMaintenanceLock,
   removeMeshesByRoot,
@@ -90,7 +90,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    for (const mesh of loadMeshes().filter((entry) => entry.root === root)) {
+    for (const mesh of meshesForRoot(root)) {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }
