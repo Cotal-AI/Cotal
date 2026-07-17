@@ -130,7 +130,13 @@ export const BASELINE_DELIVERY_COMMANDS = ["join", "leave", "list"] as const;
  *  no-name self stop) and the spawn-capability owner-mode lifecycle set. */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
 export const BASELINE_SELF_LIFECYCLE_COMMANDS = ["stop"] as const;
-export const SPAWN_LIFECYCLE_COMMANDS = ["spawn", "stop", "despawn", "attach"] as const;
+/** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
+ *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
+ *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
+ *  UNTARGETED; the child-owner ceiling is the authenticated caller's own owner, carried by the
+ *  pinned caller triple. The other three act on an EXISTING agent, so they ride owner mode. */
+export const SPAWN_CREATE_COMMANDS = ["spawn"] as const;
+export const SPAWN_OWNER_LIFECYCLE_COMMANDS = ["stop", "despawn", "attach"] as const;
 
 /** `describe` on ALL endpoints (Appendix B / §13.9 "describe by default"): the ONE
  *  subject-wildcard request form in the caller grammar,
@@ -153,14 +159,19 @@ export function baselineCallerCapabilities(): EpCapability[] {
   ];
 }
 
-/** The `spawn` capability's addition (Appendix B): the manager endpoint's lifecycle commands
- *  with authz-mode `owner`, target owner pinned to the CALLER's own owner (§13.2: an
- *  owner-mode standing mint never names a foreign owner). */
+/** The `spawn` capability's addition (Appendix B): the manager endpoint's lifecycle commands.
+ *  `spawn` (creation) is UNTARGETED — a virgin child has no lifecycle UID to resolve against the
+ *  current mapping, so an owner-mode row would be un-invokable under the verb grammar (§13.2). The
+ *  three that act on an existing agent ride owner mode, target owner pinned to the CALLER's own
+ *  (§13.2: an owner-mode standing mint never names a foreign owner). */
 export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
-  return SPAWN_LIFECYCLE_COMMANDS.map((command) => ({
-    endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
-    target: { mode: "owner", tOwner: callerOwner } as EpTarget,
-  }));
+  return [
+    ...SPAWN_CREATE_COMMANDS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...SPAWN_OWNER_LIFECYCLE_COMMANDS.map((command) => ({
+      endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+      target: { mode: "owner", tOwner: callerOwner } as EpTarget,
+    })),
+  ];
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

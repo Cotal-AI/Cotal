@@ -866,6 +866,11 @@ export function permissionsFor(
   // manager lifecycle set. Beyond the baseline stays default-deny: only minted capabilities
   // produce rows, each pinning the full caller triple (§13.1 lifecycle UID included; the nonce
   // is the only wildcard token).
+  // ONE lifecycle uid keys the whole caller rail (§13.1/§13.2 forge-lock: one credential names one
+  // incarnation). `uid` is the already-asserted pr.lifecycleUid; the baseline, the spawn set, AND
+  // the explicit capabilities ALL build their caller triple from it. opts.lifecycleUid is a public
+  // seam (the IdP-adapter path) that must AGREE, never a second source of truth for the triple: a
+  // divergent value would mint two reply rails on one credential, so it fails loud here.
   const epCaller = { owner: pr.owner, actor: pr.actor, uid };
   const baseline = epBaselineGrantRows(space, epCaller);
   pubAllow.push(...baseline.pub);
@@ -873,9 +878,9 @@ export function permissionsFor(
   if (opts.capabilities?.includes("spawn"))
     pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);
   if (opts.endpointCapabilities?.length) {
-    if (!opts.lifecycleUid)
-      throw new Error("permissionsFor: endpointCapabilities require a lifecycleUid - the caller triple pins it at mint time (SPEC 13.1/13.2)");
-    const rows = epCallerGrantRows(space, opts.endpointCapabilities, { owner: pr.owner, actor: pr.actor, uid: opts.lifecycleUid });
+    if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
+      throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);
+    const rows = epCallerGrantRows(space, opts.endpointCapabilities, epCaller);
     pubAllow.push(...rows.pub);
     for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
   }

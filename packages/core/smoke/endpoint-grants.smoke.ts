@@ -13,7 +13,7 @@ import {
   createSpaceAuth, mintCreds, newIdentity,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
-  epBaselineGrantRows, spawnCallerCapabilities,
+  epBaselineGrantRows, spawnCallerCapabilities, permissionsFor,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
 
@@ -78,10 +78,10 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: owner-mode manager lifecycle, target owner pinned to the caller's own",
+c("the spawn set: spawn is UNTARGETED (virgin child, no uid to resolve); stop/despawn/attach ride owner-mode pinned to the caller's own owner",
   spawnCallerCapabilities("u_abc").length === 4
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.stop.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.stop.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*`);
 
 // ── serve rows against the §13.9 matrix forms ──
 c("serve subscribe: queue-qualified class rail + plain scatter + exact instance, per command",
@@ -137,10 +137,23 @@ c("no-capability mint carries the baseline reply-rail read (and only that ep sub
 c("no-capability mint carries NO journal rows and NO owner/child/ledger-mode rows",
   ![...without.pub.allow].some((r) => r.includes(".epj.") || r.includes(".owner.") || r.includes(".child.") || r.includes(".ledger.")));
 const withSpawn = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID, capabilities: ["spawn"] }));
-c("the spawn capability adds the owner-mode manager lifecycle set to the minted JWT",
-  ["spawn", "stop", "despawn", "attach"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`)));
+c("the spawn capability adds UNTARGETED manager.spawn + owner-mode stop/despawn/attach to the minted JWT",
+  withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.spawn.u_abc.cli.${UID}.*`)
+  && ["stop", "despawn", "attach"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`)));
 c("without the spawn capability none of the owner-mode lifecycle rows appear",
   !without.pub.allow.some((r) => r.includes(".owner.")));
+// C7 (critic/distsys/engineer-5): one credential names ONE incarnation on the caller rail. Through
+// mintCreds, principalOf collapses opts.lifecycleUid INTO pr.lifecycleUid, so they cannot diverge;
+// the risk lives on the PUBLIC permissionsFor seam (the IdP-adapter path), where pr and opts are
+// separate. A divergent opts.lifecycleUid must FAIL LOUD there, never mint two reply rails.
+const OTHER_UID = "z".repeat(26);
+const prC7 = { owner: "u_abc", actor: "cli", connId: "connid01234567", lifecycleUid: UID };
+throws("permissionsFor fails loud when opts.lifecycleUid disagrees with the principal's (no dual-uid caller rail, C7)",
+  () => permissionsFor("agent", "demo", prC7 as never, { endpointCapabilities: [spawnCap], lifecycleUid: OTHER_UID }));
+const agreed = permissionsFor("agent", "demo", prC7 as never, { endpointCapabilities: [spawnCap], lifecycleUid: UID });
+c("permissionsFor with an AGREEING opts.lifecycleUid mints, and every caller-rail row carries the ONE uid",
+  agreed.pub.allow.concat(agreed.sub.allow).filter((r: string) => r.includes(".ep.")).every((r: string) => r.includes(`.${UID}.`) || r.includes(`.${UID}`))
+  && !agreed.pub.allow.some((r: string) => r.includes(OTHER_UID)));
 let threw = false;
 try {
   await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, endpointCapabilities: [spawnCap] });
