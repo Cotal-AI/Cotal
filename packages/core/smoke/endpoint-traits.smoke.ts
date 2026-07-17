@@ -292,10 +292,10 @@ try {
   const kv = await openRecordsBucket(nc, SPACE, { create: true });
 
   const authority: ServiceNameAuthority = { authorize: (_n, owner) => ({ authorized: owner === "u_op", revision: 0 }) };
-  const gateStates = new Map<string, { space: string; endpoint: string; lifecycleUid: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+  const gateStates = new Map<string, { space: string; endpoint: string; lifecycleUid: string; principal: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
   const barrierFor = (endpoint: string, instanceId: string): EpIssuanceBarrier => {
     const key = `${endpoint}/${instanceId}`;
-    if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
+    if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
     const g = gateStates.get(key)!;
     return {
       observe: () => ({ ...g }),

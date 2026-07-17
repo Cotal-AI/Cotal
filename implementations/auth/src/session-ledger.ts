@@ -396,6 +396,9 @@ export function kvServeIssuanceGate(store: SessionAuthStore, args: { endpoint: s
       const gate = parseEndpointGate(entry.value, key);
       return {
         space: store.space, endpoint, lifecycleUid: instanceId,
+        // Carry the gate's registered serving principal so the core mint fence can bind the minted
+        // owner.actor to it (§13.1:1056-1069: a sibling actor cannot win the gate).
+        principal: gate.principal,
         state: gate.state, generation: gate.generation, processEpoch: gate.processEpoch,
         registrationRevision: gate.registrationRevision, nameAuthorityRevision: gate.nameAuthorityRevision,
         revision: entry.revision,

@@ -1119,6 +1119,12 @@ export interface EpGateState {
    *  reserved, not an endpoint child). */
   endpoint: string;
   lifecycleUid: string;
+  /** The registered serving instance's CONNZ-attributable connection principal (`<owner>.<actor>`
+   *  dot-form, §13.1:1056-1069): the eviction target, and the value every `epcred` row MUST copy
+   *  as its `holderPrincipal`. The mint is bound to it — a credential whose minting `owner.actor`
+   *  is not this principal (a SIBLING ACTOR under the registered owner) cannot win the gate — so
+   *  the ledger/eviction target can never diverge from the registered serving principal. */
+  principal: string;
   state: "open" | "frozen" | "retired";
   generation: number;
   processEpoch: number;
@@ -1315,13 +1321,22 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     throw new EpEnvelopeError("expired", `the issuance gate is at registrationRevision ${obs.registrationRevision}, not the authorized ${snap.registrationRevision}; a re-registration superseded the branded surface (SPEC 13.5/13.9)`);
   if (obs.nameAuthorityRevision !== snap.nameAuthorityRevision)
     throw new EpEnvelopeError("expired", `the issuance gate is at nameAuthorityRevision ${obs.nameAuthorityRevision}, not the authorized ${snap.nameAuthorityRevision}; a name transfer superseded the serving owner (SPEC 13.9)`);
+  // SERVING-PRINCIPAL BINDING (§13.1:1056-1069): the mint is bound to the gate's REGISTERED serving
+  // principal, not merely the registered owner. authorizeServeGrant proves owner == registered
+  // owner, but a SIBLING ACTOR under that owner would otherwise win the real gate and be
+  // ledgered/evicted in place of the registered serving instance. The minted `owner.actor` MUST
+  // equal `epgate.principal`; on any mismatch the mint releases nothing and writes no active row.
+  const mintedPrincipal = principalKey(snap.owner, credential.holderActor).key;
+  if (mintedPrincipal !== obs.principal)
+    throw new EpEnvelopeError("permission-denied", `the serve mint's principal "${mintedPrincipal}" is not the gate's registered serving principal "${obs.principal}" for "${snap.endpoint}/${snap.instanceId}"; a sibling actor under the registered owner cannot win the endpoint gate (SPEC 13.1)`);
   const row: EpServeLedgerRow = {
     credentialId: credential.credentialId,
     credentialKey: credential.credentialKey,
-    // The eviction target, serialized through the ONE principal serializer the eviction feed keys
-    // on (never an ad-hoc `owner.actor` join, subjects.ts principalKey invariant) so the barrier's
-    // enumeration key can never drift from the credential's.
-    holderPrincipal: principalKey(snap.owner, credential.holderActor).key,
+    // The eviction target is the OBSERVED gate principal (== the minted principal, checked above),
+    // serialized through the ONE principal serializer the eviction feed keys on (subjects.ts
+    // principalKey invariant), so the barrier's enumeration key can never drift from the
+    // credential's and always names the registered serving principal (§13.1).
+    holderPrincipal: obs.principal,
     endpoint: snap.endpoint,
     lifecycleUid: snap.instanceId,
     sourceChain: Object.freeze([...credential.sourceChain]),

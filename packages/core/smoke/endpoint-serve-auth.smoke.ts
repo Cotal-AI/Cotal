@@ -116,11 +116,14 @@ function memKv(): KV {
  *  idempotent-if-identical (a different row for the same credentialId conflicts). `evict` models
  *  verified cluster-wide eviction (records the principal; a per-gate override forces fail-closed).
  *  The ledger `rows` carry the normative §13.1 fields + `active`/`revoked` state. */
-function makeGate(init: { endpoint: string; lifecycleUid: string; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision?: number; evictOk?: boolean; space?: string }) {
+function makeGate(init: { endpoint: string; lifecycleUid: string; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision?: number; evictOk?: boolean; space?: string; principal?: string }) {
   const gate = {
     space: init.space ?? space, // this smoke's single space; a per-gate override tests cross-space refusal
     endpoint: init.endpoint,
     lifecycleUid: init.lifecycleUid,
+    // The registered serving principal the mint binds to (§13.1): default matches the positive
+    // mint's `u_op.mgr`; a per-gate override drives the sibling-actor refusal probe.
+    principal: init.principal ?? "u_op.mgr",
     state: "open" as "open" | "frozen" | "retired",
     generation: init.generation,
     processEpoch: init.processEpoch,
@@ -257,6 +260,11 @@ try {
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, serveIssuance: gate.seam }));
   c("the endpoint-serve profile without the issuance gate refuses (the release fence is mandatory)",
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant }));
+  // SERVING-PRINCIPAL BINDING (§13.1:1056-1069): a SIBLING ACTOR under the registered owner passes
+  // authorizeServeGrant's owner check but must NOT win the real gate (whose principal is u_op.mgr).
+  // The mint refuses before staging, so no active epcred row is written and no JWT releases.
+  c("a SIBLING ACTOR under the registered owner cannot win the gate (mint binds to epgate.principal, not just the owner), and writes NO row",
+    await mintThrows({ principal: { owner: "u_op", actor: "evil" }, endpointServe: serveGrant, serveIssuance: gate.seam }) && gate.active() === 0);
 
   // ---- mint the restricted profiles (each mint wins its own CAS on the open gate) ----
   const serveId = newIdentity();
@@ -307,7 +315,7 @@ try {
       space, endpoint: "jobsrv", instanceId: IID, epoch: EPOCH,
       holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact, pools: ["pb", "pa"],
     });
-    const jMintGate = makeGate({ endpoint: "jobsrv", lifecycleUid: IID, generation: 1, processEpoch: EPOCH, registrationRevision: jReg.registrationRevision, nameAuthorityRevision: NAR });
+    const jMintGate = makeGate({ endpoint: "jobsrv", lifecycleUid: IID, generation: 1, processEpoch: EPOCH, registrationRevision: jReg.registrationRevision, nameAuthorityRevision: NAR, principal: "u_op.job" });
     const jRows = decodeJwtRows(await mintCreds(auth, newIdentity(), "endpoint-serve", {
       principal: { owner: "u_op", actor: "job" }, endpointServe: jGrant, serveIssuance: jMintGate.seam,
     }));
