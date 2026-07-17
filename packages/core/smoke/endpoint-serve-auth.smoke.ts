@@ -266,7 +266,7 @@ try {
   c("the mint STAGED its credential-ledger row and WON the gate CAS (one active row)",
     gate.active() === 1 && gate.revoked() === 0);
   c("the staged ledger row carries the NORMATIVE §13.1 fields (per-JWT credentialId + nkey credentialKey, holderPrincipal, lifecycleUid, ['root'] lineage, state, exp)",
-    (() => { const r = [...gate.rows.values()][0]; return typeof r.credentialId === "string" && r.credentialId.startsWith("sha256:")
+    (() => { const r = [...gate.rows.values()][0]; return typeof r.credentialId === "string" && r.credentialId.startsWith("sha256-")
       && typeof r.credentialKey === "string" && r.credentialKey !== r.credentialId
       && r.holderPrincipal === "u_op.mgr" && r.lifecycleUid === IID
       && Array.isArray(r.sourceChain) && r.sourceChain.length === 1 && r.sourceChain[0] === "root" && r.state === "active" && typeof r.exp === "number"
@@ -281,6 +281,45 @@ try {
       try { gate.seam.stage({ ...r, holderPrincipal: "u_evil.x" }); } catch { conflicted = true; }
       return gate.rows.size === before && conflicted;
     })());
+
+  // ---- D14: the §13.9:2473 bind rows ride the minted credential (journal class + owned pools) ----
+  const decodeJwtRows = (creds: string): { pub: string[]; sub: string[] } => {
+    const jwt = /BEGIN NATS USER JWT-+\s+(\S+)/.exec(creds)![1];
+    const payload = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const nats = (JSON.parse(Buffer.from(payload, "base64").toString()) as { nats: { pub: { allow: string[] }; sub: { allow: string[] } } }).nats;
+    return { pub: nats.pub.allow, sub: nats.sub.allow };
+  };
+  {
+    const ephRows = decodeJwtRows(serveCreds);
+    c("an EPHEMERAL-ONLY poolless serve credential carries NO JetStream rows at all (default-deny both directions)",
+      ephRows.pub.every((r) => !r.startsWith("$JS.")));
+    const DOC_J = {
+      urn: "ai.cotal.jobsrv", revision: 1, attributes: [], events: [],
+      commands: [{ name: "submitjob", class: "journal", targeted: false, capability: "jobsrv.call", inputDigest: D, outputDigest: D }],
+    };
+    const DOCJ_ROOT = contractDigest(DOC_J);
+    const DCJ = contractDigest({ v: 1, root: DOCJ_ROOT, members: [] });
+    store.set(DCJ, { v: 1, root: DOCJ_ROOT, members: [] });
+    store.set(DOCJ_ROOT, DOC_J);
+    const jRegGate = makeGate({ endpoint: "jobsrv", lifecycleUid: IID, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: NAR });
+    const jReg = await regSvc(kv, { space, spec: { endpoint: "jobsrv", owner: "u_op", clusterDigests: [DCJ], protocol: { v: 1 } }, instanceId: IID, registrant: { owner: "u_op" }, authority, barrier: jRegGate.barrier });
+    const jGrant = await authorizeServeGrant(kv, {
+      space, endpoint: "jobsrv", instanceId: IID, epoch: EPOCH,
+      holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact, pools: ["pb", "pa"],
+    });
+    const jMintGate = makeGate({ endpoint: "jobsrv", lifecycleUid: IID, generation: 1, processEpoch: EPOCH, registrationRevision: jReg.registrationRevision, nameAuthorityRevision: NAR });
+    const jRows = decodeJwtRows(await mintCreds(auth, newIdentity(), "endpoint-serve", {
+      principal: { owner: "u_op", actor: "job" }, endpointServe: jGrant, serveIssuance: jMintGate.seam,
+    }));
+    const has = (r: string) => jRows.pub.includes(r);
+    c("a JOURNAL+POOLS serve credential carries EXACTLY the bind rows: the shared effects durable + each owned pool + one $JS.API.INFO, all name-literal, bind-only",
+      has(`$JS.API.CONSUMER.INFO.EPF_${space}.eff_jobsrv`) && has(`$JS.API.CONSUMER.MSG.NEXT.EPF_${space}.eff_jobsrv`) && has(`$JS.ACK.EPF_${space}.eff_jobsrv.>`)
+      && has(`$JS.API.CONSUMER.INFO.EPW_${space}.pool_jobsrv_pa`) && has(`$JS.API.CONSUMER.MSG.NEXT.EPW_${space}.pool_jobsrv_pa`) && has(`$JS.ACK.EPW_${space}.pool_jobsrv_pa.>`)
+      && has(`$JS.API.CONSUMER.INFO.EPW_${space}.pool_jobsrv_pb`) && has(`$JS.API.CONSUMER.MSG.NEXT.EPW_${space}.pool_jobsrv_pb`) && has(`$JS.ACK.EPW_${space}.pool_jobsrv_pb.>`)
+      && has("$JS.API.INFO")
+      && jRows.pub.filter((r) => r.startsWith("$JS.")).length === 10
+      && !jRows.pub.some((r) => r.includes("CONSUMER.CREATE") || r.includes("CONSUMER.DELETE") || r.includes("STREAM.")));
+  }
 
   // ---- mint context binding (space + principal) ----
   await rejects("a FOREIGN PRINCIPAL cannot mint from the artifact (the minted principal IS the registered owner)",

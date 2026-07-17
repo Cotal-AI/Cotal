@@ -772,3 +772,72 @@ export function retirementCleanerGrants(space: string, endpoint: string, pools: 
   publish.push(`${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`, `${JSAPI}.INFO`);
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
+
+/** The endpoint's COMMIT PRINCIPAL rows (§13.9 matrix "Result/receipt/terminal/resume facts" +
+ *  "Claim / action / checkpoint commits"): the enumerated commit fact families on its OWN
+ *  endpoint — `goal.*.*.*.*.result` (the goal terminal; the `.bind` leaf under `goal.>` is the
+ *  canonicalizer's), `eff.>`, `receipt.>`, `wrk.>`, `cp.>` — and **never `dec.>`/`quar.>`**
+ *  (canonicalizer-only; structurally absent from these rows, not merely unused), plus its own
+ *  record keys per the §13.7 writer table (`goal.<e>.>`, `cp.<e>.>`, `lease.<e>.>`; the endpoint
+ *  qualifier is the FIRST qualifier of all three kinds, so the prefix is subject-expressible).
+ *  Read-back is FENCING and therefore leader-served (§13.9 read service): body-selected
+ *  `STREAM.MSG.GET` on `EPF_<space>` (create-only CAS emission + idempotent re-commit decisions
+ *  over exactly its five fact families) and on `KV_cotal_records_<space>` (the terminal-commit's
+ *  spec read and the epoch/deadline currency reads) — the follower-served `DIRECT.GET` forms are
+ *  deliberately NOT granted. The reply inbox is connection-scoped (`_INBOX_<connId>.>`, never
+ *  the account-wide default).
+ *
+ *  D32 residuals, EXPLICIT (accepted only for this trusted per-endpoint profile): (1) every
+ *  fact publish is payload-blind create-only, so a compromised commit principal can forge an
+ *  in-endpoint `wrk`/`goal…result` terminal or `cp` resume for work that never ran — an
+ *  escalation to fabricating completed work within its own endpoint, never beyond it; (2) its
+ *  raw `$KV` subject grants cannot enforce the per-key CAS/monotonic discipline, so it can
+ *  overwrite its own endpoint's goal/cp/lease rows (DEL/PURGE markers fail loud as corruption;
+ *  stream-level erasure is denied by the store shape, §13.12); (3) the two body-selected
+ *  `STREAM.MSG.GET` fencing reads expose the EPF and records streams space-wide, and a raw JS
+ *  API request carries a caller-selected reply subject, so compromise can direct fetched
+ *  API/message bytes onto a foreign rail (confused-deputy injection, not foreign write). */
+export function commitPrincipalGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const e = endpointToken(endpoint);
+  const p = spacePrefix(space);
+  const records = recordsBucket(space);
+  const publish = [
+    `${p}.epf.${e}.goal.*.*.*.*.result`,
+    `${p}.epf.${e}.eff.>`,
+    `${p}.epf.${e}.receipt.>`,
+    `${p}.epf.${e}.wrk.>`,
+    `${p}.epf.${e}.cp.>`,
+    `$KV.${records}.goal.${e}.>`,
+    `$KV.${records}.cp.${e}.>`,
+    `$KV.${records}.lease.${e}.>`,
+    `${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`,
+    `${JSAPI}.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
+    `${JSAPI}.INFO`,
+  ];
+  return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
+}
+
+/** The CONTRACT PUBLISHER principal's rows (§13.9 matrix "Contract-artifact publication" +
+ *  the trusted-infra half of "Contract-artifact read"): publish `epc.*` (the digest-hex is ONE
+ *  subject token; create-only rides `Nats-Expected-Last-Subject-Sequence: 0` at the typed path,
+ *  §13.7 — the grant cannot express it, the broker CAS enforces it) and the subject-confined
+ *  follower read-back `DIRECT.GET.EPC_<space>.cotal.<space>.epc.>` (NON-fencing by design:
+ *  artifacts are content-addressed and verify-on-read is the tamper boundary, §13.7, so a
+ *  stale replica serves nothing forgeable). NO `STREAM.INFO`: the deny_delete/deny_purge shape
+ *  proof is the provisioner's (§13.12), not this profile's. The reply inbox is
+ *  connection-scoped (`_INBOX_<connId>.>`, never the account-wide default).
+ *
+ *  D32 residuals, EXPLICIT: (1) the `epc.*` publish is payload-blind — a compromised publisher
+ *  can flood NEW digest subjects with garbage artifacts (verify-on-read refuses to SERVE
+ *  non-canonical or digest-mismatched bytes, and an existing digest subject is CAS-protected,
+ *  so it can waste storage but never corrupt or replace a published artifact); (2) the raw JS
+ *  API request carries a caller-selected reply subject (the same confused-deputy injection
+ *  class as every API-holding profile). */
+export function contractPublisherGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const publish = [
+    `${spacePrefix(space)}.epc.*`,
+    `${JSAPI}.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+    `${JSAPI}.INFO`,
+  ];
+  return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
+}

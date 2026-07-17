@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, epAuthBucket, newIdentity, recordsBucket } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, spacePrefix, assertPoolToken } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -134,6 +134,42 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
     ],
     subscribe: [`_INBOX_${inbox}.>`],
   };
+}
+
+/** The RETIREMENT SETTLEMENT EXECUTOR's op-bounded rows (SPEC 13.9 "Retirement settlement",
+ *  the ceee1a1 authority split): COMPOSED onto {@link authorityBarrierGrants} for ONE retirement
+ *  operation whose durable intent lists exactly these endpoint/pools — never a standing grant,
+ *  never minted without a live intent. Per listed pool: the lease-record CAS write
+ *  (`lease.<endpoint>.<pool>.…` — create for the worker-less expiry sentinel, revision-pinned
+ *  update otherwise) and the lease-derived `wrk` terminal create-only publish
+ *  (`epf.<endpoint>.wrk.<pool>.>`, first terminal wins). Plus the leader-served EPF fencing
+ *  reads (`STREAM.MSG.GET.EPF_<space>`: the acceptance-decision re-derivation and the
+ *  terminal-observe/CAS-loser reads); the records-side fencing/CAS reads ride the barrier
+ *  profile this composes onto. The `epw.>` ENQUEUE row is deliberately absent: the executor's
+ *  reconcile is reachable only for items at/past their own `workExpiry` (the settlement seam
+ *  refuses `expired` before the horizon), which structurally never takes the re-enqueue repair
+ *  branch — if a code change ever reached it, the broker denies and the barrier fails loud.
+ *
+ *  D32 residuals, EXPLICIT (the relocated forge the bounded cleaner does NOT carry): KV subject
+ *  permissions cannot distinguish CAS from overwrite or DEL/PURGE markers, and the `wrk`
+ *  publish is payload-blind, so a compromised executor can forge a lease settlement or work
+ *  terminal WITHIN the intent's exact pools (never beyond them); the space-wide EPF
+ *  `STREAM.MSG.GET` exposure and the caller-selected-reply injection ride it like every
+ *  API-holding profile. Op-bounded, intent-confined, revoked with the operation. */
+export function barrierExecutorSettlementGrants(space: string, endpoint: string, pools: string[]): { publish: string[] } {
+  if (!Array.isArray(pools) || pools.length === 0)
+    throw new EpEnvelopeError("failed-precondition", "an executor settlement grant lists at least one exact pool (SPEC 13.9: the op intent enumerates them; a poolless settlement authority is none)");
+  const e = endpointToken(endpoint);
+  const publish: string[] = [];
+  for (const pool of pools) {
+    const p = assertPoolToken(pool);
+    publish.push(
+      `${spacePrefix(space)}.epf.${e}.wrk.${p}.>`,
+      `$KV.${recordsBucket(space)}.lease.${e}.${p}.>`,
+    );
+  }
+  publish.push(`$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`);
+  return { publish };
 }
 
 export interface AuthorityClientOpts {

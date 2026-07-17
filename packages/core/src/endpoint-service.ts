@@ -13,7 +13,7 @@
 import type { KV } from "@nats-io/kv";
 import { spacePrefix, principalKey } from "./subjects.js";
 import {
-  endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken,
+  endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
 } from "./endpoint-subjects.js";
 import { EpEnvelopeError, type EpClass } from "./endpoint-envelope.js";
@@ -795,6 +795,17 @@ export interface EpServeGrant {
   commands: readonly string[];
   /** Command → its verified registered declaration. */
   surface: Readonly<Record<string, EpCommandAuthority>>;
+  /** DERIVED from the verified surface (never caller-asserted): true iff any registered command
+   *  is `class: "journal"` — the mint emits the shared `eff_<e>` effects bind rows exactly then
+   *  (§13.9 "the credential also carries the effects bind"; an ephemeral-only endpoint gets
+   *  none, default-deny both directions). */
+  journalClass: boolean;
+  /** The endpoint's owned work pools, sorted — PROVISIONING truth (the exact pools whose
+   *  `pool_<e>_<pool>` durables the provisioner pre-created), asserted by the authorizing
+   *  provisioner at this boundary because no registered record enumerates pool names (routes
+   *  are per-acceptance policy decisions, §13.6). Own-endpoint-confined by construction: every
+   *  emitted row names `pool_<endpoint>_<pool>`, so a wrong pool name binds nothing foreign. */
+  pools: readonly string[];
   /** The full authoritative descriptor describe publishes: DERIVED from verified registered
    *  bytes, deep-frozen. */
   descriptor: DescribeDescriptor;
@@ -812,6 +823,8 @@ interface AuthorizedServe {
   registrationRevision: number;
   nameAuthorityRevision: number;
   commands: string[];
+  journalClass: boolean;
+  pools: string[];
 }
 const AUTHORIZED_SERVE = new WeakMap<EpServeGrant, AuthorizedServe>();
 
@@ -851,6 +864,11 @@ export async function authorizeServeGrant(
      *  cluster MANIFEST at a closure digest, a cluster DOCUMENT at a root artifact digest — or
      *  `undefined` when the store has no such artifact (fail-closed). */
     readClusterArtifact: (digest: string) => Promise<unknown> | unknown;
+    /** The endpoint's owned work pools (PROVISIONING truth: exactly the pools whose durables
+     *  the calling provisioner pre-created; omitted = none). Validated tokens, no duplicates,
+     *  and only meaningful on a journal-class surface — a pool list on an ephemeral-only
+     *  endpoint is a caller bug and refuses loud. */
+    pools?: string[];
   },
 ): Promise<EpServeGrant> {
   spacePrefix(args.space); // grammar: a malformed space token never becomes credential rows
@@ -932,6 +950,19 @@ export async function authorizeServeGrant(
   }
   commands.sort(); // deterministic full surface
 
+  // §13.9 bind-row inputs: journal class is REGISTERED truth (derived from the verified
+  // surface, never caller-asserted); pools are PROVISIONING truth (the authorizing provisioner
+  // asserts exactly the pool durables it pre-created — no registered record enumerates pool
+  // names, routes are per-acceptance policy decisions, §13.6). Pools without a journal-class
+  // surface are refused: only journal acceptances route to pools, so the combination is a
+  // caller bug, never a silent no-op.
+  const journalClass = commands.some((cmd) => surface[cmd].class === "journal");
+  const pools = [...(args.pools ?? [])].map((p) => assertPoolToken(p)).sort();
+  if (new Set(pools).size !== pools.length)
+    throw new EpEnvelopeError("internal", `the pools list for "${args.endpoint}/${args.instanceId}" carries duplicates; the provisioner enumerates each pre-created pool once (SPEC 13.9)`);
+  if (pools.length > 0 && !journalClass)
+    throw new EpEnvelopeError("failed-precondition", `"${args.endpoint}" registers no journal-class command but the provisioner asserts pools [${pools.join(", ")}]; only journal acceptances route to work pools (SPEC 13.6/13.9)`);
+
   const current = await args.readProcessEpoch();
   if (!Number.isSafeInteger(current) || current < 0)
     throw new EpEnvelopeError("internal", `the authoritative mapping read returned ${JSON.stringify(current)}, not an unsigned processEpoch`);
@@ -948,6 +979,8 @@ export async function authorizeServeGrant(
     nameAuthorityRevision,
     commands: Object.freeze([...commands]) as readonly string[],
     surface: Object.freeze(surface),
+    journalClass,
+    pools: Object.freeze([...pools]) as readonly string[],
     descriptor: deriveDescriptor(
       { endpoint: spec.endpoint, owner: spec.owner, ...(spec.endpointType !== undefined ? { endpointType: spec.endpointType } : {}) },
       clusters,
@@ -956,6 +989,7 @@ export async function authorizeServeGrant(
   AUTHORIZED_SERVE.set(grant, {
     space: args.space, endpoint: spec.endpoint, instanceId: iId, epoch: args.epoch,
     owner: spec.owner, registrationRevision: specEntry.revision, nameAuthorityRevision, commands: [...commands],
+    journalClass, pools: [...pools],
   });
   return grant;
 }
@@ -972,7 +1006,9 @@ export function assertServeGrantAuthorized(serve: EpServeGrant): AuthorizedServe
   if (snap.space !== serve.space || snap.endpoint !== serve.endpoint || snap.instanceId !== serve.instanceId
     || snap.epoch !== serve.epoch || snap.owner !== serve.owner || snap.registrationRevision !== serve.registrationRevision
     || snap.nameAuthorityRevision !== serve.nameAuthorityRevision
-    || snap.commands.length !== serve.commands.length || snap.commands.some((cmd, i) => serve.commands[i] !== cmd))
+    || snap.commands.length !== serve.commands.length || snap.commands.some((cmd, i) => serve.commands[i] !== cmd)
+    || snap.journalClass !== serve.journalClass
+    || snap.pools.length !== serve.pools.length || snap.pools.some((p, i) => serve.pools[i] !== p))
     throw new EpEnvelopeError("permission-denied", "the serve artifact diverges from its authorized snapshot; refusing mutated serve authority (SPEC 13.9)");
   return snap;
 }
@@ -1014,11 +1050,13 @@ export interface EpGateState {
    *  key collision-free within the space bucket). Binding the ENDPOINT here is the explicit
    *  identity check that does not rely on that entropy: a caller that passes a DIFFERENT endpoint's
    *  gate sharing the instance token (or any wrong gate) is refused, never confused, and the
-   *  credential family stays per-`(endpoint, instance)`. When D13/D14 wires the durable keys BOTH
-   *  families must carry the endpoint (`gate.<endpoint>.<lifecycleUid>` AND the credential-ledger
-   *  key, whose SPEC example `cred.<lifecycleUid>.<credentialId>` is likewise endpoint-blind), so the
-   *  key derivation matches this check rather than leaning on the instance-token entropy alone. Exact
-   *  endpoint-qualified shape is subject to the frozen-SPEC reconciliation (the recorded gate). */
+   *  credential family stays per-`(endpoint, instance)`. The durable keys carry the endpoint
+   *  explicitly: the normative DISJOINT endpoint families are `epgate.<endpoint>.<instanceId>`
+   *  and `epcred.<endpoint>.<instanceId>.<credentialId>` (SPEC 13.9/13.12 — disjoint from the
+   *  agent `gate.<lifecycleUid>`/`cred.…` families by PREFIX, never arity), so the key
+   *  derivation matches this check rather than leaning on the instance-token entropy alone.
+   *  The agent families stay endpoint-blind BY DESIGN (a lifecycle uid is space-globally
+   *  reserved, not an endpoint child). */
   endpoint: string;
   lifecycleUid: string;
   state: "open" | "frozen" | "retired";
@@ -1039,9 +1077,9 @@ export interface EpGateSuccessor {
   nameAuthorityRevision: number;
 }
 
-/** One staged credential-ledger row (§13.1 `cred.<lifecycleUid>.<credentialId>` - the SPEC example
- *  is endpoint-blind; D13/D14 must endpoint-qualify this key family too, see EpGateState.endpoint):
- *  written BEFORE
+/** One staged credential-ledger row, durably keyed in the ENDPOINT family
+ *  `epcred.<endpoint>.<instanceId>.<credentialId>` (SPEC 13.9/13.12; disjoint by prefix from the
+ *  agent `cred.<lifecycleUid>.…` family, which stays endpoint-blind by design): written BEFORE
  *  the winning CAS and carrying the NORMATIVE ledger fields (§13.1) so a later barrier's
  *  enumeration can find the credential, prove which surface/incarnation it covered, and EVICT its
  *  holder:
@@ -1074,8 +1112,9 @@ export interface EpServeLedgerRow {
 }
 
 /** The MINT half of the durable, single-key issuance-gate seam the serve release fence rides
- *  (§13.1). One gate per instance; production wires it to `gate.<lifecycleUid>` in the credential
- *  ledger (the D13/D14 auth path, `allow_direct=false`, revision-pinned CAS). A takeover, a
+ *  (§13.1). One gate per instance; production wires it to the endpoint family's
+ *  `epgate.<endpoint>.<instanceId>` in the credential ledger (the auth implementation's
+ *  `kvServeIssuanceGate`; `allow_direct=false`, revision-pinned CAS). A takeover, a
  *  re-registration, and a name transfer are each a {@link EpIssuanceBarrier} that CASes this SAME
  *  key to `frozen` before proceeding and reopens it at the successor coordinate, so mint-finalize
  *  and every barrier serialize on one key — never a pseudo-transaction across two. */

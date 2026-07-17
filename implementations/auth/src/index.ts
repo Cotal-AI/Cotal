@@ -113,7 +113,7 @@ import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-s
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
 // re-exported here (import it directly from the module in smokes/provisioning). The public
 // surface is the store + hooks + close/sweep seams.
-export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, type SessionAuthStore, type EndpointGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
+export { openSessionAuthStore, kvSessionLedger, sessionRedemptionHooks, closeSession, sweepSessions, kvServeIssuanceGate, type SessionAuthStore, type EndpointGateRow, type SessionSigner, type SessionHookDeps, type SessionCloser } from "./session-ledger.js";
 // NB: the package surface is the sealed contexts + the READ seams only. The activation saga,
 // the UID reservation, the gate primitives (create/observe/freeze/reopen/retire), the
 // normative credential ledger (credential-ledger.ts: rows, source gates, the mint protocol),

@@ -32,6 +32,7 @@ import {
   canonicalizerGrants, canonicalizerWorkGrants, activatorGrants, activatorContext, readPoolOccupancy,
   effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
+  commitPrincipalGrants, contractPublisherGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   type EpCaller,
 } from "../src/index.js";
@@ -151,6 +152,37 @@ c("the record-writer and timer-writer grants own their durables",
   && timerWriterGrants(SPACE).some((r) => r.startsWith("$JS.API.CONSUMER.CREATE.EPT_REQ_epbind.timerw_epbind.")));
 c("a reader bind grant is INFO/MSG.NEXT/ACK on the reader's own stream, never create",
   readerBindGrants(recordsKvStreamName(SPACE), recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: recSubtree })).length === 3);
+// ── D14: the commit principal + contract publisher (§13.9 matrix rows, exact strings) ──
+const CONN = "ibxsmoke0123456789";
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
+  (() => {
+    const g = commitPrincipalGrants(SPACE, "manager", CONN);
+    return JSON.stringify(g.publish) === JSON.stringify([
+      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+      "cotal.epbind.epf.manager.eff.>",
+      "cotal.epbind.epf.manager.receipt.>",
+      "cotal.epbind.epf.manager.wrk.>",
+      "cotal.epbind.epf.manager.cp.>",
+      "$KV.cotal_records_epbind.goal.manager.>",
+      "$KV.cotal_records_epbind.cp.manager.>",
+      "$KV.cotal_records_epbind.lease.manager.>",
+      "$JS.API.STREAM.MSG.GET.EPF_epbind",
+      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
+      "$JS.API.INFO",
+    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
+  })());
+c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",
+  (() => {
+    const g = contractPublisherGrants(SPACE, CONN);
+    return JSON.stringify(g.publish) === JSON.stringify([
+      "cotal.epbind.epc.*",
+      "$JS.API.DIRECT.GET.EPC_epbind.cotal.epbind.epc.>",
+      "$JS.API.INFO",
+    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+      && !g.publish.some((r) => r.includes("STREAM.INFO") || r.includes("STREAM.MSG.GET") || r.includes("CONSUMER."));
+  })());
+
 c("the provisioner grants pair a full-tail CREATE with a DELETE per pre-created durable, nothing else",
   (() => {
     const rows = provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: poolConsumerConfig(SPACE, "manager", "builds") }]);

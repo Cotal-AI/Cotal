@@ -28,7 +28,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, mintLifecycleUid, recordsBucket, serverConfig, type EvictionResult } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
-import { authorityBarrierGrants, openAuthorityClient } from "../src/authority-client.js";
+import { authorityBarrierGrants, barrierExecutorSettlementGrants, openAuthorityClient } from "../src/authority-client.js";
 import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, registryStores } from "../src/lifecycle-registry.js";
@@ -87,6 +87,21 @@ try {
   for (const bad of [">", "*", "a.b", ""]) {
     check(`barrier grant REFUSES a subject-unsafe connId ${JSON.stringify(bad)}`, throwsSync(() => authorityBarrierGrants(space, bad)));
   }
+  // The D14 executor-settlement composition (SPEC 13.9 "Retirement settlement"): per listed pool
+  // the wrk terminal publish + the lease CAS, plus ONE EPF leader read; poolless refuses; no
+  // epw enqueue row ever (the expired-only reconcile structurally never repairs).
+  check("the executor settlement grant emits exactly the per-pool wrk publish + lease CAS + one EPF leader read",
+    JSON.stringify(barrierExecutorSettlementGrants(space, "jobsrv", ["pa", "pb"]).publish) === JSON.stringify([
+      `cotal.${space}.epf.jobsrv.wrk.pa.>`,
+      `$KV.${recordsBucket(space)}.lease.jobsrv.pa.>`,
+      `cotal.${space}.epf.jobsrv.wrk.pb.>`,
+      `$KV.${recordsBucket(space)}.lease.jobsrv.pb.>`,
+      `$JS.API.STREAM.MSG.GET.EPF_${space}`,
+    ]));
+  check("the executor settlement grant REFUSES a poolless list (a poolless settlement authority is none)",
+    throwsSync(() => barrierExecutorSettlementGrants(space, "jobsrv", [])));
+  check("the executor settlement grant emits NO epw enqueue and NO consumer authority",
+    barrierExecutorSettlementGrants(space, "jobsrv", ["pa"]).publish.every((r) => !r.includes(".epw.") && !r.includes("CONSUMER.")));
 
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }

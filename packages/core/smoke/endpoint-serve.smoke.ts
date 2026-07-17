@@ -411,6 +411,35 @@ try {
   throws("a JOURNAL-class registered command refuses rail-serving at construction (journal rides epj)",
     () => serveEndpoint(null as never, SPACE, grantJournal, [def("submitjob")], { public: true }));
 
+  // ---- D14 bind-row inputs on the branded artifact (journalClass = registered truth, pools =
+  // provisioning truth) ----
+  c("a journal surface derives journalClass=true on the artifact (pools default to none)",
+    grantJournal.journalClass === true && Array.isArray(grantJournal.pools) && grantJournal.pools.length === 0);
+  c("an ephemeral surface derives journalClass=false",
+    (await authorizeA()).journalClass === false);
+  {
+    const withPools = await authorizeServeGrant(kv, {
+      space: SPACE, endpoint: "mgrjob", instanceId: IID_A, epoch: 1,
+      holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact, pools: ["zeta", "alpha"],
+    });
+    c("provisioner-asserted pools are validated + sorted into the artifact", withPools.pools.join(",") === "alpha,zeta");
+    await rejects("a DUPLICATE pool refuses (the provisioner enumerates each pre-created pool once)",
+      () => authorizeServeGrant(kv, {
+        space: SPACE, endpoint: "mgrjob", instanceId: IID_A, epoch: 1,
+        holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact, pools: ["p1", "p1"],
+      }), "internal");
+    await rejects("pools on an EPHEMERAL-ONLY surface refuse (only journal acceptances route to work pools)",
+      () => authorizeServeGrant(kv, {
+        space: SPACE, endpoint: "manager", instanceId: IID_A, epoch: 1,
+        holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact, pools: ["p1"],
+      }), "failed-precondition");
+    await rejects("a malformed pool token never becomes an artifact field",
+      () => authorizeServeGrant(kv, {
+        space: SPACE, endpoint: "mgrjob", instanceId: IID_A, epoch: 1,
+        holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact, pools: ["BAD POOL"],
+      }));
+  }
+
   // §13.6 virtual registration: an ON-DEMAND activation policy is only valid over an
   // all-journal-class surface (an ephemeral call to an endpoint with no live instance is an
   // honest `unavailable`, so it cannot be advertised).

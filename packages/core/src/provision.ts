@@ -72,6 +72,7 @@ import {
 } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
+import { effectsBindGrants, poolOwnerBindGrants } from "./endpoint-binding.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 
@@ -375,7 +376,8 @@ export interface MintOpts {
    *  durable, single-key issuance gate whose revision-pinned CAS `mintCreds` must WIN to release
    *  the serve credential. Both the takeover and re-registration barriers freeze this same gate,
    *  so a mint racing either loses the CAS and releases nothing. Production wires it to the
-   *  credential ledger's `gate.<lifecycleUid>`; a test provides a faithful CAS fake. */
+   *  credential ledger's endpoint family `epgate.<endpoint>.<instanceId>` (the auth
+   *  implementation's `kvServeIssuanceGate`); a test provides a faithful CAS fake. */
   serveIssuance?: EpIssuanceGate;
   /** Delivery-daemon shard seam (`delivery` profile only). N=1 is the only operating mode; these do
    *  not change permissions in this build (the daemon owns the whole space at N=1). Present so the
@@ -606,8 +608,11 @@ export async function mintCreds(
       // has distinct bytes (fresh exp/iat), so it writes a DISTINCT ledger row and never overwrites
       // or resurrects a prior one. The create-only / idempotent-if-identical guarantee lives at the
       // finalize/stage seam (the SAME credential object staged twice), not the mint layer. The
-      // stable nkey rides separately as `credentialKey` for broker revocation.
-      credentialId: rawDigest(creds),
+      // stable nkey rides separately as `credentialKey` for broker revocation. KEY-SAFE digest
+      // form (`sha256-<hex>`, never the §13.7 `sha256:` artifact form): the id becomes a segment
+      // of the durable `epcred.` KV key, whose grammar has no ":" — the digest property (a
+      // byte-identical retry maps to the SAME id) is what matters, not the separator.
+      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
       credentialKey: identity.id,
       holderActor: pr.actor,
       // A serve credential is minted directly by the provisioner authority, so its §13.1 issuance
@@ -1139,8 +1144,10 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
  *  class rail, the plain scatter rail, and the own-instance rail for the FULL registered
  *  command set plus the derived `describe`, and the own epoch-pinned timer-fire subjects;
  *  publish: the epoch-pinned egress (reply / `epe` events / `ept` schedule requests / `epr`
- *  record-write ingress). No agent baseline of any kind — no chat/DM/anycast/presence/ctl, no
- *  `$JS.>` (the effects/pool bind rows are the D14 credential assembly). The value MUST be the
+ *  record-write ingress) plus, from the branded snapshot only, the §13.9 bind rows: the shared
+ *  `eff_<e>` effects bind iff the surface is journal-class and each owned `pool_<e>_<pool>`
+ *  bind (bind-only + `$JS.API.INFO`; an ephemeral-only poolless endpoint emits none). No agent
+ *  baseline of any kind — no chat/DM/anycast/presence/ctl, no broad `$JS.>`. The value MUST be the
  *  branded ARTIFACT `authorizeServeGrant` returned, and its mint context binds: same space, and
  *  the minted principal is the registered owner. This builds the ROWS; the RELEASE fence is the
  *  durable issuance-gate CAS `mintCreds` runs (SPEC §13.1) — a raw/copied/diverging value or a
@@ -1162,8 +1169,18 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
   const rows = epServeGrantRows(space, {
     endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, ephemeralCommands,
   });
+  // §13.9:2473 bind rows, from the BRANDED snapshot only (journal class is registered truth,
+  // pools are the authorizing provisioner's pre-created durables): a journal-class instance
+  // binds the shared `eff_<e>` effects durable, a pool-owning one binds each owned
+  // `pool_<e>_<pool>` — all bind-only (INFO/MSG.NEXT/ACK, never create/delete), plus the one
+  // `$JS.API.INFO` a pull consumer needs. An ephemeral-only poolless endpoint emits NONE of
+  // these rows (default-deny both directions).
+  const bindRows: string[] = [];
+  if (snap.journalClass) bindRows.push(...effectsBindGrants(space, snap.endpoint));
+  for (const pool of snap.pools) bindRows.push(...poolOwnerBindGrants(space, snap.endpoint, pool));
+  if (bindRows.length > 0) bindRows.push("$JS.API.INFO");
   return {
-    pub: { allow: rows.pub },
+    pub: { allow: [...rows.pub, ...bindRows] },
     sub: { allow: [...rows.sub, `_INBOX_${pr.connId}.>`] },
   };
 }

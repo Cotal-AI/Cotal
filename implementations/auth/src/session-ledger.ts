@@ -65,6 +65,8 @@ import {
   type SessionCredentialIds,
   type SessionTerminalState,
   type LifecycleGatePin,
+  type EpIssuanceGate,
+  type EpServeLedgerRow,
 } from "@cotal-ai/core";
 import {
   observeGate,
@@ -75,6 +77,7 @@ import {
 } from "./lifecycle-registry.js";
 import {
   createRowByteIdempotent,
+  epcredRowKey,
   markLedgerRowRevoked,
   parseLedgerRow,
   type CredentialLedgerRow,
@@ -355,6 +358,79 @@ async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string,
   if (gate.state !== "open")
     throw new EpEnvelopeError("permission-denied", `${what}'s endpoint issuance gate is "${gate.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
   return { pin: { key, revision: entry.revision }, gate };
+}
+
+/** The PRODUCTION serve-issuance gate (§13.1) over the durable endpoint families: core's serve
+ *  mint (`mintCreds`, profile `endpoint-serve`) fences its release on the
+ *  `epgate.<endpoint>.<instanceId>` key and stages its per-JWT row under
+ *  `epcred.<endpoint>.<instanceId>.<credentialId>` — the SAME observe/stage/commit/revoke
+ *  protocol the in-memory smoke seam models, over the real KV. This closes the recorded
+ *  D13/D14 durable-key gate: the endpoint-qualified families are normative (SPEC 13.9/13.12)
+ *  and the serve mint fence stops being fake-only.
+ *
+ *  Mapping to the NORMATIVE closed row schema (§13.1): the staged row's
+ *  identity/lineage/state/exp become the CredentialLedgerRow (`lifecycleUid` is the endpoint
+ *  instance's instanceId). Its gate-coordinate fields
+ *  (generation/processEpoch/registrationRevision/nameAuthorityRevision) and the holder nkey
+ *  (`credentialKey`) are NOT persisted on the row: the closed schema refuses unknown fields,
+ *  the coordinates are pinned by the GATE key the commit CASes (one key, §13.1), and
+ *  revocation/eviction route by credentialId/holderPrincipal, never nkey. `commit` is the
+ *  pinned identical-bytes TOUCH at the observed revision — a barrier that moved the gate since
+ *  observation makes the mint LOSE, the session adapter's exact discipline. */
+export function kvServeIssuanceGate(kv: KV, args: { space: string; endpoint: string; instanceId: string }): EpIssuanceGate {
+  const endpoint = endpointToken(args.endpoint);
+  const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
+  const key = epgateKey(endpoint, instanceId);
+  return {
+    observe: async () => {
+      const entry = await kv.get(key);
+      if (!entry) return null; // no gate => the mint fails closed (core refuses a null observe)
+      if (entry.operation !== "PUT")
+        throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
+      const gate = parseEndpointGate(entry.value, key);
+      return {
+        space: args.space, endpoint, lifecycleUid: instanceId,
+        state: gate.state, generation: gate.generation, processEpoch: gate.processEpoch,
+        registrationRevision: gate.registrationRevision, nameAuthorityRevision: gate.nameAuthorityRevision,
+        revision: entry.revision,
+      };
+    },
+    stage: async (row: EpServeLedgerRow) => {
+      // The staged row must BE this gate's instance — a foreign endpoint/instance row through
+      // this adapter is a caller bug, never silently redirected into another family.
+      if (row.endpoint !== endpoint || row.lifecycleUid !== instanceId)
+        throw new EpEnvelopeError("failed-precondition", `the staged serve row names ${row.endpoint}/${row.lifecycleUid} but this gate serves ${endpoint}/${instanceId}; a row never crosses families (SPEC 13.1)`);
+      if (typeof row.exp !== "number")
+        throw new EpEnvelopeError("failed-precondition", `the staged serve row for ${endpoint}/${instanceId} carries no expiry; the normative ledger row requires one (SPEC 13.1)`);
+      const ledgerRow: CredentialLedgerRow = {
+        credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
+        lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
+      };
+      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
+      // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a
+      // row this trusted path would itself refuse to read never lands durably.
+      parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
+      await createRowByteIdempotent(kv, rowKey, ledgerRow);
+    },
+    commit: async (expectedRevision: number) => {
+      const entry = await kv.get(key);
+      if (!entry || entry.operation !== "PUT" || entry.revision !== expectedRevision) return false;
+      if (parseEndpointGate(entry.value, key).state !== "open") return false;
+      try {
+        await kv.update(key, entry.value, expectedRevision);
+        return true;
+      } catch (e) {
+        if (isCasLoss(e)) return false; // a barrier froze/reopened since observation; the mint loses
+        throw new EpEnvelopeError("unavailable", `the serve-issuance gate touch for ${key} is ambiguous; the mint fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+      }
+    },
+    revoke: async (row: EpServeLedgerRow) => {
+      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
+      const entry = await kv.get(rowKey);
+      if (!entry) return; // a never-staged row re-revokes successfully (idempotent abort path)
+      await markLedgerRowRevoked(kv, rowKey);
+    },
+  };
 }
 
 // ---- the session stage pins (stage.session.<sessionId>.<c|s>) + the deterministic release -------

@@ -38,7 +38,8 @@ import {
   type LifecycleRegistry,
 } from "../src/index.js";
 // The gate/provisioning stand-ins + registry primitives are test-internal (not in the public index).
-import { writeEndpointGate, epgateKey, reconcileSessionForTakeover } from "../src/session-ledger.js";
+import { writeEndpointGate, epgateKey, reconcileSessionForTakeover, kvServeIssuanceGate } from "../src/session-ledger.js";
+import { parseLedgerRow } from "../src/credential-ledger.js";
 import { tryReserveUid, createGateFrozen, reopenGate } from "../src/lifecycle-registry.js";
 
 let ok = 0, fail = 0;
@@ -466,6 +467,62 @@ try {
     const rec2 = await reconcileSessionForTakeover(store, hooks, sid(45));
     c("…idempotent: a re-run still returns it (a resumed barrier must re-evict)",
       rec2.servingPrincipals.length === 1 && rec2.servingPrincipals[0] === SERVING_PRINCIPAL, rec2);
+  }
+
+  console.log("J. the D14 production serve-issuance gate over the durable endpoint families");
+  {
+    const EP = "servegate";
+    const IID = "g".repeat(26);
+    const seam = kvServeIssuanceGate(kv, { space: SPACE, endpoint: EP, instanceId: IID });
+    c("observe of a MISSING gate is null (the mint fails closed on it)", (await seam.observe()) === null);
+    await writeEndpointGate(kv, EP, IID, { state: "open", generation: 2, processEpoch: 5, registrationRevision: 3, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
+    const g1 = await seam.observe();
+    c("observe maps the durable gate row + the store revision into the §13.1 gate state",
+      g1 !== null && g1.state === "open" && g1.generation === 2 && g1.processEpoch === 5
+      && g1.registrationRevision === 3 && g1.nameAuthorityRevision === 1
+      && g1.endpoint === EP && g1.lifecycleUid === IID && g1.space === SPACE && typeof g1.revision === "number");
+    const digestId = `sha256-${"e".repeat(64)}`;
+    const mkRow = (over: Record<string, unknown> = {}) => ({
+      credentialId: digestId, credentialKey: "UKEYUNPERSISTED", holderPrincipal: SERVING_PRINCIPAL,
+      endpoint: EP, lifecycleUid: IID, sourceChain: ["root"], state: "active" as const,
+      exp: NOW + 60_000, generation: 2, processEpoch: 5, registrationRevision: 3, nameAuthorityRevision: 1,
+      ...over,
+    });
+    await seam.stage(mkRow() as never);
+    {
+      const stored = await kv.get(`epcred.${EP}.${IID}.${digestId}`);
+      const row = parseLedgerRow(stored!.value, `epcred.${EP}.${IID}.${digestId}`);
+      c("stage writes the NORMATIVE epcred row (closed schema; coordinates + nkey not persisted; key rebuilds)",
+        row.state === "active" && row.endpoint === EP && row.lifecycleUid === IID && row.holderPrincipal === SERVING_PRINCIPAL
+        && row.sourceChain.length === 1 && row.sourceChain[0] === "root");
+    }
+    await seam.stage(mkRow() as never);
+    c("re-staging the SAME issuance is byte-idempotent (one row)", true);
+    await rejects("a FOREIGN-content restage for the same credentialId conflicts (a staged name never re-binds)",
+      () => seam.stage(mkRow({ holderPrincipal: `u_${"d".repeat(26)}.evil` }) as never), "conflict");
+    await rejects("a row naming a FOREIGN endpoint/instance refuses (a row never crosses families)",
+      () => seam.stage(mkRow({ endpoint: "otherep" }) as never), "failed-precondition");
+    await rejects("the pre-fix `sha256:<hex>` id form REFUSES at the key boundary (the ledger grammar has no colon)",
+      () => seam.stage(mkRow({ credentialId: `sha256:${"e".repeat(64)}` }) as never));
+    c("commit WINS the pinned touch at the observed revision", (await seam.commit(g1!.revision)) === true);
+    c("…and the winning touch advanced the gate revision (the SAME pin cannot win twice)", (await seam.commit(g1!.revision)) === false);
+    {
+      const g2 = await seam.observe();
+      await writeEndpointGate(kv, EP, IID, { state: "frozen", generation: 2, processEpoch: 5, registrationRevision: 3, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL, op: { opId: "o".repeat(26), kind: "takeover" } });
+      c("a barrier freeze after observation makes the parked mint's pinned commit LOSE (durable re-proof of the parked-mint race)",
+        (await seam.commit(g2!.revision)) === false);
+      const g3 = await seam.observe();
+      c("…and a commit pinned at the CURRENT revision still refuses while frozen (only an open gate mints)",
+        (await seam.commit(g3!.revision)) === false);
+    }
+    await seam.revoke(mkRow() as never);
+    {
+      const stored = await kv.get(`epcred.${EP}.${IID}.${digestId}`);
+      const row = parseLedgerRow(stored!.value, `epcred.${EP}.${IID}.${digestId}`);
+      c("revoke marks the staged row revoked (monotonic, never deleted)", row.state === "revoked");
+    }
+    await seam.revoke(mkRow({ credentialId: `sha256-${"f".repeat(64)}` }) as never);
+    c("revoking a never-staged row is idempotent (the abort path re-revokes safely)", true);
   }
 
   await nc.drain().catch(() => {});
