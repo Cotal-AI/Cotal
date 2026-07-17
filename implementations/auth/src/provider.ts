@@ -13,13 +13,17 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider } from "@cotal-ai/core";
-import { assertUserAuthInfo, homeCotalDir, type UserAuthInfo } from "@cotal-ai/workspace";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type SecretStore } from "@cotal-ai/core";
+import { assertUserAuthInfo, homeCotalDir, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
 import {
+  authCalloutKey,
+  authIssuerKey,
+  authOwnerSecretKey,
+  authServiceKeysKey,
   ensureCalloutAuth,
   ensureIssuer,
   ensureOwnerSecret,
@@ -46,7 +50,11 @@ export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: "cotal",
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
-    const { space, dir, idpUrl } = input;
+    const { space, store, dir, idpUrl } = input;
+    // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
+    // probe/pin below can touch anything at a caller-provided dir — not first at the key builders
+    // further down, which would leave a pin written at an aliased path behind the thrown error.
+    spaceSegment(space);
     // On a FRESH enable, prove the IdP actually serves a JWKS before we pin + provision a space
     // around it — a dead or typo'd `--idp` must fail loud here, not silently boot a broken space
     // that only errors at the first user connect. Skip on re-up (an already-pinned IdP was validated
@@ -55,12 +63,12 @@ export const cotalAuthProvider: AuthProvider = {
     // Pin the IdP FIRST, so a fresh `up --user-auth` without --idp fails on the config error before
     // any key material is generated.
     const idp = ensurePinnedIdp(dir, idpUrl);
-    ensureOwnerSecret(dir);
-    await ensureIssuer(dir, space);
-    const callout = await ensureCalloutAuth(dir, { space, operatorSeed: input.operatorSeed, accountPub: input.account.pub });
+    await ensureOwnerSecret(store, space);
+    await ensureIssuer(store, space);
+    const callout = await ensureCalloutAuth(store, { space, operatorSeed: input.operatorSeed, accountPub: input.account.pub });
     // The daemon's ONLY signing material: the data-account user-minting seed. Written by this
-    // (briefly privileged) call; the long-lived service loads this file, never the space bundle.
-    saveServiceKeys(dir, { dataAccount: { pub: input.account.pub, signingSeed: input.account.signingSeed } });
+    // (briefly privileged) call; the long-lived service loads this projection, never the space bundle.
+    await saveServiceKeys(store, space, { dataAccount: { pub: input.account.pub, signingSeed: input.account.signingSeed } });
 
     const publicAuth: UserAuthInfo = assertUserAuthInfo({
       provider: "cotal",
@@ -105,9 +113,9 @@ export const cotalAuthProvider: AuthProvider = {
   /** Client side: this machine's login session → a fresh IdP JWT → the local auth service's
    *  exchange → the Cotal bearer, plus the space's sentinel creds. NO fallback anywhere; each
    *  failure is one sentence with the exact operator action (U1/U10/U11 acceptance strings). */
-  async userCredentials({ dir, space, actor, view }: { dir: string; space: string; actor: string; view?: string }) {
+  async userCredentials({ store, dir, space, actor, view }: { store: SecretStore; dir: string; space: string; actor: string; view?: string }) {
     const idp = loadPinnedIdp(dir);
-    const callout = loadCalloutAuth(dir);
+    const callout = await loadCalloutAuth(store, space);
     if (!idp || !callout)
       throw new Error(
         `space "${space}" has no user-auth material on this machine - user-mode connects run where \`cotal up --user-auth\` provisioned the space (remote discovery is not supported yet)`,
@@ -153,9 +161,9 @@ export const cotalAuthProvider: AuthProvider = {
 
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the
    *  space's owner secret; no IdP round trip). The spawn paths' "whose agents are these" answer. */
-  async ownerForLogin({ dir, space }) {
+  async ownerForLogin({ store, dir, space }) {
     const idp = loadPinnedIdp(dir);
-    const secret = loadOwnerSecret(dir);
+    const secret = await loadOwnerSecret(store, space);
     if (!idp || !secret)
       throw new Error(`space "${space}" has no user-auth material on this machine - spawns for a user-auth space run where \`cotal up --user-auth\` provisioned it`);
     const session = requireIdpSession(homeCotalDir(), idp.url);
@@ -167,7 +175,7 @@ export const cotalAuthProvider: AuthProvider = {
   /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
    *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
    *  status` must be able to say "not signed in" without becoming a connect. */
-  async userStatus({ dir, space, actor }) {
+  async userStatus({ store, dir, space, actor }) {
     const idp = loadPinnedIdp(dir);
     if (!idp)
       throw new Error(
@@ -176,7 +184,7 @@ export const cotalAuthProvider: AuthProvider = {
     const session = loadIdpSession(homeCotalDir(), idp.url);
     if (!session?.sub) return { idpUrl: idp.url };
     const login = { sub: session.sub, expiresAt: session.expiresAt };
-    const secret = loadOwnerSecret(dir);
+    const secret = await loadOwnerSecret(store, space);
     if (!secret) return { idpUrl: idp.url, login };
     const owner = deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
     const row = findInteractiveActor(dir, owner, actor);
@@ -200,8 +208,8 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label }) {
-    const callout = loadCalloutAuth(dir);
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label }) {
+    const callout = await loadCalloutAuth(store, space);
     if (!callout)
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
     const { actorToken, tokenHash } = newActorToken();
@@ -223,6 +231,25 @@ export const cotalAuthProvider: AuthProvider = {
     return revokeManagedActor(dir, owner, actor);
   },
 
+  /** The delete half of the seam pair: drop the four secret kinds from the store, attempting all
+   *  four even when one fails (idempotent deletes — a failed pass re-runs as-is), then fail loud
+   *  with everything that failed. The caller sweeps its non-seam local state only after this. */
+  async deprovisionSecrets({ store, space }) {
+    const keys = [authCalloutKey(space), authIssuerKey(space), authOwnerSecretKey(space), authServiceKeysKey(space)];
+    const failures: string[] = [];
+    for (const key of keys) {
+      try {
+        await store.delete(key);
+      } catch (e) {
+        failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (failures.length)
+      throw new Error(
+        `auth secret deprovision failed for ${failures.length} of ${keys.length} keys (${failures.join("; ")}) - the deletes are idempotent, re-run the reset`,
+      );
+  },
+
   /** Fresh read across BOTH row spaces (actor names are disjoint between them, so the unified
    *  lookup is unambiguous): the manager's control authorization must see an operator's
    *  `actor grant` scope edit — or a revoke — on the very next stop/attach, hence no caching. */
@@ -231,8 +258,8 @@ export const cotalAuthProvider: AuthProvider = {
     return row ? [...row.scope] : undefined;
   },
 
-  async trustFingerprint({ dir, space }) {
-    return userAuthTrustFingerprint(dir, space);
+  async trustFingerprint({ store, dir, space }) {
+    return userAuthTrustFingerprint(store, dir, space);
   },
 
   async validateRetainedAgent(opts) {

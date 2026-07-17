@@ -115,7 +115,7 @@ try {
 
   // --- `store` removes exactly the JetStream store -------------------------------------------
   const storeRoot = meshRoot();
-  const removedStore = removeLocalState(storeRoot, { includeAuth: false });
+  const removedStore = await removeLocalState(storeRoot, { includeAuth: false });
   check("store: removes the JetStream store", removedStore.some((r) => r.includes("nats")) && !existsSync(join(storeRoot, ".cotal", "nats")));
   check("store: auth + derived creds survive", existsSync(join(storeRoot, ".cotal", "auth", "auth.json")) && existsSync(join(storeRoot, ".cotal", "delivery.creds")));
   check("store: personas survive", existsSync(join(storeRoot, ".cotal", "agents", "default.md")));
@@ -124,7 +124,7 @@ try {
   // --- `all` removes store + identity + derived creds + crash residue ------------------------
   const allRoot = meshRoot();
   writeFileSync(join(allRoot, ".cotal", "nats.pid"), "999999"); // stale pidfile from a crash
-  const removedAll = removeLocalState(allRoot, { includeAuth: true });
+  const removedAll = await removeLocalState(allRoot, { includeAuth: true });
   check("all: removes store + auth", !existsSync(join(allRoot, ".cotal", "nats")) && !existsSync(join(allRoot, ".cotal", "auth")));
   for (const f of DERIVED) check(`all: removes derived ${f}`, !existsSync(join(allRoot, ".cotal", f)));
   check("all: sweeps stale pidfiles", !existsSync(join(allRoot, ".cotal", "nats.pid")));
@@ -144,25 +144,45 @@ try {
   // as-passed spelling only ever passed on POSIX by luck: "/private/var/x" contains "/var/x". A
   // Windows 8.3 short name is not a substring of its long form, so it caught this honestly.)
   const customStoreResolved = realpathSync.native(customStore);
-  const removedCustom = removeLocalState(customRoot, { includeAuth: false, storeDir: customStore });
+  const removedCustom = await removeLocalState(customRoot, { includeAuth: false, storeDir: customStore });
   check("--store-dir: removes the OVERRIDE dir, not .cotal/nats", !existsSync(customStore) && existsSync(join(customRoot, ".cotal", "nats")));
   check("--store-dir: reports the resolved path it removed", removedCustom.some((r) => r.includes(customStoreResolved)), removedCustom);
-  assert.throws(
+  await assert.rejects(
     () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
     /unsafe store cleanup target/,
   );
   const controlTree = join(customRoot, ".cotal", "manifests");
   mkdirSync(join(controlTree, "jetstream"), { recursive: true });
-  assert.throws(
+  await assert.rejects(
     () => removeLocalState(customRoot, { includeAuth: false, storeDir: controlTree }),
     /unsafe store cleanup target/,
   );
   rmSync(customRoot, { recursive: true, force: true });
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));
-  check("already clean: removes nothing, throws nothing", removeLocalState(empty, { includeAuth: true }).length === 0);
+  check("already clean: removes nothing, throws nothing", (await removeLocalState(empty, { includeAuth: true })).length === 0);
   check("already clean: no live process reported", liveMeshProcess(empty) === undefined);
   rmSync(empty, { recursive: true, force: true });
+
+  // --- seam ordering: a failed store delete must abort BEFORE the identity is wiped -----------
+  // Force the failure the way the store actually fails: `delivery.creds` (a MIGRATED kind, so
+  // `clean all` deletes it through the SecretStore, never a raw rm) as a NON-EMPTY DIRECTORY —
+  // FsSecretStore.delete's non-recursive rmSync throws. The reset must throw, leave the local
+  // identity (auth.json) intact for the retry, and name the retry.
+  const seamRoot = meshRoot();
+  rmSync(join(seamRoot, ".cotal", "delivery.creds"));
+  mkdirSync(join(seamRoot, ".cotal", "delivery.creds"));
+  writeFileSync(join(seamRoot, ".cotal", "delivery.creds", "occupant"), "x");
+  let seamErr = "";
+  try {
+    await removeLocalState(seamRoot, { includeAuth: true });
+  } catch (e) {
+    seamErr = (e as Error).message;
+  }
+  check("seam: a failed store delete throws, naming the retry", /deprovision failed/.test(seamErr) && /re-run/.test(seamErr), seamErr);
+  check("seam: the local identity survives the failed reset (no split authority)", existsSync(join(seamRoot, ".cotal", "auth", "auth.json")));
+  check("seam: derived creds also survive (nothing identity-scoped was swept)", existsSync(join(seamRoot, ".cotal", "membership-rw.creds")));
+  rmSync(seamRoot, { recursive: true, force: true });
 
   // --- the ONE shared pidfile probe (down/clean/status all ride pidfileState) -----------------
   // Empty/corrupt parses to 0 or NaN -> "bad pidfile", never `running (pid 0)` (POSIX kill(0, 0)

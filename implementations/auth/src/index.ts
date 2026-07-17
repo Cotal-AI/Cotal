@@ -63,6 +63,10 @@ export {
   validateRetainedManagedAgent,
 } from "./continuity.js";
 export {
+  authCalloutKey,
+  authIssuerKey,
+  authOwnerSecretKey,
+  authServiceKeysKey,
   clearAuthServiceInfo,
   ensureCalloutAuth,
   ensureIssuer,

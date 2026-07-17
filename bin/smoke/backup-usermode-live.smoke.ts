@@ -48,7 +48,7 @@ const { bearer } = await fromAuth("better-auth/plugins/bearer");
 const { toNodeHandler } = await fromAuth("better-auth/node");
 
 const { CotalEndpoint, isReachable, mintCreds, newIdentity, principalKey } = await import("@cotal-ai/core");
-const { authDir, loadSpaceAuth, userAuthStateDir } = await import("@cotal-ai/workspace");
+const { authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, establishIdpSession } = await import("@cotal-ai/auth");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
@@ -188,11 +188,11 @@ try {
   // authority input, so a re-grant after the artifact would itself be trust drift.
   await must("actor grant cli (scope incl. admin)",
     ["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
-  const OWNER = await cotalAuthProvider.ownerForLogin({ dir: stateDir, space: SPACE });
+  const OWNER = await cotalAuthProvider.ownerForLogin({ store: workspaceSecretStore(root), dir: stateDir, space: SPACE });
   // A retained MANAGED agent principal: real user-mode agent authority (ledger row + sentinel +
   // actor token), the material a same-principal resume must reuse rather than replace.
   const retained = await cotalAuthProvider.grantAgent({
-    dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
+    store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
     scope: [], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: "worker", parent: `${OWNER}.cli`,
   });
   check("retained managed agent principal provisioned", !!retained.actorToken && !!retained.sentinelCreds);
@@ -251,7 +251,7 @@ try {
   // Same-principal resume of the retained agent's AUTHORITY: the preserved material must still
   // adopt the SAME principal with the SAME envelope, and never mint a replacement.
   const adopted = await cotalAuthProvider.validateRetainedAgent({
-    dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
+    store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
     actorToken: retained.actorToken, sentinelCreds: retained.sentinelCreds,
   }).then((a: any) => ({ ok: true as const, a }), (e: Error) => ({ ok: false as const, e }));
   check("retained agent material resumes under the SAME principal after the restore",

@@ -49,6 +49,7 @@ import {
   serverFlag,
   spaceFlag,
   userAuthStateDir,
+  workspaceSecretStore,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -584,6 +585,7 @@ async function provisionUserForeground(
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void> }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
+  const store = workspaceSecretStore(target.root);
   const fail = (msg: string): never => {
     console.error(c.red(`✗ ${msg}`));
     process.exit(1);
@@ -592,7 +594,7 @@ async function provisionUserForeground(
   let owner: string;
   try {
     provider = resolveAuthProvider();
-    owner = await provider.ownerForLogin({ dir, space });
+    owner = await provider.ownerForLogin({ store, dir, space });
   } catch (e) {
     return fail((e as Error).message);
   }
@@ -609,6 +611,7 @@ async function provisionUserForeground(
     // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
     // the same ordering as Manager.provisionUserAgent, for the same reason.
     const grant = await provider.grantAgent({
+      store,
       dir,
       space,
       owner,

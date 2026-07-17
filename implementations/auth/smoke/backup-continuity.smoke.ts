@@ -1,9 +1,10 @@
 /** Broker-free backup trust + retained-principal regression smoke. */
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
+import { userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import {
   cotalAuthProvider,
   ensurePinnedIdp,
@@ -61,8 +62,16 @@ const SPACE = "backup-auth";
 const OWNER = `u_${"a".repeat(26)}`;
 const OTHER_OWNER = `u_${"b".repeat(26)}`;
 const IDP = "http://127.0.0.1:49151/api/auth";
-const dir = mkdtempSync(join(tmpdir(), "cotal-auth-continuity-"));
-const missing = mkdtempSync(join(tmpdir(), "cotal-auth-continuity-missing-"));
+// The seam split, composed the way the CLI does it: secret kinds ride the store (rooted at
+// <root>/.cotal, keys auth/<space>/…), the ledger/pin stay under the state dir — byte-for-byte
+// the same on-disk paths, so the drift mutations below poke the exact files the store reads.
+const root = mkdtempSync(join(tmpdir(), "cotal-auth-continuity-"));
+const dir = userAuthStateDir(root, SPACE);
+const store = workspaceSecretStore(root);
+const missingRoot = mkdtempSync(join(tmpdir(), "cotal-auth-continuity-missing-"));
+const missing = userAuthStateDir(missingRoot, SPACE);
+const missingStore = workspaceSecretStore(missingRoot);
+mkdirSync(missing, { recursive: true });
 
 try {
   // Pin first so prepareServer remains entirely broker/network-free.
@@ -72,6 +81,7 @@ try {
     space: SPACE,
     operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    store,
     dir,
   });
   grantActor(dir, {
@@ -83,6 +93,7 @@ try {
     label: "first label",
   });
   const retained = await cotalAuthProvider.grantAgent({
+    store,
     dir,
     space: SPACE,
     owner: OWNER,
@@ -95,12 +106,20 @@ try {
   });
 
   console.log("A. canonical trust fingerprint");
-  const first = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const first = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("fingerprint uses the versioned non-secret scheme", first.scheme === USER_AUTH_TRUST_SCHEME);
   check("fingerprint is a sha256 hex value", /^[0-9a-f]{64}$/.test(first.value));
   await rejects(
-    "the same state directory cannot be fingerprinted as another space",
-    () => cotalAuthProvider.trustFingerprint({ dir, space: "other-space" }),
+    "another space name cannot even address this space's material (key segmentation fails closed)",
+    () => cotalAuthProvider.trustFingerprint({ store, dir, space: "other-space" }),
+    "missing",
+  );
+  // The cross-PASTE vector the key segmentation cannot see: this space's documents copied under
+  // another space's keys. The issuer's in-document binding still refuses.
+  cpSync(join(root, ".cotal", "auth", SPACE), join(root, ".cotal", "auth", "other-space"), { recursive: true });
+  await rejects(
+    "the same state cannot be fingerprinted as another space",
+    () => cotalAuthProvider.trustFingerprint({ store, dir, space: "other-space" }),
     "not space",
   );
 
@@ -113,7 +132,7 @@ try {
     allowPublish: ["general", "ops"],
     label: "non-authority metadata changed",
   });
-  const reordered = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const reordered = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("set order and non-authority metadata do not change the fingerprint", reordered.value === first.value);
 
   grantActor(dir, {
@@ -123,7 +142,7 @@ try {
     allowSubscribe: ["general", "ops"],
     allowPublish: ["general", "ops"],
   });
-  const narrowed = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const narrowed = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("authority narrowing changes the fingerprint", narrowed.value !== first.value);
 
   // Restore the original authority before validating the retained child envelope.
@@ -138,6 +157,7 @@ try {
   console.log("B. retained managed principal");
   const beforeReads = snapshot(dir);
   const authority = await cotalAuthProvider.validateRetainedAgent({
+    store,
     dir,
     space: SPACE,
     owner: OWNER,
@@ -153,31 +173,32 @@ try {
   );
   await rejects(
     "a wrong retained agent token is refused without rotation",
-    () => cotalAuthProvider.validateRetainedAgent({ dir, space: SPACE, owner: OWNER, actor: "worker", actorToken: "wrong", sentinelCreds: retained.sentinelCreds }),
+    () => cotalAuthProvider.validateRetainedAgent({ store, dir, space: SPACE, owner: OWNER, actor: "worker", actorToken: "wrong", sentinelCreds: retained.sentinelCreds }),
     "wrong secret",
   );
   await rejects(
     "a foreign retained sentinel is refused",
-    () => cotalAuthProvider.validateRetainedAgent({ dir, space: SPACE, owner: OWNER, actor: "worker", actorToken: retained.actorToken, sentinelCreds: "wrong" }),
+    () => cotalAuthProvider.validateRetainedAgent({ store, dir, space: SPACE, owner: OWNER, actor: "worker", actorToken: retained.actorToken, sentinelCreds: "wrong" }),
     "does not match",
   );
   await rejects(
     "a missing managed row never provisions a replacement",
-    () => cotalAuthProvider.validateRetainedAgent({ dir, space: SPACE, owner: OWNER, actor: "missing", actorToken: retained.actorToken, sentinelCreds: retained.sentinelCreds }),
+    () => cotalAuthProvider.validateRetainedAgent({ store, dir, space: SPACE, owner: OWNER, actor: "missing", actorToken: retained.actorToken, sentinelCreds: retained.sentinelCreds }),
     "unknown agent",
   );
   await rejects(
     "retained material cannot be adopted into another space",
-    () => cotalAuthProvider.validateRetainedAgent({ dir, space: "other-space", owner: OWNER, actor: "worker", actorToken: retained.actorToken, sentinelCreds: retained.sentinelCreds }),
+    () => cotalAuthProvider.validateRetainedAgent({ store, dir, space: "other-space", owner: OWNER, actor: "worker", actorToken: retained.actorToken, sentinelCreds: retained.sentinelCreds }),
     "not space",
   );
-  await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  rmSync(join(root, ".cotal", "auth", "other-space"), { recursive: true, force: true });
+  await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("fingerprint and retained-agent validation do not mutate provider state", snapshot(dir) === beforeReads);
 
   console.log("C. missing state");
   await rejects(
     "missing trust state fails closed",
-    () => cotalAuthProvider.trustFingerprint({ dir: missing, space: SPACE }),
+    () => cotalAuthProvider.trustFingerprint({ store: missingStore, dir: missing, space: SPACE }),
     "missing the data-account identity",
   );
   check("a missing-state read creates no files", readdirSync(missing).length === 0);
@@ -192,7 +213,7 @@ try {
   }, null, 2));
   await rejects(
     "account identity drift fails its callout binding",
-    () => cotalAuthProvider.trustFingerprint({ dir, space: SPACE }),
+    () => cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE }),
     "callout account JWT",
   );
   writeFileSync(serviceKeysPath, serviceKeysJson);
@@ -200,7 +221,7 @@ try {
   const ownerSecretPath = join(dir, "owner-secret.json");
   const ownerSecretJson = readFileSync(ownerSecretPath, "utf8");
   writeFileSync(ownerSecretPath, JSON.stringify({ ver: 1, secretB64: Buffer.alloc(32, 7).toString("base64") }, null, 2));
-  const ownerDrift = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const ownerDrift = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("owner-secret drift changes the fingerprint", ownerDrift.value !== first.value);
   writeFileSync(ownerSecretPath, ownerSecretJson);
 
@@ -208,7 +229,7 @@ try {
   const idpJson = readFileSync(idpPath, "utf8");
   const pin = loadPinnedIdp(dir)!;
   writeFileSync(idpPath, JSON.stringify({ ver: 1, ...pin, audience: "https://changed.example" }, null, 2));
-  const idpDrift = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const idpDrift = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("IdP authority drift changes the fingerprint", idpDrift.value !== first.value);
   writeFileSync(idpPath, idpJson);
 
@@ -221,7 +242,7 @@ try {
     activeKid: replacement.kid,
     keys: [await exportSigningKey(replacement)],
   }, null, 2));
-  const issuerDrift = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const issuerDrift = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("issuer identity drift changes the fingerprint", issuerDrift.value !== first.value);
   writeFileSync(issuerPath, issuerJson);
 
@@ -230,7 +251,7 @@ try {
   const calloutFile = JSON.parse(calloutJson) as { callout: { sentinelCreds: string } };
   calloutFile.callout.sentinelCreds += "\n";
   writeFileSync(calloutPath, JSON.stringify(calloutFile, null, 2));
-  const sentinelDrift = await cotalAuthProvider.trustFingerprint({ dir, space: SPACE });
+  const sentinelDrift = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("callout/sentinel trust drift changes the fingerprint", sentinelDrift.value !== first.value);
   writeFileSync(calloutPath, calloutJson);
 
@@ -240,7 +261,7 @@ try {
   renameSync(join(managedDir, managedName), join(managedDir, "renamed.json"));
   await rejects(
     "a row outside its canonical principal filename is refused",
-    () => cotalAuthProvider.trustFingerprint({ dir, space: SPACE }),
+    () => cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE }),
     "filename does not match",
   );
   renameSync(join(managedDir, "renamed.json"), join(managedDir, managedName));
@@ -251,7 +272,7 @@ try {
   writeFileSync(duplicatePath, JSON.stringify(managedRow, null, 2));
   await rejects(
     "the same principal in both ledger spaces is refused",
-    () => cotalAuthProvider.trustFingerprint({ dir, space: SPACE }),
+    () => cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE }),
     "BOTH the interactive and managed row spaces",
   );
   rmSync(duplicatePath);
@@ -260,6 +281,7 @@ try {
   const workerPath = join(managedDir, managedName);
   const workerJson = readFileSync(workerPath, "utf8");
   const retainedB = await cotalAuthProvider.grantAgent({
+    store,
     dir,
     space: SPACE,
     owner: OWNER,
@@ -279,6 +301,7 @@ try {
   await rejects(
     "row B content at row A's canonical path cannot authenticate as row A",
     () => cotalAuthProvider.validateRetainedAgent({
+      store,
       dir,
       space: SPACE,
       owner: OWNER,
@@ -304,6 +327,7 @@ try {
   await rejects(
     "a managed row whose owner differs from its requested canonical key is refused",
     () => cotalAuthProvider.validateRetainedAgent({
+      store,
       dir,
       space: SPACE,
       owner: OWNER,
@@ -353,8 +377,8 @@ try {
     rmSync(linkedRowSpace);
   }
 } finally {
-  rmSync(dir, { recursive: true, force: true });
-  rmSync(missing, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+  rmSync(missingRoot, { recursive: true, force: true });
 }
 
 console.log(`\nbackup continuity smoke: ${pass} passed, ${fail} failed`);

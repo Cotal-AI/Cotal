@@ -39,8 +39,8 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { isReachable, type ParsedArgs } from "@cotal-ai/core";
-import { findCotalRoot, userAuthStateDir } from "@cotal-ai/workspace";
+import { isReachable, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, type IdpBridge } from "./idp.js";
@@ -81,10 +81,18 @@ const BAD_CAP_PER_MIN = 30;
 type Values = Record<string, string | undefined>;
 
 /** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`
- *  (loopback HTTP port; default ephemeral). All persisted material must already exist in the
- *  space-scoped state dir (the provider's `prepareServer` ran at `cotal up`) — a missing piece is a
- *  fail-loud config error naming the fix, never a silent partial service. */
-export async function runAuthService(args: ParsedArgs): Promise<void> {
+ *  (loopback HTTP port; default ephemeral). All persisted material must already exist (the
+ *  provider's `prepareServer` ran at `cotal up`) — a missing piece is a fail-loud config error
+ *  naming the fix, never a silent partial service; this daemon LOADS the four secret kinds and
+ *  never generates them.
+ *
+ *  `store` is the hosted composition's injection point for the space's SECRET material (callout
+ *  account, issuer keys, owner secret, service key projection) — when given, it is those kinds'
+ *  ONLY source (no flag or path can point this daemon at other secret material; an absent key is
+ *  the hard error below). Absent, the daemon composes the local workspace store over `.cotal/`.
+ *  NON-SEAM state (the actor ledger, the IdP pin, the discovery file) still lives in the local
+ *  state dir either way — hosting those is a later, separate seam. */
+export async function runAuthService(args: ParsedArgs, store?: SecretStore): Promise<void> {
   const v = args.values as Values;
   const space = v.space;
   if (!space) throw new Error("auth-service: --space is required");
@@ -94,19 +102,31 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error(`auth-service: --port must be a port number, got "${v.port}"`);
 
-  // The provider's space-scoped state dir — every file this daemon reads lives here. The layout
-  // fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
-  const dir = userAuthStateDir(findCotalRoot(), space);
+  // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
+  // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
+  const root = findCotalRoot();
+  const dir = userAuthStateDir(root, space);
+  const secrets = store ?? workspaceSecretStore(root);
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a
   // readiness poll for THIS start (the provider's ready() also pid-checks; belt and braces).
   clearAuthServiceInfo(dir);
-  const keys = loadServiceKeys(dir);
-  const callout = loadCalloutAuth(dir);
-  const issuer = await loadIssuer(dir);
-  const ownerSecret = loadOwnerSecret(dir);
+  const keys = await loadServiceKeys(secrets, space);
+  const callout = await loadCalloutAuth(secrets, space);
+  const issuer = await loadIssuer(secrets, space);
+  const ownerSecret = await loadOwnerSecret(secrets, space);
   const idp = loadPinnedIdp(dir);
-  if (!keys || !callout || !issuer || !ownerSecret || !idp)
-    throw new Error(`auth-service: user-auth material is missing under ${dir} - enable it with \`cotal up --user-auth --idp <url>\``);
+  if (!keys || !callout || !issuer || !ownerSecret || !idp) {
+    const missing = [
+      ...(keys ? [] : ["service keys"]),
+      ...(callout ? [] : ["callout account"]),
+      ...(issuer ? [] : ["issuer keys"]),
+      ...(ownerSecret ? [] : ["owner secret"]),
+      ...(idp ? [] : [`IdP pin under ${dir}`]),
+    ];
+    throw new Error(
+      `auth-service: user-auth material is missing (${missing.join(", ")}) - ${store ? "the hosted composition must provision the secret store before starting this daemon" : "enable it with `cotal up --user-auth --idp <url>`"}`,
+    );
+  }
   if (issuer.issuer !== spaceIssuer(space))
     throw new Error(`auth-service: issuer pin ${issuer.issuer} does not match space "${space}"`);
 

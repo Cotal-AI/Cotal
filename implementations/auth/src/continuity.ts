@@ -5,7 +5,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { decode, type Account } from "@nats-io/jwt";
 import { fromCurveSeed, fromSeed } from "@nats-io/nkeys";
-import type { AuthTrustFingerprint, RetainedAgentAuthority } from "@cotal-ai/core";
+import type { AuthTrustFingerprint, RetainedAgentAuthority, SecretStore } from "@cotal-ai/core";
 import { ledgerAuthorizeAgentExchange, loadActorLedger } from "./ledger.js";
 import {
   loadCalloutAuth,
@@ -24,9 +24,9 @@ const compareCodeUnits = (a: string, b: string): number => a < b ? -1 : a > b ? 
 const commitment = (domain: string, value: string | Uint8Array): string =>
   sha256(Buffer.concat([Buffer.from(`${domain}\0`), Buffer.from(value)]));
 
-function requireState<T>(value: T | undefined, dir: string, what: string): T {
+function requireState<T>(value: T | undefined, where: string, what: string): T {
   if (value === undefined)
-    throw new Error(`user-auth trust state under ${dir} is missing ${what} - restore the existing state; continuity reads never generate replacements`);
+    throw new Error(`user-auth trust state ${where} is missing ${what} - restore the existing state; continuity reads never generate replacements`);
   return value;
 }
 
@@ -37,16 +37,18 @@ function requireState<T>(value: T | undefined, dir: string, what: string): T {
  * rows are sorted so filesystem order and harmless list ordering cannot perturb the result. This
  * is the provider-local component: the CLI must compose its generic broker root-chain input
  * separately rather than this package rediscovering workspace auth files outside `dir`.
+ * SECRET kinds read through the caller-composed `store`; the IdP pin and ledger stay under `dir`.
  */
-export async function userAuthTrustFingerprint(dir: string, space: string): Promise<AuthTrustFingerprint> {
+export async function userAuthTrustFingerprint(store: SecretStore, dir: string, space: string): Promise<AuthTrustFingerprint> {
   if (!space) throw new Error("user-auth trust fingerprint needs a space");
-  const keys = requireState(loadServiceKeys(dir), dir, "the data-account identity");
-  const callout = requireState(loadCalloutAuth(dir), dir, "the callout account");
-  const ownerSecret = requireState(loadOwnerSecret(dir), dir, "the owner-derivation secret");
-  const idp = requireState(loadPinnedIdp(dir), dir, "the IdP pin");
-  const issuer = requireState(await loadIssuer(dir), dir, "the bearer issuer");
+  const inStore = `for space "${space}"`;
+  const keys = requireState(await loadServiceKeys(store, space), inStore, "the data-account identity");
+  const callout = requireState(await loadCalloutAuth(store, space), inStore, "the callout account");
+  const ownerSecret = requireState(await loadOwnerSecret(store, space), inStore, "the owner-derivation secret");
+  const idp = requireState(loadPinnedIdp(dir), `under ${dir}`, "the IdP pin");
+  const issuer = requireState(await loadIssuer(store, space), inStore, "the bearer issuer");
   if (issuer.issuer !== spaceIssuer(space))
-    throw new Error(`user-auth trust state under ${dir} belongs to issuer "${issuer.issuer}", not space "${space}"`);
+    throw new Error(`user-auth trust state ${inStore} belongs to issuer "${issuer.issuer}", not space "${space}"`);
 
   const publicFromSeed = (seed: string): string => {
     const pair = fromSeed(new TextEncoder().encode(seed));
@@ -67,7 +69,7 @@ export async function userAuthTrustFingerprint(dir: string, space: string): Prom
     curvePair.clear();
   }
   if (calloutAccountPub !== callout.account.pub || calloutSigningPub !== callout.account.signingPub || calloutXkeyPub !== callout.xkey.pub)
-    throw new Error(`user-auth trust state under ${dir} has a callout seed/public-key mismatch`);
+    throw new Error(`user-auth trust state ${inStore} has a callout seed/public-key mismatch`);
 
   const accountClaims = decode<Account>(callout.account.jwt);
   const external = accountClaims.nats.authorization;
@@ -75,7 +77,7 @@ export async function userAuthTrustFingerprint(dir: string, space: string): Prom
   if (accountClaims.sub !== callout.account.pub || signingKeys.length !== 1 || signingKeys[0] !== callout.account.signingPub ||
       external?.allowed_accounts?.length !== 1 || external.allowed_accounts[0] !== keys.dataAccount.pub ||
       external.auth_users?.length !== 1 || external.xkey !== callout.xkey.pub)
-    throw new Error(`user-auth trust state under ${dir} has a callout account JWT that does not match its account, signer, xkey, or data-account binding`);
+    throw new Error(`user-auth trust state ${inStore} has a callout account JWT that does not match its account, signer, xkey, or data-account binding`);
   const ledger = loadActorLedger(dir)
     .map((row) => ({
       kind: row.kind,
@@ -133,6 +135,7 @@ function sameSecret(a: string, b: string): boolean {
 
 /** Validate retained managed-agent material without writing or minting anything. */
 export async function validateRetainedManagedAgent(input: {
+  store: SecretStore;
   dir: string;
   space: string;
   owner: string;
@@ -140,10 +143,10 @@ export async function validateRetainedManagedAgent(input: {
   actorToken: string;
   sentinelCreds: string;
 }): Promise<RetainedAgentAuthority> {
-  const issuer = requireState(await loadIssuer(input.dir), input.dir, "the bearer issuer");
+  const issuer = requireState(await loadIssuer(input.store, input.space), `for space "${input.space}"`, "the bearer issuer");
   if (issuer.issuer !== spaceIssuer(input.space))
     throw new Error(`retained user-auth state belongs to issuer "${issuer.issuer}", not space "${input.space}"`);
-  const callout = requireState(loadCalloutAuth(input.dir), input.dir, "the callout account");
+  const callout = requireState(await loadCalloutAuth(input.store, input.space), `for space "${input.space}"`, "the callout account");
   if (!sameSecret(input.sentinelCreds, callout.sentinelCreds))
     throw new Error(`retained sentinel credential for ${input.owner}.${input.actor} does not match space "${input.space}"`);
 

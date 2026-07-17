@@ -52,6 +52,7 @@ import {
   removeMesh,
   setCurrent,
   userAuthStateDir,
+  workspaceSecretStore,
   type MeshEntry,
   type UserAuthInfo,
   acquireMaintenanceLock,
@@ -525,6 +526,7 @@ export async function up(args: ParsedArgs): Promise<void> {
             space: held.space,
             operatorSeed: auth.operator.seed,
             account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+            store: workspaceSecretStore(root),
             dir: stateDir,
             idpUrl: values.idp,
           });
@@ -686,14 +688,26 @@ export async function up(args: ParsedArgs): Promise<void> {
   // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
   // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
   // auth service's pid is space-scoped so no other space's daemon can ever be hit.
-  const stop = () => { stopDelivery(); stopManager(); stopAuthService(space); child.kill("SIGTERM"); };
+  // stopDelivery is async (its creds delete goes through the secret store); the rest of the teardown
+  // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
+  // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
+  const stop = () => {
+    void stopDelivery()
+      .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
+      .then(() => {
+        stopManager();
+        stopAuthService(space);
+        child.kill("SIGTERM");
+      });
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
-  child.on("exit", (code) => {
+  child.on("exit", async (code) => {
     rmSync(cotalPath("nats.pid"), { force: true });
-    stopDelivery();
+    // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
+    await stopDelivery().catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     stopManager();
     stopAuthService(space);
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
@@ -1092,6 +1106,7 @@ async function ensureRecoveredUserAuth(
     space: prepared.space,
     operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    store: workspaceSecretStore(prepared.root),
     dir: stateDir,
   });
   return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
@@ -1405,7 +1420,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     try {
       mkdirSync(cotalPath("nats"), { recursive: true });
       const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth);
-      owner = await resolveAuthProvider().ownerForLogin({ dir: setup.stateDir!, space: m.space });
+      owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
@@ -1830,6 +1845,7 @@ async function authSetup(
         space,
         operatorSeed: auth.operator.seed,
         account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+        store: workspaceSecretStore(cotalRoot()),
         dir: stateDir,
         idpUrl: user.idpUrl,
       });

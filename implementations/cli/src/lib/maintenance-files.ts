@@ -5,7 +5,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { resolveAuthProvider, validateSpaceAuth } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth, userAuthStateDir, type MaintenanceAuthMode } from "@cotal-ai/workspace";
+import { authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore, type MaintenanceAuthMode } from "@cotal-ai/workspace";
 
 export interface AuthorityFingerprint {
   mode: MaintenanceAuthMode;
@@ -52,7 +52,7 @@ export async function authorityFingerprint(root: string, space: string, mode: Ma
   };
   const rootChain = rootChainCommitment(root, space);
   if (mode === "user") {
-    const provider = await resolveAuthProvider().trustFingerprint({ dir: userAuthStateDir(root, space), space });
+    const provider = await resolveAuthProvider().trustFingerprint({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space), space });
     return {
       mode,
       account: rootChain.account,

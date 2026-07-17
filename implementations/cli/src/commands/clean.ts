@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import { clearSpaceHistory, isReachable, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
+import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
+  DELIVERY_CREDS_KEY,
   acquireMaintenanceLock,
   cleanupRestoreFallback,
   localProcessPath,
@@ -12,6 +13,7 @@ import {
   removeMeshesByRoot,
   resolveSpace,
   rollbackRestore,
+  workspaceSecretStore,
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
@@ -94,7 +96,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }
-    removed = removeLocalState(root, { includeAuth: target === "all", storeDir: values["store-dir"] });
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir: values["store-dir"] });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all") removeMeshesByRoot(root);
   } finally {
@@ -149,15 +151,25 @@ export function liveMeshProcesses(root: string): string[] {
  *  `store`: the JetStream store directory. `all` adds the space identity (`.cotal/auth`), the
  *  locally persisted creds/markers tied to it - all invalid once the identity regenerates, and
  *  re-minted by the next fresh `cotal up` - plus crash residue a normal `down` would have swept
- *  (stale pidfiles, `run/`). Callers guard liveness first (`liveMeshProcess`). */
-export function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string }): string[] {
+ *  (stale pidfiles, `run/`). Callers guard liveness first (`liveMeshProcess`).
+ *
+ *  MIGRATED SECRET KINDS are removed through the SecretStore seam FIRST — `delivery.creds` via
+ *  its workspace key, the auth kinds via the registered provider's `deprovisionSecrets` — and a
+ *  failure there THROWS BEFORE any raw removal of the local identity: wiping trust/IdP/ledger
+ *  after a failed store delete would leave the store's old secrets authoritative over a freshly
+ *  minted identity (split authority). The store deletes are idempotent, so a failed reset re-runs
+ *  as-is, with `auth.json` still present to name the space. This surface stays the LOCAL
+ *  filesystem composition (hosted resets ride the closed composition's own store + the same
+ *  provider hook, never a KMS mode on this CLI). */
+export async function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string }): Promise<string[]> {
   const removed: string[] = [];
   const rm = (path: string, label: string) => {
     if (!existsSync(path)) return;
     rmSync(path, { recursive: true, force: true });
     removed.push(label);
   };
-  // The space must be read before `.cotal/auth` goes - it names the auth service's pidfile.
+  // The space must be read before `.cotal/auth` goes - it names the auth service's pidfile
+  // and keys the provider's secret deprovision.
   const space = resolveSpace(root);
   const store = safeStoreCleanupPath(root, opts.storeDir);
   if (store.identity) {
@@ -165,13 +177,38 @@ export function removeLocalState(root: string, opts: { includeAuth: boolean; sto
     removed.push(opts.storeDir ? store.path : ".cotal/nats (JetStream store)");
   }
   if (opts.includeAuth) {
+    // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
+    const secrets = workspaceSecretStore(root);
+    const failures: string[] = [];
+    try {
+      if ((await secrets.get(DELIVERY_CREDS_KEY)) !== undefined) {
+        await secrets.delete(DELIVERY_CREDS_KEY);
+        removed.push(`.cotal/${DELIVERY_CREDS_KEY}`);
+      }
+    } catch (e) {
+      failures.push(`${DELIVERY_CREDS_KEY}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Gate on registration: an open-mode composition may not register an auth provider, and a
+    // reset there must not start failing. With one registered, its deprovision must SUCCEED
+    // (absent keys are idempotent no-ops) before the identity goes.
+    if (registry.all<AuthProvider>("auth-provider").length) {
+      try {
+        await resolveAuthProvider().deprovisionSecrets({ store: secrets, space });
+      } catch (e) {
+        failures.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (failures.length)
+      throw new Error(
+        `clean all: secret-store deprovision failed (${failures.join("; ")}) - the local identity was NOT removed; the deletes are idempotent, fix the cause and re-run \`cotal clean all --force\``,
+      );
     rm(join(root, ".cotal", "auth"), ".cotal/auth (space identity + creds)");
     // Creds/records signed by (or tied to) the deleted identity: stale the moment it is gone.
     // The fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds`
     // in up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no
-    // old-operator material survives the reset.
+    // old-operator material survives the reset. (`delivery.creds` is gone already — it is a
+    // migrated kind and went through the store above, never a raw rm.)
     for (const f of [
-      "delivery.creds",
       "manager.delivery-aware",
       "membership-observer.creds",
       "membership-rw.creds",

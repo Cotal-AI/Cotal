@@ -34,7 +34,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { agentAuthState, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1428,6 +1428,11 @@ export class Manager {
       // the spawner's own grant), so a refused delegation exits here having touched nothing beyond
       // the ledger: no durables, no broker footprint, nothing for a corrected respawn to race.
       const grant = await provider.grantAgent({
+        // LOCAL composition, hardcoded: until the manager's entry is store-threaded (the same
+        // later slice as its renewal-owner store, with/after the membership-rw reader migration),
+        // a pure-KMS hosted manager CANNOT read the callout material this grant needs — hosted
+        // user-mode spawn via the manager is UNAVAILABLE, not silently degraded, until then.
+        store: workspaceSecretStore(this.workspaceRoot),
         dir,
         space: this.space,
         owner,
@@ -2256,6 +2261,7 @@ export class Manager {
       const actorToken = readFileSync(entry.identity.actorToken.path, "utf8");
       const sentinelCreds = readFileSync(entry.identity.sentinelCredential.path, "utf8");
       const adopted = await provider.validateRetainedAgent({
+        store: workspaceSecretStore(this.workspaceRoot),
         dir: userAuthStateDir(this.workspaceRoot, this.space),
         space: this.space,
         owner: entry.identity.owner,

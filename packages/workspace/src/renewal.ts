@@ -5,8 +5,10 @@ import {
   mintCreds,
   writeSecretFile,
   type Profile,
+  type SecretStore,
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "./auth-paths.js";
+import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
  * D5 slice 5 class-2 standing renewal — the RENEWAL OWNER'S half, shared by the manager (the
@@ -16,11 +18,18 @@ import { authDir, loadSpaceAuth } from "./auth-paths.js";
  * layer: implementations never import each other.
  */
 
+/** The canonical secret-store key of the delivery daemon's scoped cred — by the FS convention the
+ *  key IS the filename under `.cotal/`. The single source for every tier (the CLI writer, the
+ *  delivery daemon reader, this renewal owner): a hand-copied drifted literal would silently split
+ *  the kind across two store entries with no compile error. Lives in workspace because the
+ *  key↔filename convention is the workspace layout's; implementations never import each other. */
+export const DELIVERY_CREDS_KEY = "delivery.creds";
+
 /** The seed-less daemon creds files a renewal owner re-signs. The $SYS files
  *  (membership-observer, connection-evictor) are deliberately ABSENT: they are rotation-renewed —
  *  no persisted seed can re-sign them, by design. */
 export const REMINTABLE_DAEMON_CREDS: ReadonlyArray<{ file: string; profile: Profile }> = [
-  { file: "delivery.creds", profile: "delivery" },
+  { file: DELIVERY_CREDS_KEY, profile: "delivery" },
   { file: "membership-rw.creds", profile: "membership-rw" },
 ];
 
@@ -33,21 +42,31 @@ export interface RemintResult {
 }
 
 /** Re-sign the daemon creds files for their EXISTING nkeys (a renewal must never swap a daemon's
- *  identity — the daemon side pins it). Structured per-file results, never throws: a failed remint
- *  leaves the old cred running toward its loud expiry and the caller records/reports the failure. */
-export async function remintDaemonCreds(root: string): Promise<RemintResult[]> {
+ *  identity — the daemon side pins it). Reads and writes through the secret-store seam; `store` is
+ *  the renewal owner's injection point, SYMMETRIC with the daemon's `runDelivery(args, store?)`.
+ *  The manager — the D5 standing-renewal owner, and a hosted-path caller (manager.ts calls this
+ *  unconditionally) — must pass the SAME store it gives the daemon, or a hosted composition
+ *  re-signs into one store while the daemon reads another and rides to expiry. Threading the store
+ *  through the manager's entry is its own slice; until it lands, hosted end-to-end renewal on an
+ *  injected store is NOT yet wired, and no store means the local workspace FS composition (keys =
+ *  the filenames under `.cotal/`). The store's ATOMIC put is load-bearing here, because the daemons
+ *  re-read these files LIVE (the delivery endpoint's 75% source backstop, the membership rw
+ *  reconnect getter) and the plain `writeSecretFile` this replaced could tear such a concurrent
+ *  re-read. Structured per-file results, never throws: a failed remint leaves the old cred running
+ *  toward its loud expiry and the caller records/reports the failure. */
+export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
   const auth = loadSpaceAuth(authDir(root));
   if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
+  const s = store ?? workspaceSecretStore(root);
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
-    const path = join(root, ".cotal", file);
-    if (!existsSync(path)) {
-      results.push({ file, ok: false, skipped: "missing-file" });
-      continue;
-    }
     try {
-      const identity = identityFromCreds(readFileSync(path, "utf8"));
-      writeSecretFile(path, await mintCreds(auth, identity, profile));
+      const current = await s.get(file);
+      if (current === undefined) {
+        results.push({ file, ok: false, skipped: "missing-file" });
+        continue;
+      }
+      await s.put(file, await mintCreds(auth, identityFromCreds(current), profile));
       results.push({ file, ok: true });
     } catch (e) {
       results.push({ file, ok: false, error: (e as Error).message });
