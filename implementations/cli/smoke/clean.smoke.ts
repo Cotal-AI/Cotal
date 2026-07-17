@@ -138,9 +138,15 @@ try {
   const customStore = mkdtempSync(join(tmpdir(), "cotal-store-"));
   mkdirSync(join(customStore, "jetstream"));
   writeFileSync(join(customStore, "stream.dat"), "x");
+  // Cleanup resolves its target before deleting it, and REPORTS what it actually removed — so the
+  // report names the resolved store, which is the spelling that matters for a destructive op. Pin
+  // the canonical form now, while the dir still exists to resolve. (A substring check against the
+  // as-passed spelling only ever passed on POSIX by luck: "/private/var/x" contains "/var/x". A
+  // Windows 8.3 short name is not a substring of its long form, so it caught this honestly.)
+  const customStoreResolved = realpathSync.native(customStore);
   const removedCustom = removeLocalState(customRoot, { includeAuth: false, storeDir: customStore });
   check("--store-dir: removes the OVERRIDE dir, not .cotal/nats", !existsSync(customStore) && existsSync(join(customRoot, ".cotal", "nats")));
-  check("--store-dir: reports the explicit path", removedCustom.some((r) => r.includes(customStore)));
+  check("--store-dir: reports the resolved path it removed", removedCustom.some((r) => r.includes(customStoreResolved)), removedCustom);
   assert.throws(
     () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
     /unsafe store cleanup target/,
