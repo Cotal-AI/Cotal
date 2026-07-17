@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, spacePrefix, assertPoolToken } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, spacePrefix, assertPoolToken, principalTags, principalKey } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -197,6 +197,12 @@ export interface AuthorityClientOpts {
   /** The grant builder — called with the connection's stable identity so the scoped inbox is in
    *  the credential BEFORE the first connect. */
   grants: (connId: string) => { publish: string[]; subscribe: string[] };
+  /** Optional CONNZ principal tag (`owner.actor`). A bare authority connection is identified only
+   *  by its nkey, which the delivery daemon's principal-scan eviction cannot target (it kicks by
+   *  `owner.actor` tag, evict-exec.ts). A connection that must be VERIFIED-EVICTABLE (the per-op
+   *  retirement cleaner) sets this so CONNZ surfaces it and `evictPrincipal(<owner>.<actor>)` can
+   *  kill it. Omit for connections that are only ever torn down by close/TTL (writer/barrier/reader). */
+  principal?: { owner: string; actor: string };
   log: (line: string) => void;
   /** Fired the moment a renewal mint REJECTS (after the loud log). The supervised reader wires
    *  this to down itself immediately — renewal failure is a fail-closed boundary NOW, never
@@ -212,6 +218,9 @@ export interface AuthorityClient {
   nc: NatsConnection;
   /** The stable user-nkey public key — the connection id its scoped inbox is keyed by. */
   connId: string;
+  /** The CONNZ principal `owner.actor` dot-form when {@link AuthorityClientOpts.principal} was set
+   *  (the verified-evictable identity); absent for bare nkey-only connections. */
+  principal?: string;
   close(): Promise<void>;
 }
 
@@ -230,7 +239,8 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       opts.label,
       fromPublic(identity.id),
       fromPublic(opts.dataAccount.pub),
-      { pub: { allow: grants.publish }, sub: { allow: grants.subscribe } },
+      { pub: { allow: grants.publish }, sub: { allow: grants.subscribe },
+        ...(opts.principal ? { tags: principalTags(opts.principal.owner, opts.principal.actor) } : {}) },
       { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
     );
   let currentJwt = await mint();
@@ -263,6 +273,7 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
   return {
     nc,
     connId: identity.id,
+    ...(opts.principal ? { principal: principalKey(opts.principal.owner, opts.principal.actor).key } : {}),
     close: async () => {
       clearInterval(renewal);
       await nc.close().catch(() => {});
