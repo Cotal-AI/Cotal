@@ -214,9 +214,6 @@ importers:
       '@opencode-ai/plugin':
         specifier: ^1.16.2
         version: 1.16.2
-      '@opencode-ai/sdk':
-        specifier: ^1.16.2
-        version: 1.16.2
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
