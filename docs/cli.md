@@ -343,8 +343,10 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
-attached to your terminal; `--detach` hands the launch to the running manager. `--detach` is the
-only mode that registers a durable delivery membership; a foreground spawn reads live only. See
+attached to your terminal; `--detach` hands the launch to the running manager. Both modes get the
+durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a foreground
+spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
+the agent's creds and broker footprint, like a manager despawn. See
 [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
 [manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
 
