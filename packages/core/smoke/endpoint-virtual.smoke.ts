@@ -500,9 +500,9 @@ try {
     const revX = await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, [E, IIDX]), specR);
     await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, [E, IIDX]), { epoch: 1, state: SERVICE_ESCALATED, observedSpecRevision: revX });
     await rejects("a registry holding ONLY an escalated instance has no live members (failed-precondition, never an empty success)",
-      () => freezeExpectedSet(kv, E), "failed-precondition");
+      () => freezeExpectedSet(jsm, kv, SPACE, E), "failed-precondition");
     await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, [E, IIDR]), { epoch: 1, state: SERVICE_READY, observedSpecRevision: revR });
-    const frozen = await freezeExpectedSet(kv, E);
+    const frozen = await freezeExpectedSet(jsm, kv, SPACE, E);
     c("the frozen expected set contains the READY instance and EXCLUDES the escalated one (terminally not-startable)",
       frozen.length === 1 && frozen[0].instanceId === IIDR, frozen);
   }

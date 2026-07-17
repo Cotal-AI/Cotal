@@ -11,6 +11,7 @@
  * table names (`provisioner-registration` for spec, `instance-commit-epoch-fenced` for status).
  */
 import type { KV } from "@nats-io/kv";
+import type { JetStreamManager } from "@nats-io/jetstream";
 import { spacePrefix, principalKey } from "./subjects.js";
 import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
@@ -18,7 +19,7 @@ import {
 } from "./endpoint-subjects.js";
 import { EpEnvelopeError, type EpClass } from "./endpoint-envelope.js";
 import {
-  RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord,
+  RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
   createRecordEntry, updateRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
@@ -707,104 +708,113 @@ export interface FrozenInstance {
  *  is `failed-precondition`, never an empty success (§13.5); a MALFORMED registry record fails
  *  loud (`internal`, §13.9: readers fail loud on invalid mediated-writer state). The read grant
  *  this runs under is a §13.9 matrix row. */
-export async function freezeExpectedSet(kv: KV, endpoint: string): Promise<FrozenInstance[]> {
+export async function freezeExpectedSet(jsm: JetStreamManager, kv: KV, space: string, endpoint: string): Promise<FrozenInstance[]> {
   const e = endpointToken(endpoint);
   const frozen: FrozenInstance[] = [];
-  const unreadable = (err: unknown): never => {
-    // Only the freeze's OWN classifications stay loud: malformed mediated-writer state
-    // (`internal`, §13.9) and the torn-state `failed-precondition` the record reader already
-    // makes. Every other failure — including a typed `permission-denied` from an
-    // access-checked read path — IS the unreadable-registry condition: it normalizes to
-    // `failed-precondition` (§13.5), never escapes as a weaker or misleading code.
-    if (err instanceof EpEnvelopeError && (err.code === "internal" || err.code === "failed-precondition")) throw err;
-    const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
-    (wrapped as Error & { cause?: unknown }).cause = err;
-    throw wrapped;
-  };
   const instanceIds: string[] = [];
   try {
+    // Enumeration is a bounded-lag `kv.keys` LIST (which instances exist): a just-registered
+    // instance missed here simply is not frozen this round (it falls to the gather/reconcile), so
+    // the list read need not be leader-served — but each frozen slot's coordinate reads below ARE.
     const iter = await kv.keys(`svc.${e}.*.spec`);
     for await (const key of iter) instanceIds.push(key.split(".")[2]);
   } catch (err) {
-    unreadable(err);
+    const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
+    (wrapped as Error & { cause?: unknown }).cause = err;
+    throw wrapped;
   }
   for (const instanceId of instanceIds) {
-    // The NAME, not the pre-tokenized `e`: the kind's qualifier assert tokenizes exactly once.
-    let rec;
-    try {
-      rec = await readRecord(kv, RECORD_KINDS.svc, [endpoint, instanceId]);
-    } catch (err) {
-      unreadable(err);
-    }
-    if (!rec || !rec.status) continue; // registered but never converged: not a live class member
-    parseServiceSpec(rec.spec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
-    const status = parseServiceStatus(rec.status.value);
+    // Leader-served spec + status reads, so the FROZEN registrationRevision comes from the same
+    // consistency level as the reconcile's — a follower-stale freeze paired with a leader reconcile
+    // would otherwise fabricate registration churn from pure read-skew.
+    const spec = await readSvcRecordLeader(jsm, space, recordSpecKey(RECORD_KINDS.svc, [endpoint, instanceId]));
+    if (!spec || "deleted" in spec) continue; // gone since the enumeration list: not a live member
+    parseServiceSpec(spec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
+    const statusRec = await readSvcRecordLeader(jsm, space, recordStatusKey(RECORD_KINDS.svc, [endpoint, instanceId]));
+    if (!statusRec || "deleted" in statusRec) continue; // registered but never converged: not a live class member
+    const status = parseServiceStatus(statusRec.value);
     if (status.state === SERVICE_EXITED) continue;
     if (status.state === SERVICE_ESCALATED) continue; // terminally not-startable (§13.6): never a live scatter member
-    if (rec.staleProjection) continue; // liveness predates the CURRENT registration: not live under it
-    frozen.push({ instanceId, registrationRevision: rec.spec.revision, epoch: status.epoch });
+    if (status.observedSpecRevision < spec.revision) continue; // staleProjection: liveness predates the CURRENT registration
+    frozen.push({ instanceId, registrationRevision: spec.revision, epoch: status.epoch });
   }
   if (frozen.length === 0)
     throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances; an empty registry is never an empty scatter success (SPEC 13.5)`);
   return frozen;
 }
 
+/** A LEADER-SERVED read of one `svc` record key (§13.1: every authority currency read is a
+ *  leader-served `STREAM.MSG.GET`, never a follower/mirror Direct Get — independent of how a KV
+ *  handle was opened, so the public reader seams do not depend on a caller passing a bind-only KV).
+ *  `svc` records, unlike the never-deleted lifecycle families, MAY be deleted on deregistration
+ *  (§13.5: a deleted spec is an explicit deregistration), so a DELETE/PURGE marker is reported as
+ *  `{ deleted: true }`, never a corruption throw. Absent → `undefined`; malformed → loud. */
+async function readSvcRecordLeader(
+  jsm: JetStreamManager,
+  space: string,
+  key: string,
+): Promise<{ value: unknown; revision: number } | { deleted: true } | undefined> {
+  const bucket = recordsBucket(space);
+  let m;
+  try {
+    m = await jsm.streams.getMessage(`KV_${bucket}`, { last_by_subj: `$KV.${bucket}.${key}` });
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 10037) return undefined; // no message on the subject: never registered
+    const wrapped = new EpEnvelopeError("failed-precondition", `the service registry key ${key} is unreadable (leader read); an unreadable registry is failed-precondition, never a fabricated verdict (SPEC 13.5): ${(e as Error)?.message ?? String(e)}`);
+    (wrapped as Error & { cause?: unknown }).cause = e;
+    throw wrapped;
+  }
+  if (!m) return undefined;
+  if (m.header?.get("KV-Operation")) return { deleted: true }; // a deregistration, not corruption (§13.5)
+  return { value: decodeJson(m.data, key), revision: m.seq };
+}
+
 /** The PRODUCTION `reconcileRegistration` hook for {@link epScatter} (§13.5): a bounded post-T
- *  read of every frozen slot's CURRENT `svc….spec` key over the SAME §13.9 read grant the
- *  freeze ran under. Per slot: a live spec is `{ registered: true, registrationRevision }` (the
- *  key's CURRENT store revision — an advance past the frozen value is what the gather classifies
- *  as `registration` churn); an absent or deleted spec is the EXPLICIT `{ registered: false }`
- *  verdict (a mid-scatter deregistration, §13.5: not churn). Only the spec KEY is read — the
- *  reconcile compares registration currency, not liveness, so the merged status read (and its
- *  stabilization loops) would add latency for nothing. A malformed spec fails loud (`internal`,
- *  §13.9 mediated-writer state); an unreadable registry normalizes to `failed-precondition`
- *  exactly like the freeze (§13.5: never a fabricated verdict). */
+ *  LEADER-SERVED read of every frozen slot's CURRENT `svc….spec` key (the same §13.9 read class as
+ *  the freeze). Per slot: a live spec is `{ registered: true, registrationRevision }` (the key's
+ *  CURRENT store revision — an advance past the frozen value is what the gather classifies as
+ *  `registration` churn); an absent OR deleted spec is the EXPLICIT `{ registered: false }` verdict
+ *  (a mid-scatter deregistration, §13.5: not churn). Only the spec KEY is read — the reconcile
+ *  compares registration currency, not liveness. A malformed spec fails loud (`internal`, §13.9);
+ *  an unreadable registry normalizes to `failed-precondition` (§13.5: never a fabricated verdict).
+ *  Leader-served so a follower-stale read can never miss an advanced revision and falsely retain a
+ *  counted reply (engineer/distsys). */
 export function registrationReconciler(
-  kv: KV,
+  jsm: JetStreamManager,
+  space: string,
   endpoint: string,
   frozen: readonly FrozenInstance[],
 ): () => Promise<Map<string, EpRegistrationState>> {
-  const name = endpointToken(endpoint); // grammar up front: a malformed endpoint never reaches the read
-  void name;
+  endpointToken(endpoint); // grammar up front: a malformed endpoint never reaches the read
   return async () => {
     const verdicts = new Map<string, EpRegistrationState>();
     for (const slot of frozen) {
-      let entry;
-      try {
-        entry = await kv.get(recordSpecKey(RECORD_KINDS.svc, [endpoint, slot.instanceId]));
-      } catch (err) {
-        const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable during the scatter reconcile; an unreadable registry is failed-precondition, never a fabricated verdict (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
-        (wrapped as Error & { cause?: unknown }).cause = err;
-        throw wrapped;
-      }
-      if (!entry || entry.operation !== "PUT") {
+      const rec = await readSvcRecordLeader(jsm, space, recordSpecKey(RECORD_KINDS.svc, [endpoint, slot.instanceId]));
+      if (!rec || "deleted" in rec) {
         verdicts.set(slot.instanceId, { registered: false });
         continue;
       }
-      parseServiceSpec(decodeJson(entry.value, `svc spec for ${endpoint}/${slot.instanceId}`), { endpoint }); // malformed registry state fails LOUD (§13.9)
-      verdicts.set(slot.instanceId, { registered: true, registrationRevision: entry.revision });
+      parseServiceSpec(rec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
+      verdicts.set(slot.instanceId, { registered: true, registrationRevision: rec.revision });
     }
     return verdicts;
   };
 }
 
-/** The PRODUCTION `currentEpoch` hook for {@link epCall} on the `one` rail (§13.2): reads the
- *  answering instance's CURRENT `svc….status` epoch from the registry over the caller's §13.9
- *  read grant. An unregistered instance or one that never converged (no status) has no current
- *  epoch to verify a queue winner against and refuses `failed-precondition` — the read's OWN
- *  failure, which {@link epCall} deliberately never mislabels as responder staleness. A stale
- *  projection does not refuse: `epoch` advances only through a takeover's status write, so the
- *  freshest status epoch is the currency answer even while a re-registration's projection
- *  catches up (§13.5: revision advances never move the epoch). */
-export function serviceEpochReader(kv: KV, endpoint: string): (instanceId: string) => Promise<number> {
+/** The PRODUCTION `currentEpoch` hook for {@link epCall} on the `one` rail (§13.2): a LEADER-SERVED
+ *  read of the answering instance's CURRENT `svc….status` epoch. An unregistered instance or one
+ *  that never converged (no status) has no current epoch to verify a queue winner against and
+ *  refuses `failed-precondition` — the read's OWN failure, which {@link epCall} never mislabels as
+ *  responder staleness. Leader-served so a follower-stale status read can never accept a
+ *  just-superseded queue winner at an old epoch (engineer/distsys). A stale projection does not
+ *  refuse: `epoch` advances only through a takeover's status write (§13.5). */
+export function serviceEpochReader(jsm: JetStreamManager, space: string, endpoint: string): (instanceId: string) => Promise<number> {
   endpointToken(endpoint);
   return async (instanceId: string) => {
-    const rec = await readRecord(kv, RECORD_KINDS.svc, [endpoint, instanceId]);
-    if (!rec)
-      throw new EpEnvelopeError("failed-precondition", `no registered spec for "${endpoint}/${instanceId}"; a \`one\` responder outside the registry has no current epoch to verify (SPEC 13.2)`);
-    if (!rec.status)
-      throw new EpEnvelopeError("failed-precondition", `"${endpoint}/${instanceId}" is registered but never converged (no status); there is no current epoch to verify the queue winner against (SPEC 13.2)`);
-    return parseServiceStatus(rec.status.value).epoch;
+    const rec = await readSvcRecordLeader(jsm, space, recordStatusKey(RECORD_KINDS.svc, [endpoint, instanceId]));
+    if (!rec || "deleted" in rec)
+      throw new EpEnvelopeError("failed-precondition", `"${endpoint}/${instanceId}" has no live status; a \`one\` responder with no current epoch cannot be verified (SPEC 13.2)`);
+    return parseServiceStatus(rec.value).epoch;
   };
 }
 
