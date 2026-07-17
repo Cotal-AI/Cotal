@@ -1338,8 +1338,15 @@ export class Manager {
     }
   }
 
-  /** Keep an accepted stop inside the lifecycle drain until the runtime proves the child is gone.
-   * This preserves the ordinary immediate control reply while closing the stop-vs-fence race. */
+  /** Keep an accepted stop inside the lifecycle drain until the runtime proves the child is gone,
+   * so a maintenance prepare can never fence ahead of a child that is still dying.
+   *
+   * An operator-accepted stop frees its slot at once: `stop` replying ✓ means `ps` no longer lists
+   * the agent. That cannot omit a still-live child from a cut, because runPreparation drains the
+   * lifecycle BEFORE it reads the roster — the exit proof below is what closes the race, not the
+   * slot lingering. A recursive reap (`requireAuthoritativeExit`) instead keeps the slot until the
+   * wait proves exit: nobody asked for those children to be gone, so they stay managed until the
+   * runtime says otherwise, and a runtime that cannot prove exit records an unverified stop. */
   private trackStoppedHandle(a: ManagedAgent, floor: boolean, requireAuthoritativeExit = false): void {
     if (!a.handle.waitForExit) {
       // Preserve ordinary external-runtime stop behavior, but retain enough evidence for a later
@@ -1357,9 +1364,10 @@ export class Manager {
       this.freeSlot(a, floor, true);
       return;
     }
+    if (!requireAuthoritativeExit) this.freeSlot(a, floor, true);
     this.lifecycleInFlight++;
     void this.awaitHandleExit(a.handle)
-      .then(() => this.freeSlot(a, floor, true))
+      .then(() => this.freeSlot(a, floor, true)) // no-op once an accepted stop already freed it
       .catch((e) => {
         this.unverifiedStops.push({
           name: a.name,

@@ -67,6 +67,25 @@ function fakeHandle(name: string, opts: { throwOnStop?: boolean } = {}): FakeHan
   return handle;
 }
 
+/** A handle whose stop leaves the child DYING: `waitForExit` stays pending until `finishExit`. A
+ *  real pty exits on its own clock, so this is the only shape that separates an accepted stop from
+ *  its exit proof — `fakeHandle` exits inside `stop()`, which hides that gap entirely. */
+function lingeringHandle(name: string): AgentHandle & { finishExit(): void } {
+  let state: "running" | "exited" = "running";
+  let release = (): void => {};
+  const exited = new Promise<void>((resolve) => { release = resolve; });
+  return {
+    name,
+    kind: "fake",
+    status: () => state,
+    stop: () => {},
+    waitForExit: () => exited,
+    interrupt: () => {},
+    attach: () => { throw new Error("lingering handle has no attach stream"); },
+    finishExit: () => { state = "exited"; release(); },
+  };
+}
+
 function silentExitHandle(name: string): AgentHandle & { exitSilently(): void } {
   let state: "running" | "exited" = "running";
   return {
@@ -847,6 +866,36 @@ let openInventory: ManagerResumeAgent;
   await manager.stop();
   check("normal stop still hard-stops managed agents", handle.stops === 1, handle.stops);
   check("normal stop still deprovisions managed agents", deprovisions === 1, deprovisions);
+}
+
+// Regression: an accepted control stop frees the slot AT ONCE — `stop` replying ✓ has to mean `ps`
+// no longer lists the agent, even while the child is still dying. The exit proof holds the
+// lifecycle drain instead, so a cut still cannot fence ahead of that child.
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const handle = lingeringHandle("dying");
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("dying", managed("dying", "dying_id", handle, "persona"));
+  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => {};
+  const stopped = await control(manager, CONTROL_ADMIN, "stop", { name: "dying" });
+  check("an accepted stop replies without waiting for the child to die", stopped.ok === true, stopped.error);
+  const listed = await control(manager, CONTROL_ADMIN, "ps", {});
+  check(
+    "an accepted stop frees the slot before ps reads it",
+    (listed.data as { name: string }[]).every((a) => a.name !== "dying"),
+    listed.data,
+  );
+  let prepared = false;
+  const preparation = manager.preparePreservation("accepted_stop").then((plan) => { prepared = true; return plan; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check("a cut still drains the dying child's exit proof before it inventories", !prepared);
+  handle.finishExit();
+  const plan = await preparation;
+  check(
+    "the drained cut omits the stopped child",
+    plan.inventory.agents.every((a) => a.name !== "dying"),
+    plan.inventory.agents.map((a) => a.name),
+  );
 }
 
 console.log(`\nPRESERVE-STATE SMOKE ${failures === 0 ? "OK" : "FAILED"} (${failures} failures)`);
