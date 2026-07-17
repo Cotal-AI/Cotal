@@ -167,6 +167,14 @@ try {
   check("DENIED: a records uid. reservation WRITE", (await denied(() => recKvB.put(`uid.${mintLifecycleUid()}`, enc.encode("{}")))) === "denied");
   check("DENIED: STREAM.CREATE (the barrier never provisions stores)", (await denied(() => barrier!.nc.request(`$JS.API.STREAM.CREATE.FORGED_${space}`, enc.encode(JSON.stringify({ name: `FORGED_${space}`, subjects: [`forged.${space}`] })), { timeout: 1500 }))) === "denied");
   check("DENIED: CONSUMER.CREATE on the RECORDS stream (enumeration is auth-store-only)", (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.probe${Date.now() % 1000}`, enc.encode(JSON.stringify({ stream_name: `KV_${recordsBucket(space)}`, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
+  // H2 (security/distsys/fact): the barrier's consumer grant is the pinned EXTENDED create only.
+  // A BARE create (arbitrary name, body-selected filter + deliver_subject) and a DURABLE create (a
+  // consumer that outlives this connection and keeps exporting future auth rows) are both DENIED;
+  // the pull scan the barrier actually runs (extended create + name-token INFO/NEXT/DELETE) is not.
+  check("DENIED: a BARE CONSUMER.CREATE on the auth stream (no pinned filter => body-selectable)",
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.KV_${epAuthBucket(space)}`, enc.encode(JSON.stringify({ stream_name: `KV_${epAuthBucket(space)}`, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
+  check("DENIED: a DURABLE CONSUMER.CREATE on the auth stream (a durable consumer outlives the connection)",
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.DURABLE.CREATE.KV_${epAuthBucket(space)}.persist${Date.now() % 1000}`, enc.encode(JSON.stringify({ stream_name: `KV_${epAuthBucket(space)}`, config: { durable_name: "persist", ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
 
   // ---- F. BOOT CRASH-RESUME through the real plane ----
   const uid2 = mintLifecycleUid();

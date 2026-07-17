@@ -91,9 +91,11 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
  *  - `STREAM.INFO` on both stores (the registry's §13.12 bind proof), `STREAM.MSG.GET` on both
  *    (leader-served gate/cred/intent and head reads), and records `DIRECT.GET` (reads that only
  *    feed revision-pinned CASes — the mint writer's own discipline).
- *  - The per-run THROWAWAY enumeration consumer on the auth stream (SPEC 13.9: the barrier's
- *    LastPerSubject point-in-time family scan): CREATE/INFO/MSG.NEXT/DELETE, never a standing
- *    durable. Scoped to the AUTH stream only — no consumer authority on records.
+ *  - The per-run THROWAWAY enumeration consumer on the auth stream (SPEC 13.9:2645: the barrier's
+ *    LastPerSubject point-in-time family scan): EXTENDED create pinned to the name-token wildcard
+ *    plus the auth-bucket filter (never a bare or DURABLE create), INFO/MSG.NEXT/DELETE pinned to
+ *    the name-token (never a foreign consumer). Scoped to the AUTH stream only — no consumer
+ *    authority on records.
  *  - `$KV` writes on EXACTLY the barrier keys: auth `gate.` (the freeze/reopen CAS), `cred.`
  *    (the family revokes), `stage.` (the durable operation intent), and records `lifecycle.`
  *    (the containment/epoch head CASes). No `bysrc.`/`uid.` (a barrier never mints), no
@@ -121,12 +123,21 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
       `$JS.API.STREAM.MSG.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}.>`,
-      `$JS.API.CONSUMER.CREATE.${auth}`,
-      `$JS.API.CONSUMER.CREATE.${auth}.>`,
-      `$JS.API.CONSUMER.DURABLE.CREATE.${auth}.>`,
-      `$JS.API.CONSUMER.INFO.${auth}.>`,
-      `$JS.API.CONSUMER.DELETE.${auth}.>`,
-      `$JS.API.CONSUMER.MSG.NEXT.${auth}.>`,
+      // The per-run throwaway enumeration consumer, pinned to the SPEC 13.9:2645 form (security H2
+      // / distsys / fact H1): EXTENDED create only — a name-token wildcard plus the filter pinned
+      // to the auth bucket subtree (`CREATE.<auth>.*.$KV.<bucket>.>`), so the holder can never issue
+      // a BARE create (arbitrary name + body-selected filter/config) nor a DURABLE create (a durable
+      // consumer that outlives this connection and keeps exporting future rows). INFO/NEXT/DELETE
+      // are pinned to the name-token (`.*`), not `.>`, so the holder cannot INFO/DELETE a FOREIGN
+      // auth consumer. Named residual (D32 class, broker-inexpressible): a push consumer's
+      // `deliver_subject` is a request-BODY field the subject ACL cannot constrain (nats-server#8274),
+      // so a compromised holder could still route a pinned-filter read to an arbitrary subject; the
+      // barrier's own scanner is PULL (`ack_policy: none`, no deliver_subject) and never does this,
+      // and eliminating the bare/durable forms removes the persistent-export vector.
+      `$JS.API.CONSUMER.CREATE.${auth}.*.$KV.${epAuthBucket(space)}.>`,
+      `$JS.API.CONSUMER.INFO.${auth}.*`,
+      `$JS.API.CONSUMER.DELETE.${auth}.*`,
+      `$JS.API.CONSUMER.MSG.NEXT.${auth}.*`,
       `$KV.${epAuthBucket(space)}.gate.>`,
       `$KV.${epAuthBucket(space)}.cred.>`,
       // ONE token: the barrier's own durable operation intents `stage.<opId>` — never `stage.>`,
