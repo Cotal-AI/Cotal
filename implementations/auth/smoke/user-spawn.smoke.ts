@@ -93,7 +93,7 @@ const {
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel,
 } = await import("@cotal-ai/core");
 const { decodeJwt } = await import("jose");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
   actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp,
@@ -141,7 +141,8 @@ const PORT = 20000 + Math.floor(Math.random() * 40000);
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `uspawn-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
-const dir = userAuthStateDir(root, SPACE); // the provider's space-scoped state dir
+const dir = userAuthStateDir(root, SPACE); // the provider's space-scoped state dir (ledger, pin, discovery)
+const store = workspaceSecretStore(root); // the secret kinds ride the seam, keyed auth/<space>/…
 const credsDir = join(authDir(root), "creds");
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
@@ -299,6 +300,7 @@ try {
     space: SPACE,
     operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    store,
     dir,
     idpUrl: base,
   });
@@ -329,11 +331,11 @@ try {
   // (the cross-process path both spawn entry points ride; this smoke found the save/load path
   // dropping `sub`, which broke it in production while every in-process test passed). Cross-check
   // it against the direct derivation the server uses at exchange time — they must be the same bytes.
-  const OWNER = await cotalAuthProvider.ownerForLogin({ dir, space: SPACE });
+  const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   const idpPin = loadPinnedIdp(dir)!;
   check(
     "ownerForLogin (cache round-trip) == exchange-time derivation",
-    OWNER === deriveOwnerForIdpSubject(loadOwnerSecret(dir)!, idpPin.issuer, sub),
+    OWNER === deriveOwnerForIdpSubject((await loadOwnerSecret(store, SPACE))!, idpPin.issuer, sub),
     { OWNER },
   );
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
@@ -353,7 +355,7 @@ try {
   check("a managed-actors row exists with a 64-hex tokenHash", typeof managedRow.tokenHash === "string" && /^[0-9a-f]{64}$/.test(managedRow.tokenHash), managedRow.tokenHash);
   const alphaToken = readFileSync(join(credsDir, "alpha.actor-token"), "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
-  const opCreds = await cotalAuthProvider.userCredentials({ dir, space: SPACE, actor: "cli" });
+  const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });
   observer = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds,
     channels: [], consume: false, registerPresence: false, watchPresence: true,
@@ -411,7 +413,7 @@ try {
   tampered.tokenHash = "0".repeat(64); // forge a managed-shape field into an interactive row
   writeFileSync(cliRowPath, JSON.stringify(tampered, null, 2));
   let credThrew = "";
-  try { await cotalAuthProvider.userCredentials({ dir, space: SPACE, actor: "cli" }); }
+  try { await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" }); }
   catch (e) { credThrew = (e as Error).message; }
   writeFileSync(cliRowPath, cliRowOrig); // restore the honest row
   check("a token-hash forged into the interactive cli row fails closed (readRow denies)", /interactive grant|token hash/i.test(credThrew), credThrew);
@@ -420,7 +422,7 @@ try {
   console.log("D) direct agent exchange (ttlSec:10) → a live connection that dies at the bearer's exp");
   const shortEx = await agentExchange("alpha", alphaToken, OWNER, 10);
   check("direct agent exchange { owner, actorToken, ttlSec:10 } mints a bearer (200)", shortEx.status === 200 && typeof shortEx.body.token === "string", shortEx.status);
-  const callout = loadCalloutAuth(dir)!;
+  const callout = (await loadCalloutAuth(store, SPACE))!;
   let connected = false;
   shortEp = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: shortEx.body.token!, sentinelCreds: callout.sentinelCreds,
@@ -479,7 +481,7 @@ try {
   // manager's owner-domain authorization.
   console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
   const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
-    const g = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [] });
+    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [] });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -516,7 +518,7 @@ try {
   check("cross-owner attach with ledger admin passes (fresh ledger read)", adminAttach.ok === true, adminAttach);
   // Narrow the auditor back to [spawn] (upsert) — the SAME live connection loses cross-owner reach
   // on its very next op: the ledger read is fresh, no reconnect or bearer refresh involved.
-  await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
+  await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
   const narrowedAttach: ControlReply = await auditor.requestControl(CONTROL_PRIVILEGED, { op: "attach", args: { name: "alpha" } });
   check("narrowing the auditor's scope bites its NEXT op on the same live connection", narrowedAttach.ok === false && /another owner/.test(narrowedAttach.error ?? ""), narrowedAttach);
 
@@ -541,7 +543,7 @@ try {
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
-  const vg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [] });
+  const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [] });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${svc.cap}` },
@@ -562,7 +564,7 @@ try {
   check("with admin ADDED, the admin-view exchange mints act.view", (decodeJwt(firstView).act as { view?: string }).view === "admin");
   // The standing god-view tap: a bearer SOURCE over ≤20s tokens (the endpoint refreshes ahead of
   // each expiry and reconnects across the bearer-bound JWT's death), pinned principal up front.
-  const sentinel = loadCalloutAuth(dir)!.sentinelCreds;
+  const sentinel = (await loadCalloutAuth(store, SPACE))!.sentinelCreds;
   const godEye = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: mintAdminView, sentinelCreds: sentinel,
     channels: [], consume: false, registerPresence: false, watchPresence: false,
@@ -580,7 +582,7 @@ try {
   check("the admin-view tap sees a DM between two OTHER principals (the god view)", sawDm, tapped.slice(-3));
   // channel-purger view: publish two chat messages on a scratch channel, purge them via clearChannel
   // over a one-shot purger-view bearer (the standalone user-mode connect path).
-  const wg = await cotalAuthProvider.grantAgent({ dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"] });
+  const wg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "writer", scope: [], allowSubscribe: ["viewtest"], allowPublish: ["viewtest"] });
   const wx = await agentExchange("writer", wg.actorToken, OWNER);
   const writer = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: wx.body.token!, sentinelCreds: wg.sentinelCreds,

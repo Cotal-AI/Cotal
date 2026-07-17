@@ -31,7 +31,7 @@ import {
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
 } from "@cotal-ai/core";
-import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -627,6 +627,11 @@ export class Manager {
       // the spawner's own grant), so a refused delegation exits here having touched nothing beyond
       // the ledger: no durables, no broker footprint, nothing for a corrected respawn to race.
       const grant = await provider.grantAgent({
+        // LOCAL composition, hardcoded: until the manager's entry is store-threaded (the same
+        // later slice as its renewal-owner store, with/after the membership-rw reader migration),
+        // a pure-KMS hosted manager CANNOT read the callout material this grant needs — hosted
+        // user-mode spawn via the manager is UNAVAILABLE, not silently degraded, until then.
+        store: workspaceSecretStore(this.workspaceRoot),
         dir,
         space: this.space,
         owner,

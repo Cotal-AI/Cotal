@@ -45,6 +45,7 @@ import {
   removeMesh,
   setCurrent,
   userAuthStateDir,
+  workspaceSecretStore,
   type MeshEntry,
   type UserAuthInfo,
 } from "@cotal-ai/workspace";
@@ -172,6 +173,7 @@ export async function up(args: ParsedArgs): Promise<void> {
             space: held.space,
             operatorSeed: auth.operator.seed,
             account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+            store: workspaceSecretStore(root),
             dir: stateDir,
             idpUrl: values.idp,
           });
@@ -424,7 +426,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     try {
       mkdirSync(cotalPath("nats"), { recursive: true });
       const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth);
-      owner = await resolveAuthProvider().ownerForLogin({ dir: setup.stateDir!, space: m.space });
+      owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
@@ -832,6 +834,7 @@ async function authSetup(
         space,
         operatorSeed: auth.operator.seed,
         account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+        store: workspaceSecretStore(cotalRoot()),
         dir: stateDir,
         idpUrl: user.idpUrl,
       });

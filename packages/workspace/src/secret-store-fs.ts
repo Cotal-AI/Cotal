@@ -2,6 +2,14 @@ import { readFileSync, rmSync } from "node:fs";
 import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, type SecretStore } from "@cotal-ai/core";
 
+/** THE local composition of the secret keyspace: a filesystem store rooted at the workspace's
+ *  `.cotal/` dir, so every canonical key (`delivery.creds`, `auth/<space>/callout.json`, …)
+ *  lands byte-for-byte on today's paths. Every local caller composes through here — a hand-rolled
+ *  root that drifted from `.cotal` would silently split the keyspace in two. */
+export function workspaceSecretStore(root: string): FsSecretStore {
+  return new FsSecretStore(join(root, ".cotal"));
+}
+
 /**
  * The default filesystem {@link SecretStore}: the workstation adapter behind core's abstract seam.
  *

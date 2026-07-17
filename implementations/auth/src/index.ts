@@ -58,6 +58,10 @@ export {
 } from "./login.js";
 export { calloutPermissions, type AclResolver } from "./permissions.js";
 export {
+  authCalloutKey,
+  authIssuerKey,
+  authOwnerSecretKey,
+  authServiceKeysKey,
   clearAuthServiceInfo,
   ensureCalloutAuth,
   ensureIssuer,

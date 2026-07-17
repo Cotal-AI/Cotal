@@ -8,7 +8,7 @@ import {
   type SecretStore,
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "./auth-paths.js";
-import { FsSecretStore } from "./secret-store-fs.js";
+import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
  * D5 slice 5 class-2 standing renewal — the RENEWAL OWNER'S half, shared by the manager (the
@@ -57,7 +57,7 @@ export interface RemintResult {
 export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
   const auth = loadSpaceAuth(authDir(root));
   if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
-  const s = store ?? new FsSecretStore(join(root, ".cotal"));
+  const s = store ?? workspaceSecretStore(root);
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
     try {

@@ -1,28 +1,36 @@
 /**
- * On-disk persistence for a space's USER-AUTH material, under the same `.cotal/auth/` dir as the
- * space trust material (explicit-dir APIs, the auth-paths posture: the caller picks the dir, nothing
- * here discovers paths ambiently). Everything is generate-on-first-use and STABLE thereafter — the
- * callout account identity, the issuer signing keys, and the owner-derivation secret must survive
- * restarts, or previously-minted credentials/owners silently break:
+ * Persistence for a space's USER-AUTH material. Everything is generate-on-first-use and STABLE
+ * thereafter — the callout account identity, the issuer signing keys, and the owner-derivation
+ * secret must survive restarts, or previously-minted credentials/owners silently break:
  *
  *  - `callout.json` — the dedicated auth-callout account ({@link CalloutAuth}: account + signing key,
  *    callout service creds, deny-all sentinel creds, xkey). Regenerating it would orphan the account
  *    the broker config preloads; minting it the first time needs the FULL SpaceAuth (operator seed).
  *  - `issuer.json` — the Cotal user-bearer issuer: its pinned `iss` string plus the serialized
  *    Ed25519 signing keys (private JWKs) and the active kid. Losing these kills every outstanding
- *    bearer (rotation is `rotate`/`retire` on the loaded issuer, then {@link saveIssuerFile}).
+ *    bearer (rotation is `rotate`/`retire` on the loaded issuer plus a re-put of the document).
  *  - `owner-secret.json` — the per-space owner-derivation secret (32 random bytes). REGENERATING IT
  *    RE-KEYS EVERY OWNER in the space (same human → different `u_…`), which is a migration, never an
  *    accident — hence load-or-create with no overwrite path.
  *
- * All files 0600 under a 0700 dir (core's secret-fs helpers), atomic writes, versioned JSON with
- * fail-loud parsing (the login session-cache posture: a torn/hand-edited credential file surfaces as
- * one legible sentence, never a raw SyntaxError downstream).
+ * These SECRET kinds (plus `service-keys.json`, the daemon's key projection) read and write through
+ * the {@link SecretStore} seam — the caller composes the store (locally the workspace's
+ * `.cotal`-rooted filesystem store, so keys land byte-for-byte on today's paths; a hosted
+ * composition injects KMS/Vault) and nothing here discovers one ambiently. The store's atomic
+ * whole-value put replaces the explicit temp+rename here; its adapter owns 0600/0700 hardening.
+ *
+ * The NON-SEAM kinds stay explicit-dir filesystem APIs (the auth-paths posture: the caller picks
+ * the dir): the IdP pin (`idp.json`, a trust pin, not a secret) and the auth-service runtime
+ * discovery file (`auth-service.json`, ephemeral pid/port/capability).
+ *
+ * Versioned JSON with fail-loud parsing everywhere (the login session-cache posture: a torn or
+ * hand-edited credential surfaces as one legible sentence, never a raw SyntaxError downstream).
  */
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, type SecretStore } from "@cotal-ai/core";
+import { spaceSegment } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
 import {
@@ -34,10 +42,17 @@ import {
   type UserTokenIssuer,
 } from "./issuer.js";
 
-const CALLOUT_FILE = "callout.json";
-const ISSUER_FILE = "issuer.json";
-const OWNER_SECRET_FILE = "owner-secret.json";
 const STORE_VER = 1;
+
+/** Canonical {@link SecretStore} keys of the four secret kinds — one builder per kind, mirroring
+ *  today's `.cotal/auth/<space>/<file>` layout so the local filesystem composition is unchanged.
+ *  A hosted adapter treats them as opaque ids (its own resolve adds tenant scope). The space
+ *  segment is workspace's ONE guarded encoder (`spaceSegment`, shared with `userAuthStateDir`):
+ *  a `.`/`..`/empty space is refused before any key or path exists, on both surfaces. */
+export const authCalloutKey = (space: string): string => `auth/${spaceSegment(space)}/callout.json`;
+export const authIssuerKey = (space: string): string => `auth/${spaceSegment(space)}/issuer.json`;
+export const authOwnerSecretKey = (space: string): string => `auth/${spaceSegment(space)}/owner-secret.json`;
+export const authServiceKeysKey = (space: string): string => `auth/${spaceSegment(space)}/service-keys.json`;
 
 /** The pinned `iss` for a space's Cotal user bearers — a stable URN, deliberately NOT the auth
  *  service's URL (the service port is ephemeral; an issuer pin must never change across restarts).
@@ -47,19 +62,32 @@ export function spaceIssuer(space: string): string {
   return `urn:cotal:auth:${space}`;
 }
 
-/** Fail-loud versioned-JSON read: a missing file is undefined; a torn/edited/unknown-version file is
- *  a legible sentence naming the file and the recovery, never a raw parse error downstream. */
-function readStoreFile<T extends { ver: number }>(path: string, what: string): T | undefined {
-  if (!existsSync(path)) return undefined;
+/** Fail-loud versioned-JSON parse, shared by the store-read and file-read paths: a torn/edited/
+ *  unknown-version document is a legible sentence naming WHERE it lives (a store key or a path)
+ *  and the recovery, never a raw parse error downstream. */
+function parseStoreDoc<T extends { ver: number }>(raw: string, where: string, what: string): T {
   let parsed: T;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8")) as T;
+    parsed = JSON.parse(raw) as T;
   } catch (e) {
-    throw new Error(`${path}: the ${what} file is not valid JSON (${e instanceof Error ? e.message : String(e)}) - restore it from backup; regenerating breaks existing credentials`);
+    throw new Error(`${where}: the ${what} entry is not valid JSON (${e instanceof Error ? e.message : String(e)}) - restore it from backup; regenerating breaks existing credentials`);
   }
   if (parsed === null || typeof parsed !== "object" || parsed.ver !== STORE_VER)
-    throw new Error(`${path}: unknown ${what} version ${String((parsed as { ver?: unknown })?.ver)} (expected ${STORE_VER}) - refusing to guess at credential material`);
+    throw new Error(`${where}: unknown ${what} version ${String((parsed as { ver?: unknown })?.ver)} (expected ${STORE_VER}) - refusing to guess at credential material`);
   return parsed;
+}
+
+/** The store-side read: an absent key is undefined; everything else parses fail-loud. The key names
+ *  the location in errors — under the local filesystem composition it IS the `.cotal`-relative path. */
+async function readStoreValue<T extends { ver: number }>(store: SecretStore, key: string, what: string): Promise<T | undefined> {
+  const raw = await store.get(key);
+  return raw === undefined ? undefined : parseStoreDoc<T>(raw, key, what);
+}
+
+/** The file-side read, for the NON-SEAM kinds only (the IdP pin, service runtime discovery). */
+function readStoreFile<T extends { ver: number }>(path: string, what: string): T | undefined {
+  if (!existsSync(path)) return undefined;
+  return parseStoreDoc<T>(readFileSync(path, "utf8"), path, what);
 }
 
 // ---- the dedicated auth-callout account ----
@@ -70,24 +98,24 @@ interface CalloutFile {
 }
 
 /** Load the persisted callout account material, or undefined if this space never enabled user auth. */
-export function loadCalloutAuth(dir: string): CalloutAuth | undefined {
-  const f = readStoreFile<CalloutFile>(join(dir, CALLOUT_FILE), "callout account");
+export async function loadCalloutAuth(store: SecretStore, space: string): Promise<CalloutAuth | undefined> {
+  const key = authCalloutKey(space);
+  const f = await readStoreValue<CalloutFile>(store, key, "callout account");
   if (!f) return undefined;
   const c = f.callout;
   if (!c?.account?.pub || !c.account.jwt || !c.calloutCreds || !c.sentinelCreds || !c.xkey?.seed)
-    throw new Error(`${join(dir, CALLOUT_FILE)}: malformed callout account material - restore it from backup; regenerating orphans the preloaded auth account`);
+    throw new Error(`${key}: malformed callout account material - restore it from backup; regenerating orphans the preloaded auth account`);
   return c;
 }
 
 /** Load-or-create the callout account: first call on a space mints it (operator seed required)
  *  and persists; every later call returns the SAME account, so the broker config preload and
  *  previously-issued sentinel creds stay valid. Idempotent. */
-export async function ensureCalloutAuth(dir: string, input: CalloutProvisionInput): Promise<CalloutAuth> {
-  const existing = loadCalloutAuth(dir);
+export async function ensureCalloutAuth(store: SecretStore, input: CalloutProvisionInput): Promise<CalloutAuth> {
+  const existing = await loadCalloutAuth(store, input.space);
   if (existing) return existing;
   const callout = await createCalloutAuth(input);
-  mkSecretDir(dir); // harden BEFORE the secret lands
-  writeSecretFileAtomic(join(dir, CALLOUT_FILE), JSON.stringify({ ver: STORE_VER, callout } satisfies CalloutFile, null, 2));
+  await store.put(authCalloutKey(input.space), JSON.stringify({ ver: STORE_VER, callout } satisfies CalloutFile, null, 2));
   return callout;
 }
 
@@ -102,14 +130,15 @@ interface IssuerFile {
 
 /** Load the persisted issuer (all published kids live; the persisted active kid signs), or undefined
  *  if this space never enabled user auth. */
-export async function loadIssuer(dir: string): Promise<UserTokenIssuer | undefined> {
-  const f = readStoreFile<IssuerFile>(join(dir, ISSUER_FILE), "issuer key");
+export async function loadIssuer(store: SecretStore, space: string): Promise<UserTokenIssuer | undefined> {
+  const key = authIssuerKey(space);
+  const f = await readStoreValue<IssuerFile>(store, key, "issuer key");
   if (!f) return undefined;
   if (!f.issuer || !Array.isArray(f.keys) || !f.keys.length || !f.activeKid)
-    throw new Error(`${join(dir, ISSUER_FILE)}: malformed issuer key file - restore it from backup; regenerating kills every outstanding bearer`);
+    throw new Error(`${key}: malformed issuer key material - restore it from backup; regenerating kills every outstanding bearer`);
   const active = f.keys.find((k) => k.kid === f.activeKid);
   if (!active)
-    throw new Error(`${join(dir, ISSUER_FILE)}: active kid ${f.activeKid} is not in the key set - restore it from backup`);
+    throw new Error(`${key}: active kid ${f.activeKid} is not in the key set - restore it from backup`);
   // createUserTokenIssuer starts with one active key; rotate() adds the rest (each rotate re-points
   // active, so feed the non-active keys THROUGH rotate and finish on the persisted active kid).
   const issuer = createUserTokenIssuer({ issuer: f.issuer, key: await importSigningKey(active) });
@@ -122,18 +151,17 @@ export async function loadIssuer(dir: string): Promise<UserTokenIssuer | undefin
  *  persists it under the pinned {@link spaceIssuer} `iss`; later calls return the SAME keys, so
  *  outstanding bearers keep verifying. A persisted `iss` that disagrees with the space's pin fails
  *  loud (the material belongs to another space/layout — never sign under a mismatched issuer). */
-export async function ensureIssuer(dir: string, space: string): Promise<UserTokenIssuer> {
+export async function ensureIssuer(store: SecretStore, space: string): Promise<UserTokenIssuer> {
   const iss = spaceIssuer(space);
-  const existing = await loadIssuer(dir);
+  const existing = await loadIssuer(store, space);
   if (existing) {
     if (existing.issuer !== iss)
-      throw new Error(`${join(dir, ISSUER_FILE)}: persisted issuer "${existing.issuer}" != this space's pin "${iss}" - the material belongs to a different space; refusing to mint under it`);
+      throw new Error(`${authIssuerKey(space)}: persisted issuer "${existing.issuer}" != this space's pin "${iss}" - the material belongs to a different space; refusing to mint under it`);
     return existing;
   }
   const key = await generateSigningKey();
-  mkSecretDir(dir);
-  writeSecretFileAtomic(
-    join(dir, ISSUER_FILE),
+  await store.put(
+    authIssuerKey(space),
     JSON.stringify({ ver: STORE_VER, issuer: iss, activeKid: key.kid, keys: [await exportSigningKey(key)] } satisfies IssuerFile, null, 2),
   );
   return createUserTokenIssuer({ issuer: iss, key });
@@ -148,24 +176,24 @@ interface OwnerSecretFile {
 }
 
 /** Load the owner-derivation secret, or undefined if this space never enabled user auth. */
-export function loadOwnerSecret(dir: string): Uint8Array | undefined {
-  const f = readStoreFile<OwnerSecretFile>(join(dir, OWNER_SECRET_FILE), "owner secret");
+export async function loadOwnerSecret(store: SecretStore, space: string): Promise<Uint8Array | undefined> {
+  const key = authOwnerSecretKey(space);
+  const f = await readStoreValue<OwnerSecretFile>(store, key, "owner secret");
   if (!f) return undefined;
   const secret = Buffer.from(f.secretB64 ?? "", "base64");
   if (secret.byteLength !== 32)
-    throw new Error(`${join(dir, OWNER_SECRET_FILE)}: malformed owner secret - restore it from backup; a regenerated secret RE-KEYS EVERY OWNER in the space`);
+    throw new Error(`${key}: malformed owner secret - restore it from backup; a regenerated secret RE-KEYS EVERY OWNER in the space`);
   return new Uint8Array(secret);
 }
 
 /** Load-or-create the per-space owner-derivation secret. There is deliberately NO regenerate path:
  *  a new secret re-keys every owner in the space (a migration, never an accident). */
-export function ensureOwnerSecret(dir: string): Uint8Array {
-  const existing = loadOwnerSecret(dir);
+export async function ensureOwnerSecret(store: SecretStore, space: string): Promise<Uint8Array> {
+  const existing = await loadOwnerSecret(store, space);
   if (existing) return existing;
   const secret = randomBytes(32);
-  mkSecretDir(dir);
-  writeSecretFileAtomic(
-    join(dir, OWNER_SECRET_FILE),
+  await store.put(
+    authOwnerSecretKey(space),
     JSON.stringify({ ver: STORE_VER, secretB64: Buffer.from(secret).toString("base64") } satisfies OwnerSecretFile, null, 2),
   );
   return new Uint8Array(secret);
@@ -232,8 +260,6 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
 
 // ---- the auth service's own key projection ----
 
-const SERVICE_KEYS_FILE = "service-keys.json";
-
 /** EXACTLY what the long-lived auth service may hold of the space's signing material: the data
  *  account's pub + user-minting signing seed (minting scoped users at connect time IS the service's
  *  function) — and nothing else. Written by `prepareServer` (which may briefly see more), loaded by
@@ -247,20 +273,20 @@ interface ServiceKeysFile extends ServiceKeys {
   ver: number;
 }
 
-export function loadServiceKeys(dir: string): ServiceKeys | undefined {
-  const f = readStoreFile<ServiceKeysFile>(join(dir, SERVICE_KEYS_FILE), "service key projection");
+export async function loadServiceKeys(store: SecretStore, space: string): Promise<ServiceKeys | undefined> {
+  const key = authServiceKeysKey(space);
+  const f = await readStoreValue<ServiceKeysFile>(store, key, "service key projection");
   if (!f) return undefined;
   if (!f.dataAccount?.pub || !f.dataAccount.signingSeed)
-    throw new Error(`${join(dir, SERVICE_KEYS_FILE)}: malformed service key projection - re-run \`cotal up --user-auth\` to rewrite it`);
+    throw new Error(`${key}: malformed service key projection - re-run \`cotal up --user-auth\` to rewrite it`);
   return { dataAccount: { pub: f.dataAccount.pub, signingSeed: f.dataAccount.signingSeed } };
 }
 
 /** Write (or refresh) the service's key projection. Idempotent overwrite — the projection carries
  *  no identity of its own, it IS the (stable) data-account signing material, so rewriting from the
  *  same space bundle is a no-op in content. */
-export function saveServiceKeys(dir: string, keys: ServiceKeys): void {
-  mkSecretDir(dir);
-  writeSecretFileAtomic(join(dir, SERVICE_KEYS_FILE), JSON.stringify({ ver: STORE_VER, ...keys } satisfies ServiceKeysFile, null, 2));
+export async function saveServiceKeys(store: SecretStore, space: string, keys: ServiceKeys): Promise<void> {
+  await store.put(authServiceKeysKey(space), JSON.stringify({ ver: STORE_VER, ...keys } satisfies ServiceKeysFile, null, 2));
 }
 
 // ---- the auth-service runtime discovery file ----

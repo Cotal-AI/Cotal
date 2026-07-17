@@ -12,7 +12,7 @@ import {
   type ParsedArgs,
   type SecretStore,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction } from "./evict-exec.js";
 
@@ -47,8 +47,8 @@ function resolveCredsStore(v: Values, injected?: SecretStore): CredsSource {
     const p = resolve(v.creds);
     return { store: new FsSecretStore(dirname(p)), key: basename(p), where: p, injected: false };
   }
-  const dir = join(findCotalRoot(), ".cotal");
-  return { store: new FsSecretStore(dir), key: DELIVERY_CREDS_KEY, where: join(dir, DELIVERY_CREDS_KEY), injected: false };
+  const root = findCotalRoot();
+  return { store: workspaceSecretStore(root), key: DELIVERY_CREDS_KEY, where: join(root, ".cotal", DELIVERY_CREDS_KEY), injected: false };
 }
 
 /** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED cred through the

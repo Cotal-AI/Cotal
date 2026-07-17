@@ -6,7 +6,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
@@ -15,7 +15,7 @@ import { ensureManager, managerHasDeliveryMarker, managerUp, stopManager } from 
 const PID_PATH = () => cotalPath("delivery.pid");
 // The daemon's cred goes through the secret-store seam; the shared key (== the filename, so the
 // file stays `.cotal/delivery.creds`) comes from workspace — never a hand-copied literal.
-const credsStore = () => new FsSecretStore(cotalPath());
+const credsStore = () => workspaceSecretStore(findCotalRoot());
 
 type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string };
 

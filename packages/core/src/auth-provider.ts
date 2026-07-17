@@ -1,4 +1,5 @@
 import { registry, type Extension } from "./registry.js";
+import type { SecretStore } from "./secret-store.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -15,21 +16,29 @@ import { registry, type Extension } from "./registry.js";
  * No provider registered ⇒ user-mode auth is unavailable and requesting it MUST fail loud (no
  * static fallback) — a library root that never imports the auth package simply cannot serve a
  * user-auth space.
+ *
+ * TWO state surfaces, split by the {@link SecretStore} seam: the provider's SECRET material
+ * (callout account, issuer keys, owner secret, service key projection) rides the `store` each
+ * method receives — the CALLER composes it (locally the workspace's `.cotal`-rooted filesystem
+ * store; a hosted composition injects KMS/Vault), the provider never discovers one ambiently.
+ * The provider's NON-SEAM state (the actor ledger, the IdP pin, service runtime discovery)
+ * stays under `dir`, the local state directory.
  */
 export interface AuthProvider extends Extension {
   readonly kind: "auth-provider";
   /**
-   * Ensure this space's user-auth material exists under `input.dir` (generated + persisted on the
-   * first call, reused verbatim after — account identities and signing keys MUST be stable across
-   * restarts or previously-issued credentials break) and describe what the composition root must
-   * wire up. Idempotent. This call may hold the provisioning seeds BRIEFLY; the long-lived service
+   * Ensure this space's user-auth material exists (generated + persisted on the first call, reused
+   * verbatim after — account identities and signing keys MUST be stable across restarts or
+   * previously-issued credentials break) and describe what the composition root must wire up.
+   * Secret material persists through `input.store`; non-seam state under `input.dir`. Idempotent. This call may hold the provisioning seeds BRIEFLY; the long-lived service
    * process must load only provider-owned projected files written here, never the space's full
    * trust bundle.
    */
   prepareServer(input: AuthPrepareInput): Promise<AuthPrepared>;
   /**
    * CLIENT side: produce the connect material for a user-mode space from THIS machine's session
-   * state (the login cache + the provider's space-scoped state under `dir`). `actor` is the
+   * state (the login cache + the provider's space-scoped state — secrets in `store`, the rest
+   * under `dir`). `actor` is the
    * ledger-granted agent-instance the caller connects as. Returns what {@link EndpointOptions}'
    * user mode consumes (`bearer` + `sentinelCreds`). MUST fail loud with the EXACT operator
    * action when anything is missing — not logged in (`cotal login --idp …`), the auth service
@@ -41,32 +50,33 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: { dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
+  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).
    * The spawn paths use it to answer "whose agents are these": a foreground/manifest spawn runs
    * the agents under the OPERATOR's owner. MUST fail loud when not logged in (naming the exact
-   * `cotal login --idp …` line) or when the space has no user-auth material under `dir`.
+   * `cotal login --idp …` line) or when the space has no user-auth material (in `store`/`dir`).
    */
-  ownerForLogin(opts: { dir: string; space: string }): Promise<string>;
+  ownerForLogin(opts: { store: SecretStore; dir: string; space: string }): Promise<string>;
   /**
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's
    * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state
-   * here, not a thrown one. Throws only when the space has no user-auth material under `dir`
+   * here, not a thrown one. Throws only when the space has no user-auth material in `store`/`dir`
    * (there is nothing to report status about).
    */
-  userStatus(opts: { dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
+  userStatus(opts: { store: SecretStore; dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
   /**
    * SERVER side, agent lifecycle: author an agent grant for `(owner, actor)` in this space's
    * ledger — the spawn path's half of "actors are server-ledger-authorized, never taken from
    * connect payloads". Returns the ONE-TIME plaintext agent secret (persisted only as a hash;
    * the caller delivers it to the agent process via a 0600 file and never sees it again) plus
    * the sentinel creds the agent presents alongside its bearers. Upsert — re-granting an actor
-   * rotates its secret. MUST fail loud when the space has no user-auth material under `dir`.
+   * rotates its secret. MUST fail loud when the space has no user-auth material in `store`/`dir`.
    */
   grantAgent(opts: {
+    store: SecretStore;
     dir: string;
     space: string;
     owner: string;
@@ -91,6 +101,17 @@ export interface AuthProvider extends Extension {
    * fresh so a scope edit bites the caller's next control op with no restart or reconnect.
    */
   actorScope(opts: { dir: string; owner: string; actor: string }): Promise<string[] | undefined>;
+  /**
+   * Remove this provider's SECRET material for a space from the given store — the DELETE half of
+   * the seam pair (every kind that reads and writes through a {@link SecretStore} must be
+   * deletable through it, or a reset wipes local identity while an injected backend keeps the old
+   * secrets authoritative: split authority, and the next provision mixes a fresh trust bundle
+   * with stale stable identities). Attempts EVERY owned key even when one fails (each delete is
+   * idempotent by the store contract, so a failed pass is retryable as-is), then throws with the
+   * collected failures. Touches ONLY the store — non-seam state (ledger, IdP pin, discovery) is
+   * the caller's local-reset concern, swept only AFTER this succeeds.
+   */
+  deprovisionSecrets(opts: { store: SecretStore; space: string }): Promise<void>;
   /**
    * Registry name of the provider's self-registered {@link Command} that prints ONE fresh agent
    * bearer to stdout and exits (flags: `--dir <state-dir> --space <space> --owner <o> --actor <a>
@@ -142,8 +163,13 @@ export interface AuthPrepareInput {
   /** The data account users are bound into: its public key + the signing seed that mints its
    *  users (projected to the service's key file; the ACCOUNT seed itself never crosses). */
   account: { pub: string; signingSeed: string };
-  /** The provider's OWN state dir. The caller keys it — today `<root>/.cotal/auth/<space>`; a
-   *  future (broker, space) key is a caller change, never an on-disk format break. */
+  /** Where the provider's SECRET material persists (callout account, issuer keys, owner secret,
+   *  service key projection) — caller-composed, keys are the provider's own. Locally the
+   *  workspace's `.cotal`-rooted filesystem store; a hosted composition injects its backend. */
+  store: SecretStore;
+  /** The provider's OWN state dir for NON-SEAM state (actor ledger, IdP pin, service runtime
+   *  discovery). The caller keys it — today `<root>/.cotal/auth/<space>`; a future
+   *  (broker, space) key is a caller change, never an on-disk format break. */
   dir: string;
   /** The operator's external identity-provider base URL (`up --user-auth --idp <url>`), OPAQUE to
    *  core — the provider pins/persists it (first call requires one; a later call must match the
