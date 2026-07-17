@@ -22,6 +22,11 @@
 import { CotalEndpoint, mintCreds, newIdentity, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
 import type { EvictPrincipal } from "./credential-ledger.js";
 
+/** The per-eviction credential's TTL (Security H3): one delivery-admin call runs in a 15s request
+ *  budget; 60s covers connect + the call + teardown with margin, and bounds the blast radius of a
+ *  copied supervisor credential to a minute rather than the profile's default 24h. */
+const EVICTOR_CRED_TTL_SECONDS = 60;
+
 /**
  * Build the barrier executor's `evictPrincipal` capability over the delivery daemon's
  * `ctl.delivery-admin` rail. Per-call connection (an eviction is a rare, heavyweight barrier
@@ -49,7 +54,12 @@ export function makeDeliveryAdminEvictor(opts: {
     const id = newIdentity();
     let ep: CotalEndpoint | undefined;
     try {
-      const creds = await mintCreds(auth, id, "supervisor");
+      // Security H3: this is a per-eviction credential for ONE ~15s delivery-admin call, not a
+      // standing connection. The `supervisor` profile is default standing-renewable (24h); mint it
+      // with a tight TTL so a COPIED credential expires almost immediately instead of carrying a
+      // day of full manager-control-tier + lease/presence authority. (The dedicated narrow
+      // delivery-admin infra profile is the #30 target; until then, bound the lifetime here.)
+      const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
         space: opts.space,
         servers: opts.server,

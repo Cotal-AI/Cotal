@@ -139,6 +139,17 @@ try {
   check("the issuance gate reopened at the successor generation", gate1?.row.state === "open" && gate1.row.generation === 2, gate1?.row);
   const head1 = await readLifecycleHeadForOperation(breg, OWNER, "worker1");
   check("the head advanced to epoch 2 with the operation stamped", head1?.mapping.processEpoch === 2 && head1.mapping.lastTakeoverOpId === op1, head1?.mapping);
+  // C1 (panel HIGH, all lanes): the takeover's epoch CAS CLEARS currentCredentialId (which named
+  // the now-revoked root). Leaving it set permanently wedges the successor mint. Proven load-bearing:
+  // the head's root slot is absent, and a fresh-root mint for the SAME lifecycle then succeeds (the
+  // old bug returned permission-denied here).
+  check("C1: the head no longer names the revoked root credential after the takeover (slot cleared)",
+    head1?.mapping.currentCredentialId === undefined, head1?.mapping);
+  const cred1b = await ensureRootCredential(wreg, { owner: OWNER, actor: "worker1", lifecycleUid: uid1, managerInstance: "smoke" });
+  check("C1: a successor root mint for the same lifecycle SUCCEEDS after the takeover (no wedge)",
+    typeof cred1b === "string" && cred1b !== cred1, { cred1, cred1b });
+  const head1b = await readLifecycleHeadForOperation(breg, OWNER, "worker1");
+  check("C1: the head now names the FRESH successor root credential", head1b?.mapping.currentCredentialId === cred1b, head1b?.mapping);
 
   // ---- E2. the completed operation's intent is discoverable (and correctly attributed) ----
   const intents = await enumerateOperationIntents(breg);

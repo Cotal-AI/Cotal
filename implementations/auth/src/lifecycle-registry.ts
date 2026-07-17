@@ -351,11 +351,25 @@ export async function advanceEpochWithinTakeover(
     // and refuses, never claiming the winner's advance (SPEC 13.1).
     if (cur.mapping.lastTakeoverOpId !== args.opId)
       throw new EpEnvelopeError("conflict", `the head for "${args.owner}/${args.actor}" is at epoch ${args.fromEpoch + 1} advanced by operation ${cur.mapping.lastTakeoverOpId ?? "<none>"}, not ${args.opId}; a concurrent takeover won and this operation lost (SPEC 13.1)`);
+    // C1 (panel HIGH): our own completed advance MUST have cleared the revoked root stamp too. If
+    // the epoch advanced under our opId but `currentCredentialId` is still set, that is IMPOSSIBLE
+    // persisted state (a partial write or an old binary) — fail loud rather than report success
+    // over a head that still wedges the successor mint.
+    if (cur.mapping.currentCredentialId !== undefined)
+      throw new EpEnvelopeError("failed-precondition", `the head for "${args.owner}/${args.actor}" advanced under takeover ${args.opId} but still names root credential ${cur.mapping.currentCredentialId}; the epoch CAS clears it atomically, so a residual stamp is impossible persisted state (SPEC 13.1)`);
     return "already-advanced";
   }
   if (cur.mapping.processEpoch !== args.fromEpoch)
     throw new EpEnvelopeError("failed-precondition", `the head for "${args.owner}/${args.actor}" is at epoch ${cur.mapping.processEpoch}, not the takeover's captured epoch ${args.fromEpoch} (or its +1); a foreign operation moved it (SPEC 13.1)`);
-  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...cur.mapping, processEpoch: args.fromEpoch + 1, lastTakeoverOpId: assertLifecycleToken(args.opId) }, cur.revision);
+  // C1 (panel HIGH, all lanes): advance the epoch AND clear `currentCredentialId` in the SAME CAS.
+  // The takeover's family revoke marked the incarnation's root row `revoked`; leaving the head
+  // still naming that revoked root permanently wedges the successor mint (`ensureRootCredential`'s
+  // fast path reads the stamped id, refuses its revoked state, and `setCurrentRootCredential`
+  // refuses a value flip). Clearing the stamp makes the head's root slot ABSENT, so the successor's
+  // release-last stamp can win. Root rotation stays a barrier's job — this CAS IS that barrier step.
+  const { currentCredentialId: _revoked, ...rest } = cur.mapping;
+  void _revoked;
+  await updateRecordEntry(recordsKv, headKey(args.owner, args.actor), { ...rest, processEpoch: args.fromEpoch + 1, lastTakeoverOpId: assertLifecycleToken(args.opId) }, cur.revision);
   return "advanced";
 }
 
