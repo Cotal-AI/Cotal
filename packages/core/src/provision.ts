@@ -445,8 +445,9 @@ function principalOf(identity: Identity, principal?: { owner: string; actor: str
  *  TASK) durables, RECORD its read ACL in the durable registry (unless `durableMembership:false`), and
  *  mint its scoped creds. Live delivery is the agent's own core subscription — there is no per-instance
  *  chat durable. Boot durable MEMBERSHIP is not written here: the agent self-joins its durable channels
- *  via the server-side delivery daemon's `ctl.delivery` op at connect. A live-only launcher
- *  (`durableMembership:false`, e.g. direct `cotal spawn`) gets no ACL row and stays live-only. */
+ *  via the server-side delivery daemon's `ctl.delivery` op at connect. A deliberately live-only
+ *  launcher (`durableMembership:false`, e.g. `cotal spawn --live-only`) gets no ACL row, so the
+ *  daemon never authorizes a durable backstop for it. */
 export async function provisionAgent(
   provisioner: DurableProvisioner,
   auth: SpaceAuth,
@@ -484,8 +485,8 @@ export async function provisionAgentDurables(
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
   // server-side delivery daemon can re-authorize this agent's durable entries + validate its runtime
   // durable-joins — it holds no in-memory ledger. The agent SELF-JOINS its durable boot channels via the
-  // daemon at connect (no manager-written boot membership). `durableMembership:false` (a live-only
-  // launcher, e.g. direct `cotal spawn` with no daemon) opts out of the ACL row → the daemon never
+  // daemon at connect (no manager-written boot membership). `durableMembership:false` (an explicit
+  // live-only launcher, e.g. `cotal spawn --live-only`) opts out of the ACL row → the daemon never
   // authorizes a durable backstop for it, so it stays live-only.
   // ACL is keyed by the agent's owner+actor principal dot-form (per-agent read authority).
   if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, allowSubscribe);
