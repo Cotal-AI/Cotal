@@ -422,14 +422,21 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       return 10;
     };
     const ranked = [...all].sort((a, b) => rank(a) - rank(b) || (a.order ?? 50) - (b.order ?? 50));
-    for (const component of ranked.filter((component) => !component.stopLast))
+    // The quiescence proof runs BETWEEN two stop phases. Everything it proves dead — the
+    // lease-holding daemons, delivery and manager — stops before it. The user-auth service holds no
+    // lease, so the proof does not cover it, and on a USER mesh the proof's own broker connect
+    // exchanges through that service: stop it first and the cut can no longer prove itself, ending
+    // at cut-committed with the broker still up. It stops after the proof, still before the broker.
+    const afterQuiescence = (component: LocalProcess): boolean => component.stopLast || component.name === "auth";
+    for (const component of ranked.filter((component) => !afterQuiescence(component)))
       await stopLocalProcess(component, context);
     // Wire-truth quiescence while the broker still answers: every control-plane daemon must be
     // provably lease-dead, not merely pidfile-absent, before the broker stops and ready publishes.
     // An already-unreachable broker is itself the proof - nothing can mutate broker-resident state
     // through a dead endpoint, and the final unreachable check below re-verifies it.
     if (await isReachable(mesh.server)) await assertControlPlaneQuiesced(mesh.space, mesh.server);
-    for (const component of ranked.filter((component) => component.stopLast))
+    // rank() keeps auth (40) ahead of the broker (stopLast, 100) within this phase.
+    for (const component of ranked.filter(afterQuiescence))
       await stopLocalProcess(component, context);
     const stillRunning = all.filter((component) => processAlive(component, context));
     if (stillRunning.length)
