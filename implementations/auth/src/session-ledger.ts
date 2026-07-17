@@ -376,8 +376,14 @@ async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string,
  *  the coordinates are pinned by the GATE key the commit CASes (one key, §13.1), and
  *  revocation/eviction route by credentialId/holderPrincipal, never nkey. `commit` is the
  *  pinned identical-bytes TOUCH at the observed revision — a barrier that moved the gate since
- *  observation makes the mint LOSE, the session adapter's exact discipline. */
-export function kvServeIssuanceGate(kv: KV, args: { space: string; endpoint: string; instanceId: string }): EpIssuanceGate {
+ *  observation makes the mint LOSE, the session adapter's exact discipline.
+ *
+ *  Consumes the BRANDED {@link SessionAuthStore} ({@link openSessionAuthStore}), never a raw
+ *  `{kv, space}` pair: the space bond is constructed, not asserted, so a caller can never pair
+ *  another bucket's KV with a desired space label and fence/stage against the wrong store. */
+export function kvServeIssuanceGate(store: SessionAuthStore, args: { endpoint: string; instanceId: string }): EpIssuanceGate {
+  assertStore(store);
+  const kv = store.kv;
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
@@ -389,7 +395,7 @@ export function kvServeIssuanceGate(kv: KV, args: { space: string; endpoint: str
         throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
       const gate = parseEndpointGate(entry.value, key);
       return {
-        space: args.space, endpoint, lifecycleUid: instanceId,
+        space: store.space, endpoint, lifecycleUid: instanceId,
         state: gate.state, generation: gate.generation, processEpoch: gate.processEpoch,
         registrationRevision: gate.registrationRevision, nameAuthorityRevision: gate.nameAuthorityRevision,
         revision: entry.revision,

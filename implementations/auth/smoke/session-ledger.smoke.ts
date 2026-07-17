@@ -473,7 +473,9 @@ try {
   {
     const EP = "servegate";
     const IID = "g".repeat(26);
-    const seam = kvServeIssuanceGate(kv, { space: SPACE, endpoint: EP, instanceId: IID });
+    const seam = kvServeIssuanceGate(store, { endpoint: EP, instanceId: IID });
+    await rejects("a hand-assembled {kv, space} refuses (the space bond is constructed, not asserted)",
+      async () => kvServeIssuanceGate({ kv, space: SPACE }, { endpoint: EP, instanceId: IID }), "failed-precondition");
     c("observe of a MISSING gate is null (the mint fails closed on it)", (await seam.observe()) === null);
     await writeEndpointGate(kv, EP, IID, { state: "open", generation: 2, processEpoch: 5, registrationRevision: 3, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
     const g1 = await seam.observe();

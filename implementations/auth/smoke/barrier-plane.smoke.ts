@@ -121,7 +121,9 @@ try {
 
   // ---- E1. intent discovery baseline: empty, and session release pins are skipped ----
   check("enumerateOperationIntents on a fresh space sees no intents", (await enumerateOperationIntents(breg)).length === 0);
-  await registryStores(breg).authKv.put("stage.session.sess1.c", new TextEncoder().encode(JSON.stringify({ kid: "k", party: "c" })));
+  // Planted through the WRITER (the session ledger's side of the `stage.` family): the barrier
+  // profile deliberately cannot write multi-segment stage keys (see the DENIED check below).
+  await registryStores(wreg).authKv.put("stage.session.sess1.c", new TextEncoder().encode(JSON.stringify({ kid: "k", party: "c" })));
   check("a multi-segment stage.session release pin is NOT an operation intent", (await enumerateOperationIntents(breg)).length === 0);
 
   // ---- C. GRANT SUFFICIENCY: the full takeover barrier over the barrier profile ----
@@ -150,6 +152,7 @@ try {
   check("DENIED: a bysrc. lineage WRITE (mint keys are not the barrier's)", (await denied(() => authKvB.put(`bysrc.k.i.${uid1}.x`, enc.encode("{}")))) === "denied");
   check("DENIED: a srcgate. WRITE (handle revocation is not this slice's grant)", (await denied(() => authKvB.put("srcgate.k.i", enc.encode("{}")))) === "denied");
   check("DENIED: a session. WRITE (session reconcile is an injected seam)", (await denied(() => authKvB.put("session.s1", enc.encode("{}")))) === "denied");
+  check("DENIED: a multi-segment stage.session pin WRITE (the barrier's stage row is one-token stage.*)", (await denied(() => authKvB.put("stage.session.sess9.c", enc.encode("{}")))) === "denied");
   check("DENIED: a records uid. reservation WRITE", (await denied(() => recKvB.put(`uid.${mintLifecycleUid()}`, enc.encode("{}")))) === "denied");
   check("DENIED: STREAM.CREATE (the barrier never provisions stores)", (await denied(() => barrier!.nc.request(`$JS.API.STREAM.CREATE.FORGED_${space}`, enc.encode(JSON.stringify({ name: `FORGED_${space}`, subjects: [`forged.${space}`] })), { timeout: 1500 }))) === "denied");
   check("DENIED: CONSUMER.CREATE on the RECORDS stream (enumeration is auth-store-only)", (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.probe${Date.now() % 1000}`, enc.encode(JSON.stringify({ stream_name: `KV_${recordsBucket(space)}`, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");

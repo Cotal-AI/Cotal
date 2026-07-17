@@ -186,7 +186,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_d32m.>",
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
-    "$KV.cotal_auth_d32m.stage.>",
+    "$KV.cotal_auth_d32m.stage.*",
     "$KV.cotal_records_d32m.lifecycle.>",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "auth-connect-reader": { publish: [

@@ -129,7 +129,12 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
       `$JS.API.CONSUMER.MSG.NEXT.${auth}.>`,
       `$KV.${epAuthBucket(space)}.gate.>`,
       `$KV.${epAuthBucket(space)}.cred.>`,
-      `$KV.${epAuthBucket(space)}.stage.>`,
+      // ONE token: the barrier's own durable operation intents `stage.<opId>` — never `stage.>`,
+      // which would also reach the session ledger's `stage.session.<sid>.<c|s>` release pins (a
+      // family the SESSION writer owns). The documented-future takeover/registration successor
+      // artifacts (`stage.<opId>.…`) have no writer yet; compose `stage.*.>` in the slice that
+      // introduces them, so forgetting fails loud here instead of widening silently now.
+      `$KV.${epAuthBucket(space)}.stage.*`,
       `$KV.${recordsBucket(space)}.lifecycle.>`,
     ],
     subscribe: [`_INBOX_${inbox}.>`],

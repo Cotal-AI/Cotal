@@ -68,10 +68,17 @@ export function makeDeliveryAdminEvictor(opts: {
       const d = r.data as Partial<EvictionResult> | undefined;
       if (
         d === undefined || d === null || d.principal !== principal ||
-        typeof d.kicked !== "number" || typeof d.remaining !== "number" ||
+        typeof d.kicked !== "number" || !Number.isSafeInteger(d.kicked) || d.kicked < 0 ||
+        typeof d.remaining !== "number" || !Number.isSafeInteger(d.remaining) || d.remaining < 0 ||
         typeof d.verifiedGone !== "boolean" || typeof d.scanComplete !== "boolean"
       )
         return failClosed(principal, `the delivery daemon returned a garbled or foreign eviction result (${JSON.stringify(r.data ?? null)}); a result that does not verifiably describe this principal never authorizes`);
+      // An internally CONTRADICTORY success never authorizes: the barriers gate on
+      // `verifiedGone === true` alone, so a tuple claiming verified-gone while admitting an
+      // incomplete scan or surviving connections would launder a partial answer into an epoch
+      // advance / head terminal. Verified-gone is conclusive only as (scan complete, none remain).
+      if (d.verifiedGone === true && (d.scanComplete !== true || d.remaining !== 0))
+        return failClosed(principal, `the delivery daemon claimed verifiedGone with scanComplete=${String(d.scanComplete)} and remaining=${d.remaining}; an internally contradictory eviction result never authorizes`);
       return {
         principal,
         kicked: d.kicked,
