@@ -127,6 +127,18 @@ the secret, every stop or despawn revokes the row, so a non-running agent holds 
 standing authority. Manifest deploys (`up -f`) stamp the logged-in owner into the launch,
 so those agents are yours too.
 
+**Despawn retires the name, then frees it.** When you despawn an agent, the manager asks
+the auth service to *retire* that agent's lifecycle: it settles any in-flight work, evicts
+the departed credential, and records the lifecycle as retired. The name is held *reserved
+pending retirement* until that finishes, so a same-name respawn in the gap is refused with
+a plain reason and a retry hint rather than quietly handing the alias to a new agent while
+the old one's cleanup is still running. Once the retirement completes, the name is free and
+`cotal spawn <same-name>` gives you a fresh agent cleanly. This is what makes reusing an
+agent's name safe: the old incarnation is fully retired before the new one takes the alias.
+If the auth service is unreachable, the despawn still stops the agent and holds the name,
+retries the retirement on the next despawn or restart, and tells you to recover the stack
+(`cotal supervise`) rather than reusing the name over an unretired predecessor.
+
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:
 everything under their owner (their CLI, every agent they spawn, every agent those
 spawn) stays within its channel lists and its capability scope. Handing a role to a
