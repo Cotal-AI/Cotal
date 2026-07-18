@@ -103,9 +103,12 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   principalKey, registry, dmStream, dlvStream, openAclRegistry,
+  CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
+  createEndpointStreams,
 } = await import("@cotal-ai/core");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
+const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
@@ -232,6 +235,7 @@ const rowHash = (owner: string): string | undefined => {
 let manager: InstanceType<typeof Manager> | undefined;
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
+let delivery: InstanceType<typeof CotalEndpoint> | undefined;
 let jsDir: string | undefined;
 try {
   // ---------- A. setup: user-auth broker + streams + auth service + login + grant ----------
@@ -289,6 +293,42 @@ try {
   const provId = newIdentity();
   const provCreds = await mintCreds(auth, provId, "provisioner");
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: provCreds });
+  // The endpoint lifecycle-data streams (EPF/EPW/EPE/records): production space setup creates them,
+  // and the retirement barrier's FRONTIER step reads their last_seq to close the lifecycle interval.
+  {
+    // The endpoint lifecycle-data streams are created by the space's setup authority (broader than
+    // the scoped provisioner); a harness god cred (account-signed, allow-all) stands in for it.
+    const setupId = newIdentity();
+    const setupCreds = fmtCreds(
+      await encodeUser("fsb-setup", fromPublic(setupId.id), fromPublic(auth.account.pub), { pub: { allow: [">"] }, sub: { allow: [">"] } }, { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) }),
+      fromSeed(new TextEncoder().encode(setupId.seed)),
+    );
+    const snc = await connect({ servers: SERVER, authenticator: credsAuthenticator(setupCreds), maxReconnectAttempts: 0 });
+    try { await createEndpointStreams(await jetstreamManager(snc), new Kvm(snc), SPACE); }
+    finally { await snc.drain().catch(() => {}); }
+  }
+
+  // The DELIVERY DAEMON (the eviction rail the retirement barrier needs): production `cotal up`
+  // runs auth AND delivery, and a terminal retirement's VERIFIED eviction rides the delivery-admin
+  // rail. This harness hosts Plane-3 inline with a REAL evictPrincipal (the $SYS observer + KICK
+  // evictor minted here, the only window their in-memory seed exists), so despawn -> retirement can
+  // reach its terminal exactly as it does under a full stack. Without it the barrier fail-closes at
+  // eviction and the alias stays reserved (the pre-delivery composition, proven earlier).
+  const dlvObserverCreds = await mintMembershipObserverCreds(auth, newIdentity());
+  const dlvEvictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
+  const dlvId = newIdentity();
+  delivery = new CotalEndpoint({
+    space: SPACE, servers: SERVER, creds: await mintCreds(auth, dlvId, "delivery"),
+    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+  });
+  delivery.on("error", () => {});
+  await delivery.start();
+  await delivery.startPlane3((owner: string, lifecycleUid: string) => delivery!.aclForOwner(owner, lifecycleUid), {
+    evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
+      servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
+    }),
+  });
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", `${AGENT}.md`), `---\nname: ${AGENT}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${AGENT} persona.\n`);
@@ -529,6 +569,7 @@ try {
   process.exitCode = 1;
 } finally {
   try { await manager?.stop(); } catch { /* already stopped */ }
+  try { await delivery?.stop(); } catch { /* already stopped */ }
   if (authChild?.pid) { try { process.kill(authChild.pid, "SIGKILL"); } catch { /* gone */ } }
   if (broker?.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }
   await wait(300);
