@@ -16,6 +16,19 @@
  *    `retirementCleanerGrants ∪ barrierExecutorSettlementGrants` for those pools (bind-only on the
  *    pool durables + the op's `wrk`/`lease` writes + the EPF fencing read), short-TTL, and CONNZ
  *    principal-tagged so the barrier can verified-evict it.
+ *    KNOWN, DEFERRED to #29 piece 2 (freelance a559d9c round): SPEC 13.9 SPLITS this union — the
+ *    cleaner must hold NO lease/`wrk` write (its residual is terminal-free ACK suppression), and
+ *    the op-bounded settlement EXECUTOR owns those writes on its OWN connection. Piece 1 unions
+ *    them here AND runs the settlement code on the barrier's standing connection; the split (a
+ *    distinct executor client whose grant carries the lease/`wrk` writes plus the EPW/records
+ *    reads the settlement executes) lands with the piece-2 wiring, where a real executor
+ *    connection exists and security reviews the new profile. The path is daemon-unwired today, so
+ *    the over-grant is latent, not live.
+ *  - ATOMIC acquisition (freelance a559d9c round): the principal is reserved SYNCHRONOUSLY before
+ *    the first await (two concurrent same-op opens cannot both pass a check-then-connect gap), both
+ *    JS handles are built INSIDE the transaction, and the client is published to the live map only
+ *    on full success — a post-connect `$JS.API.INFO` failure closes the connection and releases the
+ *    reservation rather than stranding a live, never-retired client.
  *  - `retireCleanerCredential` closes the connection (the deny-new half). The barrier then runs its
  *    OWN `evictPrincipal(bind.principal)` (the kill-live half) — this module never evicts, so the
  *    kill-live authority stays with the barrier's delivery-admin seam.
@@ -51,44 +64,60 @@ export function makeRetirementCleaners(opts: {
   openCleaner: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<PoolCleanerBind>;
   retireCleanerCredential: (bind: PoolCleanerBind) => Promise<void>;
 } {
-  // principal -> the open client, so retireCleanerCredential can close exactly this op's connection.
-  const clients = new Map<string, AuthorityClient>();
+  // principal -> the open (or reserving) client, so retireCleanerCredential closes exactly this
+  // op's connection. `"opening"` is the SYNCHRONOUS reservation held across the connect+bind await.
+  const clients = new Map<string, AuthorityClient | "opening">();
   return {
     openCleaner: async ({ opId, endpoint, pools }): Promise<PoolCleanerBind> => {
       const actor = cleanerActor(opId);
-      // Fail-loud on a double-open of a LIVE op's cleaner: a silent map overwrite would leak the
-      // first connection (infinite-reconnect, so the process never drains) and make
+      const principal = principalKey(CLEANER_OWNER, actor).key;
+      // ATOMIC, FAIL-CLOSED double-open guard: reserve the key SYNCHRONOUSLY (before the first
+      // await), so two concurrent same-op opens cannot BOTH pass a check-then-connect gap and leak
+      // the loser's connection (infinite-reconnect, so the process never drains) or make
       // retireCleanerCredential close the WRONG one. A crash-resume re-open is fine — the crashed
       // process's map is gone, so nothing is tracked here.
-      if (clients.has(principalKey(CLEANER_OWNER, actor).key))
-        throw new Error(`retirement cleaner already open for op ${opId}; retire it before re-opening`);
-      const client = await openAuthorityClient({
-        server: opts.server,
-        space: opts.space,
-        dataAccount: opts.dataAccount,
-        label: `cotal:ep-cleaner:${opts.space}:${opId}`,
-        principal: { owner: CLEANER_OWNER, actor },
-        grants: (connId) => {
-          // Exactly the op's pools, from the durable intent: bind-only pool-durable reads +
-          // wrk/lease settlement writes + the EPF fencing read + the scoped inbox. Nothing standing.
-          const cleaner = retirementCleanerGrants(opts.space, endpoint, pools, connId);
-          const settlement = barrierExecutorSettlementGrants(opts.space, endpoint, pools);
-          return { publish: [...cleaner.publish, ...settlement.publish], subscribe: cleaner.subscribe };
-        },
-        log: opts.log,
-      });
-      const principal = client.principal!; // set because we passed `principal`
-      clients.set(principal, client);
-      return { jsm: await jetstreamManager(client.nc), js: jetstream(client.nc), principal };
+      if (clients.has(principal))
+        throw new Error(`retirement cleaner already open (or opening) for op ${opId}; retire it before re-opening`);
+      clients.set(principal, "opening");
+      let client: AuthorityClient | undefined;
+      try {
+        client = await openAuthorityClient({
+          server: opts.server,
+          space: opts.space,
+          dataAccount: opts.dataAccount,
+          label: `cotal:ep-cleaner:${opts.space}:${opId}`,
+          principal: { owner: CLEANER_OWNER, actor },
+          grants: (connId) => {
+            // Exactly the op's pools, from the durable intent: bind-only pool-durable reads +
+            // wrk/lease settlement writes + the EPF fencing read + the scoped inbox. Nothing standing.
+            const cleaner = retirementCleanerGrants(opts.space, endpoint, pools, connId);
+            const settlement = barrierExecutorSettlementGrants(opts.space, endpoint, pools);
+            return { publish: [...cleaner.publish, ...settlement.publish], subscribe: cleaner.subscribe };
+          },
+          log: opts.log,
+        });
+        // Build BOTH JS handles inside the transaction: `jetstreamManager` performs a `$JS.API.INFO`
+        // that can reject AFTER the credential connected. Publish to the live map ONLY on full
+        // success, so a post-connect failure never strands a live, never-retired tracked client.
+        const bind: PoolCleanerBind = { jsm: await jetstreamManager(client.nc), js: jetstream(client.nc), principal };
+        clients.set(principal, client);
+        return bind;
+      } catch (e) {
+        clients.delete(principal); // release the reservation
+        if (client !== undefined) await client.close().catch(() => { /* already failing loud */ });
+        throw e;
+      }
     },
     retireCleanerCredential: async (bind: PoolCleanerBind): Promise<void> => {
       // Deny-new: close this op's cleaner connection. Kill-live (evicting any lingering connection
       // that raced the close) is the BARRIER's job via its own evictPrincipal — never here, so the
       // delivery-admin KICK authority stays out of this seam.
-      const client = clients.get(bind.principal);
-      if (client) {
+      const tracked = clients.get(bind.principal);
+      // A retire never closes a half-built client under a concurrent open (the reservation is not a
+      // connection): only a fully-published client is closed.
+      if (tracked !== undefined && tracked !== "opening") {
         clients.delete(bind.principal);
-        await client.close();
+        await tracked.close();
       }
     },
   };

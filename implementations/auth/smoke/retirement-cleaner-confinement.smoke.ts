@@ -76,6 +76,24 @@ try {
     bind1.principal !== bind2.principal, { p1: bind1.principal, p2: bind2.principal });
   c("a DOUBLE-OPEN of a LIVE op's cleaner THROWS (a silent overwrite would leak the first connection)",
     await cleaners.openCleaner({ opId: op1, endpoint: EP, pools: [POOL_A] }).then(() => false, () => true));
+  // ATOMIC acquisition (freelance a559d9c HIGH): two CONCURRENT opens of the SAME op race the
+  // reservation, not a check-then-connect gap — exactly one wins, the other throws, and NO second
+  // connection is leaked (the synchronous "opening" reservation refuses the loser before it connects).
+  {
+    const op3 = mintLifecycleUid();
+    const settled = await Promise.allSettled([
+      cleaners.openCleaner({ opId: op3, endpoint: EP, pools: [POOL_A] }),
+      cleaners.openCleaner({ opId: op3, endpoint: EP, pools: [POOL_A] }),
+    ]);
+    const wins = settled.filter((r) => r.status === "fulfilled");
+    c("two CONCURRENT same-op opens: exactly ONE wins, the other throws (synchronous reservation, no leaked loser)",
+      wins.length === 1 && settled.filter((r) => r.status === "rejected").length === 1, settled.map((r) => r.status));
+    if (wins[0]?.status === "fulfilled") await cleaners.retireCleanerCredential(wins[0].value);
+    // The reservation was released on the loser's path: the same op re-opens cleanly afterward.
+    const reopen = await cleaners.openCleaner({ opId: op3, endpoint: EP, pools: [POOL_A] });
+    c("after the race + retire, the same op re-opens (the loser released its reservation, no poisoned map entry)", reopen.principal.length > 0);
+    await cleaners.retireCleanerCredential(reopen);
+  }
   await cleaners.retireCleanerCredential(bind1);
   const bind1b = await cleaners.openCleaner({ opId: op1, endpoint: EP, pools: [POOL_A] });
   c("the SAME opId re-derives the same principal after retire (a crash-resume)", bind1b.principal === bind1.principal);
