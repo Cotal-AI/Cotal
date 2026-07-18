@@ -42,8 +42,9 @@
  *   can never interleave pre-clean/create/fetch/delete with a live scan and hand back a partial
  *   map. ONE shared instance per space stays the composition rule (#29 injects one), but safety no
  *   longer depends on it. Cross-PROCESS duplication is the two-authority-planes split-brain class
- *   (excluded by the one-plane-per-space composition), and a foreign re-resolution of the literal
- *   name is made loud by the per-message filter revalidation in the drain.
+ *   (excluded by the one-plane-per-space composition); the per-message filter revalidation in the
+ *   drain makes an OUT-OF-FILTER delivery from a foreign re-resolution loud, while a foreign
+ *   same-or-narrower filter stays covered by that composition assumption, not by the check.
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";

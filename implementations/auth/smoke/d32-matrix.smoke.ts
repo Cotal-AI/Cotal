@@ -8,10 +8,12 @@
  * The grep tests transcribed from 13.9: (1) no UNTRUSTED profile (agent/observer/admin, plus
  * the caller/serve row sets) holds any CONSUMER.CREATE / MSG.NEXT / DIRECT.GET / STREAM.MSG.GET
  * on a control-surface resource; (2) every consumer-name token is a LITERAL, NO exceptions,
- * and the ONLY consumer-lifecycle holders on the two AUTHORITY streams (`KV_cotal_auth_<space>`,
- * `KV_cotal_records_<space>`) are the two SEALED scanner profiles, each pinned to its one
- * literal name with its CREATE filter confined (sites 1-3, nats-server#8274, and the auth
- * path's former name-wildcard enumeration family is GONE); (3) the complete STREAM.MSG.GET holder set
+ * and the AUTHORITY-stream (`KV_cotal_auth_<space>`, `KV_cotal_records_<space>`) consumer
+ * surface is EXACTLY: the two SEALED scanner profiles (the sole DYNAMIC-ENUMERATION creates,
+ * each pinned to its one literal name with its CREATE filter confined; sites 1-3,
+ * nats-server#8274, the auth path's former name-wildcard enumeration family is GONE) plus the
+ * provisioner's pre-created full-tail records-READER durables (CREATE+DELETE only, the 13.9
+ * provisioning row); (3) the complete STREAM.MSG.GET holder set
  * is exactly the enumerated trusted list; (4) every Direct-Get tail is fully qualified except
  * the auth path's records pair (reads feeding revision-pinned CASes, named in its builder doc);
  * (5) cross-principal namespace disjointness (the canonicalizer's dec/quar/bind families never
@@ -29,6 +31,7 @@ import {
   commitPrincipalGrants, contractPublisherGrants, activatorGrants, epCallerGrantRows, epServeGrantRows,
   RECORD_KINDS, epwStreamName, epjStreamName, eptReqStreamName, epfStreamName,
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
+  recordReaderConfig, recordsKvStreamName,
   createSpaceAuth, mintCreds, newIdentity,
   type EpCapability,
 } from "@cotal-ai/core";
@@ -114,6 +117,11 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.CONSUMER.DELETE.EPW_d32m.pool_jobsrv_pa",
     "$JS.API.CONSUMER.CREATE.EPT_REQ_d32m.timerw_d32m.cotal.d32m.ept.*.*.*.*.schedule",
     "$JS.API.CONSUMER.DELETE.EPT_REQ_d32m.timerw_d32m",
+    // The matrix's pre-created RECORDS-READER durable (SPEC 13.9 provisioning row): the ONE
+    // legitimate non-scanner consumer authority on the records authority stream — full-literal
+    // tail, kind-pinned, CREATE+DELETE only (the provisioner never consumes; owners bind).
+    `$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.rec_${"u".repeat(26)}-g0-0.$KV.cotal_records_d32m.svc.jobsrv.>`,
+    `$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.rec_${"u".repeat(26)}-g0-0`,
   ], subscribe: [] },
   "mediator": { publish: [
     "$KV.cotal_records_d32m.oblig.*.jobsrv.>",
@@ -267,6 +275,10 @@ put("provisioner-consumers", provisionerConsumerGrants([
   { stream: epfStreamName(S), config: effectsConsumerConfig(S, EPJ) },
   { stream: epwStreamName(S), config: poolConsumerConfig(S, EPJ, "pa") },
   { stream: eptReqStreamName(S), config: timerWriterConsumerConfig(S) },
+  // The records-reader family the 13.9 provisioning row names (fact's a559d9c re-verify: the
+  // REAL builders emit records-stream CREATE/DELETE for pre-created reader durables, so the
+  // fixture must carry one or the sole-holder audit below passes by omission).
+  { stream: recordsKvStreamName(S), config: recordReaderConfig(S, { uid: UID, grantId: "g0", index: 0, subtree: `$KV.cotal_records_${S}.svc.${EPJ}.>` }) },
 ]));
 put("mediator", admissionMediatorGrants(S, EPJ, CONN));
 put("cleaner", retirementCleanerGrants(S, EPJ, ["pa", "pb"], CONN));
@@ -311,24 +323,34 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   c("every consumer-name token is literal (NO exceptions; no bare ephemeral-create form anywhere)", bad.length === 0, bad);
 }
 
-// (2a') the 13.9 sole-holder claim, mechanically: the ONLY dynamic-enumeration CONSUMER.CREATE
-// on the two AUTHORITY streams belongs to the two sealed scanner profiles (exact literal name,
-// exact confined filter), and no OTHER principal holds ANY consumer verb on either stream. A
-// future grant widen (a third CREATE holder, a runtime bind row creeping back onto the mediator
-// or barrier) fails HERE, not in review.
+// (2a') the 13.9 sole-holder claim, mechanically NARROWED to what the matrix actually grants
+// (fact's a559d9c re-verify: 13.9's provisioning row legitimately pre-creates full-tail
+// records-READER durables, so "scanners are the sole consumer-lifecycle holders" was an
+// overclaim that passed only by fixture omission). The TRUE pinned surface: the two sealed
+// scanners are the ONLY DYNAMIC-ENUMERATION CONSUMER.CREATE holders (runtime scans, own-name
+// lifecycle), and the provisioner's pre-created reader durables (CREATE+DELETE only, full
+// literal tail, never INFO/NEXT: it provisions, owners bind) are the ONE other consumer
+// authority, on the records stream only. The check pins the COMPLETE (principal, row) set on
+// both authority streams, so any new holder or verb fails HERE, not in review.
 {
   const authorityConsumerRows = allRows.filter(({ row }) =>
     /^\$JS\.API\.CONSUMER\./.test(row) && /\.KV_cotal_(auth|records)_d32m(\.|$)/.test(row));
-  const creates = authorityConsumerRows.filter(({ row }) => row.includes(".CONSUMER.CREATE."))
-    .map(({ principal, row }) => `${principal}: ${row}`).sort();
-  c("the ONLY authority-stream CONSUMER.CREATE holders are the two sealed scanners (exact literal name + confined filter)",
-    JSON.stringify(creates) === JSON.stringify([
-      "auth-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_auth_d32m.cotal-ledger-scan.$KV.cotal_auth_d32m.>",
-      "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.oblig.>",
-    ]), creates);
-  const nonScanner = authorityConsumerRows.filter(({ principal }) => principal !== "auth-scanner" && principal !== "records-scanner")
-    .map(({ principal, row }) => `${principal}: ${row}`);
-  c("NO non-scanner principal holds ANY consumer verb on an authority stream", nonScanner.length === 0, nonScanner);
+  const actual = authorityConsumerRows.map(({ principal, row }) => `${principal}: ${row}`).sort();
+  const READER_D = `rec_${UID}-g0-0`;
+  const expected = [
+    "auth-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_auth_d32m.cotal-ledger-scan.$KV.cotal_auth_d32m.>",
+    "auth-scanner: $JS.API.CONSUMER.INFO.KV_cotal_auth_d32m.cotal-ledger-scan",
+    "auth-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_d32m.cotal-ledger-scan",
+    "auth-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_auth_d32m.cotal-ledger-scan",
+    "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.oblig.>",
+    "records-scanner: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
+    "records-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
+    "records-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
+    `provisioner-consumers: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.${READER_D}.$KV.cotal_records_d32m.svc.jobsrv.>`,
+    `provisioner-consumers: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.${READER_D}`,
+  ].sort();
+  c("the authority-stream consumer surface is EXACTLY the two sealed scanners (dynamic enumeration, own-name lifecycle) + the provisioner's pre-created reader durables (CREATE+DELETE only)",
+    JSON.stringify(actual) === JSON.stringify(expected), actual);
 }
 
 // (2b) the complete STREAM.MSG.GET holder set is exactly the enumerated trusted list.

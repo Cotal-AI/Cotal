@@ -128,11 +128,11 @@ export {
 } from "./lifecycle-registry.js";
 // The D13 (4) admission mediator + admission-policy coordinate (SPEC 13.6/13.8/13.9) is
 // PACKAGE-INTERNAL, deliberately: `openAdmissionMediator` requires the BRANDED records
-// scanner (site 3, nats-server#8274), there is exactly ONE records scanner per space
-// (fact-5: a second instance's independent lock over the same literal consumer name can
-// delete a live scan mid-drain and declare quiescence over a partial map), and this package
-// does not yet own that singleton (the #29 composition does). Exporting the mediator open
-// without a constructible scanner (or a bare scanner constructor beside it) would either be
-// an unsatisfiable public seam or make the dual-instance hazard the default API. Until the
-// singleton-owning composition lands, the whole coordinate is reached by importing the
-// module directly (smokes do); nothing of it is on the package surface.
+// scanner (site 3, nats-server#8274), whose constructors are not on the package surface, so
+// a root export would be an unsatisfiable public seam (a mediator you can name but never
+// construct). And a bare `openRecordsScanner` export is refused too: ONE shared records
+// scanner per space is the composition rule (fact-5; scans serialize module-wide per space,
+// so a stray second instance is safe but never the intended shape), and this package does
+// not own that composition (the #29 slice does). Until it lands, the whole coordinate is
+// reached by importing the module directly (smokes do); nothing of it is on the package
+// surface.

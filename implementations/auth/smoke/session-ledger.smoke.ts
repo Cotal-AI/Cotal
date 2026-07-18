@@ -289,6 +289,17 @@ try {
     await rejects("a NaN sweep clock refuses (never expires every live row at once)",
       () => sweepSessions(store, hooks, { now: Number.NaN }, scanner), "failed-precondition");
     await rejects("a negative sweep margin refuses", () => sweepSessions(store, hooks, { now: NOW, marginMs: -1 }, scanner), "failed-precondition");
+    // The sweep's SCANNER brand/space bond (the freelance seal hole: this public dispatch never
+    // asserted the scanner, so a structural stub swept "successfully" over nothing).
+    await rejects("a HAND-ASSEMBLED scanner refuses at the sweep dispatch (an empty enumeration would report success while expired credentials stay active)",
+      () => sweepSessions(store, hooks, { now: NOW }, { scanCredentialFamily: async () => [], scanBysrc: async () => [], scanStageFamily: async () => [], scanSessions: async () => [], close: async () => {} } as never), "failed-precondition");
+    await rejects("a FOREIGN-SPACE scanner refuses at the sweep dispatch (foreign rows never drive local revoke hooks)",
+      () => sweepSessions(store, hooks, { now: NOW }, makeLedgerScannerOverConnection(nc, "otherspace")), "failed-precondition");
+    // The STORE handle is frozen before branding: a post-brand kv/space rebind throws rather than
+    // redirecting authority rows to a foreign space over a still-valid brand.
+    let storeRebindDenied = false;
+    try { (store as { space: string }).space = "otherspace"; } catch { storeRebindDenied = true; }
+    c("the branded session store is FROZEN: a post-brand space/kv rebind THROWS", storeRebindDenied && Object.isFrozen(store));
   }
 
   // (5) EXACT-REPLAY retry identity: a DIFFERENT grant reusing the sessionId + holder does NOT

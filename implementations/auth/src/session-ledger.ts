@@ -81,7 +81,7 @@ import {
   parseLedgerRow,
   type CredentialLedgerRow,
 } from "./credential-ledger.js";
-import type { AuthLedgerScanner } from "./ledger-scanner.js";
+import { assertScannerSpace, type AuthLedgerScanner } from "./ledger-scanner.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -130,7 +130,11 @@ export async function openSessionAuthStore(nc: NatsConnection, space: string): P
     throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted session/gate authority key silently drops a fence (§13.12) — reprovision without MaxAge`);
   if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
     throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is a mirror/sourced stream; a follower copy cannot serve read-your-writes authority reads (§13.1) — bind the primary`);
-  const store: SessionAuthStore = { kv, space };
+  // FROZEN before branding (the scanner-handle discipline): the brand keys this exact reference,
+  // and the freeze guarantees `kv`/`space` are still the constructed pair when a seam asserts the
+  // brand — a post-brand `store.space = "other"` / `store.kv = foreignKv` rebind throws instead of
+  // redirecting authority rows to a foreign space over a still-valid brand.
+  const store: SessionAuthStore = Object.freeze({ kv, space });
   AUTH_STORES.set(store, true);
   return store;
 }
@@ -820,6 +824,11 @@ export async function sweepSessions(
   scanner: AuthLedgerScanner,
 ): Promise<{ acted: number; failed: string[] }> {
   assertStore(store);
+  // The scanner brand/space bond, at THIS public dispatch (not only at registry/mediator install):
+  // a hand-assembled `{ scanSessions: async () => [] }` would report a successful sweep while
+  // expired session credentials stay active, and a real foreign-space scanner would drive local
+  // revoke hooks from foreign rows. Neither ever authorizes an enumeration (SPEC 13.12).
+  assertScannerSpace(scanner, store.space);
   if (!Number.isSafeInteger(opts.now) || opts.now < 0)
     throw new EpEnvelopeError("failed-precondition", `the sweep clock ${JSON.stringify(opts.now)} is not a non-negative safe integer; a malformed clock would expire live rows or spare dead ones (SPEC 13.6)`);
   if (opts.marginMs !== undefined && (!Number.isSafeInteger(opts.marginMs) || opts.marginMs < 0))
