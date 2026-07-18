@@ -201,8 +201,10 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m",
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
     // No auth-stream CONSUMER.CREATE/INFO/DELETE/NEXT (46e778f re-verify): a create body is not
-    // subject-ACL confinable (durable+push exporter surviving revoke), so the barrier enumerates
-    // via the body-safe STREAM.INFO subjects_filter + leader MSG.GET already granted above.
+    // subject-ACL confinable (durable+push exporter surviving revoke), so this profile does NOT
+    // enumerate — the barrier's family/intent/lineage scans run on the SEALED auth-ledger scanner (a
+    // separate credential; ledger-scanner.ts). The MSG.GET above is this profile's leader-served
+    // POINT reads only.
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.stage.*",

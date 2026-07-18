@@ -177,8 +177,9 @@ try {
   // current/future auth row and SURVIVES this connection + JWT revoke (nats-server#8274). Bare and
   // legacy DURABLE.CREATE stay denied, AND the exact exploit — the previously-ALLOWED EXTENDED form
   // (matching name token + full auth-bucket filter) with a durable + foreign-deliver body — is now
-  // denied. The family enumeration the barrier actually runs proved sufficient at section C
-  // (`revokedRows === 1` requires the no-consumer STREAM.INFO + leader MSG.GET scan to have worked).
+  // denied. The family enumeration the barrier actually runs (via the SEPARATE sealed auth-ledger
+  // scanner, not this barrier credential) proved sufficient at section C (`revokedRows === 1`
+  // requires that scan to have worked while THIS credential holds no create at all).
   const authStream = `KV_${epAuthBucket(space)}`;
   check("DENIED: a BARE CONSUMER.CREATE on the auth stream (no pinned filter => body-selectable)",
     (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.${authStream}`, enc.encode(JSON.stringify({ stream_name: authStream, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
@@ -195,6 +196,17 @@ try {
   // — the denial is at publish, so no durable exporter can persist.
   check("no exploit consumer survives on the auth stream (denied at publish, nothing created)",
     (await rejects(() => jetstreamManager(writer!.nc).then((m) => m.consumers.info(authStream, exploitName)))).length > 0);
+
+  // The barrier holds NO consumer verbs at all — not even against the SEALED scanner's own consumer
+  // name (`cotal-ledger-scan`): it can neither inspect, drain, nor delete the sealed scanner's read.
+  // (The scanner's CREATE/INFO/NEXT/DELETE live on its own separate credential, never this one.)
+  const SCAN_NAME = "cotal-ledger-scan";
+  check("DENIED: foreign CONSUMER.INFO on the sealed scanner's consumer name",
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.INFO.${authStream}.${SCAN_NAME}`, enc.encode(""), { timeout: 1500 }))) === "denied");
+  check("DENIED: foreign CONSUMER.DELETE on the sealed scanner's consumer name",
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.DELETE.${authStream}.${SCAN_NAME}`, enc.encode(""), { timeout: 1500 }))) === "denied");
+  check("DENIED: foreign CONSUMER.MSG.NEXT on the sealed scanner's consumer name",
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.MSG.NEXT.${authStream}.${SCAN_NAME}`, enc.encode(JSON.stringify({ batch: 1, no_wait: true })), { timeout: 1500 }))) === "denied");
 
   // ---- F. BOOT CRASH-RESUME through the real plane ----
   const uid2 = mintLifecycleUid();

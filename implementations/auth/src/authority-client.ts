@@ -93,9 +93,12 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
  *    feed revision-pinned CASes — the mint writer's own discipline).
  *  - NO auth-stream `CONSUMER.CREATE` at all (46e778f re-verify): a consumer-create BODY is not
  *    subject-ACL confinable, so any create grant admits a durable PUSH exporter surviving revoke
- *    (nats-server#8274). The barrier's LastPerSubject family/intent/lineage scans instead run on
- *    a no-consumer LEADER read (`STREAM.INFO` subjects_filter + `STREAM.MSG.GET last_by_subj`),
- *    both already listed above. No consumer authority on either stream.
+ *    (nats-server#8274). This profile therefore does NOT enumerate: the barrier's
+ *    family/intent/lineage LastPerSubject scans run on the SEALED auth-ledger scanner, a SEPARATE
+ *    dedicated credential that holds the only auth-stream `CONSUMER.CREATE` and never escapes the
+ *    process (`ledger-scanner.ts`). The `STREAM.MSG.GET` here is only this profile's leader-served
+ *    POINT reads (a specific gate/cred/intent/head `last_by_subj`), never a family scan. No consumer
+ *    authority on either stream.
  *  - `$KV` writes on EXACTLY the barrier keys: auth `gate.` (the freeze/reopen CAS), `cred.`
  *    (the family revokes), `stage.` (the durable operation intent), and records `lifecycle.`
  *    (the containment/epoch head CASes). No `bysrc.`/`uid.` (a barrier never mints), no
@@ -130,11 +133,13 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
       // (== the subject name token) + PUSH `deliver_subject` (nats-server#8274) and leave a DURABLE
       // exporter of every current/future gate/cred/stage row that SURVIVES this connection and JWT
       // revoke. Subject-token pinning cannot stop it; only holding no create can. The barrier's
-      // family/intent/lineage enumerations therefore use a no-consumer LEADER scan (STREAM.INFO
-      // `subjects_filter` + `STREAM.MSG.GET last_by_subj`, credential-ledger.ts), both body-safe
-      // primitives already granted above. Remaining D32 residual (unchanged, accepted): a
-      // stream-wide `MSG.GET` while the credential is LIVE is a one-shot read to the requester's
-      // own inbox — never a durable/push exporter.
+      // family/intent/lineage enumerations therefore run on the SEALED auth-ledger scanner — a
+      // SEPARATE dedicated credential that holds the only auth-stream `CONSUMER.CREATE` and never
+      // escapes the process (ledger-scanner.ts) — NOT on this profile. The `STREAM.MSG.GET` granted
+      // above is only this profile's leader-served POINT reads (a specific gate/cred/intent/head
+      // `last_by_subj`). Remaining D32 residual (unchanged, accepted): that stream-wide `MSG.GET`
+      // while the credential is LIVE is a one-shot read to the requester's own inbox carrying the
+      // caller-selected-reply injection class — never a durable/push exporter.
       `$KV.${epAuthBucket(space)}.gate.>`,
       `$KV.${epAuthBucket(space)}.cred.>`,
       // ONE token: the barrier's own durable operation intents `stage.<opId>` — never `stage.>`,

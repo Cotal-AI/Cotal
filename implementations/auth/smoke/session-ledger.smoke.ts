@@ -39,6 +39,7 @@ import {
 } from "../src/index.js";
 // The gate/provisioning stand-ins + registry primitives are test-internal (not in the public index).
 import { writeEndpointGate, epgateKey, reconcileSessionForTakeover, kvServeIssuanceGate } from "../src/session-ledger.js";
+import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { parseLedgerRow } from "../src/credential-ledger.js";
 import { tryReserveUid, createGateFrozen, reopenGate } from "../src/lifecycle-registry.js";
 
@@ -105,6 +106,9 @@ try {
   await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE);
   const store = await openSessionAuthStore(nc, SPACE);
   const kv = store.kv;
+  // The sweep enumerates `session.>` through the SAME sealed auth-ledger scanner the barriers use
+  // (one literal consumer name + lock over the auth stream); the sweep holds no CONSUMER.CREATE.
+  const scanner = makeLedgerScannerOverConnection(nc, SPACE);
   const registry = await openLifecycleRegistry(nc, SPACE);
   const reader = await openLifecycleMappingReader(nc, SPACE);
   const recordsKv = await new Kvm(nc).open(`cotal_records_${SPACE}`);
@@ -240,13 +244,13 @@ try {
   {
     const g8 = mkGrant(sid(8), { exp: NOW + 5_000 });
     await redeemSession(g8, PRESENTER, hooks);
-    const idle = await sweepSessions(store, hooks, { now: NOW + 1_000 });
+    const idle = await sweepSessions(store, hooks, { now: NOW + 1_000 }, scanner);
     c("an in-life active row is left alone", idle.acted === 0, idle);
-    const pass1 = await sweepSessions(store, hooks, { now: NOW + 6_000 });
+    const pass1 = await sweepSessions(store, hooks, { now: NOW + 6_000 }, scanner);
     c("past exp the sweep transitions and revokes (one row acted)", pass1.acted === 1, pass1);
     const row = JSON.parse(dec.decode((await kv.get(sessionLedgerKey(sid(8))))!.value)) as { state: string; revoked: { caller: boolean; serving: boolean } };
     c("…expired durably, both halves revoked and marked", row.state === "expired" && row.revoked.caller && row.revoked.serving, row);
-    c("a fully-collected terminal row is never touched again", (await sweepSessions(store, hooks, { now: NOW + 7_000 })).acted === 0);
+    c("a fully-collected terminal row is never touched again", (await sweepSessions(store, hooks, { now: NOW + 7_000 }, scanner)).acted === 0);
   }
   {
     // A SWALLOWED revoke failure leaves its mark unset; the next sweep pass retries EXACTLY
@@ -266,7 +270,7 @@ try {
     c("the failed half stays UNMARKED (the mark is set only by a revoke that succeeded)",
       afterClose.revoked.caller && !afterClose.revoked.serving, afterClose);
     failServing = false;
-    const retryPass = await sweepSessions(store, flaky, { now: NOW + 1_000 });
+    const retryPass = await sweepSessions(store, flaky, { now: NOW + 1_000 }, scanner);
     const afterRetry = JSON.parse(dec.decode((await kv.get(sessionLedgerKey(sid(9))))!.value)) as { revoked: { caller: boolean; serving: boolean } };
     c("the next sweep pass retries EXACTLY the unmarked half to completion",
       retryPass.acted === 1 && afterRetry.revoked.serving, { retryPass, afterRetry });
@@ -283,8 +287,8 @@ try {
     await rejects("a NaN redemption clock refuses (never finalizes a dead grant active)",
       () => redeemSession(mkGrant(sid(20)), PRESENTER, nanHooks), "failed-precondition");
     await rejects("a NaN sweep clock refuses (never expires every live row at once)",
-      () => sweepSessions(store, hooks, { now: Number.NaN }), "failed-precondition");
-    await rejects("a negative sweep margin refuses", () => sweepSessions(store, hooks, { now: NOW, marginMs: -1 }), "failed-precondition");
+      () => sweepSessions(store, hooks, { now: Number.NaN }, scanner), "failed-precondition");
+    await rejects("a negative sweep margin refuses", () => sweepSessions(store, hooks, { now: NOW, marginMs: -1 }, scanner), "failed-precondition");
   }
 
   // (5) EXACT-REPLAY retry identity: a DIFFERENT grant reusing the sessionId + holder does NOT
@@ -340,7 +344,7 @@ try {
     const gP1 = mkGrant(sid(24), { exp: NOW + 5_000 });
     await redeemSession(gP1, PRESENTER, hooks);
     await kv.put(sessionLedgerKey(sid(25).slice(0, 22) + "gg"), enc.encode("{\"poison\":true}"));
-    const pass = await sweepSessions(store, hooks, { now: NOW + 6_000 });
+    const pass = await sweepSessions(store, hooks, { now: NOW + 6_000 }, scanner);
     const row = JSON.parse(dec.decode((await kv.get(sessionLedgerKey(sid(24))))!.value)) as { state: string };
     c("a poison row is COLLECTED (failed[]) but the valid row is still expired+contained this pass",
       pass.failed.length === 1 && row.state === "expired", { pass, row });
@@ -453,7 +457,7 @@ try {
     // DEL/PURGE, so a keys-based sweep would never encounter the tombstone; the marker-preserving
     // LastPerSubject enumeration reports it in `failed`, never silently skips it).
     {
-      const swept = await sweepSessions(store, hooks, { now: clock.t });
+      const swept = await sweepSessions(store, hooks, { now: clock.t }, scanner);
       c("the sweep SEES a tombstoned session key and reports it as failed (not filtered away by kv.keys)",
         swept.failed.includes(sessionLedgerKey(sid(44))), swept.failed);
     }

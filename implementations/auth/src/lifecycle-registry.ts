@@ -63,7 +63,7 @@ import {
   workPoolContext,
   type WorkPoolContext,
 } from "@cotal-ai/core";
-import type { AuthLedgerScanner } from "./ledger-scanner.js";
+import { assertScannerSpace, type AuthLedgerScanner } from "./ledger-scanner.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -194,6 +194,11 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string, s
   assertAuthorityStreamShape(authCfg, authBucket);
   if (authCfg.allow_direct !== false)
     throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable gate store defeats read-your-writes (SPEC 13.1) — reprovision`);
+  // The injected scanner must be a REAL scanner (built by ledger-scanner.ts) bonded to THIS space —
+  // a hand-assembled structural object or a foreign-space scanner would enumerate an empty/wrong
+  // family and let a barrier advance over live descendants (SPEC 13.1/13.12). Same anti-hand-
+  // assembly + space-bond discipline the registry itself carries.
+  if (scanner !== undefined) assertScannerSpace(scanner, space);
   const reg: LifecycleRegistry = Object.freeze({ space });
   REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), scanner });
   return reg;

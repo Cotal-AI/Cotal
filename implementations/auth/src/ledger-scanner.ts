@@ -35,13 +35,19 @@
  *  - the config is FORCED — pull (no `deliver_subject`), ephemeral (no `durable_name`),
  *    `AckPolicy.None`, `DeliverPolicy.LastPerSubject`, memory storage, bounded inactivity. The
  *    bind-verify re-reads the created consumer and refuses if ANY forced field drifted.
- *  - pre-clean is FAIL-CLOSED: it accepts only a confirmed delete or a proved not-found, then
- *    creates; any other error (timeout/permission/leader) fails the scan. Final cleanup is
- *    unconditional; a leaked orphan is collected by the bounded inactivity and pre-cleaned next run.
- *  - completeness is FAIL-CLOSED: the drain re-reads `num_pending` and stops only at a proved zero
- *    (never a stale initial count); an under-delivering fetch throws.
+ *  - pre-clean is FAIL-CLOSED and PROVES absence: it proceeds only on a confirmed delete
+ *    (`delete(...) === true`) or a structured ConsumerNotFound; a `false` return or any other error
+ *    (timeout/permission/leader) fails the scan. Final cleanup is unconditional; a leaked orphan is
+ *    collected by the bounded inactivity and pre-cleaned next run.
+ *  - completeness is FAIL-CLOSED: the drain re-reads `num_pending` and stops only at a freshly
+ *    observed zero (never a stale initial count), so a subject overwritten WHILE draining is fetched
+ *    in a later round; last-write-wins by subject keeps the current row. A run that cannot reach the
+ *    fresh zero (unbounded churn, a stuck delivery) fails closed rather than looping.
+ *  - the injected scanner is BRANDED to its exact space ({@link assertScannerSpace}): the barrier
+ *    registry rejects a hand-assembled or foreign-space scanner, so enumeration can never be
+ *    silently empty/foreign and let a barrier advance over live descendants.
  */
-import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, epAuthBucket } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
@@ -53,10 +59,16 @@ const SCANNER_CONSUMER_NAME = "cotal-ledger-scan";
 /** Bounded inactivity (ns): a leaked orphan (a run that crashed before its unconditional delete)
  *  is broker-collected within this window, and the next run's pre-clean removes it by name. */
 const INACTIVE_THRESHOLD_NS = 30_000_000_000;
-/** A guard on the drain: under a frozen gate no new family writes occur, so a LastPerSubject
- *  consumer settles to zero pending quickly; a scan that never settles fails closed rather than
- *  spinning. */
+/** Drain bounds (fail-closed, not spin). A LastPerSubject consumer over a quiescent family settles
+ *  to zero pending in a handful of rounds; a concurrent same-subject overwrite (a mint that won its
+ *  fence, or a crashing revoker) adds at most a bounded burst that the next round re-reads and
+ *  drains. NOT "a frozen gate permits no new family writes" — the staged-mint/concurrent-revoke
+ *  analysis disproves that; the completeness fence is the freshly-observed zero, and a run that
+ *  cannot reach it (unbounded churn, a stuck delivery) fails closed rather than looping. */
 const MAX_DRAIN_ROUNDS = 4096;
+/** Consecutive rounds that observe pending > 0 yet deliver nothing before the scan fails closed —
+ *  a consumer that claims pending but never delivers is a completeness hazard, not a slow one. */
+const MAX_NO_PROGRESS_ROUNDS = 8;
 
 /** One KV key segment (no dots — the separator — no wildcards): the closed ops validate every
  *  id token before it forms a filter, so a dot/wildcard can never widen the scan. */
@@ -91,15 +103,38 @@ export interface AuthLedgerScanner {
   /** LastPerSubject over `stage.>` — every durable operation intent and session release pin (the
    *  caller separates the single-segment operation intents from the multi-segment pins). */
   scanStageFamily(): Promise<RawScanEntry[]>;
+  /** LastPerSubject over `session.>` — the current last of every session-ledger row (markers
+   *  included, so the sweep sees a DEL/PURGE a bucket's own `keys()`/`watch()` would hide). Shares
+   *  this instance's ONE literal consumer name + lock with the credential-ledger scans (fact-5:
+   *  auth-ledger and session operations are one scanner over the one auth stream). */
+  scanSessions(): Promise<RawScanEntry[]>;
   /** Tear down the owned credential+connection. */
   close(): Promise<void>;
 }
 
-const isConsumerNotFound = (e: unknown): boolean => {
-  const err = e as { code?: unknown; api_error?: { err_code?: unknown }; message?: unknown };
-  return err?.code === 404 || err?.api_error?.err_code === 10014 ||
-    (typeof err?.message === "string" && /consumer not found/i.test(err.message));
-};
+/** STRUCTURAL not-found classification (not a message regex): @nats-io/jetstream@3.4.0 throws a
+ *  ConsumerNotFoundError extends JetStreamApiError whose `.code` is the JS API err_code
+ *  (`JetStreamApiCodes.ConsumerNotFound` = 10014); `.status` is the HTTP 404. The pre-clean proceeds
+ *  ONLY on this exact structured shape — any other error fails the scan closed. */
+const isConsumerNotFound = (e: unknown): boolean =>
+  e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound;
+
+/** The production scanner's BRAND (HIGH: security/distsys, site-1 re-verify): the ONLY way to be an
+ *  AuthLedgerScanner the barrier registry accepts is to be built by {@link buildScanner} in THIS
+ *  module, which pins the scanner's exact space. A hand-assembled structural object (e.g. one whose
+ *  ops return `[]`) or a real scanner for a DIFFERENT space is rejected by {@link assertScannerSpace},
+ *  so a barrier can never enumerate an empty/foreign family and advance over live descendants. */
+const SCANNER_BRAND = new WeakMap<AuthLedgerScanner, string>();
+
+/** Assert `scanner` was built by this module for exactly `space` — the registry's space-bond and
+ *  anti-hand-assembly discipline extended to the injected scanner (SPEC 13.12/13.9). */
+export function assertScannerSpace(scanner: AuthLedgerScanner, space: string): void {
+  const bonded = SCANNER_BRAND.get(scanner);
+  if (bonded === undefined)
+    throw new EpEnvelopeError("failed-precondition", "the injected auth-ledger scanner was not built by openAuthLedgerScanner/makeLedgerScannerOverConnection; a hand-assembled scanner never authorizes an enumeration (SPEC 13.12)");
+  if (bonded !== space)
+    throw new EpEnvelopeError("failed-precondition", `the injected auth-ledger scanner is bonded to space ${JSON.stringify(bonded)}, not ${JSON.stringify(space)}; a foreign-space scanner would enumerate the wrong (or an empty) family and let a barrier advance over live descendants (SPEC 13.1/13.12)`);
+}
 
 /**
  * Open the sealed auth-ledger scanner over the space's auth stream: a DEDICATED self-minted
@@ -130,13 +165,16 @@ export function makeLedgerScannerOverConnection(nc: NatsConnection, space: strin
   return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe);
 }
 
-/** SMOKE-ONLY probe (precedent: AuthorityClient.probeRenewal). `afterCreate` fires ONCE, after the
- *  consumer is created + bind-verified but BEFORE the drain, so a test can force the history=1
- *  race: overwrite a subject `active→revoked` (evicting the pre-scan revision) inside the create→
- *  drain window and prove the fence-free scan still returns that subject's CURRENT last. Production
- *  compositions never set it. */
+/** SMOKE-ONLY probes (precedent: AuthorityClient.probeRenewal). Never set in production.
+ *  - `afterCreate` fires ONCE after the consumer is created + bind-verified but BEFORE the drain,
+ *    forcing the create→drain race: a subject overwritten `active→revoked` (evicting the pre-scan
+ *    revision) is still returned at its CURRENT last.
+ *  - `afterFirstFetch` fires ONCE after the FIRST drain fetch completes, forcing the mid-drain race:
+ *    a subject delivered old in round 1 then overwritten re-appears as pending and is fetched in a
+ *    later round (proving the drain re-reads `num_pending` to a fresh zero, not a stale local count). */
 export interface ScannerProbe {
   afterCreate?: () => Promise<void>;
+  afterFirstFetch?: () => Promise<void>;
 }
 
 function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: ScannerProbe): AuthLedgerScanner {
@@ -165,16 +203,21 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     const filterBase = `$KV.${bucket}.${prefix}`; // every returned subject MUST start with this
     const filter = `${filterBase}>`;
 
-    // 1. FAIL-CLOSED pre-clean: remove any leftover of the literal name from a crashed prior run.
-    // Accept ONLY a confirmed delete or a proved not-found; a timeout/permission/leader error fails
-    // the scan (a surviving stale consumer with an outstanding pull could otherwise advance AckNone
-    // deliveries and make this run silently omit rows).
+    // 1. FAIL-CLOSED pre-clean: PROVE the literal name absent before create (a leftover from a run
+    // that crashed before its unconditional delete). Absence is proved ONLY by a confirmed delete
+    // (`delete(...) === true`) or a structured ConsumerNotFound; a `false` return, a timeout, a
+    // permission/leader error, or any other shape fails the scan (a surviving stale AckNone consumer
+    // with an outstanding pull could otherwise advance deliveries and make this run silently omit
+    // rows).
+    let provedAbsent = false;
     try {
-      await jsm.consumers.delete(stream, SCANNER_CONSUMER_NAME);
+      provedAbsent = (await jsm.consumers.delete(stream, SCANNER_CONSUMER_NAME)) === true;
     } catch (e) {
-      if (!isConsumerNotFound(e))
-        throw new EpEnvelopeError("unavailable", `the sealed scanner could not prove its literal consumer absent on ${stream} before create (pre-clean fails closed, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
+      if (isConsumerNotFound(e)) provedAbsent = true;
+      else throw new EpEnvelopeError("unavailable", `the sealed scanner could not prove its literal consumer absent on ${stream} before create (pre-clean fails closed, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
     }
+    if (!provedAbsent)
+      throw new EpEnvelopeError("unavailable", `the sealed scanner's pre-clean did not confirm the literal consumer deleted or absent on ${stream}; refusing to create over an unproven consumer (fail-closed, SPEC 13.9)`);
 
     // 2. Create with the FORCED config ONLY (the seam derives every field; no caller config).
     try {
@@ -219,11 +262,15 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
       // drain, so the history=1 proof runs against the real broker. Never set in production.
       if (probe?.afterCreate) await probe.afterCreate();
 
-      // 4. Drain to a RE-PROVED zero. `num_pending` is re-read each round (never a stale initial
-      // count): a LastPerSubject consumer over a frozen family settles to zero, so a proved-zero
-      // read is the completeness fence. Last-write-wins by concrete subject, monotonic in seq.
+      // 4. Drain to a FRESHLY-OBSERVED zero. `num_pending` is re-read each round (never a stale
+      // initial count): a subject delivered old (a@1) and then overwritten while draining (a@4)
+      // re-appears as pending and is fetched in a later round, so the result is one CURRENT row per
+      // subject. The completeness fence is num_pending===0 — NOT a per-fetch `got===want` assertion,
+      // which a concurrent eviction (a@1 replaced by a@4 between the info read and the fetch) would
+      // trip falsely. Last-write-wins by concrete subject, keeping the HIGHEST safe sequence.
       const latest = new Map<string, { data: Uint8Array; seq: number; op: string | undefined }>();
       const consumer = await js.consumers.get(stream, SCANNER_CONSUMER_NAME);
+      let noProgress = 0;
       for (let round = 0; ; round++) {
         const pending = (await consumer.info()).num_pending;
         if (pending === 0) break;
@@ -238,12 +285,26 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
           // prefix before we slice its key (a foreign subject never enters the result).
           if (!m.subject.startsWith(filterBase))
             throw new EpEnvelopeError("internal", `the sealed scanner received subject ${m.subject} outside the forced prefix ${filterBase}; refusing (SPEC 13.9)`);
+          // Safe positive stream sequence before any ordering decision (a garbled/zero seq never
+          // wins a last-write-wins comparison).
+          if (!Number.isSafeInteger(m.seq) || m.seq <= 0)
+            throw new EpEnvelopeError("internal", `the sealed scanner received a non-positive/unsafe sequence ${m.seq} for ${m.subject}; refusing (SPEC 13.9)`);
           const prev = latest.get(m.subject);
           if (prev === undefined || m.seq > prev.seq)
             latest.set(m.subject, { data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
         }
-        if (got < want)
-          throw new EpEnvelopeError("unavailable", `the sealed scanner under ${prefix} under-delivered (${got}/${want}); a partial read never proceeds (SPEC 13.1)`);
+        // SMOKE-ONLY mid-drain race window: fire once after the FIRST fetch so a test can overwrite
+        // an already-delivered subject and prove the fresh-zero re-read (not a stale local count)
+        // picks up the new revision in a later round. Never set in production.
+        if (round === 0 && probe?.afterFirstFetch) await probe.afterFirstFetch();
+        // A round that observed pending > 0 yet delivered nothing makes no progress toward the
+        // fresh zero; a bounded run of those fails closed rather than looping to the round cap.
+        if (got === 0) {
+          if (++noProgress >= MAX_NO_PROGRESS_ROUNDS)
+            throw new EpEnvelopeError("unavailable", `the sealed scanner under ${prefix} reported pending but delivered nothing for ${noProgress} rounds; the scan fails closed (SPEC 13.9)`);
+        } else {
+          noProgress = 0;
+        }
       }
       const out: RawScanEntry[] = [];
       for (const [subject, v] of latest) out.push({ key: subject.slice(keyPrefixLen), data: v.data, seq: v.seq, op: v.op });
@@ -254,14 +315,19 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     }
   };
 
-  return {
+  const scanner: AuthLedgerScanner = {
     scanCredentialFamily: (lifecycleUid) =>
       serialized(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`)),
     scanBysrc: (issuerKeyId, id) =>
       serialized(() => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`)),
     scanStageFamily: () => serialized(() => scanOnce("stage.")),
+    scanSessions: () => serialized(() => scanOnce("session.")),
     close: onClose,
   };
+  // BRAND the scanner with its exact space so the barrier registry's assertScannerSpace can reject a
+  // hand-assembled or foreign-space scanner (a structural object can never enter the WeakMap).
+  SCANNER_BRAND.set(scanner, space);
+  return scanner;
 }
 
 /**

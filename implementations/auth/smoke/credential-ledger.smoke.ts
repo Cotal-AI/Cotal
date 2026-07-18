@@ -479,6 +479,45 @@ try {
     c("…and the untouched sibling stays enumerated (active)", siblingRow?.row.state === "active", siblingRow?.row);
   }
 
+  console.log("L2. the mid-drain overwrite (a subject delivered old in round 1, then overwritten, is re-fetched — the drain re-reads num_pending to a fresh zero, never a stale local count)");
+  {
+    const actL2 = await activateLifecycle(reg, { owner: "local", actor: "midrace", managerInstance: MGR });
+    const uidL2 = actL2.mapping.lifecycleUid;
+    await finalizeAgentMint(reg, await stageAgentMint(reg, { lifecycleUid: uidL2, credentialId: "root0001", holderPrincipal: "local.midrace", sourceChain: ["root"], exp: NOW + 60_000 }));
+    await finalizeAgentMint(reg, await stageAgentMint(reg, { lifecycleUid: uidL2, credentialId: "sib00001", holderPrincipal: "local.midrace", sourceChain: ["root"], exp: NOW + 60_000 }));
+    await finalizeAgentMint(reg, await stageAgentMint(reg, { lifecycleUid: uidL2, credentialId: "sib00002", holderPrincipal: "local.midrace", sourceChain: ["root"], exp: NOW + 60_000 }));
+    const overwriteKey = credRowKey(uidL2, "root0001");
+    let fired = false;
+    // The probe fires AFTER the first fetch (which delivers root0001@active among the family), then
+    // revokes root0001 — under history=1 its active revision is evicted and a revoked revision
+    // appended AFTER the drain's first round. The stale `pending -= got` bug would exit having
+    // already "spent" its local count and miss the new revision; the fresh-zero re-read fetches it.
+    const midScanner = makeLedgerScannerOverConnection(nc, SPACE, {
+      afterFirstFetch: async () => { if (!fired) { fired = true; await markLedgerRowRevoked(authKv, overwriteKey); } },
+    });
+    const midReg = await openLifecycleRegistry(nc, SPACE, midScanner);
+    const famM = await enumerateAgentFamily(midReg, uidL2);
+    c("the mid-drain overwrite fired (after the first fetch)", fired);
+    c("all three family subjects are enumerated (none dropped by the mid-drain overwrite)", famM.length === 3, famM.map((r) => r.key));
+    c("the subject overwritten mid-drain reads its CURRENT last (revoked), fetched on the fresh-zero re-read", famM.find((r) => r.key === overwriteKey)?.row.state === "revoked", famM.find((r) => r.key === overwriteKey)?.row);
+  }
+
+  console.log("M. the injected scanner is BRANDED + space-bonded (a hand-assembled or foreign-space scanner never enumerates — it would silently empty a barrier's family)");
+  {
+    const handAssembled: Parameters<typeof openLifecycleRegistry>[2] = {
+      scanCredentialFamily: async () => [],
+      scanBysrc: async () => [],
+      scanStageFamily: async () => [],
+      scanSessions: async () => [],
+      close: async () => {},
+    };
+    await rejects("a HAND-ASSEMBLED structural scanner is rejected at registry open (an empty-family enumeration would let a barrier advance over live holders)",
+      () => openLifecycleRegistry(nc, SPACE, handAssembled), "failed-precondition");
+    const foreignScanner = makeLedgerScannerOverConnection(nc, "otherspace");
+    await rejects("a FOREIGN-SPACE scanner attached to this space's registry is rejected (the scanner is bonded to its exact space)",
+      () => openLifecycleRegistry(nc, SPACE, foreignScanner), "failed-precondition");
+  }
+
   await nc.drain().catch(() => {});
 } catch (e) {
   fail++;
