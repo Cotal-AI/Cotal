@@ -238,6 +238,10 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.stage.*",
+    // The PLANE CLAIM key (#29 HIGH 3, SPEC 13.13): ONE exact key, never `plane.>`/`plane.*` —
+    // the cross-process single-plane exclusion row (two scanner tuples + held|released). Only
+    // the barrier writes it; reads ride the leader-served MSG.GET above.
+    "$KV.cotal_auth_d32m.plane",
     "$KV.cotal_records_d32m.lifecycle.>",
     // The retirement frontier record (#29 piece 4): the barrier is the frontier.<uid> writer
     // (§13.7 create-only, once, before the gate/head terminals) — exact arity, never frontier.>.
@@ -474,6 +478,12 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   // C6 (fact): $JS. is not proof of non-write — NO principal may hold a destructive stream verb.
   const destructive = allRows.filter(({ row }) => DESTRUCTIVE_JS.test(row)).map(({ principal, row }) => `${principal}: ${row}`);
   c("NO principal holds a destructive JetStream stream verb (STREAM.PURGE / STREAM.DELETE / STREAM.MSG.DELETE)", destructive.length === 0, destructive);
+  // (2e) the PLANE CLAIM key (#29 HIGH 3, SPEC 13.13): the barrier is its SOLE writer, at exact
+  // arity — a `plane.>`/`plane.*` widen or a second holder would hand the cross-process
+  // single-plane exclusion to another profile.
+  const planeRows = allRows.filter(({ row }) => row.includes(".plane"));
+  c("the plane-claim write surface is EXACTLY the barrier's one exact-arity row (no widen, no second holder)",
+    JSON.stringify(planeRows) === JSON.stringify([{ principal: "auth-barrier", row: "$KV.cotal_auth_d32m.plane" }]), planeRows);
 }
 
 // ---- 3. the minted UNTRUSTED profiles hold nothing on control-surface resources ---------------

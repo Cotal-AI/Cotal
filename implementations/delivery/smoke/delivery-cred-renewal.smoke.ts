@@ -192,6 +192,7 @@ try {
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
+  console.error("  -- daemon output tail (diagnosis; a thrown scenario otherwise hides the daemon's last words):\n", output.slice(-2000));
   process.exitCode = 1;
 } finally {
   try { await sup?.stop(); } catch { /* draining */ }

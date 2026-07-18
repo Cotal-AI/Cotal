@@ -53,8 +53,9 @@ import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, ope
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { openAuthLedgerScanner, type AuthLedgerScanner } from "./ledger-scanner.js";
-import { openRecordsScanner, type RecordsScanner } from "./records-scanner.js";
+import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
+import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
+import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, type RetirementDeps } from "./retirement-barrier.js";
@@ -126,6 +127,14 @@ export async function openAuthAuthorityPlane(opts: {
    *  compositions never set this: the real capability is the delivery daemon's
    *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminEvictor}). */
   probeEvictor?: EvictPrincipal;
+  /** SMOKE-ONLY plane-liveness override for the plane claim's stale-reclaim adjudication.
+   *  Production compositions never set this: the real oracle is the delivery daemon's
+   *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminPlaneOracle}). */
+  probePlaneOracle?: PlaneLivenessOracle;
+  /** SMOKE-ONLY scanner-death injector: receives kill switches for the two plane-owned scanner
+   *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
+   *  no natural failure to inject). Production compositions never set this. */
+  probePlaneDeath?: (kill: { ledger: () => Promise<void>; records: () => Promise<void> }) => void;
 }): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
@@ -149,24 +158,60 @@ export async function openAuthAuthorityPlane(opts: {
   // job") and the barrier's stage-write authority lives here alone. The barrier profile holds NO
   // auth-stream `CONSUMER.CREATE` (nats-server#8274): its family/intent/lineage enumeration runs
   // on the SEALED auth-ledger scanner, a FOURTH self-minted connection whose CREATE-capable
-  // credential never escapes ({@link openAuthLedgerScanner}), threaded into the barrier registry.
-  // The retirement barrier's OBLIGATION drain (§13.8, records stream) enumerates the same way and
-  // for the same #8274 reason: a FIFTH self-minted connection, the SEALED records scanner
-  // ({@link openRecordsScanner}), is opened co-located and threaded into the SAME barrier registry
-  // (the ONE records scanner per space the composition owns). The mint-writer registry above
-  // carries neither scanner — only the barrier registry enumerates.
+  // credential never escapes ({@link openAuthLedgerScannerCandidate}), threaded into the barrier
+  // registry. The retirement barrier's OBLIGATION drain (§13.8, records stream) enumerates the
+  // same way and for the same #8274 reason: a FIFTH self-minted connection, the SEALED records
+  // scanner ({@link openRecordsScannerCandidate}), is opened co-located and threaded into the SAME
+  // barrier registry (the ONE records scanner per space the composition owns). The mint-writer
+  // registry above carries neither scanner — only the barrier registry enumerates.
+  //
+  // THE PLANE CLAIM (#29 HIGH 3, SPEC 13.13) gates the whole block: both scanner connections open
+  // FIRST as INERT candidates (non-reconnecting, identities captured, no scan capability exists),
+  // then the claim is taken by broker-atomic create/CAS on the ONE `plane` auth-KV key. Only the
+  // WINNER activates the branded scanners; a loser closes both candidates and this open REFUSES
+  // with the operator-legible copy (live peer / inconclusive / concurrent). A stale held claim is
+  // reclaimed on LIVENESS ALONE: both claimed tuples conclusively absent under a COMPLETE CONNZ
+  // sweep, adjudicated over the delivery-admin rail (auth holds no $SYS). A mid-life scanner
+  // disconnect FENCES the plane: the guard refuses every later scan, the sibling closes, and the
+  // in-flight enumeration's result is discarded by the post-scan claim check.
   let barrier;
+  let ledgerCand: LedgerScannerCandidate | undefined;
+  let recordsCand: RecordsScannerCandidate | undefined;
+  let hold: PlaneClaimHold | undefined;
   let scanner: AuthLedgerScanner | undefined;
   let recordsScanner: RecordsScanner | undefined;
   let barrierReg;
+  let closing = false;
   try {
     barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
-    scanner = await openAuthLedgerScanner({ server, space, dataAccount, log });
-    recordsScanner = await openRecordsScanner({ server, space, dataAccount, log });
+    ledgerCand = await openAuthLedgerScannerCandidate({ server, space, dataAccount, log });
+    recordsCand = await openRecordsScannerCandidate({ server, space, dataAccount, log });
+    const oracle = opts.probePlaneOracle ?? makeDeliveryAdminPlaneOracle({ space, server, dataAccount, log });
+    hold = await acquirePlaneClaim({ nc: barrier.nc, space, ledger: ledgerCand.tuple, records: recordsCand.tuple, oracle, log });
+    scanner = ledgerCand.activate(hold.guard);
+    recordsScanner = recordsCand.activate(hold.guard);
+    // Mid-life disconnect = the FENCING event (security req: an owned scanner that dies must not
+    // leave the plane half-running). First death wins: fence the guard with the ux state-3 copy,
+    // close the sibling so a successor's reclaim isn't blocked by a half-dead pair, log loud.
+    const fenceOnDeath = (role: "auth-ledger" | "records", sibling: () => Promise<void>) => {
+      if (closing) return;
+      const copy = scannerDeathCopy(space, role);
+      hold?.fence(copy);
+      log(`auth-plane: ${copy}`);
+      void sibling().catch(() => {});
+    };
+    void ledgerCand.gone.then(() => fenceOnDeath("auth-ledger", () => recordsCand?.close() ?? Promise.resolve()));
+    void recordsCand.gone.then(() => fenceOnDeath("records", () => ledgerCand?.close() ?? Promise.resolve()));
+    const lc = ledgerCand, rc = recordsCand;
+    opts.probePlaneDeath?.({ ledger: () => lc.close(), records: () => rc.close() });
     barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
   } catch (e) {
-    await recordsScanner?.close();
-    await scanner?.close();
+    // Clean-close order even on a failed open: scan-capable clients first, THEN the claim release
+    // (held → released is valid only once neither scanner can act), then the rest.
+    closing = true;
+    await recordsCand?.close();
+    await ledgerCand?.close();
+    await hold?.release();
     await barrier?.close();
     await reader.close();
     await writer.close();
@@ -222,8 +267,10 @@ export async function openAuthAuthorityPlane(opts: {
   try {
     await resumeOpenOperations(barrierReg, evictPrincipal, retirement, log);
   } catch (e) {
+    closing = true;
     await recordsScanner.close();
     await scanner.close();
+    await hold.release();
     await barrier.close();
     await reader.close();
     await writer.close();
@@ -237,9 +284,13 @@ export async function openAuthAuthorityPlane(opts: {
     },
     mintConnectCredential: (args) => ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` }),
     close: async () => {
+      // Clean-close order (SPEC 13.13): scan-capable clients down FIRST, then `held → released`
+      // (never released while either scanner can still act), then the barrier that wrote it.
+      closing = true;
       await reader.close();
       await recordsScanner.close();
       await scanner.close();
+      await hold.release();
       await barrier.close();
       await writer.close();
     },

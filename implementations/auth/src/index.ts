@@ -130,7 +130,7 @@ export {
 // PACKAGE-INTERNAL, deliberately: `openAdmissionMediator` requires the BRANDED records
 // scanner (site 3, nats-server#8274), whose constructors are not on the package surface, so
 // a root export would be an unsatisfiable public seam (a mediator you can name but never
-// construct). And a bare `openRecordsScanner` export is refused too: ONE shared records
+// construct). And a bare `openRecordsScannerCandidate` export is refused too: ONE shared records
 // scanner per space is the composition rule (fact-5; scans serialize module-wide per space,
 // so a stray second instance is safe but never the intended shape), and this package does
 // not own that composition (the #29 slice does). Until it lands, the whole coordinate is

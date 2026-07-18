@@ -2,9 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   evictDeniedPrincipalWithCreds,
+  isPlaneConnTuple,
   isPrincipalOwnerToken,
+  observePlaneLivenessWithCreds,
   parsePrincipalKey,
   type EvictionResult,
+  type PlaneLivenessQuery,
+  type PlaneLivenessResult,
 } from "@cotal-ai/core";
 import { findCotalRoot } from "@cotal-ai/workspace";
 
@@ -42,5 +46,35 @@ export async function executeEviction(server: string, principal: string): Promis
     evictorCreds: readFileSync(evPath, "utf8"),
     accountId,
     principal,
+  });
+}
+
+/**
+ * The delivery daemon's PLANE-LIVENESS oracle executor (#29 HIGH 3, on the privileged
+ * delivery-admin rail): answer whether the auth plane's two claimed sealed-scanner connections are
+ * live/gone/unknown via the $SYS CONNZ observer cred (opened per call; READ-ONLY — the KICK
+ * evictor cred never enters this path). The query is a CLOSED shape: exactly two role-keyed
+ * connection tuples; anything else refuses loudly. A space provisioned before the observer existed
+ * refuses with the regeneration step — the auth plane treats that refusal as UNKNOWN and never
+ * reclaims over it (fail-closed).
+ */
+export async function executePlaneLiveness(server: string, query: unknown): Promise<PlaneLivenessResult> {
+  const q = query as Partial<PlaneLivenessQuery> | undefined;
+  if (q === undefined || q === null || !isPlaneConnTuple(q.ledger) || !isPlaneConnTuple(q.records))
+    throw new Error("planeConnLiveness: the query must be exactly { ledger, records } connection tuples ({ serverId, cid, userNkey }); refusing a malformed or wider query");
+  const dir = join(findCotalRoot(), ".cotal");
+  const obsPath = join(dir, "membership-observer.creds");
+  const cfgPath = join(dir, "membership.json");
+  if (!existsSync(obsPath) || !existsSync(cfgPath))
+    throw new Error(
+      "planeConnLiveness: the $SYS observer creds are not provisioned here (a space created before live observation) — regenerate the space auth (`cotal down` + fresh `cotal up`)",
+    );
+  const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
+  if (!accountId) throw new Error("planeConnLiveness: .cotal/membership.json has no accountId");
+  return observePlaneLivenessWithCreds({
+    servers: server,
+    observerCreds: readFileSync(obsPath, "utf8"),
+    accountId,
+    query: { ledger: q.ledger, records: q.records },
   });
 }

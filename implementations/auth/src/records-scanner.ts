@@ -13,7 +13,7 @@
  * admission mediator, the retirement barrier's obligation drain) may hold `CONSUMER.CREATE` on the
  * records stream. The dynamic obligation-enumeration CREATE lives ONLY here.
  *
- * THE SEAL is the auth scanner's, verbatim: {@link openRecordsScanner} opens a DEDICATED, minimal
+ * THE SEAL is the auth scanner's, verbatim: {@link openRecordsScannerCandidate} opens a DEDICATED, minimal
  * credential+connection ({@link recordsScannerGrants}: exactly the one literal consumer name's
  * CREATE/INFO/NEXT/DELETE pinned to the `oblig.` subtree + the stream shape read, nothing else) and
  * never exposes it. Callers receive only the CLOSED, validated {@link RecordsScanner.scanObligations}
@@ -48,8 +48,9 @@
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, recordsBucket, recordsKvStreamName } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, recordsBucket, recordsKvStreamName, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
+import type { ScanGuard } from "./plane-claim.js";
 
 /** The ONE literal consumer name every obligation scan over the records stream reuses (the grant
  *  pins exactly this token; separate from the auth-ledger scanner's — fact-5, one name per stream).
@@ -147,7 +148,7 @@ const RECORDS_SCANNER_BRAND = new WeakMap<RecordsScanner, string>();
 export function assertRecordsScannerSpace(scanner: RecordsScanner, space: string): void {
   const bonded = RECORDS_SCANNER_BRAND.get(scanner);
   if (bonded === undefined)
-    throw new EpEnvelopeError("failed-precondition", "the injected records scanner was not built by openRecordsScanner/makeRecordsScannerOverConnection; a hand-assembled scanner never authorizes an enumeration (SPEC 13.12)");
+    throw new EpEnvelopeError("failed-precondition", "the injected records scanner was not built by openRecordsScannerCandidate/makeRecordsScannerOverConnection; a hand-assembled scanner never authorizes an enumeration (SPEC 13.12)");
   if (bonded !== space)
     throw new EpEnvelopeError("failed-precondition", `the injected records scanner is bonded to space ${JSON.stringify(bonded)}, not ${JSON.stringify(space)}; a foreign-space scanner would enumerate the wrong (or an empty) subtree and let a drain declare quiescence over live obligations (SPEC 13.1/13.12)`);
 }
@@ -157,28 +158,55 @@ export function assertRecordsScannerSpace(scanner: RecordsScanner, space: string
  * self-minted connection carrying ONLY {@link recordsScannerGrants}. The returned object exposes
  * only the closed op; the connection, credential, and raw scan are never handed out.
  */
-export async function openRecordsScanner(opts: {
+export interface RecordsScannerCandidate {
+  /** The connection's claim-pinnable broker identity (#29 HIGH 3, SPEC 13.13). */
+  tuple: PlaneConnTuple;
+  /** Resolves when the non-reconnecting connection is permanently gone (the fencing signal). */
+  gone: Promise<void>;
+  /** WINNER-ONLY, once: build the branded sealed scanner, its scan wrapped in the plane guard. */
+  activate(guard: ScanGuard): RecordsScanner;
+  close(): Promise<void>;
+}
+
+export async function openRecordsScannerCandidate(opts: {
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
   log: (line: string) => void;
-}): Promise<RecordsScanner> {
+}): Promise<RecordsScannerCandidate> {
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space: opts.space, dataAccount: opts.dataAccount, label: `cotal:records-scan:${opts.space}`,
-    grants: (id) => recordsScannerGrants(opts.space, id), log: opts.log,
+    grants: (id) => recordsScannerGrants(opts.space, id), log: opts.log, planeCandidate: true,
   });
-  return buildScanner(client.nc, opts.space, () => client.close());
+  if (client.tuple === undefined || client.gone === undefined)
+    throw new EpEnvelopeError("internal", "a plane-candidate authority client carries a tuple and a gone signal by contract (SPEC 13.13)");
+  let activated = false;
+  let closed = false;
+  return {
+    tuple: client.tuple,
+    gone: client.gone,
+    activate: (guard: ScanGuard): RecordsScanner => {
+      if (closed) throw new EpEnvelopeError("failed-precondition", "this records scanner candidate is closed (a losing plane open never activates)");
+      if (activated) throw new EpEnvelopeError("failed-precondition", "this records scanner candidate is already activated (one branded scanner per candidate)");
+      activated = true;
+      return buildScanner(client.nc, opts.space, () => client.close(), undefined, guard);
+    },
+    close: async () => {
+      closed = true;
+      await client.close();
+    },
+  };
 }
 
 /**
  * TEST/SMOKE-ONLY: build the sealed records scanner over an EXISTING connection. A plain-auth test
  * broker has no data-account signing seed to self-mint a JWT, so the JWT-owning
- * {@link openRecordsScanner} (the PRODUCTION seam) does not apply. This factory's `close()` does
+ * {@link openRecordsScannerCandidate} (the PRODUCTION seam) does not apply. This factory's `close()` does
  * NOT close the caller's connection (the harness owns it); it is never a production composition path
  * and is never registered as a mintable profile.
  */
-export function makeRecordsScannerOverConnection(nc: NatsConnection, space: string, probe?: RecordsScannerProbe): RecordsScanner {
-  return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe);
+export function makeRecordsScannerOverConnection(nc: NatsConnection, space: string, probe?: RecordsScannerProbe, guard?: ScanGuard): RecordsScanner {
+  return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe, guard);
 }
 
 /** SMOKE-ONLY probes (mirroring the auth scanner). Never set in production.
@@ -189,7 +217,7 @@ export interface RecordsScannerProbe {
   afterFirstFetch?: () => Promise<void>;
 }
 
-function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: RecordsScannerProbe): RecordsScanner {
+function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: RecordsScannerProbe, guard?: ScanGuard): RecordsScanner {
   const bucket = recordsBucket(space);
   const stream = recordsKvStreamName(space);
   const keyPrefixLen = `$KV.${bucket}.`.length;
@@ -307,7 +335,15 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // freeze guarantees its ops are still the module's when an install seam asserts the brand — a
   // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
   const scanner: RecordsScanner = Object.freeze({
-    scanObligations: (filter: string) => serializedForSpace(space, () => scanOnce(filter)),
+    // The PLANE guard (#29 HIGH 3, SPEC 13.13) wraps the scan INSIDE the serialized critical
+    // section: claim re-validated before (refuse to enumerate) and after (discard the result).
+    scanObligations: (filter: string) => serializedForSpace(space, async () => {
+      if (guard === undefined) return scanOnce(filter);
+      await guard.assertHeld("before");
+      const out = await scanOnce(filter);
+      await guard.assertHeld("after");
+      return out;
+    }),
     close: onClose,
   });
   RECORDS_SCANNER_BRAND.set(scanner, space);
@@ -319,7 +355,7 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
  * literal enumeration consumer's lifecycle (CREATE/INFO/NEXT/DELETE pinned to
  * {@link RECORDS_SCANNER_CONSUMER_NAME}, the CREATE filter confined to the `oblig.` subtree) + the
  * stream shape read + the scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE` on
- * `KV_cotal_records_<space>` for obligation enumeration; {@link openRecordsScanner} opens it for the
+ * `KV_cotal_records_<space>` for obligation enumeration; {@link openRecordsScannerCandidate} opens it for the
  * trusted process and it is NEVER registered as an external/mintable profile. The bucket is DERIVED
  * from the validated space and the name is the module constant, so no caller-supplied token forms a
  * privileged subject.

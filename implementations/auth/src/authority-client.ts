@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -156,6 +156,13 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
       // artifacts (`stage.<opId>.…`) have no writer yet; compose `stage.*.>` in the slice that
       // introduces them, so forgetting fails loud here instead of widening silently now.
       `$KV.${epAuthBucket(space)}.stage.*`,
+      // The PLANE CLAIM (#29 HIGH 3, SPEC 13.13): the ONE exact never-deleted key the plane-open
+      // create/CAS protocol writes (`plane` — no `.>`/`.*` widen; the row binds the two sealed
+      // scanner connection tuples and its held/released state). Reads ride the leader-served
+      // `STREAM.MSG.GET` above. Only this profile writes it; the claim IS the cross-process
+      // single-plane exclusion, so a wider row here would hand takeover authority to whatever
+      // else composes onto this profile.
+      `$KV.${epAuthBucket(space)}.plane`,
       `$KV.${recordsBucket(space)}.lifecycle.>`,
       // The retirement FRONTIER record `frontier.<lifecycleUid>` (§13.7: create-only, never
       // deleted, one key per retired lifecycle, recorded once under its own operation's opId
@@ -228,6 +235,21 @@ export interface AuthorityClientOpts {
    *  to reject deterministically (the mint is a local signing operation with no natural failure
    *  to inject). Production compositions never set this. */
   probeRenewal?: { intervalMs: number; fail?: boolean };
+  /** #29 HIGH 3: open this connection as a PLANE-OWNED candidate — the ownership-bearing shape the
+   *  sealed scanners connect with under the plane claim:
+   *   - NON-RECONNECTING (`reconnect:false`): the claim row pins this connection's exact
+   *     `(serverId, cid, userNkey)` tuple, so the identity must be STABLE and disappearance must
+   *     mean the connection can never return (a reconnect would resurrect the identity under a
+   *     fresh cid the claim doesn't cover — the split-brain the claim exists to exclude). A
+   *     disconnect is a FENCING event the composition observes via {@link AuthorityClient.gone}.
+   *   - NON-EXPIRING mint (no `exp`): a short-exp JWT would have the broker hard-disconnect the
+   *     connection at expiry, fencing the plane on a timer. NAMED RESIDUAL (the fact-3 short-TTL
+   *     pin deliberately relaxed for EXACTLY these two in-process connections): the credential
+   *     never leaves process memory, and the data-account signing seed co-resident in the SAME
+   *     memory is strictly stronger authority, so the marginal exposure is nil; revoke remains the
+   *     D5 class (stop the service / rotate the seed). The renewal timer is skipped (nothing to
+   *     renew, and a renewal could not be presented without the forbidden reconnect anyway). */
+  planeCandidate?: boolean;
 }
 
 export interface AuthorityClient {
@@ -237,6 +259,13 @@ export interface AuthorityClient {
   /** The CONNZ principal `owner.actor` dot-form when {@link AuthorityClientOpts.principal} was set
    *  (the verified-evictable identity); absent for bare nkey-only connections. */
   principal?: string;
+  /** planeCandidate only: this connection's broker identity, captured from the protocol INFO at
+   *  connect — what the plane claim row pins ({@link PlaneConnTuple}). */
+  tuple?: PlaneConnTuple;
+  /** planeCandidate only: resolves when the NON-RECONNECTING connection is permanently gone (the
+   *  plane's fencing signal — close() also resolves it; the composition's `closing` flag tells a
+   *  deliberate teardown from a mid-life death). */
+  gone?: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -257,14 +286,18 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       fromPublic(opts.dataAccount.pub),
       { pub: { allow: grants.publish }, sub: { allow: grants.subscribe },
         ...(opts.principal ? { tags: principalTags(opts.principal.owner, opts.principal.actor) } : {}) },
-      { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
+      // planeCandidate: NON-EXPIRING by design (see the option's doc — the named fact-3 residual);
+      // every other authority connection keeps the short-exp + half-life-renewal boundary.
+      opts.planeCandidate ? { signer } : { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
     );
   let currentJwt = await mint();
   const renew = async (): Promise<string> => {
     if (opts.probeRenewal?.fail) throw new Error("probe-forced renewal failure");
     return mint();
   };
-  const renewal = setInterval(() => {
+  // No renewal timer for a planeCandidate: nothing expires, and a fresh mint could only be
+  // presented on the reconnect the non-reconnecting shape forbids.
+  const renewal = opts.planeCandidate ? undefined : setInterval(() => {
     void renew().then(
       (jwt) => { currentJwt = jwt; },
       (e) => {
@@ -280,18 +313,34 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       name: opts.label,
       authenticator: jwtAuthenticator(() => currentJwt, new TextEncoder().encode(identity.seed)),
       inboxPrefix: `_INBOX_${identity.id}`,
-      maxReconnectAttempts: -1,
+      ...(opts.planeCandidate ? { reconnect: false, maxReconnectAttempts: 0 } : { maxReconnectAttempts: -1 }),
     });
   } catch (e) {
-    clearInterval(renewal);
+    if (renewal !== undefined) clearInterval(renewal);
     throw e;
+  }
+  let tuple: PlaneConnTuple | undefined;
+  let gone: Promise<void> | undefined;
+  if (opts.planeCandidate) {
+    // The claim row pins this exact identity; a connect whose INFO cannot supply it is unusable
+    // as an ownership-bearing connection — fail loud, never claim over a hole.
+    const info = nc.info as { server_id?: string; client_id?: number } | undefined;
+    if (typeof info?.server_id !== "string" || info.server_id.length === 0 ||
+        typeof info.client_id !== "number" || !Number.isSafeInteger(info.client_id) || info.client_id <= 0) {
+      await nc.close().catch(() => {});
+      throw new EpEnvelopeError("unavailable", `${opts.label}: the broker INFO carries no usable (server_id, client_id) for the plane claim (got server_id=${JSON.stringify(info?.server_id)}, client_id=${JSON.stringify(info?.client_id)}); an ownership-bearing scanner connection must be claim-pinnable (SPEC 13.13)`);
+    }
+    tuple = { serverId: info.server_id, cid: info.client_id, userNkey: identity.id };
+    gone = nc.closed().then(() => undefined, () => undefined);
   }
   return {
     nc,
     connId: identity.id,
     ...(opts.principal ? { principal: principalKey(opts.principal.owner, opts.principal.actor).key } : {}),
+    ...(tuple ? { tuple } : {}),
+    ...(gone ? { gone } : {}),
     close: async () => {
-      clearInterval(renewal);
+      if (renewal !== undefined) clearInterval(renewal);
       await nc.close().catch(() => {});
     },
   };

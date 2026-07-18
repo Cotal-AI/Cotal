@@ -35,7 +35,7 @@ import {
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
   principalKey, MEMBERSHIP_INBOX_PREFIX,
 } from "../src/index.js";
-import { evictDeniedPrincipal } from "../src/evict.js";
+import { evictDeniedPrincipal, observePlaneLiveness, type PlaneConnTuple } from "../src/evict.js";
 import {
   createCalloutAuth, startAuthCallout, calloutPermissions,
   createUserTokenIssuer, generateSigningKey,
@@ -232,6 +232,42 @@ try {
     noCid.verifiedGone === false && noCid.scanComplete === false,
     noCid,
   );
+
+  // ---------- PLANE-LIVENESS ORACLE (#29 HIGH 3, SPEC 13.13): the read-only CONNZ twin, LIVE ----------
+  // The reclaim adjudicator the auth plane consults over the delivery-admin rail: two claimed
+  // scanner tuples in, two bound verdicts + sweep completeness out. Proven against the SAME real
+  // broker + real $SYS observer: a live static-JWT connection (CONNZ `authorized_user` = its user
+  // nkey, exactly the plane-candidate shape) reads `live`; a fabricated cid reads `gone` under the
+  // complete sweep; a RESTARTED-broker tuple (a server_id no current server carries) reads `gone`,
+  // never a permanent UNKNOWN wedge; a closed connection reads `gone`; a blind observer (no CONNZ
+  // grant) reads UNKNOWN with sweepComplete:false, never a silent absence.
+  {
+    const wId = newIdentity();
+    const wCreds = await mintCreds(auth, wId, "provisioner");
+    const w = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(wCreds)), name: `cotal:auth-scan:${space}`, maxReconnectAttempts: 0 });
+    const wInfo = w.info as { server_id?: string; client_id?: number } | undefined;
+    const wTuple: PlaneConnTuple = { serverId: wInfo?.server_id ?? "", cid: wInfo?.client_id ?? 0, userNkey: wId.id };
+    check("a plane-candidate-shaped connection exposes its (server_id, client_id) via INFO", wTuple.serverId.length > 0 && wTuple.cid > 0, wInfo);
+    const deadTuple: PlaneConnTuple = { serverId: wTuple.serverId, cid: 999999901, userNkey: `U${"C".repeat(55)}` };
+    const r1 = await observePlaneLiveness(observerNc!, auth.account.pub, { ledger: wTuple, records: deadTuple }, EVICT_OPTS);
+    check("oracle: a live claimed connection reads LIVE; an absent cid reads GONE under the complete sweep",
+      r1.ledger.state === "live" && r1.records.state === "gone" && r1.sweepComplete === true, r1);
+    check("oracle: the reply echoes the queried tuples (bound, never a foreign description)",
+      r1.ledger.tuple.userNkey === wTuple.userNkey && r1.records.tuple.cid === deadTuple.cid);
+    // The whole-stack-crash rule: a claimed server_id from a PRIOR broker run never replies again,
+    // and a connection dies with its server — complete sweep + nkey nowhere = conclusively gone.
+    const restarted: PlaneConnTuple = { serverId: "NRESTARTEDBROKERRUN", cid: 7, userNkey: `U${"D".repeat(55)}` };
+    const r2 = await observePlaneLiveness(observerNc!, auth.account.pub, { ledger: restarted, records: restarted }, EVICT_OPTS);
+    check("oracle: a restarted-broker tuple reads GONE under a complete sweep (no permanent reclaim wedge)",
+      r2.ledger.state === "gone" && r2.records.state === "gone" && r2.sweepComplete === true, r2);
+    await w.close();
+    const r3 = await observePlaneLiveness(observerNc!, auth.account.pub, { ledger: wTuple, records: wTuple }, EVICT_OPTS);
+    check("oracle: a CLOSED claimed connection reads GONE (crash reclaim unblocks)",
+      r3.ledger.state === "gone" && r3.records.state === "gone" && r3.sweepComplete === true, r3);
+    const r4 = await observePlaneLiveness(evictorNc!, auth.account.pub, { ledger: wTuple, records: wTuple }, EVICT_OPTS);
+    check("oracle fail-closed: a blind observer (no CONNZ grant) reads UNKNOWN with sweepComplete:false (never silent absence)",
+      r4.ledger.state === "unknown" && r4.records.state === "unknown" && r4.sweepComplete === false, r4);
+  }
 
   console.log(`\nEVICT-LIVE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

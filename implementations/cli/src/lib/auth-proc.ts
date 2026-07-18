@@ -36,18 +36,57 @@ export function authServiceUp(space: string): boolean {
   return Number.isFinite(pid) && alive(pid);
 }
 
-/** Start the provider's daemon command detached (pid + log space-scoped), stopped by `cotal down`. */
+/** EXCLUSIVE pidfile claim (#29 HIGH 3 belt): the slot is created with `wx` BEFORE any spawn, so
+ *  two concurrent launchers cannot both pass a check-then-spawn race and double-launch the auth
+ *  service. This is the cheap HOST-LAYER belt only — the broker-visible exclusion is the plane
+ *  claim inside `openAuthAuthorityPlane` (a second plane refuses there even if it somehow gets
+ *  spawned; SPEC 13.13). Outcomes:
+ *   - `{ fd }`: this launcher owns the slot (write the child pid through the fd, then close it);
+ *   - `{ livePid }`: a LIVE daemon already holds it — use that one;
+ *   - `undefined`: yield — the file is unreadable/fresh (a sibling launcher between its exclusive
+ *     create and its pid write) or still contested after one stale-removal retry; never steal.
+ *  A file naming a provably DEAD pid is removed and the claim retried ONCE. */
+export function claimAuthPidSlot(space: string): { fd: number } | { livePid: number } | undefined {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return { fd: openSync(PID_PATH(space), "wx") };
+    } catch {
+      let pid = Number.NaN;
+      try {
+        pid = Number(readFileSync(PID_PATH(space), "utf8").trim());
+      } catch { /* vanished between open and read - retry the claim */ }
+      if (Number.isFinite(pid) && pid > 0 && alive(pid)) return { livePid: pid };
+      if (Number.isFinite(pid) && pid > 0 && attempt === 0) {
+        try { rmSync(PID_PATH(space)); } catch { /* a sibling removed it first */ }
+        continue;
+      }
+      return undefined; // unreadable/empty: a sibling is mid-claim - let its daemon come up
+    }
+  }
+  return undefined;
+}
+
+/** Start the provider's daemon command detached (pid + log space-scoped), stopped by `cotal down`.
+ *  The pid slot is claimed exclusively FIRST ({@link claimAuthPidSlot}); a held or contested slot
+ *  yields to the existing daemon (the caller's ready() poll adjudicates liveness). */
 function startAuthServiceDetached(space: string, server: string, command: string): number {
-  const fd = openSync(LOG_PATH(space), "a");
-  const [node, ...self] = selfArgv();
-  const child = spawn(node, [...self, command, "--space", space, "--server", server], {
-    detached: true,
-    stdio: ["ignore", fd, fd],
-  });
-  closeSync(fd);
-  child.unref();
-  writeFileSync(PID_PATH(space), String(child.pid));
-  return child.pid ?? 0;
+  const slot = claimAuthPidSlot(space);
+  if (slot === undefined) return 0;
+  if ("livePid" in slot) return slot.livePid;
+  try {
+    const fd = openSync(LOG_PATH(space), "a");
+    const [node, ...self] = selfArgv();
+    const child = spawn(node, [...self, command, "--space", space, "--server", server], {
+      detached: true,
+      stdio: ["ignore", fd, fd],
+    });
+    closeSync(fd);
+    child.unref();
+    writeFileSync(slot.fd, String(child.pid)); // through the exclusively-created fd, never a re-open
+    return child.pid ?? 0;
+  } finally {
+    closeSync(slot.fd);
+  }
 }
 
 /** Make the user-auth service available for a space: start the provider's daemon unless it's

@@ -111,7 +111,10 @@ provisions them at boot, and refuses connects it cannot credential-check against
 there is no fallback path. If it
 dies while the broker lives, re-running `cotal up` heals it, and a boot whose auth
 service never became ready exits non-zero, so automation never reads a dead identity
-plane as success.
+plane as success. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
+service takes a broker-backed ownership claim, so a second same-space auth process refuses
+with instructions instead of silently splitting the plane, and a crashed one's claim is
+reclaimed only once the broker confirms its connections are gone.
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a

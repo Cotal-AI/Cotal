@@ -17,6 +17,8 @@
  *
  * Run: pnpm smoke:frozen-exports   (broker-free; part of smoke:ci)
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import * as core from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -88,6 +90,19 @@ if (misses.length > 0) {
   ok++;
 }
 c(`every exported array (${arrays}) and plain-object (${objects}) collection in @cotal-ai/core is deep-frozen`, misses.length === 0, misses);
+
+// The COMPLETENESS coupling (the critic's 212781d argument): scanning `core.*` covers the WHOLE
+// external-mutation surface ONLY because core's package `exports` map is CLOSED — the sole "."
+// entry means Node refuses every cross-package deep import, so no collection can be externally
+// reachable OFF the barrel. A future "./*" (or any subpath) entry would reopen deep imports and
+// let a non-barrelled mutable export bypass this guard invisibly. This assertion couples the
+// guard to the fact it depends on: widening the exports map fails HERE, at authoring time.
+{
+  const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
+  const keys = Object.keys(pkg.exports ?? {});
+  c(`core's package "exports" map is CLOSED (exactly ["."], no wildcard/subpath) so the barrel scan equals the external-mutation surface`,
+    keys.length === 1 && keys[0] === ".", keys);
+}
 
 console.log(`\nFROZEN-EXPORTS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed; ${arrays} arrays + ${objects} plain-objects scanned)`);
 if (fail > 0) process.exit(1);

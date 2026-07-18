@@ -300,6 +300,10 @@ export class CotalEndpoint extends EventEmitter {
     /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
     evictPrincipal?: (principal: string) => Promise<unknown>;
+    /** Composition-root hook: the plane-claim liveness oracle (#29 HIGH 3) — answer whether the
+     *  two claimed sealed-scanner connections are live/gone/unknown via the daemon's $SYS observer
+     *  cred (opened per call; read-only, never the evictor). */
+    planeConnLiveness?: (query: unknown) => Promise<unknown>;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -2038,10 +2042,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: () => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: () => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown> } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness };
     await this.armPlane3();
   }
 
@@ -2185,6 +2189,20 @@ export class CotalEndpoint extends EventEmitter {
       if (!principal) return { ok: false, error: "evictPrincipal: a principal (owner.actor dot-form) is required" };
       try {
         return { ok: true, data: await this.plane3.evictPrincipal(principal) };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "planeConnLiveness") {
+      // The plane-claim liveness oracle (#29 HIGH 3): a CLOSED read-only verb — two claimed
+      // scanner tuples in, two bound verdicts + sweep completeness out. The executor hook owns
+      // the closed query validation (it holds the $SYS observer cred outside this trust boundary);
+      // absent hook = a daemon build without the oracle, refused loudly (the auth plane treats
+      // that refusal as UNKNOWN and never reclaims over it).
+      if (!this.plane3?.planeConnLiveness)
+        return { ok: false, error: "planeConnLiveness: no plane-liveness oracle wired on this daemon" };
+      try {
+        return { ok: true, data: await this.plane3.planeConnLiveness(req.args?.query) };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

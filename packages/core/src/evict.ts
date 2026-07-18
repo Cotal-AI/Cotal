@@ -255,6 +255,166 @@ export async function evictDeniedPrincipal(
   return { principal, kicked, remaining: 0, verifiedGone: false, scanComplete: true, note };
 }
 
+// ---- Plane-claim CONNZ liveness (#29 HIGH 3): the delivery-admin oracle's read half ----
+
+/** One plane-owned connection's broker identity, captured at connect from the protocol INFO and
+ *  pinned in the auth plane's durable claim row. `serverId` is the broker RUN's ephemeral id (a
+ *  restart mints a new one), `cid` is that server's connection id, `userNkey` is the connection's
+ *  stable user public key (the self-minted authority identity). */
+export interface PlaneConnTuple {
+  serverId: string;
+  cid: number;
+  userNkey: string;
+}
+
+/** The closed plane-liveness query: exactly the TWO ownership-bearing sealed-scanner tuples out of
+ *  the plane claim row — never a generic CONNZ filter (the delivery daemon derives the allowed
+ *  connection labels from its own space; a caller cannot probe arbitrary connections). */
+export interface PlaneLivenessQuery {
+  ledger: PlaneConnTuple;
+  records: PlaneConnTuple;
+}
+
+/** Per-role verdict. `live` = the claimed identity (or its user nkey anywhere) is connected NOW;
+ *  `gone` = a COMPLETE sweep conclusively proves it absent; `unknown` = the observation cannot
+ *  decide (incomplete sweep) — a caller MUST treat unknown as "may still be live" (refuse
+ *  takeover), never as gone. */
+export type PlaneRoleLiveness = "live" | "gone" | "unknown";
+
+/** The oracle's bound reply: each queried tuple echoed with its verdict (a reply that does not
+ *  echo the caller's exact query never authorizes), plus `sweepComplete` — CONNZ OBSERVATION
+ *  completeness (every round replied, no truncation), NEVER any statement about a sealed scan
+ *  having finished (the critic's mid-scan-crash wedge; reclaim gates on liveness alone). */
+export interface PlaneLivenessResult {
+  ledger: { tuple: PlaneConnTuple; state: PlaneRoleLiveness };
+  records: { tuple: PlaneConnTuple; state: PlaneRoleLiveness };
+  sweepComplete: boolean;
+  note?: string;
+}
+
+/** Structural tuple validation (closed parse — the wire crosses a trust boundary in BOTH
+ *  directions: the daemon validates the query, the auth plane validates the echo). */
+export function isPlaneConnTuple(v: unknown): v is PlaneConnTuple {
+  if (v === null || typeof v !== "object") return false;
+  const t = v as Partial<PlaneConnTuple>;
+  return (
+    typeof t.serverId === "string" && t.serverId.length > 0 && t.serverId.length <= 128 &&
+    typeof t.cid === "number" && Number.isSafeInteger(t.cid) && t.cid > 0 &&
+    typeof t.userNkey === "string" && /^U[A-Z2-7]{55}$/.test(t.userNkey)
+  );
+}
+
+/** A CONNZ connection row as this sweep needs it: identity fields only. */
+interface PlaneConnzConn {
+  cid?: number;
+  name?: string;
+  authorized_user?: string;
+}
+
+/**
+ * Answer a plane-liveness query over the account's live connections (the delivery daemon's
+ * read-only half of the #29 HIGH 3 reclaim protocol; observer cred only, no KICK). Verdict rules,
+ * fail-safe by construction:
+ *
+ *  - `live`: a connection carrying the claimed `userNkey` exists ANYWHERE (any server, any cid —
+ *    wider than the exact tuple on purpose: an identity that still holds ANY connection must block
+ *    takeover), or the exact `(serverId, cid)` pair is present.
+ *  - `gone`: the sweep is COMPLETE and the claimed `userNkey` appears nowhere. This includes the
+ *    claimed `serverId` being absent from the repliers entirely: `server_id` is per-broker-RUN, so
+ *    after a broker restart the claimed incarnation can never reply again while every connection
+ *    it held is gone by definition — requiring its reply forever would turn every whole-stack
+ *    crash into a permanent reclaim wedge (the inverted-lockout class). NAMED RESIDUAL (cluster):
+ *    completeness is the settle-window heuristic ({@link scanLive}'s), so a PARTITIONED cluster
+ *    member holding the connection can be misread as a restarted one; today's one-broker-per-space
+ *    deployment does not have that topology, and a multi-server deployment must revisit this
+ *    verdict before trusting it (the same residual the eviction verify already documents).
+ *  - `unknown`: the sweep under-reported (no replies, truncation, an unroutable row) — the caller
+ *    refuses takeover.
+ *
+ *  Closed surface: the CONNZ request carries no caller-selected filter (account-wide sweep only)
+ *  and the reply exposes ONLY the two bound verdicts + sweep completeness — never a connection
+ *  listing. A row matching the claimed nkey under ANY connection name counts live (fail safe);
+ *  the residual "is this nkey connected" bit the verb leaks is strictly weaker than the kick
+ *  authority the same rail already carries.
+ */
+export async function observePlaneLiveness(
+  observerConn: NatsConnection,
+  accountId: string,
+  query: PlaneLivenessQuery,
+  options: EvictOptions = {},
+): Promise<PlaneLivenessResult> {
+  const opts = {
+    settleMs: options.settleMs ?? 250,
+    maxWaitMs: options.maxWaitMs ?? 2000,
+    pageLimit: options.pageLimit ?? 1024,
+  };
+  const conns: { serverId: string; cid: number; userNkey?: string }[] = [];
+  let gotAnyReply = false;
+  let truncated = false;
+  let malformed = false;
+  let seq = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const offset = page * opts.pageLimit;
+    const replies = await connzRound(observerConn, accountId, offset, opts, seq++);
+    if (replies.length) gotAnyReply = true;
+    let fullPageSomewhere = false;
+    for (const r of replies) {
+      const serverId = r.data?.server_id ?? r.server?.id;
+      if (!serverId) {
+        malformed = true; // a reply we cannot attribute to a server makes the sweep untrustworthy
+        continue;
+      }
+      const cs = (r.data?.connections ?? []) as PlaneConnzConn[];
+      for (const c of cs) {
+        if (typeof c.cid !== "number") {
+          malformed = true; // an id-less row could BE the claimed connection — fail safe
+          continue;
+        }
+        conns.push({ serverId, cid: c.cid, ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}) });
+      }
+      const total = r.data?.total ?? 0;
+      if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
+    }
+    if (!fullPageSomewhere) break;
+    if (page === MAX_PAGES - 1) truncated = true;
+  }
+  const sweepComplete = gotAnyReply && !truncated && !malformed;
+  const verdict = (tuple: PlaneConnTuple): PlaneRoleLiveness => {
+    const live = conns.some((c) => c.userNkey === tuple.userNkey || (c.serverId === tuple.serverId && c.cid === tuple.cid));
+    if (live) return "live";
+    return sweepComplete ? "gone" : "unknown";
+  };
+  return {
+    ledger: { tuple: query.ledger, state: verdict(query.ledger) },
+    records: { tuple: query.records, state: verdict(query.records) },
+    sweepComplete,
+    ...(sweepComplete ? {} : { note: "CONNZ sweep under-reported (no responder, truncation, or an unattributable row) - liveness UNKNOWN" }),
+  };
+}
+
+/** Creds-level wrapper for the delivery daemon's admin-rail plane-liveness verb: open the $SYS
+ *  observer PER CALL (the eviction seam's rule — never a standing $SYS connection), run
+ *  {@link observePlaneLiveness}, drain. Read-only: no evictor cred enters this path. */
+export async function observePlaneLivenessWithCreds(opts: {
+  servers: string;
+  observerCreds: string;
+  accountId: string;
+  query: PlaneLivenessQuery;
+  options?: EvictOptions;
+}): Promise<PlaneLivenessResult> {
+  const observer = await connect({
+    servers: opts.servers,
+    authenticator: credsAuthenticator(enc(opts.observerCreds)),
+    inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    return await observePlaneLiveness(observer, opts.accountId, opts.query, opts.options ?? {});
+  } finally {
+    await observer.drain().catch(() => {});
+  }
+}
+
 /** Creds-level wrapper for composition roots that hold the two $SYS creds as FILES/strings (the
  *  delivery daemon's admin-rail executor): open the observer (under its granted inbox prefix) and
  *  the kick-only evictor PER CALL, run {@link evictDeniedPrincipal}, and drain both — eviction is a

@@ -11,7 +11,7 @@
  * CREATE lives ONLY here.
  *
  * THE SEAL (fact/security first-pass blockers, this round):
- *  - the composition OWNS ITS AUTHORITY: {@link openAuthLedgerScanner} opens a DEDICATED, minimal
+ *  - the composition OWNS ITS AUTHORITY: {@link openAuthLedgerScannerCandidate} opens a DEDICATED, minimal
  *    credential+connection ({@link authorityScannerGrants}: exactly the one literal consumer name's
  *    CREATE/INFO/NEXT/DELETE + the stream shape read, nothing else) and never exposes it. No caller
  *    receives the raw `NatsConnection`, the JWT/seed, the grant builder, or a raw-prefix scan — only
@@ -64,8 +64,9 @@
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, epAuthBucket } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
+import type { ScanGuard } from "./plane-claim.js";
 
 /** The ONE literal consumer name every scan over the auth stream reuses (the grant pins exactly
  *  this token). Scans over it serialize on the MODULE-LEVEL per-space chain below, never a
@@ -156,38 +157,73 @@ const SCANNER_BRAND = new WeakMap<AuthLedgerScanner, string>();
 export function assertScannerSpace(scanner: AuthLedgerScanner, space: string): void {
   const bonded = SCANNER_BRAND.get(scanner);
   if (bonded === undefined)
-    throw new EpEnvelopeError("failed-precondition", "the injected auth-ledger scanner was not built by openAuthLedgerScanner/makeLedgerScannerOverConnection; a hand-assembled scanner never authorizes an enumeration (SPEC 13.12)");
+    throw new EpEnvelopeError("failed-precondition", "the injected auth-ledger scanner was not built by openAuthLedgerScannerCandidate/makeLedgerScannerOverConnection; a hand-assembled scanner never authorizes an enumeration (SPEC 13.12)");
   if (bonded !== space)
     throw new EpEnvelopeError("failed-precondition", `the injected auth-ledger scanner is bonded to space ${JSON.stringify(bonded)}, not ${JSON.stringify(space)}; a foreign-space scanner would enumerate the wrong (or an empty) family and let a barrier advance over live descendants (SPEC 13.1/13.12)`);
 }
 
+/** An INERT plane candidate (#29 HIGH 3, SPEC 13.13): the dedicated scanner connection is OPEN
+ *  (non-reconnecting, identity captured for the plane claim row) but NO branded scan capability
+ *  exists until the claim CAS wins and the composition calls {@link activate} — a losing opener
+ *  closes the candidate having never been able to touch the literal consumer. */
+export interface LedgerScannerCandidate {
+  /** The connection's claim-pinnable broker identity. */
+  tuple: PlaneConnTuple;
+  /** Resolves when the non-reconnecting connection is permanently gone (the fencing signal). */
+  gone: Promise<void>;
+  /** WINNER-ONLY, once: build the branded sealed scanner, its every scan wrapped in the plane
+   *  guard (claim re-validated before AND after, inside the serialized critical section). */
+  activate(guard: ScanGuard): AuthLedgerScanner;
+  close(): Promise<void>;
+}
+
 /**
- * Open the sealed auth-ledger scanner over the space's auth stream: a DEDICATED self-minted
- * connection carrying ONLY {@link authorityScannerGrants}. The returned object exposes only the
- * closed ops; the connection, credential, and raw scan are never handed out.
+ * Open the sealed auth-ledger scanner CANDIDATE over the space's auth stream: a DEDICATED
+ * self-minted plane-owned connection carrying ONLY {@link authorityScannerGrants}. The connection,
+ * credential, and raw scan are never handed out; the scan capability itself does not exist until
+ * the plane claim is won ({@link LedgerScannerCandidate.activate}).
  */
-export async function openAuthLedgerScanner(opts: {
+export async function openAuthLedgerScannerCandidate(opts: {
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
   log: (line: string) => void;
-}): Promise<AuthLedgerScanner> {
+}): Promise<LedgerScannerCandidate> {
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space: opts.space, dataAccount: opts.dataAccount, label: `cotal:auth-scan:${opts.space}`,
-    grants: (id) => authorityScannerGrants(opts.space, id), log: opts.log,
+    grants: (id) => authorityScannerGrants(opts.space, id), log: opts.log, planeCandidate: true,
   });
-  return buildScanner(client.nc, opts.space, () => client.close());
+  // planeCandidate guarantees both (openAuthorityClient throws otherwise); the assert keeps the
+  // contract loud if that shape ever drifts.
+  if (client.tuple === undefined || client.gone === undefined)
+    throw new EpEnvelopeError("internal", "a plane-candidate authority client carries a tuple and a gone signal by contract (SPEC 13.13)");
+  let activated = false;
+  let closed = false;
+  return {
+    tuple: client.tuple,
+    gone: client.gone,
+    activate: (guard: ScanGuard): AuthLedgerScanner => {
+      if (closed) throw new EpEnvelopeError("failed-precondition", "this auth-ledger scanner candidate is closed (a losing plane open never activates)");
+      if (activated) throw new EpEnvelopeError("failed-precondition", "this auth-ledger scanner candidate is already activated (one branded scanner per candidate)");
+      activated = true;
+      return buildScanner(client.nc, opts.space, () => client.close(), undefined, guard);
+    },
+    close: async () => {
+      closed = true;
+      await client.close();
+    },
+  };
 }
 
 /**
  * TEST/SMOKE-ONLY: build the sealed scanner over an EXISTING connection. A plain-auth test broker
- * has no data-account signing seed to self-mint a JWT, so the JWT-owning {@link openAuthLedgerScanner}
+ * has no data-account signing seed to self-mint a JWT, so the JWT-owning {@link openAuthLedgerScannerCandidate}
  * (the PRODUCTION seam, which owns a dedicated credential+connection) does not apply. This factory's
  * `close()` does NOT close the caller's connection (the harness owns it); it is never a production
  * composition path and is never registered as a mintable profile.
  */
-export function makeLedgerScannerOverConnection(nc: NatsConnection, space: string, probe?: ScannerProbe): AuthLedgerScanner {
-  return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe);
+export function makeLedgerScannerOverConnection(nc: NatsConnection, space: string, probe?: ScannerProbe, guard?: ScanGuard): AuthLedgerScanner {
+  return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe, guard);
 }
 
 /** SMOKE-ONLY probes (precedent: AuthorityClient.probeRenewal). Never set in production.
@@ -202,7 +238,7 @@ export interface ScannerProbe {
   afterFirstFetch?: () => Promise<void>;
 }
 
-function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: ScannerProbe): AuthLedgerScanner {
+function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: ScannerProbe, guard?: ScanGuard): AuthLedgerScanner {
   const bucket = epAuthBucket(space);
   const stream = `KV_${bucket}`;
   const keyPrefixLen = `$KV.${bucket}.`.length;
@@ -215,6 +251,18 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // chain: a second caller (or a sibling instance) waits rather than colliding on
   // pre-clean/create/fetch/delete.
   const serialized = <T>(fn: () => Promise<T>): Promise<T> => serializedForSpace(space, fn);
+  // The PLANE guard (#29 HIGH 3, SPEC 13.13), inside the serialized critical section: the claim
+  // is re-validated BEFORE the scan (refuse to enumerate under a lost claim) and AFTER it (a
+  // claim lost DURING the scan discards the result — a successor may already own the literal
+  // name). Intra-process serialization stays the module chain above; the guard is the
+  // CROSS-process authority.
+  const guarded = async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (guard === undefined) return fn();
+    await guard.assertHeld("before");
+    const out = await fn();
+    await guard.assertHeld("after");
+    return out;
+  };
 
   // The RAW scan — MODULE-PRIVATE (a closure over the owned connection): no caller ever supplies
   // `prefix`; the closed ops below force it from a validated id.
@@ -341,11 +389,11 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
   const scanner: AuthLedgerScanner = Object.freeze({
     scanCredentialFamily: (lifecycleUid: string) =>
-      serialized(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`)),
+      serialized(() => guarded(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`))),
     scanBysrc: (issuerKeyId: string, id: string) =>
-      serialized(() => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`)),
-    scanStageFamily: () => serialized(() => scanOnce("stage.")),
-    scanSessions: () => serialized(() => scanOnce("session.")),
+      serialized(() => guarded(() => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`))),
+    scanStageFamily: () => serialized(() => guarded(() => scanOnce("stage."))),
+    scanSessions: () => serialized(() => guarded(() => scanOnce("session."))),
     close: onClose,
   });
   // BRAND the scanner with its exact space so the barrier registry's assertScannerSpace can reject a
@@ -358,7 +406,7 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
  * The SEALED SCANNER's credential grant on the AUTH stream (SPEC 13.9): exactly the ONE literal
  * enumeration consumer's lifecycle (CREATE/INFO/NEXT/DELETE pinned to {@link SCANNER_CONSUMER_NAME})
  * + the stream shape read + the scoped inbox. This is the ONLY profile that holds `CONSUMER.CREATE`
- * on `KV_cotal_auth_<space>`; {@link openAuthLedgerScanner} opens it for the trusted process and it
+ * on `KV_cotal_auth_<space>`; {@link openAuthLedgerScannerCandidate} opens it for the trusted process and it
  * is NEVER registered as an external/mintable profile. The bucket is DERIVED from the validated
  * space and the name is the module constant, so no caller-supplied token forms a privileged subject.
  */
