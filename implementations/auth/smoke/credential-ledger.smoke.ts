@@ -516,6 +516,19 @@ try {
     const foreignScanner = makeLedgerScannerOverConnection(nc, "otherspace");
     await rejects("a FOREIGN-SPACE scanner attached to this space's registry is rejected (the scanner is bonded to its exact space)",
       () => openLifecycleRegistry(nc, SPACE, foreignScanner), "failed-precondition");
+    // HIGH 2 (capability integrity): the branded handle is FROZEN, so a post-brand method swap (the
+    // silent-empty scanner the brand alone cannot catch: the WeakMap keys the reference, not the
+    // behavior) THROWS instead of surviving a later assertScannerSpace.
+    const liveScanner = makeLedgerScannerOverConnection(nc, SPACE);
+    let swapDenied = false;
+    try { (liveScanner as { scanStageFamily: unknown }).scanStageFamily = async () => []; } catch { swapDenied = true; }
+    c("the branded auth scanner is FROZEN: a post-brand silent-empty method swap THROWS", swapDenied && Object.isFrozen(liveScanner));
+    // HIGH 3 (fact-5 ENFORCED): two branded same-space instances share the MODULE-LEVEL per-space
+    // scan chain, so CONCURRENT scans serialize instead of interleaving pre-clean/create/fetch/
+    // delete on the one literal consumer name; both see the identical complete family.
+    const [stA, stB] = await Promise.all([liveScanner.scanStageFamily(), makeLedgerScannerOverConnection(nc, SPACE).scanStageFamily()]);
+    c("two branded same-space auth scanners scanning CONCURRENTLY return the identical stage family (module-level serialization, fact-5)",
+      JSON.stringify(stA.map((r) => `${r.key}@${r.seq}`)) === JSON.stringify(stB.map((r) => `${r.key}@${r.seq}`)), { a: stA.length, b: stB.length });
   }
 
   await nc.drain().catch(() => {});

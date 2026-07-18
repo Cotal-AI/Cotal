@@ -24,7 +24,7 @@ import {
   effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseWorkTerminalFact, parseDecisionFact, workTerminalSubject,
 } from "@cotal-ai/core";
-import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, drainTargetForEndpoint, type MediatedRequest } from "../src/index.js";
+import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, drainTargetForEndpoint, type MediatedRequest } from "../src/admission-mediator.js";
 import { openLifecycleRegistry, activateLifecycle, registryStores, observeGate, reopenGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { stageAgentMint, finalizeAgentMint, credRowKey, type EvictPrincipal } from "../src/credential-ledger.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";

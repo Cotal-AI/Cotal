@@ -29,17 +29,56 @@
  * pull/LastPerSubject shape, full bind-verify, and fresh-zero drain are the auth scanner's, and the
  * injected scanner is BRANDED to its exact space ({@link assertRecordsScannerSpace}) so a
  * hand-assembled or foreign-space scanner can never silently empty a drain.
+ *
+ * CAPABILITY INTEGRITY + SERIALIZATION (panel HIGHs on the seal claim):
+ * - The returned handle is FROZEN: the brand proves construction identity, the freeze proves the
+ *   reference's ops are still the module's (a post-brand `scanObligations = async () => []` swap
+ *   throws instead of surviving the injection assert). The ops close over module-private state, so
+ *   the frozen handle carries the registry/mediator seal's integrity in one object. The swap vector
+ *   was reachable only from inside the trusted process (the signing-seed residual class), never
+ *   externally; it is refused anyway because the invariant must be enforced, not asserted.
+ * - fact-5 is ENFORCED, not asserted: every scan over a space's ONE literal consumer name
+ *   serializes on a MODULE-LEVEL per-space chain, so a second branded instance (however composed)
+ *   can never interleave pre-clean/create/fetch/delete with a live scan and hand back a partial
+ *   map. ONE shared instance per space stays the composition rule (#29 injects one), but safety no
+ *   longer depends on it. Cross-PROCESS duplication is the two-authority-planes split-brain class
+ *   (excluded by the one-plane-per-space composition), and a foreign re-resolution of the literal
+ *   name is made loud by the per-message filter revalidation in the drain.
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError, assertInboxConnId, recordsBucket, recordsKvStreamName } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 
-/** The ONE literal consumer name every obligation scan over the records stream reuses under the
- *  serialization lock (the grant pins exactly this token; two instances with the same name would
- *  have independent locks and could delete each other's read, so there is ONE records scanner
- *  instance per stream, separate from the auth-ledger scanner's — fact-5). */
+/** The ONE literal consumer name every obligation scan over the records stream reuses (the grant
+ *  pins exactly this token; separate from the auth-ledger scanner's — fact-5, one name per stream).
+ *  Scans over it serialize on the MODULE-LEVEL per-space chain below, never a per-instance lock. */
 const RECORDS_SCANNER_CONSUMER_NAME = "cotal-records-scan";
+
+/** fact-5 ENFORCED (panel HIGH): the serialization critical section for a space's literal consumer
+ *  name lives at MODULE level, keyed by space, so two branded same-space instances share one chain
+ *  and can never interleave pre-clean/create/fetch/delete on that name (a per-instance lock cannot
+ *  see a sibling instance). */
+const SPACE_SCAN_CHAINS = new Map<string, Promise<unknown>>();
+const serializedForSpace = <T>(space: string, fn: () => Promise<T>): Promise<T> => {
+  const tail = SPACE_SCAN_CHAINS.get(space) ?? Promise.resolve();
+  const run = tail.then(fn, fn);
+  SPACE_SCAN_CHAINS.set(space, run.then(() => undefined, () => undefined));
+  return run;
+};
+
+/** Does a concrete delivered subject match the requested consumer filter (`*` one token, trailing
+ *  `>` a non-empty remainder)? Revalidated PER MESSAGE in the drain: bind-verify proves the config
+ *  once at create, this proves every delivered row still belongs to THIS scan's filter, so a
+ *  foreign re-resolution of the literal name (a config swapped under the scan) is refused loud. */
+const matchesFilter = (subject: string, pattern: string): boolean => {
+  const s = subject.split("."), p = pattern.split(".");
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] === ">") return s.length > i;
+    if (i >= s.length || (p[i] !== "*" && p[i] !== s[i])) return false;
+  }
+  return s.length === p.length;
+};
 /** Bounded inactivity (ns): a leaked orphan (a run that crashed before its unconditional delete) is
  *  broker-collected within this window, and the next run's pre-clean removes it by name. */
 const INACTIVE_THRESHOLD_NS = 30_000_000_000;
@@ -153,20 +192,10 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   const bucket = recordsBucket(space);
   const stream = recordsKvStreamName(space);
   const keyPrefixLen = `$KV.${bucket}.`.length;
-  const obligRoot = `$KV.${bucket}.oblig.`; // every delivered subject MUST start with this
   let jsmP: Promise<JetStreamManager> | undefined;
   let jsRef: JetStreamClient | undefined;
   const jsmOf = (): Promise<JetStreamManager> => (jsmP ??= jetstreamManager(nc));
   const jsOf = (): JetStreamClient => (jsRef ??= jetstream(nc));
-
-  // Serialize every scan over the shared literal consumer name: a promise chain is the critical
-  // section, so a second caller waits rather than colliding on create/fetch/delete.
-  let tail: Promise<unknown> = Promise.resolve();
-  const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
-    const run = tail.then(fn, fn);
-    tail = run.then(() => undefined, () => undefined);
-    return run;
-  };
 
   const scanOnce = async (rawFilter: string): Promise<RawRecordsEntry[]> => {
     const jsm = await jsmOf();
@@ -245,10 +274,11 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
         let got = 0;
         for await (const m of iter) {
           got++;
-          // CLOSED subject validation: a delivered subject MUST start with the oblig root before we
-          // slice its key (a foreign subject never enters the result).
-          if (!m.subject.startsWith(obligRoot))
-            throw new EpEnvelopeError("internal", `the records scanner received subject ${m.subject} outside the oblig subtree ${obligRoot}; refusing (SPEC 13.9)`);
+          // CLOSED subject validation, PER MESSAGE against THIS scan's exact filter (not just the
+          // oblig root): a foreign subject never enters the result, and a literal-name consumer
+          // swapped to a different config under the scan is refused loud instead of contaminating.
+          if (!matchesFilter(m.subject, filter))
+            throw new EpEnvelopeError("internal", `the records scanner received subject ${m.subject} outside its requested filter ${filter}; refusing (a foreign re-resolution of the literal consumer name never feeds a scan, SPEC 13.9)`);
           if (!Number.isSafeInteger(m.seq) || m.seq <= 0)
             throw new EpEnvelopeError("internal", `the records scanner received a non-positive/unsafe sequence ${m.seq} for ${m.subject}; refusing (SPEC 13.9)`);
           const prev = latest.get(m.subject);
@@ -272,10 +302,13 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     }
   };
 
-  const scanner: RecordsScanner = {
-    scanObligations: (filter) => serialized(() => scanOnce(filter)),
+  // FROZEN before branding (capability integrity): the brand keys this exact reference, and the
+  // freeze guarantees its ops are still the module's when an install seam asserts the brand — a
+  // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
+  const scanner: RecordsScanner = Object.freeze({
+    scanObligations: (filter: string) => serializedForSpace(space, () => scanOnce(filter)),
     close: onClose,
-  };
+  });
   RECORDS_SCANNER_BRAND.set(scanner, space);
   return scanner;
 }

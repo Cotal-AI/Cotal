@@ -1048,7 +1048,11 @@ export interface EnumeratedObligation {
  *  §13.1 retirement barrier — holds none, so a compromise can never durable-export the `oblig.`
  *  subtree, nats-server#8274). The barrier enumerates the target-wide `oblig.<targetUid>.>` (its
  *  endpoint discovery + quiescence re-check) through the registry's records scanner; each mediator
- *  enumerates its own endpoint's subtree through the scanner injected at open. */
+ *  enumerates its own endpoint's subtree through the scanner injected at open. INVARIANT: the
+ *  `scanner` argument MUST come from one of those brand-asserted seams (`med.recordsScanner`,
+ *  `registryRecordsScanner(reg)`), never a hand-passed instance; the brand assert lives at
+ *  INJECTION (openAdmissionMediator / openLifecycleRegistry), not here, so a new caller that
+ *  hand-passes a scanner bypasses the space bond. */
 export async function enumerateObligationRows(
   scanner: RecordsScanner,
   filter: string,

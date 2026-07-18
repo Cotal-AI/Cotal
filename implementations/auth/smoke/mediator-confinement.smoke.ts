@@ -34,8 +34,8 @@ import {
 } from "@cotal-ai/core";
 import {
   openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, settleEpfOrSelfObligation,
-} from "../src/index.js";
-import { enumerateObligationRows } from "../src/admission-mediator.js";
+  enumerateObligationRows,
+} from "../src/admission-mediator.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-registry.js";
 import { runExactPoolCleaner } from "../src/retirement-barrier.js";
@@ -255,6 +255,8 @@ try {
     () => openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, recordsScanner: makeRecordsScannerOverConnection(nc, "otherspace") }));
   await denied("openLifecycleRegistry REJECTS a foreign-space records scanner",
     () => openLifecycleRegistry(nc, SPACE, undefined, makeRecordsScannerOverConnection(nc, "otherspace")));
+  await denied("openLifecycleRegistry REJECTS a hand-assembled records scanner (both injection points cover both negatives)",
+    () => openLifecycleRegistry(nc, SPACE, undefined, { scanObligations: async () => [], close: async () => {} } as never));
   // Filter confinement: the closed scan op refuses any filter that escapes the `oblig.` subtree, so
   // the sealed scanner can never be widened to the records root or a foreign subtree (head/govern/lease).
   await denied("scanObligations REFUSES a non-oblig subtree filter (govern head)",
@@ -263,6 +265,32 @@ try {
     () => recScanner.scanObligations(">"));
   await denied("scanObligations REFUSES a dotted-injection filter segment",
     () => recScanner.scanObligations("oblig.bad seg.>"));
+  // HIGH 2 (capability integrity): the branded handle is FROZEN, so a post-brand method swap (the
+  // silent-empty scanner the brand alone cannot catch: the WeakMap keys the reference, not the
+  // behavior) THROWS instead of surviving the injection assert, and the op still enumerates.
+  // (Raw scanObligations below, not enumerateObligationRows: §B deliberately left a DEL-marked
+  // oblig row, which the parse layer correctly refuses as corruption; the RAW scan returns markers.)
+  {
+    let swapDenied = false;
+    try { (recScanner as { scanObligations: unknown }).scanObligations = async () => []; } catch { swapDenied = true; }
+    const after = await recScanner.scanObligations(`oblig.*.${EP}.>`);
+    c("the branded records scanner is FROZEN: a post-brand silent-empty method swap THROWS and the op still enumerates the real rows",
+      swapDenied && Object.isFrozen(recScanner) && after.length === 2, after.map((e) => e.key));
+  }
+  // HIGH 3 (fact-5 ENFORCED): scans serialize on a MODULE-LEVEL per-space chain, so a SECOND branded
+  // same-space instance scanning CONCURRENTLY cannot interleave pre-clean/create/fetch/delete on the
+  // one literal consumer name; both scans see the complete current set, never a partial/empty map
+  // from a mid-drain delete/create.
+  {
+    const twin = makeRecordsScannerOverConnection(nc, SPACE);
+    const [a, b] = await Promise.all([
+      recScanner.scanObligations(`oblig.*.${EP}.>`),
+      twin.scanObligations(`oblig.*.${EP}.>`),
+    ]);
+    const keys = (rows: { key: string }[]) => rows.map((r) => r.key).sort().join(",");
+    c("two branded same-space scanners scanning CONCURRENTLY each see the complete oblig set (module-level serialization, fact-5)",
+      a.length === 2 && keys(a) === keys(b), { a: keys(a), b: keys(b) });
+  }
 
   console.log("C. the cleaner's rows are LIVE-SUFFICIENT (the real cleaner over the scoped credential)");
   // One expired item in the listed pool, enqueued + accepted by the trusted side.

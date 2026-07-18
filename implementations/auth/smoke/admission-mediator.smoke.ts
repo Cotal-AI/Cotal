@@ -22,15 +22,14 @@ import {
   createRecordEntry, updateRecordEntry, readRecordLeader, contractDigest,
   effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, readLastFact, parseDecisionFact,
 } from "@cotal-ai/core";
-import { drainTargetForEndpoint } from "../src/index.js";
 import {
-  openLifecycleRegistry, openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation,
+  openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation,
   acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
   readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
-  drainEndpointPolicy, type MediatedRequest,
-} from "../src/index.js";
+  drainEndpointPolicy, drainTargetForEndpoint, type MediatedRequest,
+} from "../src/admission-mediator.js";
 import { publishFactCreateOnly } from "@cotal-ai/core";
-import { activateLifecycle } from "../src/lifecycle-registry.js";
+import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-registry.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import type { CommitValue } from "../src/admission-mediator.js";

@@ -46,16 +46,41 @@
  *  - the injected scanner is BRANDED to its exact space ({@link assertScannerSpace}): the barrier
  *    registry rejects a hand-assembled or foreign-space scanner, so enumeration can never be
  *    silently empty/foreign and let a barrier advance over live descendants.
+ *
+ * CAPABILITY INTEGRITY + SERIALIZATION (panel HIGHs on the seal claim):
+ *  - the returned handle is FROZEN: the brand proves construction identity, the freeze proves the
+ *    reference's ops are still the module's (a post-brand `scanStageFamily = async () => []` swap
+ *    throws instead of surviving the injection assert). The ops close over module-private state, so
+ *    the frozen handle carries the registry's frozen-marker seal's integrity in one object. The
+ *    swap vector was reachable only from inside the trusted process (the signing-seed residual
+ *    class above), never externally; it is refused anyway because the invariant must be enforced,
+ *    not asserted.
+ *  - the serialization critical section lives at MODULE level, keyed by space, so a second branded
+ *    same-space instance (however composed) shares the ONE chain and can never interleave
+ *    pre-clean/create/fetch/delete on the literal name with a live scan (a per-instance lock cannot
+ *    see a sibling instance). Cross-PROCESS duplication is the two-authority-planes split-brain
+ *    class, excluded by the one-plane-per-space composition; a foreign re-resolution of the name is
+ *    made loud by the per-message exact-prefix validation in the drain.
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, epAuthBucket } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 
-/** The ONE literal consumer name every scan over the auth stream reuses under the serialization
- *  lock (the grant pins exactly this token; two instances with the same name would have independent
- *  locks and could delete each other's read, so there is ONE scanner instance per stream). */
+/** The ONE literal consumer name every scan over the auth stream reuses (the grant pins exactly
+ *  this token). Scans over it serialize on the MODULE-LEVEL per-space chain below, never a
+ *  per-instance lock, so a sibling instance can never delete a live read. */
 const SCANNER_CONSUMER_NAME = "cotal-ledger-scan";
+
+/** fact-5 ENFORCED (panel HIGH): the serialization critical section for a space's literal consumer
+ *  name lives at MODULE level, keyed by space, shared by every instance for that space. */
+const SPACE_SCAN_CHAINS = new Map<string, Promise<unknown>>();
+const serializedForSpace = <T>(space: string, fn: () => Promise<T>): Promise<T> => {
+  const tail = SPACE_SCAN_CHAINS.get(space) ?? Promise.resolve();
+  const run = tail.then(fn, fn);
+  SPACE_SCAN_CHAINS.set(space, run.then(() => undefined, () => undefined));
+  return run;
+};
 /** Bounded inactivity (ns): a leaked orphan (a run that crashed before its unconditional delete)
  *  is broker-collected within this window, and the next run's pre-clean removes it by name. */
 const INACTIVE_THRESHOLD_NS = 30_000_000_000;
@@ -186,14 +211,10 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   const jsmOf = (): Promise<JetStreamManager> => (jsmP ??= jetstreamManager(nc));
   const jsOf = (): JetStreamClient => (jsRef ??= jetstream(nc));
 
-  // Serialize every scan over the shared literal consumer name: a promise chain is the critical
-  // section, so a second caller waits rather than colliding on create/fetch/delete.
-  let tail: Promise<unknown> = Promise.resolve();
-  const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
-    const run = tail.then(fn, fn);
-    tail = run.then(() => undefined, () => undefined);
-    return run;
-  };
+  // Serialize every scan over the shared literal consumer name on the MODULE-LEVEL per-space
+  // chain: a second caller (or a sibling instance) waits rather than colliding on
+  // pre-clean/create/fetch/delete.
+  const serialized = <T>(fn: () => Promise<T>): Promise<T> => serializedForSpace(space, fn);
 
   // The RAW scan — MODULE-PRIVATE (a closure over the owned connection): no caller ever supplies
   // `prefix`; the closed ops below force it from a validated id.
@@ -315,15 +336,18 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     }
   };
 
-  const scanner: AuthLedgerScanner = {
-    scanCredentialFamily: (lifecycleUid) =>
+  // FROZEN before branding (capability integrity): the brand keys this exact reference, and the
+  // freeze guarantees its ops are still the module's when an install seam asserts the brand — a
+  // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
+  const scanner: AuthLedgerScanner = Object.freeze({
+    scanCredentialFamily: (lifecycleUid: string) =>
       serialized(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`)),
-    scanBysrc: (issuerKeyId, id) =>
+    scanBysrc: (issuerKeyId: string, id: string) =>
       serialized(() => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`)),
     scanStageFamily: () => serialized(() => scanOnce("stage.")),
     scanSessions: () => serialized(() => scanOnce("session.")),
     close: onClose,
-  };
+  });
   // BRAND the scanner with its exact space so the barrier registry's assertScannerSpace can reject a
   // hand-assembled or foreign-space scanner (a structural object can never enter the WeakMap).
   SCANNER_BRAND.set(scanner, space);

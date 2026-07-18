@@ -126,16 +126,13 @@ export {
   readLifecycleMappingLeader, lifecycleProcessEpochReader,
   type LifecycleRegistry, type LifecycleMappingReader, type LifecycleMapping, type EpGateRow,
 } from "./lifecycle-registry.js";
-// The D13 (4) admission mediator + admission-policy coordinate (SPEC 13.6/13.8/13.9): the
-// per-endpoint sealed mediator over the `oblig.` prefix, the immutable `policy` version
-// publication, and the govern-head stage/drain/promote selector. The obtain/settle/recover/
-// drain entry points are the public seam; the row/proof internals stay module-private.
-export {
-  openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation,
-  acceptSelfObligation, recoverSelfObligation, settleEpfOrSelfObligation, assertAdmissionProof, verifyAdmissionProof,
-  readEnforcedPolicy, publishPolicyVersion, stagePolicySelector, promotePolicySelector,
-  drainEndpointPolicy, drainTargetForEndpoint,
-  type AdmissionMediator, type MediatedRequest, type AdmissionOp, type AdmissionProof, type ObtainedObligation,
-  type ObligationRow, type ObligationState, type CommitValue, type SelfCommitIntent,
-  type PolicySelector, type DrainResult, type DrainQuiescence, type ApplyCommit, type ReconcileAcceptedRoute,
-} from "./admission-mediator.js";
+// The D13 (4) admission mediator + admission-policy coordinate (SPEC 13.6/13.8/13.9) is
+// PACKAGE-INTERNAL, deliberately: `openAdmissionMediator` requires the BRANDED records
+// scanner (site 3, nats-server#8274), there is exactly ONE records scanner per space
+// (fact-5: a second instance's independent lock over the same literal consumer name can
+// delete a live scan mid-drain and declare quiescence over a partial map), and this package
+// does not yet own that singleton (the #29 composition does). Exporting the mediator open
+// without a constructible scanner (or a bare scanner constructor beside it) would either be
+// an unsatisfiable public seam or make the dual-instance hazard the default API. Until the
+// singleton-owning composition lands, the whole coordinate is reached by importing the
+// module directly (smokes do); nothing of it is on the package surface.

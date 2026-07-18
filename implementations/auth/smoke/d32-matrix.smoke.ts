@@ -7,9 +7,11 @@
  *
  * The grep tests transcribed from 13.9: (1) no UNTRUSTED profile (agent/observer/admin, plus
  * the caller/serve row sets) holds any CONSUMER.CREATE / MSG.NEXT / DIRECT.GET / STREAM.MSG.GET
- * on a control-surface resource; (2) every consumer-name token is a LITERAL — the ONLY
- * exception is the documented auth-store enumeration family (name-token wildcard rows on
- * `KV_cotal_auth_<space>`, trusted auth path only); (3) the complete STREAM.MSG.GET holder set
+ * on a control-surface resource; (2) every consumer-name token is a LITERAL, NO exceptions,
+ * and the ONLY consumer-lifecycle holders on the two AUTHORITY streams (`KV_cotal_auth_<space>`,
+ * `KV_cotal_records_<space>`) are the two SEALED scanner profiles, each pinned to its one
+ * literal name with its CREATE filter confined (sites 1-3, nats-server#8274, and the auth
+ * path's former name-wildcard enumeration family is GONE); (3) the complete STREAM.MSG.GET holder set
  * is exactly the enumerated trusted list; (4) every Direct-Get tail is fully qualified except
  * the auth path's records pair (reads feeding revision-pinned CASes, named in its builder doc);
  * (5) cross-principal namespace disjointness (the canonicalizer's dec/quar/bind families never
@@ -32,6 +34,8 @@ import {
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
 import { authConnectReaderGrants } from "../src/connect-reader.js";
+import { authorityScannerGrants } from "../src/ledger-scanner.js";
+import { recordsScannerGrants } from "../src/records-scanner.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -209,6 +213,25 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.stage.*",
     "$KV.cotal_records_d32m.lifecycle.>",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // The two SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
+  // profiles on the authority streams, each pinned to its ONE literal consumer name; the records
+  // scanner's CREATE filter is additionally confined to the `oblig.` subtree.
+  "auth-scanner": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
+    "$JS.API.CONSUMER.CREATE.KV_cotal_auth_d32m.cotal-ledger-scan.$KV.cotal_auth_d32m.>",
+    "$JS.API.CONSUMER.INFO.KV_cotal_auth_d32m.cotal-ledger-scan",
+    "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_d32m.cotal-ledger-scan",
+    "$JS.API.CONSUMER.DELETE.KV_cotal_auth_d32m.cotal-ledger-scan",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  "records-scanner": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    "$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.oblig.>",
+    "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
+    "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
+    "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "auth-connect-reader": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
@@ -254,6 +277,8 @@ put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: U
 put("serve-rows", epServeGrantRows(S, { endpoint: EP, instanceId: "i".repeat(26), epoch: 3, ephemeralCommands: ["status"] }));
 put("auth-writer", authorityWriterGrants(S, CONN));
 put("auth-barrier", authorityBarrierGrants(S, CONN));
+put("auth-scanner", authorityScannerGrants(S, CONN));
+put("records-scanner", recordsScannerGrants(S, CONN));
 put("auth-connect-reader", authConnectReaderGrants(S, CONN));
 put("barrier-executor", { publish: barrierExecutorSettlementGrants(S, EPJ, ["pa", "pb"]).publish, subscribe: [] });
 
@@ -268,26 +293,42 @@ const CS_STREAM = /(EPF_|EPW_|EPJ_|EPR_|EPT_REQ_|EPT_|EPC_|KV_cotal_records_|KV_
 const allRows: { principal: string; row: string }[] = [];
 for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publish, ...v.subscribe]) allRows.push({ principal, row });
 
-// (2a) consumer-name literalness — the ONLY exception is the auth-store enumeration family.
+// (2a) consumer-name literalness — NO exceptions. The former auth-store name-wildcard
+// enumeration family is GONE (sites 1-3, #8274): dynamic enumeration lives only in the two
+// sealed scanner profiles, whose names are the pinned literals checked in (2a') below.
 {
   const bad: string[] = [];
   for (const { principal, row } of allRows) {
     const m = /^\$JS\.API\.CONSUMER\.(?:DURABLE\.)?(?:CREATE|INFO|MSG\.NEXT|DELETE)\.([^.]+)\.(.+)$/.exec(row);
     if (!m) continue;
-    const stream = m[1], tail = m[2];
-    if (stream === "KV_cotal_auth_d32m") {
-      if (principal !== "auth-writer" && principal !== "auth-barrier") bad.push(`${principal}: ${row} (auth-store consumer rows are the trusted auth path's ONLY)`);
-      continue; // the documented name-token-wildcard family
-    }
-    const name = tail.split(".")[0];
+    const name = m[2].split(".")[0];
     if (name.includes("*") || name.includes(">")) bad.push(`${principal}: ${row}`);
   }
-  // The bare prefix forms (`CONSUMER.CREATE.<stream>` with no tail) are auth-store-only too.
+  // NO profile holds a bare ephemeral-create form (`CONSUMER.CREATE.<stream>` with no tail).
   for (const { principal, row } of allRows) {
-    const m = /^\$JS\.API\.CONSUMER\.CREATE\.([^.]+)$/.exec(row);
-    if (m && m[1] !== "KV_cotal_auth_d32m") bad.push(`${principal}: ${row} (a bare ephemeral-create form outside the auth store)`);
+    if (/^\$JS\.API\.CONSUMER\.CREATE\.[^.]+$/.test(row)) bad.push(`${principal}: ${row} (a bare ephemeral-create form)`);
   }
-  c("every consumer-name token is literal (auth-store enumeration family excepted, and confined to the auth path)", bad.length === 0, bad);
+  c("every consumer-name token is literal (NO exceptions; no bare ephemeral-create form anywhere)", bad.length === 0, bad);
+}
+
+// (2a') the 13.9 sole-holder claim, mechanically: the ONLY dynamic-enumeration CONSUMER.CREATE
+// on the two AUTHORITY streams belongs to the two sealed scanner profiles (exact literal name,
+// exact confined filter), and no OTHER principal holds ANY consumer verb on either stream. A
+// future grant widen (a third CREATE holder, a runtime bind row creeping back onto the mediator
+// or barrier) fails HERE, not in review.
+{
+  const authorityConsumerRows = allRows.filter(({ row }) =>
+    /^\$JS\.API\.CONSUMER\./.test(row) && /\.KV_cotal_(auth|records)_d32m(\.|$)/.test(row));
+  const creates = authorityConsumerRows.filter(({ row }) => row.includes(".CONSUMER.CREATE."))
+    .map(({ principal, row }) => `${principal}: ${row}`).sort();
+  c("the ONLY authority-stream CONSUMER.CREATE holders are the two sealed scanners (exact literal name + confined filter)",
+    JSON.stringify(creates) === JSON.stringify([
+      "auth-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_auth_d32m.cotal-ledger-scan.$KV.cotal_auth_d32m.>",
+      "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-records-scan.$KV.cotal_records_d32m.oblig.>",
+    ]), creates);
+  const nonScanner = authorityConsumerRows.filter(({ principal }) => principal !== "auth-scanner" && principal !== "records-scanner")
+    .map(({ principal, row }) => `${principal}: ${row}`);
+  c("NO non-scanner principal holds ANY consumer verb on an authority stream", nonScanner.length === 0, nonScanner);
 }
 
 // (2b) the complete STREAM.MSG.GET holder set is exactly the enumerated trusted list.
