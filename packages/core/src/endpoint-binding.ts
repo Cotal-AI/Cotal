@@ -531,6 +531,16 @@ export function eventReaderConfig(
   });
 }
 
+/** PRIVATE frozen `kind → authority-head arity` snapshot, built ONCE at module load from the
+ *  canonical (runtime-frozen) {@link AUTHORITY_KIND_DEFS}. The reader seam consults THIS map,
+ *  never the live export, on every call: the public collection is frozen for contract honesty,
+ *  and the seam's guard additionally survives even a hypothetical defeat of that freeze (the
+ *  panel's identity-vs-integrity closure: single-source provenance is not post-construction
+ *  integrity; the seam reads a private immutable copy). */
+const AUTHORITY_HEAD_ARITY: ReadonlyMap<string, number> = new Map(
+  AUTHORITY_KIND_DEFS.map((d) => [d.kind, 1 + d.qualifiers.length]),
+);
+
 /** `recD = rec_<uid>-<gid>-<n>` — one per GRANTED record subtree (§13.9): a PULL durable over the
  *  records KV stream (`KV_cotal_records_<space>`), pre-created by the provisioner with the
  *  capability's EXACT full `$KV.cotal_records_<space>.…` subtree tail, bound by the read
@@ -556,7 +566,7 @@ export function recordReaderConfig(
   // while an unregistered kind is usually a typo or a missing registerRecordKind and the caller
   // needs that next step, not the forbidden-kinds list.
   if (!callerReadableRecordKind(kind)) {
-    if (AUTHORITY_KIND_DEFS.some((d) => d.kind === kind)) {
+    if (AUTHORITY_HEAD_ARITY.has(kind)) {
       const authorityKinds = AUTHORITY_KIND_DEFS.filter((d) => !callerReadableRecordKind(d.kind)).map((d) => d.kind).join("/");
       throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} targets the authority-control kind ${JSON.stringify(kind)}; authority-control kinds (${authorityKinds}) are never caller reader capabilities by design: their keys are the auth process's own authority state, enumerated only by its sealed scanner (§13.9, nats-server#8274)`);
     }
@@ -564,12 +574,14 @@ export function recordReaderConfig(
   }
   // DUAL-token head-disjointness: a kind that is caller-readable AND also carries an authority head
   // (only `lifecycle` today: its atomic HEAD `lifecycle.<owner>.<actor>` is the authority mapping,
-  // while `lifecycle.<owner>.<actor>.<uid>.{spec,status}` is the caller audit detail). A reader may
-  // read the DEEPER per-UID detail but must never target a filter that can match the atomic head
-  // key itself (that key IS the authority mapping, §13.9). Derived from AUTHORITY_KIND_DEFS.
-  const authHead = AUTHORITY_KIND_DEFS.find((d) => d.kind === kind);
-  if (authHead !== undefined) {
-    const headLen = 1 + authHead.qualifiers.length; // the atomic head key's token count
+  // while `lifecycle.<owner>.<actor>.<uid>.{spec,status}` is the caller audit detail). A reader
+  // admits ONLY filters STRICTLY DEEPER than the head (§13.9): never one that can match the atomic
+  // head key itself (that key IS the authority mapping), and never a fully-concrete filter
+  // SHALLOWER than the head, which can match no record at all (the head is exactly head-arity
+  // tokens and the audit detail is deeper), so a dead reader grant refuses loud at mint time.
+  // The arity comes from the PRIVATE module-load snapshot, never the live export.
+  const headLen = AUTHORITY_HEAD_ARITY.get(kind);
+  if (headLen !== undefined) {
     const endsWild = tail[tail.length - 1] === ">";
     const concreteLen = endsWild ? tail.length - 1 : tail.length;
     // A trailing `>` matches subjects of length >= concreteLen+1, so it can match the headLen-token
@@ -577,6 +589,8 @@ export function recordReaderConfig(
     const canMatchHead = endsWild ? concreteLen < headLen : tail.length === headLen;
     if (canMatchHead)
       throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} can match the authority HEAD key ${JSON.stringify(kind)}.<${headLen - 1} token(s)>; a caller reader may read only the deeper per-UID audit detail, never the ${JSON.stringify(kind)} authority head (§13.9, nats-server#8274)`);
+    if (!endsWild && tail.length < headLen)
+      throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} is SHALLOWER than the ${JSON.stringify(kind)} authority head (${headLen} tokens); it can match no record (the caller-readable audit detail is strictly deeper than the head), so the grant would be dead; deepen the filter to the per-UID audit subtree (§13.9)`);
   }
   return family(recordsKvStreamName(space), {
     durable_name: recordReaderDurable(args.uid, args.grantId, args.index),

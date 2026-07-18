@@ -293,12 +293,28 @@ export const AUTHORITY_KIND_DEFS: readonly RecordKindDef[] = [
   LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION, RETIREMENT_FRONTIER,
 ];
 
+/** RUNTIME-freeze a def: `readonly` is type-level only, and this module's collections are a
+ *  SECURITY classification the reader seam consults, so identity (built here) must also be
+ *  integrity (unchangeable after export). Every def, its qualifiers array, each qualifier, and
+ *  its writers object freeze; under ESM strict mode a later mutation THROWS instead of silently
+ *  removing an exclusion or a head guard (the panel's identity-vs-integrity class, the same as
+ *  the sealed-scanner handle). */
+function freezeDef(def: RecordKindDef): RecordKindDef {
+  for (const q of def.qualifiers) Object.freeze(q);
+  Object.freeze(def.qualifiers);
+  Object.freeze(def.writers);
+  return Object.freeze(def);
+}
+
 const registry = new Map<string, RecordKindDef[]>();
 for (const def of [...Object.values(RECORD_KINDS), ...AUTHORITY_KIND_DEFS]) {
+  freezeDef(def);
   const list = registry.get(def.kind) ?? [];
   list.push(def);
   registry.set(def.kind, list);
 }
+Object.freeze(AUTHORITY_KIND_DEFS);
+Object.freeze(RECORD_KINDS);
 
 /** The record-reader ALLOWLIST predicate (§13.9): a kind is CALLER-READABLE iff the registry holds
  *  a def for it that is NOT an authority-control def — a caller `RECORD_KIND` (core or a registered
@@ -325,6 +341,7 @@ export function registerRecordKind(def: Omit<RecordKindDef, "kind"> & { kind: st
   const list = registry.get(kindToken) ?? [];
   if (list.some((d) => d.qualifiers.length === entry.qualifiers.length && d.split === entry.split))
     throw new Error(`record kind "${def.kind}" is already registered with this key arity`);
+  freezeDef(entry); // registered defs carry the same runtime integrity as the core ones
   list.push(entry);
   registry.set(kindToken, list);
   return entry;

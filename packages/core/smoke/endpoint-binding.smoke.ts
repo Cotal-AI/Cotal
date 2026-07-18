@@ -35,7 +35,7 @@ import {
   commitPrincipalGrants, contractPublisherGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
-  type EpCaller,
+  type EpCaller, type RecordKindDef,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -171,6 +171,32 @@ c("a lifecycle reader on the per-UID audit DETAIL admits (deeper than the head)"
 c("a lifecycle reader `lifecycle.<owner>.<actor>.>` admits (strictly deeper than the head, all audit under owner.actor)",
   recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker.>` }).filter_subject
     === `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker.>`);
+// STRICTLY-DEEPER completeness (the fact/contract alignment round): a fully-concrete dual-token
+// filter SHALLOWER than the head matches no record at all (head = exact arity, audit = deeper),
+// so it is a DEAD grant and refuses loud at mint time — which is what makes the SPEC sentence
+// "admits only a filter strictly deeper than the head" true, not an overclaim.
+throws("a bare `lifecycle` concrete filter refuses (shallower than the head: a dead grant)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle` }));
+throws("a `lifecycle.<owner>` concrete filter refuses (still shallower than the 3-token head)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc` }));
+// RUNTIME INTEGRITY of the canonical classification (the security mutability round): `readonly`
+// is type-level only, so the collection, every def, and every qualifiers array must be FROZEN,
+// and a mutation attempt must THROW (ESM strict mode) — and even after attempted mutation the
+// exact head still rejects (the seam consults a private module-load snapshot, not the live
+// export). Identity (single source) is not integrity (unchangeable); this proves both.
+c("AUTHORITY_KIND_DEFS, every def, and every qualifiers array are runtime-frozen",
+  Object.isFrozen(AUTHORITY_KIND_DEFS)
+  && AUTHORITY_KIND_DEFS.every((d) => Object.isFrozen(d) && Object.isFrozen(d.qualifiers) && d.qualifiers.every((q) => Object.isFrozen(q)) && Object.isFrozen(d.writers)));
+c("RECORD_KINDS and its defs are runtime-frozen too (same public security surface)",
+  Object.isFrozen(RECORD_KINDS) && Object.values(RECORD_KINDS).every((d) => Object.isFrozen(d)));
+throws("splicing a def OUT of AUTHORITY_KIND_DEFS throws (the guard cannot be removed live)",
+  () => (AUTHORITY_KIND_DEFS as unknown as RecordKindDef[]).splice(0, 1));
+throws("reassigning a def's kind throws (the classification cannot be re-pointed live)",
+  () => { (AUTHORITY_KIND_DEFS[0] as unknown as { kind: string }).kind = "moved"; });
+throws("pushing into a def's qualifiers throws (the head arity cannot be re-shaped live)",
+  () => (AUTHORITY_KIND_DEFS[0].qualifiers as unknown as unknown[]).push({}));
+throws("AFTER the attempted mutations the exact lifecycle head STILL refuses (the seam reads a private snapshot)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker` }));
 c("a lease reader admits (a caller-readable record kind with no authority head)",
   recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status` }).filter_subject
     === `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status`);
