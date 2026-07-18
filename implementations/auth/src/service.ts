@@ -60,6 +60,7 @@ import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } f
 import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
+import { makeDrainRepairers } from "./drain-repair.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
@@ -238,23 +239,24 @@ export async function openAuthAuthorityPlane(opts: {
   // drain is the first production mediator composition), sharing the plane's ONE sealed records
   // scanner. The per-op cleaner/executor credentials come from the piece-2 split factory.
   //
-  // SCOPED BOUNDARY (#29 HIGH 1, panel-accepted narrow): the mediator profile holds NO
-  // records-write authority, so this assembled drain completes every SETTLEABLE obligation
-  // (provisional -> rejected, an already-committed self row driven terminal, a materialized pool
-  // item handed to the cleaner) but CANNOT re-apply an accepted self-commit whose target record
-  // write never landed, nor re-materialize an accepted effects/pool route. Those need a
-  // confined COMMIT-APPLIER / ROUTE-RECONCILER authority that is its own §13.9 profile and its own
-  // security review (a #29 follow-up slice). Until it lands, `applyCommit`/`reconcileAcceptedRoute`
-  // fail CLOSED with an OPERATOR-legible message (frozen, NOT lost) rather than the mediator's
-  // developer-vocabulary throw, so a retirement blocked on real in-flight accepted work is a
-  // legible frozen alias, never a silent wedge or a lost lifecycle.
-  const acceptedWorkUnavailable = (what: string) => (): never => {
-    throw new EpEnvelopeError("unavailable",
-      `this build cannot auto-complete a retirement that still has ${what}: the alias is FROZEN, not lost, and nothing mints for it until it completes. It completes when the confined commit-applier/route-reconciler authority is composed (#29 follow-up) or when the endpoint's own writer terminalizes the outstanding work; the barrier then re-runs on the next boot (SPEC 13.1/13.8).`);
-  };
+  // THE CONFINED DRAIN REPAIRERS (#29 HIGH 1 functional closure): the mediator hands CLOSED,
+  // already-validated repair commands; the per-op executors ({@link makeDrainRepairers}) mint an
+  // exact-coordinate credential per repair, execute, and close. Covered classes now COMPLETE on
+  // resume instead of freezing: an accepted self-commit re-applies (or classifies landed /
+  // superseded), an accepted pool route re-enqueues create-only. THREE distinct operator
+  // outcomes (ux):
+  //  1. auto-completed - the retirement finishes; the repair is logged, no freeze message;
+  //  2. a covered-class repair that still cannot land names its SPECIFIC reason (an out-of-class
+  //     commit key refuses in the executor with the confused-deputy copy; a CAS loss reports
+  //     "another writer moved the record" and the next pass re-classifies);
+  //  3. genuinely-in-flight accepted EFFECTS work stays a legible FREEZE (auto-completing would
+  //     fabricate "the effect ran"): the serving endpoint's own writer must terminalize it, and
+  //     the barrier re-runs on the next boot. The retirement-cancel terminal (its own reviewed
+  //     wire slice) replaces this freeze when it lands.
+  const repairers = makeDrainRepairers({ server, space, dataAccount, log });
   const retirement: RetirementDeps = {
     evictPrincipal,
-    drainTargetObligations: async (endpoint, targetUid) => {
+    drainTargetObligations: async (endpoint, targetUid, opId) => {
       const drain = await openAuthorityClient({
         server, space, dataAccount,
         label: `cotal:ep-drain:${space}:${endpoint}`,
@@ -263,8 +265,12 @@ export async function openAuthAuthorityPlane(opts: {
       });
       try {
         await drainTargetForEndpoint(await openAdmissionMediator(drain.nc, space, endpoint, { recordsScanner }), targetUid, {
-          applyCommit: acceptedWorkUnavailable("an accepted self-commit whose target record write did not land"),
-          reconcileAcceptedRoute: acceptedWorkUnavailable("accepted work whose route (effect or pool item) was never materialized"),
+          applyCommit: repairers.applyCommitFor(opId),
+          reconcilePoolRoute: repairers.reconcilePoolRouteFor(opId),
+          cancelEffectsRoute: async ({ key }) => {
+            throw new EpEnvelopeError("unavailable",
+              `this retirement still has an accepted EFFECTS obligation in flight (${key}): the alias is FROZEN, not lost, and nothing mints for it until the effect completes. Completing it here would fabricate a result, so the serving endpoint's own writer must terminalize it (watch that endpoint's journal for the completion marker); the barrier re-runs on the next auth-service boot and finishes the retirement once the marker exists (SPEC 13.1/13.8).`);
+          },
         });
       } finally {
         await drain.close();

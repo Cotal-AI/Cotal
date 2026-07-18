@@ -202,9 +202,12 @@ export interface RetirementExecutorBind {
  *  verification. */
 export interface RetirementDeps extends TakeoverDeps {
   /** Drive ONE endpoint's obligations under the retiring target to §13.8 quiescence (wire to
-   *  `drainTargetForEndpoint` over that endpoint's admission mediator). The barrier re-checks
+   *  `drainTargetForEndpoint` over that endpoint's admission mediator). `opId` is the barrier's
+   *  own durable operation id: the drain's per-op repair credentials (the confined
+   *  commit-applier and pool-route reconciler) mint under it, so their principals are
+   *  op-attributable and op-bounded. The barrier re-checks
    *  quiescence itself afterward; a drain that lied fails the barrier, not the invariant. */
-  drainTargetObligations: (endpoint: string, targetUid: string) => Promise<void>;
+  drainTargetObligations: (endpoint: string, targetUid: string, opId: string) => Promise<void>;
   /** Mint + connect the DISTINCT bounded-lived cleaner profile for (op × endpoint), granted
    *  exactly the listed pools (§13.9 cleaner row). */
   openCleaner: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<PoolCleanerBind>;
@@ -693,7 +696,7 @@ export async function runAgentRetirementBarrier(
     if (pass > 4)
       throw new EpEnvelopeError("unavailable", `the obligation drain for ${intent.lifecycleUid} did not reach quiescence in ${pass - 1} passes (${needingDrain.length} row(s) still needing drain, first ${needingDrain[0]?.key}); investigate before retiring (SPEC 13.8)`);
     for (const ep of endpoints) {
-      await deps.drainTargetObligations(ep, intent.lifecycleUid);
+      await deps.drainTargetObligations(ep, intent.lifecycleUid, opId);
       if (!drainedEndpoints.includes(ep)) drainedEndpoints.push(ep);
       for (const r of nonTerminal)
         if (r.key.split(".")[2] === ep && r.row.state === "accepted" && r.row.decision === "epf")

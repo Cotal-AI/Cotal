@@ -53,7 +53,7 @@ import {
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
   epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, goalResultSubject, parseGoalResultFact, publishFactCreateOnly, readLastFact, parseDecisionFact, parseEffectFact,
-  workTerminalSubject, parseWorkTerminalFact,
+  workTerminalSubject, parseWorkTerminalFact, workItemBytesOf,
   contractDigest, parseEpSubject,
   type RejectionFact, type DecisionFact, type WorkItemRef,
   mintLifecycleUid, assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken,
@@ -1070,11 +1070,35 @@ function enumerateObligations(med: MediatorInternals, filter: string): Promise<E
   return enumerateObligationRows(med.recordsScanner, filter);
 }
 
-/** The injected ACCEPTED-EPF route reconciler (§13.8: a drain must complete accept-side
- *  reconciliation — enqueue/goal/effect/terminal — for an accepted EPF row before it declares
- *  quiescence; an accepted decision whose route never materialized would otherwise be lost or
- *  execute PAST the barrier). Idempotent; drives THIS row's route to durable establishment. */
-export type ReconcileAcceptedRoute = (row: ObligationRow, key: string) => Promise<void>;
+/** A CLOSED, mediator-validated POOL-route repair command (§13.8; the confined-applier slice's
+ *  boundary): the MEDIATOR reads and validates the acceptance decision fact itself
+ *  (parse + row/decision binding + route + horizon), derives the exact EPW item subject and the
+ *  canonical acceptance-derived bytes ({@link workItemBytesOf}), and hands the executor ONLY this
+ *  command. The executor holds NO derivation authority — it can be granted exactly the one
+ *  create-publish row and executes the command verbatim (create-only; a lost create is benign,
+ *  the drain re-reads establishment either way). */
+export interface PoolRouteRepair {
+  kind: "pool";
+  /** The exact EPW item subject (`<space>.epw.<endpoint>.<pool>.<cO>.<cA>.<cUid>.<id>`). */
+  subject: string;
+  /** The canonical acceptance-derived stored bytes. */
+  bytes: Uint8Array;
+  /** The acceptance's identity-bound absolute horizon (context for the executor's logs/refusals). */
+  workExpiry: number;
+}
+
+/** The injected POOL-route reconciler (§13.8: a drain must complete accept-side reconciliation
+ *  for an accepted pool row before it declares quiescence; an accepted decision whose enqueue
+ *  never landed would otherwise be lost). Receives a closed {@link PoolRouteRepair}; idempotent. */
+export type ReconcilePoolRoute = (repair: PoolRouteRepair) => Promise<void>;
+
+/** The injected ACCEPTED-EFFECTS resolution hook (§13.8): called when an accepted `effects`
+ *  route has NO durable completion marker. Auto-completing would fabricate "the effect ran", so
+ *  this build's production composition FAILS CLOSED here with an operator-legible message; the
+ *  retirement-cancel terminal (its own reviewed slice) replaces it when it lands. After the hook
+ *  returns, the drain RE-READS the marker — a hook that neither established completion nor threw
+ *  still fails closed. */
+export type CancelEffectsRoute = (info: { key: string; doneSubject: string }) => Promise<void>;
 
 /** What one drain pass acted on. */
 export interface DrainResult {
@@ -1100,7 +1124,7 @@ async function verifyAcceptedEpfRoute(
   med: MediatorInternals,
   key: string,
   row: ObligationRow,
-  reconciler: ReconcileAcceptedRoute | undefined,
+  deps: { reconcilePoolRoute?: ReconcilePoolRoute; cancelEffectsRoute?: CancelEffectsRoute },
 ): Promise<void> {
   const [cOwner, cActor, cUid, id] = key.split(".").slice(3); // [oblig, target, endpoint, cO, cA, cUid, id]
   if (row.route === "effects") {
@@ -1134,11 +1158,11 @@ async function verifyAcceptedEpfRoute(
       return true;
     };
     if (await established()) return;
-    if (reconciler === undefined)
-      throw new EpEnvelopeError("failed-precondition", `accepted effects obligation ${key} has no durable completion marker ${doneSubject} and no reconcileAcceptedRoute was given; a drain never declares quiescence over executable accepted effects work (SPEC 13.8/13.9)`);
-    await reconciler(row, key);
+    if (deps.cancelEffectsRoute === undefined)
+      throw new EpEnvelopeError("failed-precondition", `accepted effects obligation ${key} has no durable completion marker ${doneSubject} and no cancelEffectsRoute was given; a drain never declares quiescence over executable accepted effects work (SPEC 13.8/13.9)`);
+    await deps.cancelEffectsRoute({ key, doneSubject });
     if (!(await established()))
-      throw new EpEnvelopeError("unavailable", `the reconciler for accepted effects obligation ${key} did not establish durable completion marker ${doneSubject}; effects work is still executable and quiescence fails closed (SPEC 13.8/13.9)`);
+      throw new EpEnvelopeError("unavailable", `the effects hook for accepted obligation ${key} did not establish durable completion marker ${doneSubject}; effects work is still executable and quiescence fails closed (SPEC 13.8/13.9)`);
     return;
   }
   const pool = row.route!.slice("pool.".length);
@@ -1154,9 +1178,23 @@ async function verifyAcceptedEpfRoute(
     return (await readLastFact(med.jsm, epwStreamName(med.space), itemSubject)) !== undefined;
   };
   if (await established()) return;
-  if (reconciler === undefined)
-    throw new EpEnvelopeError("failed-precondition", `accepted pool obligation ${key} has no terminal wrk fact and no live EPW item (its enqueue did not land) and no reconcileAcceptedRoute was given; a drain never declares quiescence over unmaterialized accepted work (SPEC 13.8)`);
-  await reconciler(row, key);
+  if (deps.reconcilePoolRoute === undefined)
+    throw new EpEnvelopeError("failed-precondition", `accepted pool obligation ${key} has no terminal wrk fact and no live EPW item (its enqueue did not land) and no reconcilePoolRoute was given; a drain never declares quiescence over unmaterialized accepted work (SPEC 13.8)`);
+  // The MEDIATOR derives the repair (fact pin 3): read + validate the durable acceptance decision
+  // itself, then hand the executor a closed command — never row-supplied coordinates or bytes.
+  const decSubject = epfSubject(med.space, med.endpoint, ["dec", cOwner, cActor, cUid, id]);
+  const decRaw = await readLastFact(med.jsm, epfStreamName(med.space), decSubject);
+  if (decRaw === undefined)
+    throw new EpEnvelopeError("internal", `accepted pool obligation ${key} has no decision fact; accepted rows derive from a durable decision (corruption, SPEC 13.8)`);
+  const fact = parseDecisionFact(decRaw, decSubject);
+  if (fact.decision !== "accepted")
+    throw new EpEnvelopeError("internal", `accepted pool obligation ${key} points at a rejected decision fact; obligation/decision state diverged (corruption, SPEC 13.8)`);
+  assertDecisionMatchesRow(fact, row, key);
+  if (fact.route !== row.route)
+    throw new EpEnvelopeError("internal", `the decision fact for ${key} routes "${fact.route}" but the obligation row routes "${row.route}"; state diverged (corruption, SPEC 13.8)`);
+  if (typeof fact.workExpiry !== "number")
+    throw new EpEnvelopeError("internal", `the accepted pool decision for ${key} pins no workExpiry; a pool item carries its absolute horizon (corruption, SPEC 13.8)`);
+  await deps.reconcilePoolRoute({ kind: "pool", subject: itemSubject, bytes: workItemBytesOf(fact), workExpiry: fact.workExpiry });
   if (!(await established()))
     throw new EpEnvelopeError("unavailable", `the reconciler for accepted pool obligation ${key} established neither a terminal wrk fact nor a live EPW item; the route is still unmaterialized and quiescence fails closed (SPEC 13.8)`);
 }
@@ -1172,7 +1210,7 @@ async function drainFilter(
   filter: string,
   why: string,
   counts: (row: ObligationRow) => boolean,
-  deps: { applyCommit?: ApplyCommit; reconcileAcceptedRoute?: ReconcileAcceptedRoute } = {},
+  deps: { applyCommit?: ApplyCommit; reconcilePoolRoute?: ReconcilePoolRoute; cancelEffectsRoute?: CancelEffectsRoute } = {},
 ): Promise<DrainResult> {
   let settledProvisional = 0, recoveredSelf = 0, reconciledAcceptedEpf = 0;
   for (let pass = 1; pass <= 8; pass++) {
@@ -1197,7 +1235,7 @@ async function drainFilter(
         // declared quiescent). The drain OWNS the check (it reads the route marker itself), so a
         // no-op reconciler cannot fake it — for a pool route a missing EPW item calls the
         // injected reconciler and then RE-READS, failing closed if still unmaterialized.
-        await verifyAcceptedEpfRoute(med, item.key, item.row, deps.reconcileAcceptedRoute);
+        await verifyAcceptedEpfRoute(med, item.key, item.row, deps);
         reconciledAcceptedEpf++;
       }
     }
@@ -1218,7 +1256,7 @@ async function drainFilter(
  *  quiescence witness {@link promotePolicySelector} consumes. */
 export async function drainEndpointPolicy(
   med: AdmissionMediator,
-  deps: { applyCommit?: ApplyCommit; reconcileAcceptedRoute?: ReconcileAcceptedRoute } = {},
+  deps: { applyCommit?: ApplyCommit; reconcilePoolRoute?: ReconcilePoolRoute; cancelEffectsRoute?: CancelEffectsRoute } = {},
 ): Promise<DrainResult & { quiescence: DrainQuiescence }> {
   const i = internals(med);
   const govKey = recordAtomicKey(GOVERN_HEAD, [i.endpoint]);
@@ -1258,7 +1296,7 @@ export async function drainEndpointPolicy(
 export async function drainTargetForEndpoint(
   med: AdmissionMediator,
   targetUid: string,
-  deps: { applyCommit?: ApplyCommit; reconcileAcceptedRoute?: ReconcileAcceptedRoute } = {},
+  deps: { applyCommit?: ApplyCommit; reconcilePoolRoute?: ReconcilePoolRoute; cancelEffectsRoute?: CancelEffectsRoute } = {},
 ): Promise<DrainResult> {
   const i = internals(med);
   // A retirement drains EVERY row bound to the target (the prefix is target-scoped and excludes

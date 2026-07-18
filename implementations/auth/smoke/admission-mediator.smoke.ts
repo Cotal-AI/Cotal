@@ -98,8 +98,9 @@ try {
   const recScanner = makeRecordsScannerOverConnection(nc, SPACE);
   let clock = NOW;
   const med = await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, proofTtlMs: 1000, recordsScanner: recScanner });
-  const markEffectsDone = async (row: { route?: string }, key: string) => {
-    if (row.route !== "effects") return;
+  // The effects hook (the drain's cancelEffectsRoute seam): this smoke plays the SERVING writer
+  // and establishes the completion marker so the drain's re-read passes.
+  const markEffectsDone = async ({ key }: { key: string; doneSubject: string }) => {
     const [cOwner, cActor, cUid, id] = key.split(".").slice(3);
     const decSubject = epfSubject(SPACE, EP, ["dec", cOwner, cActor, cUid, id]);
     const decision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), decSubject), decSubject);
@@ -107,7 +108,7 @@ try {
     const subject = epfEffectSubject(SPACE, EP, { owner: cOwner, actor: cActor, uid: cUid }, id);
     await publishFactCreateOnly(js, subject, new TextEncoder().encode(JSON.stringify(effectFactOf(decision, clock))));
   };
-  const drainDeps = { applyCommit: (k: string, b: Uint8Array) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: markEffectsDone };
+  const drainDeps = { applyCommit: (k: string, b: Uint8Array) => applyCommit(recordsKv, k, b), cancelEffectsRoute: markEffectsDone };
 
   console.log("A. the govern head + immutable content-addressed policy version");
   const policyV1 = await publishPolicyVersion(reg, EP, { capacity: 10, v: 1 });
@@ -319,14 +320,39 @@ try {
     const actB4 = await activateLifecycle(reg, { owner: "local", actor: "b4target", managerInstance: MGR });
     const tgtB4 = { owner: "local", actor: "b4target", lifecycleUid: actB4.mapping.lifecycleUid };
     const POOL = "workpool";
-    const pg = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "f".repeat(26) }), { target: tgtB4, id: "acc001", fingerprint: fp("P"), sourceSeq: 4, route: `pool.${POOL}` });
+    const cP = { ...CALLER, uid: "f".repeat(26) };
+    const pg = await obtainEpfObligation(med, mkReq(cP), { target: tgtB4, id: "acc001", fingerprint: fp("P"), sourceSeq: 4, route: `pool.${POOL}` });
     await updateRecordEntry(recordsKv, pg.key, { ...pg.row, state: "accepted" }, pg.revision); // canonicalizer accepted it
+    // The drain's pool repair derives from the DURABLE acceptance decision (fact pin 3), so the
+    // canonicalizer's decision fact must exist (route + workExpiry + row-matching identity).
+    {
+      const request: Record<string, unknown> = {
+        v: 1, id: "acc001", op: { endpoint: EP, command: "run", inputDigest: fp("P"), outputDigest: fp("P") },
+        class: "journal", replyExpected: false, deadlineMs: 5000, args: {},
+        from: { id: `${cP.owner}.${cP.actor}`, name: "c" }, target: tgtB4,
+      };
+      const raw = {
+        v: 1, id: "acc001", decision: "accepted", fingerprint: fp("P"), request,
+        caller: { id: `${cP.owner}.${cP.actor}`, lifecycleUid: cP.uid }, target: tgtB4,
+        contractDigests: { input: fp("P"), output: fp("P") }, authzDecision: { revision: 1, epoch: 1 },
+        route: `pool.${POOL}`, workExpiry: NOW + 60_000, sourceSeq: 4, ts: NOW,
+      };
+      const decSubject = epfSubject(SPACE, EP, ["dec", cP.owner, cP.actor, cP.uid, "acc001"]);
+      parseDecisionFact(raw, decSubject); // the forge must be core-valid
+      if (!(await publishFactCreateOnly(js, decSubject, enc.encode(JSON.stringify(raw)))).won) throw new Error("acc001 decision forge lost");
+    }
     await rejects("a drain over an accepted pool row with a MISSING EPW item + no-op reconciler fails closed (postcondition unmet)",
-      () => drainTargetForEndpoint(med, tgtB4.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: async () => {} }), "unavailable");
+      () => drainTargetForEndpoint(med, tgtB4.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcilePoolRoute: async () => {} }), "unavailable");
     const epwSubj = epwSubject(SPACE, EP, POOL, { owner: CALLER.owner, actor: CALLER.actor, uid: "f".repeat(26), id: "acc001" });
-    const reconcileEnqueues = async () => { await registryStores(reg).js.publish(epwSubj, enc.encode(JSON.stringify({ item: 1 }))); };
-    const drained = await drainTargetForEndpoint(med, tgtB4.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: reconcileEnqueues });
-    c("…a reconciler that establishes the EPW item lets the drain reach quiescence (postcondition met)", drained.passes >= 1 && drained.reconciledAcceptedEpf >= 1, drained);
+    const repairs: { subject: string; bytes: Uint8Array }[] = [];
+    const reconcileEnqueues = async (repair: { subject: string; bytes: Uint8Array }) => {
+      repairs.push(repair);
+      await registryStores(reg).js.publish(repair.subject, repair.bytes);
+    };
+    const drained = await drainTargetForEndpoint(med, tgtB4.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcilePoolRoute: reconcileEnqueues });
+    c("…a reconciler executing the mediator's CLOSED repair command lets the drain reach quiescence (postcondition met)", drained.passes >= 1 && drained.reconciledAcceptedEpf >= 1, drained);
+    c("…the mediator derived the repair itself: the exact EPW subject + canonical acceptance bytes (never row-supplied coordinates)",
+      repairs.length === 1 && repairs[0]!.subject === epwSubj && JSON.parse(new TextDecoder().decode(repairs[0]!.bytes)).id === "acc001", repairs.map((r) => r.subject));
   }
 
   console.log("K. the round-8 fold: settled work quiesces, ref self-cert, multibyte detail");
@@ -347,7 +373,7 @@ try {
     const wrkFact = { v: 1, disposition: "expired", pool: POOL, caller: { ...cK, id: "acc002" }, workExpiry: NOW - 1, ts: NOW };
     if (!(await publishFactCreateOnly(registryStores(reg).js, wrkSubj, enc.encode(JSON.stringify(wrkFact)))).won) throw new Error("wrk forge lost");
     const forbidRecon = async () => { throw new Error("reconciliation ran for SETTLED work (terminal wrk present)"); };
-    const drainedK = await drainTargetForEndpoint(med, tgtB4k.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcileAcceptedRoute: forbidRecon });
+    const drainedK = await drainTargetForEndpoint(med, tgtB4k.lifecycleUid, { applyCommit: (k, b) => applyCommit(recordsKv, k, b), reconcilePoolRoute: forbidRecon, cancelEffectsRoute: forbidRecon });
     c("a settled pool row (terminal wrk, EPW acked away) quiesces WITHOUT reconciliation (13.6 predicate: wrk OR live EPW)",
       drainedK.passes >= 1 && drainedK.reconciledAcceptedEpf >= 2, drainedK);
 
@@ -405,8 +431,8 @@ try {
 
     const pending = await acceptEffects("fxpending", "j".repeat(26), "fx0001", 21);
     await rejects("an accepted effects decision with no eff/goal terminal blocks quiescence",
-      () => drainTargetForEndpoint(med, pending.target.lifecycleUid, { reconcileAcceptedRoute: async () => {} }), "unavailable");
-    const completed = await drainTargetForEndpoint(med, pending.target.lifecycleUid, { reconcileAcceptedRoute: markEffectsDone });
+      () => drainTargetForEndpoint(med, pending.target.lifecycleUid, { cancelEffectsRoute: async () => {} }), "unavailable");
+    const completed = await drainTargetForEndpoint(med, pending.target.lifecycleUid, { cancelEffectsRoute: markEffectsDone });
     c("a bound, codec-valid eff fact lets the effects row quiesce", completed.reconciledAcceptedEpf === 1, completed);
 
     const wrong = await acceptEffects("fxwrong", "k".repeat(26), "fx0002", 22);

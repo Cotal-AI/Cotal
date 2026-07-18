@@ -38,7 +38,7 @@ import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epwSubject, epfSubject, assertBoundedOwner, assertLifecycleToken, type EpCaller } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket } from "./endpoint-records.js";
-import { epfStreamName, readLastFact } from "./endpoint-journal.js";
+import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 // The §13.12 resource names and consumer configs live in endpoint-binding.ts (the single source
 // of the stream/durable table: epwStreamName, poolDurable, poolConsumerConfig); this module is
 // the lease/commit/reconcile SEMANTICS over them.
@@ -155,10 +155,35 @@ function isNoMessage(e: unknown): boolean {
   return (e as { code?: unknown })?.code === 10037;
 }
 
+/** The CANONICAL acceptance→item-bytes derivation (§13.6): the ONE deterministic projection of a
+ *  pool-routed {@link AcceptanceFact} into the EPW stored bytes — work identity + input ONLY
+ *  (`v`/`id`/`fingerprint`/`sourceSeq`/`workExpiry`/`caller`/`request`; never a lease, token, or
+ *  decision metadata), RFC-8785 canonical JSON so two independent derivations are BYTE-IDENTICAL.
+ *  Every first enqueue AND every reconciliation re-enqueue MUST derive through this function:
+ *  {@link enqueueWorkItem}'s idempotency is same-subject AND same-bytes, so a canonicalizer and a
+ *  drain repairing its crash-before-enqueue must agree byte-for-byte or the repair fails loud as
+ *  a mixup. Refuses a non-pool route or a missing work horizon (those never enqueue). */
+export function workItemBytesOf(acceptance: AcceptanceFact): Uint8Array {
+  if (!acceptance.route.startsWith("pool."))
+    throw new EpEnvelopeError("failed-precondition", `work item bytes derive only from a pool-routed acceptance; route is "${acceptance.route}" (SPEC 13.6)`);
+  if (typeof acceptance.workExpiry !== "number" || !Number.isSafeInteger(acceptance.workExpiry))
+    throw new EpEnvelopeError("failed-precondition", `a pool-routed acceptance must pin an integer workExpiry; the stored item carries its absolute horizon (SPEC 13.8)`);
+  return new TextEncoder().encode(canonicalJson({
+    v: 1,
+    id: acceptance.id,
+    fingerprint: acceptance.fingerprint,
+    sourceSeq: acceptance.sourceSeq,
+    workExpiry: acceptance.workExpiry,
+    caller: acceptance.caller,
+    request: acceptance.request,
+  }));
+}
+
 /** Enqueue a pool item (the canonicalizer's seam, §13.6): CREATE-ONLY per acceptance-identity
  *  subject, so acceptance→enqueue spanning two streams stays idempotent — a duplicate or
  *  reconciliation re-enqueue of the same item loses its CAS harmlessly. The bytes are the
- *  acceptance-derived work identity + input ONLY (never a lease/token). A CAS loss is only a
+ *  acceptance-derived work identity + input ONLY (never a lease/token; {@link workItemBytesOf}
+ *  is the canonical derivation). A CAS loss is only a
  *  benign duplicate if the stored bytes are BYTE-IDENTICAL to the ones offered (same
  *  acceptance-derived work): a differing prior body under the same identity is a canonicalizer
  *  mixup and fails loud, never silently executes the wrong input. */

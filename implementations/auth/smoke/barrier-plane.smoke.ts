@@ -26,8 +26,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfStreamName, epfSubject, epwStreamName, isReachable, mintLifecycleUid, publishFactCreateOnly, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, type EvictionResult } from "@cotal-ai/core";
-import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation } from "../src/admission-mediator.js";
+import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfStreamName, epfSubject, epwStreamName, epwSubject, isReachable, mintLifecycleUid, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, type EvictionResult } from "@cotal-ai/core";
+import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation, acceptSelfObligation } from "../src/admission-mediator.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { authorityBarrierGrants, barrierExecutorSettlementGrants, openAuthorityClient } from "../src/authority-client.js";
@@ -339,12 +339,80 @@ try {
   const drainLines: string[] = [];
   const planeDrainWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => drainLines.push(l), probeEvictor: okEvictor([]) });
   await planeDrainWedged.close();
-  check("the resume gets past eviction and FAILS CLOSED at the drain on unmaterialized accepted work",
+  check("the resume gets past eviction and FAILS CLOSED at the drain on in-flight accepted EFFECTS work",
     (await observeGate(breg, uid4))?.row.state === "frozen"
     && (await readLifecycleHeadForOperation(breg, OWNER, "worker4"))?.mapping.state !== "retired", await observeGate(breg, uid4));
-  check("the resume failure is OPERATOR-legible (FROZEN not lost + how it completes), not a seam-dep throw",
+  check("the effects freeze is OPERATOR-legible (FROZEN not lost + the real self-heal NEXT), never a seam-dep throw or a stale build pointer",
     drainLines.some((l) => l.includes(`resuming retirement ${retireOp4}`) && l.includes("FROZEN, not lost")
-      && !l.includes("reconcileAcceptedRoute was given")), drainLines);
+      && l.includes("serving endpoint's own writer")
+      && !l.includes("cancelEffectsRoute was given") && !l.includes("#29") && !l.includes("commit-applier")), drainLines);
+
+  // ---- F4. the CONFINED drain repairers AUTO-COMPLETE covered accepted work over the REAL
+  // per-op reduced credentials (#29 HIGH 1 functional closure): an accepted SELF commit that
+  // never landed re-applies (guarded create at its pinned base) and an accepted POOL route that
+  // never enqueued re-materializes from the mediator-derived CLOSED repair command — the
+  // retirement then COMPLETES on resume instead of freezing. Real plane, real broker ACLs on the
+  // per-repair exact-coordinate credentials. ----
+  const uid5 = mintLifecycleUid();
+  await ensureRootCredential(wreg, { owner: OWNER, actor: "worker5", lifecycleUid: uid5, managerInstance: "smoke" });
+  const F4_COMMIT_KEY = `goal.manager.${OWNER}.bcaller.${"b".repeat(26)}.g00001.spec`;
+  const f4Desired = { probe: "f4", v: 1 };
+  const F4_POOL = "workpool";
+  const f4Caller = { owner: OWNER, actor: "bcaller", uid: "b".repeat(26) };
+  {
+    const recScanner = makeRecordsScannerOverConnection(writer.nc, space);
+    const EP = "manager";
+    const med = await openAdmissionMediator(writer.nc, space, EP, { recordsScanner: recScanner });
+    const target = { owner: OWNER, actor: "worker5", lifecycleUid: uid5 };
+    const req = mediatedRequestFromSubject(`cotal.${space}.epj.${EP}.admit.${f4Caller.owner}.${f4Caller.actor}.${f4Caller.uid}`);
+    // (a) the accepted SELF row whose commit never landed (crash after accept, before the write).
+    const selfGot = await obtainSelfObligation(med, req, {
+      target, id: "self0001",
+      commit: {
+        commitKey: F4_COMMIT_KEY, commitBaseRevision: 0,
+        commitValue: { enc: "b64u", bytes: Buffer.from(JSON.stringify(f4Desired)).toString("base64url") },
+        commitDigest: contractDigest(f4Desired),
+      },
+    });
+    await acceptSelfObligation(med, selfGot.proof);
+    // (b) the accepted POOL row whose enqueue never landed (crash before enqueue), with the
+    // durable acceptance decision the mediator derives the repair from.
+    const fpP = contractDigest({ id: "pool0001" });
+    const gotP = await obtainEpfObligation(med, req, { target, id: "pool0001", fingerprint: fpP, sourceSeq: 2, route: `pool.${F4_POOL}` });
+    const D2 = contractDigest({ probe: "f4p" });
+    const from2 = { id: `${f4Caller.owner}.${f4Caller.actor}`, name: "c" };
+    const decFact2 = {
+      v: 1, id: "pool0001", decision: "accepted", fingerprint: fpP,
+      request: { v: 1, id: "pool0001", op: { endpoint: EP, command: "run", inputDigest: D2, outputDigest: D2 }, class: "journal", replyExpected: false, deadlineMs: 5000, args: {}, from: from2, target },
+      caller: { id: from2.id, lifecycleUid: f4Caller.uid }, contractDigests: { input: D2, output: D2 },
+      authzDecision: { revision: 1, epoch: 1 }, route: `pool.${F4_POOL}`, workExpiry: Date.now() + 300_000, sourceSeq: 2, ts: 1, target,
+    };
+    const decSubject2 = epfSubject(space, EP, ["dec", f4Caller.owner, f4Caller.actor, f4Caller.uid, "pool0001"]);
+    if (!(await publishFactCreateOnly(jetstream(writer.nc), decSubject2, new TextEncoder().encode(JSON.stringify(decFact2)))).won) throw new Error("pool acceptance forge lost");
+    await updateRecordEntry(registryStores(wreg).recordsKv, gotP.key, { ...gotP.row, state: "accepted" }, gotP.revision);
+  }
+  const retireOp5 = mintLifecycleUid();
+  const wedge5 = await rejects(() => runAgentRetirementBarrier(breg, {
+    owner: OWNER, actor: "worker5", lifecycleUid: uid5, opId: retireOp5,
+    endpoints: [], frontierStreams: [epfStreamName(space), epwStreamName(space)],
+  }, wedgeDeps(failEvictor)));
+  check("F4: the retirement wedges at eviction with covered accepted work still pending", wedge5.length > 0, wedge5.slice(0, 80));
+  const repairLines: string[] = [];
+  const planeRepair = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => repairLines.push(l), probeEvictor: okEvictor([]) });
+  await planeRepair.close();
+  {
+    const committed = await readRecordLeader(registryStores(wreg).jsm, space, F4_COMMIT_KEY);
+    check("F4: the per-op COMMIT APPLIER landed the accepted self-commit (guarded create, pinned digest)",
+      committed !== undefined && contractDigest(committed.value) === contractDigest(f4Desired), committed?.value);
+    const itemSubject = epwSubject(space, "manager", F4_POOL, { owner: f4Caller.owner, actor: f4Caller.actor, uid: f4Caller.uid, id: "pool0001" });
+    const item = await readLastFact(registryStores(wreg).jsm, epwStreamName(space), itemSubject);
+    check("F4: the per-op POOL RECONCILER re-enqueued the mediator's closed repair (live EPW item, canonical acceptance bytes)",
+      item !== undefined && (item as { id?: string }).id === "pool0001" && (item as { workExpiry?: number }).workExpiry !== undefined, item);
+    check("F4: the retirement COMPLETED on resume (head retired) - covered accepted work no longer freezes the alias",
+      (await readLifecycleHeadForOperation(breg, OWNER, "worker5"))?.mapping.state === "retired"
+      && repairLines.some((l) => l.includes("applied the accepted self-commit"))
+      && repairLines.some((l) => l.includes("re-enqueued the accepted pool item")), repairLines.filter((l) => l.includes("drain-repair")));
+  }
 
   // ---- G. the delivery-admin eviction seam fails CLOSED with no daemon on the rail ----
   const seam = makeDeliveryAdminEvictor({ space, server: SERVERS, dataAccount, log: quiet });

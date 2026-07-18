@@ -147,8 +147,7 @@ try {
     drainTargetObligations: async (endpoint, targetUid) => {
       const med = meds[endpoint as keyof typeof meds];
       if (med === undefined) throw new Error(`no mediator for endpoint ${endpoint}`);
-      await drainTargetForEndpoint(med, targetUid, { reconcileAcceptedRoute: async (row, key) => {
-        if (row.route !== "effects") return;
+      await drainTargetForEndpoint(med, targetUid, { cancelEffectsRoute: async ({ key }) => {
         const [cOwner, cActor, cUid, id] = key.split(".").slice(3);
         const decSubject = epfSubject(SPACE, endpoint, ["dec", cOwner, cActor, cUid, id]);
         const decision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), decSubject), decSubject);
@@ -389,12 +388,14 @@ try {
     // EPW enqueue is missing. The reconciler is what recovers the enqueue.
     await acceptPoolItem({ endpoint: EP, caller: cAcc, id: "ao0001", target: tgt6, workExpiry: NOW + 100_000, sourceSeq: 12, skipEnqueue: true });
     const drainedEps: string[] = [];
-    const reconEnqueue = async () => { await js.publish(epwSubject(SPACE, EP, POOL, { ...cAcc, id: "ao0001" }), enc.encode(JSON.stringify({ item: "ao0001" }))); };
+    // The reconciler executes the mediator's CLOSED repair command (exact subject + canonical
+    // acceptance-derived bytes) — the crash-before-enqueue repair, on the new boundary.
+    const reconEnqueue = async (repair: { subject: string; bytes: Uint8Array }) => { await js.publish(repair.subject, repair.bytes); };
     const deps6: RetirementDeps = {
       ...mkDeps({ guardUid: uid6 }),
       drainTargetObligations: async (endpoint, targetUid) => {
         drainedEps.push(endpoint);
-        await drainTargetForEndpoint(meds[endpoint as keyof typeof meds], targetUid, { reconcileAcceptedRoute: reconEnqueue });
+        await drainTargetForEndpoint(meds[endpoint as keyof typeof meds], targetUid, { reconcilePoolRoute: reconEnqueue });
       },
     };
     const res6 = await runAgentRetirementBarrier(reg, {
@@ -469,9 +470,9 @@ try {
     let injected = false;
     const deps8: RetirementDeps = {
       ...base,
-      drainTargetObligations: async (endpoint, targetUid) => {
+      drainTargetObligations: async (endpoint, targetUid, opId) => {
         drainCalls++;
-        await base.drainTargetObligations(endpoint, targetUid);
+        await base.drainTargetObligations(endpoint, targetUid, opId);
         if (!injected) {
           injected = true;
           await createRecordEntry(recordsKv, lateKey, { ...first.row, opId: "8".repeat(26), fingerprint: fp("late02"), sourceSeq: 32 });
