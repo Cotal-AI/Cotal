@@ -8,8 +8,9 @@
  * (same-subject replacement) — never the 2.14 stop-plus-publish path.
  */
 
-/** The minimum broker for the endpoint control surface. */
-export const BROKER_FLOOR = { major: 2, minor: 12 } as const;
+/** The minimum broker for the endpoint control surface. Runtime-frozen (the afa715b class): a
+ *  post-import `minor = 0` would silently bypass the mandatory 2.12 startup gate. */
+export const BROKER_FLOOR = Object.freeze({ major: 2, minor: 12 } as const);
 
 /** Structural slice of a NATS connection: the pre-auth INFO carries the server version. */
 export interface BrokerInfoSource {

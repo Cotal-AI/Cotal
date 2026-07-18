@@ -327,7 +327,10 @@ export async function verifySessionGrant(
 
 // ---- the session ledger row (auth store `session.<sessionId>`, §13.12) -----------------------
 
-export const SESSION_TERMINAL_STATES = ["closed", "expired", "superseded", "retired"] as const;
+// Runtime-frozen + a private Set the transition/sweep seams consult (the afa715b class: a
+// spliced-out "closed" would otherwise disable the revocation-retry backstop, executed repro).
+export const SESSION_TERMINAL_STATES = Object.freeze(["closed", "expired", "superseded", "retired"] as const);
+const TERMINAL_STATE_SNAP: ReadonlySet<string> = new Set(SESSION_TERMINAL_STATES);
 export type SessionTerminalState = (typeof SESSION_TERMINAL_STATES)[number];
 export type SessionState = "issuing" | "active" | SessionTerminalState;
 
@@ -367,7 +370,7 @@ export function sessionLedgerKey(sessionId: string): string {
 /** The monotonic state grammar: `issuing → active`, `issuing → terminal` (the sweep collecting
  *  a crashed half-issue), `active → terminal`. Terminal states never transition. */
 export function assertSessionStateTransition(from: SessionState, to: SessionState): void {
-  const terminal = (SESSION_TERMINAL_STATES as readonly string[]).includes(from);
+  const terminal = TERMINAL_STATE_SNAP.has(from);
   if (terminal)
     throw new EpEnvelopeError("failed-precondition", `session state "${from}" is terminal; states are monotonic (SPEC 13.6)`);
   if (to === "issuing")
@@ -719,7 +722,7 @@ export async function sweepSessionRow(
       }
     }
   };
-  if ((SESSION_TERMINAL_STATES as readonly string[]).includes(row.state)) {
+  if (TERMINAL_STATE_SNAP.has(row.state)) {
     if (row.revoked.caller && row.revoked.serving) return false; // fully collected
     await revokePending();
     return true;

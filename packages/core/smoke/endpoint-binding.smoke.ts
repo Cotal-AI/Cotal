@@ -35,6 +35,9 @@ import {
   commitPrincipalGrants, contractPublisherGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
+  BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS,
+  baselineCallerCapabilities, spawnCallerCapabilities, CREDENTIAL_LIFETIMES, credentialLifetime,
+  SESSION_TERMINAL_STATES, SCHEMA_PROFILE, BROKER_FLOOR, meetsBrokerFloor,
   type EpCaller, type RecordKindDef,
 } from "../src/index.js";
 
@@ -197,6 +200,30 @@ throws("pushing into a def's qualifiers throws (the head arity cannot be re-shap
   () => (AUTHORITY_KIND_DEFS[0].qualifiers as unknown as unknown[]).push({}));
 throws("AFTER the attempted mutations the exact lifecycle head STILL refuses (the seam reads a private snapshot)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker` }));
+// The SAME class swept across core's other exported security collections (the freelance cold
+// read after afa715b): the baseline grant vocabularies and credential lifetimes sit on the
+// MINTING path (a push/reassignment widened every subsequently minted grant, executed repro),
+// the session terminal states arm the revocation backstop, the schema profile is the DoS
+// ceiling, the broker floor is the startup gate. All runtime-frozen; the minting-path
+// consumers read private module-load snapshots.
+c("the baseline/spawn command vocabularies are frozen",
+  [BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS].every((a) => Object.isFrozen(a)));
+throws("pushing a command into the baseline vocabulary throws (no post-import grant widening)",
+  () => (BASELINE_SELF_LIFECYCLE_COMMANDS as unknown as string[]).push("attach"));
+c("the minted baseline/spawn surfaces are unchanged after the attempted push (private snapshots)",
+  baselineCallerCapabilities().length === 4 && spawnCallerCapabilities("u_abc").length === 3);
+c("CREDENTIAL_LIFETIMES and every policy are frozen",
+  Object.isFrozen(CREDENTIAL_LIFETIMES) && Object.values(CREDENTIAL_LIFETIMES).every((p) => Object.isFrozen(p)));
+throws("nulling a one-shot TTL throws (a non-expiring provisioner credential cannot be minted in)",
+  () => { (credentialLifetime("provisioner") as { defaultTtlSeconds?: number }).defaultTtlSeconds = undefined; });
+c("SESSION_TERMINAL_STATES / SCHEMA_PROFILE / BROKER_FLOOR are frozen",
+  Object.isFrozen(SESSION_TERMINAL_STATES) && Object.isFrozen(SCHEMA_PROFILE) && Object.isFrozen(BROKER_FLOOR));
+throws("splicing 'closed' out of the terminal states throws (the revocation backstop stays armed)",
+  () => (SESSION_TERMINAL_STATES as unknown as string[]).splice(0, 1));
+throws("raising the schema maxDepth throws (the DoS ceiling is not caller-tunable)",
+  () => { (SCHEMA_PROFILE as unknown as { maxDepth: number }).maxDepth = Number.MAX_SAFE_INTEGER; });
+throws("lowering the broker floor throws", () => { (BROKER_FLOOR as unknown as { minor: number }).minor = 0; });
+c("meetsBrokerFloor still refuses 2.11 after the attempted lowering", meetsBrokerFloor("2.11.0") === false);
 c("a lease reader admits (a caller-readable record kind with no authority head)",
   recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status` }).filter_subject
     === `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status`);

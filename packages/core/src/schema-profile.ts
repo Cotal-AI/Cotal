@@ -12,8 +12,10 @@ import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { assertSafePattern } from "./safe-pattern.js";
 
-/** Registration-time bounds (SPEC §13.7/§13.8). Fixed by the profile, not caller-tunable. */
-export const SCHEMA_PROFILE = {
+/** Registration-time bounds (SPEC §13.7/§13.8). Fixed by the profile, not caller-tunable, and
+ *  RUNTIME-frozen (the afa715b class): a post-import `maxDepth = MAX_SAFE_INTEGER` would remove
+ *  the pre-compilation recursion/DoS ceiling, so mutation throws instead. */
+export const SCHEMA_PROFILE = Object.freeze({
   /** One schema document's canonical form, bytes. */
   maxDocumentBytes: 256 * 1024,
   /** The complete resolved closure (root + digest-referenced members), bytes. */
@@ -31,7 +33,7 @@ export const SCHEMA_PROFILE = {
   validateBudgetMs: 10,
   /** Compiled-schema cache entries (the SPEC's reference 256-entry LRU). */
   compiledCacheEntries: 256,
-} as const;
+} as const);
 
 /** The canonical void schema (§13.7): the one artifact a side with no payload declares, so both
  *  `op` digests exist for every command. Validation against it means the payload is absent or

@@ -123,13 +123,17 @@ export function epCallerGrantRows(
 // daemons register them; minting them ahead of serving is default-deny-safe (an unserved request
 // form is a no-responder, never authority).
 
-/** The delivery endpoint's baseline command names (Appendix B: "durable join/leave/list"). */
+/** The delivery endpoint's baseline command names (Appendix B: "durable join/leave/list").
+ *  All four command vocabularies below are RUNTIME-frozen (TS `as const` is type-level only)
+ *  and the capability builders consult PRIVATE module-load snapshots, never these live
+ *  exports: a post-import `push("attach")` here would otherwise widen every subsequently
+ *  minted agent grant (the afa715b identity-vs-integrity class, executed repro). */
 export const BASELINE_DELIVERY_ENDPOINT = "delivery";
-export const BASELINE_DELIVERY_COMMANDS = ["join", "leave", "list"] as const;
+export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"] as const);
 /** The manager endpoint's self-lifecycle baseline (the v0.3 self-service tier serves exactly
  *  no-name self stop) and the spawn-capability owner-mode lifecycle set. */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = ["stop"] as const;
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
@@ -139,8 +143,16 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = ["stop"] as const;
  *  stop and a despawn both free-slot + deprovision, so an owner-mode `stop` would be a wire synonym
  *  of `despawn` (distsys) — one owner-mode terminal command keeps the vocabulary single. Self-`stop`
  *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt. */
-export const SPAWN_CREATE_COMMANDS = ["spawn"] as const;
-export const SPAWN_OWNER_LIFECYCLE_COMMANDS = ["despawn", "attach"] as const;
+export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
+export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
+
+// PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
+// never the live exports, so the minted surface survives even a hypothetical defeat of the
+// freezes above (the seam-snapshot half of the afa715b closure pattern).
+const DELIVERY_COMMANDS_SNAP = Object.freeze([...BASELINE_DELIVERY_COMMANDS]);
+const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS]);
+const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
+const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
 
 /** `describe` on ALL endpoints (Appendix B / §13.9 "describe by default"): the ONE
  *  subject-wildcard request form in the caller grammar,
@@ -158,8 +170,8 @@ export function epDescribeAllGrantRow(space: string, caller: EpCaller): string {
  *  describe row: delivery join/leave/list (untargeted) + self-mode lifecycle. */
 export function baselineCallerCapabilities(): EpCapability[] {
   return [
-    ...BASELINE_DELIVERY_COMMANDS.map((command) => ({ endpoint: BASELINE_DELIVERY_ENDPOINT, command })),
-    ...BASELINE_SELF_LIFECYCLE_COMMANDS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, target: { mode: "self" } as const })),
+    ...DELIVERY_COMMANDS_SNAP.map((command) => ({ endpoint: BASELINE_DELIVERY_ENDPOINT, command })),
+    ...SELF_LIFECYCLE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, target: { mode: "self" } as const })),
   ];
 }
 
@@ -170,8 +182,8 @@ export function baselineCallerCapabilities(): EpCapability[] {
  *  (§13.2: an owner-mode standing mint never names a foreign owner). */
 export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
   return [
-    ...SPAWN_CREATE_COMMANDS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
-    ...SPAWN_OWNER_LIFECYCLE_COMMANDS.map((command) => ({
+    ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...SPAWN_OWNER_SNAP.map((command) => ({
       endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
       target: { mode: "owner", tOwner: callerOwner } as EpTarget,
     })),

@@ -42,7 +42,7 @@ import {
 export { TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS };
 
 /** What a trait definition may attach to (§13.7). */
-export const TRAIT_SELECTORS = ["cluster", "command", "attribute", "event"] as const;
+export const TRAIT_SELECTORS = Object.freeze(["cluster", "command", "attribute", "event"] as const);
 export type TraitSelector = (typeof TRAIT_SELECTORS)[number];
 
 /** The §13.7 trait definition artifact: content-addressed (its identity is

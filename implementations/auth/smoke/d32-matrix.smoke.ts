@@ -37,6 +37,7 @@ import {
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
+import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { authConnectReaderGrants } from "../src/connect-reader.js";
 import { authorityScannerGrants } from "../src/ledger-scanner.js";
 import { recordsScannerGrants } from "../src/records-scanner.js";
@@ -266,6 +267,21 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.lease.jobsrv.pb.>",
     "$JS.API.STREAM.MSG.GET.EPF_d32m",
   ], subscribe: [] },
+  // The FULL production executor-client profile (#29 piece 2, the credential split): the
+  // settlement rows above PLUS the reads its own code path performs. Pinned here so a future
+  // widen of retirementExecutorClientGrants fails this audit (distsys residual on b8803b2),
+  // not only the confinement smoke.
+  "retirement-executor": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.STREAM.MSG.GET.EPW_d32m",
+    "cotal.d32m.epf.jobsrv.wrk.pa.>",
+    "$KV.cotal_records_d32m.lease.jobsrv.pa.>",
+    "cotal.d32m.epf.jobsrv.wrk.pb.>",
+    "$KV.cotal_records_d32m.lease.jobsrv.pb.>",
+    "$JS.API.STREAM.MSG.GET.EPF_d32m",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
 };
 
 // ---- 1. regenerate every builder and pin against the fixture ----------------------------------
@@ -306,6 +322,7 @@ put("auth-scanner", authorityScannerGrants(S, CONN));
 put("records-scanner", recordsScannerGrants(S, CONN));
 put("auth-connect-reader", authConnectReaderGrants(S, CONN));
 put("barrier-executor", { publish: barrierExecutorSettlementGrants(S, EPJ, ["pa", "pb"]).publish, subscribe: [] });
+put("retirement-executor", retirementExecutorClientGrants(S, EPJ, ["pa", "pb"], CONN));
 
 for (const name of Object.keys(FIXTURE)) {
   c(`fixture pin: ${name}`, JSON.stringify(gen[name]) === JSON.stringify(FIXTURE[name]), gen[name]);
@@ -403,6 +420,9 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
     "barrier-executor:EPF_d32m",
+    // The full production executor client (#29 piece 2): the settlement EPF read plus the
+    // leader-served EPW live-entry and records-lease reads its own code path performs.
+    "retirement-executor:EPF_d32m", "retirement-executor:EPW_d32m", "retirement-executor:KV_cotal_records_d32m",
   ]);
   c("the STREAM.MSG.GET holder set equals the enumerated trusted list exactly",
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());

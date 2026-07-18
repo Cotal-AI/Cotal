@@ -301,7 +301,7 @@ export async function resolveGoalSubmission(
 // ---- the goal record: spec + status projection (§13.6 item 2/3, commit-path-owned) -----------
 
 /** The §13.6 single status vocabulary for every long-running surface. */
-export const GOAL_STATES = ["accepted", "running", "waiting", "cancelling", "succeeded", "failed", "cancelled", "expired", "uncertain"] as const;
+export const GOAL_STATES = Object.freeze(["accepted", "running", "waiting", "cancelling", "succeeded", "failed", "cancelled", "expired", "uncertain"] as const);
 export type GoalState = (typeof GOAL_STATES)[number];
 /** All five are TERMINAL and immutable; first-terminal-fact-wins applies uniformly. */
 export const GOAL_TERMINAL_STATES: readonly GoalState[] = Object.freeze(["succeeded", "failed", "cancelled", "expired", "uncertain"]);

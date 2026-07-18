@@ -163,6 +163,15 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
+// RUNTIME integrity (the afa715b class): the matrix and every policy freeze at module load
+// (a post-import `defaultTtlSeconds = undefined` would otherwise mint a NON-EXPIRING credential
+// out of a one-shot profile, executed repro), and the mint path below reads a PRIVATE TTL
+// snapshot taken here, never the live export.
+for (const p of Object.values(CREDENTIAL_LIFETIMES)) Object.freeze(p);
+Object.freeze(CREDENTIAL_LIFETIMES);
+const LIFETIME_TTL_SNAP: ReadonlyMap<string, number | undefined> = new Map(
+  Object.entries(CREDENTIAL_LIFETIMES).map(([k, p]) => [k, p.defaultTtlSeconds]),
+);
 
 export function credentialLifetime(kind: CredentialKind): CredentialLifetimePolicy {
   return CREDENTIAL_LIFETIMES[kind];
@@ -417,7 +426,7 @@ function userValidDates(kind: CredentialKind, opts: MintOpts): { exp?: number } 
       throw new Error("mintCreds: expiresAt must be a non-negative integer timestamp (seconds)");
     return { exp: opts.expiresAt };
   }
-  const ttl = opts.expiresInSeconds ?? CREDENTIAL_LIFETIMES[kind].defaultTtlSeconds;
+  const ttl = opts.expiresInSeconds ?? LIFETIME_TTL_SNAP.get(kind);
   if (ttl === undefined) return {};
   if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("mintCreds: expiresInSeconds must be a positive integer");
   return { exp: Math.floor(Date.now() / 1000) + ttl };
