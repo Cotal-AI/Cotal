@@ -149,6 +149,12 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
       // introduces them, so forgetting fails loud here instead of widening silently now.
       `$KV.${epAuthBucket(space)}.stage.*`,
       `$KV.${recordsBucket(space)}.lifecycle.>`,
+      // The retirement FRONTIER record `frontier.<lifecycleUid>` (§13.7: create-only, never
+      // deleted, one key per retired lifecycle, recorded once under its own operation's opId
+      // BEFORE the gate/head terminals): the barrier is its one writer, and the exact-arity
+      // `frontier.*` row is that authority (#29 piece 4; a barrier without it is broker-denied
+      // at step 6 on a real callout broker, masked by super-user smoke brokers).
+      `$KV.${recordsBucket(space)}.frontier.*`,
     ],
     subscribe: [`_INBOX_${inbox}.>`],
   };

@@ -41,7 +41,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { ensureAuthorityStores, isReachable, type ParsedArgs } from "@cotal-ai/core";
+import { admissionMediatorGrants, ensureAuthorityStores, isReachable, type ParsedArgs } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
@@ -57,6 +57,9 @@ import { openAuthLedgerScanner, type AuthLedgerScanner } from "./ledger-scanner.
 import { openRecordsScanner, type RecordsScanner } from "./records-scanner.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
+import { resumeAgentRetirement, type RetirementDeps } from "./retirement-barrier.js";
+import { makeRetirementCleaners } from "./retirement-cleaner.js";
+import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
   ledgerAclResolver,
@@ -170,13 +173,38 @@ export async function openAuthAuthorityPlane(opts: {
     throw e;
   }
   const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ space, server, dataAccount, log });
+  // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from
+  // reviewed §13.9 profiles only. The obligation drain runs per endpoint on a SHORT-LIVED
+  // client minted with that endpoint's admission-mediator profile (the daemon owns no standing
+  // mediator; the drain is the first production mediator composition), sharing the plane's ONE
+  // sealed records scanner. reconcileAcceptedRoute is deliberately ABSENT: a resume that finds
+  // unmaterialized accepted work fails LOUD and the alias stays frozen — no repair authority is
+  // invented here. The per-op cleaner/executor credentials come from the piece-2 split factory.
+  const retirement: RetirementDeps = {
+    evictPrincipal,
+    drainTargetObligations: async (endpoint, targetUid) => {
+      const drain = await openAuthorityClient({
+        server, space, dataAccount,
+        label: `cotal:ep-drain:${space}:${endpoint}`,
+        grants: (id) => admissionMediatorGrants(space, endpoint, id),
+        log,
+      });
+      try {
+        await drainTargetForEndpoint(await openAdmissionMediator(drain.nc, space, endpoint, { recordsScanner }), targetUid);
+      } finally {
+        await drain.close();
+      }
+    },
+    ...makeRetirementCleaners({ server, space, dataAccount, log }),
+    now: Date.now,
+  };
   // Boot crash-resume BEFORE the plane answers anything (SPEC 13.1): finish every takeover this
   // executor owes from its durable intents. A garbled intent store fails the boot (we cannot
   // know what we owe); an individual resume failure is LOUD but non-fatal — that alias stays
   // frozen (nothing mints for it, fail-closed) while every other alias keeps working, and a
   // later restart re-drives it.
   try {
-    await resumeOpenOperations(barrierReg, evictPrincipal, log);
+    await resumeOpenOperations(barrierReg, evictPrincipal, retirement, log);
   } catch (e) {
     await recordsScanner.close();
     await scanner.close();
@@ -208,15 +236,20 @@ export async function openAuthAuthorityPlane(opts: {
  * opId (completed and lost operations leave their intent behind by design and are skipped).
  * A frozen TAKEOVER resumes through {@link resumeAgentTakeover}; session-derived descendants
  * fail loud inside the barrier until the session reconciler is wired (the #29 trigger slice).
- * A frozen RETIREMENT is named loudly and left frozen: its deps (the exact-pool cleaner bind)
- * are the trigger slice's wiring, and a frozen gate is already the fail-closed posture.
+ * A frozen RETIREMENT resumes through {@link resumeAgentRetirement} with the plane's assembled
+ * {@link RetirementDeps} (#29 piece 4); its failure is equally loud and non-fatal.
  */
-async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: EvictPrincipal, log: (line: string) => void): Promise<void> {
+async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: EvictPrincipal, retirement: RetirementDeps, log: (line: string) => void): Promise<void> {
   for (const it of await enumerateOperationIntents(reg)) {
     const gate = await observeGate(reg, it.lifecycleUid);
     if (gate === undefined || gate.row.state !== "frozen" || gate.row.op?.opId !== it.opId) continue;
     if (it.kind === "retirement") {
-      log(`auth-barrier: lifecycle ${it.lifecycleUid} is frozen by retirement ${it.opId}; retirement deps are not wired in this executor yet (#29 trigger slice) - the alias stays frozen (fail-closed)`);
+      try {
+        const r = await resumeAgentRetirement(reg, it.opId, retirement);
+        log(`auth-barrier: resumed retirement ${it.opId} for ${it.lifecycleUid} (${r.revokedRows} row(s) revoked, ${r.evictedPrincipals.length} principal(s) verified-evicted, ${r.drainedEndpoints.length} endpoint(s) drained, ${Object.keys(r.cleaned).length} pool(s) cleaned, ${Object.keys(r.frontiers).length} frontier stream(s))`);
+      } catch (e) {
+        log(`auth-barrier: resuming retirement ${it.opId} for ${it.lifecycleUid} FAILED (${e instanceof Error ? e.message : String(e)}) - the gate stays frozen and nothing mints for this alias until a resume succeeds (fail-closed)`);
+      }
       continue;
     }
     try {

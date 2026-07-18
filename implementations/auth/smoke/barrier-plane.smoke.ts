@@ -26,13 +26,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, mintLifecycleUid, recordsBucket, serverConfig, type EvictionResult } from "@cotal-ai/core";
+import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, mintLifecycleUid, recordAtomicKey, recordsBucket, recordsKvStreamName, RETIREMENT_FRONTIER, serverConfig, type EvictionResult } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { authorityBarrierGrants, barrierExecutorSettlementGrants, openAuthorityClient } from "../src/authority-client.js";
 import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, registryStores } from "../src/lifecycle-registry.js";
 import { credRowKey, enumerateOperationIntents, parseLedgerRow, runAgentTakeoverBarrier, type EvictPrincipal } from "../src/credential-ledger.js";
+import { runAgentRetirementBarrier, type RetirementDeps } from "../src/retirement-barrier.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -234,6 +235,56 @@ try {
   check("the next boot RESUMES the owed takeover: gate reopened at the successor generation", resumedGate?.row.state === "open" && resumedGate.row.generation === 2, resumedGate?.row);
   check("the resumed takeover advanced the epoch and stamped its op", resumedHead?.mapping.processEpoch === 2 && resumedHead.mapping.lastTakeoverOpId === wedgeOp, resumedHead?.mapping);
   check("the resume verified-evicted the alias principal", resumeEvicted.includes(`${OWNER}.worker2`), resumeEvicted);
+
+  // ---- F2. BOOT CRASH-RESUME of a RETIREMENT through the real plane (#29 piece 4) ----
+  // Stage a mid-crash retirement exactly like the takeover wedge: containment eviction fails,
+  // the gate stays frozen by the op, the durable intent survives. The endpoint list is empty
+  // (no pools for this alias), so the resume exercises the full rail EXCEPT the cleaner step:
+  // drain (zero obligations via the sealed records scanner), the FRONTIER record write on the
+  // REAL barrier credential (the `frontier.*` grant row, denied before piece 4), and both
+  // terminals.
+  const uid3 = mintLifecycleUid();
+  await ensureRootCredential(wreg, { owner: OWNER, actor: "worker3", lifecycleUid: uid3, managerInstance: "smoke" });
+  const unreached = (what: string) => async (): Promise<never> => { throw new Error(`${what} must not be reached while staging the wedge`); };
+  const wedgeDeps = (evict: EvictPrincipal): RetirementDeps => ({
+    evictPrincipal: evict,
+    drainTargetObligations: unreached("drain"),
+    openCleaner: unreached("openCleaner"), retireCleanerCredential: unreached("retireCleanerCredential"),
+    openExecutor: unreached("openExecutor"), retireExecutorCredential: unreached("retireExecutorCredential"),
+    now: Date.now,
+  });
+  const retireOp = mintLifecycleUid();
+  const retireArgs = { owner: OWNER, actor: "worker3", lifecycleUid: uid3, opId: retireOp, endpoints: [], frontierStreams: [recordsKvStreamName(space)] };
+  const retireWedgeMsg = await rejects(() => runAgentRetirementBarrier(breg, retireArgs, wedgeDeps(failEvictor)));
+  check("a retirement whose eviction cannot verify THROWS (fail-closed)", retireWedgeMsg.length > 0, retireWedgeMsg.slice(0, 80));
+  const retireWedged = await observeGate(breg, uid3);
+  check("the wedged retirement gate stays FROZEN by the crashed op", retireWedged?.row.state === "frozen" && retireWedged.row.op?.opId === retireOp, retireWedged?.row);
+
+  const retireLines: string[] = [];
+  const planeRetireWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => retireLines.push(l), probeEvictor: failEvictor });
+  await planeRetireWedged.close();
+  check("a boot with failing eviction leaves the retirement frozen and is LOUD",
+    (await observeGate(breg, uid3))?.row.state === "frozen"
+    && retireLines.some((l) => l.includes(`resuming retirement ${retireOp}`) && l.includes("FAILED")), retireLines);
+
+  const retireEvicted: string[] = [];
+  const retireResumeLines: string[] = [];
+  const planeRetireResumed = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => retireResumeLines.push(l), probeEvictor: okEvictor(retireEvicted) });
+  await planeRetireResumed.close();
+  const retiredGate = await observeGate(breg, uid3);
+  const retiredHead = await readLifecycleHeadForOperation(breg, OWNER, "worker3");
+  check("the next boot RESUMES the owed retirement: gate terminal under the op (never reopened)",
+    retiredGate?.row.state === "retired" && retiredGate.row.op?.opId === retireOp, retiredGate?.row);
+  check("the head is terminal `retired` (the alias is replaceable now)", retiredHead?.mapping.state === "retired", retiredHead?.mapping);
+  {
+    const fr = await registryStores(breg).recordsKv.get(recordAtomicKey(RETIREMENT_FRONTIER, [uid3]));
+    const frontier = fr && fr.operation === "PUT" ? JSON.parse(new TextDecoder().decode(fr.value)) as { opId: string; streams: Record<string, number> } : undefined;
+    check("the FRONTIER record was written by the resume over the REAL barrier credential (the frontier.* row)",
+      frontier !== undefined && frontier.opId === retireOp && Object.keys(frontier.streams).includes(recordsKvStreamName(space)), frontier);
+  }
+  check("the resumed retirement revoked the family and verified-evicted the alias principal",
+    retireEvicted.includes(`${OWNER}.worker3`)
+    && retireResumeLines.some((l) => l.includes(`resumed retirement ${retireOp}`)), { retireEvicted, retireResumeLines });
 
   // ---- G. the delivery-admin eviction seam fails CLOSED with no daemon on the rail ----
   const seam = makeDeliveryAdminEvictor({ space, server: SERVERS, dataAccount, log: quiet });

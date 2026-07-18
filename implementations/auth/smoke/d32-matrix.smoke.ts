@@ -233,6 +233,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.stage.*",
     "$KV.cotal_records_d32m.lifecycle.>",
+    // The retirement frontier record (#29 piece 4): the barrier is the frontier.<uid> writer
+    // (§13.7 create-only, once, before the gate/head terminals) — exact arity, never frontier.>.
+    "$KV.cotal_records_d32m.frontier.*",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   // The two SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
   // profiles on the authority streams, each pinned to its ONE literal consumer name; the records
