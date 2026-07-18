@@ -124,6 +124,17 @@ throws("a cross-kind record subtree refuses (`*` kind reads every registered kin
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.*.>` }));
 throws("a mid-subtree `>` refuses (only one TRAILING subtree wildcard)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.svc.>.status` }));
+// ENFORCED partition (panel a559d9c re-verify, #8274): a reader durable may NEVER target an
+// authority-control record kind — above all `oblig.`, the sealed records scanner's exclusive
+// domain — so "the sealed scanner is the sole dynamic-enumeration holder over oblig" is a proven
+// partition at the seam, not a fixture sample. A reader there would durably export authority state.
+throws("a record-reader on the OBLIG subtree refuses (the sealed scanner's exclusive domain, #8274)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.oblig.${UID}.manager.>` }));
+throws("a record-reader on the OBLIG subtree with a `*` target position refuses",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.oblig.*.manager.>` }));
+for (const authKind of ["govern", "policy", "uid", "frontier"])
+  throws(`a record-reader on the authority-control kind ${authKind} refuses (authority-only, never a caller read)`,
+    () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.${authKind}.manager.>` }));
 
 // ── §13.9 API grant rows: the single source, exact matrix strings (broker-free) ──
 c("the canonicalizer grants own + consume its EPJ durable (create pins the full-tail filter)",

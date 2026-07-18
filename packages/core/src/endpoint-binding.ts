@@ -31,6 +31,7 @@ import {
   type EpCaller,
 } from "./endpoint-subjects.js";
 import type { RecordKindDef } from "./endpoint-records.js";
+import { OBLIGATION, GOVERN_HEAD, POLICY_VERSION, RETIREMENT_FRONTIER, UID_RESERVATION } from "./endpoint-records.js";
 import { epjStreamName, epfStreamName, canonDurable } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
 
@@ -530,6 +531,19 @@ export function eventReaderConfig(
   });
 }
 
+/** The AUTHORITY-CONTROL record kinds a caller reader durable may NEVER target (§13.9): the
+ *  admission-obligation subtree (the SEALED records scanner's EXCLUSIVE dynamic-enumeration domain,
+ *  nats-server#8274), the governance/policy heads, the UID reservation, and the retirement frontier.
+ *  These tokens belong to authority consts only — never a caller-readable `RECORD_KINDS` entry — so
+ *  a reader durable pinned to one would be a durable EXPORT of authority state that survives revoke.
+ *  DERIVED from the authority defs (never a hand-kept literal list), so a new authority kind extends
+ *  the exclusion automatically. `lifecycle`/`lease` are deliberately absent: those tokens carry a
+ *  caller-readable record kind (the per-UID audit detail / the lease record) as well as an authority
+ *  head, and the head/detail split is a separate concern; the sealed scanner touches none of them. */
+const RESERVED_READER_KINDS: ReadonlySet<string> = new Set(
+  [OBLIGATION, GOVERN_HEAD, POLICY_VERSION, RETIREMENT_FRONTIER, UID_RESERVATION].map((d) => d.kind),
+);
+
 /** `recD = rec_<uid>-<gid>-<n>` — one per GRANTED record subtree (§13.9): a PULL durable over the
  *  records KV stream (`KV_cotal_records_<space>`), pre-created by the provisioner with the
  *  capability's EXACT full `$KV.cotal_records_<space>.…` subtree tail, bound by the read
@@ -544,6 +558,13 @@ export function recordReaderConfig(
   // across every registered kind — a trusted-reader grant family, not a caller capability.
   if (tail[0] === "*")
     throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} must pin its record kind (a cross-kind read is not a caller capability, §13.9)`);
+  // ENFORCED partition (panel a559d9c re-verify, #8274): a caller reader durable may never target an
+  // AUTHORITY-CONTROL subtree — above all `oblig.`, which the sealed records scanner enumerates as
+  // its EXCLUSIVE domain. A reader pinned there would be a durable export of authority state that
+  // survives revoke; rejecting it at the SEAM makes "the sealed scanner is the sole dynamic-
+  // enumeration holder over oblig" a proven partition, not a fixture-sampled claim.
+  if (RESERVED_READER_KINDS.has(tail[0]))
+    throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} targets the authority-control record kind ${JSON.stringify(tail[0])}, which is never a caller read capability (the sealed scanner owns the oblig subtree; the governance/policy/uid/frontier heads are authority-only, §13.9, nats-server#8274)`);
   return family(recordsKvStreamName(space), {
     durable_name: recordReaderDurable(args.uid, args.grantId, args.index),
     filter_subject: args.subtree,
