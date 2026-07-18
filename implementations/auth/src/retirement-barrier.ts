@@ -178,6 +178,17 @@ export interface PoolCleanerBind {
   principal: string;
 }
 
+/** The settlement executor's bind: a space-bonded {@link WorkPoolContext} DERIVED from the
+ *  executor's OWN authenticated connection (the separately minted, op-bounded settlement
+ *  profile, SPEC 13.9 "Retirement settlement"; never the cleaner's bind and never the barrier's
+ *  standing connection, so the settlement rights and the settlement code sit on ONE connection)
+ *  plus that connection's CONNZ-attributable principal, which the barrier verified-evicts at
+ *  the fence alongside the cleaner's. */
+export interface RetirementExecutorBind {
+  work: WorkPoolContext;
+  principal: string;
+}
+
 /** The retirement barrier's injected capabilities — the takeover deps plus the retirement-only
  *  seams. Every seam is deployment-owned mechanics; the barrier owns the ORDER and the
  *  verification. */
@@ -193,6 +204,15 @@ export interface RetirementDeps extends TakeoverDeps {
    *  barrier then verified-evicts the bind's principal itself (the kill-live half). Called on
    *  BOTH the success and the failure path — a wedged barrier never leaves a live cleaner. */
   retireCleanerCredential: (bind: PoolCleanerBind) => Promise<void>;
+  /** Mint + connect the DISTINCT bounded-lived settlement-executor profile for (op × endpoint),
+   *  granted exactly the listed pools' settlement rows (§13.9 "Retirement settlement": the lease
+   *  CAS + `wrk` terminal publish + the leader-served EPW/EPF/records fencing reads). The
+   *  barrier builds the settlement seam over THIS bind's work context, never its own standing
+   *  connection. */
+  openExecutor: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<RetirementExecutorBind>;
+  /** Revoke the executor bind's credential (the deny-new half); the barrier verified-evicts its
+   *  principal too. Same discipline as the cleaner: called on success AND failure paths. */
+  retireExecutorCredential: (bind: RetirementExecutorBind) => Promise<void>;
   /** The executor's clock (the `workExpiry` comparisons and the terminal-fact timestamps). */
   now: () => number;
   /** Cleaner pacing knobs (tests tighten them; production defaults hold). */
@@ -452,20 +472,72 @@ export function settlementForIntent(
   };
 }
 
-/** Run the cleaner step for one endpoint entry: mint the bind, clean every listed pool, then —
- *  BEFORE anything else proceeds — retire the cleaner credential and verified-evict its
- *  principal, on the failure path too (a wedged barrier never leaves a live cleaner). */
+/** One per-op credential under the §13.1 fence: its principal and its deny-new action. */
+interface OpCredential {
+  what: "cleaner" | "executor";
+  principal: string;
+  retire: () => Promise<void>;
+}
+
+/** The per-op credential fence (§13.1): deny-new (revoke every credential) AND kill-live
+ *  (verified eviction of every principal), on the success AND the failure path. A revoke that
+ *  THROWS must NOT skip any live eviction, and one principal's eviction failure must NOT skip
+ *  the other's, or a bounded-lived connection survives the failed barrier: every containment
+ *  action runs, every failure is captured, THEN the barrier fails loud on the first. The
+ *  verified eviction is the load-bearing half (the connection is dead even if the deny-new
+ *  revoke failed); a revoke failure still fails the barrier afterward so no frontier records
+ *  while a credential may live, and the resume re-runs the whole fence. */
+async function fenceOpCredentials(deps: RetirementDeps, creds: OpCredential[]): Promise<void> {
+  const retireFailures: Array<{ c: OpCredential; e: unknown }> = [];
+  for (const c of creds) {
+    try {
+      await c.retire();
+    } catch (e) {
+      retireFailures.push({ c, e });
+    }
+  }
+  const evictFailures: unknown[] = [];
+  for (const c of creds) {
+    try {
+      const res = await deps.evictPrincipal(c.principal);
+      if (res.verifiedGone !== true)
+        evictFailures.push(new EpEnvelopeError("unavailable", `the retirement barrier could not VERIFY eviction of the ${c.what} principal ${c.principal} (kicked ${res.kicked}, remaining ${res.remaining}, scanComplete ${res.scanComplete}${res.note ? `; ${res.note}` : ""}); no frontier may record over a live ${c.what} (SPEC 13.1)`));
+    } catch (e) {
+      evictFailures.push(e);
+    }
+  }
+  if (evictFailures.length > 0) throw evictFailures[0];
+  if (retireFailures.length > 0) {
+    const { c, e } = retireFailures[0];
+    throw new EpEnvelopeError("unavailable", `the ${c.what} principal ${c.principal} was verified-evicted (kill-live done) but revoking its credential (deny-new) failed; the barrier fails closed so no frontier records while the credential may live, and the resume re-runs the fence (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+  }
+}
+
+/** Run the cleaner step for one endpoint entry: mint BOTH per-op binds (the zero-write cleaner
+ *  and the settlement executor, §13.9's split authority), build the settlement seam over the
+ *  EXECUTOR's own work context, clean every listed pool, then — BEFORE anything else proceeds —
+ *  fence both credentials (retire + verified-evict), on the failure path too (a wedged barrier
+ *  never leaves a live cleaner or executor). */
 async function cleanEndpointPools(
   intent: RetirementIntent,
   spec: RetirementPoolSpec,
   space: string,
   opId: string,
-  work: WorkPoolContext,
   deps: RetirementDeps,
   cleaned: Record<string, PoolCleanResult>,
 ): Promise<void> {
   const bind = await deps.openCleaner({ opId, endpoint: spec.endpoint, pools: [...spec.pools] });
-  const settleItem = settlementForIntent(work, intent, spec, space, opId, deps.now);
+  const cleanerCred: OpCredential = { what: "cleaner", principal: bind.principal, retire: () => deps.retireCleanerCredential(bind) };
+  let exec: RetirementExecutorBind;
+  try {
+    exec = await deps.openExecutor({ opId, endpoint: spec.endpoint, pools: [...spec.pools] });
+  } catch (e) {
+    // A failed executor mint must not leave the already-minted cleaner live: run the full
+    // cleaner fence first, then fail with the mint error (a fence failure wins by throwing).
+    await fenceOpCredentials(deps, [cleanerCred]);
+    throw e;
+  }
+  const settleItem = settlementForIntent(exec.work, intent, spec, space, opId, deps.now);
   let cleanerError: unknown;
   try {
     for (const pool of spec.pools) {
@@ -477,24 +549,10 @@ async function cleanEndpointPools(
   } catch (e) {
     cleanerError = e;
   }
-  // The cleaner fence (§13.1): deny-new (revoke the credential) AND kill-live (verified eviction
-  // of the cleaner's own principal), on the success AND the failure path. A revoke that THROWS
-  // must NOT skip the live eviction, or the bounded-lived cleaner connection survives the failed
-  // barrier: attempt the revoke, capture its failure, then ALWAYS run the verified kill-live.
-  // The verified eviction is the load-bearing half (the connection is dead even if the deny-new
-  // revoke failed); a revoke failure still fails the barrier loud afterward so no frontier
-  // records while the credential may live, and the resume re-runs the whole fence.
-  let retireError: unknown;
-  try {
-    await deps.retireCleanerCredential(bind);
-  } catch (e) {
-    retireError = e;
-  }
-  const res = await deps.evictPrincipal(bind.principal);
-  if (res.verifiedGone !== true)
-    throw new EpEnvelopeError("unavailable", `the retirement barrier could not VERIFY eviction of the cleaner principal ${bind.principal} (kicked ${res.kicked}, remaining ${res.remaining}, scanComplete ${res.scanComplete}${res.note ? `; ${res.note}` : ""}); no frontier may record over a live cleaner (SPEC 13.1)`);
-  if (retireError !== undefined)
-    throw new EpEnvelopeError("unavailable", `the cleaner principal ${bind.principal} was verified-evicted (kill-live done) but revoking its credential (deny-new) failed; the barrier fails closed so no frontier records while the credential may live, and the resume re-runs the fence (SPEC 13.1): ${(retireError as Error)?.message ?? String(retireError)}`);
+  await fenceOpCredentials(deps, [
+    cleanerCred,
+    { what: "executor", principal: exec.principal, retire: () => deps.retireExecutorCredential(exec) },
+  ]);
   if (cleanerError !== undefined) throw cleanerError;
 }
 
@@ -513,7 +571,7 @@ export async function runAgentRetirementBarrier(
   },
   deps: RetirementDeps,
 ): Promise<RetirementResult> {
-  const { space, authKv, recordsKv, jsm, work } = registryStores(reg);
+  const { space, authKv, recordsKv, jsm } = registryStores(reg);
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);
   const frontierKey = recordAtomicKey(RETIREMENT_FRONTIER, [args.lifecycleUid]);
@@ -635,11 +693,12 @@ export async function runAgentRetirementBarrier(
     }
   }
 
-  // 5. The exact-pool terminal cleaner, per (op × endpoint), each bind revoked and
-  // verified-evicted BEFORE any frontier records (§13.1 cleaner fence).
+  // 5. The exact-pool terminal cleaner, per (op × endpoint): the zero-write cleaner bind plus
+  // the settlement-executor bind (§13.9 split), BOTH revoked and verified-evicted BEFORE any
+  // frontier records (§13.1 fence).
   const cleaned: Record<string, PoolCleanResult> = {};
   for (const spec of intent.endpoints) {
-    await cleanEndpointPools(intent, spec, space, opId, work, deps, cleaned);
+    await cleanEndpointPools(intent, spec, space, opId, deps, cleaned);
   }
 
   // 6. Record the per-stream retirement frontiers (create-only; an existing record is THIS

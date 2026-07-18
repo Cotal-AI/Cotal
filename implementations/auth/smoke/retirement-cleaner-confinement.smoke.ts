@@ -1,9 +1,12 @@
 /**
- * The per-op RETIREMENT CLEANER credential confinement smoke (#29 piece 1). Proves the production
- * `makeRetirementCleaners` seams over a LIVE broker: the cleaner is a per-op, principal-tagged,
- * exact-pool-scoped connection — CONNZ-evictable, able to reach its OWN pool + settlement rows, and
- * broker-DENIED everything else. distsys vote (2): a DISTINCT principal per op so an evict never
- * collateral-kills a concurrent op's cleaner.
+ * The per-op RETIREMENT CLEANER + SETTLEMENT EXECUTOR credential confinement smoke (#29 pieces
+ * 1+2). Proves the production `makeRetirementCleaners` seams over a LIVE broker: each role is a
+ * per-op, principal-tagged, exact-pool-scoped connection — CONNZ-evictable, able to reach its OWN
+ * rows, and broker-DENIED everything else. distsys vote (2): a DISTINCT principal per (op, role)
+ * so an evict never collateral-kills a concurrent op's client or the sibling role. The piece-2
+ * SPLIT (SPEC 13.9): the cleaner holds ZERO writes; the executor holds the settlement writes
+ * (own-pool lease CAS + wrk terminal) and the leader-served EPW/EPF/records fencing reads, and
+ * NO consumer authority, NO epw enqueue, NO auth-store read.
  *
  * Denial probes ride bounded `nc.request` (a permission-denied JetStream publish gets NO reply, so
  * an unbounded manager call would hang): an ALLOWED API subject replies fast (even a JS error reply
@@ -21,9 +24,9 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   createSpaceAuth, createEndpointStreams, isReachable, mintLifecycleUid, serverConfig,
   epwStreamName, epfStreamName, poolDurable, poolConsumerConfig, assertValidOwnerToken,
-  retirementCleanerGrants,
+  retirementCleanerGrants, recordsKvStreamName, recordsBucket, epAuthBucket,
 } from "@cotal-ai/core";
-import { makeRetirementCleaners } from "../src/retirement-cleaner.js";
+import { makeRetirementCleaners, retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { openAuthorityClient, barrierExecutorSettlementGrants } from "../src/authority-client.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 
@@ -127,6 +130,70 @@ try {
   c("DENIED: a STREAM.PURGE on EPW (a cleaner never destroys stored work)",
     (await reaches(clean.nc, jsapi(`STREAM.PURGE.${epwStreamName(SPACE)}`))) === "denied");
   await clean.close();
+
+  // ---- D. the settlement EXECUTOR client (the piece-2 split): shape, reach + confinement ----
+  const opE = mintLifecycleUid();
+  const execBind = await cleaners.openExecutor({ opId: opE, endpoint: EP, pools: [POOL_A] });
+  c("the executor principal is a CONNZ-attributable local.epexe_<hash> (owner.actor, evictable)",
+    /^local\.epexe_[0-9a-f]{16}$/.test(execBind.principal), execBind.principal);
+  {
+    const clnE = await cleaners.openCleaner({ opId: opE, endpoint: EP, pools: [POOL_A] });
+    c("one op holds BOTH roles concurrently under TWO principals (the fence evicts each separately)",
+      clnE.principal !== execBind.principal && clnE.principal.startsWith("local.epcln_") && execBind.principal.startsWith("local.epexe_"));
+    await cleaners.retireCleanerCredential(clnE);
+  }
+  c("the executor's work context is space-bonded to THIS space by construction", execBind.work.space === SPACE);
+  c("a DOUBLE-OPEN of a LIVE op's executor THROWS (same atomic-acquisition discipline as the cleaner)",
+    await cleaners.openExecutor({ opId: opE, endpoint: EP, pools: [POOL_A] }).then(() => false, () => true));
+  await cleaners.retireExecutorCredential(execBind);
+
+  // Reach + confinement via a directly-opened executor connection (bounded probes over the EXACT
+  // production grant). Write probes are verified against stream message counts through the seed
+  // connection: a permission-denied core publish is dropped silently, so reply-timeout probes only
+  // cover the API rows.
+  const execProbe = await openAuthorityClient({
+    server: SERVERS, space: SPACE, dataAccount, label: `cotal:ep-executor:${SPACE}:probe`,
+    principal: { owner: "local", actor: "epexe_probe00000000" },
+    grants: (connId) => retirementExecutorClientGrants(SPACE, EP, [POOL_A], connId),
+    log: quiet,
+  });
+  c("the executor reaches the EPW live-entry leader read (STREAM.MSG.GET on EPW replies)",
+    (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.${epwStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `cotal.${SPACE}.epw.${EP}.${POOL_A}.nonesuch` })))) === "allowed");
+  c("the executor reaches the records-store fencing read (STREAM.MSG.GET on KV_records replies)",
+    (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.${recordsKvStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_A}.nonesuch` })))) === "allowed");
+  c("the executor reaches the EPF fencing read (STREAM.MSG.GET on EPF replies)",
+    (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.${epfStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `cotal.${SPACE}.epf.${EP}.nonesuch` })))) === "allowed");
+  c("the executor reaches the workPoolContext bind probe (STREAM.INFO on KV_records replies)",
+    (await reaches(execProbe.nc, jsapi(`STREAM.INFO.${recordsKvStreamName(SPACE)}`))) === "allowed");
+  c("DENIED: the auth store (STREAM.MSG.GET on KV_auth): no authority-plane read rides the executor",
+    (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.KV_${epAuthBucket(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `$KV.${epAuthBucket(SPACE)}.nonesuch` })))) === "denied");
+  c("DENIED: the pool durable bind (CONSUMER.INFO): the executor holds NO consumer authority at all",
+    (await reaches(execProbe.nc, jsapi(`CONSUMER.INFO.${epwStreamName(SPACE)}.${poolDurable(EP, POOL_A)}`))) === "denied");
+  c("DENIED: creating a consumer on EPW (dynamic enumeration stays with the sealed scanners, #8274)",
+    (await reaches(execProbe.nc, jsapi(`CONSUMER.CREATE.${epwStreamName(SPACE)}`), enc.encode(JSON.stringify({ stream_name: epwStreamName(SPACE), config: { ack_policy: "none" } })))) === "denied");
+  c("DENIED: a STREAM.PURGE on EPW (the executor settles items, never destroys stored work)",
+    (await reaches(execProbe.nc, jsapi(`STREAM.PURGE.${epwStreamName(SPACE)}`))) === "denied");
+  // Core-publish rows, count-verified through the seed: own-pool wrk terminal + lease CAS admit;
+  // the FOREIGN pool and the epw ENQUEUE are dropped at the broker.
+  const countOf = async (stream: string) => (await gjsm.streams.info(stream)).state.messages;
+  const pubLands = async (subject: string, stream: string): Promise<boolean> => {
+    const before = await countOf(stream);
+    execProbe.nc.publish(subject, enc.encode(JSON.stringify({ probe: true })));
+    await execProbe.nc.flush();
+    for (let i = 0; i < 20; i++) { if ((await countOf(stream)) > before) return true; await wait(50); }
+    return false;
+  };
+  c("the executor's OWN-pool wrk terminal publish lands (the intent-confined forge residual, §13.9)",
+    await pubLands(`cotal.${SPACE}.epf.${EP}.wrk.${POOL_A}.probe1`, epfStreamName(SPACE)));
+  c("the executor's OWN-pool lease write lands (the settlement CAS row)",
+    await pubLands(`$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_A}.probe1`, recordsKvStreamName(SPACE)));
+  c("DENIED: a FOREIGN pool's wrk terminal (pool pb is not in this op's intent)",
+    !(await pubLands(`cotal.${SPACE}.epf.${EP}.wrk.${POOL_B}.probe1`, epfStreamName(SPACE))));
+  c("DENIED: a FOREIGN pool's lease write",
+    !(await pubLands(`$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_B}.probe1`, recordsKvStreamName(SPACE))));
+  c("DENIED: the epw ENQUEUE publish (the re-enqueue repair branch is ungranted by design)",
+    !(await pubLands(`cotal.${SPACE}.epw.${EP}.${POOL_A}.probe1`, epwStreamName(SPACE))));
+  await execProbe.close();
 
   await god.close();
 } finally {

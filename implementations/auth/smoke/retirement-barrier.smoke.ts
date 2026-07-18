@@ -29,7 +29,8 @@ import { openLifecycleRegistry, activateLifecycle, registryStores, observeGate, 
 import { stageAgentMint, finalizeAgentMint, credRowKey, type EvictPrincipal } from "../src/credential-ledger.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
-import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind } from "../src/retirement-barrier.js";
+import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind, type RetirementExecutorBind } from "../src/retirement-barrier.js";
+import { workPoolContext } from "@cotal-ai/core";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -72,6 +73,7 @@ accounts {
       { user: "auth", password: "pw" }
       { user: "local-victim", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
       { user: "local-cleaner", password: "pw" }
+      { user: "local-executor", password: "pw" }
     ]
   }
 }
@@ -140,7 +142,7 @@ try {
 
   const events: string[] = [];
   const frontierKeyOf = (uid: string) => recordAtomicKey(RETIREMENT_FRONTIER, [uid]);
-  const mkDeps = (opts: { failCleanerOpen?: boolean; guardUid?: string } = {}): RetirementDeps => ({
+  const mkDeps = (opts: { failCleanerOpen?: boolean; failExecutorOpen?: boolean; guardUid?: string } = {}): RetirementDeps => ({
     evictPrincipal: async (p) => { const r = await liveEvict(p); events.push(`evict:${p}:${JSON.stringify(r)}`); return r; },
     drainTargetObligations: async (endpoint, targetUid) => {
       const med = meds[endpoint as keyof typeof meds];
@@ -170,6 +172,23 @@ try {
       events.push("retireCleanerCredential");
       // Deliberately does NOT close the connection: the barrier's own verified eviction must
       // kill the live cleaner (the deny-new half is the deployment's; kill-live is the barrier's).
+    },
+    openExecutor: async ({ endpoint, pools }): Promise<RetirementExecutorBind> => {
+      if (opts.failExecutorOpen) throw new Error("simulated crash at executor mint");
+      events.push(`openExecutor:${endpoint}:${pools.join(",")}`);
+      const conn = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "local-executor", pass: "pw", reconnect: false });
+      cleanerConns.push(conn);
+      // A REAL constructed (branded, space-bonded) work context over the executor's OWN
+      // connection: the settlement seam asserts the brand, a hand-assembled bundle would throw.
+      return { work: await workPoolContext(conn, SPACE), principal: "local.executor" };
+    },
+    retireExecutorCredential: async () => {
+      // The same order probe: the executor fence too precedes THIS retirement's frontier (§13.1).
+      if (opts.guardUid !== undefined) {
+        const fr = await recordsKv.get(frontierKeyOf(opts.guardUid));
+        if (fr && fr.operation === "PUT") throw new Error(`executor retired AFTER a frontier record existed (${opts.guardUid})`);
+      }
+      events.push("retireExecutorCredential");
     },
     now: () => clock,
     cleaner: { fetchExpiresMs: 1000, maxStalledPasses: 4 },
@@ -255,8 +274,14 @@ try {
     const head = await readLifecycleHeadForOperation(reg, "local", "victim");
     c("the head is retired with no op intent (terminal asserts the completed barrier)", head!.mapping.state === "retired" && head!.mapping.op === undefined);
     c("the cleaner fence ran before the frontier (retire recorded, no early frontier throw)", events.includes("retireCleanerCredential"));
-    const lastCleaner = cleanerConns[cleanerConns.length - 1];
+    c("the SPLIT ran: the executor bind was opened for the op's exact pools and retired before the frontier",
+      events.includes(`openExecutor:${EP}:${POOL}`) && events.includes("retireExecutorCredential"), events);
+    c("BOTH per-op principals were evicted at the fence (cleaner AND executor, §13.1)",
+      events.some((e) => e.startsWith("evict:local.cleaner:")) && events.some((e) => e.startsWith("evict:local.executor:")), events);
+    const lastExecutor = cleanerConns[cleanerConns.length - 1];
+    const lastCleaner = cleanerConns[cleanerConns.length - 2];
     c("the cleaner's own live connection was killed by the fence eviction", await until(() => lastCleaner.isClosed()));
+    c("the executor's own live connection was killed by the fence eviction too", await until(() => lastExecutor.isClosed()));
   }
   const act2 = await activateLifecycle(reg, { owner: "local", actor: "victim", managerInstance: MGR });
   c("only a RETIRED predecessor is replaceable, and the successor gets a FRESH uid at epoch 1",
@@ -396,6 +421,26 @@ try {
     c("…but the cleaner principal was STILL verified-evicted (kill-live is not skipped by a deny-new failure)", evictedCleaner);
     c("…the live cleaner connection is dead, and no frontier recorded (fail-closed)",
       await until(() => liveConn?.isClosed() === true) && (await recordsKv.get(frontierKeyOf(uid7))) === null);
+  }
+
+  console.log("E2. a failed executor mint fences the already-minted cleaner (fail-closed)");
+  {
+    const actE2 = await activateLifecycle(reg, { owner: "local", actor: "execfail", managerInstance: MGR });
+    const uidE2 = actE2.mapping.lifecycleUid;
+    const mark = events.length;
+    await rejects("the barrier fails loud when the executor mint throws (the gate stays frozen)",
+      () => runAgentRetirementBarrier(reg, {
+        owner: "local", actor: "execfail", lifecycleUid: uidE2, opId: "x".repeat(26),
+        endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      }, mkDeps({ failExecutorOpen: true, guardUid: uidE2 })));
+    const tail = events.slice(mark);
+    c("…the already-minted cleaner was fenced first (retired + principal evicted, no live cleaner)",
+      tail.includes("retireCleanerCredential") && tail.some((e) => e.startsWith("evict:local.cleaner:")), tail);
+    c("…no executor retire/evict ran (nothing was minted) and no frontier recorded",
+      !tail.includes("retireExecutorCredential") && !tail.some((e) => e.startsWith("evict:local.executor:"))
+      && (await recordsKv.get(frontierKeyOf(uidE2))) === null);
+    const lastConn = cleanerConns[cleanerConns.length - 1];
+    c("…the cleaner connection is dead", await until(() => lastConn.isClosed()));
   }
 
   console.log("F. a late row on an already-drained endpoint forces another drain");

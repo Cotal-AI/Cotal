@@ -1,59 +1,144 @@
 /**
- * The per-op EXACT-POOL CLEANER credential lifecycle (SPEC 13.9 "Terminal pool cleanup" / #29
- * trigger slice, piece 1). The retirement barrier's {@link RetirementDeps} needs two cleaner seams
- * — `openCleaner` and `retireCleanerCredential` — wired to a REAL bounded credential, not the
- * static-conf user the smoke fakes. This module is that wiring; it is the production home of the
- * `barrierExecutorSettlementGrants` per-op credential the D14 audit flagged as unwired.
+ * The per-op EXACT-POOL CLEANER and RETIREMENT SETTLEMENT EXECUTOR credential lifecycles
+ * (SPEC 13.9 "Terminal pool cleanup" + "Retirement settlement"; #29 piece 2, the credential
+ * split the piece-1 union deferred). The retirement barrier's {@link RetirementDeps} needs four
+ * credential seams (`openCleaner`/`retireCleanerCredential` and `openExecutor`/
+ * `retireExecutorCredential`) wired to REAL bounded credentials, not the static-conf users the
+ * smokes fake.
  *
- * The panel-agreed shape (distsys, #29 piece-1 vote (2)):
- *  - ONE distinct cleaner principal PER OP: `local.epcln_<opId-hash>`. Kill-live is by CONNZ
- *    principal TAG (`owner.actor`), not nkey — so a SHARED cleaner principal would let one op's
- *    `evictPrincipal` collateral-kill a concurrent op's cleaner. A per-op actor makes the evict hit
- *    exactly this op's connection. The actor token grammar forbids `-` (the principal name-form
- *    separator, subjects.ts), so the op id is joined with `_` and shortened to a deterministic
- *    16-hex digest to stay a single bounded `[a-z0-9_]` token.
- *  - the credential is minted from the DURABLE INTENT's `(endpoint, pools)` only, granted EXACTLY
- *    `retirementCleanerGrants ∪ barrierExecutorSettlementGrants` for those pools (bind-only on the
- *    pool durables + the op's `wrk`/`lease` writes + the EPF fencing read), short-TTL, and CONNZ
- *    principal-tagged so the barrier can verified-evict it.
- *    KNOWN, DEFERRED to #29 piece 2 (freelance a559d9c round): SPEC 13.9 SPLITS this union — the
- *    cleaner must hold NO lease/`wrk` write (its residual is terminal-free ACK suppression), and
- *    the op-bounded settlement EXECUTOR owns those writes on its OWN connection. Piece 1 unions
- *    them here AND runs the settlement code on the barrier's standing connection; the split (a
- *    distinct executor client whose grant carries the lease/`wrk` writes plus the EPW/records
- *    reads the settlement executes) lands with the piece-2 wiring, where a real executor
- *    connection exists and security reviews the new profile. The path is daemon-unwired today, so
- *    the over-grant is latent, not live.
- *  - ATOMIC acquisition (freelance a559d9c round): the principal is reserved SYNCHRONOUSLY before
- *    the first await (two concurrent same-op opens cannot both pass a check-then-connect gap), both
- *    JS handles are built INSIDE the transaction, and the client is published to the live map only
- *    on full success — a post-connect `$JS.API.INFO` failure closes the connection and releases the
- *    reservation rather than stranding a live, never-retired client.
- *  - `retireCleanerCredential` closes the connection (the deny-new half). The barrier then runs its
- *    OWN `evictPrincipal(bind.principal)` (the kill-live half) — this module never evicts, so the
- *    kill-live authority stays with the barrier's delivery-admin seam.
- *  - fail-closed: a mint failure throws, so the barrier leaves the gate frozen (no frontiers, no
- *    head terminal) rather than proceeding without a cleaner.
+ * TWO clients per (op x endpoint), never one. SPEC 13.9 SPLITS the authority: the cleaner holds
+ * NO write grant at all (its explicit residual is terminal-free ACK suppression), while the
+ * op-bounded settlement executor owns the lease-record CAS and the lease-derived `wrk` terminal
+ * publish (the relocated, intent-confined forge residual). Piece 1 unioned both grant sets onto
+ * the one cleaner credential, which (a) collapsed the split's confinement, a compromised
+ * cleaner could both suppress ACKs and forge terminals, and (b) left the settlement CODE
+ * running on the barrier's STANDING connection, which holds no settlement grant at all (masked
+ * by the super-user smoke broker). This module mints them separately and hands the barrier an
+ * executor-owned {@link WorkPoolContext}, so the rights and the code sit on the SAME connection.
+ *
+ * The panel-agreed shape (distsys #29 piece-1 vote (2)), now per CLIENT:
+ *  - ONE distinct principal PER OP per role: `local.epcln_<opId-hash>` (cleaner) and
+ *    `local.epexe_<opId-hash>` (executor). Kill-live is by CONNZ principal TAG, so a shared
+ *    principal would let one op's evict collateral-kill another's client; and the barrier
+ *    verified-evicts BOTH principals at the fence, so the two roles must be two principals.
+ *  - grants from the DURABLE INTENT's (endpoint, pools) only: the cleaner gets exactly
+ *    `retirementCleanerGrants` (bind-only pool reads + the EPF fencing read + scoped inbox,
+ *    ZERO writes); the executor gets exactly {@link retirementExecutorClientGrants}. Nothing
+ *    standing, short-lived, both CONNZ principal-tagged so the barrier can verified-evict them.
+ *  - acquisition is ATOMIC and failure-transactional (the a559d9c freelance round): the
+ *    principal is reserved SYNCHRONOUSLY before the first await (two concurrent same-op opens
+ *    cannot both pass a check-then-await gap), the handles are built INSIDE the transaction,
+ *    the client is published to the live map only on full success, and every post-connect
+ *    failure closes the connection and releases the reservation (no infinite-reconnect leak,
+ *    no poisoned entry).
+ *  - `retire*Credential` closes the connection (the deny-new half). The barrier then runs its
+ *    OWN `evictPrincipal` (the kill-live half); this module never evicts, so the delivery-admin
+ *    KICK authority stays out of this seam.
+ *  - fail-closed: a mint failure throws, so the barrier leaves the gate frozen (no frontiers,
+ *    no head terminal) rather than proceeding without a credential.
  */
 import { createHash } from "node:crypto";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { barrierExecutorSettlementGrants, openAuthorityClient, type AuthorityClient } from "./authority-client.js";
-import { EpEnvelopeError, principalKey, retirementCleanerGrants } from "@cotal-ai/core";
-import type { PoolCleanerBind } from "./retirement-barrier.js";
+import {
+  EpEnvelopeError,
+  assertInboxConnId,
+  epwStreamName,
+  principalKey,
+  recordsKvStreamName,
+  retirementCleanerGrants,
+  workPoolContext,
+} from "@cotal-ai/core";
+import type { PoolCleanerBind, RetirementExecutorBind } from "./retirement-barrier.js";
 
-/** The infra owner for cleaner principals — CONNZ-attributable (`local` passes the delivery
- *  daemon's owner check, evict-exec.ts), reserved so it never collides with an agent principal. */
-const CLEANER_OWNER = "local";
+/** The infra owner for cleaner/executor principals: CONNZ-attributable (`local` passes the
+ *  delivery daemon's owner check, evict-exec.ts), reserved so it never collides with an agent
+ *  principal. */
+const INFRA_OWNER = "local";
 
-/** `epcln_<16-hex-of-sha256(opId)>` — a single `[a-z0-9_]` actor token (no `-`, bounded), UNIQUE
- *  per op (64 bits of digest: collision-resistant across any realistic set of concurrent ops). */
-function cleanerActor(opId: string): string {
-  return `epcln_${createHash("sha256").update(opId).digest("hex").slice(0, 16)}`;
+/** `epcln_<16-hex-of-sha256(opId)>` / `epexe_<...>`: single `[a-z0-9_]` actor tokens (no `-`,
+ *  bounded), UNIQUE per (op, role). Same digest, distinct prefixes, so the two roles are two
+ *  CONNZ principals and an evict of one never touches the other. 64 bits of digest is
+ *  collision-resistant across any realistic set of concurrent ops. */
+function opActor(prefix: "epcln" | "epexe", opId: string): string {
+  return `${prefix}_${createHash("sha256").update(opId).digest("hex").slice(0, 16)}`;
 }
 
 /**
- * Build the retirement cleaner seams over the data-account seed (the same self-mint substrate as
- * the barrier evictor). Returns `openCleaner`/`retireCleanerCredential` for a {@link RetirementDeps}.
+ * The op-bounded SETTLEMENT EXECUTOR client's grant (SPEC 13.9 "Retirement settlement" row):
+ * {@link barrierExecutorSettlementGrants} (per listed pool: the `lease.` CAS write and the
+ * `epf.<e>.wrk.<pool>.>` create-only publish, plus the leader-served EPF fencing read) + the
+ * reads the settlement's own code path performs on its own connection, derived from the code:
+ *  - `STREAM.MSG.GET.EPW_<space>`: `reconcileWorkItem`/`retireWorkItem` leader-read the live
+ *    pool entry (EPW is `allow_direct=false`, SPEC 13.6).
+ *  - `STREAM.MSG.GET.KV_cotal_records_<space>`: the lease re-reads (`kv.get` on the no-direct
+ *    records bucket is a leader-served MSG.GET).
+ *  - `STREAM.INFO.KV_cotal_records_<space>`: the `workPoolContext` bind probe (`Kvm.open`
+ *    reads the stream config to bind the bucket).
+ *  - `$JS.API.INFO` (the `jetstreamManager` handshake) + the connection-scoped inbox.
+ * NOT the barrier's standing profile: the executor client carries the settlement forge residual
+ * op-bounded (the D14/13.9 residual notes on {@link barrierExecutorSettlementGrants}), and the
+ * barrier's auth-store write authority never rides this connection. The `epw.>` ENQUEUE row is
+ * deliberately absent (the settlement seam refuses `expired` before the horizon, so the
+ * re-enqueue repair branch is structurally unreachable; if a code change ever reached it, the
+ * broker denies and the barrier fails loud).
+ */
+export function retirementExecutorClientGrants(space: string, endpoint: string, pools: string[], connId: string): { publish: string[]; subscribe: string[] } {
+  const settlement = barrierExecutorSettlementGrants(space, endpoint, pools);
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.INFO.${recordsKvStreamName(space)}`,
+      `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
+      `$JS.API.STREAM.MSG.GET.${epwStreamName(space)}`,
+      ...settlement.publish,
+    ],
+    subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
+  };
+}
+
+/** ATOMIC acquire: reserve the principal key SYNCHRONOUSLY (before any await), build the client
+ *  and its handles transactionally, publish to the live map only on success. On ANY failure the
+ *  reservation is released and a connected client is closed (never leaked, never poisoned). */
+async function acquire<B>(
+  clients: Map<string, AuthorityClient | "opening">,
+  key: string,
+  what: string,
+  openClient: () => Promise<AuthorityClient>,
+  makeBind: (client: AuthorityClient) => Promise<B>,
+): Promise<B> {
+  if (clients.has(key))
+    throw new EpEnvelopeError("failed-precondition", `${what} already open (or opening) for ${key}; retire it before re-opening`);
+  clients.set(key, "opening"); // the SYNCHRONOUS reservation: a concurrent same-op open throws above
+  let client: AuthorityClient | undefined;
+  try {
+    client = await openClient();
+    const bind = await makeBind(client);
+    clients.set(key, client);
+    return bind;
+  } catch (e) {
+    clients.delete(key);
+    if (client !== undefined) await client.close().catch(() => { /* already failing loud */ });
+    throw e;
+  }
+}
+
+/** Release: close the tracked client for the principal (the deny-new half). A still-opening
+ *  reservation refuses (a retire never closes a half-built client under a concurrent open);
+ *  an untracked principal is a no-op (a crash-resume retires what a dead process never held). */
+async function release(clients: Map<string, AuthorityClient | "opening">, key: string, what: string): Promise<void> {
+  const tracked = clients.get(key);
+  if (tracked === "opening")
+    throw new EpEnvelopeError("failed-precondition", `${what} for ${key} is still opening; a retire never closes a half-built client`);
+  if (tracked !== undefined) {
+    clients.delete(key);
+    await tracked.close();
+  }
+}
+
+/**
+ * Build the retirement credential seams over the data-account seed (the same self-mint
+ * substrate as the barrier evictor). Returns all four seams for a {@link RetirementDeps}.
  */
 export function makeRetirementCleaners(opts: {
   server: string;
@@ -63,62 +148,48 @@ export function makeRetirementCleaners(opts: {
 }): {
   openCleaner: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<PoolCleanerBind>;
   retireCleanerCredential: (bind: PoolCleanerBind) => Promise<void>;
+  openExecutor: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<RetirementExecutorBind>;
+  retireExecutorCredential: (bind: RetirementExecutorBind) => Promise<void>;
 } {
-  // principal -> the open (or reserving) client, so retireCleanerCredential closes exactly this
-  // op's connection. `"opening"` is the SYNCHRONOUS reservation held across the connect+bind await.
+  // principal -> the open (or opening) client, both roles in ONE map (the keys are disjoint by
+  // the actor prefix), so retire closes exactly this op's connection for that role.
   const clients = new Map<string, AuthorityClient | "opening">();
+  const openRole = <B>(
+    role: "epcln" | "epexe",
+    what: string,
+    label: string,
+    args: { opId: string; endpoint: string; pools: string[] },
+    grants: (connId: string) => { publish: string[]; subscribe: string[] },
+    makeBind: (client: AuthorityClient, principal: string) => Promise<B>,
+  ): Promise<B> => {
+    const actor = opActor(role, args.opId);
+    const principal = principalKey(INFRA_OWNER, actor).key;
+    return acquire(clients, principal, what, () => openAuthorityClient({
+      server: opts.server,
+      space: opts.space,
+      dataAccount: opts.dataAccount,
+      label: `cotal:ep-${label}:${opts.space}:${args.opId}`,
+      principal: { owner: INFRA_OWNER, actor },
+      grants,
+      log: opts.log,
+    }), (client) => makeBind(client, principal));
+  };
   return {
-    openCleaner: async ({ opId, endpoint, pools }): Promise<PoolCleanerBind> => {
-      const actor = cleanerActor(opId);
-      const principal = principalKey(CLEANER_OWNER, actor).key;
-      // ATOMIC, FAIL-CLOSED double-open guard: reserve the key SYNCHRONOUSLY (before the first
-      // await), so two concurrent same-op opens cannot BOTH pass a check-then-connect gap and leak
-      // the loser's connection (infinite-reconnect, so the process never drains) or make
-      // retireCleanerCredential close the WRONG one. A crash-resume re-open is fine — the crashed
-      // process's map is gone, so nothing is tracked here.
-      if (clients.has(principal))
-        throw new EpEnvelopeError("failed-precondition", `retirement cleaner already open (or opening) for op ${opId}; retire it before re-opening`);
-      clients.set(principal, "opening");
-      let client: AuthorityClient | undefined;
-      try {
-        client = await openAuthorityClient({
-          server: opts.server,
-          space: opts.space,
-          dataAccount: opts.dataAccount,
-          label: `cotal:ep-cleaner:${opts.space}:${opId}`,
-          principal: { owner: CLEANER_OWNER, actor },
-          grants: (connId) => {
-            // Exactly the op's pools, from the durable intent: bind-only pool-durable reads +
-            // wrk/lease settlement writes + the EPF fencing read + the scoped inbox. Nothing standing.
-            const cleaner = retirementCleanerGrants(opts.space, endpoint, pools, connId);
-            const settlement = barrierExecutorSettlementGrants(opts.space, endpoint, pools);
-            return { publish: [...cleaner.publish, ...settlement.publish], subscribe: cleaner.subscribe };
-          },
-          log: opts.log,
-        });
-        // Build BOTH JS handles inside the transaction: `jetstreamManager` performs a `$JS.API.INFO`
-        // that can reject AFTER the credential connected. Publish to the live map ONLY on full
-        // success, so a post-connect failure never strands a live, never-retired tracked client.
-        const bind: PoolCleanerBind = { jsm: await jetstreamManager(client.nc), js: jetstream(client.nc), principal };
-        clients.set(principal, client);
-        return bind;
-      } catch (e) {
-        clients.delete(principal); // release the reservation
-        if (client !== undefined) await client.close().catch(() => { /* already failing loud */ });
-        throw e;
-      }
-    },
-    retireCleanerCredential: async (bind: PoolCleanerBind): Promise<void> => {
-      // Deny-new: close this op's cleaner connection. Kill-live (evicting any lingering connection
-      // that raced the close) is the BARRIER's job via its own evictPrincipal — never here, so the
-      // delivery-admin KICK authority stays out of this seam.
-      const tracked = clients.get(bind.principal);
-      // A retire never closes a half-built client under a concurrent open (the reservation is not a
-      // connection): only a fully-published client is closed.
-      if (tracked !== undefined && tracked !== "opening") {
-        clients.delete(bind.principal);
-        await tracked.close();
-      }
-    },
+    openCleaner: ({ opId, endpoint, pools }) =>
+      openRole("epcln", "retirement cleaner", "cleaner", { opId, endpoint, pools },
+        (connId) => retirementCleanerGrants(opts.space, endpoint, pools, connId),
+        // Both JS handles are built INSIDE the transaction: `jetstreamManager` performs a
+        // `$JS.API.INFO` that can reject AFTER the credential connected; a failure there closes
+        // the connection instead of stranding a live, never-retired tracked client.
+        async (client, principal) => ({ jsm: await jetstreamManager(client.nc), js: jetstream(client.nc), principal })),
+    retireCleanerCredential: (bind) => release(clients, bind.principal, "retirement cleaner"),
+    openExecutor: ({ opId, endpoint, pools }) =>
+      openRole("epexe", "retirement settlement executor", "executor", { opId, endpoint, pools },
+        (connId) => retirementExecutorClientGrants(opts.space, endpoint, pools, connId),
+        // The executor-owned, space-bonded work context: the settlement seam's rights and code
+        // sit on this ONE connection (the constructor derives kv/js/jsm from it, brands the
+        // context, and probes the records bucket, all inside the transaction).
+        async (client, principal) => ({ work: await workPoolContext(client.nc, opts.space), principal })),
+    retireExecutorCredential: (bind) => release(clients, bind.principal, "retirement settlement executor"),
   };
 }
