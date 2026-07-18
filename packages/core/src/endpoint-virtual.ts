@@ -175,16 +175,16 @@ export async function readPoolOccupancy(
     throw new EpEnvelopeError("unavailable", `the pool occupancy read failed for ${stream}/${durable}; an admission fence fails closed, never open (SPEC 13.6): ${(e as Error)?.message ?? String(e)}`);
   }
   if (info.config.max_deliver !== -1)
-    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports max_deliver ${String(info.config.max_deliver)}, not -1 (unlimited); a finite delivery ceiling strands exhausted items outside num_pending and num_ack_pending, so the occupancy sum would be a lie — repin the consumer (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports max_deliver ${String(info.config.max_deliver)}, not -1 (unlimited); a finite delivery ceiling strands exhausted items outside num_pending and num_ack_pending, so the occupancy sum would be a lie; repin the consumer (SPEC 13.6)`);
   const expectedFilter = `${spacePrefix(ctx.space)}.epw.${endpointToken(endpoint)}.${assertPoolToken(pool)}.>`;
   if ((info.config as { filter_subjects?: unknown }).filter_subjects !== undefined)
-    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports a multi-filter (filter_subjects); the §13.6 count is defined over exactly ONE pool filter — repin the consumer (SPEC 13.9)`);
+    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports a multi-filter (filter_subjects); the §13.6 count is defined over exactly ONE pool filter; repin the consumer (SPEC 13.9)`);
   if (info.config.filter_subject !== expectedFilter)
-    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports filter "${String(info.config.filter_subject)}", not the pool's own "${expectedFilter}"; FilterSubject is editable post-create and a narrowed/foreign filter undercounts stored work — repin the consumer (SPEC 13.6/13.9)`);
+    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports filter "${String(info.config.filter_subject)}", not the pool's own "${expectedFilter}"; FilterSubject is editable post-create and a narrowed/foreign filter undercounts stored work; repin the consumer (SPEC 13.6/13.9)`);
   if (info.config.ack_policy !== AckPolicy.Explicit)
     throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} reports ack_policy "${String(info.config.ack_policy)}", not explicit; without the ack barrier num_ack_pending does not mean owned work (SPEC 13.9)`);
   if ((info.config as { deliver_subject?: unknown }).deliver_subject !== undefined)
-    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} is a PUSH consumer (deliver_subject set); the §13.6 pool is pull-only, a delete/recreate must not substitute a push shape — repin the consumer (SPEC 13.9)`);
+    throw new EpEnvelopeError("failed-precondition", `pool consumer ${durable} is a PUSH consumer (deliver_subject set); the §13.6 pool is pull-only, a delete/recreate must not substitute a push shape; repin the consumer (SPEC 13.9)`);
   if (!uint(info.num_pending) || !uint(info.num_ack_pending) || !Number.isSafeInteger(info.num_pending + info.num_ack_pending))
     throw new EpEnvelopeError("internal", `pool consumer ${durable} reported non-safe-integer counters (num_pending ${String(info.num_pending)}, num_ack_pending ${String(info.num_ack_pending)})`);
   return { pending: info.num_pending, ackPending: info.num_ack_pending, occupancy: info.num_pending + info.num_ack_pending };
@@ -304,7 +304,7 @@ export async function admitVirtualWork(
     throw new EpEnvelopeError("unavailable", `the admission-durable read failed for ${admissionDurable}; the serial pin cannot be assumed, admission fails closed (SPEC 13.6): ${(e as Error)?.message ?? String(e)}`);
   }
   if (admissionInfo.config.max_ack_pending !== 1)
-    throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports max_ack_pending ${String(admissionInfo.config.max_ack_pending)}, not 1; MaxAckPending is editable post-create and without the pin two submissions can observe the same free slot — repin the consumer (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports max_ack_pending ${String(admissionInfo.config.max_ack_pending)}, not 1; MaxAckPending is editable post-create and without the pin two submissions can observe the same free slot; repin the consumer (SPEC 13.6)`);
   // Re-prove the load-bearing shape too (defense against a delete/recreate substituting a
   // semantically different consumer that keeps the same max_ack_pending/filter): the serial
   // pin only serializes when ack is Explicit and delivery is pull (no deliver_subject).
@@ -314,7 +314,7 @@ export async function admitVirtualWork(
     throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} is a PUSH consumer (deliver_subject set); the canonicalizer is pull-only, a push shape does not serialize the decision path (SPEC 13.9)`);
   const expectedAdmissionFilter = `${spacePrefix(ctx.space)}.epj.${endpointToken(args.endpoint)}.>`;
   if ((admissionInfo.config as { filter_subjects?: unknown }).filter_subjects !== undefined || admissionInfo.config.filter_subject !== expectedAdmissionFilter)
-    throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports filter "${String(admissionInfo.config.filter_subject)}", not the endpoint's own "${expectedAdmissionFilter}"; a drifted admission filter serializes the wrong stream — repin the consumer (SPEC 13.9)`);
+    throw new EpEnvelopeError("failed-precondition", `admission durable ${admissionDurable} reports filter "${String(admissionInfo.config.filter_subject)}", not the endpoint's own "${expectedAdmissionFilter}"; a drifted admission filter serializes the wrong stream; repin the consumer (SPEC 13.9)`);
 
   // (2) Repair BEFORE counting.
   let repaired = 0;
@@ -569,7 +569,7 @@ export async function noteInstanceRestart(
   // stale window count computed against the bad clock (SPEC 13.6).
   const newest = history.reduce((m, e) => Math.max(m, e.t), 0);
   if (args.now < newest)
-    throw new EpEnvelopeError("failed-precondition", `${what}: the supervision clock ${args.now} is BEHIND the newest recorded restart ${newest}; a clock regression must not amnesty durable history (SPEC 13.6) — restore the clock or reconcile manually`);
+    throw new EpEnvelopeError("failed-precondition", `${what}: the supervision clock ${args.now} is BEHIND the newest recorded restart ${newest}; a clock regression must not amnesty durable history (SPEC 13.6); restore the clock or reconcile manually`);
   if (history.some((e) => e.epoch === args.epoch)) {
     // The SAME dying epoch is already recorded: this note is a replay/duplicate of a restart
     // already counted — idempotent no-op (a real restart advances the epoch).

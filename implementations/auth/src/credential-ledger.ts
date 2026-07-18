@@ -520,7 +520,7 @@ export interface EnumeratedRow {
 function parseLedgerEntries(entries: RawScanEntry[]): EnumeratedRow[] {
   return entries.map((e) => {
     if (e.op === "DEL" || e.op === "PURGE")
-      throw new EpEnvelopeError("failed-precondition", `the ledger key ${e.key} carries a ${e.op} marker; ledger rows are revoked, never deleted — the enumeration refuses (corruption, SPEC 13.12)`);
+      throw new EpEnvelopeError("failed-precondition", `the ledger key ${e.key} carries a ${e.op} marker; ledger rows are revoked, never deleted; the enumeration refuses (corruption, SPEC 13.12)`);
     return { key: e.key, row: parseLedgerRow(e.data, e.key), revision: e.seq };
   });
 }
@@ -762,7 +762,7 @@ export async function runAgentTakeoverBarrier(
     // re-read the head and refuse any movement BEFORE the intent becomes durable.
     const head2 = await readLifecycleHeadForOperation(reg, args.owner, args.actor);
     if (head2 === undefined || head2.mapping.state !== "active" || head2.mapping.lifecycleUid !== args.lifecycleUid || head2.mapping.processEpoch !== head.mapping.processEpoch)
-      throw new EpEnvelopeError("conflict", `the head for "${args.owner}/${args.actor}" moved while this takeover captured its coordinates (epoch ${head.mapping.processEpoch} → ${head2 === undefined ? "gone" : `${head2.mapping.state}@${head2.mapping.processEpoch}`}); the captured pair is torn — re-read and re-decide with fresh coordinates (SPEC 13.1)`);
+      throw new EpEnvelopeError("conflict", `the head for "${args.owner}/${args.actor}" moved while this takeover captured its coordinates (epoch ${head.mapping.processEpoch} → ${head2 === undefined ? "gone" : `${head2.mapping.state}@${head2.mapping.processEpoch}`}); the captured pair is torn; re-read and re-decide with fresh coordinates (SPEC 13.1)`);
     const intent: TakeoverIntent = {
       kind: "takeover", lifecycleUid: args.lifecycleUid, owner: args.owner, actor: args.actor,
       fromEpoch: head.mapping.processEpoch, fromGeneration: gate0.row.generation,
@@ -799,7 +799,7 @@ export async function runAgentTakeoverBarrier(
       // claim the winner's completion (SPEC 13.1). The epoch stamp binds completion to one op.
       const head = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);
       if (head === undefined || head.mapping.state !== "active" || head.mapping.lifecycleUid !== intent.lifecycleUid || head.mapping.processEpoch !== intent.fromEpoch + 1)
-        throw new EpEnvelopeError("internal", `the gate for ${intent.lifecycleUid} reopened at generation ${gate.row.generation} but the head does not show the completed takeover (SPEC 13.1) — inspect the operation ${opId}`);
+        throw new EpEnvelopeError("internal", `the gate for ${intent.lifecycleUid} reopened at generation ${gate.row.generation} but the head does not show the completed takeover (SPEC 13.1); inspect the operation ${opId}`);
       if (head.mapping.lastTakeoverOpId !== opId)
         throw new EpEnvelopeError("conflict", `the takeover of ${intent.lifecycleUid} at epoch ${intent.fromEpoch + 1} was completed by operation ${head.mapping.lastTakeoverOpId ?? "<none>"}, not ${opId}; a concurrent takeover won and this operation lost (SPEC 13.1)`);
       return { opId, lifecycleUid: intent.lifecycleUid, toEpoch: intent.fromEpoch + 1, toGeneration: intent.fromGeneration + 1, revokedRows: 0, evictedPrincipals: [] };
@@ -814,7 +814,7 @@ export async function runAgentTakeoverBarrier(
     // this read must first freeze the gate itself, which makes OUR freeze CAS lose and re-loop.
     const headNow = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);
     if (headNow === undefined || headNow.mapping.state !== "active" || headNow.mapping.lifecycleUid !== intent.lifecycleUid || headNow.mapping.processEpoch !== intent.fromEpoch)
-      throw new EpEnvelopeError("conflict", `the head for "${intent.owner}/${intent.actor}" is ${headNow === undefined ? "gone" : `${headNow.mapping.state}@epoch ${headNow.mapping.processEpoch} (uid ${headNow.mapping.lifecycleUid})`}, not this takeover's captured epoch ${intent.fromEpoch}; the intent is stale and this operation lost — the gate was not moved (SPEC 13.1)`);
+      throw new EpEnvelopeError("conflict", `the head for "${intent.owner}/${intent.actor}" is ${headNow === undefined ? "gone" : `${headNow.mapping.state}@epoch ${headNow.mapping.processEpoch} (uid ${headNow.mapping.lifecycleUid})`}, not this takeover's captured epoch ${intent.fromEpoch}; the intent is stale and this operation lost; the gate was not moved (SPEC 13.1)`);
     try {
       await freezeGate(reg, { lifecycleUid: intent.lifecycleUid, revision: gate.revision, op: { opId, kind: "takeover" } });
       break;

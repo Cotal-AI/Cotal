@@ -1472,7 +1472,7 @@ export class CotalEndpoint extends EventEmitter {
       const e = await kv.get(key);
       if (!e || e.operation === "DEL" || e.operation === "PURGE") continue;
       if (key === MEMBERSHIP_FEED_KEY) {
-        try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled — leave undefined */ }
+        try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
       }
       try {
@@ -1643,7 +1643,7 @@ export class CotalEndpoint extends EventEmitter {
     try {
       await jsm.consumers.info(stream, name);
       return; // this lifecycle's durable exists — keep its original frontier
-    } catch { /* absent — create below */ }
+    } catch { /* absent; create below */ }
     const frontier = (await jsm.streams.info(stream)).state.last_seq;
     try {
       await jsm.consumers.add(stream, dmDurableConfig(this.space, owner, actor, lifecycleUid, { ...opts, activationFrontier: frontier }));
@@ -2809,7 +2809,7 @@ export class CotalEndpoint extends EventEmitter {
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
-    try { await this.jsm.consumers.delete(stream, name); } catch { /* none — fine */ }
+    try { await this.jsm.consumers.delete(stream, name); } catch { /* none; fine */ }
     await this.jsm.consumers.add(stream, {
       name,
       filter_subject: subject,
@@ -3395,7 +3395,7 @@ export async function probeConnect(
       if (typeof opts.creds === "string") {
         try {
           if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
-        } catch { /* not introspectable — keep the wire truth */ }
+        } catch { /* not introspectable; keep the wire truth */ }
       }
       return { ok: false, reason: "auth-required" };
     }

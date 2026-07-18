@@ -222,7 +222,7 @@ function pickCorrelation(v: unknown): EpCorrelation | undefined {
     if (!m || m[1] === "ff" || /^0+$/.test(m[2]) || /^0+$/.test(m[3]))
       fail("bad-request", "correlation.traceparent is not a valid W3C Trace Context traceparent");
     if (m[1] === "00" && m[4] !== undefined)
-      fail("bad-request", "correlation.traceparent version 00 is exactly 55 characters — it carries no extension fields");
+      fail("bad-request", "correlation.traceparent version 00 is exactly 55 characters; it carries no extension fields");
     out.traceparent = tp;
   }
   for (const k of ["tracestate", "baggage"] as const) {

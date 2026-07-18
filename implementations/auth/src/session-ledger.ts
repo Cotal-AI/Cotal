@@ -102,7 +102,7 @@ export interface SessionAuthStore {
 const AUTH_STORES = new WeakMap<SessionAuthStore, true>();
 function assertStore(store: SessionAuthStore): void {
   if (!AUTH_STORES.has(store))
-    throw new EpEnvelopeError("failed-precondition", `the session auth store was not constructed by openSessionAuthStore(); a hand-assembled {kv, space} never authorizes — the space bond is constructed, not asserted (SPEC 13.12)`);
+    throw new EpEnvelopeError("failed-precondition", `the session auth store was not constructed by openSessionAuthStore(); a hand-assembled {kv, space} never authorizes; the space bond is constructed, not asserted (SPEC 13.12)`);
 }
 
 /** Open the per-space auth store and PROVE its security-critical shape, not merely that some
@@ -125,11 +125,11 @@ export async function openSessionAuthStore(nc: NatsConnection, space: string): P
     throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is not provisioned (run space setup; SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
   }
   if (cfg.allow_direct !== false)
-    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} has allow_direct=${String(cfg.allow_direct)}, not false; every authority read here must be leader-served, a Direct-Get-capable store defeats read-your-writes (§13.1) — reprovision`);
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} has allow_direct=${String(cfg.allow_direct)}, not false; every authority read here must be leader-served, a Direct-Get-capable store defeats read-your-writes (§13.1); reprovision`);
   if (typeof cfg.max_age === "number" && cfg.max_age > 0)
-    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted session/gate authority key silently drops a fence (§13.12) — reprovision without MaxAge`);
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted session/gate authority key silently drops a fence (§13.12); reprovision without MaxAge`);
   if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
-    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is a mirror/sourced stream; a follower copy cannot serve read-your-writes authority reads (§13.1) — bind the primary`);
+    throw new EpEnvelopeError("failed-precondition", `the auth store ${bucket} is a mirror/sourced stream; a follower copy cannot serve read-your-writes authority reads (§13.1); bind the primary`);
   // FROZEN before branding (the scanner-handle discipline): the brand keys this exact reference,
   // and the freeze guarantees `kv`/`space` are still the constructed pair when a seam asserts the
   // brand — a post-brand `store.space = "other"` / `store.kv = foreignKv` rebind throws instead of
@@ -329,7 +329,7 @@ function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
     // (SPEC 13.1 per-kind transition sets): a retired gate belongs only to an activation orphan
     // or a retirement, and only takeover/registration may stage a successor summary.
     if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1) — impossible persisted state, refused`);
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1); impossible persisted state, refused`);
     if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
       throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
     try {

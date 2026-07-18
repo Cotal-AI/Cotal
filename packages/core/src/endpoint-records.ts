@@ -495,7 +495,7 @@ export async function readRecord<S = unknown, T = unknown>(
   // deadline — a transient interleaving must never be classified as corruption (§13.4).
   for (let attempt = 0; !liveEntry(specEntry) && liveEntry(statusEntry); attempt++) {
     if (Date.now() >= deadline)
-      throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key (stable across bounded re-reads) — torn record state, refusing to read`);
+      throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key (stable across bounded re-reads); torn record state, refusing to read`);
     await new Promise((r) => setTimeout(r, Math.min(backoffMs(attempt), Math.max(0, deadline - Date.now()))));
     specEntry = await kv.get(sKey);
     if (!liveEntry(specEntry)) statusEntry = await kv.get(tKey);
@@ -627,7 +627,7 @@ export async function* watchRecord<S = unknown, T = unknown>(
           // The replay is a consistent view: a live status whose spec key never appeared is
           // REAL torn state, not a read-order artifact — fail loud, never relist over it.
           if (status && !specSeen)
-            throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key in a consistent watch replay — torn record state`);
+            throw new EpEnvelopeError("failed-precondition", `record ${tKey} exists without its spec key in a consistent watch replay; torn record state`);
         } else {
           progressed = true;
         }

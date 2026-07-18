@@ -144,7 +144,7 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
   for (const ref of collectRefs(doc, label)) {
     if (ref.startsWith("#")) continue; // local pointer/anchor — resolved within the document
     const m = STORE_REF.exec(ref);
-    if (!m) throw new ContractInvalidError(`${label}: external $ref ${JSON.stringify(ref)} — only local '#…' or digest-pinned 'cotal:sha256:<hex>' references are permitted (no ambient resolution)`);
+    if (!m) throw new ContractInvalidError(`${label}: external $ref ${JSON.stringify(ref)}; only local '#…' or digest-pinned 'cotal:sha256:<hex>' references are permitted (no ambient resolution)`);
     storeRefs.push(m[1]);
   }
   return storeRefs;

@@ -404,7 +404,7 @@ function analyze(node: Node): Facts {
       if (repeats) {
         if (body.variable) refuse("repeats a group that itself contains a quantifier (exponential backtracking class)");
         if (body.nullable) refuse("repeats a nullable body (unbounded ambiguity on empty matches)");
-        if (body.ambiguousAlt) refuse("repeats an ambiguous alternation (branches overlap — exponential backtracking class)");
+        if (body.ambiguousAlt) refuse("repeats an ambiguous alternation (branches overlap; exponential backtracking class)");
       }
       // Every NONDETERMINISTIC repetition (`max > min`: `*`, `+`, `{n,}`, `?`, and any `{m,n}`
       // with n>m) drives the polynomial overlap, because it can match a VARIABLE number of the

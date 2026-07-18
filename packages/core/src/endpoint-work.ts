@@ -191,7 +191,7 @@ export async function enqueueWorkItem(
     try { stored = await ctx.jsm.streams.getMessage(epwStreamName(ctx.space), { last_by_subj: subject }); }
     catch (ge) { if (isNoMessage(ge)) return { enqueued: false }; throw new EpEnvelopeError("unavailable", `the enqueue CAS lost and the stored item is not readable to verify identity (SPEC 13.6): ${(ge as Error)?.message ?? String(ge)}`); }
     if (stored !== null && rawDigest(stored.data) !== rawDigest(bytes)) // the DETACHED bytes, the ones actually published — not the caller-owned itemBytes a mutation could have changed during the publish await
-      throw new EpEnvelopeError("conflict", `an item with acceptance identity "${ref.acceptance.id}" is already enqueued with DIFFERENT bytes; idempotency is same-subject AND same-bytes — a differing body is a canonicalizer mixup, never silently accepted (SPEC 13.6)`);
+      throw new EpEnvelopeError("conflict", `an item with acceptance identity "${ref.acceptance.id}" is already enqueued with DIFFERENT bytes; idempotency is same-subject AND same-bytes; a differing body is a canonicalizer mixup, never silently accepted (SPEC 13.6)`);
     return { enqueued: false };
   }
 }
@@ -404,7 +404,7 @@ export async function leaseWorkItem(
     // Settlement DOMINATES every binding check: a never-leased expired settlement carries
     // sentinel coordinates (sourceSeq 0), so binding refusals on a settled item would mislead.
     if (stored.state === "settled")
-      throw new EpEnvelopeError("failed-precondition", `the item is already settled ${stored.disposition}; a committed item can never be leased again — observe the terminal and ack the redelivery without effect (SPEC 13.5/13.6)`);
+      throw new EpEnvelopeError("failed-precondition", `the item is already settled ${stored.disposition}; a committed item can never be leased again; observe the terminal and ack the redelivery without effect (SPEC 13.5/13.6)`);
     if (stored.sourceSeq !== sourceSeq)
       throw new EpEnvelopeError("conflict", `the lease for this acceptance identity binds stream sequence ${stored.sourceSeq}, not ${sourceSeq}; a request id becomes new work only after workExpiry AND fact retention pass (SPEC 13.8)`);
     // `workExpiry` is IDENTITY-BOUND: it is set once from the AcceptanceFact and every later

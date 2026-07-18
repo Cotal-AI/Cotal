@@ -74,15 +74,15 @@ function assertInterchangeable(v: unknown, path: string): void {
           throw new Error(`canonicalJson: non-ordinary array at ${path} (a subclassed/exotic array canonicalizes through projections)`);
         for (const k of Reflect.ownKeys(v)) {
           if (typeof k !== "string")
-            throw new Error(`canonicalJson: symbol-keyed own property on array at ${path} (invisible to canonicalization — refusing the projection)`);
+            throw new Error(`canonicalJson: symbol-keyed own property on array at ${path} (invisible to canonicalization; refusing the projection)`);
           if (k === "length") continue;
           if (!/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= v.length)
-            throw new Error(`canonicalJson: non-index own property "${k}" on array at ${path} (invisible to canonicalization — refusing the projection)`);
+            throw new Error(`canonicalJson: non-index own property "${k}" on array at ${path} (invisible to canonicalization; refusing the projection)`);
         }
         for (let i = 0; i < v.length; i++) {
           const d = Object.getOwnPropertyDescriptor(v, i);
           if (d === undefined)
-            throw new Error(`canonicalJson: hole at ${path}[${i}] (a hole would be coerced to null — refusing the projection)`);
+            throw new Error(`canonicalJson: hole at ${path}[${i}] (a hole would be coerced to null; refusing the projection)`);
           if (!d.enumerable || d.get !== undefined || d.set !== undefined)
             throw new Error(`canonicalJson: non-enumerable or accessor element at ${path}[${i}] (refusing the projection)`);
           assertInterchangeable(v[i], `${path}[${i}]`);
@@ -94,13 +94,13 @@ function assertInterchangeable(v: unknown, path: string): void {
         throw new Error(`canonicalJson: non-plain object at ${path} (a class/exotic instance canonicalizes through projections like toJSON; only plain data objects are interchangeable)`);
       for (const k of Reflect.ownKeys(v)) {
         if (typeof k !== "string")
-          throw new Error(`canonicalJson: symbol-keyed own property at ${path} (invisible to canonicalization — refusing the projection)`);
+          throw new Error(`canonicalJson: symbol-keyed own property at ${path} (invisible to canonicalization; refusing the projection)`);
         if (hasLoneSurrogate(k)) throw new Error(`canonicalJson: lone surrogate in key at ${path}.${k}`);
         const d = Object.getOwnPropertyDescriptor(v, k)!;
         if (!d.enumerable)
-          throw new Error(`canonicalJson: non-enumerable own property "${k}" at ${path} (invisible to canonicalization — refusing the projection)`);
+          throw new Error(`canonicalJson: non-enumerable own property "${k}" at ${path} (invisible to canonicalization; refusing the projection)`);
         if (d.get !== undefined || d.set !== undefined)
-          throw new Error(`canonicalJson: accessor property "${k}" at ${path} (a getter is code, not data — refusing the projection)`);
+          throw new Error(`canonicalJson: accessor property "${k}" at ${path} (a getter is code, not data; refusing the projection)`);
         assertInterchangeable((v as Record<string, unknown>)[k], `${path}.${k}`);
       }
       return;
@@ -130,7 +130,7 @@ export function contractDigest(value: unknown): string {
 export function rawDigest(data: Uint8Array | string): string {
   const h = createHash("sha256");
   if (typeof data === "string") {
-    if (hasLoneSurrogate(data)) throw new Error("rawDigest: lone surrogate in string input — no UTF-8 encoding exists, the digest would not be over the carried value");
+    if (hasLoneSurrogate(data)) throw new Error("rawDigest: lone surrogate in string input; no UTF-8 encoding exists, the digest would not be over the carried value");
     h.update(data, "utf8");
   } else {
     h.update(data);
@@ -150,6 +150,6 @@ export function verifyArtifact(bytes: Uint8Array, digest: string): unknown {
     throw new Error(`verifyArtifact: artifact for ${digest} is not valid UTF-8 JSON: ${(e as Error).message}`);
   }
   const actual = contractDigest(parsed);
-  if (actual !== digest) throw new Error(`verifyArtifact: digest mismatch — advertised ${digest}, content is ${actual}`);
+  if (actual !== digest) throw new Error(`verifyArtifact: digest mismatch; advertised ${digest}, content is ${actual}`);
   return parsed;
 }

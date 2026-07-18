@@ -72,7 +72,7 @@ export type GuardAnswer =
   | { decision: "hold"; token: string; holdDeadlineMs: number; obligations: GuardObligation[] };
 
 function denyClosed(why: string): never {
-  throw new EpEnvelopeError("permission-denied", `guard gate DENIES: ${why} (SPEC 13.6: timeout, an unreachable guard, or a garbled answer is deny — the gate fails closed, never open)`);
+  throw new EpEnvelopeError("permission-denied", `guard gate DENIES: ${why} (SPEC 13.6: timeout, an unreachable guard, or a garbled answer is deny; the gate fails closed, never open)`);
 }
 
 function parseObligation(raw: unknown, i: number): Omit<GuardObligation, "sig"> & { sig: string } {

@@ -234,7 +234,7 @@ function itemRefOf(space: string, endpoint: string, pool: string, subject: strin
     throw new EpEnvelopeError("internal", `the delivered pool message ${subject} does not carry a valid acceptance identity: ${(e as Error).message} (SPEC 13.2)`);
   }
   if (rebuilt !== subject)
-    throw new EpEnvelopeError("internal", `the delivered pool message ${subject} does not rebuild from the bound pool coordinates (${rebuilt}); the durable's filter proof does not cover it (SPEC 13.9) — refused`);
+    throw new EpEnvelopeError("internal", `the delivered pool message ${subject} does not rebuild from the bound pool coordinates (${rebuilt}); the durable's filter proof does not cover it (SPEC 13.9); refused`);
   return ref;
 }
 
@@ -242,7 +242,7 @@ function itemRefOf(space: string, endpoint: string, pool: string, subject: strin
  *  AckSync or re-proven, never assumed). */
 async function ackSync(m: { ackAck: () => Promise<boolean> }, subject: string): Promise<void> {
   if ((await m.ackAck()) !== true)
-    throw new EpEnvelopeError("unavailable", `the cleaner's ACK for ${subject} was not confirmed by the server; re-run the barrier — the settled terminal makes the retry idempotent (SPEC 13.9)`);
+    throw new EpEnvelopeError("unavailable", `the cleaner's ACK for ${subject} was not confirmed by the server; re-run the barrier; the settled terminal makes the retry idempotent (SPEC 13.9)`);
 }
 
 /**
@@ -295,7 +295,7 @@ export async function runExactPoolCleaner(
   if (cfg.ack_policy !== AckPolicy.Explicit)
     throw new EpEnvelopeError("failed-precondition", `the pool durable ${durable} has ack policy ${String(cfg.ack_policy)}, not explicit; terminal-only ACK needs explicit acks (SPEC 13.9)`);
   if (cfg.max_deliver !== -1)
-    throw new EpEnvelopeError("failed-precondition", `the pool durable ${durable} caps delivery at ${String(cfg.max_deliver)}; an exhausted item leaves the counters and falsifies quiescence (SPEC 13.9) — the ceiling must be unlimited`);
+    throw new EpEnvelopeError("failed-precondition", `the pool durable ${durable} caps delivery at ${String(cfg.max_deliver)}; an exhausted item leaves the counters and falsifies quiescence (SPEC 13.9); the ceiling must be unlimited`);
 
   const counts: PoolCleanResult = { ackedTerminal: 0, settledExpired: 0, settledRetired: 0 };
   const foreignLive = new Map<string, string>(); // subject → why it may not be settled
@@ -321,12 +321,12 @@ export async function runExactPoolCleaner(
       const decSubject = epfSubject(space, endpoint, ["dec", ref.acceptance.owner, ref.acceptance.actor, ref.acceptance.uid, ref.acceptance.id]);
       const decRaw = await readLastFact(bind.jsm, epfStreamName(space), decSubject);
       if (decRaw === undefined)
-        throw new EpEnvelopeError("internal", `the pool item ${m.subject} has no decision fact; an enqueued item derives from an acceptance (corruption, SPEC 13.8) — the cleaner refuses`);
+        throw new EpEnvelopeError("internal", `the pool item ${m.subject} has no decision fact; an enqueued item derives from an acceptance (corruption, SPEC 13.8); the cleaner refuses`);
       const fact = parseDecisionFact(decRaw, decSubject);
       if (fact.decision !== "accepted")
-        throw new EpEnvelopeError("internal", `the pool item ${m.subject} sits under a REJECTED identity; a rejection never enqueues work (corruption, SPEC 13.8) — the cleaner refuses`);
+        throw new EpEnvelopeError("internal", `the pool item ${m.subject} sits under a REJECTED identity; a rejection never enqueues work (corruption, SPEC 13.8); the cleaner refuses`);
       if (fact.workExpiry === undefined)
-        throw new EpEnvelopeError("internal", `the pool item ${m.subject} was accepted without a workExpiry; a pool-routed acceptance always carries the absolute horizon (corruption, SPEC 13.8) — the cleaner refuses`);
+        throw new EpEnvelopeError("internal", `the pool item ${m.subject} was accepted without a workExpiry; a pool-routed acceptance always carries the absolute horizon (corruption, SPEC 13.8); the cleaner refuses`);
       const now = args.now();
       if (now >= fact.workExpiry) {
         const settled = await args.settleItem({ ref, itemBytes: m.data, disposition: "expired" });
@@ -578,7 +578,7 @@ export async function runAgentRetirementBarrier(
     }
     // open
     if (gate.row.generation !== intent.fromGeneration)
-      throw new EpEnvelopeError("conflict", `the issuance gate for ${intent.lifecycleUid} is open at generation ${gate.row.generation}, not this retirement's captured generation ${intent.fromGeneration}; a foreign operation moved it — the intent is stale, nothing was moved, retry with a fresh operation (SPEC 13.1)`);
+      throw new EpEnvelopeError("conflict", `the issuance gate for ${intent.lifecycleUid} is open at generation ${gate.row.generation}, not this retirement's captured generation ${intent.fromGeneration}; a foreign operation moved it; the intent is stale, nothing was moved, retry with a fresh operation (SPEC 13.1)`);
     // HEAD GUARD immediately before the freeze CAS (the takeover discipline): a stale intent
     // must refuse WITHOUT moving the gate.
     const headNow = await readLifecycleHeadForOperation(reg, intent.owner, intent.actor);

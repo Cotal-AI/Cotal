@@ -435,7 +435,7 @@ export async function stagePolicySelector(
   const head: Record<string, unknown> = cur === undefined ? { commands: {} } : { ...cur.head };
   parseSelector(head, govKey);
   if (head.pendingPolicyKey !== undefined)
-    throw new EpEnvelopeError("conflict", `the govern head ${govKey} already stages pending policy ${String(head.pendingPolicyKey)}; one mutation at a time — promote or abandon it first (SPEC 13.6)`);
+    throw new EpEnvelopeError("conflict", `the govern head ${govKey} already stages pending policy ${String(head.pendingPolicyKey)}; one mutation at a time; promote or abandon it first (SPEC 13.6)`);
   // A UNIQUE mutation opId stamped on the head binds this exact stage: a drain witness carries it,
   // and a later re-stage (a NEW opId) invalidates any witness from an earlier stage, even for the
   // same content-addressed policy key (the freelance's stage→drain→promote→re-stage→reuse attack).
@@ -528,7 +528,7 @@ async function readPolicyCurrency(med: MediatorInternals): Promise<{ policy: unk
     throw new EpEnvelopeError("failed-precondition", `endpoint "${med.endpoint}" enforces no admission policy; a policy-admitted decision has nothing to pin (SPEC 13.6)`);
   const version = await readPolicyVersionCertified(med.jsm, med.space, med.endpoint, sel.enforcedPolicyKey);
   if (version.revision !== sel.enforcedPolicyRevision)
-    throw new EpEnvelopeError("failed-precondition", `the enforced policy ${sel.enforcedPolicyKey} reads at revision ${version.revision}, not the selector's ${sel.enforcedPolicyRevision}; an immutable version never moves (corruption) — admission pauses rather than guessing (SPEC 13.6)`);
+    throw new EpEnvelopeError("failed-precondition", `the enforced policy ${sel.enforcedPolicyKey} reads at revision ${version.revision}, not the selector's ${sel.enforcedPolicyRevision}; an immutable version never moves (corruption); admission pauses rather than guessing (SPEC 13.6)`);
   return { policy: version.value, revision: version.revision, key: sel.enforcedPolicyKey };
 }
 
@@ -1205,7 +1205,7 @@ async function drainFilter(
     // provisional or un-driven accepted-self row — never by having settled a PREVIOUS enumeration.
     if (unsettled === 0) return { passes: pass, settledProvisional, recoveredSelf, reconciledAcceptedEpf };
   }
-  throw new EpEnvelopeError("unavailable", `the drain under ${filter} did not reach quiescence in 8 passes; admission traffic is outrunning it — investigate before promoting or retiring (SPEC 13.8)`);
+  throw new EpEnvelopeError("unavailable", `the drain under ${filter} did not reach quiescence in 8 passes; admission traffic is outrunning it; investigate before promoting or retiring (SPEC 13.8)`);
 }
 
 /** The POLICY drain (§13.6): settles ONLY the obligations pinned to the OLD enforced policy

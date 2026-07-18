@@ -92,7 +92,7 @@ export async function openConnectReader(nc: NatsConnection, space: string): Prom
     const authCfg = (await jsm.streams.info(`KV_${authBucket}`)).config;
     assertAuthorityStreamShape(authCfg, authBucket);
     if (authCfg.allow_direct !== false)
-      throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable credential store defeats leader-served deny-new (SPEC 13.1) — reprovision`);
+      throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable credential store defeats leader-served deny-new (SPEC 13.1); reprovision`);
   } catch (e) {
     if (e instanceof EpEnvelopeError) throw e;
     throw new EpEnvelopeError("failed-precondition", `the connect reader cannot bind + shape-prove the auth store ${authBucket} (SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
@@ -125,7 +125,7 @@ async function readCredRowLeader(reader: ConnectReader, uid: string, credid: str
   if (!m) return undefined;
   const op = m.header?.get("KV-Operation");
   if (op)
-    throw new EpEnvelopeError("failed-precondition", `the credential row ${key} carries a ${op} marker; a deletion is never absence — a revoked credential is a row with state:"revoked", not a tombstone (SPEC 13.1)`);
+    throw new EpEnvelopeError("failed-precondition", `the credential row ${key} carries a ${op} marker; a deletion is never absence; a revoked credential is a row with state:"revoked", not a tombstone (SPEC 13.1)`);
   return parseLedgerRow(m.data, key);
 }
 
@@ -157,7 +157,7 @@ function isRootChain(chain: string[]): boolean {
 export async function authorizeConnectCredential(reader: ConnectReader, t: ValidatedUserToken, now: () => number): Promise<void> {
   const credid = t.act.credentialId;
   if (credid === undefined)
-    throw new EpEnvelopeError("permission-denied", "the bearer carries no credential claim (act.credentialId); connect deny-new requires it — re-exchange for a fresh bearer (lifecycle credential-bound from v0.4 R1)");
+    throw new EpEnvelopeError("permission-denied", "the bearer carries no credential claim (act.credentialId); connect deny-new requires it; re-exchange for a fresh bearer (lifecycle credential-bound from v0.4 R1)");
   const uid = t.act.lifecycleUid;
   if (uid === undefined)
     throw new EpEnvelopeError("permission-denied", "the bearer carries no lifecycle claim; a credential row is keyed by lifecycle uid (SPEC 13.1)");

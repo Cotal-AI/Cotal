@@ -564,7 +564,7 @@ export async function redeemSession(
   if (typeof presenter?.id !== "string" || typeof presenter?.lifecycleUid !== "string")
     invalid("presenter is not an authenticated principal projection");
   if (presenter.id !== grant.holder.id || presenter.lifecycleUid !== grant.holder.lifecycleUid)
-    throw new EpEnvelopeError("permission-denied", `session grant is holder-bound to ${grant.holder.id} (uid ${grant.holder.lifecycleUid}); the presenter is ${presenter.id} (uid ${presenter.lifecycleUid}) — a grant is not a bearer artifact (SPEC 13.6/13.10)`);
+    throw new EpEnvelopeError("permission-denied", `session grant is holder-bound to ${grant.holder.id} (uid ${grant.holder.lifecycleUid}); the presenter is ${presenter.id} (uid ${presenter.lifecycleUid}); a grant is not a bearer artifact (SPEC 13.6/13.10)`);
 
   const now = hooks.now?.() ?? Date.now();
   if (now > grant.exp) throw new EpEnvelopeError("expired", `session grant expired at ${grant.exp} (now ${now})`);

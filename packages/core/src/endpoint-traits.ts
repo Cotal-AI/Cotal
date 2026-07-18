@@ -584,7 +584,7 @@ export async function assertGovernedPreEffect(args: {
       resolveAnchor: guard.resolveAnchor,
     });
     if (verdict.decision === "hold")
-      throw new EpEnvelopeError("failed-precondition", `the guard held "${args.command}": hold converts an ACTION to waiting on a guard-owned checkpoint (SPEC 13.6), and the ephemeral rail cannot wait — submit the work as an action, whose gate (gateGoalExecution) routes hold; refusing pre-effect`);
+      throw new EpEnvelopeError("failed-precondition", `the guard held "${args.command}": hold converts an ACTION to waiting on a guard-owned checkpoint (SPEC 13.6), and the ephemeral rail cannot wait; submit the work as an action, whose gate (gateGoalExecution) routes hold; refusing pre-effect`);
     obligations = verdict.obligations;
   }
 

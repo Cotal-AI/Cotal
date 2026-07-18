@@ -414,7 +414,7 @@ export async function registerServiceInstance(
   if (obs.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`);
   if (obs.state !== "open")
-    throw new EpEnvelopeError("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it — re-read and re-decide (SPEC 13.8)`);
+    throw new EpEnvelopeError("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; re-read and re-decide (SPEC 13.8)`);
   const token = await args.barrier.freeze(obs.revision);
   if (token === null)
     throw new EpEnvelopeError("conflict", `a concurrent barrier froze the issuance gate for "${args.instanceId}" first; re-read and re-decide (SPEC 13.1/13.8)`);
@@ -472,9 +472,9 @@ export async function registerServiceInstance(
     const gov = await readEndpointGovernance(kv, spec.endpoint);
     if (gov.provisional) {
       if (gov.provisional.instanceId !== args.instanceId)
-        throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" (instance "${gov.provisional.instanceId}") holds the governance slot through its spec publication; re-read and re-decide — if its holder aborted pre-publish its stale-generation slot is reclaimed by that instance's retry or by reconciliation (SPEC 13.7/13.8)`);
+        throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" (instance "${gov.provisional.instanceId}") holds the governance slot through its spec publication; re-read and re-decide; if its holder aborted pre-publish its stale-generation slot is reclaimed by that instance's retry or by reconciliation (SPEC 13.7/13.8)`);
       if (gov.provisional.generation >= obs.generation)
-        throw new EpEnvelopeError("internal", `the governance slot for endpoint "${spec.endpoint}" is held by this very instance at generation ${gov.provisional.generation} while its gate is frozen at ${obs.generation}; a live slot under a re-frozen gate cannot exist (every retry freezes at an advanced generation) — reconcile the head before registering (SPEC 13.7)`);
+        throw new EpEnvelopeError("internal", `the governance slot for endpoint "${spec.endpoint}" is held by this very instance at generation ${gov.provisional.generation} while its gate is frozen at ${obs.generation}; a live slot under a re-frozen gate cannot exist (every retry freezes at an advanced generation); reconcile the head before registering (SPEC 13.7)`);
       // else: this instance's OWN orphan from an aborted earlier attempt (the gate has reopened
       // past its stamp since) — the slot-take below replaces it.
     }
@@ -503,7 +503,7 @@ export async function registerServiceInstance(
       // into EpEnvelopeError("conflict") — classify on THAT, the numeric code never reaches here.
       if (e instanceof EpEnvelopeError && e.code === "conflict")
         throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" took the governance slot first (a definite no-write CAS loss); re-read and re-decide (SPEC 13.7/13.8)`);
-      throw new EpEnvelopeError("unavailable", `the governance slot-take for endpoint "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens — a committed-but-unacked slot self-orphans at the reopened generation and this instance's retry replaces it (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
+      throw new EpEnvelopeError("unavailable", `the governance slot-take for endpoint "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens; a committed-but-unacked slot self-orphans at the reopened generation and this instance's retry replaces it (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
     }
   } catch (err) {
     await reopenGateAfterAbort(args.barrier, token, successorAt(obs.registrationRevision), err);

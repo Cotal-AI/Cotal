@@ -134,7 +134,7 @@ function parseGrantCommand(raw: unknown): HandleGrantCommand {
   // Every other combination is schema-invalid — in particular a partial tuple never weakens
   // into a broader one (§13.6): targetActor without targetLifecycleUid, or targetLifecycleUid
   // without targetActor, or owner+actor without uid.
-  invalid(`command "${o.name}" has a partial target tuple (${[hasOwner && "owner", hasActor && "actor", hasUid && "uid"].filter(Boolean).join("+")}); the legal shapes are no components, targetOwner alone, or the full triple — a partial tuple never weakens into a broader grant`);
+  invalid(`command "${o.name}" has a partial target tuple (${[hasOwner && "owner", hasActor && "actor", hasUid && "uid"].filter(Boolean).join("+")}); the legal shapes are no components, targetOwner alone, or the full triple; a partial tuple never weakens into a broader grant`);
 }
 
 /** A read scope names an exact record-key or event-topic SUBTREE (§13.6): dot-separated
@@ -564,7 +564,7 @@ export async function verifyHandleChain(
 
   // Leaf holder binding (the presenter IS the leaf's holder).
   if (leaf.holder.id !== A.presenter.id || leaf.holder.lifecycleUid !== A.presenter.lifecycleUid)
-    throw new EpEnvelopeError("permission-denied", `handle "${leaf.id}" is holder-bound to ${leaf.holder.id}/${leaf.holder.lifecycleUid}; the presenter ${A.presenter.id}/${A.presenter.lifecycleUid} is not the holder — a recycled alias cannot present its predecessor's handles (SPEC 13.6)`);
+    throw new EpEnvelopeError("permission-denied", `handle "${leaf.id}" is holder-bound to ${leaf.holder.id}/${leaf.holder.lifecycleUid}; the presenter ${A.presenter.id}/${A.presenter.lifecycleUid} is not the holder; a recycled alias cannot present its predecessor's handles (SPEC 13.6)`);
 
   // Walk every link: currency, containment, issuer authority, signature, revocation.
   for (let i = 0; i < handles.length; i++) {
@@ -626,7 +626,7 @@ export async function verifyHandleChain(
       const readRevocation = A.readRevocation;
       const revoked = await withVerifyBudget(() => readRevocation(h.issuer.keyId, h.id), remainingBudget(), `the revocation read for "${h.id}"`);
       if (revoked !== false)
-        throw new EpEnvelopeError("permission-denied", `a sturdy link in the chain is not provably unrevoked (handle "${h.id}", issuer ${h.issuer.keyId}, status ${JSON.stringify(revoked)}); ONLY a literal false is "not revoked" — an unreadable/undefined status fails closed, and every sturdy link is checked, not only the leaf (SPEC 13.6)`);
+        throw new EpEnvelopeError("permission-denied", `a sturdy link in the chain is not provably unrevoked (handle "${h.id}", issuer ${h.issuer.keyId}, status ${JSON.stringify(revoked)}); ONLY a literal false is "not revoked"; an unreadable/undefined status fails closed, and every sturdy link is checked, not only the leaf (SPEC 13.6)`);
     }
   }
 

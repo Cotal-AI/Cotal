@@ -333,7 +333,7 @@ export function parseReceipt(raw: unknown, ref: ReceiptRef, space: string): Rece
   for (const k of Object.keys(o)) if (!allowed.has(k)) garbled(`the receipt carries the unknown field "${k}" (closed schema)`);
   if (o.v !== 1) garbled("the receipt version is not 1");
   if (o.requestId !== ref.requestId || o.sourceSeq !== ref.sourceSeq || o.endpoint !== ref.endpoint || o.space !== space)
-    garbled(`the receipt names (${String(o.space)}, ${String(o.endpoint)}, ${String(o.requestId)}, ${String(o.sourceSeq)}), not its subject's (${space}, ${ref.endpoint}, ${ref.requestId}, ${ref.sourceSeq}) — request-mismatched receipts fail loud`);
+    garbled(`the receipt names (${String(o.space)}, ${String(o.endpoint)}, ${String(o.requestId)}, ${String(o.sourceSeq)}), not its subject's (${space}, ${ref.endpoint}, ${ref.requestId}, ${ref.sourceSeq}); request-mismatched receipts fail loud`);
   if (typeof o.command !== "string" || o.command.length === 0) garbled("the receipt has no command");
   const inst = o.instance as Record<string, unknown>;
   if (!isRec(inst) || typeof inst.id !== "string" || typeof inst.instanceId !== "string"
