@@ -154,13 +154,17 @@ export interface EffectFact {
   caller: FactCaller;
   sourceSeq: number;
   ts: number;
+  /** The REQUIRED outcome discriminant (the goal union's `state` bar, applied to effects): every
+   *  member of the completion union declares its outcome explicitly, so a cancelled fact is never
+   *  structurally assignable to the ran type and every reader is forced to read the outcome. */
+  outcome: "ran";
 }
 
 /** The RETIREMENT-CANCELLED member of the effects completion union (§13.8 option-(i) closure):
  *  the SAME identity spine as {@link EffectFact} (so every fingerprint/sourceSeq binding applies
- *  unchanged) plus the `cancelled` block binding the acceptance to the RETIRING target and the
- *  retirement operation — a reader that sees it KNOWS the effect did not run and was cancelled by
- *  that retirement; it is never a forged success. It publishes CREATE-ONLY on the SAME completion
+ *  unchanged), the `outcome: "cancelled"` discriminant, and the `cancelled` block binding the
+ *  acceptance to the RETIRING target and the retirement operation — a reader that sees it KNOWS
+ *  the effect did not run and was cancelled by that retirement; it is never a forged success. It publishes CREATE-ONLY on the SAME completion
  *  subject the real marker would use, so first-terminal-wins is structural: a racing real
  *  completion that lands first wins and the cancel loses its create harmlessly (and vice versa).
  *  Actions need no such member: `goal.result` already carries the first-class `cancelled`
@@ -172,6 +176,7 @@ export interface EffectCancelledFact {
   caller: FactCaller;
   sourceSeq: number;
   ts: number;
+  outcome: "cancelled";
   cancelled: { opId: string; target: { owner: string; actor: string; lifecycleUid: string } };
 }
 
@@ -185,7 +190,7 @@ export function effectFactOf(acceptance: AcceptanceFact, ts: number): EffectFact
   if (!isDigest(acceptance.fingerprint) || !posInt(acceptance.sourceSeq) || !wireInt(ts))
     throw new EpEnvelopeError("failed-precondition", "an effect completion fact requires a validated acceptance fingerprint/sourceSeq and non-negative timestamp");
   const caller = checkCaller(acceptance.caller, "effect acceptance caller");
-  return { v: 1, id: assertIdToken(acceptance.id, "effect id"), fingerprint: acceptance.fingerprint, caller, sourceSeq: acceptance.sourceSeq, ts };
+  return { v: 1, id: assertIdToken(acceptance.id, "effect id"), fingerprint: acceptance.fingerprint, caller, sourceSeq: acceptance.sourceSeq, ts, outcome: "ran" };
 }
 
 /** Build the retirement-cancelled completion marker for one validated non-action `effects`
@@ -205,7 +210,7 @@ export function effectCancelledFactOf(
     throw new EpEnvelopeError("failed-precondition", "a cancelled effect marker requires the retiring target triple (SPEC 13.8)");
   if (acceptance.target === undefined || acceptance.target.lifecycleUid !== t.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `a retirement cancels only ITS target's accepted work: the acceptance targets ${acceptance.target?.lifecycleUid ?? "(none)"}, not ${t.lifecycleUid} (SPEC 13.8)`);
-  return { ...base, cancelled: { opId: cancelled.opId, target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid } } };
+  return { ...base, outcome: "cancelled", cancelled: { opId: cancelled.opId, target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid } } };
 }
 
 function factFail(what: string): never {
@@ -378,8 +383,11 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
 export function parseEffectFact(raw: unknown, subject: string): EffectCompletionFact {
   const addr = parseEffectFactSubject(subject);
   const o = isRec(raw) ? raw : factFail("effect fact is not an object");
-  const isCancelled = "cancelled" in o;
-  assertClosedKeys(o, isCancelled ? ["v", "id", "fingerprint", "caller", "sourceSeq", "ts", "cancelled"] : ["v", "id", "fingerprint", "caller", "sourceSeq", "ts"], `effect fact on ${subject}`);
+  // The SYMMETRIC outcome discriminant (the goal union's bar): every member declares its outcome,
+  // so a fact missing it — or claiming one outcome while carrying the other's fields — refuses.
+  if (o.outcome !== "ran" && o.outcome !== "cancelled") factFail("effect.outcome must be \"ran\" or \"cancelled\"");
+  const isCancelled = o.outcome === "cancelled";
+  assertClosedKeys(o, isCancelled ? ["v", "id", "fingerprint", "caller", "sourceSeq", "ts", "outcome", "cancelled"] : ["v", "id", "fingerprint", "caller", "sourceSeq", "ts", "outcome"], `effect fact on ${subject}`);
   if (o.v !== 1) factFail("effect.v");
   if (o.id !== addr.id) factFail("effect.id disagrees with the fact subject");
   if (!isDigest(o.fingerprint)) factFail("effect.fingerprint");
@@ -389,7 +397,7 @@ export function parseEffectFact(raw: unknown, subject: string): EffectCompletion
   if (caller.id !== addr.caller.id || caller.lifecycleUid !== addr.caller.lifecycleUid)
     factFail("effect.caller disagrees with the fact subject");
   const base = { v: 1 as const, id: addr.id, fingerprint: o.fingerprint as string, caller, sourceSeq: o.sourceSeq as number, ts: o.ts as number };
-  if (!isCancelled) return base;
+  if (!isCancelled) return { ...base, outcome: "ran" };
   const c = o.cancelled;
   if (!isRec(c)) factFail("effect.cancelled is not an object");
   assertClosedKeys(c, ["opId", "target"], `effect.cancelled on ${subject}`);
@@ -399,7 +407,7 @@ export function parseEffectFact(raw: unknown, subject: string): EffectCompletion
   assertClosedKeys(t, ["owner", "actor", "lifecycleUid"], `effect.cancelled.target on ${subject}`);
   if (typeof t.owner !== "string" || t.owner.length === 0 || typeof t.actor !== "string" || t.actor.length === 0 || typeof t.lifecycleUid !== "string" || t.lifecycleUid.length === 0)
     factFail("effect.cancelled.target triple");
-  return { ...base, cancelled: { opId: c.opId, target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid } } };
+  return { ...base, outcome: "cancelled", cancelled: { opId: c.opId, target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid } } };
 }
 
 /** Validate a quarantine fact at its consuming boundary; the body's source sequence must agree

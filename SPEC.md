@@ -2671,10 +2671,14 @@ codec-validating that terminal, ACK the delivery. A `wrk` create that bypasses t
 non-conformant: it can contradict a racing commit.
 
 An `eff` completion fact `epf.<endpoint>.eff.<cO>.<cA>.<cUid>.<id>` is a CLOSED two-member
-union. The RAN member is `{ v: 1, id, fingerprint, caller, sourceSeq, ts }`; the
-RETIREMENT-CANCELLED member adds exactly `cancelled: { opId, target }` — the same identity
-spine, plus the binding to the retiring target's lifecycle and the retirement operation that
-cancelled it. A reader that sees `cancelled` KNOWS the effect did not run; the member is never
+union carrying a REQUIRED `outcome` discriminant on EVERY member (the goal union's `state`
+bar, applied to effects: a member is never structurally assignable to the other, and every
+reader is forced to read the outcome). The RAN member is
+`{ v: 1, id, fingerprint, caller, sourceSeq, ts, outcome: "ran" }`; the RETIREMENT-CANCELLED
+member is `outcome: "cancelled"` plus exactly `cancelled: { opId, target }` — the same
+identity spine, plus the binding to the retiring target's lifecycle and the retirement
+operation that cancelled it. A fact missing the discriminant, or claiming one outcome while
+carrying the other's fields, refuses. A reader that sees `cancelled` KNOWS the effect did not run; the member is never
 a forged success. Both members' caller triple and `id` are bound by the subject, and their
 `fingerprint` and `sourceSeq` MUST equal the accepted decision's. The cancelled member may be
 written ONLY for an acceptance whose own `target` names the retiring lifecycle (a retirement
