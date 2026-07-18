@@ -22,12 +22,15 @@ import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
-  createSpaceAuth, createEndpointStreams, isReachable, mintLifecycleUid, serverConfig,
-  epwStreamName, epfStreamName, poolDurable, poolConsumerConfig, assertValidOwnerToken,
+  createSpaceAuth, createEndpointStreams, contractDigest, isReachable, mintLifecycleUid, serverConfig,
+  epwStreamName, epfStreamName, epfSubject, epwSubject, poolDurable, poolConsumerConfig, assertValidOwnerToken,
+  parseDecisionFact, parseWorkTerminalFact, publishFactCreateOnly, readLastFact, workTerminalSubject,
   retirementCleanerGrants, recordsKvStreamName, recordsBucket, epAuthBucket,
 } from "@cotal-ai/core";
 import { makeRetirementCleaners, retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
-import { openAuthorityClient, barrierExecutorSettlementGrants } from "../src/authority-client.js";
+import { settlementForIntent } from "../src/retirement-barrier.js";
+import { openAuthorityClient } from "../src/authority-client.js";
+import { jetstream } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 
 let ok = 0, fail = 0;
@@ -67,6 +70,17 @@ try {
 
   const cleaners = makeRetirementCleaners({ server: SERVERS, space: SPACE, dataAccount, log: quiet });
 
+  // A core-publish probe, count-verified through the allow-all seed: a permission-denied publish
+  // is dropped SILENTLY (no reply), so a write is proven only by the target stream's count rising.
+  const countOf = async (stream: string) => (await gjsm.streams.info(stream)).state.messages;
+  const writeLands = async (nc: NatsConnection, subject: string, stream: string): Promise<boolean> => {
+    const before = await countOf(stream);
+    nc.publish(subject, enc.encode(JSON.stringify({ probe: true })));
+    await nc.flush();
+    for (let i = 0; i < 20; i++) { if ((await countOf(stream)) > before) return true; await wait(50); }
+    return false;
+  };
+
   // ---- A. per-op principal shape + distinctness (distsys vote 2) ----
   const op1 = mintLifecycleUid(), op2 = mintLifecycleUid();
   const bind1 = await cleaners.openCleaner({ opId: op1, endpoint: EP, pools: [POOL_A] });
@@ -103,15 +117,14 @@ try {
   await cleaners.retireCleanerCredential(bind2);
   await cleaners.retireCleanerCredential(bind1b);
 
-  // ---- B/C. reach + confinement via a directly-opened cleaner connection (bounded probes) ----
+  // ---- B/C. reach + confinement via the EXACT production cleaner grant (zero-write, #29 split) ----
+  // No settlement union here: the production cleaner holds retirementCleanerGrants ALONE (all
+  // writes moved to the executor, so a compromised cleaner cannot forge a terminal). This probe
+  // is that exact profile, so an accidental future re-union would surface as a write reaching.
   const clean = await openAuthorityClient({
     server: SERVERS, space: SPACE, dataAccount, label: `cotal:ep-cleaner:${SPACE}:probe`,
     principal: { owner: "local", actor: "epcln_probe000000000" },
-    grants: (connId) => {
-      const cl = retirementCleanerGrants(SPACE, EP, [POOL_A], connId);
-      const se = barrierExecutorSettlementGrants(SPACE, EP, [POOL_A]);
-      return { publish: [...cl.publish, ...se.publish], subscribe: cl.subscribe };
-    },
+    grants: (connId) => retirementCleanerGrants(SPACE, EP, [POOL_A], connId),
     log: quiet,
   });
   const jsapi = (s: string) => `$JS.API.${s}`;
@@ -120,6 +133,11 @@ try {
     (await reaches(clean.nc, jsapi(`CONSUMER.INFO.${epwStreamName(SPACE)}.${poolDurable(EP, POOL_A)}`))) === "allowed");
   c("the cleaner reaches the EPF fencing read (STREAM.MSG.GET on EPF replies)",
     (await reaches(clean.nc, jsapi(`STREAM.MSG.GET.${epfStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `cotal.${SPACE}.epf.${EP}.nonesuch` })))) === "allowed");
+  // the split's load-bearing confinement: the cleaner holds NO settlement write at all
+  c("DENIED: the cleaner's own-pool lease write (the split moved every write to the executor)",
+    (await writeLands(clean.nc, `$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_A}.probe0`, recordsKvStreamName(SPACE))) === false);
+  c("DENIED: the cleaner's own-pool wrk terminal (a compromised cleaner cannot forge a terminal)",
+    (await writeLands(clean.nc, `cotal.${SPACE}.epf.${EP}.wrk.${POOL_A}.probe0`, epfStreamName(SPACE))) === false);
   // confinement: foreign pool, foreign endpoint, and consumer CREATE all DENIED
   c("DENIED: a FOREIGN pool durable not in the op's list (pool_<e>_pb)",
     (await reaches(clean.nc, jsapi(`CONSUMER.INFO.${epwStreamName(SPACE)}.${poolDurable(EP, POOL_B)}`))) === "denied");
@@ -157,8 +175,8 @@ try {
     grants: (connId) => retirementExecutorClientGrants(SPACE, EP, [POOL_A], connId),
     log: quiet,
   });
-  c("the executor reaches the EPW live-entry leader read (STREAM.MSG.GET on EPW replies)",
-    (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.${epwStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `cotal.${SPACE}.epw.${EP}.${POOL_A}.nonesuch` })))) === "allowed");
+  c("DENIED: the EPW live-entry read (STREAM.MSG.GET on EPW): unreachable from settlement, so ungranted (b8803b2)",
+    (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.${epwStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `cotal.${SPACE}.epw.${EP}.${POOL_A}.nonesuch` })))) === "denied");
   c("the executor reaches the records-store fencing read (STREAM.MSG.GET on KV_records replies)",
     (await reaches(execProbe.nc, jsapi(`STREAM.MSG.GET.${recordsKvStreamName(SPACE)}`), enc.encode(JSON.stringify({ last_by_subj: `$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_A}.nonesuch` })))) === "allowed");
   c("the executor reaches the EPF fencing read (STREAM.MSG.GET on EPF replies)",
@@ -175,25 +193,63 @@ try {
     (await reaches(execProbe.nc, jsapi(`STREAM.PURGE.${epwStreamName(SPACE)}`))) === "denied");
   // Core-publish rows, count-verified through the seed: own-pool wrk terminal + lease CAS admit;
   // the FOREIGN pool and the epw ENQUEUE are dropped at the broker.
-  const countOf = async (stream: string) => (await gjsm.streams.info(stream)).state.messages;
-  const pubLands = async (subject: string, stream: string): Promise<boolean> => {
-    const before = await countOf(stream);
-    execProbe.nc.publish(subject, enc.encode(JSON.stringify({ probe: true })));
-    await execProbe.nc.flush();
-    for (let i = 0; i < 20; i++) { if ((await countOf(stream)) > before) return true; await wait(50); }
-    return false;
-  };
   c("the executor's OWN-pool wrk terminal publish lands (the intent-confined forge residual, §13.9)",
-    await pubLands(`cotal.${SPACE}.epf.${EP}.wrk.${POOL_A}.probe1`, epfStreamName(SPACE)));
+    await writeLands(execProbe.nc, `cotal.${SPACE}.epf.${EP}.wrk.${POOL_A}.probe1`, epfStreamName(SPACE)));
   c("the executor's OWN-pool lease write lands (the settlement CAS row)",
-    await pubLands(`$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_A}.probe1`, recordsKvStreamName(SPACE)));
+    await writeLands(execProbe.nc, `$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_A}.probe1`, recordsKvStreamName(SPACE)));
   c("DENIED: a FOREIGN pool's wrk terminal (pool pb is not in this op's intent)",
-    !(await pubLands(`cotal.${SPACE}.epf.${EP}.wrk.${POOL_B}.probe1`, epfStreamName(SPACE))));
+    !(await writeLands(execProbe.nc, `cotal.${SPACE}.epf.${EP}.wrk.${POOL_B}.probe1`, epfStreamName(SPACE))));
   c("DENIED: a FOREIGN pool's lease write",
-    !(await pubLands(`$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_B}.probe1`, recordsKvStreamName(SPACE))));
+    !(await writeLands(execProbe.nc, `$KV.${recordsBucket(SPACE)}.lease.${EP}.${POOL_B}.probe1`, recordsKvStreamName(SPACE))));
   c("DENIED: the epw ENQUEUE publish (the re-enqueue repair branch is ungranted by design)",
-    !(await pubLands(`cotal.${SPACE}.epw.${EP}.${POOL_A}.probe1`, epwStreamName(SPACE))));
+    !(await writeLands(execProbe.nc, `cotal.${SPACE}.epw.${EP}.${POOL_A}.probe1`, epwStreamName(SPACE))));
   await execProbe.close();
+
+  // ---- E. LIVE settlement through the REDUCED executor credential (security b8803b2): prove the
+  // grant is live-SUFFICIENT after the EPW read was dropped. Forge an accepted, expired pool
+  // decision via the seed, then run the REAL settlementForIntent over a credential minted by
+  // makeRetirementCleaners.openExecutor (retirementExecutorClientGrants, no EPW). The expired path
+  // is exactly the one whose reconcileWorkItem would have used the EPW liveEntry read if it were
+  // reachable; that it settles here proves the read was dead. ----
+  const D = contractDigest({ probe: true });
+  const forgeAccepted = async (caller: { owner: string; actor: string; uid: string }, id: string, workExpiry: number, target?: { owner: string; actor: string; lifecycleUid: string }) => {
+    const from = { id: `${caller.owner}.${caller.actor}`, name: "c" };
+    const request: Record<string, unknown> = { v: 1, id, op: { endpoint: EP, command: "run", inputDigest: D, outputDigest: D }, class: "journal", replyExpected: false, deadlineMs: 5000, args: {}, from };
+    if (target !== undefined) request.target = target;
+    const fact: Record<string, unknown> = {
+      v: 1, id, decision: "accepted", fingerprint: contractDigest({ id }), request,
+      caller: { id: from.id, lifecycleUid: caller.uid }, contractDigests: { input: D, output: D },
+      authzDecision: { revision: 1, epoch: 1 }, route: `pool.${POOL_A}`, workExpiry, sourceSeq: 1, ts: 1,
+    };
+    if (target !== undefined) fact.target = target;
+    const subject = epfSubject(SPACE, EP, ["dec", caller.owner, caller.actor, caller.uid, id]);
+    parseDecisionFact(fact, subject); // core-valid or the probe proves nothing
+    const gjs = jetstream(god.nc);
+    if (!(await publishFactCreateOnly(gjs, subject, enc.encode(JSON.stringify(fact)))).won) throw new Error(`acceptance forge lost on ${subject}`);
+  };
+  {
+    const opL = mintLifecycleUid();
+    const liveExec = await cleaners.openExecutor({ opId: opL, endpoint: EP, pools: [POOL_A] });
+    // expired: an untargeted item already past its own horizon (the executor may settle any target expired).
+    const callerX = { owner: "local", actor: "cx", uid: "x".repeat(26) };
+    await forgeAccepted(callerX, "exp001", 10);
+    const intent = { kind: "retirement" as const, lifecycleUid: opL, owner: "local", actor: "victimx", fromGeneration: 1, endpoints: [{ endpoint: EP, pools: [POOL_A] }], frontierStreams: [] };
+    const spec = { endpoint: EP, pools: [POOL_A] };
+    const settle = settlementForIntent(liveExec.work, intent, spec, SPACE, opL, () => 1000); // clock well past the horizon
+    const refX = { endpoint: EP, pool: POOL_A, acceptance: { ...callerX, id: "exp001" } };
+    const fact = await settle({ ref: refX, itemBytes: enc.encode("x"), disposition: "expired" });
+    c("LIVE: the reduced executor settles an EXPIRED item (no EPW grant needed, security b8803b2)", fact.disposition === "expired", fact);
+    const term = parseWorkTerminalFact(await readLastFact(liveExec.work.jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, refX)), workTerminalSubject(SPACE, refX), refX);
+    c("LIVE: the expired wrk terminal is durably readable through the reduced executor", term.disposition === "expired", term);
+    // retired: a still-live item whose accepted target is THIS op's lifecycle (retireWorkItem, lease + EPF only).
+    const callerR = { owner: "local", actor: "cr", uid: "y".repeat(26) };
+    const target = { owner: "local", actor: "victimx", lifecycleUid: opL };
+    await forgeAccepted(callerR, "ret001", 5_000_000, target);
+    const refR = { endpoint: EP, pool: POOL_A, acceptance: { ...callerR, id: "ret001" } };
+    const factR = await settle({ ref: refR, itemBytes: enc.encode("y"), disposition: "retired" });
+    c("LIVE: the reduced executor settles a RETIRED item (lease + EPF terminal, no EPW)", factR.disposition === "retired", factR);
+    await cleaners.retireExecutorCredential(liveExec);
+  }
 
   await god.close();
 } finally {

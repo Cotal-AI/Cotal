@@ -278,7 +278,8 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
-    "$JS.API.STREAM.MSG.GET.EPW_d32m",
+    // NO EPW MSG.GET (b8803b2 re-verify): the EPW live-entry read is unreachable from the
+    // settlement code path, so the space-wide work-body read + reply-injection class is not granted.
     "cotal.d32m.epf.jobsrv.wrk.pa.>",
     "$KV.cotal_records_d32m.lease.jobsrv.pa.>",
     "cotal.d32m.epf.jobsrv.wrk.pb.>",
@@ -424,8 +425,8 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
     "barrier-executor:EPF_d32m",
     // The full production executor client (#29 piece 2): the settlement EPF read plus the
-    // leader-served EPW live-entry and records-lease reads its own code path performs.
-    "retirement-executor:EPF_d32m", "retirement-executor:EPW_d32m", "retirement-executor:KV_cotal_records_d32m",
+    // leader-served records-lease read its own code path performs. NO EPW (dead grant removed, b8803b2).
+    "retirement-executor:EPF_d32m", "retirement-executor:KV_cotal_records_d32m",
   ]);
   c("the STREAM.MSG.GET holder set equals the enumerated trusted list exactly",
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());

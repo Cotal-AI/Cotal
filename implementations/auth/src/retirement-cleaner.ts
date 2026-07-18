@@ -43,7 +43,6 @@ import { barrierExecutorSettlementGrants, openAuthorityClient, type AuthorityCli
 import {
   EpEnvelopeError,
   assertInboxConnId,
-  epwStreamName,
   principalKey,
   recordsKvStreamName,
   retirementCleanerGrants,
@@ -69,19 +68,22 @@ function opActor(prefix: "epcln" | "epexe", opId: string): string {
  * {@link barrierExecutorSettlementGrants} (per listed pool: the `lease.` CAS write and the
  * `epf.<e>.wrk.<pool>.>` create-only publish, plus the leader-served EPF fencing read) + the
  * reads the settlement's own code path performs on its own connection, derived from the code:
- *  - `STREAM.MSG.GET.EPW_<space>`: `reconcileWorkItem`/`retireWorkItem` leader-read the live
- *    pool entry (EPW is `allow_direct=false`, SPEC 13.6).
  *  - `STREAM.MSG.GET.KV_cotal_records_<space>`: the lease re-reads (`kv.get` on the no-direct
  *    records bucket is a leader-served MSG.GET).
  *  - `STREAM.INFO.KV_cotal_records_<space>`: the `workPoolContext` bind probe (`Kvm.open`
  *    reads the stream config to bind the bucket).
  *  - `$JS.API.INFO` (the `jetstreamManager` handshake) + the connection-scoped inbox.
- * NOT the barrier's standing profile: the executor client carries the settlement forge residual
- * op-bounded (the D14/13.9 residual notes on {@link barrierExecutorSettlementGrants}), and the
- * barrier's auth-store write authority never rides this connection. The `epw.>` ENQUEUE row is
- * deliberately absent (the settlement seam refuses `expired` before the horizon, so the
- * re-enqueue repair branch is structurally unreachable; if a code change ever reached it, the
- * broker denies and the barrier fails loud).
+ * NO `STREAM.MSG.GET.EPW_<space>` (security/distsys/engineer, b8803b2 re-verify): the EPW
+ * live-entry read (`liveEntryExists`) is UNREACHABLE from this composition. `settlementForIntent`
+ * only ever calls `reconcileWorkItem` after proving `clock >= workExpiry`, so reconcile always
+ * returns through the terminal/settled-lease/`now >= workExpiry` branches BEFORE the
+ * `liveEntryExists` probe; `retireWorkItem` uses the lease key + EPF terminal alone. A space-wide
+ * EPW body read plus its caller-selected-reply injection class is therefore dead authority, not a
+ * read this code performs, so it is not granted. NOT the barrier's standing profile: the executor
+ * client carries the settlement forge residual op-bounded (the D14/13.9 residual notes on
+ * {@link barrierExecutorSettlementGrants}), and the barrier's auth-store write authority never
+ * rides this connection. The `epw.>` ENQUEUE row is likewise absent (the settlement seam refuses
+ * `expired` before the horizon, so the re-enqueue repair branch is structurally unreachable).
  */
 export function retirementExecutorClientGrants(space: string, endpoint: string, pools: string[], connId: string): { publish: string[]; subscribe: string[] } {
   const settlement = barrierExecutorSettlementGrants(space, endpoint, pools);
@@ -90,7 +92,6 @@ export function retirementExecutorClientGrants(space: string, endpoint: string, 
       "$JS.API.INFO",
       `$JS.API.STREAM.INFO.${recordsKvStreamName(space)}`,
       `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
-      `$JS.API.STREAM.MSG.GET.${epwStreamName(space)}`,
       ...settlement.publish,
     ],
     subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
