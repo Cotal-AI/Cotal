@@ -34,6 +34,7 @@ import {
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
   commitPrincipalGrants, contractPublisherGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
+  AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   type EpCaller,
 } from "../src/index.js";
 
@@ -124,17 +125,44 @@ throws("a cross-kind record subtree refuses (`*` kind reads every registered kin
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.*.>` }));
 throws("a mid-subtree `>` refuses (only one TRAILING subtree wildcard)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.svc.>.status` }));
-// ENFORCED partition (panel a559d9c re-verify, #8274): a reader durable may NEVER target an
-// authority-control record kind — above all `oblig.`, the sealed records scanner's exclusive
-// domain — so "the sealed scanner is the sole dynamic-enumeration holder over oblig" is a proven
-// partition at the seam, not a fixture sample. A reader there would durably export authority state.
+// ENFORCED partition, ALLOWLIST not deny-list (panel + freelance a559d9c re-verify, #8274): a
+// reader durable's kind MUST be a registered CALLER-readable record kind, so it can never target
+// an authority-control subtree (above all `oblig.`, the sealed scanner's exclusive domain) NOR an
+// unregistered kind — both would durably export state past revoke. Driven by AUTHORITY_KIND_DEFS,
+// the same canonical collection the registry is built from (no parallel deny-list to drift).
 throws("a record-reader on the OBLIG subtree refuses (the sealed scanner's exclusive domain, #8274)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.oblig.${UID}.manager.>` }));
 throws("a record-reader on the OBLIG subtree with a `*` target position refuses",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.oblig.*.manager.>` }));
-for (const authKind of ["govern", "policy", "uid", "frontier"])
-  throws(`a record-reader on the authority-control kind ${authKind} refuses (authority-only, never a caller read)`,
-    () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.${authKind}.manager.>` }));
+// Every PURE authority kind (kind not also a caller RECORD_KIND) is refused — iterated over the
+// canonical collection, so a NEW authority def added to AUTHORITY_KIND_DEFS is covered by
+// construction (the anti-drift proof: the exclusion is not a hand-kept parallel list).
+for (const def of AUTHORITY_KIND_DEFS) {
+  if (callerReadableRecordKind(def.kind)) continue; // dual-token (lifecycle) is head-guarded below
+  throws(`a record-reader on the authority-control kind ${def.kind} refuses (authority-only, never a caller read)`,
+    () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.${def.kind}.manager.>` }));
+}
+// An UNREGISTERED kind is refused too (the allowlist rejects it; a deny-list would have let it
+// through — the freelance a559d9c finding).
+throws("a record-reader on an UNREGISTERED kind refuses (allowlist: only registered caller kinds)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.futureauth.manager.>` }));
+// DUAL-token (lifecycle): the atomic HEAD `lifecycle.<owner>.<actor>` is authority; deeper per-UID
+// audit detail is caller-readable. Head-matching filters refuse; strictly-deeper filters admit.
+throws("a lifecycle reader matching the exact HEAD key refuses (the authority mapping, not audit)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker` }));
+throws("a lifecycle reader `lifecycle.>` refuses (the `>` can match the head)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.>` }));
+throws("a lifecycle reader `lifecycle.<owner>.>` refuses (the `>` can still match the head)",
+  () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.>` }));
+c("a lifecycle reader on the per-UID audit DETAIL admits (deeper than the head)",
+  recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker.${UID}.spec` }).filter_subject
+    === `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker.${UID}.spec`);
+c("a lifecycle reader `lifecycle.<owner>.<actor>.>` admits (strictly deeper than the head, all audit under owner.actor)",
+  recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker.>` }).filter_subject
+    === `$KV.${recordsBucket(SPACE)}.lifecycle.u_abc.worker.>`);
+c("a lease reader admits (a caller-readable record kind with no authority head)",
+  recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status` }).filter_subject
+    === `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status`);
 
 // ── §13.9 API grant rows: the single source, exact matrix strings (broker-free) ──
 c("the canonicalizer grants own + consume its EPJ durable (create pins the full-tail filter)",

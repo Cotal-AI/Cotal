@@ -32,6 +32,7 @@ import {
   RECORD_KINDS, epwStreamName, epjStreamName, eptReqStreamName, epfStreamName,
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
+  AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   createSpaceAuth, mintCreds, newIdentity,
   type EpCapability,
 } from "@cotal-ai/core";
@@ -368,21 +369,25 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     JSON.stringify(actual) === JSON.stringify(expected), actual);
 }
 
-// (2a'') the oblig-partition is ENFORCED at the reader-config SEAM (panel a559d9c re-verify): the
-// records scanner's CREATE filter is confined to `oblig.>`, and recordReaderConfig REFUSES any
-// authority-control kind (oblig/govern/policy/uid/frontier), so NO caller reader durable can be
-// configured over the sealed scanner's domain. This is the partition proof the pinned surface above
-// rests on — sole dynamic-enumeration holder over oblig by construction, not by fixture choice.
+// (2a'') the partition is ENFORCED at the reader-config SEAM, driven by the CANONICAL collection
+// (panel + freelance a559d9c re-verify): the records scanner's CREATE filter is confined to
+// `oblig.>`, and recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
+// caller-readable record kind. Iterating AUTHORITY_KIND_DEFS (the same collection the registry is
+// built from) proves the exclusion is by construction, not a hand-kept parallel list: a new
+// authority def is covered automatically. Dual-token `lifecycle` admits deeper audit but head-guards.
 {
-  const authKinds = ["oblig", "govern", "policy", "uid", "frontier"];
-  const refused = authKinds.every((k) => {
-    try { recordReaderConfig(S, { uid: UID, grantId: "g9", index: 0, subtree: `$KV.cotal_records_${S}.${k}.${EPJ}.>` }); return false; }
-    catch { return true; }
-  });
-  // A caller record kind (svc) is still ACCEPTED — the exclusion is exactly the authority set.
-  let svcOk = false;
-  try { recordReaderConfig(S, { uid: UID, grantId: "g9", index: 0, subtree: `$KV.cotal_records_${S}.svc.${EPJ}.>` }); svcOk = true; } catch { /* unexpected */ }
-  c("recordReaderConfig REFUSES every authority-control kind (oblig/govern/policy/uid/frontier) and ACCEPTS a caller kind (svc) — the oblig-partition is enforced at the seam", refused && svcOk);
+  const tryReader = (subtree: string): boolean => {
+    try { recordReaderConfig(S, { uid: UID, grantId: "g9", index: 0, subtree }); return true; } catch { return false; }
+  };
+  const pureAuthRefused = AUTHORITY_KIND_DEFS.filter((d) => !callerReadableRecordKind(d.kind))
+    .every((d) => !tryReader(`$KV.cotal_records_${S}.${d.kind}.${EPJ}.>`));
+  const svcOk = tryReader(`$KV.cotal_records_${S}.svc.${EPJ}.>`);                         // caller kind admits
+  const unregisteredRefused = !tryReader(`$KV.cotal_records_${S}.futureauth.${EPJ}.>`);    // allowlist rejects
+  const lifecycleHeadRefused = !tryReader(`$KV.cotal_records_${S}.lifecycle.u_abc.worker`) // dual-token head
+    && !tryReader(`$KV.cotal_records_${S}.lifecycle.>`);
+  const lifecycleAuditOk = tryReader(`$KV.cotal_records_${S}.lifecycle.u_abc.worker.${UID}.spec`); // audit detail
+  c("recordReaderConfig is an ALLOWLIST driven by AUTHORITY_KIND_DEFS: refuses every pure-authority kind + unregistered kinds + the lifecycle authority head, admits caller kinds + the lifecycle audit detail",
+    pureAuthRefused && svcOk && unregisteredRefused && lifecycleHeadRefused && lifecycleAuditOk);
 }
 
 // (2b) the complete STREAM.MSG.GET holder set is exactly the enumerated trusted list.

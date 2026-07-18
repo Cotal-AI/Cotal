@@ -280,11 +280,38 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
   },
 };
 
+/** The canonical AUTHORITY-CONTROL record kinds (§13.9): the mapping head, the UID reservation,
+ *  the governance/policy heads, the acceptance obligation, and the retirement frontier. This is
+ *  the SINGLE SOURCE consumed BOTH by the registry below AND by the record-reader seam
+ *  ({@link ../endpoint-binding.ts}.recordReaderConfig): a caller reader durable may target NONE of
+ *  these authority-only subtrees (nats-server#8274, the sealed records scanner owns `oblig.`), so
+ *  adding a kind here extends registration AND the reader exclusion together — no parallel
+ *  hand-kept deny-list to drift. `lifecycle` is DUAL: its atomic HEAD (`LIFECYCLE_HEAD`) is
+ *  authority, while its deeper per-UID `RECORD_KINDS.lifecycle` detail is a caller-readable audit
+ *  record; the seam admits the detail but head-guards the atomic key. */
+export const AUTHORITY_KIND_DEFS: readonly RecordKindDef[] = [
+  LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION, RETIREMENT_FRONTIER,
+];
+
 const registry = new Map<string, RecordKindDef[]>();
-for (const def of [...Object.values(RECORD_KINDS), LIFECYCLE_HEAD, UID_RESERVATION, GOVERN_HEAD, OBLIGATION, POLICY_VERSION, RETIREMENT_FRONTIER]) {
+for (const def of [...Object.values(RECORD_KINDS), ...AUTHORITY_KIND_DEFS]) {
   const list = registry.get(def.kind) ?? [];
   list.push(def);
   registry.set(def.kind, list);
+}
+
+/** The record-reader ALLOWLIST predicate (§13.9): a kind is CALLER-READABLE iff the registry holds
+ *  a def for it that is NOT an authority-control def — a caller `RECORD_KIND` (core or a registered
+ *  third-party kind). A PURE authority kind (`oblig`/`uid`/`govern`/`policy`/`frontier`) and any
+ *  UNREGISTERED kind return false (a reader may target neither); a DUAL-token kind (`lifecycle`)
+ *  returns true because its audit detail is readable, and the seam then head-guards it. The
+ *  record-reader seam calls this instead of a deny-list, so an unregistered/authority kind can
+ *  never pass and a new authority kind added to {@link AUTHORITY_KIND_DEFS} is excluded by
+ *  construction. */
+const AUTHORITY_DEF_SET: ReadonlySet<RecordKindDef> = new Set(AUTHORITY_KIND_DEFS);
+export function callerReadableRecordKind(kind: string): boolean {
+  const defs = registry.get(kind);
+  return defs !== undefined && defs.some((d) => !AUTHORITY_DEF_SET.has(d));
 }
 
 /** Register a third-party record kind. Reverse-DNS names ONLY — single-label kind names are
