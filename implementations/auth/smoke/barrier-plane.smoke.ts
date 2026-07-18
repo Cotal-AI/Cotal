@@ -33,6 +33,7 @@ import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, registryStores } from "../src/lifecycle-registry.js";
 import { credRowKey, enumerateOperationIntents, parseLedgerRow, runAgentTakeoverBarrier, type EvictPrincipal } from "../src/credential-ledger.js";
+import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -116,7 +117,10 @@ try {
 
   // ---- the barrier connection under test ----
   barrier = await openAuthorityClient({ server: SERVERS, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log: quiet });
-  const breg = await openLifecycleRegistry(barrier.nc, space);
+  // The barrier profile holds NO auth-stream CONSUMER.CREATE; enumeration runs on the SEALED scanner
+  // (a SEPARATE credential — modeled here over the broad writer connection, since the barrier cred
+  // deliberately cannot create a consumer). The registry threads the scanner's closed ops.
+  const breg = await openLifecycleRegistry(barrier.nc, space, makeLedgerScannerOverConnection(writer.nc, space));
   check("ALLOWED: the barrier connection binds + shape-proves both stores (STREAM.INFO)", true);
 
   // ---- E1. intent discovery baseline: empty, and session release pins are skipped ----
@@ -167,14 +171,30 @@ try {
   check("DENIED: a records uid. reservation WRITE", (await denied(() => recKvB.put(`uid.${mintLifecycleUid()}`, enc.encode("{}")))) === "denied");
   check("DENIED: STREAM.CREATE (the barrier never provisions stores)", (await denied(() => barrier!.nc.request(`$JS.API.STREAM.CREATE.FORGED_${space}`, enc.encode(JSON.stringify({ name: `FORGED_${space}`, subjects: [`forged.${space}`] })), { timeout: 1500 }))) === "denied");
   check("DENIED: CONSUMER.CREATE on the RECORDS stream (enumeration is auth-store-only)", (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.probe${Date.now() % 1000}`, enc.encode(JSON.stringify({ stream_name: `KV_${recordsBucket(space)}`, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
-  // H2 (security/distsys/fact): the barrier's consumer grant is the pinned EXTENDED create only.
-  // A BARE create (arbitrary name, body-selected filter + deliver_subject) and a DURABLE create (a
-  // consumer that outlives this connection and keeps exporting future auth rows) are both DENIED;
-  // the pull scan the barrier actually runs (extended create + name-token INFO/NEXT/DELETE) is not.
+  // 46e778f RE-VERIFY (security/fact/distsys/freelance, unanimous HIGH): the barrier holds NO
+  // auth-stream CONSUMER.CREATE at all — a create-request BODY is not subject-ACL confinable, so
+  // ANY create grant admits a `durable_name` + PUSH `deliver_subject` consumer that exports every
+  // current/future auth row and SURVIVES this connection + JWT revoke (nats-server#8274). Bare and
+  // legacy DURABLE.CREATE stay denied, AND the exact exploit — the previously-ALLOWED EXTENDED form
+  // (matching name token + full auth-bucket filter) with a durable + foreign-deliver body — is now
+  // denied. The family enumeration the barrier actually runs proved sufficient at section C
+  // (`revokedRows === 1` requires the no-consumer STREAM.INFO + leader MSG.GET scan to have worked).
+  const authStream = `KV_${epAuthBucket(space)}`;
   check("DENIED: a BARE CONSUMER.CREATE on the auth stream (no pinned filter => body-selectable)",
-    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.KV_${epAuthBucket(space)}`, enc.encode(JSON.stringify({ stream_name: `KV_${epAuthBucket(space)}`, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
-  check("DENIED: a DURABLE CONSUMER.CREATE on the auth stream (a durable consumer outlives the connection)",
-    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.DURABLE.CREATE.KV_${epAuthBucket(space)}.persist${Date.now() % 1000}`, enc.encode(JSON.stringify({ stream_name: `KV_${epAuthBucket(space)}`, config: { durable_name: "persist", ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.CREATE.${authStream}`, enc.encode(JSON.stringify({ stream_name: authStream, config: { ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
+  check("DENIED: a legacy DURABLE.CREATE on the auth stream",
+    (await denied(() => barrier!.nc.request(`$JS.API.CONSUMER.DURABLE.CREATE.${authStream}.persist${Date.now() % 1000}`, enc.encode(JSON.stringify({ stream_name: authStream, config: { durable_name: "persist", ack_policy: "none" } })), { timeout: 1500 }))) === "denied");
+  const exploitName = `evil${Date.now() % 1000}`;
+  const exploitFilter = `$KV.${epAuthBucket(space)}.>`;
+  check("DENIED: the EXACT EXPLOIT — EXTENDED create (matching name+filter) with a DURABLE + PUSH body (persistent auth-row exporter)",
+    (await denied(() => barrier!.nc.request(
+      `$JS.API.CONSUMER.CREATE.${authStream}.${exploitName}.${exploitFilter}`,
+      enc.encode(JSON.stringify({ stream_name: authStream, config: { name: exploitName, durable_name: exploitName, filter_subject: exploitFilter, deliver_subject: `attacker.exfil.${space}`, deliver_policy: "all", ack_policy: "none" } })),
+      { timeout: 1500 }))) === "denied");
+  // No surviving consumer: a WRITER-side (allow-all) INFO confirms the exploit left nothing behind
+  // — the denial is at publish, so no durable exporter can persist.
+  check("no exploit consumer survives on the auth stream (denied at publish, nothing created)",
+    (await rejects(() => jetstreamManager(writer!.nc).then((m) => m.consumers.info(authStream, exploitName)))).length > 0);
 
   // ---- F. BOOT CRASH-RESUME through the real plane ----
   const uid2 = mintLifecycleUid();

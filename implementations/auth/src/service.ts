@@ -53,6 +53,7 @@ import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, ope
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { openAuthLedgerScanner, type AuthLedgerScanner } from "./ledger-scanner.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import {
@@ -141,13 +142,19 @@ export async function openAuthAuthorityPlane(opts: {
   }
   // The BARRIER EXECUTOR: the third self-minted connection, with its own registry bind — the
   // mint writer stays the minimal issuance credential ("barriers are NOT this credential's
-  // job") and the barrier's enumeration-consumer/stage-write authority lives here alone.
+  // job") and the barrier's stage-write authority lives here alone. The barrier profile holds NO
+  // auth-stream `CONSUMER.CREATE` (nats-server#8274): its family/intent/lineage enumeration runs
+  // on the SEALED auth-ledger scanner, a FOURTH self-minted connection whose CREATE-capable
+  // credential never escapes ({@link openAuthLedgerScanner}), threaded into the barrier registry.
   let barrier;
+  let scanner: AuthLedgerScanner | undefined;
   let barrierReg;
   try {
     barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
-    barrierReg = await openLifecycleRegistry(barrier.nc, space);
+    scanner = await openAuthLedgerScanner({ server, space, dataAccount, log });
+    barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner);
   } catch (e) {
+    await scanner?.close();
     await barrier?.close();
     await reader.close();
     await writer.close();
@@ -162,6 +169,7 @@ export async function openAuthAuthorityPlane(opts: {
   try {
     await resumeOpenOperations(barrierReg, evictPrincipal, log);
   } catch (e) {
+    await scanner.close();
     await barrier.close();
     await reader.close();
     await writer.close();
@@ -176,6 +184,7 @@ export async function openAuthAuthorityPlane(opts: {
     mintConnectCredential: (args) => ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` }),
     close: async () => {
       await reader.close();
+      await scanner.close();
       await barrier.close();
       await writer.close();
     },

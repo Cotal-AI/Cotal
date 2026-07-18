@@ -91,11 +91,11 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
  *  - `STREAM.INFO` on both stores (the registry's §13.12 bind proof), `STREAM.MSG.GET` on both
  *    (leader-served gate/cred/intent and head reads), and records `DIRECT.GET` (reads that only
  *    feed revision-pinned CASes — the mint writer's own discipline).
- *  - The per-run THROWAWAY enumeration consumer on the auth stream (SPEC 13.9:2645: the barrier's
- *    LastPerSubject point-in-time family scan): EXTENDED create pinned to the name-token wildcard
- *    plus the auth-bucket filter (never a bare or DURABLE create), INFO/MSG.NEXT/DELETE pinned to
- *    the name-token (never a foreign consumer). Scoped to the AUTH stream only — no consumer
- *    authority on records.
+ *  - NO auth-stream `CONSUMER.CREATE` at all (46e778f re-verify): a consumer-create BODY is not
+ *    subject-ACL confinable, so any create grant admits a durable PUSH exporter surviving revoke
+ *    (nats-server#8274). The barrier's LastPerSubject family/intent/lineage scans instead run on
+ *    a no-consumer LEADER read (`STREAM.INFO` subjects_filter + `STREAM.MSG.GET last_by_subj`),
+ *    both already listed above. No consumer authority on either stream.
  *  - `$KV` writes on EXACTLY the barrier keys: auth `gate.` (the freeze/reopen CAS), `cred.`
  *    (the family revokes), `stage.` (the durable operation intent), and records `lifecycle.`
  *    (the containment/epoch head CASes). No `bysrc.`/`uid.` (a barrier never mints), no
@@ -103,8 +103,9 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
  *    this credential's job).
  *
  * Named residuals (D32 class, not pretend-confined): the stream-wide body-selected `MSG.GET`
- * metadata read and the caller-selected-reply injection class ride this profile like its
- * siblings; and the `$KV` prefixes span every uid (broker ACLs cannot scope "only the family
+ * metadata read (a ONE-SHOT read to the requester's own inbox while the credential is live — not
+ * a durable/push exporter) and the caller-selected-reply injection class ride this profile like
+ * its siblings; and the `$KV` prefixes span every uid (broker ACLs cannot scope "only the family
  * you are containing") — the executor IS the barrier authority, and that authority is exactly
  * what it holds.
  */
@@ -123,21 +124,17 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
       `$JS.API.STREAM.MSG.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}.>`,
-      // The per-run throwaway enumeration consumer, pinned to the SPEC 13.9:2645 form (security H2
-      // / distsys / fact H1): EXTENDED create only — a name-token wildcard plus the filter pinned
-      // to the auth bucket subtree (`CREATE.<auth>.*.$KV.<bucket>.>`), so the holder can never issue
-      // a BARE create (arbitrary name + body-selected filter/config) nor a DURABLE create (a durable
-      // consumer that outlives this connection and keeps exporting future rows). INFO/NEXT/DELETE
-      // are pinned to the name-token (`.*`), not `.>`, so the holder cannot INFO/DELETE a FOREIGN
-      // auth consumer. Named residual (D32 class, broker-inexpressible): a push consumer's
-      // `deliver_subject` is a request-BODY field the subject ACL cannot constrain (nats-server#8274),
-      // so a compromised holder could still route a pinned-filter read to an arbitrary subject; the
-      // barrier's own scanner is PULL (`ack_policy: none`, no deliver_subject) and never does this,
-      // and eliminating the bare/durable forms removes the persistent-export vector.
-      `$JS.API.CONSUMER.CREATE.${auth}.*.$KV.${epAuthBucket(space)}.>`,
-      `$JS.API.CONSUMER.INFO.${auth}.*`,
-      `$JS.API.CONSUMER.DELETE.${auth}.*`,
-      `$JS.API.CONSUMER.MSG.NEXT.${auth}.*`,
+      // NO auth-stream `CONSUMER.CREATE` (security/fact/distsys/freelance, 46e778f re-verify): the
+      // extended `CONSUMER.CREATE.<auth>.<name>.<filter>` API pins name+filter on the SUBJECT but
+      // the request BODY is not subject-ACL confinable — a holder can set `durable_name`
+      // (== the subject name token) + PUSH `deliver_subject` (nats-server#8274) and leave a DURABLE
+      // exporter of every current/future gate/cred/stage row that SURVIVES this connection and JWT
+      // revoke. Subject-token pinning cannot stop it; only holding no create can. The barrier's
+      // family/intent/lineage enumerations therefore use a no-consumer LEADER scan (STREAM.INFO
+      // `subjects_filter` + `STREAM.MSG.GET last_by_subj`, credential-ledger.ts), both body-safe
+      // primitives already granted above. Remaining D32 residual (unchanged, accepted): a
+      // stream-wide `MSG.GET` while the credential is LIVE is a one-shot read to the requester's
+      // own inbox — never a durable/push exporter.
       `$KV.${epAuthBucket(space)}.gate.>`,
       `$KV.${epAuthBucket(space)}.cred.>`,
       // ONE token: the barrier's own durable operation intents `stage.<opId>` — never `stage.>`,

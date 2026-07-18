@@ -200,10 +200,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m",
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
-    "$JS.API.CONSUMER.CREATE.KV_cotal_auth_d32m.*.$KV.cotal_auth_d32m.>",
-    "$JS.API.CONSUMER.INFO.KV_cotal_auth_d32m.*",
-    "$JS.API.CONSUMER.DELETE.KV_cotal_auth_d32m.*",
-    "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_d32m.*",
+    // No auth-stream CONSUMER.CREATE/INFO/DELETE/NEXT (46e778f re-verify): a create body is not
+    // subject-ACL confinable (durable+push exporter surviving revoke), so the barrier enumerates
+    // via the body-safe STREAM.INFO subjects_filter + leader MSG.GET already granted above.
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.stage.*",

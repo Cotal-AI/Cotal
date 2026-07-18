@@ -37,6 +37,7 @@ import {
 } from "@cotal-ai/core";
 import { openLifecycleRegistry, openLifecycleMappingReader, openSessionAuthStore, sessionRedemptionHooks } from "../src/index.js";
 import { activateLifecycle, observeGate, freezeGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
+import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { writeEndpointGate, reconcileSessionForTakeover } from "../src/session-ledger.js";
 import {
   stageAgentMint, finalizeAgentMint, enumerateAgentFamily,
@@ -108,7 +109,7 @@ try {
   const liveEvict: EvictPrincipal = (principal) => evictDeniedPrincipal(sysObserver!, sysEvictor!, "APP", principal, EVICT_OPTS);
 
   await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE);
-  const reg = await openLifecycleRegistry(nc, SPACE);
+  const reg = await openLifecycleRegistry(nc, SPACE, makeLedgerScannerOverConnection(nc, SPACE));
   const authKv = await new Kvm(nc).open(epAuthBucket(SPACE));
 
   console.log("A. activation + the mint protocol (observe → rows → pinned touch → release)");
@@ -447,6 +448,35 @@ try {
     c("mutating a pin object THROWS (strict-mode write to a frozen object)", mutationThrew);
     await finalizeAgentMint(reg, stagedK);
     c("…and the untampered finalize still releases from the module-private snapshot", true);
+  }
+
+  console.log("L. the history=1 concurrent-overwrite race (the sealed fence-free LastPerSubject scan sees an active→revoked overwrite that EVICTS the pre-scan revision — the exact subject a seq/INFO fence walk drops)");
+  {
+    const actL = await activateLifecycle(reg, { owner: "local", actor: "raceholder", managerInstance: MGR });
+    const uidL = actL.mapping.lifecycleUid;
+    await finalizeAgentMint(reg, await stageAgentMint(reg, { lifecycleUid: uidL, credentialId: "root0001", holderPrincipal: "local.raceholder", sourceChain: ["root"], exp: NOW + 60_000 }));
+    await finalizeAgentMint(reg, await stageAgentMint(reg, { lifecycleUid: uidL, credentialId: "sib00001", holderPrincipal: "local.raceholder", sourceChain: ["root"], exp: NOW + 60_000 }));
+    const racedKey = credRowKey(uidL, "root0001");
+    const siblingKey = credRowKey(uidL, "sib00001");
+    let raced = false;
+    // The probe fires AFTER the LastPerSubject consumer is created (root0001 still ACTIVE) and
+    // BEFORE the drain: it revokes root0001, appending a new revision and — under the normative
+    // history=1 store — EVICTING the active revision the consumer captured. A seq/INFO fence walk (B
+    // captured at scan start) sees the revoked append ABOVE B, drops the subject, and never evicts
+    // its holder (the revoker may have crashed after the row write, before eviction — simulated by
+    // marking the row revoked without touching connections). The fence-free scan must still return
+    // root0001 at its CURRENT (revoked) value and must not lose the untouched sibling.
+    const raceScanner = makeLedgerScannerOverConnection(nc, SPACE, {
+      afterCreate: async () => { if (!raced) { raced = true; await markLedgerRowRevoked(authKv, racedKey); } },
+    });
+    const raceReg = await openLifecycleRegistry(nc, SPACE, raceScanner);
+    const fam = await enumerateAgentFamily(raceReg, uidL);
+    c("the race actually fired (the overwrite happened inside the create→drain window)", raced);
+    const racedRow = fam.find((r) => r.key === racedKey);
+    const siblingRow = fam.find((r) => r.key === siblingKey);
+    c("the fence-free scan SEES the subject overwritten mid-scan (never drops it — a fence walk would)", racedRow !== undefined, fam.map((r) => r.key));
+    c("…and returns its CURRENT last (revoked), not the evicted active revision", racedRow?.row.state === "revoked", racedRow?.row);
+    c("…and the untouched sibling stays enumerated (active)", siblingRow?.row.state === "active", siblingRow?.row);
   }
 
   await nc.drain().catch(() => {});

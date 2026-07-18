@@ -24,8 +24,10 @@
  *    every revoked row's holder principal (fail-closed; the gate stays frozen forever);
  *  - the TAKEOVER BARRIER {@link runAgentTakeoverBarrier} in the normative order: durable op
  *    intent (`stage.<opId>`, create-only) → gate CAS `open → frozen` carrying the intent →
- *    point-in-time enumeration of `cred.<lifecycleUid>.>` (a per-run throwaway LastPerSubject
- *    PULL consumer, created and deleted per run, never reused) → revoke EVERY row → VERIFIED
+ *    point-in-time enumeration of `cred.<lifecycleUid>.>` (the SEALED auth-ledger scanner's
+ *    fence-free LastPerSubject read — `ledger-scanner.ts`; the barrier profile holds NO auth-stream
+ *    `CONSUMER.CREATE`, whose body cannot be subject-confined, so the CREATE lives only in the
+ *    scanner's own sealed credential) → revoke EVERY row → VERIFIED
  *    eviction of every holder principal (the injected `evictPrincipal` seam; `verifiedGone`
  *    is the ONLY success — anything else throws and the gate STAYS frozen) → the epoch head
  *    CAS LAST ({@link advanceEpochWithinTakeover}) → reopen the gate at generation G+1. Every
@@ -54,14 +56,11 @@
  * an `opId` is an identifier, never a bearer capability. Implementation staging lives in the
  * `stage.` family only — never under a ledger prefix a barrier enumerates.
  */
-import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   EpEnvelopeError,
   assertLifecycleToken,
   endpointToken,
-  epAuthBucket,
-  mintLifecycleUid,
   parsePrincipalKey,
   isPrincipalOwnerToken,
   isCasLoss as isRawCasLoss,
@@ -69,6 +68,7 @@ import {
 } from "@cotal-ai/core";
 import {
   registryStores,
+  registryScanner,
   readLifecycleHeadForOperation,
   readUidReservation,
   observeGate,
@@ -77,6 +77,7 @@ import {
   advanceEpochWithinTakeover,
   type LifecycleRegistry,
 } from "./lifecycle-registry.js";
+import type { RawScanEntry } from "./ledger-scanner.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -509,16 +510,14 @@ export interface EnumeratedRow {
 }
 
 /**
- * Point-in-time enumeration of a ledger family prefix via a PER-RUN THROWAWAY PULL consumer
- * (SPEC 13.9): `DeliverPolicy: LastPerSubject` (the CURRENT last value of every key under the
- * prefix — exactly the barrier's need, and what a standing acking durable can never re-scan),
- * `AckPolicy: none`, created and deleted per run, never reused. FAIL-LOUD is the contract: a
- * DEL/PURGE marker under a ledger prefix is corruption (rows are revoked, never deleted), and
- * a row that does not parse aborts the enumeration — a barrier that skipped either would
- * report a family it did not actually cover.
+ * Parse a sealed-scanner family read into closed {@link EnumeratedRow}s. FAIL-LOUD is the
+ * contract: a DEL/PURGE marker under a ledger prefix is corruption (rows are revoked, never
+ * deleted), and a row that does not parse aborts the enumeration — a barrier that skipped either
+ * would report a family it did not actually cover. The {@link RawScanEntry} seam stays here (the
+ * ledger's own parse layer): each entry becomes a closed parsed row BEFORE anything reaches a
+ * barrier dependency.
  */
-async function enumerateLedgerPrefix(reg: LifecycleRegistry, prefix: string): Promise<EnumeratedRow[]> {
-  const entries = await scanPrefixLastPerSubject(reg, prefix);
+function parseLedgerEntries(entries: RawScanEntry[]): EnumeratedRow[] {
   return entries.map((e) => {
     if (e.op === "DEL" || e.op === "PURGE")
       throw new EpEnvelopeError("failed-precondition", `the ledger key ${e.key} carries a ${e.op} marker; ledger rows are revoked, never deleted — the enumeration refuses (corruption, SPEC 13.12)`);
@@ -526,51 +525,17 @@ async function enumerateLedgerPrefix(reg: LifecycleRegistry, prefix: string): Pr
   });
 }
 
-/** The raw point-in-time scan behind {@link enumerateLedgerPrefix} and
- *  {@link enumerateOperationIntents}: the per-run throwaway LastPerSubject pull consumer, with NO
- *  marker/parse policy (each caller owns its own fail-loud contract over the returned entries). */
-async function scanPrefixLastPerSubject(
-  reg: LifecycleRegistry,
-  prefix: string,
-): Promise<{ key: string; data: Uint8Array; seq: number; op: string | undefined }[]> {
-  const { space, jsm, js } = registryStores(reg);
-  const bucket = epAuthBucket(space);
-  const stream = `KV_${bucket}`;
-  const name = `ledgerscan_${mintLifecycleUid()}`;
-  const filter = `$KV.${bucket}.${prefix}>`;
-  try {
-    await jsm.consumers.add(stream, {
-      name, filter_subject: filter, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject,
-      mem_storage: true, inactive_threshold: 30_000_000_000,
-    });
-  } catch (e) {
-    throw new EpEnvelopeError("unavailable", `creating the barrier's enumeration consumer on ${stream} failed; the barrier fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-  }
-  const out: { key: string; data: Uint8Array; seq: number; op: string | undefined }[] = [];
-  try {
-    const consumer = await js.consumers.get(stream, name);
-    let pending = (await consumer.info()).num_pending;
-    while (pending > 0) {
-      const want = Math.min(pending, 256);
-      const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
-      let got = 0;
-      for await (const m of iter) {
-        got++;
-        out.push({ key: m.subject.slice(`$KV.${bucket}.`.length), data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
-      }
-      if (got < want)
-        throw new EpEnvelopeError("unavailable", `the barrier's enumeration under ${prefix} under-delivered (${got}/${want}); a partial family read never proceeds (SPEC 13.1)`);
-      pending -= got;
-    }
-  } finally {
-    try { await jsm.consumers.delete(stream, name); } catch { /* per-run consumer; inactive_threshold collects it */ }
-  }
-  return out;
-}
-
-/** Enumerate a lifecycle's FULL descendant family `cred.<lifecycleUid>.>` (SPEC 13.1). */
-export function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid: string): Promise<EnumeratedRow[]> {
-  return enumerateLedgerPrefix(reg, `cred.${assertLifecycleToken(lifecycleUid)}.`);
+/**
+ * Enumerate a lifecycle's FULL descendant family `cred.<lifecycleUid>.>` (SPEC 13.1/13.9) through
+ * the SEALED auth-ledger scanner ({@link registryScanner}). The scan is a fence-free LastPerSubject
+ * read: under the normative history=1 store a same-subject `active→revoked` overwrite EVICTS the
+ * pre-scan revision, so the scanner delivers each subject's CURRENT last (a concurrent revoke is
+ * SEEN, never dropped). The scanner holds the ONLY auth-stream `CONSUMER.CREATE` on its own sealed
+ * credential; the barrier profile holds none (a consumer-create body is not subject-ACL confinable,
+ * nats-server#8274 — ledger-scanner.ts).
+ */
+export async function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid: string): Promise<EnumeratedRow[]> {
+  return parseLedgerEntries(await registryScanner(reg).scanCredentialFamily(assertLifecycleToken(lifecycleUid)));
 }
 
 /** A durable operation intent under `stage.<opId>` (SINGLE segment: the session release pins
@@ -591,7 +556,7 @@ export interface OperationIntentRef {
  * is never deleted while resumable, and garbled trusted-path state never drives a barrier.
  */
 export async function enumerateOperationIntents(reg: LifecycleRegistry): Promise<OperationIntentRef[]> {
-  const entries = await scanPrefixLastPerSubject(reg, "stage.");
+  const entries = await registryScanner(reg).scanStageFamily();
   const out: OperationIntentRef[] = [];
   for (const e of entries) {
     const opId = e.key.slice("stage.".length);
@@ -979,41 +944,13 @@ export async function revokeHandleSource(
 /** Enumerate a handle's lineage index `bysrc.<issuerKeyId>.<id>.>` (the walk's read). The
  *  index parse is closed and key-bound; the referenced rows are parsed by the walk itself. */
 async function enumerateBysrc(reg: LifecycleRegistry, issuerKeyId: string, id: string): Promise<Array<{ key: string; ref: string }>> {
-  const { space, jsm, js } = registryStores(reg);
-  const bucket = epAuthBucket(space);
-  const stream = `KV_${bucket}`;
-  const prefix = `bysrc.${assertKeySegment(issuerKeyId, "issuerKeyId")}.${assertKeySegment(id, "handle id")}.`;
-  const name = `ledgerscan_${mintLifecycleUid()}`;
-  try {
-    await jsm.consumers.add(stream, {
-      name, filter_subject: `$KV.${bucket}.${prefix}>`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject,
-      mem_storage: true, inactive_threshold: 30_000_000_000,
-    });
-  } catch (e) {
-    throw new EpEnvelopeError("unavailable", `creating the revocation walk's enumeration consumer on ${stream} failed; the walk fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-  }
-  const out: Array<{ key: string; ref: string }> = [];
-  try {
-    const consumer = await js.consumers.get(stream, name);
-    let pending = (await consumer.info()).num_pending;
-    while (pending > 0) {
-      const want = Math.min(pending, 256);
-      const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
-      let got = 0;
-      for await (const m of iter) {
-        got++;
-        const key = m.subject.slice(`$KV.${bucket}.`.length);
-        const op = m.headers?.get("KV-Operation");
-        if (op === "DEL" || op === "PURGE")
-          throw new EpEnvelopeError("failed-precondition", `the lineage index key ${key} carries a ${op} marker; index rows are never deleted (corruption, SPEC 13.12)`);
-        out.push({ key, ref: parseBysrcRow(m.data, key).ref });
-      }
-      if (got < want)
-        throw new EpEnvelopeError("unavailable", `the revocation walk's enumeration under ${prefix} under-delivered (${got}/${want}); a partial family read never proceeds (SPEC 13.1)`);
-      pending -= got;
-    }
-  } finally {
-    try { await jsm.consumers.delete(stream, name); } catch { /* per-run consumer; inactive_threshold collects it */ }
-  }
-  return out;
+  // The SEALED scanner's fence-free LastPerSubject read over `bysrc.<issuerKeyId>.<id>.>`
+  // (ledger-scanner.ts: a consumer-create grant is body-unconfinable, so the CREATE lives only in
+  // the scanner's own sealed credential). Index rows are never deleted, so a DEL/PURGE marker is
+  // corruption and refuses.
+  return (await registryScanner(reg).scanBysrc(assertKeySegment(issuerKeyId, "issuerKeyId"), assertKeySegment(id, "handle id"))).map((e) => {
+    if (e.op === "DEL" || e.op === "PURGE")
+      throw new EpEnvelopeError("failed-precondition", `the lineage index key ${e.key} carries a ${e.op} marker; index rows are never deleted (corruption, SPEC 13.12)`);
+    return { key: e.key, ref: parseBysrcRow(e.data, e.key).ref };
+  });
 }

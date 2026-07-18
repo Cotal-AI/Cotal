@@ -26,6 +26,7 @@ import {
   grantManagedActor, ledgerAclResolver, newActorToken, openAuthAuthorityPlane, startAuthCallout,
 } from "../src/index.js";
 import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
+import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import {
   containLifecycleFamily, createSourceGateOpen, finalizeAgentMint, revokeHandleSource, stageAgentMint,
   type EvictPrincipal,
@@ -102,7 +103,7 @@ try {
   // gates, stage intents, and enumeration consumers — deliberately NOT in the production mint
   // writer's grant, which stays under test-by-confinement elsewhere).
   writer = await openAuthorityClient({ server: SERVERS, space, dataAccount, label: `cotal:smoke-writer:${space}`, grants: (id) => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: quiet });
-  const reg = await openLifecycleRegistry(writer.nc, space);
+  const reg = await openLifecycleRegistry(writer.nc, space, makeLedgerScannerOverConnection(writer.nc, space));
 
   /** Grant + activate an alias through the production ensure, then mint one HANDLE-derived
    *  descendant under its open gate. Returns both bearers. */

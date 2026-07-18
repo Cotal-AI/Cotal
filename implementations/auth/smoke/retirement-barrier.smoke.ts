@@ -27,6 +27,7 @@ import {
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, drainTargetForEndpoint, type MediatedRequest } from "../src/index.js";
 import { openLifecycleRegistry, activateLifecycle, registryStores, observeGate, reopenGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { stageAgentMint, finalizeAgentMint, credRowKey, type EvictPrincipal } from "../src/credential-ledger.js";
+import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind } from "../src/retirement-barrier.js";
 
 let ok = 0, fail = 0;
@@ -91,7 +92,7 @@ try {
   const jsm = await jetstreamManager(nc);
   const js = jetstream(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
-  const reg = await openLifecycleRegistry(nc, SPACE);
+  const reg = await openLifecycleRegistry(nc, SPACE, makeLedgerScannerOverConnection(nc, SPACE));
   const { recordsKv, authKv } = registryStores(reg);
   let clock = NOW;
   const meds = {

@@ -63,6 +63,7 @@ import {
   workPoolContext,
   type WorkPoolContext,
 } from "@cotal-ai/core";
+import type { AuthLedgerScanner } from "./ledger-scanner.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -90,10 +91,14 @@ interface RegistryInternals {
   recordsKv: KV;
   authKv: KV;
   jsm: JetStreamManager;
-  /** The JetStream client over the SAME authenticated connection — the credential-ledger
-   *  barrier's per-run throwaway enumeration consumer fetches through it (SPEC 13.9). */
   js: JetStreamClient;
   work: WorkPoolContext;
+  /** The SEALED auth-ledger scanner (SPEC 13.9): the ONLY holder of `CONSUMER.CREATE` on the auth
+   *  stream, on its own dedicated credential+connection ({@link openAuthLedgerScanner}). The
+   *  barrier reaches enumeration through its CLOSED ops only ({@link registryScanner}); the raw
+   *  scanner/connection never escapes. Absent on the mint-writer registry (which never enumerates),
+   *  so {@link registryScanner} fails loud if a scanner-less registry is asked to enumerate. */
+  scanner?: AuthLedgerScanner;
 }
 const REGISTRIES = new WeakMap<LifecycleRegistry, RegistryInternals>();
 const READERS = new WeakMap<LifecycleMappingReader, { space: string; jsm: JetStreamManager }>();
@@ -165,7 +170,7 @@ export function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: stri
 /** Open the minting authority's sealed lifecycle registry: binds the space's primary records
  *  bucket AND its auth bucket. BOTH are shape-proved at bind (SPEC 13.12): primary, un-aged,
  *  no finite global eviction cap; the auth store additionally leader-only `allow_direct=false`. */
-export async function openLifecycleRegistry(nc: NatsConnection, space: string): Promise<LifecycleRegistry> {
+export async function openLifecycleRegistry(nc: NatsConnection, space: string, scanner?: AuthLedgerScanner): Promise<LifecycleRegistry> {
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
   const recordsBucket = `cotal_records_${space}`;
@@ -190,7 +195,7 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string): 
   if (authCfg.allow_direct !== false)
     throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable gate store defeats read-your-writes (SPEC 13.1) — reprovision`);
   const reg: LifecycleRegistry = Object.freeze({ space });
-  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space) });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), scanner });
   return reg;
 }
 
@@ -319,6 +324,17 @@ async function readHeadCandidate(kv: KV, owner: string, actor: string): Promise<
  *  never re-exported from the package index: a sealed registry stays the only door. */
 export function registryStores(reg: LifecycleRegistry): { space: string; recordsKv: KV; authKv: KV; jsm: JetStreamManager; js: JetStreamClient; work: WorkPoolContext } {
   return internals(reg);
+}
+
+/** PACKAGE-INTERNAL: the barrier's CLOSED enumeration seam (SPEC 13.9). Returns the sealed
+ *  auth-ledger scanner or throws — a registry constructed WITHOUT one (the mint writer) never
+ *  enumerates, so asking it to is a composition bug, not a silent degrade. Exposes only the closed
+ *  scan ops; the raw scanner/connection/credential stay inside {@link openAuthLedgerScanner}. */
+export function registryScanner(reg: LifecycleRegistry): AuthLedgerScanner {
+  const s = internals(reg).scanner;
+  if (s === undefined)
+    throw new EpEnvelopeError("failed-precondition", "this lifecycle registry was opened without a sealed auth-ledger scanner; only the barrier registry enumerates (SPEC 13.9) — open it with openAuthLedgerScanner");
+  return s;
 }
 
 /** PACKAGE-INTERNAL: the barrier's candidate read of an alias head (the credential-ledger
