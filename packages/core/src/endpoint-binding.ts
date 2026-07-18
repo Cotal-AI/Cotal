@@ -686,30 +686,24 @@ export function provisionerConsumerGrants(durables: PreCreatedDurable[]): string
   return rows;
 }
 
-/** The deterministic enumeration consumer NAME the mediator profile is pinned to, bound to
- *  (endpoint, connId): one connection carries one name, so the profile's consumer rows are
- *  name-LITERAL and can never read or disturb a foreign records-stream consumer by name.
- *  Concurrent enumerations under one pinned name fail LOUD (a create-config conflict or the
- *  drain's under-delivery guard), never silently share deliveries into a partial read. */
-export function mediatorEnumConsumerName(endpoint: string, connId: string): string {
-  return `medenum_${endpointToken(endpoint)}-${assertInboxConnId(connId)}`;
-}
-
 /** The ADMISSION MEDIATOR principal's rows (§13.9 matrix "Acceptance obligation", §13.8): the
  *  ONE writer of ITS endpoint's `oblig.` subtree (create-only winner + revision-pinned CAS;
  *  the target position is a principal wildcard, the endpoint token is LITERAL) plus the
  *  terminal-REJECTION publish on its own endpoint's create-only decision subjects, the fencing
- *  leader reads (records / EPF / EPW `STREAM.MSG.GET`), the §13.12 bind-time shape proof
- *  (records `STREAM.INFO`), and the per-run throwaway enumeration consumer whose CREATE row
- *  PINS both the NAME (deterministic, (endpoint, connId)-bound, {@link mediatorEnumConsumerName})
- *  and the filter to the endpoint's own oblig subtree (any other name or filter is a different
- *  API subject and is denied; narrower filters inside the subtree ride the `*` target token).
- *  The `CONSUMER.DELETE` row is pinned to that SAME literal name: with a fixed name a prior
- *  run's consumer (a different filter) would wedge the next create, so the profile deletes its
- *  own throwaway consumer between runs; an own-name delete reaches no foreign consumer, unlike
- *  the name-`*` delete row this builder refuses to mint. The reply inbox is connection-scoped
- *  (`_INBOX_<connId>.>`, never the account-wide default): every JS API call is request/reply,
- *  so an account-wide inbox would receive other principals' API replies.
+ *  leader reads (records / EPF / EPW `STREAM.MSG.GET`), and the §13.12 bind-time shape proof
+ *  (records `STREAM.INFO`). The reply inbox is connection-scoped (`_INBOX_<connId>.>`, never the
+ *  account-wide default): every JS API call is request/reply, so an account-wide inbox would
+ *  receive other principals' API replies.
+ *
+ *  NO `CONSUMER.CREATE` on the records stream (SPEC 13.9, site 3 — nats-server#8274). A
+ *  consumer-create request BODY is not subject-ACL confinable: the extended
+ *  `CONSUMER.CREATE.<records>.<name>.<oblig filter>` row this profile used to hold still admitted a
+ *  `durable_name` + PUSH `deliver_subject` body — a durable exporter of the endpoint's whole
+ *  `oblig.` subtree that SURVIVES this credential's connection and revoke (reproduced live). So the
+ *  mediator's drain-to-quiescence enumeration runs on the SEALED records scanner
+ *  ({@link ../../implementations/auth/src/records-scanner.ts openRecordsScanner}), a separate
+ *  self-minted credential the trusted process never hands out — this profile holds no consumer
+ *  lifecycle on the records stream at all.
  *
  *  D32 residuals, EXPLICIT (accepted only for this trusted per-endpoint profile): (1) the
  *  decision publish is payload-blind, so a compromised mediator can forge an ACCEPTANCE within
@@ -722,13 +716,12 @@ export function mediatorEnumConsumerName(endpoint: string, connId: string): stri
  *  `STREAM.MSG.GET` fencing reads expose the records/EPF/EPW streams space-wide, and raw JS API
  *  requests carry a caller-selected reply subject, so a compromised mediator can direct fetched
  *  API/message bytes onto a foreign rail (confused-deputy injection, not foreign read access).
- *  The former third residual (a name-`*` consumer INFO/MSG.NEXT reach) is CLOSED by the
- *  deterministic name pin. */
+ *  The former consumer-create durable-export reach is CLOSED: enumeration moved to the sealed
+ *  records scanner and this profile holds no records-stream CREATE. */
 export function admissionMediatorGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
   const e = endpointToken(endpoint);
   const stream = recordsKvStreamName(space);
   const obligFilter = `$KV.${recordsBucket(space)}.oblig.*.${e}.>`;
-  const enumName = mediatorEnumConsumerName(endpoint, connId);
   const publish = [
     obligFilter,
     `${spacePrefix(space)}.epf.${e}.dec.>`,
@@ -736,10 +729,6 @@ export function admissionMediatorGrants(space: string, endpoint: string, connId:
     `${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`,
     `${JSAPI}.STREAM.MSG.GET.${epwStreamName(space)}`,
     `${JSAPI}.STREAM.INFO.${stream}`,
-    `${JSAPI}.CONSUMER.CREATE.${stream}.${enumName}.${assertGrantFilter(obligFilter, "the mediator enumeration")}`,
-    `${JSAPI}.CONSUMER.INFO.${stream}.${enumName}`,
-    `${JSAPI}.CONSUMER.MSG.NEXT.${stream}.${enumName}`,
-    `${JSAPI}.CONSUMER.DELETE.${stream}.${enumName}`,
     `${JSAPI}.INFO`,
   ];
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };

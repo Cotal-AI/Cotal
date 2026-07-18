@@ -118,10 +118,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.EPF_d32m",
     "$JS.API.STREAM.MSG.GET.EPW_d32m",
     "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
-    "$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.medenum_jobsrv-ibxconn0123456789.$KV.cotal_records_d32m.oblig.*.jobsrv.>",
-    "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.medenum_jobsrv-ibxconn0123456789",
-    "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.medenum_jobsrv-ibxconn0123456789",
-    "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.medenum_jobsrv-ibxconn0123456789",
+    // No records-stream CONSUMER.CREATE/INFO/NEXT/DELETE (site 3, nats-server#8274): a create body
+    // is not subject-ACL confinable, so obligation enumeration moved to the sealed records scanner
+    // and the mediator holds no consumer lifecycle on the records stream.
     "$JS.API.INFO",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "cleaner": { publish: [

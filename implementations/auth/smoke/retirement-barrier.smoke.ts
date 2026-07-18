@@ -28,6 +28,7 @@ import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation,
 import { openLifecycleRegistry, activateLifecycle, registryStores, observeGate, reopenGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { stageAgentMint, finalizeAgentMint, credRowKey, type EvictPrincipal } from "../src/credential-ledger.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
+import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind } from "../src/retirement-barrier.js";
 
 let ok = 0, fail = 0;
@@ -92,12 +93,15 @@ try {
   const jsm = await jetstreamManager(nc);
   const js = jetstream(nc);
   await createEndpointStreams(jsm, new Kvm(nc), SPACE);
-  const reg = await openLifecycleRegistry(nc, SPACE, makeLedgerScannerOverConnection(nc, SPACE));
+  // ONE sealed records scanner shared by the barrier registry AND both mediators (its internal lock
+  // serializes every obligation scan over the one records-stream consumer name; site 3).
+  const recScanner = makeRecordsScannerOverConnection(nc, SPACE);
+  const reg = await openLifecycleRegistry(nc, SPACE, makeLedgerScannerOverConnection(nc, SPACE), recScanner);
   const { recordsKv, authKv } = registryStores(reg);
   let clock = NOW;
   const meds = {
-    [EP]: await openAdmissionMediator(nc, SPACE, EP, { now: () => clock }),
-    [EP2]: await openAdmissionMediator(nc, SPACE, EP2, { now: () => clock }),
+    [EP]: await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, recordsScanner: recScanner }),
+    [EP2]: await openAdmissionMediator(nc, SPACE, EP2, { now: () => clock, recordsScanner: recScanner }),
   };
   const mkReq = (endpoint: string, cc: { owner: string; actor: string; uid: string }): MediatedRequest =>
     mediatedRequestFromSubject(`cotal.${SPACE}.epj.${endpoint}.admit.${cc.owner}.${cc.actor}.${cc.uid}`);

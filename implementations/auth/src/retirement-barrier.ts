@@ -68,6 +68,7 @@ import {
 } from "@cotal-ai/core";
 import {
   registryStores,
+  registryRecordsScanner,
   observeGate,
   freezeGate,
   retireGate,
@@ -512,7 +513,7 @@ export async function runAgentRetirementBarrier(
   },
   deps: RetirementDeps,
 ): Promise<RetirementResult> {
-  const { space, authKv, recordsKv, jsm, js, work } = registryStores(reg);
+  const { space, authKv, recordsKv, jsm, work } = registryStores(reg);
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);
   const frontierKey = recordAtomicKey(RETIREMENT_FRONTIER, [args.lifecycleUid]);
@@ -618,7 +619,7 @@ export async function runAgentRetirementBarrier(
   const drainedEndpoints: string[] = [];
   const verifiedAcceptedEpf = new Set<string>();
   for (let pass = 1; ; pass++) {
-    const rows = await enumerateObligationRows({ jsm, js }, space, `oblig.${intent.lifecycleUid}.>`);
+    const rows = await enumerateObligationRows(registryRecordsScanner(reg), `oblig.${intent.lifecycleUid}.>`);
     const nonTerminal = rows.filter((r) => r.row.state === "provisional" || r.row.state === "accepted");
     const needingDrain = nonTerminal.filter((r) => r.row.state !== "accepted" || r.row.decision !== "epf" || !verifiedAcceptedEpf.has(`${r.key}@${r.revision}`));
     if (needingDrain.length === 0) break; // all accepted EPF rows seen here were route-verified at this exact revision

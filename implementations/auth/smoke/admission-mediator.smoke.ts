@@ -32,6 +32,7 @@ import {
 import { publishFactCreateOnly } from "@cotal-ai/core";
 import { activateLifecycle } from "../src/lifecycle-registry.js";
 import { registryStores } from "../src/lifecycle-registry.js";
+import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import type { CommitValue } from "../src/admission-mediator.js";
 
 let ok = 0, fail = 0;
@@ -93,8 +94,11 @@ try {
   const reg = await openLifecycleRegistry(nc, SPACE);
   const { recordsKv } = registryStores(reg);
   const js = jetstream(nc);
+  // The sealed records scanner the mediator's drain enumerates through (site 3): the mediator's own
+  // credential holds no records-stream CONSUMER.CREATE.
+  const recScanner = makeRecordsScannerOverConnection(nc, SPACE);
   let clock = NOW;
-  const med = await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, proofTtlMs: 1000 });
+  const med = await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, proofTtlMs: 1000, recordsScanner: recScanner });
   const markEffectsDone = async (row: { route?: string }, key: string) => {
     if (row.route !== "effects") return;
     const [cOwner, cActor, cUid, id] = key.split(".").slice(3);
@@ -197,7 +201,7 @@ try {
   const recKey4 = `svc.${EP}.${"m".repeat(26)}.status`;
   const commit4 = commitOf({ epoch: 4, state: "running", observedSpecRevision: 1 });
   const selfGot4 = await obtainSelfObligation(med, mkReq({ ...CALLER, uid: "x".repeat(26) }), { policy: true, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
-  const medReborn = await openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 1000 });
+  const medReborn = await openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 1000, recordsScanner: recScanner });
   const rejoin = await obtainSelfObligation(medReborn, mkReq({ ...CALLER, uid: "x".repeat(26) }), { policy: true, id: "self0004", commit: { commitKey: recKey4, commitBaseRevision: 0, ...commit4 } });
   c("a restarted writer (new mediator) JOINS its own provisional self obligation", rejoin.joined && rejoin.key === selfGot4.key);
   await acceptSelfObligation(medReborn, rejoin.proof);
@@ -242,7 +246,7 @@ try {
   console.log("H. the round-6 fold: state-aware proof, TTL cap, decision-winner bind");
   // TTL cap: an unbounded proof TTL is refused at open.
   await rejects("an over-cap proofTtlMs is refused (a proof is bounded-lived)",
-    () => openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 10 * 60_000 }), "failed-precondition");
+    () => openAdmissionMediator(nc!, SPACE, EP, { now: () => clock, proofTtlMs: 10 * 60_000, recordsScanner: recScanner }), "failed-precondition");
   // State-aware proof: a self obtain's proof is INERT once a drain settles its row, even though
   // its brand/bind/expiry still look valid (state-blind assertAdmissionProof would pass).
   {
@@ -450,7 +454,7 @@ try {
   }
 
   console.log("G. a proof never crosses endpoints or outlives its TTL");
-  const medOther = await openAdmissionMediator(nc, SPACE, "other", { now: () => clock, proofTtlMs: 1000 });
+  const medOther = await openAdmissionMediator(nc, SPACE, "other", { now: () => clock, proofTtlMs: 1000, recordsScanner: recScanner });
   const g2 = await obtainEpfObligation(med, mkReq({ ...CALLER, uid: "y".repeat(26) }), { target: tgt, id: "req0100", fingerprint: fp("p"), sourceSeq: 1, route: "effects" });
   rejectsSync("a proof issued by endpoint A refuses at endpoint B's mediator", () => assertAdmissionProof(medOther, g2.proof, g2.key), "permission-denied");
   clock += 2000; // past the 1000ms TTL

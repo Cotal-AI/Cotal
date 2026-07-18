@@ -46,7 +46,6 @@
  * wiring rides the EPF slice.
  */
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
-import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -63,6 +62,7 @@ import {
   assertAuthorityStreamShape, registryStores, openLifecycleMappingReader, readLifecycleMappingLeader,
   type AuthorityStreamCfg, type LifecycleRegistry, type LifecycleMappingReader,
 } from "./lifecycle-registry.js";
+import { assertRecordsScannerSpace, type RecordsScanner } from "./records-scanner.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -115,7 +115,7 @@ interface MediatorInternals {
   reader: LifecycleMappingReader;
   now: () => number;
   proofTtlMs: number;
-  enumConsumerName?: string;
+  recordsScanner: RecordsScanner;
 }
 const MEDIATORS = new WeakMap<AdmissionMediator, MediatorInternals>();
 
@@ -129,16 +129,19 @@ function internals(med: AdmissionMediator): MediatorInternals {
 /** Open the sealed per-endpoint admission mediator over the space's PRIMARY records store —
  *  shape-proved at bind exactly like every trusted consumer of that store (SPEC 13.12).
  *  `now`/`proofTtlMs` are probe seams; the proof TTL defaults to the §13.8 reference call
- *  deadline (15 s). `enumConsumerName` is the deterministic (endpoint, connId)-bound
- *  enumeration consumer name a SCOPED mediator credential is grant-pinned to
- *  (core `mediatorEnumConsumerName`); omitted, enumerations mint a per-run random name (the
- *  executor-credential paths, whose grants are not name-pinned). */
+ *  deadline (15 s). `recordsScanner` is the SEALED records-obligation scanner the mediator's
+ *  drain-to-quiescence enumeration runs on (SPEC 13.9, site 3): the mediator's own credential holds
+ *  NO `CONSUMER.CREATE` on the records stream (a create-request body is not subject-ACL confinable —
+ *  nats-server#8274), so it can never build a durable+PUSH exporter of its `oblig.` subtree; the
+ *  CREATE lives only inside {@link ./records-scanner.ts}. Required: a mediator that cannot enumerate
+ *  cannot drain (SPEC 13.8), which is a composition bug, not a silent degrade. */
 export async function openAdmissionMediator(
   nc: NatsConnection,
   space: string,
   endpoint: string,
-  opts: { now?: () => number; proofTtlMs?: number; enumConsumerName?: string } = {},
+  opts: { now?: () => number; proofTtlMs?: number; recordsScanner: RecordsScanner },
 ): Promise<AdmissionMediator> {
+  assertRecordsScannerSpace(opts.recordsScanner, space);
   const ep = endpointToken(endpoint);
   const bucket = recordsBucket(space);
   const jsm = await jetstreamManager(nc);
@@ -161,7 +164,7 @@ export async function openAdmissionMediator(
   MEDIATORS.set(med, {
     space, endpoint: ep, recordsKv, jsm, js: jetstream(nc), reader,
     now: opts.now ?? Date.now, proofTtlMs: opts.proofTtlMs ?? 15_000,
-    enumConsumerName: opts.enumConsumerName,
+    recordsScanner: opts.recordsScanner,
   });
   return med;
 }
@@ -1038,61 +1041,29 @@ export interface EnumeratedObligation {
   revision: number;
 }
 
-/** Point-in-time enumeration of an obligation filter via a per-run throwaway LastPerSubject
- *  PULL consumer (§13.9; the credential ledger's exact pattern). Markers and parse failures
- *  abort LOUD: a drain that skipped either would declare quiescence over rows it never read.
- *  PACKAGE-INTERNAL beyond the mediator: the §13.1 retirement barrier enumerates the
- *  target-wide `oblig.<targetUid>.>` (its endpoint discovery + its own quiescence re-check)
- *  over the executor's authenticated handles, never through a per-endpoint mediator. */
+/** Enumerate an obligation filter through the SEALED records scanner (§13.9, site 3), turning each
+ *  raw entry into a parsed, closed-schema obligation row. Markers and parse failures abort LOUD: a
+ *  drain that skipped either would declare quiescence over rows it never read. The scanner holds the
+ *  ONLY `CONSUMER.CREATE` on the records stream (fence-free LastPerSubject; the caller — mediator or
+ *  §13.1 retirement barrier — holds none, so a compromise can never durable-export the `oblig.`
+ *  subtree, nats-server#8274). The barrier enumerates the target-wide `oblig.<targetUid>.>` (its
+ *  endpoint discovery + quiescence re-check) through the registry's records scanner; each mediator
+ *  enumerates its own endpoint's subtree through the scanner injected at open. */
 export async function enumerateObligationRows(
-  handles: { jsm: JetStreamManager; js: JetStreamClient },
-  space: string,
+  scanner: RecordsScanner,
   filter: string,
-  opts: { consumerName?: string } = {},
 ): Promise<EnumeratedObligation[]> {
-  const bucket = recordsBucket(space);
-  const stream = `KV_${bucket}`;
-  // A SCOPED mediator credential is grant-pinned to one deterministic (endpoint, connId)-bound
-  // name whose own-name DELETE row makes the finally-delete effective, so the fixed name is
-  // reusable across filters; a concurrent enumeration under one pinned name fails loud (a
-  // create-config conflict or the under-delivery guard below), never a silent partial read.
-  const name = opts.consumerName ?? `obligscan_${mintLifecycleUid()}`;
-  try {
-    await handles.jsm.consumers.add(stream, {
-      name, filter_subject: `$KV.${bucket}.${filter}`, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject,
-      mem_storage: true, inactive_threshold: 30_000_000_000,
-    });
-  } catch (e) {
-    throw new EpEnvelopeError("unavailable", `creating the drain's enumeration consumer on ${stream} failed; the drain fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-  }
   const out: EnumeratedObligation[] = [];
-  try {
-    const consumer = await handles.js.consumers.get(stream, name);
-    let pending = (await consumer.info()).num_pending;
-    while (pending > 0) {
-      const want = Math.min(pending, 256);
-      const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
-      let got = 0;
-      for await (const m of iter) {
-        got++;
-        const key = m.subject.slice(`$KV.${bucket}.`.length);
-        const op = m.headers?.get("KV-Operation");
-        if (op === "DEL" || op === "PURGE")
-          throw new EpEnvelopeError("failed-precondition", `the obligation ${key} carries a ${op} marker; obligation rows are never deleted (corruption, SPEC 13.12)`);
-        out.push({ key, row: parseObligationRow(m.data, key), revision: m.seq });
-      }
-      if (got < want)
-        throw new EpEnvelopeError("unavailable", `the drain's enumeration under ${filter} under-delivered (${got}/${want}); a partial read never declares quiescence (SPEC 13.8)`);
-      pending -= got;
-    }
-  } finally {
-    try { await handles.jsm.consumers.delete(stream, name); } catch { /* per-run consumer; inactive_threshold collects it */ }
+  for (const e of await scanner.scanObligations(filter)) {
+    if (e.op === "DEL" || e.op === "PURGE")
+      throw new EpEnvelopeError("failed-precondition", `the obligation ${e.key} carries a ${e.op} marker; obligation rows are never deleted (corruption, SPEC 13.12)`);
+    out.push({ key: e.key, row: parseObligationRow(e.data, e.key), revision: e.seq });
   }
   return out;
 }
 
 function enumerateObligations(med: MediatorInternals, filter: string): Promise<EnumeratedObligation[]> {
-  return enumerateObligationRows({ jsm: med.jsm, js: med.js }, med.space, filter, { consumerName: med.enumConsumerName });
+  return enumerateObligationRows(med.recordsScanner, filter);
 }
 
 /** The injected ACCEPTED-EPF route reconciler (§13.8: a drain must complete accept-side

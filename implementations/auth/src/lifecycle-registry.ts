@@ -64,6 +64,7 @@ import {
   type WorkPoolContext,
 } from "@cotal-ai/core";
 import { assertScannerSpace, type AuthLedgerScanner } from "./ledger-scanner.js";
+import { assertRecordsScannerSpace, type RecordsScanner } from "./records-scanner.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -99,6 +100,13 @@ interface RegistryInternals {
    *  scanner/connection never escapes. Absent on the mint-writer registry (which never enumerates),
    *  so {@link registryScanner} fails loud if a scanner-less registry is asked to enumerate. */
   scanner?: AuthLedgerScanner;
+  /** The SEALED records-obligation scanner (SPEC 13.9, site 3): the ONLY holder of `CONSUMER.CREATE`
+   *  on the records stream for obligation enumeration, on its own dedicated credential+connection
+   *  ({@link openRecordsScanner}). The §13.1 retirement barrier's obligation drain reaches it through
+   *  {@link registryRecordsScanner}; the raw scanner/connection never escapes. Absent until the
+   *  retirement-drain executor is wired (#29 trigger), so {@link registryRecordsScanner} fails loud
+   *  if a scanner-less registry is asked to drain obligations. */
+  recordsScanner?: RecordsScanner;
 }
 const REGISTRIES = new WeakMap<LifecycleRegistry, RegistryInternals>();
 const READERS = new WeakMap<LifecycleMappingReader, { space: string; jsm: JetStreamManager }>();
@@ -170,7 +178,7 @@ export function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: stri
 /** Open the minting authority's sealed lifecycle registry: binds the space's primary records
  *  bucket AND its auth bucket. BOTH are shape-proved at bind (SPEC 13.12): primary, un-aged,
  *  no finite global eviction cap; the auth store additionally leader-only `allow_direct=false`. */
-export async function openLifecycleRegistry(nc: NatsConnection, space: string, scanner?: AuthLedgerScanner): Promise<LifecycleRegistry> {
+export async function openLifecycleRegistry(nc: NatsConnection, space: string, scanner?: AuthLedgerScanner, recordsScanner?: RecordsScanner): Promise<LifecycleRegistry> {
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
   const recordsBucket = `cotal_records_${space}`;
@@ -199,8 +207,12 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string, s
   // family and let a barrier advance over live descendants (SPEC 13.1/13.12). Same anti-hand-
   // assembly + space-bond discipline the registry itself carries.
   if (scanner !== undefined) assertScannerSpace(scanner, space);
+  // Same anti-hand-assembly + space-bond discipline for the records scanner (SPEC 13.9, site 3): a
+  // foreign-space or hand-built records scanner would let the retirement barrier's obligation drain
+  // declare quiescence over live obligations it never read.
+  if (recordsScanner !== undefined) assertRecordsScannerSpace(recordsScanner, space);
   const reg: LifecycleRegistry = Object.freeze({ space });
-  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), scanner });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), scanner, recordsScanner });
   return reg;
 }
 
@@ -339,6 +351,17 @@ export function registryScanner(reg: LifecycleRegistry): AuthLedgerScanner {
   const s = internals(reg).scanner;
   if (s === undefined)
     throw new EpEnvelopeError("failed-precondition", "this lifecycle registry was opened without a sealed auth-ledger scanner; only the barrier registry enumerates (SPEC 13.9) — open it with openAuthLedgerScanner");
+  return s;
+}
+
+/** PACKAGE-INTERNAL: the retirement barrier's CLOSED obligation-enumeration seam (SPEC 13.9,
+ *  site 3). Returns the sealed records scanner or throws — a registry constructed WITHOUT one never
+ *  drains obligations, so asking it to is a composition bug, not a silent degrade. Exposes only the
+ *  closed scan op; the raw scanner/connection/credential stay inside {@link openRecordsScanner}. */
+export function registryRecordsScanner(reg: LifecycleRegistry): RecordsScanner {
+  const s = internals(reg).recordsScanner;
+  if (s === undefined)
+    throw new EpEnvelopeError("failed-precondition", "this lifecycle registry was opened without a sealed records scanner; the retirement barrier's obligation drain requires one (SPEC 13.9) — open it with openRecordsScanner");
   return s;
 }
 
