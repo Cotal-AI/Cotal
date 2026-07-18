@@ -31,7 +31,11 @@ export interface DeliveryLeaseInfo {
  *  manager (no fallbacks); `pid` is a diagnostics + targeted-stop hint. Acquired by an ATOMIC CAS
  *  create — a second manager's create THROWS, a loud refusal-to-bind. */
 export interface ManagerLeaseInfo {
-  holder: string;   // manager endpoint id
+  /** The manager endpoint id — `principalKey(owner, actor).key` dot-form (the endpoint card's
+   *  id), so it is DIRECTLY comparable to a control subject's `<owner>.<actor>` attribution:
+   *  the auth service's retirement rail (#29 piece 3) leader-reads this row and requires
+   *  holder == the subject-attributed requester principal, fresh per request. */
+  holder: string;
   runtime: string;  // pty | tmux | cmux
   root: string;     // resolved workspaceRoot (same-checkout check)
   pid: number;      // OS pid

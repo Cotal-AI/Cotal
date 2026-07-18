@@ -539,6 +539,16 @@ export const CONTROL_DELIVERY = "delivery" as const;
  *  cred is default-denied — nats-server is the boundary, same pattern as {@link CONTROL_ADMIN});
  *  the `delivery` cred holds the serve + bounded-reply side. */
 export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
+/** The AUTH service's control rail (#29 piece 3; SPEC 13.2 reserved): lifecycle-authority ops the
+ *  AUTH plane serves — the D5 split's other half (retirement is the auth plane's operation; it
+ *  never rides the DELIVERY daemon's rail). The surface is GENERIC — "retire a lifecycle
+ *  (owner, actor, lifecycleUid)" — never caller-specific: the manager's despawn is ONE caller,
+ *  and the serve-time authz (the space-manager-lease holder check, leader-read fresh per
+ *  request) is the auth service's, not the subject grammar's. Caller attribution is
+ *  SUBJECT-derived (`ctl.auth-admin.<owner>.<actor>`, broker-ACL-enforced): only a credential
+ *  minted with that principal's request-publish grant reaches it, and replies are bound under
+ *  the sender's own `<request>.reply.>` subtree. */
+export const CONTROL_AUTH_ADMIN = "auth-admin" as const;
 /** The three control-plane tiers the manager serves — values tie to the `CONTROL_*` service
  *  names so handler routing can't drift from the subject names. */
 export type ControlTier = typeof CONTROL_PRIVILEGED | typeof CONTROL_SELF_SERVICE | typeof CONTROL_ADMIN;

@@ -39,6 +39,7 @@ import {
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
+import { authAdminListenerGrants } from "../src/auth-admin.js";
 import { authConnectReaderGrants } from "../src/connect-reader.js";
 import { authorityScannerGrants } from "../src/ledger-scanner.js";
 import { recordsScannerGrants } from "../src/records-scanner.js";
@@ -537,6 +538,24 @@ c("the agent's control-surface reach is exactly its caller rows + the Appendix-B
   untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r) || BASELINE_PUB.includes(r))
   && BASELINE_PUB.every((r) => untrusted.agent.pub.includes(r))
   && untrusted.agent.sub.filter((r) => r.includes(".ep.reply.")).every((r) => gen["caller"].subscribe.includes(r)));
+
+// ---- 4. the #29 piece-3 rail profiles: requester mint + listener, pinned EXACTLY ---------------
+console.log("4. the auth-admin rail profiles (piece 3)");
+{
+  const req = decode(await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { owner: "local", actor: "mgr0" } }));
+  c("the retirement-requester mint is EXACTLY request + own-reply + inbox (no store reads, no executing right)",
+    JSON.stringify(req.pub) === JSON.stringify([`cotal.${S}.ctl.auth-admin.local.mgr0`])
+    && req.sub.length === 2 && req.sub[0] === `cotal.${S}.ctl.auth-admin.local.mgr0.reply.>` && req.sub[1]!.startsWith("_INBOX_"),
+    req);
+  const listener = authAdminListenerGrants(S, CONN);
+  c("the auth-admin listener grant is EXACTLY serve + bounded replies + $JS.API.INFO + the ONE lease read + inbox",
+    JSON.stringify(listener) === JSON.stringify({
+      publish: [`cotal.${S}.ctl.auth-admin.>`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_manager_${S}`],
+      subscribe: [`cotal.${S}.ctl.auth-admin.*.*`, `_INBOX_${CONN}.>`],
+    }), listener);
+  c("the listener holds NO consumer authority and NO KV write anywhere",
+    listener.publish.every((r) => !r.includes("CONSUMER.") && !r.startsWith("$KV.")));
+}
 
 console.log(fail === 0 ? `\nD32 MATRIX AUDIT OK ✅  (${ok} passed, ${fail} failed)` : `\nD32 MATRIX AUDIT FAILED ❌  (${ok} passed, ${fail} failed)`);
 if (fail > 0) process.exit(1);

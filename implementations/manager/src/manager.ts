@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -31,6 +33,8 @@ import {
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
+  CONTROL_AUTH_ADMIN,
+  controlServiceSubject,
 } from "@cotal-ai/core";
 import { agentAuthState, authDir, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, ManagerLeaseInfo, MeshLaunchAgent, SpaceAuth } from "@cotal-ai/core";
@@ -66,6 +70,14 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+
+/** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
+ *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
+ *  operation (the rail's idempotence table needs exactly one op per retiring incarnation). 26 hex
+ *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
+function retireOpId(lifecycleUid: string): string {
+  return createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
+}
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
@@ -214,6 +226,14 @@ export class Manager {
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
+  /** Names RESERVED PENDING RETIREMENT (#29 piece 3): a despawned agent's name stays held until
+   *  the auth plane confirms its lifecycle's retirement TERMINAL over the auth-admin rail — the
+   *  alias-reuse gate that closes the same-name despawn→respawn race at its root. An UNCERTAIN
+   *  outcome (rail down, timeout) keeps the hold with the last attempt's copy; a same-name spawn
+   *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
+   *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
+   *  named residual this belt narrows, not replaces). */
+  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; startedAt: number; lastError?: string }>();
   private readonly attach: AttachEndpoint;
   private ep!: CotalEndpoint;
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
@@ -710,6 +730,13 @@ export class Manager {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     this.agents.delete(a.name);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
+    // #29 piece 3: in auth mode the name is RESERVED PENDING RETIREMENT — despawn started this
+    // agent's retirement (the auth-side lifecycle terminal), and the alias frees only when the
+    // auth plane confirms it. The detached deprovision below drives the request.
+    if (this.auth) {
+      const p = parsePrincipalKey(a.id);
+      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, startedAt: Date.now() });
+    }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
@@ -755,6 +782,56 @@ export class Manager {
       }
     }
     await this.deprovisionBroker(a);
+    // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
+    // the auth-admin rail. The rail re-checks the space-manager lease at serve time; the terminal
+    // (or an already-retired answer) clears the name reservation. Failures keep the hold with
+    // their operator copy — legible, retryable, never a silent half-state.
+    await this.requestRetirement(a);
+  }
+
+  /** Request the auth-side retirement of a departed agent's lifecycle (#29 piece 3): an ephemeral
+   *  `retirement-requester` credential (request + reply only), the generic `retireLifecycle` op,
+   *  a STABLE opId (derived from the lifecycleUid, so every retry re-drives the SAME operation),
+   *  and the four-outcome handling in operator vocabulary. */
+  private async requestRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
+    if (!this.auth) return;
+    const held = this.retiring.get(a.name);
+    const me = parsePrincipalKey(this.ep.ref().id);
+    const target = parsePrincipalKey(a.id);
+    if (!me || !target) {
+      if (held) held.lastError = "the manager or target principal could not be derived; the retirement was not requested";
+      return;
+    }
+    const uncertain = (why: string) =>
+      `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and retrying the despawn or a same-name spawn re-drives the same retirement; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then retry.`;
+    try {
+      const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", { retirementRequester: { owner: me.owner, actor: me.actor } });
+      const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+      try {
+        const subject = controlServiceSubject(this.space, CONTROL_AUTH_ADMIN, me.owner, me.actor);
+        const m = await nc.request(
+          subject,
+          JSON.stringify({ op: "retireLifecycle", args: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid, opId: retireOpId(a.lifecycleUid) } }),
+          { timeout: 20_000, noMux: true, reply: `${subject}.reply.${randomUUID()}` },
+        );
+        const r = m.json<{ ok: boolean; data?: unknown; error?: string }>();
+        if (r.ok) {
+          this.retiring.delete(a.name);
+          console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
+        } else {
+          // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
+          // full-no-op statements included) - surface it INTACT, never flattened.
+          if (held) held.lastError = r.error ?? "the auth service refused the retirement without a reason";
+          console.error(`despawn ${a.name}: ${r.error ?? "the auth service refused the retirement without a reason"}`);
+        }
+      } finally {
+        await nc.close().catch(() => {});
+      }
+    } catch (e) {
+      const copy = uncertain((e as Error).message);
+      if (held) held.lastError = copy;
+      console.error(`despawn ${a.name}: ${copy}`);
+    }
   }
 
   /** The teardown's ASYNC BROKER PHASE: mint the ephemeral target-pinned deprovisioner cred and
@@ -811,7 +888,7 @@ export class Manager {
    *  in-flight (reserved) slots. Lets a colliding spawn auto-number instead of being rejected, so
    *  callers never have to invent a unique name. */
   private uniqueName(base: string): string {
-    return firstFreeName(base, (n) => this.agents.has(n) || this.reserved.has(n));
+    return firstFreeName(base, (n) => this.agents.has(n) || this.reserved.has(n) || this.retiring.has(n));
   }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
@@ -1111,6 +1188,17 @@ export class Manager {
     }
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+    // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
+    // legibly (never a silent suffix), and the refusal re-drives the retirement request so
+    // "retry the spawn" is also the nudge.
+    const held = this.retiring.get(identityName);
+    if (held !== undefined) {
+      void this.requestRetirement({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid }).catch(() => {});
+      return {
+        ok: false,
+        error: `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that agent's retirement, and the name frees when the retirement completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying also re-drives the retirement), or pick another name.`,
+      };
+    }
     if (variant && !connector.supportsModelVariant)
       return { ok: false, error: `${agent} connector does not support model variants (variant)` };
 

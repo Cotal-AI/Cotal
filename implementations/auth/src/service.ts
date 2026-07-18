@@ -61,6 +61,7 @@ import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
+import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
@@ -295,6 +296,24 @@ export async function openAuthAuthorityPlane(opts: {
     await writer.close();
     throw e;
   }
+  // The AUTH CONTROL RAIL (#29 piece 3, SPEC 13.2 CONTROL_AUTH_ADMIN): serve the generic
+  // "retire a lifecycle" op over a dedicated minimal listener credential. Every executing right
+  // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
+  // scanner exactly like the boot resume); the listener only authorizes (subject attribution +
+  // the FRESH space-manager-lease holder check) and dispatches.
+  let authAdmin: AuthAdminListener | undefined;
+  try {
+    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, log });
+  } catch (e) {
+    closing = true;
+    await recordsScanner.close();
+    await scanner.close();
+    await hold.release();
+    await barrier.close();
+    await reader.close();
+    await writer.close();
+    throw e;
+  }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
   // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
@@ -317,9 +336,11 @@ export async function openAuthAuthorityPlane(opts: {
     },
     fenced,
     close: async () => {
-      // Clean-close order (SPEC 13.13): scan-capable clients down FIRST, then `held → released`
-      // (never released while either scanner can still act), then the barrier that wrote it.
+      // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
+      // clients down, then `held → released` (never released while either scanner can still
+      // act), then the barrier that wrote it.
       closing = true;
+      await authAdmin?.close();
       await reader.close();
       await recordsScanner.close();
       await scanner.close();

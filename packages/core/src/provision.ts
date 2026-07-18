@@ -42,6 +42,7 @@ import {
   CONTROL_ADMIN,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
+  CONTROL_AUTH_ADMIN,
   type ControlTier,
   chatStream,
   dmStream,
@@ -84,6 +85,7 @@ export type Profile =
   | "supervisor"
   | "provisioner"
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
+  | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "operator"
   | "purger"
   | "delivery"
@@ -150,6 +152,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs .cotal/membership-rw.creds for the SAME nkey, delivery-admin reloadCreds reconnects the rw feed explicitly, and source re-read is only a backstop (D5 slice 5 class 2)" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
+  "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   probe: { class: "one-shot", defaultTtlSeconds: 60, note: "connect-only preflight" },
@@ -401,6 +404,13 @@ export interface MintOpts {
    *  never a peer's, never the role-shared `svc_<role>`, and structurally never a same-alias
    *  successor's (its names carry a different uid). Ignored by every other profile. */
   deprovisionTarget?: DeprovisionTarget;
+  /** `retirement-requester` profile only: the REQUESTING principal (the current space-manager's
+   *  own `owner`/`actor`) whose auth-admin control subject the credential may publish. The
+   *  subject IS the attribution (SPEC 13.2 `CONTROL_AUTH_ADMIN`): the auth service's rail
+   *  compares the subject-attributed principal against the FRESH space-manager lease holder, so
+   *  a requester minted by a manager that later lost its lease is refused AT THE RAIL. Ignored
+   *  by every other profile. */
+  retirementRequester?: { owner: string; actor: string };
   /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
    *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
    *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
@@ -673,6 +683,16 @@ export function permissionsFor(
     if (!opts.deprovisionTarget)
       throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget ({principal, lifecycleUid} of the departed incarnation)");
     return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
+  }
+  if (profile === "retirement-requester") {
+    // Ephemeral request+reply on the auth-admin rail (#29 piece 3): publish EXACTLY the
+    // requester's own control subject + subscribe its own reply subtree and inbox. No store
+    // reads, no barrier/scanner/plane authority - the requester only asks; the auth plane
+    // holds every executing right and re-checks the lease at serve time.
+    if (!opts.retirementRequester)
+      throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester ({owner, actor} of the requesting manager)");
+    const req = controlServiceSubject(space, CONTROL_AUTH_ADMIN, opts.retirementRequester.owner, opts.retirementRequester.actor);
+    return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
   if (profile === "operator") return operatorPermissions(space, pr); // human-CLI client (send/dm/ask) (closure (ii))
