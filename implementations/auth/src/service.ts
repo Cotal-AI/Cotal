@@ -249,10 +249,12 @@ export async function openAuthAuthorityPlane(opts: {
   //  2. a covered-class repair that still cannot land names its SPECIFIC reason (an out-of-class
   //     commit key refuses in the executor with the confused-deputy copy; a CAS loss reports
   //     "another writer moved the record" and the next pass re-classifies);
-  //  3. genuinely-in-flight accepted EFFECTS work stays a legible FREEZE (auto-completing would
-  //     fabricate "the effect ran"): the serving endpoint's own writer must terminalize it, and
-  //     the barrier re-runs on the next boot. The retirement-cancel terminal (its own reviewed
-  //     wire slice) replaces this freeze when it lands.
+  //  3. accepted EFFECTS work terminalizes through the RETIREMENT-CANCEL terminal (§13.8 option
+  //     (i)): a first-terminal-wins cancelled marker on the SAME completion coordinate — an
+  //     action's goal union already carries the first-class `cancelled` state, a non-action
+  //     effect gets the EffectCancelledFact union member. Never a forged success: a reader sees
+  //     the effect did NOT run and which retirement cancelled it; a racing real completion wins
+  //     by landing first.
   const repairers = makeDrainRepairers({ server, space, dataAccount, log });
   const retirement: RetirementDeps = {
     evictPrincipal,
@@ -267,10 +269,7 @@ export async function openAuthAuthorityPlane(opts: {
         await drainTargetForEndpoint(await openAdmissionMediator(drain.nc, space, endpoint, { recordsScanner }), targetUid, {
           applyCommit: repairers.applyCommitFor(opId),
           reconcilePoolRoute: repairers.reconcilePoolRouteFor(opId),
-          cancelEffectsRoute: async ({ key }) => {
-            throw new EpEnvelopeError("unavailable",
-              `this retirement still has an accepted EFFECTS obligation in flight (${key}): the alias is FROZEN, not lost, and nothing mints for it until the effect completes. Completing it here would fabricate a result, so the serving endpoint's own writer must terminalize it (watch that endpoint's journal for the completion marker); the barrier re-runs on the next auth-service boot and finishes the retirement once the marker exists (SPEC 13.1/13.8).`);
-          },
+          cancelEffectsRoute: repairers.cancelEffectsRouteFor(opId),
         });
       } finally {
         await drain.close();

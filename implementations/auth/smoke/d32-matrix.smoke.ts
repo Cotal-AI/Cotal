@@ -38,7 +38,7 @@ import {
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
-import { drainApplierGrants, drainReconcilerGrants } from "../src/drain-repair.js";
+import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
 import { authConnectReaderGrants } from "../src/connect-reader.js";
 import { authorityScannerGrants } from "../src/ledger-scanner.js";
 import { recordsScannerGrants } from "../src/records-scanner.js";
@@ -306,6 +306,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   "drain-reconciler": { publish: [
     `cotal.d32m.epw.jobsrv.pa.local.worker.${"u".repeat(26)}.acc001`,
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  "drain-canceller": { publish: [
+    `cotal.d32m.epf.jobsrv.eff.local.worker.${"u".repeat(26)}.acc001`,
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
 };
 
 // ---- 1. regenerate every builder and pin against the fixture ----------------------------------
@@ -349,6 +352,7 @@ put("barrier-executor", { publish: barrierExecutorSettlementGrants(S, EPJ, ["pa"
 put("retirement-executor", retirementExecutorClientGrants(S, EPJ, ["pa", "pb"], CONN));
 put("drain-applier", drainApplierGrants(S, `goal.${EPJ}.local.worker.${UID}.g00001.spec`, CONN));
 put("drain-reconciler", drainReconcilerGrants(S, `cotal.${S}.epw.${EPJ}.pa.local.worker.${UID}.acc001`, CONN));
+put("drain-canceller", drainCancellerGrants(S, `cotal.${S}.epf.${EPJ}.eff.local.worker.${UID}.acc001`, CONN));
 
 for (const name of Object.keys(FIXTURE)) {
   c(`fixture pin: ${name}`, JSON.stringify(gen[name]) === JSON.stringify(FIXTURE[name]), gen[name]);

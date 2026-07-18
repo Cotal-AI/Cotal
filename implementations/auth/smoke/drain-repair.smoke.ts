@@ -24,9 +24,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { createSpaceAuth, ensureAuthorityStores, isReachable, recordsBucket, serverConfig, spacePrefix, createEndpointStreams } from "@cotal-ai/core";
+import { contractDigest, createSpaceAuth, ensureAuthorityStores, epfEffectSubject, epfStreamName, isReachable, parseEffectFact, publishFactCreateOnly, readLastFact, recordsBucket, serverConfig, spacePrefix, createEndpointStreams, effectFactOf, effectCancelledFactOf, type AcceptanceFact } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
-import { assertAppliableCommitKey, assertPoolRepairSubject, drainApplierGrants, drainReconcilerGrants, makeDrainRepairers } from "../src/drain-repair.js";
+import { assertAppliableCommitKey, assertEffectsCancelSubject, assertPoolRepairSubject, drainApplierGrants, drainCancellerGrants, drainReconcilerGrants, makeDrainRepairers } from "../src/drain-repair.js";
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -156,6 +156,68 @@ try {
   const reenq = repairers.reconcilePoolRouteFor("op".padEnd(26, "1"));
   const foreign = await rejects(() => reenq({ kind: "pool", subject: `${spacePrefix("other")}.epw.manager.workpool.local.worker.${UID}.acc001`, bytes: new TextEncoder().encode("{}"), workExpiry: 1 }));
   check("the real reconciler refuses a foreign-space repair BEFORE any mint", foreign.includes("no reconciler credential mints"), foreign);
+
+  console.log("E. the effects canceller: closed subject, live confinement, first-terminal-wins");
+  {
+    const effOk = `${spacePrefix(space)}.epf.manager.eff.local.worker.${UID}.eff001`;
+    const goalOk = `${spacePrefix(space)}.epf.manager.goal.local.worker.${UID}.g00001.result`;
+    check("an exact eff completion marker is ACCEPTED", (await rejects(() => assertEffectsCancelSubject(space, effOk))) === "");
+    check("an exact goal result coordinate is ACCEPTED", (await rejects(() => assertEffectsCancelSubject(space, goalOk))) === "");
+    for (const [what, subject] of Object.entries({
+      "a foreign space's EPF rail": `${spacePrefix("other")}.epf.manager.eff.local.worker.${UID}.eff001`,
+      "a non-EPF rail": `${spacePrefix(space)}.epw.manager.workpool.local.worker.${UID}.eff001`,
+      "a goal coordinate without the result tail": `${spacePrefix(space)}.epf.manager.goal.local.worker.${UID}.g00001.progress`,
+      "a wildcard coordinate": `${spacePrefix(space)}.epf.manager.eff.local.worker.${UID}.*`,
+      "a decision coordinate": `${spacePrefix(space)}.epf.manager.dec.local.worker.${UID}.eff001`,
+    })) {
+      const msg = await rejects(() => assertEffectsCancelSubject(space, subject));
+      check(`${what} REFUSES before any credential mints`, msg.includes("no canceller credential mints"), { subject, msg });
+    }
+    const D = contractDigest({ probe: "cancel" });
+    const accOf = (id: string, sourceSeq: number): AcceptanceFact => ({
+      v: 1, id, decision: "accepted", fingerprint: D,
+      request: { v: 1, id, op: { endpoint: "manager", command: "run", inputDigest: D, outputDigest: D }, class: "journal", replyExpected: false, deadlineMs: 5000, args: {}, from: { id: "local.worker", name: "c" } },
+      caller: { id: "local.worker", lifecycleUid: UID }, target: { owner: "local", actor: "worker", lifecycleUid: UID },
+      contractDigests: { input: D, output: D }, authzDecision: { revision: 1, epoch: 1 },
+      route: "effects", sourceSeq, ts: 1,
+    } as unknown as AcceptanceFact);
+    // Live confinement: the canceller credential for eff001 is broker-DENIED on a sibling marker.
+    const canc = await openAuthorityClient({
+      server: SERVERS, space, dataAccount, label: `probe:cancel`,
+      grants: (id) => drainCancellerGrants(space, effOk, id), log: quiet,
+    });
+    try {
+      const js = jetstream(canc.nc);
+      const denied = await rejects(() => js.publish(`${spacePrefix(space)}.epf.manager.eff.local.worker.${UID}.eff002`, new TextEncoder().encode("{}"), { timeout: 1500 }));
+      check("the canceller credential is broker-DENIED on a sibling completion marker (exact-coordinate grant)", denied.length > 0, denied);
+    } finally {
+      await canc.close();
+    }
+    const cancelFor = repairers.cancelEffectsRouteFor("op".padEnd(26, "1"));
+    // Direction 1: the REAL completion landed first — the cancel LOSES its create and the real
+    // marker survives (first-terminal-wins protects a genuinely-executed effect).
+    const acc1 = accOf("eff001", 3);
+    const real = effectFactOf(acc1, 1);
+    if (!(await publishFactCreateOnly(jetstream(wide.nc), effOk, new TextEncoder().encode(JSON.stringify(real)))).won) throw new Error("real completion forge lost");
+    const lost = await rejects(() => cancelFor({ kind: "effects-cancel", subject: effOk, key: "oblig.probe", goal: false, acceptance: acc1 }));
+    const after1 = parseEffectFact(await readLastFact(wideJsm, epfStreamName(space), effOk), effOk);
+    check("a cancel racing an EXISTING real completion loses its create (the real marker survives)", lost === "" && !("cancelled" in after1), after1);
+    // Direction 2: the cancel landed first — a late real completion loses ITS create.
+    const eff3 = `${spacePrefix(space)}.epf.manager.eff.local.worker.${UID}.eff003`;
+    const acc3 = accOf("eff003", 4);
+    await cancelFor({ kind: "effects-cancel", subject: eff3, key: "oblig.probe3", goal: false, acceptance: acc3 });
+    const lateReal = await publishFactCreateOnly(jetstream(wide.nc), eff3, new TextEncoder().encode(JSON.stringify(effectFactOf(acc3, 2))));
+    const after3 = parseEffectFact(await readLastFact(wideJsm, epfStreamName(space), eff3), eff3);
+    check("a cancel that landed first wins: the late real completion loses ITS create and the CANCELLED member survives",
+      lateReal.won === false && "cancelled" in after3, after3);
+    // The core builders refuse a foreign or absent target (a retirement cancels only ITS work).
+    const foreignTarget = await rejects(() => effectCancelledFactOf(acc1, { opId: "op1", target: { owner: "local", actor: "other", lifecycleUid: "z".repeat(26) } }, 1));
+    check("the cancel builder refuses a FOREIGN target (a retirement cancels only its own target's work)", foreignTarget.includes("cancels only ITS target"), foreignTarget);
+    const targetless = await rejects(() => cancelFor({ kind: "effects-cancel", subject: eff3, key: "k", goal: false, acceptance: { ...acc3, target: undefined } as unknown as AcceptanceFact }));
+    check("the real canceller refuses a TARGET-LESS acceptance BEFORE any mint", targetless.includes("never retirement-cancelled"), targetless);
+    const wrongKind = await rejects(() => cancelFor({ kind: "pool", subject: eff3 } as never));
+    check("the canceller refuses a non-cancel repair kind", wrongKind.includes("completion cancels only"), wrongKind);
+  }
 
   await wide.close();
 } finally {

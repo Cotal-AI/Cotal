@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfStreamName, epfSubject, epwStreamName, epwSubject, isReachable, mintLifecycleUid, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, type EvictionResult } from "@cotal-ai/core";
+import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, epwSubject, isReachable, mintLifecycleUid, parseEffectFact, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, type EvictionResult } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation, acceptSelfObligation } from "../src/admission-mediator.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
@@ -336,16 +336,27 @@ try {
   }, wedgeDeps(failEvictor)));
   check("the retirement wedges at eviction with the accepted obligation still pending", wedge4.length > 0, wedge4.slice(0, 80));
 
+  // F3 (reworked for §13.8 option (i)): the resume no longer freezes on in-flight accepted
+  // EFFECTS work — the per-op canceller terminalizes it with the first-terminal-wins CANCELLED
+  // union member on the SAME completion coordinate, and the retirement COMPLETES.
   const drainLines: string[] = [];
   const planeDrainWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => drainLines.push(l), probeEvictor: okEvictor([]) });
   await planeDrainWedged.close();
-  check("the resume gets past eviction and FAILS CLOSED at the drain on in-flight accepted EFFECTS work",
-    (await observeGate(breg, uid4))?.row.state === "frozen"
-    && (await readLifecycleHeadForOperation(breg, OWNER, "worker4"))?.mapping.state !== "retired", await observeGate(breg, uid4));
-  check("the effects freeze is OPERATOR-legible (FROZEN not lost + the real self-heal NEXT), never a seam-dep throw or a stale build pointer",
-    drainLines.some((l) => l.includes(`resuming retirement ${retireOp4}`) && l.includes("FROZEN, not lost")
-      && l.includes("serving endpoint's own writer")
-      && !l.includes("cancelEffectsRoute was given") && !l.includes("#29") && !l.includes("commit-applier")), drainLines);
+  check("the resume gets past eviction and CANCELS the in-flight accepted EFFECTS work (the retirement COMPLETES)",
+    (await readLifecycleHeadForOperation(breg, OWNER, "worker4"))?.mapping.state === "retired"
+    && drainLines.some((l) => l.includes("the in-flight effect was cancelled by this retirement")),
+    drainLines.filter((l) => l.includes("drain-repair") || l.includes("retirement")));
+  check("no freeze face and no stale build pointer fire for a cancellable effect",
+    !drainLines.some((l) => l.includes("FROZEN, not lost") || l.includes("#29") || l.includes("commit-applier") || l.includes("cancelEffectsRoute was given")), drainLines);
+  {
+    const effSubject = epfEffectSubject(space, "manager", { owner: OWNER, actor: "acaller", uid: "a".repeat(26) }, "acc001");
+    const marker = await readLastFact(registryStores(wreg).jsm, epfStreamName(space), effSubject);
+    const parsed = marker === undefined ? undefined : parseEffectFact(marker, effSubject);
+    const cancelled = parsed !== undefined && "cancelled" in parsed
+      ? (parsed as { cancelled: { opId: string; target: { lifecycleUid: string } } }).cancelled : undefined;
+    check("the completion coordinate carries the CANCELLED union member bound to acceptance + target + retirement op (never a forged success)",
+      cancelled !== undefined && cancelled.opId === retireOp4 && cancelled.target.lifecycleUid === uid4, parsed);
+  }
 
   // ---- F4. the CONFINED drain repairers AUTO-COMPLETE covered accepted work over the REAL
   // per-op reduced credentials (#29 HIGH 1 functional closure): an accepted SELF commit that

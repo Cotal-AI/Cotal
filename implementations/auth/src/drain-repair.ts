@@ -45,19 +45,22 @@ import {
   EpEnvelopeError,
   RECORD_KINDS,
   callerReadableRecordKind,
+  effectCancelledFactOf,
+  goalCancelledResultOf,
   isCasLoss,
+  publishFactCreateOnly,
   recordsBucket,
   spacePrefix,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "./authority-client.js";
-import type { ApplyCommit, PoolRouteRepair, ReconcilePoolRoute } from "./admission-mediator.js";
+import type { ApplyCommit, CancelEffectsRoute, EffectsCancelRepair, PoolRouteRepair, ReconcilePoolRoute } from "./admission-mediator.js";
 
 /** The infra owner for repair principals: CONNZ-attributable, reserved (the cleaner precedent). */
 const INFRA_OWNER = "local";
 
 /** `epapl_<16-hex-of-sha256(opId)>` / `eprec_<...>`: distinct prefixes per role, unique per op —
  *  an evict of one role's principal never touches the other's (the epcln_/epexe_ pattern). */
-function opActor(prefix: "epapl" | "eprec", opId: string): string {
+function opActor(prefix: "epapl" | "eprec" | "epcan", opId: string): string {
   return `${prefix}_${createHash("sha256").update(opId).digest("hex").slice(0, 16)}`;
 }
 
@@ -131,6 +134,34 @@ export function drainApplierGrants(space: string, commitKey: string, connId: str
 export function drainReconcilerGrants(space: string, itemSubject: string, connId: string): { publish: string[]; subscribe: string[] } {
   return {
     publish: [assertPoolRepairSubject(space, itemSubject)],
+    subscribe: [`_INBOX_${connId}.>`],
+  };
+}
+
+/** Validate one effects-cancel completion subject (defense in depth over the mediator's
+ *  derivation): exactly this space's `epf.<endpoint>.eff.<owner>.<actor>.<uid>.<id>` marker or
+ *  `epf.<endpoint>.goal.<owner>.<actor>.<uid>.<goalId>.result` coordinate — the two completion
+ *  subjects the drain's established() reads. Returns the subject or throws `permission-denied`. */
+export function assertEffectsCancelSubject(space: string, subject: string): string {
+  const prefix = `${spacePrefix(space)}.epf.`;
+  const refuse = (why: string): never => {
+    throw new EpEnvelopeError("permission-denied", `the effects-cancel subject "${subject}" ${why}; no canceller credential mints for it (SPEC 13.8/13.9)`);
+  };
+  if (!subject.startsWith(prefix)) refuse("is not this space's EPF rail");
+  const tokens = subject.slice(prefix.length).split(".");
+  if (tokens.some((t) => t.length === 0 || t.includes(">") || t.includes("*"))) refuse("carries a wildcard or empty token");
+  const isEff = tokens.length === 6 && tokens[1] === "eff";
+  const isGoalResult = tokens.length === 7 && tokens[1] === "goal" && tokens[6] === "result";
+  if (!isEff && !isGoalResult) refuse("is neither an exact eff completion marker nor an exact goal result coordinate");
+  return subject;
+}
+
+/** The EFFECTS CANCELLER's grant (SPEC 13.9 "Drain effects canceller" row): ONE exact completion
+ *  subject + the connection-scoped inbox. No reads, no wildcards. The subject MUST have passed
+ *  {@link assertEffectsCancelSubject} before this builder runs. */
+export function drainCancellerGrants(space: string, completionSubject: string, connId: string): { publish: string[]; subscribe: string[] } {
+  return {
+    publish: [assertEffectsCancelSubject(space, completionSubject)],
     subscribe: [`_INBOX_${connId}.>`],
   };
 }
@@ -211,5 +242,37 @@ export function makeDrainRepairers(opts: {
     }
   };
 
-  return { applyCommitFor, reconcilePoolRouteFor };
+  const cancelEffectsRouteFor = (opId: string): CancelEffectsRoute => async (repair: EffectsCancelRepair) => {
+    if (repair.kind !== "effects-cancel")
+      throw new EpEnvelopeError("permission-denied", `the effects canceller received a "${String((repair as { kind?: unknown }).kind)}" repair; it executes completion cancels only (SPEC 13.8/13.9)`);
+    assertEffectsCancelSubject(space, repair.subject);
+    const target = repair.acceptance.target;
+    if (target === undefined)
+      throw new EpEnvelopeError("permission-denied", `the accepted work at ${repair.key} binds no target, so no retirement owns it; a target-less acceptance is never retirement-cancelled (SPEC 13.8)`);
+    // The core builders refuse a foreign target (a retirement cancels only ITS OWN target's work)
+    // and never fabricate success: an action terminalizes through the goal union's FIRST-CLASS
+    // `cancelled` state; a non-action effect through the EffectCancelledFact union member.
+    const fact = repair.goal
+      ? goalCancelledResultOf(repair.acceptance, { opId, target }, Date.now())
+      : effectCancelledFactOf(repair.acceptance, { opId, target }, Date.now());
+    const client = await openAuthorityClient({
+      server, space, dataAccount,
+      label: `cotal:ep-cancel:${space}`,
+      principal: { owner: INFRA_OWNER, actor: opActor("epcan", opId) },
+      grants: (id) => drainCancellerGrants(space, repair.subject, id),
+      log,
+    });
+    try {
+      // CREATE-ONLY (first-terminal-wins, §13.8): a racing real completion that landed first
+      // WINS and this cancel loses its create harmlessly — the drain re-reads either way.
+      const res = await publishFactCreateOnly(jetstream(client.nc), repair.subject, new TextEncoder().encode(JSON.stringify(fact)));
+      log(res.won
+        ? `drain-repair: the in-flight effect was cancelled by this retirement (${repair.key}, op ${opId})`
+        : `drain-repair: the cancel for ${repair.key} lost its create (a real completion landed first); the drain re-reads the winner (op ${opId})`);
+    } finally {
+      await client.close();
+    }
+  };
+
+  return { applyCommitFor, reconcilePoolRouteFor, cancelEffectsRouteFor };
 }

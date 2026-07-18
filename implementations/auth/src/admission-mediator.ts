@@ -55,7 +55,7 @@ import {
   epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, goalResultSubject, parseGoalResultFact, publishFactCreateOnly, readLastFact, parseDecisionFact, parseEffectFact,
   workTerminalSubject, parseWorkTerminalFact, workItemBytesOf,
   contractDigest, parseEpSubject,
-  type RejectionFact, type DecisionFact, type WorkItemRef,
+  type AcceptanceFact, type RejectionFact, type DecisionFact, type WorkItemRef,
   mintLifecycleUid, assertLifecycleToken, assertIdToken, endpointToken, assertPoolToken,
 } from "@cotal-ai/core";
 import {
@@ -1092,13 +1092,29 @@ export interface PoolRouteRepair {
  *  never landed would otherwise be lost). Receives a closed {@link PoolRouteRepair}; idempotent. */
 export type ReconcilePoolRoute = (repair: PoolRouteRepair) => Promise<void>;
 
+/** A CLOSED, mediator-validated EFFECTS-CANCEL repair (§13.8 option (i)): the MEDIATOR reads and
+ *  row-binds the acceptance decision itself and derives the exact completion subject; the
+ *  executor stamps its own retirement identity through the CORE validated builders
+ *  (`effectCancelledFactOf` / `goalCancelledResultOf` — which refuse a foreign target) and
+ *  publishes CREATE-ONLY, so a racing real completion wins by landing first and a lost create is
+ *  benign. After the hook returns, the drain RE-READS the marker — a hook that neither
+ *  established a bound terminal nor threw still fails closed. */
+export interface EffectsCancelRepair {
+  kind: "effects-cancel";
+  /** The exact completion subject: the `eff` marker, or the goal's `result` coordinate. */
+  subject: string;
+  /** The obligation key (operator-facing messages only, never authority). */
+  key: string;
+  /** True when the acceptance is an ACTION (its terminal is the goal.result `cancelled` state —
+   *  a wire shape the goal union already carries); false: the {@link EffectCancelledFact} member. */
+  goal: boolean;
+  /** The mediator-parsed, row-bound acceptance decision. */
+  acceptance: AcceptanceFact;
+}
+
 /** The injected ACCEPTED-EFFECTS resolution hook (§13.8): called when an accepted `effects`
- *  route has NO durable completion marker. Auto-completing would fabricate "the effect ran", so
- *  this build's production composition FAILS CLOSED here with an operator-legible message; the
- *  retirement-cancel terminal (its own reviewed slice) replaces it when it lands. After the hook
- *  returns, the drain RE-READS the marker — a hook that neither established completion nor threw
- *  still fails closed. */
-export type CancelEffectsRoute = (info: { key: string; doneSubject: string }) => Promise<void>;
+ *  route has NO durable completion marker. A composition that wires no hook fails closed. */
+export type CancelEffectsRoute = (repair: EffectsCancelRepair) => Promise<void>;
 
 /** What one drain pass acted on. */
 export interface DrainResult {
@@ -1160,9 +1176,12 @@ async function verifyAcceptedEpfRoute(
     if (await established()) return;
     if (deps.cancelEffectsRoute === undefined)
       throw new EpEnvelopeError("failed-precondition", `accepted effects obligation ${key} has no durable completion marker ${doneSubject} and no cancelEffectsRoute was given; a drain never declares quiescence over executable accepted effects work (SPEC 13.8/13.9)`);
-    await deps.cancelEffectsRoute({ key, doneSubject });
+    // The MEDIATOR derives the repair coordinates (the closed-command boundary): the parsed,
+    // row-bound acceptance + the exact completion subject. The executor stamps its own retirement
+    // identity through the core validated builders and publishes create-only (first-terminal-wins).
+    await deps.cancelEffectsRoute({ kind: "effects-cancel", subject: doneSubject, key, goal: goalRef !== undefined, acceptance: fact });
     if (!(await established()))
-      throw new EpEnvelopeError("unavailable", `the effects hook for accepted obligation ${key} did not establish durable completion marker ${doneSubject}; effects work is still executable and quiescence fails closed (SPEC 13.8/13.9)`);
+      throw new EpEnvelopeError("unavailable", `the effects hook for accepted obligation ${key} did not establish a bound completion terminal at ${doneSubject}; effects work is still executable and quiescence fails closed (SPEC 13.8/13.9)`);
     return;
   }
   const pool = row.route!.slice("pool.".length);

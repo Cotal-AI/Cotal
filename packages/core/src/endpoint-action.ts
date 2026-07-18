@@ -679,6 +679,28 @@ export interface GoalResultFact {
   ts: number;
 }
 
+/** Build the retirement-cancelled goal terminal (§13.8 option (i)): the FIRST-CLASS `cancelled`
+ *  outcome state the goal union ALREADY carries — no new wire shape — bound to the acceptance's
+ *  fingerprint, with the retirement attribution riding the digest-bound payload
+ *  (`data.cancelledBy = { opId, target }`). Published create-only on the goal's result subject,
+ *  so a racing real commit wins by landing first (first-terminal-wins, §13.8). A retirement
+ *  cancels only ITS OWN target's accepted goals. */
+export function goalCancelledResultOf(
+  acceptance: { fingerprint: string; request: Record<string, unknown>; target?: { owner: string; actor: string; lifecycleUid: string } },
+  cancelled: { opId: string; target: { owner: string; actor: string; lifecycleUid: string } },
+  ts: number,
+): GoalResultFact {
+  const goalId = acceptance.request.goalId;
+  if (typeof goalId !== "string" || goalId.length === 0)
+    throw new EpEnvelopeError("failed-precondition", "a cancelled goal terminal requires the acceptance's goalId (SPEC 13.6)");
+  if (typeof cancelled.opId !== "string" || cancelled.opId.length === 0 || cancelled.opId.length > 64)
+    throw new EpEnvelopeError("failed-precondition", "a cancelled goal terminal requires the retirement opId (SPEC 13.8)");
+  if (acceptance.target === undefined || acceptance.target.lifecycleUid !== cancelled.target.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", `a retirement cancels only ITS target's accepted goals: the acceptance targets ${acceptance.target?.lifecycleUid ?? "(none)"}, not ${cancelled.target.lifecycleUid} (SPEC 13.8)`);
+  const data = { cancelledBy: { opId: cancelled.opId, target: { ...cancelled.target } } };
+  return { v: 1, goalId, fingerprint: acceptance.fingerprint, state: "cancelled", outcomeDigest: contractDigest(data), data, ts };
+}
+
 /** The §13.6 item-5 tombstone serving form for a payload-evicted retry. */
 export function goalTombstone(fact: GoalResultFact): GoalResultFact {
   return { v: 1, goalId: fact.goalId, fingerprint: fact.fingerprint, state: fact.state, outcomeDigest: fact.outcomeDigest, data: { evicted: true }, ts: fact.ts };
