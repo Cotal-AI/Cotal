@@ -21,7 +21,7 @@
  */
 import { contractDigest } from "./canonical.js";
 import { ContractInvalidError } from "./schema-profile.js";
-import { endpointToken, assertCommandToken, assertBoundedOwner, EP_AUTHZ_MODES, type EpAuthzMode } from "./endpoint-subjects.js";
+import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, type EpAuthzMode } from "./endpoint-subjects.js";
 import type { EpClass } from "./endpoint-envelope.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -110,7 +110,7 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
         invalid(`targeted command "${name}" must declare its admitted authorization modes (SPEC 13.7)`);
       const uniq = new Set<string>();
       for (const m of cmd.modes) {
-        if (typeof m !== "string" || !(EP_AUTHZ_MODES as readonly string[]).includes(m)) invalid(`command "${name}" admits unknown mode ${JSON.stringify(m)}`);
+        if (typeof m !== "string" || !isEpAuthzMode(m)) invalid(`command "${name}" admits unknown mode ${JSON.stringify(m)}`);
         if (uniq.has(m)) invalid(`command "${name}" admits mode "${m}" twice`);
         uniq.add(m);
       }

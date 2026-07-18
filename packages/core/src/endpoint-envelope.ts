@@ -26,13 +26,13 @@ export const EP_ENVELOPE_V = 1;
 
 /** The §13.3 error catalog. Extensions add codes only under reverse-DNS; any code (catalog or
  *  extension) is one token of at most 64 bytes. */
-export const EP_ERROR_CODES = [
+export const EP_ERROR_CODES = Object.freeze([
   "bad-request", "unsupported-version", "op-mismatch", "class-mismatch", "target-mismatch",
   "sender-mismatch", "unauthenticated", "permission-denied", "not-found", "already-exists",
   "conflict", "contract-mismatch", "contract-invalid", "failed-precondition",
   "deadline-exceeded", "cancelled", "expired", "unavailable", "unimplemented",
   "resource-exhausted", "internal",
-] as const;
+] as const);
 export type EpErrorCode = (typeof EP_ERROR_CODES)[number];
 const EP_ERROR_SET = new Set<string>(EP_ERROR_CODES);
 

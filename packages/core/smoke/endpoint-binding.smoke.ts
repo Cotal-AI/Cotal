@@ -38,6 +38,8 @@ import {
   BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS,
   baselineCallerCapabilities, spawnCallerCapabilities, CREDENTIAL_LIFETIMES, credentialLifetime,
   SESSION_TERMINAL_STATES, SCHEMA_PROFILE, BROKER_FLOOR, meetsBrokerFloor,
+  EP_AUTHZ_MODES, isEpAuthzMode, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, contractDigest,
+  EP_ERROR_CODES, RESERVED_COMMANDS,
   type EpCaller, type RecordKindDef,
 } from "../src/index.js";
 
@@ -224,6 +226,18 @@ throws("raising the schema maxDepth throws (the DoS ceiling is not caller-tunabl
   () => { (SCHEMA_PROFILE as unknown as { maxDepth: number }).maxDepth = Number.MAX_SAFE_INTEGER; });
 throws("lowering the broker floor throws", () => { (BROKER_FLOOR as unknown as { minor: number }).minor = 0; });
 c("meetsBrokerFloor still refuses 2.11 after the attempted lowering", meetsBrokerFloor("2.11.0") === false);
+// The second sweep round (freelance post-be454a7): two more live-consulted security exports plus
+// two contract-honesty vocabularies. EP_AUTHZ_MODES gates the cluster document's targeted modes
+// (a push widened accepted authority); VOID_SCHEMA is compiled by the describe surface and its
+// digest was computed once (a reassign diverged the digest from the object).
+c("EP_AUTHZ_MODES / VOID_SCHEMA / EP_ERROR_CODES / RESERVED_COMMANDS are frozen",
+  Object.isFrozen(EP_AUTHZ_MODES) && Object.isFrozen(VOID_SCHEMA) && Object.isFrozen(EP_ERROR_CODES) && Object.isFrozen(RESERVED_COMMANDS));
+throws("pushing an authz mode throws (a cluster document cannot admit a wider mode after import)",
+  () => (EP_AUTHZ_MODES as unknown as string[]).push("evil"));
+c("isEpAuthzMode still refuses an unregistered mode after the attempted push (private set)", isEpAuthzMode("evil") === false);
+throws("reassigning the void schema type throws (its pinned artifact digest stays honest)",
+  () => { (VOID_SCHEMA as unknown as { type: string }).type = "string"; });
+c("the void-schema artifact digest still matches the frozen object", contractDigest(VOID_SCHEMA) === VOID_SCHEMA_ARTIFACT_DIGEST);
 c("a lease reader admits (a caller-readable record kind with no authority head)",
   recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status` }).filter_subject
     === `$KV.${recordsBucket(SPACE)}.lease.manager.pa.u_abc.worker.${UID}.exp001.status`);

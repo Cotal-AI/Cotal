@@ -38,7 +38,7 @@ export const SCHEMA_PROFILE = Object.freeze({
 /** The canonical void schema (§13.7): the one artifact a side with no payload declares, so both
  *  `op` digests exist for every command. Validation against it means the payload is absent or
  *  `null`. */
-export const VOID_SCHEMA = { type: "null" } as const;
+export const VOID_SCHEMA = Object.freeze({ type: "null" } as const);
 /** Artifact digest of the void schema document — one fixed value by construction. */
 export const VOID_SCHEMA_ARTIFACT_DIGEST = contractDigest(VOID_SCHEMA);
 /** The void schema's CLOSURE digest (the §13.7 manifest of a self-contained document) — the

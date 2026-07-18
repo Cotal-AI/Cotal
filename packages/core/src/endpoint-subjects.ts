@@ -28,7 +28,7 @@ export const PROTOCOL_VERSION_V04 = "0.4";
 
 /** Reserved command names (§13.2): every endpoint serves `describe` (§13.7); `cancel` is the
  *  action-composite control command (§13.6). */
-export const RESERVED_COMMANDS = ["describe", "cancel"] as const;
+export const RESERVED_COMMANDS = Object.freeze(["describe", "cancel"] as const);
 
 // ---- token grammars (§13.2 "Token bounds", §13.1) -----------------------------------------
 
@@ -129,9 +129,13 @@ export interface EpCaller {
  *  (`local` or `u_`+base32 per §2, never a bare mode word); the implementation's owner validator
  *  also admits legacy principal tokens, so the parser's discrimination rests on membership in
  *  this set PLUS each mode's pinned arity, not on the owner grammar alone. */
-export const EP_AUTHZ_MODES = ["self", "owner", "any", "child", "ledger", "handle"] as const;
+export const EP_AUTHZ_MODES = Object.freeze(["self", "owner", "any", "child", "ledger", "handle"] as const);
 export type EpAuthzMode = (typeof EP_AUTHZ_MODES)[number];
 const AUTHZ_SET = new Set<string>(EP_AUTHZ_MODES);
+/** Is `m` a registered targeted-command authorization mode? Consults the PRIVATE module-load set,
+ *  never the live export, so a post-import mutation of {@link EP_AUTHZ_MODES} cannot widen the
+ *  modes a cluster document may declare (the afa715b integrity class). */
+export function isEpAuthzMode(m: string): boolean { return AUTHZ_SET.has(m); }
 
 /** Per-mode pinned target-token arity: `self` carries none (the caller triple IS the target);
  *  `owner`/`any`/`child`/`ledger` pin one `<tOwner>`; `handle` pins the full redemption-minted
