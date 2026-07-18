@@ -75,6 +75,8 @@ console.log("A. closed claim-row parse");
     "unknown state": JSON.stringify({ ...good, state: "leased" }),
     "malformed tuple": JSON.stringify({ ...good, ledger: { ...t, cid: -1 } }),
     "bad nkey": JSON.stringify({ ...good, records: { ...t, userNkey: "not-a-key" } }),
+    "an unknown extra field": JSON.stringify({ ...good, extra: 1 }),
+    "a tuple carrying an unknown extra field": JSON.stringify({ ...good, ledger: { ...t, extra: 1 } }),
   })) {
     check(`a row with ${what} is REFUSED (undefined, never partially adopted)`, parsePlaneClaimRow(enc.encode(bad)) === undefined);
   }
@@ -164,6 +166,26 @@ try {
   await c2.ledger.close();
   await c2.records.close();
 
+  // ---- E2. a tuple-only row rewrite is a LOST claim (identity is not integrity) ----
+  console.log("E2. tuple-only mutation");
+  {
+    const cands = await openCands();
+    const h = await acquirePlaneClaim({ nc: b2.nc, space, ledger: cands.ledger.tuple, records: cands.records.tuple, oracle: verdictOracle("gone", "gone", true), log: quiet });
+    // Rewrite the row preserving claimId + generation but swapping ONE scanner tuple (a raw or
+    // buggy writer): the guard must read this as a lost claim, never "still ours".
+    const cur = await wideKv.get(PLANE_CLAIM_KEY);
+    const row = parsePlaneClaimRow(cur!.value)!;
+    await wideKv.update(PLANE_CLAIM_KEY, enc.encode(JSON.stringify({ ...row, ledger: { ...row.ledger, cid: row.ledger.cid + 1 } })), cur!.revision);
+    const scan = makeLedgerScannerOverConnection(wide.nc, space, undefined, h.guard);
+    const refusedTuple = await rejects(() => scan.scanStageFamily());
+    check("a tuple-only mutation (same claimId + generation) REFUSES the scan", refusedTuple.includes("scanner tuples no longer match"));
+    await h.release();
+    const after = await wideKv.get(PLANE_CLAIM_KEY);
+    check("release LEAVES a tuple-mutated row alone (a successor may own it)", parsePlaneClaimRow(after!.value)?.state === "held");
+    await cands.ledger.close();
+    await cands.records.close();
+  }
+
   // ---- F. release fast-path + corruption ----
   console.log("F. release + corruption");
   // Repair the stolen row into a clean released state via a fresh legitimate claim/release.
@@ -247,6 +269,16 @@ try {
     await kills!.ledger();
     for (let i = 0; i < 50 && !logs.some((l) => l.includes("STOPPED scanning")); i++) await wait(100);
     check("a mid-life scanner death logs the STATE 3 copy (deliberate fail-closed stop)", logs.some((l) => l.includes("STOPPED scanning") && l.includes("restart the auth service")));
+    // The fence is FATAL for the whole plane (fact HIGH): the signal fires with the state-3
+    // OPERATOR copy (the daemon downs itself on it), while the authority faces refuse with the
+    // AGENT-facing retryable copy — never the operator's restart instruction (ux audience split).
+    const fencedReason = await Promise.race([plane1.fenced, wait(3000).then(() => "")]);
+    check("the plane's FATAL signal resolves with the state-3 operator copy", fencedReason.includes("STOPPED scanning"));
+    const authRefused = await rejects(() => plane1.authorizeConnect({} as never));
+    check("a fenced plane REFUSES authorizeConnect with the agent-facing retryable copy", authRefused.includes("momentarily unavailable") && authRefused.includes("retry"));
+    check("the agent-facing refusal never leaks the operator's restart instruction", !authRefused.includes("restart the auth service"));
+    const mintRefused = await rejects(async () => plane1.mintConnectCredential({ owner: "local", actor: "x", lifecycleUid: "u" }));
+    check("a fenced plane REFUSES mintConnectCredential the same way", mintRefused.includes("momentarily unavailable"));
     await plane1.close();
     // The successor takes over cleanly (the fenced plane released on close; no oracle needed).
     const plane2 = await openAuthAuthorityPlane({

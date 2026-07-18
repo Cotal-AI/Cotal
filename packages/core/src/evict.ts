@@ -30,6 +30,7 @@
  *  - This is ALWAYS paired with a committed deny-new by the caller: a kicked client reconnects with
  *    a fresh cid until its cred dies, so an evict-only loop would chase churn. The name says so.
  */
+import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { connzRequestSubject, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
@@ -52,8 +53,14 @@ interface ConnzConn {
   authorized_user?: string;
 }
 interface ConnzReply {
-  server?: { id?: string };
+  /** The responding server's self-description envelope (`ServerAPIResponse.server`). `cluster` is
+   *  the server's OWN topology declaration: set (config-named or dynamically generated) whenever
+   *  clustering is configured, absent only for a standalone process — the plane-reclaim
+   *  discriminator (SPEC 13.13) reads it, never inferring topology from who happened to reply. */
+  server?: { id?: string; cluster?: string };
   data?: { server_id?: string; total?: number; offset?: number; connections?: ConnzConn[] };
+  /** `ServerAPIResponse.error` — a reply carrying it is a FAILED request, never an empty page. */
+  error?: unknown;
 }
 
 /** The structured outcome of an eviction attempt — every field a repair/flip gate reads to decide
@@ -101,10 +108,11 @@ async function scanLive(
   let gotAnyReply = false;
   let truncated = false;
   let unroutable = false; // a reply named no server id → its conns can't be KICKed → scan is not complete
+  const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
   let seq = 0;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * opts.pageLimit;
-    const replies = await connzRound(observerConn, accountId, offset, opts, seq++);
+    const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
     if (replies.length) gotAnyReply = true;
     let fullPageSomewhere = false;
     for (const r of replies) {
@@ -146,13 +154,17 @@ function connzRound(
   accountId: string,
   offset: number,
   opts: Required<Pick<EvictOptions, "settleMs" | "maxWaitMs" | "pageLimit">>,
+  sweep: string,
   seq: number,
 ): Promise<ConnzReply[]> {
   return new Promise((resolve) => {
     // The reply inbox MUST sit under the prefix the observer cred (`membership-observer`) grants sub
     // on — its ACL allows only `${MEMBERSHIP_INBOX_PREFIX}.>`, so a distinct `_INBOX.cotal-evict.*`
     // subject is broker-denied and the scan gets ZERO replies (a fail-closed under-report).
-    const inbox = `${MEMBERSHIP_INBOX_PREFIX}.evict.${seq}`;
+    // `sweep` is a per-call collision-resistant nonce: concurrent sweeps (a plane reclaim next to an
+    // eviction verify) subscribe to DISJOINT inboxes, so one sweep's page reply can never satisfy —
+    // or falsely complete — another's round.
+    const inbox = `${MEMBERSHIP_INBOX_PREFIX}.evict.${sweep}.${seq}`;
     const out: ConnzReply[] = [];
     let settle: ReturnType<typeof setTimeout> | undefined;
     let done = false;
@@ -293,15 +305,41 @@ export interface PlaneLivenessResult {
 }
 
 /** Structural tuple validation (closed parse — the wire crosses a trust boundary in BOTH
- *  directions: the daemon validates the query, the auth plane validates the echo). */
+ *  directions: the daemon validates the query, the auth plane validates the echo). CLOSED schema:
+ *  an unknown field refuses (a v1 tuple is exactly these three keys). */
 export function isPlaneConnTuple(v: unknown): v is PlaneConnTuple {
   if (v === null || typeof v !== "object") return false;
+  for (const k of Object.keys(v)) if (k !== "serverId" && k !== "cid" && k !== "userNkey") return false;
   const t = v as Partial<PlaneConnTuple>;
   return (
     typeof t.serverId === "string" && t.serverId.length > 0 && t.serverId.length <= 128 &&
     typeof t.cid === "number" && Number.isSafeInteger(t.cid) && t.cid > 0 &&
     typeof t.userNkey === "string" && /^U[A-Z2-7]{55}$/.test(t.userNkey)
   );
+}
+
+/** Closed parse of a wire-crossing {@link PlaneLivenessResult} (the auth plane validates the
+ *  delivery-admin rail's reply BEFORE reasoning over it): exactly the v1 keys, both role objects
+ *  exactly `{ tuple, state }`, states in the enum, tuples closed. Undefined on ANY violation — the
+ *  caller maps that to `unknown` (a garbled oracle must block takeover, never authorize it). */
+export function parsePlaneLivenessResult(v: unknown): PlaneLivenessResult | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  for (const k of Object.keys(v)) if (!["ledger", "records", "sweepComplete", "note"].includes(k)) return undefined;
+  const r = v as Partial<PlaneLivenessResult>;
+  const role = (x: unknown): { tuple: PlaneConnTuple; state: PlaneRoleLiveness } | undefined => {
+    if (x === null || typeof x !== "object") return undefined;
+    for (const k of Object.keys(x)) if (k !== "tuple" && k !== "state") return undefined;
+    const y = x as { tuple?: unknown; state?: unknown };
+    if (!isPlaneConnTuple(y.tuple)) return undefined;
+    if (y.state !== "live" && y.state !== "gone" && y.state !== "unknown") return undefined;
+    return { tuple: y.tuple, state: y.state };
+  };
+  const ledger = role(r.ledger);
+  const records = role(r.records);
+  if (ledger === undefined || records === undefined) return undefined;
+  if (typeof r.sweepComplete !== "boolean") return undefined;
+  if (r.note !== undefined && (typeof r.note !== "string" || r.note.length === 0 || r.note.length > 2048)) return undefined;
+  return { ledger, records, sweepComplete: r.sweepComplete, ...(r.note !== undefined ? { note: r.note } : {}) };
 }
 
 /** A CONNZ connection row as this sweep needs it: identity fields only. */
@@ -319,17 +357,29 @@ interface PlaneConnzConn {
  *  - `live`: a connection carrying the claimed `userNkey` exists ANYWHERE (any server, any cid —
  *    wider than the exact tuple on purpose: an identity that still holds ANY connection must block
  *    takeover), or the exact `(serverId, cid)` pair is present.
- *  - `gone`: the sweep is COMPLETE and the claimed `userNkey` appears nowhere. This includes the
- *    claimed `serverId` being absent from the repliers entirely: `server_id` is per-broker-RUN, so
- *    after a broker restart the claimed incarnation can never reply again while every connection
- *    it held is gone by definition — requiring its reply forever would turn every whole-stack
- *    crash into a permanent reclaim wedge (the inverted-lockout class). NAMED RESIDUAL (cluster):
- *    completeness is the settle-window heuristic ({@link scanLive}'s), so a PARTITIONED cluster
- *    member holding the connection can be misread as a restarted one; today's one-broker-per-space
- *    deployment does not have that topology, and a multi-server deployment must revisit this
- *    verdict before trusting it (the same residual the eviction verify already documents).
- *  - `unknown`: the sweep under-reported (no replies, truncation, an unroutable row) — the caller
- *    refuses takeover.
+ *  - `gone`: the sweep is COMPLETE, the observation PROVES the single-server mode, and the claimed
+ *    `userNkey` appears nowhere. This includes the claimed `serverId` being absent from the
+ *    repliers entirely: `server_id` is per-broker-RUN, so after a broker restart the claimed
+ *    incarnation can never reply again while every connection it held is gone by definition —
+ *    requiring its reply forever would turn every whole-stack crash into a permanent reclaim
+ *    wedge (the inverted-lockout class).
+ *
+ *    THE SINGLE-SERVER PROOF (SPEC 13.13): CONNZ absence alone cannot distinguish a RESTARTED
+ *    claimed server (genuinely gone) from a PARTITIONED one (live, unreachable) — both present as
+ *    "the claimed serverId did not reply". The discriminator is the responding server's OWN
+ *    topology declaration, never an inference from who replied: `gone` additionally requires that
+ *    EVERY reply carried a server envelope declaring NO cluster membership (`server.cluster`
+ *    absent — nats-server sets it, config-named or dynamically generated, whenever clustering is
+ *    configured) and that exactly ONE distinct server replied. A standalone process cannot have a
+ *    silent same-cluster peer holding the claimed connection, so its complete reply is the whole
+ *    truth; a partitioned cluster member still DECLARES its cluster and reads `unknown`. NAMED
+ *    RESIDUALS: a leafnode/gateway-extended account is outside the cluster self-report (such
+ *    topologies are out of contract for the auth account until a multi-server incarnation
+ *    authority exists), and a backup-restore onto a fresh broker can present a still-running
+ *    foreign predecessor's `serverId` as dead.
+ *  - `unknown`: the sweep under-reported (no replies, truncation, an unroutable row) OR the
+ *    single-server mode is unproven (a cluster self-report, multiple repliers, or a reply without
+ *    the server envelope) — the caller refuses takeover.
  *
  *  Closed surface: the CONNZ request carries no caller-selected filter (account-wide sweep only)
  *  and the reply exposes ONLY the two bound verdicts + sweep completeness — never a connection
@@ -352,19 +402,38 @@ export async function observePlaneLiveness(
   let gotAnyReply = false;
   let truncated = false;
   let malformed = false;
+  let clusterDeclared = false; // any responder DECLARED cluster membership — single-server unproven
+  const repliers = new Set<string>();
+  const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
   let seq = 0;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * opts.pageLimit;
-    const replies = await connzRound(observerConn, accountId, offset, opts, seq++);
+    const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
     if (replies.length) gotAnyReply = true;
     let fullPageSomewhere = false;
     for (const r of replies) {
-      const serverId = r.data?.server_id ?? r.server?.id;
-      if (!serverId) {
-        malformed = true; // a reply we cannot attribute to a server makes the sweep untrustworthy
+      // FAIL-CLOSED reply validation: only a SUCCESSFUL, well-formed CONNZ page may count toward a
+      // reclaim-authorizing sweep. An API error, a missing/empty server envelope, a present but
+      // non-string (or empty-string) cluster declaration, an envelope/data server-id mismatch, or a
+      // structurally incomplete data page each mark the sweep malformed (=> every verdict unknown).
+      const envId = r.server?.id;
+      const cluster = (r.server as { cluster?: unknown } | undefined)?.cluster;
+      if (
+        r.error !== undefined ||
+        typeof envId !== "string" || envId.length === 0 ||
+        (cluster !== undefined && (typeof cluster !== "string" || cluster.length === 0)) ||
+        (r.data?.server_id !== undefined && r.data.server_id !== envId) ||
+        r.data === undefined || !Array.isArray(r.data.connections) ||
+        typeof r.data.total !== "number" || !Number.isSafeInteger(r.data.total) || r.data.total < 0 ||
+        (r.data.offset !== undefined && (typeof r.data.offset !== "number" || !Number.isSafeInteger(r.data.offset) || r.data.offset < 0))
+      ) {
+        malformed = true;
         continue;
       }
-      const cs = (r.data?.connections ?? []) as PlaneConnzConn[];
+      const serverId = envId;
+      repliers.add(serverId);
+      if (typeof cluster === "string") clusterDeclared = true;
+      const cs = r.data.connections as PlaneConnzConn[];
       for (const c of cs) {
         if (typeof c.cid !== "number") {
           malformed = true; // an id-less row could BE the claimed connection — fail safe
@@ -372,23 +441,33 @@ export async function observePlaneLiveness(
         }
         conns.push({ serverId, cid: c.cid, ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}) });
       }
-      const total = r.data?.total ?? 0;
+      const total = r.data.total;
       if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
     }
     if (!fullPageSomewhere) break;
     if (page === MAX_PAGES - 1) truncated = true;
   }
   const sweepComplete = gotAnyReply && !truncated && !malformed;
+  // The single-server proof (see the doc): `gone` is sound ONLY when every responder declared
+  // standalone topology and exactly one server replied — a declaration, never a reply-count guess.
+  const singleServerProven = sweepComplete && !clusterDeclared && repliers.size === 1;
   const verdict = (tuple: PlaneConnTuple): PlaneRoleLiveness => {
     const live = conns.some((c) => c.userNkey === tuple.userNkey || (c.serverId === tuple.serverId && c.cid === tuple.cid));
     if (live) return "live";
-    return sweepComplete ? "gone" : "unknown";
+    return singleServerProven ? "gone" : "unknown";
   };
+  const note = !sweepComplete
+    ? "CONNZ sweep under-reported (no responder, truncation, an API error, or a malformed reply) - liveness UNKNOWN"
+    : !singleServerProven
+      ? clusterDeclared
+        ? "the broker DECLARES cluster membership - a partitioned member could still hold the claimed connections, so CONNZ liveness cannot adjudicate a plane reclaim outside the single-server mode (SPEC 13.13) - liveness UNKNOWN"
+        : `${repliers.size} distinct servers replied - the single-server mode the reclaim verdict requires is unproven (SPEC 13.13) - liveness UNKNOWN`
+      : undefined;
   return {
     ledger: { tuple: query.ledger, state: verdict(query.ledger) },
     records: { tuple: query.records, state: verdict(query.records) },
     sweepComplete,
-    ...(sweepComplete ? {} : { note: "CONNZ sweep under-reported (no responder, truncation, or an unattributable row) - liveness UNKNOWN" }),
+    ...(note === undefined ? {} : { note }),
   };
 }
 

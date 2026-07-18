@@ -269,6 +269,108 @@ try {
       r4.ledger.state === "unknown" && r4.records.state === "unknown" && r4.sweepComplete === false, r4);
   }
 
+  // ---------- RC-1 (SPEC 13.13): the reclaim verdict's SINGLE-SERVER PROOF ----------
+  // CONNZ absence alone cannot distinguish a RESTARTED claimed server from a PARTITIONED one, so
+  // `gone` is sound only when every responder DECLARES standalone topology (`server.cluster`
+  // absent) and exactly one server replied. Deterministic edges over a scripted connection first
+  // (the fact repro + its variants), then the declaration fact proven against a REAL 2-node
+  // cluster (note the standalone half of the fact is ALREADY live-pinned above: r2/r3 read `gone`
+  // only because the real standalone broker's envelope omits `cluster`).
+  {
+    const claimedB: PlaneConnTuple = { serverId: "SERVER_B_OLD_RUN", cid: 42, userNkey: `U${"E".repeat(55)}` };
+    const scripted = (replies: unknown[], replyInboxes?: string[]) => {
+      let cb: ((err: unknown, msg: { json: () => unknown }) => void) | undefined;
+      return {
+        subscribe: (_subject: string, o: { callback: (err: unknown, msg: { json: () => unknown }) => void }) => {
+          cb = o.callback;
+          return { unsubscribe: () => {} };
+        },
+        publish: (_subject: string, _payload: Uint8Array, o?: { reply?: string }) => {
+          if (o?.reply !== undefined) replyInboxes?.push(o.reply);
+          setTimeout(() => { for (const r of replies) cb?.(null, { json: () => r }); }, 0);
+        },
+      } as unknown as NatsConnection;
+    };
+    const empty = (server: Record<string, unknown> | undefined, server_id: string) =>
+      ({ ...(server ? { server } : {}), data: { server_id, total: 0, connections: [] } });
+    const q = { ledger: claimedB, records: claimedB };
+    const r5 = await observePlaneLiveness(scripted([empty({ id: "SERVER_A" }, "SERVER_A")]), "ACC", q, EVICT_OPTS);
+    check("discriminator: ONE standalone-declared responder + claimed server absent = GONE (restart reclaim, no wedge)",
+      r5.ledger.state === "gone" && r5.records.state === "gone" && r5.sweepComplete === true, r5);
+    const r6 = await observePlaneLiveness(scripted([empty({ id: "SERVER_A", cluster: "c1" }, "SERVER_A")]), "ACC", q, EVICT_OPTS);
+    check("discriminator: a responder DECLARING cluster membership = UNKNOWN (the partition-steal is closed)",
+      r6.ledger.state === "unknown" && r6.records.state === "unknown" && r6.sweepComplete === true && /cluster/i.test(r6.note ?? ""), r6);
+    const r7 = await observePlaneLiveness(scripted([empty({ id: "SERVER_A" }, "SERVER_A"), empty({ id: "SERVER_C" }, "SERVER_C")]), "ACC", q, EVICT_OPTS);
+    check("discriminator: multiple repliers (even standalone-shaped) = UNKNOWN (single-server unproven)",
+      r7.ledger.state === "unknown" && r7.records.state === "unknown" && /distinct servers/i.test(r7.note ?? ""), r7);
+    const r8 = await observePlaneLiveness(scripted([empty(undefined, "SERVER_A")]), "ACC", q, EVICT_OPTS);
+    check("discriminator: a reply WITHOUT the server envelope = malformed (UNKNOWN, sweep incomplete)",
+      r8.ledger.state === "unknown" && r8.records.state === "unknown" && r8.sweepComplete === false, r8);
+    const r9 = await observePlaneLiveness(
+      scripted([{ server: { id: "SERVER_A", cluster: "c1" }, data: { server_id: "SERVER_A", total: 1, connections: [{ cid: 42, authorized_user: claimedB.userNkey }] } }]), "ACC", q, EVICT_OPTS);
+    check("discriminator: a live claimed nkey reads LIVE even under an unproven topology (fail-safe direction)",
+      r9.ledger.state === "live" && r9.records.state === "live", r9);
+    // FAIL-CLOSED reply validation (fact HIGH regressions): an API error, a non-string cluster
+    // declaration, and an envelope/data server-id mismatch must each poison the sweep — never be
+    // read as an empty standalone page that authorizes `gone`.
+    const r10 = await observePlaneLiveness(
+      scripted([{ server: { id: "SERVER_A" }, data: { server_id: "SERVER_A", total: 0, connections: [] }, error: { code: 500, description: "internal" } }]), "ACC", q, EVICT_OPTS);
+    check("validation: a reply carrying an API `error` = malformed (UNKNOWN, sweep incomplete)",
+      r10.ledger.state === "unknown" && r10.records.state === "unknown" && r10.sweepComplete === false, r10);
+    const r11 = await observePlaneLiveness(
+      scripted([{ server: { id: "SERVER_A", cluster: 42 }, data: { server_id: "SERVER_A", total: 0, connections: [] } }]), "ACC", q, EVICT_OPTS);
+    check("validation: a NON-STRING cluster declaration = malformed, never read as standalone",
+      r11.ledger.state === "unknown" && r11.records.state === "unknown" && r11.sweepComplete === false, r11);
+    const r12 = await observePlaneLiveness(
+      scripted([{ server: { id: "ENVELOPE" }, data: { server_id: "DATA", total: 0, connections: [] } }]), "ACC", q, EVICT_OPTS);
+    check("validation: an envelope/data server-id MISMATCH = malformed (an unattributable page)",
+      r12.ledger.state === "unknown" && r12.records.state === "unknown" && r12.sweepComplete === false, r12);
+    // Concurrent-sweep isolation (fact HIGH): every sweep subscribes a per-call nonce inbox, so one
+    // sweep's page reply can never satisfy or falsely complete another's round.
+    const subsA: string[] = [], subsB: string[] = [];
+    await observePlaneLiveness(scripted([empty({ id: "SERVER_A" }, "SERVER_A")], subsA), "ACC", q, EVICT_OPTS);
+    await observePlaneLiveness(scripted([empty({ id: "SERVER_A" }, "SERVER_A")], subsB), "ACC", q, EVICT_OPTS);
+    check("isolation: two sweeps use DISJOINT nonce reply inboxes (no cross-sweep cross-talk)",
+      subsA.length > 0 && subsB.length > 0 && subsA.every((s) => !subsB.includes(s)), { subsA, subsB });
+  }
+
+  // The declaration FACT proven live: a REAL 2-node cluster's `$SYS` replies carry `server.cluster`
+  // (nats-server sets it whenever clustering is configured), so the oracle refuses reclaim there.
+  // If nats-server ever stopped declaring it, this check — not production — is what breaks.
+  {
+    const pA = 21000 + Math.floor(Math.random() * 20000);
+    const [pB, cA, cB] = [pA + 1, pA + 2, pA + 3];
+    const cdir = mkdtempSync(join(tmpdir(), "cotal-evictlive-cluster-"));
+    const conf = (name: string, port: number, cport: number, routes: string) => [
+      `port: ${port}`, `server_name: ${name}`,
+      `cluster { name: livetest, listen: 127.0.0.1:${cport} ${routes} }`,
+      `accounts { SYS: { users: [ { user: sys, password: sysp } ] }, APP: { users: [ { user: app, password: appp } ] } }`,
+      `system_account: SYS`,
+    ].join("\n");
+    writeFileSync(join(cdir, "a.conf"), conf("evclA", pA, cA, ""));
+    writeFileSync(join(cdir, "b.conf"), conf("evclB", pB, cB, `, routes: [ "nats-route://127.0.0.1:${cA}" ]`));
+    const srvA = spawn("nats-server", ["-c", join(cdir, "a.conf")], { stdio: "ignore" });
+    const srvB = spawn("nats-server", ["-c", join(cdir, "b.conf")], { stdio: "ignore" });
+    let sysNc: NatsConnection | undefined;
+    try {
+      let upA = false;
+      for (let i = 0; i < 50; i++) { if (await isReachable(`nats://127.0.0.1:${pA}`)) { upA = true; break; } await wait(200); }
+      if (!upA) throw new Error(`cluster node A did not come up on ${pA}`);
+      sysNc = await connect({ servers: `nats://127.0.0.1:${pA}`, user: "sys", pass: "sysp", maxReconnectAttempts: 0 });
+      const claimed: PlaneConnTuple = { serverId: "NDEADRUN", cid: 5, userNkey: `U${"F".repeat(55)}` };
+      const rc = await observePlaneLiveness(sysNc, "APP", { ledger: claimed, records: claimed }, EVICT_OPTS);
+      check("LIVE cluster: a real clustered broker DECLARES `server.cluster`, so reclaim reads UNKNOWN never GONE",
+        rc.ledger.state === "unknown" && rc.records.state === "unknown" && /cluster/i.test(rc.note ?? ""), rc);
+    } finally {
+      try { await sysNc?.close(); } catch { /* draining */ }
+      srvA.kill("SIGKILL"); // exact PIDs — never pkill nats-server
+      srvB.kill("SIGKILL");
+      await awaitExit(srvA);
+      await awaitExit(srvB);
+      rmSync(cdir, { recursive: true, force: true });
+    }
+  }
+
   console.log(`\nEVICT-LIVE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {

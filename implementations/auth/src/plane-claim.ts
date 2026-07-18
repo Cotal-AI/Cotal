@@ -52,6 +52,7 @@ import {
   isPlaneConnTuple,
   mintCreds,
   newIdentity,
+  parsePlaneLivenessResult,
   type PlaneConnTuple,
   type PlaneLivenessQuery,
   type PlaneLivenessResult,
@@ -120,6 +121,7 @@ export function parsePlaneClaimRow(bytes: Uint8Array): PlaneClaimRow | undefined
     return undefined;
   }
   if (raw === null || typeof raw !== "object") return undefined;
+  for (const k of Object.keys(raw)) if (!["v", "generation", "claimId", "state", "ledger", "records", "openedAt"].includes(k)) return undefined; // closed v1 schema
   const r = raw as Partial<PlaneClaimRow>;
   if (r.v !== 1) return undefined;
   if (typeof r.generation !== "number" || !Number.isSafeInteger(r.generation) || r.generation < 1) return undefined;
@@ -245,10 +247,13 @@ export async function acquirePlaneClaim(opts: {
     if (released) throw new EpEnvelopeError("failed-precondition", `the plane claim for space "${space}" was released by this process; a sealed scan can no longer run under it`);
     const entry = await kv.get(PLANE_CLAIM_KEY);
     const row = entry === null ? undefined : parsePlaneClaimRow(entry.value);
-    if (row === undefined || row.state !== "held" || row.claimId !== claimId || row.generation !== gen) {
+    // Held by THIS open = state + claimId + generation + BOTH pinned scanner tuples (a row rewrite
+    // preserving id and generation but swapping a tuple is a lost claim, never "still ours").
+    if (row === undefined || row.state !== "held" || row.claimId !== claimId || row.generation !== gen ||
+        !sameTuple(row.ledger, opts.ledger) || !sameTuple(row.records, opts.records)) {
       const what = when === "before" ? "refusing to enumerate" : "DISCARDING this enumeration";
       throw new EpEnvelopeError("failed-precondition",
-        `the plane claim for space "${space}" is no longer held by this process (${row === undefined ? "row missing or unparseable" : `now ${row.state} under claim ${row.claimId} generation ${row.generation}`}, expected held under ${claimId} generation ${gen}); ${what} - a successor plane may own the sealed scanners (SPEC 13.13, fail-closed)`);
+        `the plane claim for space "${space}" is no longer held by this process (${row === undefined ? "row missing or unparseable" : row.state !== "held" || row.claimId !== claimId || row.generation !== gen ? `now ${row.state} under claim ${row.claimId} generation ${row.generation}` : "the row's scanner tuples no longer match this plane's connections"}, expected held under ${claimId} generation ${gen}); ${what} - a successor plane may own the sealed scanners (SPEC 13.13, fail-closed)`);
     }
   };
   return {
@@ -264,8 +269,11 @@ export async function acquirePlaneClaim(opts: {
       try {
         const entry = await kv.get(PLANE_CLAIM_KEY);
         const row = entry === null ? undefined : parsePlaneClaimRow(entry.value);
-        if (entry === null || row === undefined || row.state !== "held" || row.claimId !== claimId) {
-          log(`plane-claim: NOT releasing space "${space}" - the row is ${row === undefined ? "missing/unparseable" : `${row.state} under claim ${row.claimId}`}, not held by this process (a successor may own it)`);
+        // Release ownership = the FULL held invariant (state + claimId + generation + both tuples),
+        // exactly what assertHeld checks.
+        if (entry === null || row === undefined || row.state !== "held" || row.claimId !== claimId || row.generation !== gen ||
+            !sameTuple(row.ledger, opts.ledger) || !sameTuple(row.records, opts.records)) {
+          log(`plane-claim: NOT releasing space "${space}" - the row is ${row === undefined ? "missing/unparseable" : row.state !== "held" || row.claimId !== claimId || row.generation !== gen ? `${row.state} under claim ${row.claimId} generation ${row.generation}` : "held under this claimId but with FOREIGN scanner tuples"}, not held by this process (a successor may own it)`);
           return;
         }
         await kv.update(PLANE_CLAIM_KEY, enc.encode(JSON.stringify({ ...row, state: "released" } satisfies PlaneClaimRow)), entry.revision);
@@ -326,12 +334,10 @@ export function makeDeliveryAdminPlaneOracle(opts: {
       await ep.start();
       const r = await ep.requestDeliveryAdmin("planeConnLiveness", { query }, 15_000);
       if (!r.ok) return unknown(query, `the delivery daemon refused the liveness query: ${r.error ?? "(no error copy)"}`);
-      const d = r.data as Partial<PlaneLivenessResult> | undefined;
-      const okRole = (v: unknown): v is { tuple: PlaneConnTuple; state: "live" | "gone" | "unknown" } =>
-        v !== null && typeof v === "object" &&
-        isPlaneConnTuple((v as { tuple?: unknown }).tuple) &&
-        ["live", "gone", "unknown"].includes((v as { state?: string }).state ?? "");
-      if (d === undefined || d === null || !okRole(d.ledger) || !okRole(d.records) || typeof d.sweepComplete !== "boolean")
+      // CLOSED parse of the wire-crossing result: exact keys at every level, enum states, closed
+      // tuples. Anything else is a garbled oracle and blocks takeover.
+      const d = parsePlaneLivenessResult(r.data);
+      if (d === undefined)
         return unknown(query, `the delivery daemon returned a garbled liveness result (${JSON.stringify(r.data ?? null)})`);
       if (!sameTuple(d.ledger.tuple, query.ledger) || !sameTuple(d.records.tuple, query.records))
         return unknown(query, "the delivery daemon echoed a FOREIGN liveness query; a result that does not verifiably describe this claim never authorizes");
@@ -339,7 +345,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
       // complete sweep (the eviction seam's truthium rule, applied to the read-only twin).
       if (!d.sweepComplete && (d.ledger.state === "gone" || d.records.state === "gone"))
         return unknown(query, `the delivery daemon claimed gone under an INCOMPLETE sweep (ledger=${d.ledger.state}, records=${d.records.state}); contradictory - treated as unknown`);
-      return { ledger: d.ledger, records: d.records, sweepComplete: d.sweepComplete, ...(typeof d.note === "string" ? { note: d.note } : {}) };
+      return d;
     } catch (e) {
       return unknown(query, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); liveness is UNKNOWN and the claim is not reclaimed`);
     } finally {

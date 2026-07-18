@@ -114,7 +114,10 @@ service never became ready exits non-zero, so automation never reads a dead iden
 plane as success. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
 service takes a broker-backed ownership claim, so a second same-space auth process refuses
 with instructions instead of silently splitting the plane, and a crashed one's claim is
-reclaimed only once the broker confirms its connections are gone.
+reclaimed only once the broker confirms its connections are gone — a verdict trusted only
+on a standalone broker (a clustered one refuses the reclaim, since a partitioned member
+could still hold them). If the claim's connections die mid-run, the service downs itself
+loudly instead of serving from a half-dead plane.
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a

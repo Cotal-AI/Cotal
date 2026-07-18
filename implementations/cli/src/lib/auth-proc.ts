@@ -7,7 +7,8 @@
  * to the provider's `ready()` contract. No `@cotal-ai/auth` import anywhere in this package.
  */
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
@@ -36,31 +37,50 @@ export function authServiceUp(space: string): boolean {
   return Number.isFinite(pid) && alive(pid);
 }
 
-/** EXCLUSIVE pidfile claim (#29 HIGH 3 belt): the slot is created with `wx` BEFORE any spawn, so
- *  two concurrent launchers cannot both pass a check-then-spawn race and double-launch the auth
- *  service. This is the cheap HOST-LAYER belt only — the broker-visible exclusion is the plane
- *  claim inside `openAuthAuthorityPlane` (a second plane refuses there even if it somehow gets
- *  spawned; SPEC 13.13). Outcomes:
- *   - `{ fd }`: this launcher owns the slot (write the child pid through the fd, then close it);
- *   - `{ livePid }`: a LIVE daemon already holds it — use that one;
- *   - `undefined`: yield — the file is unreadable/fresh (a sibling launcher between its exclusive
- *     create and its pid write) or still contested after one stale-removal retry; never steal.
- *  A file naming a provably DEAD pid is removed and the claim retried ONCE. */
+/** EXCLUSIVE pidfile claim (#29 HIGH 3 belt): the slot is published ATOMICALLY and
+ *  PRE-POPULATED, so no reader can ever observe a legitimately-empty claim and no create/write
+ *  window exists to race. The claimant writes its own pid to a unique temp inode in the same
+ *  directory, then publishes it with `link(2)` — an atomic no-overwrite operation — as the slot
+ *  path (the held fd stays the published inode; the caller later replaces the content with the
+ *  daemon child's pid through it). This is the cheap HOST-LAYER belt only — the broker-visible
+ *  exclusion is the plane claim inside `openAuthAuthorityPlane` (a second plane refuses there
+ *  even if it somehow gets spawned; SPEC 13.13). Outcomes:
+ *   - `{ fd }`: this launcher owns the slot;
+ *   - `{ livePid }`: a LIVE holder already owns it (the daemon, or a launcher mid-spawn whose
+ *     daemon the caller's ready() poll adjudicates) — use that one;
+ *   - `undefined`: yield — garbled content, or still contested after one retry; never steal what
+ *     cannot be attributed.
+ *  A slot naming a provably DEAD pid — and an EMPTY slot, which the atomic pre-populated publish
+ *  makes impossible to produce except by a pre-protocol crash — is removed and the claim retried
+ *  ONCE, so a crash can never wedge the slot permanently. */
 export function claimAuthPidSlot(space: string): { fd: number } | { livePid: number } | undefined {
+  const target = PID_PATH(space);
   for (let attempt = 0; attempt < 2; attempt++) {
+    const temp = `${target}.claim.${process.pid}.${randomBytes(4).toString("hex")}`;
+    let fd: number | undefined;
     try {
-      return { fd: openSync(PID_PATH(space), "wx") };
+      fd = openSync(temp, "wx");
+      writeSync(fd, String(process.pid), 0);
+      linkSync(temp, target); // the atomic no-overwrite publish: EEXIST = the slot is held
+      rmSync(temp); // the published name and the held fd both keep the inode alive
+      return { fd };
     } catch {
-      let pid = Number.NaN;
+      if (fd !== undefined) closeSync(fd);
+      try { rmSync(temp); } catch { /* never created, or already gone */ }
+      let raw: string;
       try {
-        pid = Number(readFileSync(PID_PATH(space), "utf8").trim());
-      } catch { /* vanished between open and read - retry the claim */ }
-      if (Number.isFinite(pid) && pid > 0 && alive(pid)) return { livePid: pid };
-      if (Number.isFinite(pid) && pid > 0 && attempt === 0) {
-        try { rmSync(PID_PATH(space)); } catch { /* a sibling removed it first */ }
-        continue;
+        raw = readFileSync(target, "utf8");
+      } catch {
+        continue; // vanished between publish-refusal and read - retry the claim once
       }
-      return undefined; // unreadable/empty: a sibling is mid-claim - let its daemon come up
+      const trimmed = raw.trim();
+      const pid = trimmed === "" ? Number.NaN : Number(trimmed);
+      if (Number.isFinite(pid) && pid > 0 && alive(pid)) return { livePid: pid };
+      if ((trimmed === "" || (Number.isFinite(pid) && pid > 0)) && attempt === 0) {
+        try { rmSync(target); } catch { /* a sibling removed it first */ }
+        continue; // a dead holder, or an empty pre-protocol slot: reclaim ONCE
+      }
+      return undefined; // garbled content (or still contested after the retry): never steal
     }
   }
   return undefined;
@@ -82,7 +102,10 @@ function startAuthServiceDetached(space: string, server: string, command: string
     });
     closeSync(fd);
     child.unref();
-    writeFileSync(slot.fd, String(child.pid)); // through the exclusively-created fd, never a re-open
+    // Replace the launcher pid with the daemon child's pid through the exclusively-created fd,
+    // never a re-open (truncate first: the fd position sits past the launcher pid).
+    ftruncateSync(slot.fd, 0);
+    writeSync(slot.fd, String(child.pid), 0);
     return child.pid ?? 0;
   } finally {
     closeSync(slot.fd);

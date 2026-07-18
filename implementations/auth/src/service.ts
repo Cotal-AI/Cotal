@@ -101,6 +101,12 @@ type Values = Record<string, string | undefined>;
 export interface AuthAuthorityPlane {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
+   *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
+   *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
+   *  kept minting would look healthy while a successor reclaims its scanners). Never resolves on a
+   *  clean close. */
+  fenced: Promise<string>;
   close(): Promise<void>;
 }
 
@@ -182,6 +188,12 @@ export async function openAuthAuthorityPlane(opts: {
   let recordsScanner: RecordsScanner | undefined;
   let barrierReg;
   let closing = false;
+  // The plane-fatal channel (fact HIGH: a fenced plane must never keep serving): the mid-life
+  // fence resolves it, every authority operation refuses from then on, and the composition root
+  // downs the daemon. A clean close never resolves it.
+  let fatalReason: string | undefined;
+  let fireFatal!: (reason: string) => void;
+  const fenced = new Promise<string>((r) => { fireFatal = r; });
   try {
     barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
     ledgerCand = await openAuthLedgerScannerCandidate({ server, space, dataAccount, log });
@@ -197,6 +209,8 @@ export async function openAuthAuthorityPlane(opts: {
       if (closing) return;
       const copy = scannerDeathCopy(space, role);
       hold?.fence(copy);
+      fatalReason = fatalReason ?? copy;
+      fireFatal(copy);
       log(`auth-plane: ${copy}`);
       void sibling().catch(() => {});
     };
@@ -277,12 +291,26 @@ export async function openAuthAuthorityPlane(opts: {
     throw e;
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
+  // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
+  // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
+  // window, not the operator — the agent cannot "restart the auth service", so it gets a retryable
+  // unavailability, while the operator's state-3 copy stays on the log and the exit line.
+  const refuseIfFenced = () => {
+    if (fatalReason !== undefined)
+      throw new EpEnvelopeError("unavailable",
+        `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
+  };
   return {
     authorizeConnect: async (t) => {
+      refuseIfFenced();
       fileArm(t);
       await authorizeConnectCredential(reader.current(), t, Date.now);
     },
-    mintConnectCredential: (args) => ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` }),
+    mintConnectCredential: (args) => {
+      refuseIfFenced();
+      return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` });
+    },
+    fenced,
     close: async () => {
       // Clean-close order (SPEC 13.13): scan-capable clients down FIRST, then `held → released`
       // (never released while either scanner can still act), then the barrier that wrote it.
@@ -428,14 +456,24 @@ export async function runAuthService(args: ParsedArgs): Promise<void> {
 
   // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
   // owns restarts, and a callout that silently stopped answering would hang every user connect.
-  await (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
-    clearAuthServiceInfo(dir);
-    if (err) {
-      console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
+  // A FENCED plane is equally fatal (SPEC 13.13): its scanners are no longer whole, every authority
+  // operation already refuses, and a daemon that stayed up would look healthy while a successor
+  // reclaims — down the whole service instead.
+  await Promise.race([
+    (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
+      clearAuthServiceInfo(dir);
+      if (err) {
+        console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
+        process.exit(1);
+      }
+      process.exit(0);
+    }),
+    plane.fenced.then((reason) => {
+      clearAuthServiceInfo(dir);
+      console.error(`✗ auth-service: ${reason} - exiting`);
       process.exit(1);
-    }
-    process.exit(0);
-  });
+    }),
+  ]);
 }
 
 interface HandlerCtx {

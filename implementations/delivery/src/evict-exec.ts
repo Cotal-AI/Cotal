@@ -60,7 +60,9 @@ export async function executeEviction(server: string, principal: string): Promis
  */
 export async function executePlaneLiveness(server: string, query: unknown): Promise<PlaneLivenessResult> {
   const q = query as Partial<PlaneLivenessQuery> | undefined;
-  if (q === undefined || q === null || !isPlaneConnTuple(q.ledger) || !isPlaneConnTuple(q.records))
+  if (q === undefined || q === null || typeof q !== "object" ||
+      Object.keys(q).some((k) => k !== "ledger" && k !== "records") || // closed top-level shape
+      !isPlaneConnTuple(q.ledger) || !isPlaneConnTuple(q.records))
     throw new Error("planeConnLiveness: the query must be exactly { ledger, records } connection tuples ({ serverId, cid, userNkey }); refusing a malformed or wider query");
   const dir = join(findCotalRoot(), ".cotal");
   const obsPath = join(dir, "membership-observer.creds");
