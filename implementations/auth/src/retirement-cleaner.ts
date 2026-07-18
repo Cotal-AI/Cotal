@@ -38,7 +38,7 @@
 import { createHash } from "node:crypto";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { barrierExecutorSettlementGrants, openAuthorityClient, type AuthorityClient } from "./authority-client.js";
-import { principalKey, retirementCleanerGrants } from "@cotal-ai/core";
+import { EpEnvelopeError, principalKey, retirementCleanerGrants } from "@cotal-ai/core";
 import type { PoolCleanerBind } from "./retirement-barrier.js";
 
 /** The infra owner for cleaner principals — CONNZ-attributable (`local` passes the delivery
@@ -77,7 +77,7 @@ export function makeRetirementCleaners(opts: {
       // retireCleanerCredential close the WRONG one. A crash-resume re-open is fine — the crashed
       // process's map is gone, so nothing is tracked here.
       if (clients.has(principal))
-        throw new Error(`retirement cleaner already open (or opening) for op ${opId}; retire it before re-opening`);
+        throw new EpEnvelopeError("failed-precondition", `retirement cleaner already open (or opening) for op ${opId}; retire it before re-opening`);
       clients.set(principal, "opening");
       let client: AuthorityClient | undefined;
       try {

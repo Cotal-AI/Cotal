@@ -146,6 +146,17 @@ for (const def of AUTHORITY_KIND_DEFS) {
 // through — the freelance a559d9c finding).
 throws("a record-reader on an UNREGISTERED kind refuses (allowlist: only registered caller kinds)",
   () => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.futureauth.manager.>` }));
+// The two allowlist refusals are DISTINCT teaching messages (the ux review): the authority branch
+// says forbidden-by-design (no recourse), the unregistered branch says typo-or-registerRecordKind
+// (the caller's actual next step). A lumped message half-teaches: the 2am typo case scans a
+// forbidden-kinds list its kind is not in and has no next step.
+const msgOf = (fn: () => unknown): string => { try { fn(); return ""; } catch (e) { return (e as Error).message; } };
+const authMsg = msgOf(() => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.oblig.${UID}.manager.>` }));
+c("the authority-kind refusal names the by-design forbidden branch (sealed scanner, no recourse)",
+  authMsg.includes("authority-control kind") && authMsg.includes("sealed scanner") && !authMsg.includes("registerRecordKind"), authMsg);
+const unregMsg = msgOf(() => recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: `$KV.${recordsBucket(SPACE)}.futureauth.manager.>` }));
+c("the unregistered-kind refusal gives the caller's next step (typo / registerRecordKind, §13.7)",
+  unregMsg.includes("not a registered record kind") && unregMsg.includes("typo") && unregMsg.includes("registerRecordKind") && !unregMsg.includes("authority-control"), unregMsg);
 // DUAL-token (lifecycle): the atomic HEAD `lifecycle.<owner>.<actor>` is authority; deeper per-UID
 // audit detail is caller-readable. Head-matching filters refuse; strictly-deeper filters admit.
 throws("a lifecycle reader matching the exact HEAD key refuses (the authority mapping, not audit)",

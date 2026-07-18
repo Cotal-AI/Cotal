@@ -131,7 +131,12 @@ try {
   await god.close();
 } finally {
   srv.kill("SIGKILL");
-  await new Promise<void>((resolve) => { srv.once("exit", () => resolve()); srv.once("error", () => resolve()); });
+  // A broker that ALREADY exited emitted "exit" before these listeners attach; awaiting a
+  // never-fired once() leaves an unsettled top-level await (tsx exit 13, seen in a detached
+  // verify). The exitCode/signalCode check and the attach are one synchronous block, so the
+  // event cannot slip between them.
+  if (srv.exitCode === null && srv.signalCode === null)
+    await new Promise<void>((resolve) => { srv.once("exit", () => resolve()); srv.once("error", () => resolve()); });
   rmSync(tmp, { recursive: true, force: true });
 }
 

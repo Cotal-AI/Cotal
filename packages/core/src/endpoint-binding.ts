@@ -345,11 +345,11 @@ function assertFamilyPair(stream: string, cfg: Partial<ConsumerConfig>, what: st
   if (bond.stream !== stream)
     throw new Error(`${what}: durable ${JSON.stringify(cfg.durable_name ?? "")} belongs to stream ${JSON.stringify(bond.stream)}, not ${JSON.stringify(stream)} (§13.9: no cross-family pairing)`);
   if (cfg.durable_name !== bond.durable || cfg.filter_subject !== bond.filter)
-    throw new Error(`${what}: the config's durable/filter diverged from the tuple its family builder minted (minted ${JSON.stringify(bond.durable)} on ${JSON.stringify(bond.filter)}, now ${JSON.stringify(cfg.durable_name ?? "")} on ${JSON.stringify(cfg.filter_subject ?? "")}) — a mutated config is not §13.9 authority`);
+    throw new Error(`${what}: the config's durable/filter diverged from the tuple its family builder minted (minted ${JSON.stringify(bond.durable)} on ${JSON.stringify(bond.filter)}, now ${JSON.stringify(cfg.durable_name ?? "")} on ${JSON.stringify(cfg.filter_subject ?? "")}); a mutated config is not §13.9 authority`);
   // §13.9 pre-created consumers are PULL-only: a create's delivery target is body-set and
   // unconfined, so a post-mint deliver_subject would fan the stream out to an arbitrary subject.
   if (cfg.deliver_subject !== undefined)
-    throw new Error(`${what}: the config carries a deliver_subject — §13.9 family consumers are PULL-only, a push delivery target is unconfined`);
+    throw new Error(`${what}: the config carries a deliver_subject; §13.9 family consumers are PULL-only, a push delivery target is unconfined`);
 }
 
 /** The canonicalizer's durable on EPJ (`canon_<e>`): every raw submission to one endpoint.
@@ -548,12 +548,20 @@ export function recordReaderConfig(
     throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} must pin its record kind (a cross-kind read is not a caller capability, §13.9)`);
   // ENFORCED partition, ALLOWLIST not deny-list (panel + freelance a559d9c re-verify, #8274): the
   // kind MUST be a registered CALLER-readable record kind. This refuses every AUTHORITY-CONTROL
-  // kind (oblig — the sealed records scanner's EXCLUSIVE domain — plus uid/govern/policy/frontier)
+  // kind (oblig, the sealed records scanner's EXCLUSIVE domain, plus uid/govern/policy/frontier)
   // AND any UNREGISTERED kind, both of which a reader durable would durably EXPORT past revoke. It
   // consumes the same canonical {@link AUTHORITY_KIND_DEFS} the registry is built from, so a new
-  // authority kind is excluded by construction — no parallel list to drift.
-  if (!callerReadableRecordKind(kind))
-    throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} targets ${JSON.stringify(kind)}, which is not a caller-readable record kind (authority-control kinds — oblig/uid/govern/policy/frontier — and unregistered kinds are never reader capabilities; the sealed scanner owns the oblig subtree, §13.9, nats-server#8274)`);
+  // authority kind is excluded by construction: no parallel list to drift. The two refusals are
+  // DISTINCT messages (the ux review): an authority kind is forbidden by design with no recourse,
+  // while an unregistered kind is usually a typo or a missing registerRecordKind and the caller
+  // needs that next step, not the forbidden-kinds list.
+  if (!callerReadableRecordKind(kind)) {
+    if (AUTHORITY_KIND_DEFS.some((d) => d.kind === kind)) {
+      const authorityKinds = AUTHORITY_KIND_DEFS.filter((d) => !callerReadableRecordKind(d.kind)).map((d) => d.kind).join("/");
+      throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} targets the authority-control kind ${JSON.stringify(kind)}; authority-control kinds (${authorityKinds}) are never caller reader capabilities by design: their keys are the auth process's own authority state, enumerated only by its sealed scanner (§13.9, nats-server#8274)`);
+    }
+    throw new Error(`record-reader subtree ${JSON.stringify(args.subtree)} targets ${JSON.stringify(kind)}, which is not a registered record kind; check the kind for a typo, or register it (registerRecordKind, §13.7) before granting a reader over it`);
+  }
   // DUAL-token head-disjointness: a kind that is caller-readable AND also carries an authority head
   // (only `lifecycle` today: its atomic HEAD `lifecycle.<owner>.<actor>` is the authority mapping,
   // while `lifecycle.<owner>.<actor>.<uid>.{spec,status}` is the caller audit detail). A reader may
