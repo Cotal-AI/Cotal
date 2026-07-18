@@ -25,8 +25,10 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, mintLifecycleUid, recordAtomicKey, recordsBucket, recordsKvStreamName, RETIREMENT_FRONTIER, serverConfig, type EvictionResult } from "@cotal-ai/core";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfStreamName, epfSubject, epwStreamName, isReachable, mintLifecycleUid, publishFactCreateOnly, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, type EvictionResult } from "@cotal-ai/core";
+import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation } from "../src/admission-mediator.js";
+import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { authorityBarrierGrants, barrierExecutorSettlementGrants, openAuthorityClient } from "../src/authority-client.js";
 import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
@@ -112,6 +114,11 @@ try {
   // ---- B. seed through the real issuance path (writer profile, unchanged) ----
   writer = await openAuthorityClient({ server: SERVERS, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => (void id, { publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: quiet });
   await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
+  // The endpoint streams (EPF/EPW/EPE/...) must exist for the retirement frontier step to read
+  // their last_seq; a real deployment creates them at space setup. The grant fix (barrier holds
+  // STREAM.INFO on the frontier set) is what F2 exercises, but INFO on a nonexistent stream is
+  // 'stream not found', so create them here as the provisioner would.
+  await createEndpointStreams(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
   const wreg = await openLifecycleRegistry(writer.nc, space);
   const uid1 = mintLifecycleUid();
   const cred1 = await ensureRootCredential(wreg, { owner: OWNER, actor: "worker1", lifecycleUid: uid1, managerInstance: "smoke" });
@@ -254,7 +261,10 @@ try {
     now: Date.now,
   });
   const retireOp = mintLifecycleUid();
-  const retireArgs = { owner: OWNER, actor: "worker3", lifecycleUid: uid3, opId: retireOp, endpoints: [], frontierStreams: [recordsKvStreamName(space)] };
+  // Production frontier set: EPF + EPW (the normative retirement contract, retirement-barrier.smoke
+  // uses these). Step 6 does STREAM.INFO on each over the REAL barrier credential, so this proves
+  // authorityBarrierGrants carries their INFO rows (the prior records-only F2 masked the gap).
+  const retireArgs = { owner: OWNER, actor: "worker3", lifecycleUid: uid3, opId: retireOp, endpoints: [], frontierStreams: [epfStreamName(space), epwStreamName(space)] };
   const retireWedgeMsg = await rejects(() => runAgentRetirementBarrier(breg, retireArgs, wedgeDeps(failEvictor)));
   check("a retirement whose eviction cannot verify THROWS (fail-closed)", retireWedgeMsg.length > 0, retireWedgeMsg.slice(0, 80));
   const retireWedged = await observeGate(breg, uid3);
@@ -279,12 +289,62 @@ try {
   {
     const fr = await registryStores(breg).recordsKv.get(recordAtomicKey(RETIREMENT_FRONTIER, [uid3]));
     const frontier = fr && fr.operation === "PUT" ? JSON.parse(new TextDecoder().decode(fr.value)) as { opId: string; streams: Record<string, number> } : undefined;
-    check("the FRONTIER record was written by the resume over the REAL barrier credential (the frontier.* row)",
-      frontier !== undefined && frontier.opId === retireOp && Object.keys(frontier.streams).includes(recordsKvStreamName(space)), frontier);
+    check("the FRONTIER record was written by the resume over the REAL barrier credential (frontier.* write + EPF/EPW STREAM.INFO)",
+      frontier !== undefined && frontier.opId === retireOp
+      && Object.keys(frontier.streams).sort().join() === [epfStreamName(space), epwStreamName(space)].sort().join(), frontier);
   }
   check("the resumed retirement revoked the family and verified-evicted the alias principal",
     retireEvicted.includes(`${OWNER}.worker3`)
     && retireResumeLines.some((l) => l.includes(`resumed retirement ${retireOp}`)), { retireEvicted, retireResumeLines });
+
+  // ---- F3. the assembled drain fails CLOSED + OPERATOR-legible on unmaterialized accepted work
+  // (#29 HIGH 1 scoped narrow): the production drain holds no records-write authority, so an
+  // accepted obligation whose route was never materialized cannot be reconciled here. The resume
+  // must leave the alias FROZEN (not lost) with an operator-legible message, not the mediator's
+  // developer-vocabulary throw. Real plane, real mediator profile. ----
+  const uid4 = mintLifecycleUid();
+  await ensureRootCredential(wreg, { owner: OWNER, actor: "worker4", lifecycleUid: uid4, managerInstance: "smoke" });
+  {
+    // Seed an ACCEPTED effects obligation under the retiring target, with no completion marker
+    // (unmaterialized), through the real mediator profile + the plane's sealed records scanner.
+    const recScanner = makeRecordsScannerOverConnection(writer.nc, space);
+    const EP = "manager";
+    const med = await openAdmissionMediator(writer.nc, space, EP, { recordsScanner: recScanner });
+    const caller = { owner: OWNER, actor: "acaller", uid: "a".repeat(26) };
+    const target = { owner: OWNER, actor: "worker4", lifecycleUid: uid4 };
+    const req = mediatedRequestFromSubject(`cotal.${space}.epj.${EP}.admit.${caller.owner}.${caller.actor}.${caller.uid}`);
+    const fpAcc = contractDigest({ id: "acc001" });
+    const got = await obtainEpfObligation(med, req, { target, id: "acc001", fingerprint: fpAcc, sourceSeq: 1, route: "effects" });
+    // Forge the acceptance decision fact the accepted row derives from (else the drain hits a
+    // corruption check before reconcileAcceptedRoute); route effects, no completion marker.
+    const D = contractDigest({ probe: true });
+    const from = { id: `${caller.owner}.${caller.actor}`, name: "c" };
+    const decFact = {
+      v: 1, id: "acc001", decision: "accepted", fingerprint: fpAcc,
+      request: { v: 1, id: "acc001", op: { endpoint: EP, command: "run", inputDigest: D, outputDigest: D }, class: "journal", replyExpected: false, deadlineMs: 5000, args: {}, from, target },
+      caller: { id: from.id, lifecycleUid: caller.uid }, contractDigests: { input: D, output: D },
+      authzDecision: { revision: 1, epoch: 1 }, route: "effects", sourceSeq: 1, ts: 1, target,
+    };
+    const decSubject = epfSubject(space, EP, ["dec", caller.owner, caller.actor, caller.uid, "acc001"]);
+    if (!(await publishFactCreateOnly(jetstream(writer.nc), decSubject, new TextEncoder().encode(JSON.stringify(decFact)))).won) throw new Error("acceptance forge lost");
+    await updateRecordEntry(registryStores(wreg).recordsKv, got.key, { ...got.row, state: "accepted" }, got.revision); // accepted, unmaterialized (no done marker)
+  }
+  const retireOp4 = mintLifecycleUid();
+  const wedge4 = await rejects(() => runAgentRetirementBarrier(breg, {
+    owner: OWNER, actor: "worker4", lifecycleUid: uid4, opId: retireOp4,
+    endpoints: [], frontierStreams: [epfStreamName(space), epwStreamName(space)],
+  }, wedgeDeps(failEvictor)));
+  check("the retirement wedges at eviction with the accepted obligation still pending", wedge4.length > 0, wedge4.slice(0, 80));
+
+  const drainLines: string[] = [];
+  const planeDrainWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => drainLines.push(l), probeEvictor: okEvictor([]) });
+  await planeDrainWedged.close();
+  check("the resume gets past eviction and FAILS CLOSED at the drain on unmaterialized accepted work",
+    (await observeGate(breg, uid4))?.row.state === "frozen"
+    && (await readLifecycleHeadForOperation(breg, OWNER, "worker4"))?.mapping.state !== "retired", await observeGate(breg, uid4));
+  check("the resume failure is OPERATOR-legible (FROZEN not lost + how it completes), not a seam-dep throw",
+    drainLines.some((l) => l.includes(`resuming retirement ${retireOp4}`) && l.includes("FROZEN, not lost")
+      && !l.includes("reconcileAcceptedRoute was given")), drainLines);
 
   // ---- G. the delivery-admin eviction seam fails CLOSED with no daemon on the rail ----
   const seam = makeDeliveryAdminEvictor({ space, server: SERVERS, dataAccount, log: quiet });

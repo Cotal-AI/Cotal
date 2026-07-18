@@ -41,7 +41,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, ensureAuthorityStores, isReachable, type ParsedArgs } from "@cotal-ai/core";
+import { admissionMediatorGrants, EpEnvelopeError, ensureAuthorityStores, isReachable, type ParsedArgs } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
@@ -173,13 +173,26 @@ export async function openAuthAuthorityPlane(opts: {
     throw e;
   }
   const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ space, server, dataAccount, log });
-  // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from
-  // reviewed §13.9 profiles only. The obligation drain runs per endpoint on a SHORT-LIVED
-  // client minted with that endpoint's admission-mediator profile (the daemon owns no standing
-  // mediator; the drain is the first production mediator composition), sharing the plane's ONE
-  // sealed records scanner. reconcileAcceptedRoute is deliberately ABSENT: a resume that finds
-  // unmaterialized accepted work fails LOUD and the alias stays frozen — no repair authority is
-  // invented here. The per-op cleaner/executor credentials come from the piece-2 split factory.
+  // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed
+  // §13.9 profiles only. The obligation drain runs per endpoint on a SHORT-LIVED client minted
+  // with that endpoint's admission-mediator profile (the daemon owns no standing mediator; the
+  // drain is the first production mediator composition), sharing the plane's ONE sealed records
+  // scanner. The per-op cleaner/executor credentials come from the piece-2 split factory.
+  //
+  // SCOPED BOUNDARY (#29 HIGH 1, panel-accepted narrow): the mediator profile holds NO
+  // records-write authority, so this assembled drain completes every SETTLEABLE obligation
+  // (provisional -> rejected, an already-committed self row driven terminal, a materialized pool
+  // item handed to the cleaner) but CANNOT re-apply an accepted self-commit whose target record
+  // write never landed, nor re-materialize an accepted effects/pool route. Those need a
+  // confined COMMIT-APPLIER / ROUTE-RECONCILER authority that is its own §13.9 profile and its own
+  // security review (a #29 follow-up slice). Until it lands, `applyCommit`/`reconcileAcceptedRoute`
+  // fail CLOSED with an OPERATOR-legible message (frozen, NOT lost) rather than the mediator's
+  // developer-vocabulary throw, so a retirement blocked on real in-flight accepted work is a
+  // legible frozen alias, never a silent wedge or a lost lifecycle.
+  const acceptedWorkUnavailable = (what: string) => (): never => {
+    throw new EpEnvelopeError("unavailable",
+      `this build cannot auto-complete a retirement that still has ${what}: the alias is FROZEN, not lost, and nothing mints for it until it completes. It completes when the confined commit-applier/route-reconciler authority is composed (#29 follow-up) or when the endpoint's own writer terminalizes the outstanding work; the barrier then re-runs on the next boot (SPEC 13.1/13.8).`);
+  };
   const retirement: RetirementDeps = {
     evictPrincipal,
     drainTargetObligations: async (endpoint, targetUid) => {
@@ -190,7 +203,10 @@ export async function openAuthAuthorityPlane(opts: {
         log,
       });
       try {
-        await drainTargetForEndpoint(await openAdmissionMediator(drain.nc, space, endpoint, { recordsScanner }), targetUid);
+        await drainTargetForEndpoint(await openAdmissionMediator(drain.nc, space, endpoint, { recordsScanner }), targetUid, {
+          applyCommit: acceptedWorkUnavailable("an accepted self-commit whose target record write did not land"),
+          reconcileAcceptedRoute: acceptedWorkUnavailable("accepted work whose route (effect or pool item) was never materialized"),
+        });
       } finally {
         await drain.close();
       }

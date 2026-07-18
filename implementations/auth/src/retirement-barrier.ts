@@ -61,6 +61,7 @@ import {
   recordAtomicKey,
   reconcileWorkItem,
   retireWorkItem,
+  retirementFrontierStreams,
   workTerminalSubject,
   type WorkPoolContext,
   type WorkItemRef,
@@ -128,13 +129,20 @@ function assertPoolSpecs(v: unknown, what: string): RetirementPoolSpec[] {
   return v as RetirementPoolSpec[];
 }
 
-function assertFrontierStreams(v: unknown, what: string): string[] {
+function assertFrontierStreams(v: unknown, what: string, space: string): string[] {
   if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || s.length === 0))
     throw new EpEnvelopeError("failed-precondition", `${what} must be an array of non-empty stream names (SPEC 13.1)`);
+  // CLOSED set (SPEC 13.1): a frontier stream is a per-space lifecycle-data stream the barrier is
+  // GRANTED STREAM.INFO for, never a caller-selected arbitrary name. An out-of-set entry would
+  // permission-deny at the frontier step on a real broker and wedge the resume; refuse it up front.
+  const allowed = new Set(retirementFrontierStreams(space));
+  for (const s of v as string[])
+    if (!allowed.has(s))
+      throw new EpEnvelopeError("failed-precondition", `${what}: ${JSON.stringify(s)} is not a retirement frontier stream; only the per-space lifecycle-data streams (${[...allowed].join(", ")}) may be fenced (SPEC 13.1)`);
   return v as string[];
 }
 
-function parseRetirementIntent(raw: Uint8Array, key: string): RetirementIntent {
+function parseRetirementIntent(raw: Uint8Array, key: string, space: string): RetirementIntent {
   let o: unknown;
   try {
     o = JSON.parse(dec.decode(raw));
@@ -150,20 +158,20 @@ function parseRetirementIntent(raw: Uint8Array, key: string): RetirementIntent {
   try {
     assertLifecycleToken(o.lifecycleUid);
     assertPoolSpecs(o.endpoints, `intent ${key} endpoints`);
-    assertFrontierStreams(o.frontierStreams, `intent ${key} frontierStreams`);
+    assertFrontierStreams(o.frontierStreams, `intent ${key} frontierStreams`, space);
   } catch (e) {
     throw new EpEnvelopeError("internal", `the operation intent ${key} carries malformed coordinates: ${(e as Error).message}`);
   }
   return o as unknown as RetirementIntent;
 }
 
-async function readRetirementIntent(authKv: KV, opId: string): Promise<RetirementIntent | undefined> {
+async function readRetirementIntent(authKv: KV, opId: string, space: string): Promise<RetirementIntent | undefined> {
   const key = stageIntentKey(opId);
   const entry = await authKv.get(key);
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the operation intent ${key} carries a ${entry.operation} marker; an intent is never deleted while resumable (corruption, SPEC 13.12)`);
-  return parseRetirementIntent(entry.value, key);
+  return parseRetirementIntent(entry.value, key, space);
 }
 
 // ---- the injected capabilities ----------------------------------------------------------------
@@ -206,9 +214,9 @@ export interface RetirementDeps extends TakeoverDeps {
   retireCleanerCredential: (bind: PoolCleanerBind) => Promise<void>;
   /** Mint + connect the DISTINCT bounded-lived settlement-executor profile for (op × endpoint),
    *  granted exactly the listed pools' settlement rows (§13.9 "Retirement settlement": the lease
-   *  CAS + `wrk` terminal publish + the leader-served EPW/EPF/records fencing reads). The
-   *  barrier builds the settlement seam over THIS bind's work context, never its own standing
-   *  connection. */
+   *  CAS + `wrk` terminal publish + the leader-served EPF/records fencing reads; NO EPW read, that
+   *  live-entry probe is unreachable from the settlement path). The barrier builds the settlement
+   *  seam over THIS bind's work context, never its own standing connection. */
   openExecutor: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<RetirementExecutorBind>;
   /** Revoke the executor bind's credential (the deny-new half); the barrier verified-evicts its
    *  principal too. Same discipline as the cleaner: called on success AND failure paths. */
@@ -578,13 +586,13 @@ export async function runAgentRetirementBarrier(
 
   // 0. The durable intent: read-or-create BEFORE any gate movement. An existing intent's
   // coordinates WIN (they are the operation; the caller's args merely re-address it).
-  let intent = await readRetirementIntent(authKv, opId);
+  let intent = await readRetirementIntent(authKv, opId, space);
   if (intent !== undefined) {
     if (intent.lifecycleUid !== args.lifecycleUid || intent.owner !== args.owner || intent.actor !== args.actor)
       throw new EpEnvelopeError("permission-denied", `the operation intent ${stageIntentKey(opId)} belongs to lifecycle ${intent.lifecycleUid} ("${intent.owner}/${intent.actor}"), not ${args.lifecycleUid} ("${args.owner}/${args.actor}"); an opId resumes only its OWN operation (SPEC 13.1)`);
   } else {
     assertPoolSpecs(args.endpoints, "endpoints");
-    assertFrontierStreams(args.frontierStreams, "frontierStreams");
+    assertFrontierStreams(args.frontierStreams, "frontierStreams", space);
     const head = await readLifecycleHeadForOperation(reg, args.owner, args.actor);
     if (head === undefined || head.mapping.state !== "active" || head.mapping.lifecycleUid !== args.lifecycleUid)
       throw new EpEnvelopeError("failed-precondition", `retirement for "${args.owner}/${args.actor}" requires an ACTIVE head at uid ${args.lifecycleUid}; found ${head === undefined ? "no head" : `${head.mapping.state} at ${head.mapping.lifecycleUid}`} (SPEC 13.1)`);
@@ -598,7 +606,7 @@ export async function runAgentRetirementBarrier(
       fromGeneration: gate0.row.generation, endpoints: args.endpoints, frontierStreams: args.frontierStreams,
     };
     await createRowByteIdempotent(authKv, stageIntentKey(opId), fresh);
-    intent = await readRetirementIntent(authKv, opId);
+    intent = await readRetirementIntent(authKv, opId, space);
     if (intent === undefined) throw new EpEnvelopeError("internal", `the operation intent ${stageIntentKey(opId)} vanished after its create (SPEC 13.12)`);
   }
 
@@ -754,8 +762,8 @@ export async function runAgentRetirementBarrier(
  *  {@link runAgentRetirementBarrier} with the intent's own coordinates; a stranger's opId (no
  *  intent) is `not-found`. */
 export async function resumeAgentRetirement(reg: LifecycleRegistry, opId: string, deps: RetirementDeps): Promise<RetirementResult> {
-  const { authKv } = registryStores(reg);
-  const intent = await readRetirementIntent(authKv, assertLifecycleToken(opId));
+  const { space, authKv } = registryStores(reg);
+  const intent = await readRetirementIntent(authKv, assertLifecycleToken(opId), space);
   if (intent === undefined)
     throw new EpEnvelopeError("not-found", `no operation intent exists at ${stageIntentKey(opId)}; there is nothing to resume (SPEC 13.1)`);
   return runAgentRetirementBarrier(reg, {

@@ -5,8 +5,9 @@
  * rows, and broker-DENIED everything else. distsys vote (2): a DISTINCT principal per (op, role)
  * so an evict never collateral-kills a concurrent op's client or the sibling role. The piece-2
  * SPLIT (SPEC 13.9): the cleaner holds ZERO writes; the executor holds the settlement writes
- * (own-pool lease CAS + wrk terminal) and the leader-served EPW/EPF/records fencing reads, and
- * NO consumer authority, NO epw enqueue, NO auth-store read.
+ * (own-pool lease CAS + wrk terminal) and the leader-served EPF/records fencing reads (NO EPW
+ * read: unreachable from the settlement path), and NO consumer authority, NO epw enqueue, NO
+ * auth-store read.
  *
  * Denial probes ride bounded `nc.request` (a permission-denied JetStream publish gets NO reply, so
  * an unbounded manager call would hang): an ALLOWED API subject replies fast (even a JS error reply
@@ -23,7 +24,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   createSpaceAuth, createEndpointStreams, contractDigest, isReachable, mintLifecycleUid, serverConfig,
-  epwStreamName, epfStreamName, epfSubject, epwSubject, poolDurable, poolConsumerConfig, assertValidOwnerToken,
+  epwStreamName, epfStreamName, epfSubject, poolDurable, poolConsumerConfig, assertValidOwnerToken,
   parseDecisionFact, parseWorkTerminalFact, publishFactCreateOnly, readLastFact, workTerminalSubject,
   retirementCleanerGrants, recordsKvStreamName, recordsBucket, epAuthBucket,
 } from "@cotal-ai/core";

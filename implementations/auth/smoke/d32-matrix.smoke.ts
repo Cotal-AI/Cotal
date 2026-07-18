@@ -220,6 +220,12 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
     "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    // The closed retirement-frontier set STREAM.INFO (#29 piece-4 HIGH 2): step 6 reads each
+    // fenced stream's last_seq; EPF/EPW/EPE join records (already above) so a real callout broker
+    // does not deny the frontier read. retirementFrontierStreams is the single source.
+    "$JS.API.STREAM.INFO.EPF_d32m",
+    "$JS.API.STREAM.INFO.EPW_d32m",
+    "$JS.API.STREAM.INFO.EPE_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m",

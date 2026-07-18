@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, spacePrefix, assertPoolToken, principalTags, principalKey } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -118,11 +118,19 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
   // Same connId hygiene as its siblings: the only untrusted subject-forming input goes through
   // the shared inbox grammar so it can never widen the scoped inbox.
   const inbox = assertInboxConnId(connId);
+  // The §13.1 frontier step reads the last sequence of every stream in the retirement's
+  // `frontierStreams` (a subset of the CLOSED {@link retirementFrontierStreams} set). Grant
+  // STREAM.INFO for exactly that set, from the same source the intent is validated against, so the
+  // frontier authority and the frontier-writable set never drift (a real callout broker denies an
+  // ungranted INFO and the resume wedges forever). records INFO is already listed; the frontier set
+  // adds EPF/EPW/EPE (records dedups below).
+  const frontierInfo = retirementFrontierStreams(space).map((s) => `$JS.API.STREAM.INFO.${s}`);
   return {
     publish: [
       "$JS.API.INFO",
       `$JS.API.STREAM.INFO.${auth}`,
       `$JS.API.STREAM.INFO.${records}`,
+      ...frontierInfo.filter((r) => r !== `$JS.API.STREAM.INFO.${records}`),
       `$JS.API.STREAM.MSG.GET.${auth}`,
       `$JS.API.STREAM.MSG.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}`,

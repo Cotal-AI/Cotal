@@ -19,7 +19,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  isReachable, EpEnvelopeError, createEndpointStreams, contractDigest, createRecordEntry, updateRecordEntry,
+  isReachable, EpEnvelopeError, createEndpointStreams, contractDigest, createRecordEntry, updateRecordEntry, epAuthBucket,
   recordAtomicKey, recordSpecKey, RECORD_KINDS, RETIREMENT_FRONTIER, evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX,
   effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseWorkTerminalFact, parseDecisionFact, workTerminalSubject,
@@ -356,6 +356,19 @@ try {
   {
     const gate = await observeGate(reg, uid5);
     c("…and the gate stays frozen (fail-closed, the terminal never lands over a foreign frontier)", gate!.row.state === "frozen");
+  }
+
+  console.log("C2. an out-of-closed-set frontier stream refuses before any gate movement (#29 HIGH 2)");
+  {
+    const actCS = await activateLifecycle(reg, { owner: "local", actor: "cset", managerInstance: MGR });
+    const uidCS = actCS.mapping.lifecycleUid;
+    await rejects("a frontierStream outside retirementFrontierStreams refuses (only granted lifecycle-data streams may be fenced)",
+      () => runAgentRetirementBarrier(reg, {
+        owner: "local", actor: "cset", lifecycleUid: uidCS, opId: "c".repeat(26),
+        endpoints: [], frontierStreams: [`KV_${epAuthBucket(SPACE)}`], // the AUTH store: a real stream, but NOT a frontier stream
+      }, mkDeps()), "failed-precondition");
+    c("…and the gate was NOT moved (validation precedes the freeze CAS)",
+      (await observeGate(reg, uidCS))?.row.state === "open");
   }
 
   console.log("D. the drain discovers an ACCEPTED-EPF-ONLY target (no provisional/self beside it)");

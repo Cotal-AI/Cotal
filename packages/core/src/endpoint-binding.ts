@@ -47,6 +47,18 @@ export function eprStreamName(space: string): string { return `EPR_${token(space
 export function epwStreamName(space: string): string { return `EPW_${token(space)}`; }
 export function epcStreamName(space: string): string { return `EPC_${token(space)}`; }
 
+/** The CLOSED set of streams a §13.1 retirement may record a frontier cutoff over: exactly the
+ *  per-space streams that carry a retired lifecycle's durable data a later durable reader can
+ *  replay (facts EPF, work EPW, events EPE, and the records KV). A retirement intent's
+ *  `frontierStreams` must be a subset of this set; it is NOT a caller-selectable arbitrary stream
+ *  list. This is the ONE source consumed by both the intent validation and the barrier's
+ *  `STREAM.INFO` grant, so the frontier authority and the frontier-writable set never drift
+ *  (nats-server subject ACLs cannot scope INFO to an intent-selected name). The auth store is
+ *  deliberately absent: it is the control plane, never a lifecycle-data frontier. */
+export function retirementFrontierStreams(space: string): string[] {
+  return [epfStreamName(space), epwStreamName(space), epeStreamName(space), recordsKvStreamName(space)];
+}
+
 /** The per-space auth store (§13.12): credential ledger + issuance/source gates + session
  *  ledger. Trusted auth path ONLY — no agent/endpoint/observer/admin/host profile holds any
  *  grant — and `allow_direct=false`: every fence on it is a leader-served revision-pinned CAS,
