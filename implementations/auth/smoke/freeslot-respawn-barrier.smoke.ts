@@ -446,6 +446,11 @@ try {
   const probeDelta = listNames().filter((n) => !namesBeforeProbe.includes(n));
   check("BARRIER: the alias is not reassignable while the predecessor's cleanup is pending",
     !probeDelta.includes(AGENT), { probeReply: probe, probeDelta });
+  // ux follow-through 1: the refusal is the OPERATOR face, not a bare failure — it names the
+  // reserved-pending-retirement state, bridges despawn→retirement, and gives the retry NEXT.
+  check("BARRIER: the refusal reads as the operator face (reserved pending retirement + despawn→retirement bridge + retry NEXT)",
+    probe.ok === false && /reserved pending retirement/i.test(probe.error ?? "")
+    && /despawn started/i.test(probe.error ?? "") && /retry/i.test(probe.error ?? ""), probe);
   // Clear whatever the probe created (today: a live exact-alias agent; under the fix: possibly an
   // auto-numbered sibling) and let its own cleanup fully settle so it cannot confound section E.
   for (const n of probeDelta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
@@ -477,6 +482,10 @@ try {
     await wait(250);
   }
   check("same-alias respawn ok after the predecessor retired", r2?.ok === true && listNames().includes(AGENT), r2);
+  // ux follow-through 1: the clean respawn reads as a FRESH spawn of THE alias — never an
+  // auto-numbered stand-in, never a lingering refusal string.
+  check("the respawn took the EXACT alias (a fresh spawn, not a suffixed sibling or a leftover refusal)",
+    listNames().includes(AGENT) && r2?.ok === true && !/reserved pending retirement/i.test(JSON.stringify(r2 ?? {})), r2);
   // Diagnostics on the REPLACEMENT child so a post-replay death is explainable: terminal output +
   // exit timing relative to the replay.
   const newHandle = mAny.agents.get(AGENT)?.handle;
