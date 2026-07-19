@@ -52,7 +52,7 @@ import {
   EpEnvelopeError,
   OBLIGATION, OBLIGATION_EP_SENTINEL, POLICY_VERSION, GOVERN_HEAD,
   recordAtomicKey, createRecordEntry, updateRecordEntry, readRecordLeader, recordsBucket,
-  epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, goalResultSubject, parseGoalResultFact, publishFactCreateOnly, readLastFact, parseDecisionFact, parseEffectFact,
+  epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, goalResultSubject, parseGoalResultFact, publishFactCreateOnly, readLastFact, parseDecisionFact, parseEffectFact, readGoalStatusByRefLeader,
   workTerminalSubject, parseWorkTerminalFact, workItemBytesOf,
   contractDigest, parseEpSubject,
   type AcceptanceFact, type RejectionFact, type DecisionFact, type WorkItemRef,
@@ -1176,6 +1176,25 @@ async function verifyAcceptedEpfRoute(
     if (await established()) return;
     if (deps.cancelEffectsRoute === undefined)
       throw new EpEnvelopeError("failed-precondition", `accepted effects obligation ${key} has no durable completion marker ${doneSubject} and no cancelEffectsRoute was given; a drain never declares quiescence over executable accepted effects work (SPEC 13.8/13.9)`);
+    // CANCEL-FIRST for ACTIONS (fact#2): a retirement's create-only `cancelled` terminal asserts
+    // the effect did NOT run (SPEC 13.6: "a reader that sees cancelled KNOWS the effect did not
+    // run"). For an ACTION goal that is proof only while the goal is still `accepted` — the
+    // `running` edge is where it effects, and it is guard/currency-fenced. Once the goal is
+    // running/waiting/cancelling the external action MAY have effected, so a create-only cancelled
+    // could beat the executor's real completion and lie. The action's own `accepted → cancelling →
+    // terminal` machine (executor epoch/currency-fenced) is the ONLY correct cancel there; the
+    // retirement drives no create-only over it. So: leader-read the goal status and, if it is past
+    // `accepted`, REFUSE the drain loud + resumable — the goal terminalizes through its own machine
+    // (a racing completion, fenced out once the target is retired, or its readiness → uncertain
+    // settle) and the drain re-reads on resume. An `accepted` (or never-created) goal never
+    // effected, so its create-only cancelled below is truthful (SPEC 13.8 option (i), the SPEC's
+    // first-terminal-wins model). The NON-action effect variant is untouched (goalRef undefined):
+    // it has no goal machine and its create-only cancel is a held SPEC decision.
+    if (goalRef !== undefined) {
+      const goalStatus = await readGoalStatusByRefLeader(med.jsm, med.space, goalRef);
+      if (goalStatus !== undefined && goalStatus.state !== "accepted")
+        throw new EpEnvelopeError("unavailable", `accepted action goal "${goalRef.goalId}" for ${key} is "${goalStatus.state}", not "accepted"; a retirement never writes a create-only cancelled over an action that may have effected - it terminalizes through its own accepted->cancelling machine (executor epoch-fenced) or its readiness settle, and the drain re-reads on resume (SPEC 13.6/13.8)`);
+    }
     // The MEDIATOR derives the repair coordinates (the closed-command boundary): the parsed,
     // row-bound acceptance + the exact completion subject. The executor stamps its own retirement
     // identity through the core validated builders and publishes create-only (first-terminal-wins).

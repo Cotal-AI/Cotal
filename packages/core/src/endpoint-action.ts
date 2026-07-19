@@ -500,6 +500,19 @@ async function readGoalStatusLeader(ctx: ActionContext, snap: GoalRef): Promise<
   return entry === undefined ? undefined : { value: parseStatus(entry.value, key), revision: entry.revision };
 }
 
+/** Leader-read a goal's status projection by ref ALONE (no {@link ActionContext}) — a fencing read
+ *  for a caller OUTSIDE the action module. The retirement drain uses it to decide whether an
+ *  accepted ACTION goal is still `accepted` (never entered `running`, the guard/currency-fenced
+ *  effecting edge, so provably never effected) before it may create-only cancel it: a `cancelled`
+ *  terminal must mean the effect did NOT run (SPEC 13.6). `undefined` = no goal record at all
+ *  (never created ⇒ never ran). Leader-served (read-your-writes), so a running executor's
+ *  transition is never missed as a stale absence and a mis-read never authorizes a false cancel. */
+export async function readGoalStatusByRefLeader(jsm: JetStreamManager, space: string, ref: GoalRef): Promise<GoalStatusValue | undefined> {
+  const key = recordStatusKey(RECORD_KINDS.goal, goalQualifiers(snapshotRef(ref)));
+  const entry = await readRecordLeader(jsm, space, key);
+  return entry === undefined ? undefined : parseStatus(entry.value, key);
+}
+
 /** The executor's authenticated identity (subject/creds, never a body claim), required when a
  *  goal's spec pins a target lifecycle (§13.6 item 7). */
 export interface GoalExecutor { lifecycleUid: string; epoch: number }

@@ -23,6 +23,7 @@ import {
   recordAtomicKey, recordSpecKey, RECORD_KINDS, RETIREMENT_FRONTIER, evictDeniedPrincipal, MEMBERSHIP_INBOX_PREFIX,
   effectFactOf, epfEffectSubject, epfSubject, epfStreamName, epwSubject, epwStreamName, poolConsumerConfig, poolDurable,
   publishFactCreateOnly, readLastFact, parseWorkTerminalFact, parseDecisionFact, workTerminalSubject,
+  recordStatusKey, goalResultSubject, parseGoalResultFact, goalCancelledResultOf,
 } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, drainTargetForEndpoint, type MediatedRequest } from "../src/admission-mediator.js";
 import { openLifecycleRegistry, activateLifecycle, registryStores, observeGate, reopenGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
@@ -603,6 +604,67 @@ try {
       wrkF !== undefined, { cleaned: resF.cleaned, drained: resF.drainedEndpoints });
     c("the pool is quiescent after the retirement (zero pending, zero ack-pending — no orphaned live EPW, #F)",
       info.num_pending === 0 && info.num_ack_pending === 0, info);
+  }
+
+  console.log("J. cancel-first: a RUNNING action goal is never create-only cancelled by a retirement (fact#2)");
+  {
+    // The reachable defect (fact#2, ACTIONS variant): the drain's effects-canceller writes a
+    // create-only `cancelled` goal result WITHOUT consulting the goal state machine. For an action
+    // already `running`, the external action MAY have effected, so a create-only cancelled would
+    // beat the executor's real completion and violate SPEC 13.6 ("a reader that sees cancelled
+    // KNOWS the effect did not run"). The fix leader-reads the goal status and REFUSES the drain
+    // for any state past `accepted`, letting the goal terminalize through its OWN machine.
+    const actI = await activateLifecycle(reg, { owner: "local", actor: "actiongoal", managerInstance: MGR });
+    const uidI = actI.mapping.lifecycleUid;
+    const tgtI = { owner: "local", actor: "actiongoal", lifecycleUid: uidI };
+    const cI = { owner: "local", actor: "caller", uid: "i".repeat(26) };
+    const GOAL = "gA00001";
+    // An accepted EFFECTS obligation whose acceptance carries a goalId (=> an ACTION), targeting the
+    // retiring lifecycle; no completion marker yet (the action is in-flight).
+    const og = await obtainEpfObligation(meds[EP], mkReq(EP, cI), { target: tgtI, id: "act001", fingerprint: fp("act001"), sourceSeq: 50, route: "effects" });
+    await updateRecordEntry(recordsKv, og.key, { ...og.row, state: "accepted" }, og.revision);
+    const fromI = { id: `${cI.owner}.${cI.actor}`, name: "c" };
+    const decI: Record<string, unknown> = {
+      v: 1, id: "act001", decision: "accepted", fingerprint: fp("act001"),
+      request: { v: 1, id: "act001", goalId: GOAL, op: { endpoint: EP, command: "run", inputDigest: D, outputDigest: D }, class: "journal", replyExpected: false, deadlineMs: 5000, args: {}, from: fromI, target: tgtI },
+      caller: { id: fromI.id, lifecycleUid: cI.uid }, target: tgtI,
+      contractDigests: { input: D, output: D }, authzDecision: { revision: 1, epoch: 1 },
+      route: "effects", sourceSeq: 50, ts: NOW,
+    };
+    const decSubjI = epfSubject(SPACE, EP, ["dec", cI.owner, cI.actor, cI.uid, "act001"]);
+    parseDecisionFact(decI, decSubjI); // the forge must be core-valid or the probe proves nothing
+    if (!(await publishFactCreateOnly(js, decSubjI, enc.encode(JSON.stringify(decI)))).won) throw new Error("action acceptance forge lost");
+    // The goal is RUNNING (the executor entered the effecting edge).
+    await createRecordEntry(recordsKv, recordStatusKey(RECORD_KINDS.goal, [EP, cI.owner, cI.actor, cI.uid, GOAL]), { state: "running", observedSpecRevision: 1 });
+    const goalRefI = { endpoint: EP, caller: cI, goalId: GOAL };
+    const resultSubjI = goalResultSubject(SPACE, goalRefI);
+    const opI = "i".repeat(26);
+    // The FAITHFUL retirement canceller (what the real drain-repair one does for a goal): a
+    // create-only goalCancelledResultOf on the result subject. The fix must REFUSE before it runs.
+    const cancelDeps: RetirementDeps = {
+      ...mkDeps({ guardUid: uidI }),
+      drainTargetObligations: async (endpoint, targetUid) => {
+        await drainTargetForEndpoint(meds[endpoint as keyof typeof meds], targetUid, {
+          cancelEffectsRoute: async (repair) => {
+            const t = repair.acceptance.target!;
+            await publishFactCreateOnly(js, repair.subject, enc.encode(JSON.stringify(goalCancelledResultOf(repair.acceptance, { opId: opI, target: t }, NOW))));
+          },
+        });
+      },
+    };
+    await rejects("the drain REFUSES to create-only cancel a RUNNING action goal (never contradicts a real completion, fact#2)",
+      () => runAgentRetirementBarrier(reg, {
+        owner: "local", actor: "actiongoal", lifecycleUid: uidI, opId: opI,
+        endpoints: [], frontierStreams: [epfStreamName(SPACE)],
+      }, cancelDeps), "unavailable");
+    c("NO cancelled goal result was written over the running action (its completion is not preempted, fact#2)",
+      (await readLastFact(jsm, epfStreamName(SPACE), resultSubjI)) === undefined);
+    // The executor's REAL completion can still land create-only (proving the retirement never beat it).
+    const realDone = { v: 1, goalId: GOAL, fingerprint: fp("act001"), state: "succeeded", outcomeDigest: contractDigest({ ok: true }), data: { ok: true }, ts: NOW };
+    c("the action's REAL completion (succeeded) still wins the result subject after the refusal",
+      (await publishFactCreateOnly(js, resultSubjI, enc.encode(JSON.stringify(realDone)))).won);
+    const done = parseGoalResultFact(await readLastFact(jsm, epfStreamName(SPACE), resultSubjI), resultSubjI, goalRefI);
+    c("…and the recorded terminal is `succeeded`, not `cancelled` (the effect that ran is honestly recorded)", done.state === "succeeded", done);
   }
 
   await nc.drain().catch(() => {});
