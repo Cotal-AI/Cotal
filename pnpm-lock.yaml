@@ -175,6 +175,21 @@ importers:
         specifier: ^4.22.4
         version: 4.22.4
 
+  extensions/connector-codex:
+    devDependencies:
+      '@cotal-ai/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
+
   extensions/connector-core:
     dependencies:
       '@modelcontextprotocol/sdk':

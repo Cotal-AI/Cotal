@@ -1,0 +1,41 @@
+{
+  "name": "@cotal-ai/connector-codex",
+  "description": "Cotal connector for the OpenAI Codex CLI: a Node shim owns the mesh agent and drives codex exec turns, with the cotal_* tools served over local streamable HTTP MCP.",
+  "version": "0.13.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "extensions/connector-codex"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/connector-core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "esbuild": "^0.28.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
