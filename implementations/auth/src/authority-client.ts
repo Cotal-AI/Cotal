@@ -177,8 +177,9 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
 
 /** The RETIREMENT SETTLEMENT EXECUTOR's op-bounded rows (SPEC 13.9 "Retirement settlement",
  *  the ceee1a1 authority split): COMPOSED onto {@link authorityBarrierGrants} for ONE retirement
- *  operation whose durable intent lists exactly these endpoint/pools — never a standing grant,
- *  never minted without a live intent. Per listed pool: the lease-record CAS write
+ *  operation over its EFFECTIVE INVENTORY endpoint/pools (the target's accepted obligation routes
+ *  UNIONED with the durable intent's trusted additive hints) — never a standing grant, never
+ *  minted without a live intent. Per effective-inventory pool: the lease-record CAS write
  *  (`lease.<endpoint>.<pool>.…` — create for the worker-less expiry sentinel, revision-pinned
  *  update otherwise) and the lease-derived `wrk` terminal create-only publish
  *  (`epf.<endpoint>.wrk.<pool>.>`, first terminal wins). Plus the leader-served EPF fencing
@@ -192,9 +193,9 @@ export function authorityBarrierGrants(space: string, connId: string): { publish
  *  D32 residuals, EXPLICIT (the relocated forge the bounded cleaner does NOT carry): KV subject
  *  permissions cannot distinguish CAS from overwrite or DEL/PURGE markers, and the `wrk`
  *  publish is payload-blind, so a compromised executor can forge a lease settlement or work
- *  terminal WITHIN the intent's exact pools (never beyond them); the space-wide EPF
+ *  terminal WITHIN its EFFECTIVE-INVENTORY pools (never beyond them); the space-wide EPF
  *  `STREAM.MSG.GET` exposure and the caller-selected-reply injection ride it like every
- *  API-holding profile. Op-bounded, intent-confined, revoked with the operation. */
+ *  API-holding profile. Op-bounded, effective-inventory-confined, revoked with the operation. */
 export function barrierExecutorSettlementGrants(space: string, endpoint: string, pools: string[]): { publish: string[] } {
   if (!Array.isArray(pools) || pools.length === 0)
     throw new EpEnvelopeError("failed-precondition", "an executor settlement grant lists at least one exact pool (SPEC 13.9: the op intent enumerates them; a poolless settlement authority is none)");
@@ -235,6 +236,16 @@ export interface AuthorityClientOpts {
    *  to reject deterministically (the mint is a local signing operation with no natural failure
    *  to inject). Production compositions never set this. */
   probeRenewal?: { intervalMs: number; fail?: boolean };
+  /** NO auto-reconnect (`reconnect:false`, `maxReconnectAttempts:0`) for a PER-CALL connection that
+   *  mints, does ONE write, and closes (the drain-repair applier/reconciler/canceller, #4). The
+   *  default authority connection reconnects INFINITELY (`maxReconnectAttempts:-1`) so a standing
+   *  reader/writer rides a broker blip — but a per-call repair connection must NOT: after the
+   *  retirement barrier KICKs it at the drain-repair fence, an auto-reconnect with its still-valid
+   *  bearer would resurrect it under a fresh cid, so the fence's verified-eviction never converges
+   *  (the connection keeps coming back) and a write could land AFTER the fence. With no reconnect a
+   *  KICK is durable in one round; a mid-write drop simply FAILS the repair (loud) and the drain
+   *  re-mints on its next pass. Never combine with a standing/renewing role. */
+  noReconnect?: boolean;
   /** #29 HIGH 3: open this connection as a PLANE-OWNED candidate — the ownership-bearing shape the
    *  sealed scanners connect with under the plane claim:
    *   - NON-RECONNECTING (`reconnect:false`): the claim row pins this connection's exact
@@ -313,7 +324,9 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       name: opts.label,
       authenticator: jwtAuthenticator(() => currentJwt, new TextEncoder().encode(identity.seed)),
       inboxPrefix: `_INBOX_${identity.id}`,
-      ...(opts.planeCandidate ? { reconnect: false, maxReconnectAttempts: 0 } : { maxReconnectAttempts: -1 }),
+      // planeCandidate and the per-call repair connections (#4) never auto-reconnect; every standing
+      // authority connection reconnects infinitely so a broker blip never downs it silently.
+      ...(opts.planeCandidate || opts.noReconnect ? { reconnect: false, maxReconnectAttempts: 0 } : { maxReconnectAttempts: -1 }),
     });
   } catch (e) {
     if (renewal !== undefined) clearInterval(renewal);

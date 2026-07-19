@@ -9,7 +9,7 @@
  * TWO clients per (op x endpoint), never one. SPEC 13.9 SPLITS the authority: the cleaner holds
  * NO write grant at all (its explicit residual is terminal-free ACK suppression), while the
  * op-bounded settlement executor owns the lease-record CAS and the lease-derived `wrk` terminal
- * publish (the relocated, intent-confined forge residual). Piece 1 unioned both grant sets onto
+ * publish (the relocated, effective-inventory-confined forge residual). Piece 1 unioned both grant sets onto
  * the one cleaner credential, which (a) collapsed the split's confinement, a compromised
  * cleaner could both suppress ACKs and forge terminals, and (b) left the settlement CODE
  * running on the barrier's STANDING connection, which holds no settlement grant at all (masked
@@ -65,7 +65,7 @@ function opActor(prefix: "epcln" | "epexe", opId: string): string {
 
 /**
  * The op-bounded SETTLEMENT EXECUTOR client's grant (SPEC 13.9 "Retirement settlement" row):
- * {@link barrierExecutorSettlementGrants} (per listed pool: the `lease.` CAS write and the
+ * {@link barrierExecutorSettlementGrants} (per effective-inventory pool: the `lease.` CAS write and the
  * `epf.<e>.wrk.<pool>.>` create-only publish, plus the leader-served EPF fencing read) + the
  * reads the settlement's own code path performs on its own connection, derived from the code:
  *  - `STREAM.MSG.GET.KV_cotal_records_<space>`: the lease re-reads (`kv.get` on the no-direct

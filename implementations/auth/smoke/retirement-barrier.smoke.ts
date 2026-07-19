@@ -30,6 +30,7 @@ import { stageAgentMint, finalizeAgentMint, credRowKey, type EvictPrincipal } fr
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind, type RetirementExecutorBind } from "../src/retirement-barrier.js";
+import { drainRepairPrincipals } from "../src/drain-repair.js";
 import { workPoolContext } from "@cotal-ai/core";
 
 let ok = 0, fail = 0;
@@ -59,6 +60,12 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 const PORT = 20000 + Math.floor(Math.random() * 40000);
+// #4 repro: the applier principal of scenario H's op, surfaced as a static-conf user whose CONNZ
+// `authorized_user` name maps back to `local.epapl_<hash>` (principalFromName splits the first
+// dash). A live connection under it models a repair bearer still connected when the barrier is
+// about to close the frontier; the drain-repair fence must cluster-verified-evict it first.
+const OP_H = "h".repeat(26);
+const APPLIER_USER = drainRepairPrincipals(OP_H)[0]!.principal.replace(".", "-"); // local.epapl_<hash> -> local-epapl_<hash>
 const sd = mkdtempSync(join(tmpdir(), "cotal-retire-"));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
@@ -74,6 +81,7 @@ accounts {
       { user: "local-victim", password: "pw", permissions: { publish: { allow: ["victim.>"] }, subscribe: { allow: ["victim.>", "_INBOX.>"] } } }
       { user: "local-cleaner", password: "pw" }
       { user: "local-executor", password: "pw" }
+      { user: "${APPLIER_USER}", password: "pw" }
     ]
   }
 }
@@ -143,7 +151,16 @@ try {
   const events: string[] = [];
   const frontierKeyOf = (uid: string) => recordAtomicKey(RETIREMENT_FRONTIER, [uid]);
   const mkDeps = (opts: { failCleanerOpen?: boolean; failExecutorOpen?: boolean; guardUid?: string } = {}): RetirementDeps => ({
-    evictPrincipal: async (p) => { const r = await liveEvict(p); events.push(`evict:${p}:${JSON.stringify(r)}`); return r; },
+    evictPrincipal: async (p) => {
+      // The drain-repair fence (§13.1, #4) precedes THIS retirement's frontier, exactly like the
+      // cleaner/executor fence: a repair-principal evict that ran AFTER a frontier existed would
+      // mean the applier could have written its last-value record past the cutoff.
+      if (opts.guardUid !== undefined && /^local\.(epapl|eprec|epcan)_/.test(p)) {
+        const fr = await recordsKv.get(frontierKeyOf(opts.guardUid));
+        if (fr && fr.operation === "PUT") throw new Error(`a drain-repair principal (${p}) was evicted AFTER a frontier record existed (${opts.guardUid})`);
+      }
+      const r = await liveEvict(p); events.push(`evict:${p}:${JSON.stringify(r)}`); return r;
+    },
     drainTargetObligations: async (endpoint, targetUid) => {
       const med = meds[endpoint as keyof typeof meds];
       if (med === undefined) throw new Error(`no mediator for endpoint ${endpoint}`);
@@ -488,7 +505,7 @@ try {
     c("the same endpoint was re-drained for the newly observed row identity", drainCalls === 2 && lateDecision.decision === "rejected", { drainCalls, lateDecision });
   }
 
-  console.log("G. the executor settlement seam is intent-closed (the confused-deputy guard)");
+  console.log("G. the executor settlement seam is effective-inventory-closed (the confused-deputy guard)");
   {
     const { work } = registryStores(reg);
     const actHostage = await activateLifecycle(reg, { owner: "local", actor: "hostage", managerInstance: MGR });
@@ -514,6 +531,78 @@ try {
       () => settle({ ref: hostRef, itemBytes, disposition: "expired" }), "permission-denied");
     c("the refusals settled nothing: the foreign-target item has no terminal fact",
       (await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, hostRef))) === undefined);
+  }
+
+  console.log("H. the drain-repair fence live-evicts the per-op repair principals before the frontier (#4)");
+  {
+    // The reachable defect (#4): the drain's confined repair executors (commit applier / pool-route
+    // reconciler / effects canceller) mint short-lived per-op credentials INSIDE the drain and
+    // close each after its one write, but they are self-minted data-account bearers with NO ledger
+    // row (no connect-time deny-new) and a bounded JWT life. A repair connection still live when
+    // the frontier closes could write PAST the cutoff — and the APPLIER's records-KV last-value
+    // write is returned to a normal reader REGARDLESS of the cutoff. The barrier must join all
+    // three repair principals into the SAME fence as the cleaner/executor (cluster-verified evict)
+    // BEFORE any frontier records.
+    const actH = await activateLifecycle(reg, { owner: "local", actor: "repairfence", managerInstance: MGR });
+    const uidH = actH.mapping.lifecycleUid;
+    const tgtH = { owner: "local", actor: "repairfence", lifecycleUid: uidH };
+    // One provisional so the drain drives this endpoint (the op reaches the repair fence).
+    const cH = { owner: "local", actor: "caller", uid: "h".repeat(26) };
+    await obtainEpfObligation(meds[EP], mkReq(EP, cH), { target: tgtH, id: "rf0001", fingerprint: fp("rf0001"), sourceSeq: 20, route: "effects" });
+    // A LIVE connection under this op's APPLIER principal (local.epapl_<hash>): a repair bearer
+    // still connected when the barrier is about to close the frontier.
+    const applierConn = await connect({ servers: `nats://127.0.0.1:${PORT}`, user: APPLIER_USER, pass: "pw", reconnect: false });
+    cleanerConns.push(applierConn);
+    let applierClosed = false;
+    applierConn.closed().then(() => { applierClosed = true; }, () => { applierClosed = true; });
+    const [applierP, reconP, cancP] = drainRepairPrincipals(OP_H).map((r) => r.principal);
+    c("the applier repair connection is live before the barrier", !applierConn.isClosed());
+    const mark = events.length;
+    await runAgentRetirementBarrier(reg, {
+      owner: "local", actor: "repairfence", lifecycleUid: uidH, opId: OP_H,
+      endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+    }, mkDeps({ guardUid: uidH }));
+    const tail = events.slice(mark);
+    c("the drain-repair fence evicted ALL THREE per-op repair principals (applier/reconciler/canceller, #4)",
+      tail.some((e) => e.startsWith(`evict:${applierP}:`)) && tail.some((e) => e.startsWith(`evict:${reconP}:`)) && tail.some((e) => e.startsWith(`evict:${cancP}:`)), tail);
+    c("the live applier connection was KILLED by the fence (its post-frontier last-value write can never land)",
+      await until(() => applierClosed || applierConn.isClosed()));
+    const head = await readLifecycleHeadForOperation(reg, "local", "repairfence");
+    c("…and the barrier still completes to retired with a frontier (the fence precedes the frontier)",
+      head!.mapping.state === "retired" && (await recordsKv.get(frontierKeyOf(uidH))) !== null);
+  }
+
+  console.log("I. endpoints:[] must not close frontiers over un-cleaned accepted pool work (#F)");
+  {
+    // The reachable defect (#F): the auth-admin control rail calls the barrier with `endpoints: []`,
+    // so the cleaner loop `for (const spec of cleanerInventory)` would run zero times if the inventory
+    // came only from the hint — even when accepted pool obligations target the retiring lifecycle. The
+    // drain's accept-side check treats a bare LIVE EPW item as route-established (materialized) and
+    // declares quiescence, but the item is never SETTLED (no `wrk` terminal, still pending on the
+    // pool). Under the DEFECT the barrier records the frontier and completes: an orphaned, still-live
+    // pool item survives past the retirement cutoff. The fix DISCOVERS the (endpoint, pools) inventory.
+    const actF = await activateLifecycle(reg, { owner: "local", actor: "poolorphan", managerInstance: MGR });
+    const uidF = actF.mapping.lifecycleUid;
+    const tgtF = { owner: "local", actor: "poolorphan", lifecycleUid: uidF };
+    const cF = { owner: "local", actor: "caller", uid: "n".repeat(26) };
+    const of = await obtainEpfObligation(meds[EP], mkReq(EP, cF), { target: tgtF, id: "orf001", fingerprint: fp("orf001"), sourceSeq: 21, route: `pool.${POOL}` });
+    await updateRecordEntry(recordsKv, of.key, { ...of.row, state: "accepted" }, of.revision); // the canonicalizer accepted it
+    await acceptPoolItem({ endpoint: EP, caller: cF, id: "orf001", target: tgtF, workExpiry: NOW + 100_000, sourceSeq: 21 }); // decision fact + LIVE EPW item
+    const orfRef = { endpoint: EP, pool: POOL, acceptance: { ...cF, id: "orf001" } };
+    // Run with endpoints:[] — exactly what auth-admin.ts passes today.
+    const resF = await runAgentRetirementBarrier(reg, {
+      owner: "local", actor: "poolorphan", lifecycleUid: uidF, opId: "f".repeat(26),
+      endpoints: [], frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
+    }, mkDeps({ guardUid: uidF }));
+    // FIX EXPECTATION: the barrier must NOT leave the accepted pool item un-settled. Either it
+    // discovered EP/POOL and cleaned it (a `wrk` terminal + a quiescent pool), or it failed closed
+    // (no frontier). On the DEFECT both fail: the item is orphaned AND the frontier recorded.
+    const wrkF = await readLastFact(jsm, epfStreamName(SPACE), workTerminalSubject(SPACE, orfRef));
+    const info = await (await js.consumers.get(epwStreamName(SPACE), poolDurable(EP, POOL))).info(false);
+    c("the accepted pool item was SETTLED (a `wrk` terminal exists — the cleaner ran over the discovered inventory, #F)",
+      wrkF !== undefined, { cleaned: resF.cleaned, drained: resF.drainedEndpoints });
+    c("the pool is quiescent after the retirement (zero pending, zero ack-pending — no orphaned live EPW, #F)",
+      info.num_pending === 0 && info.num_ack_pending === 0, info);
   }
 
   await nc.drain().catch(() => {});

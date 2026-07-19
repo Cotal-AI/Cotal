@@ -127,16 +127,22 @@ the secret, every stop or despawn revokes the row, so a non-running agent holds 
 standing authority. Manifest deploys (`up -f`) stamp the logged-in owner into the launch,
 so those agents are yours too.
 
-**Despawn retires the name, then frees it.** When you despawn an agent, the manager asks
-the auth service to *retire* that agent's lifecycle: it settles any in-flight work, evicts
-the departed credential, and records the lifecycle as retired. The name is held *reserved
-pending retirement* until that finishes, so a same-name respawn in the gap is refused with
+**Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
+drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the
+agent's standing mint authority (its ledger row, so a copied token can no longer mint a fresh
+credential), deletes its broker footprint (the lifecycle-keyed durables + read-ACL row), and asks
+the auth service to *retire* the lifecycle (settle in-flight work, evict the departed credentials,
+record it retired). The name is held *reserved pending retirement* until **all** of that completes —
+the broker-footprint cleanup, the standing-authority revoke, **and** the lifecycle retirement, not the
+retirement alone — so a same-name respawn in the gap is refused with
 a plain reason and a retry hint rather than quietly handing the alias to a new agent while
-the old one's cleanup is still running. Once the retirement completes, the name is free and
-`cotal spawn <same-name>` gives you a fresh agent cleanly. This is what makes reusing an
-agent's name safe: the old incarnation is fully retired before the new one takes the alias.
-If the auth service is unreachable, the despawn still stops the agent and holds the name,
-retries the retirement on the next despawn or restart, and tells you to recover the stack
+the old lifecycle's teardown is still running. Only once the broker footprint is gone, the standing
+authority is revoked, and the retirement is confirmed does the name free, and `cotal spawn <same-name>`
+gives you a fresh agent cleanly. This is what makes reusing an agent's name safe: the old lifecycle is
+fully torn down before the new one takes the alias. If a step cannot complete — the auth service is
+unreachable, or the standing-authority revoke fails — the despawn still stops the agent and *holds* the
+name; **a same-name `cotal spawn` re-drives the whole teardown** and finishes it (retrying the despawn
+does not — the agent is already stopped), and the operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
 
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:

@@ -61,6 +61,21 @@ const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const quiet = () => {};
 const okEvictor: EvictPrincipal = async (principal) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true } satisfies EvictionResult);
+// A GATED evictor for phase E: when armed, the first eviction call parks (holding that retirement's
+// barrier flight live in `barrierFlight`) until released — so a second same-opId request provably
+// arrives while the first is still in flight. Pass-through (== okEvictor) whenever the gate is idle,
+// so phases A-D are unaffected.
+let gateArmed = false;
+let gateEntered: (() => void) | null = null;
+let gateRelease: (() => void) | null = null;
+const gatedEvictor: EvictPrincipal = async (principal) => {
+  if (gateArmed) {
+    gateArmed = false; // only the first call after arming gates
+    gateEntered?.();
+    await new Promise<void>((res) => { gateRelease = res; });
+  }
+  return okEvictor(principal);
+};
 const MGR = { owner: "local", actor: "mgr0" };
 const MGR_KEY = `${MGR.owner}.${MGR.actor}`;
 
@@ -100,7 +115,7 @@ try {
   await putLease(MGR_KEY);
 
   // The REAL plane serves the rail.
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: okEvictor });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: gatedEvictor });
   const wreg = await openLifecycleRegistry(wide.nc, space);
 
   console.log("A. requester-credential confinement (broker ACLs)");
@@ -173,6 +188,51 @@ try {
   // And the target is still intact after every refusal above.
   check("after every refusal face the target lifecycle is STILL active (refusals are complete no-ops)",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w2"))?.mapping.state === "active");
+
+  console.log("D. coordinate-bound single-flight (audit #1): a same-opId join for a DIFFERENT lifecycle is a full no-op while the first is in flight, never a false success");
+  {
+    const uidA = mintLifecycleUid();
+    const uidB = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wcolla", lifecycleUid: uidA, managerInstance: "smoke" });
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wcollb", lifecycleUid: uidB, managerInstance: "smoke" });
+    const shared = "c".repeat(26); // ONE opId, deliberately reused across two DIFFERENT lifecycles
+    // Park A's retirement inside its barrier (its flight live in barrierFlight), then fire B with the
+    // SAME opId. The overlap is the WHOLE point: the false-join hole only exists while A's promise is
+    // live, so gate engagement is MANDATORY — a run that fails to park A must FAIL, never silently
+    // weaken to the post-settlement durable-intent fence (which would refuse B even on a broken bind).
+    const enteredP = new Promise<void>((res) => { gateEntered = res; });
+    gateArmed = true;
+    const aP = request(MGR, { owner: OWNER, actor: "wcolla", lifecycleUid: uidA, opId: shared });
+    // Keep A releasable on any failure path so a non-engaging run cannot hang the suite.
+    let engaged = true;
+    try {
+      await Promise.race([enteredP, wait(6000).then(() => { throw new Error("A's barrier never parked in the evictor within 6s — the in-flight overlap this regression requires was not achieved"); })]);
+    } catch (e) {
+      engaged = false;
+      // Liveness: if A never parked, DISARM so a late enter cannot park with no waiter, and release any
+      // parked A — otherwise the evictor's `await` could hang the whole suite (never a clean fail).
+      gateArmed = false;
+      gateRelease?.();
+      check("the coordinate-bind regression achieved its required in-flight overlap (A parked in barrier)", false, (e as Error).message);
+    }
+    if (engaged) {
+      // A is parked in its barrier RIGHT NOW. B: same opId, DIFFERENT lifecycle — must be refused as a
+      // full no-op, never inherit A's in-flight success. Assert directly, BEFORE releasing A.
+      const rB = await request(MGR, { owner: OWNER, actor: "wcollb", lifecycleUid: uidB, opId: shared });
+      const bSuccess = rB !== "no-reply" && rB.ok === true && ((rB.data as { retired?: boolean })?.retired === true || (rB.data as { alreadyRetired?: boolean })?.alreadyRetired === true);
+      check("B (same opId, different lifecycle) is REFUSED while A is in flight (full no-op, names A's lifecycle)",
+        rB !== "no-reply" && rB.ok === false && /different lifecycle/i.test(rB.error ?? "") && /FULL no-op/i.test(rB.error ?? ""), rB);
+      check("B never inherits A's in-flight success (no retired:true / alreadyRetired for B)", !bSuccess, rB);
+      check("B's lifecycle is provably STILL ACTIVE while A is in flight (no cross-lifecycle join freed B's alias)",
+        (await readLifecycleHeadForOperation(wreg, OWNER, "wcollb"))?.mapping.state === "active");
+    }
+    // Release A; it completes its OWN legitimate retirement.
+    gateRelease?.();
+    const rA = await aP;
+    check("the in-flight lifecycle A completes its OWN retirement end-to-end (retired:true, head retired)",
+      rA !== "no-reply" && rA.ok === true && (rA.data as { retired?: boolean })?.retired === true
+      && (await readLifecycleHeadForOperation(wreg, OWNER, "wcolla"))?.mapping.state === "retired", rA);
+  }
 
   console.log(`\nAUTH-ADMIN SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

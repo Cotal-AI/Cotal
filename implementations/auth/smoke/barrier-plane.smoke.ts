@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, epwSubject, isReachable, mintLifecycleUid, parseEffectFact, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, type EvictionResult } from "@cotal-ai/core";
+import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, epwSubject, isReachable, mintLifecycleUid, parseEffectFact, parseWorkTerminalFact, poolConsumerConfig, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, workTerminalSubject, type EvictionResult } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation, acceptSelfObligation } from "../src/admission-mediator.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
@@ -401,6 +401,11 @@ try {
     const decSubject2 = epfSubject(space, EP, ["dec", f4Caller.owner, f4Caller.actor, f4Caller.uid, "pool0001"]);
     if (!(await publishFactCreateOnly(jetstream(writer.nc), decSubject2, new TextEncoder().encode(JSON.stringify(decFact2)))).won) throw new Error("pool acceptance forge lost");
     await updateRecordEntry(registryStores(wreg).recordsKv, gotP.key, { ...gotP.row, state: "accepted" }, gotP.revision);
+    // Provision the pool durable the way the real provisioner would (the pool carries accepted
+    // work, so its consumer exists): #F now discovers `workpool` from the accepted obligation and
+    // the terminal cleaner binds this PRE-CREATED durable to settle the re-enqueued item. Before
+    // #F the cleaner ran zero times (endpoints:[]), so the missing durable was never exercised.
+    await (await jetstreamManager(writer.nc)).consumers.add(epwStreamName(space), poolConsumerConfig(space, EP, F4_POOL));
   }
   const retireOp5 = mintLifecycleUid();
   const wedge5 = await rejects(() => runAgentRetirementBarrier(breg, {
@@ -415,10 +420,17 @@ try {
     const committed = await readRecordLeader(registryStores(wreg).jsm, space, F4_COMMIT_KEY);
     check("F4: the per-op COMMIT APPLIER landed the accepted self-commit (guarded create, pinned digest)",
       committed !== undefined && contractDigest(committed.value) === contractDigest(f4Desired), committed?.value);
-    const itemSubject = epwSubject(space, "manager", F4_POOL, { owner: f4Caller.owner, actor: f4Caller.actor, uid: f4Caller.uid, id: "pool0001" });
-    const item = await readLastFact(registryStores(wreg).jsm, epwStreamName(space), itemSubject);
-    check("F4: the per-op POOL RECONCILER re-enqueued the mediator's closed repair (live EPW item, canonical acceptance bytes)",
-      item !== undefined && (item as { id?: string }).id === "pool0001" && (item as { workExpiry?: number }).workExpiry !== undefined, item);
+    // The reconciler RE-ENQUEUED the item (proven by its log line) and the terminal cleaner then
+    // SETTLED it: #F discovers `workpool` from the accepted obligation and the cleaner re-binds the
+    // live item to THIS retiring target (`retired`, regardless of its still-live workExpiry) and
+    // ACKs it out of the WorkQueue. So the correct end-state is a `retired` wrk terminal, not a
+    // still-enqueued item (before #F the cleaner ran zero times and the item lingered — that was
+    // the "bare live EPW treated as terminal" bug #F closes).
+    const poolRef = { endpoint: "manager", pool: F4_POOL, acceptance: { owner: f4Caller.owner, actor: f4Caller.actor, uid: f4Caller.uid, id: "pool0001" } };
+    const wrkRaw = await readLastFact(registryStores(wreg).jsm, epfStreamName(space), workTerminalSubject(space, poolRef));
+    const wrk = wrkRaw === undefined ? undefined : parseWorkTerminalFact(wrkRaw, workTerminalSubject(space, poolRef), poolRef);
+    check("F4: the per-op POOL RECONCILER re-enqueued the mediator's closed repair, and the cleaner settled it `retired`",
+      wrk !== undefined && wrk.disposition === "retired" && repairLines.some((l) => l.includes("re-enqueued the accepted pool item")), { wrk, reenq: repairLines.filter((l) => l.includes("re-enqueued")) });
     check("F4: the retirement COMPLETED on resume (head retired) - covered accepted work no longer freezes the alias",
       (await readLifecycleHeadForOperation(breg, OWNER, "worker5"))?.mapping.state === "retired"
       && repairLines.some((l) => l.includes("applied the accepted self-commit"))

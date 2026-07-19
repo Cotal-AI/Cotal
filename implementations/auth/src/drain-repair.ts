@@ -48,6 +48,7 @@ import {
   effectCancelledFactOf,
   goalCancelledResultOf,
   isCasLoss,
+  principalKey,
   publishFactCreateOnly,
   recordsBucket,
   spacePrefix,
@@ -62,6 +63,47 @@ const INFRA_OWNER = "local";
  *  an evict of one role's principal never touches the other's (the epcln_/epexe_ pattern). */
 function opActor(prefix: "epapl" | "eprec" | "epcan", opId: string): string {
   return `${prefix}_${createHash("sha256").update(opId).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * The THREE per-op drain-repair principals (applier/reconciler/canceller) as their CONNZ
+ * `owner.actor` keys. The retirement barrier fences ALL THREE at the DRAIN FENCE (SPEC 13.1, #4):
+ * a CLUSTER-VERIFIED EVICTION of each principal BEFORE any frontier records. What that guarantees,
+ * exactly: no LIVE repair connection under the principal survives the instant the frontier closes —
+ * an in-flight publish, or a close() whose socket error was swallowed, is KICKed and confirmed gone.
+ * These connections are minted `noReconnect` (see the mint sites), so a KICK is durable in one round
+ * and there is no auto-reconnect to defeat the verify.
+ *
+ * NOT a deny-new. These are self-minted data-account bearers with NO ledger row (the authority-client
+ * model: a `cred.`/`epcred.` row would create no enforcement point), so there is nothing to revoke;
+ * `retire` in the barrier's fence is a documented no-op. Kill-live is the whole containment.
+ *
+ * The APPLIER is the load-bearing case: its guarded records-KV LAST-VALUE write (`last_by_subj` on
+ * goal/cp) is returned to a normal reader REGARDLESS of the per-stream frontier cutoff, so a LIVE
+ * post-frontier applier write would be an OBSERVABLE overwrite/DEL — unlike the reconciler/canceller
+ * epw/epf appends, which land past the interval and are excluded by the interval reader.
+ *
+ * NAMED RESIDUAL (SPEC 13.9, cs-rev-sec-ruled ACCEPTED, seed-dominated): the fence is a POINT-IN-TIME
+ * scan, not a deny-new, so a holder of a still-unexpired repair JWT+seed could open a FRESH connection
+ * AFTER the verify — the reconnect vector the `noReconnect` mint removes for the plane's OWN
+ * connections, but not for an exfiltrated bearer. It is confined by the exact ONE-coordinate grant
+ * (the applier/reconciler/canceller each publish exactly one subject), the short JWT TTL, and the
+ * material never leaving authority-plane process memory; and it is STRICTLY DOMINATED by data-account
+ * signing-seed compromise (co-resident, strictly stronger authority — the ANALOGOUS residual class
+ * §13.13 defines for the non-expiring plane-candidate connections; this repair residual is NAMED here
+ * and in the §13.9 D32 rows, with §13.13 supplying only the same class). Rotation of the data-account
+ * signing key is the only true deny-new for this family.
+ *
+ * Deterministic on opId (the SAME digest {@link opActor} stamps the live connections' principal
+ * tags from), so the barrier fences them WITHOUT the drain reporting back, and a crash-resume
+ * re-derives and re-fences the same three principals idempotently.
+ */
+export function drainRepairPrincipals(opId: string): Array<{ what: "applier" | "reconciler" | "canceller"; principal: string }> {
+  return [
+    { what: "applier", principal: principalKey(INFRA_OWNER, opActor("epapl", opId)).key },
+    { what: "reconciler", principal: principalKey(INFRA_OWNER, opActor("eprec", opId)).key },
+    { what: "canceller", principal: principalKey(INFRA_OWNER, opActor("epcan", opId)).key },
+  ];
 }
 
 /**
@@ -191,6 +233,10 @@ export function makeDrainRepairers(opts: {
       label: `cotal:ep-apply:${space}:${commitKey}`,
       principal: { owner: INFRA_OWNER, actor: opActor("epapl", opId) },
       grants: (id) => drainApplierGrants(space, commitKey, id),
+      // Per-call, never standing: no auto-reconnect, so the barrier's drain-repair fence KICK is
+      // durable in one round (an auto-reconnect with the still-valid bearer would defeat the
+      // verified-eviction) and a mid-write drop fails loud for the next drain pass to re-mint (#4).
+      noReconnect: true,
       log,
     });
     try {
@@ -223,6 +269,7 @@ export function makeDrainRepairers(opts: {
       label: `cotal:ep-reenqueue:${space}`,
       principal: { owner: INFRA_OWNER, actor: opActor("eprec", opId) },
       grants: (id) => drainReconcilerGrants(space, repair.subject, id),
+      noReconnect: true, // per-call: the fence KICK must be durable, not auto-reconnected (#4)
       log,
     });
     try {
@@ -260,6 +307,7 @@ export function makeDrainRepairers(opts: {
       label: `cotal:ep-cancel:${space}`,
       principal: { owner: INFRA_OWNER, actor: opActor("epcan", opId) },
       grants: (id) => drainCancellerGrants(space, repair.subject, id),
+      noReconnect: true, // per-call: the fence KICK must be durable, not auto-reconnected (#4)
       log,
     });
     try {

@@ -6,8 +6,9 @@
  *
  * The barrier, in the NORMATIVE order (§13.1) — every boundary crash-resumable from the durable
  * `stage.<opId>` intent, and only the SAME operation resumes it:
- *  1. durable retirement intent (create-only, captured BEFORE any movement; it enumerates the
- *     EXACT pools the cleaner profiles are minted for and the frontier stream set);
+ *  1. durable retirement intent (create-only, captured BEFORE any movement; it carries the
+ *     caller's endpoint/pool HINT and the frontier stream set — the barrier DISCOVERS the real
+ *     cleaner inventory from the target's own accepted pool obligations, §13.1 #F);
  *  2. CAS the issuance gate `open → frozen` carrying the intent (the bar: a staged mint loses
  *     its finalize touch) — a retirement freeze NEVER reopens (§13.1: its only exit is the
  *     terminal);
@@ -19,7 +20,11 @@
  *  5. drain the target's acceptance obligations to quiescence (§13.8): enumerate
  *     `oblig.<targetUid>.>` for endpoint discovery, drive each endpoint's injected drain
  *     ({@link drainTargetForEndpoint} over that endpoint's mediator), then RE-ENUMERATE and
- *     verify — the barrier OWNS the quiescence check, never the injected seam;
+ *     verify — the barrier OWNS the quiescence check, never the injected seam; then, BEFORE
+ *     anything else proceeds, fence the drain's per-op repair principals (the commit applier /
+ *     pool-route reconciler / effects canceller, {@link drainRepairPrincipals}) with a
+ *     cluster-verified eviction — the APPLIER especially, whose records-KV last-value write is
+ *     visible to a normal reader regardless of the frontier cutoff (#4);
  *  6. the exact-pool terminal cleaner ({@link runExactPoolCleaner}) under a DISTINCT,
  *     separately minted, bounded-lived profile per (op × endpoint), then — BEFORE any frontier
  *     records — revoke the cleaner's own credential and cluster-verify eviction of its
@@ -85,6 +90,7 @@ import {
   type TakeoverDeps,
 } from "./credential-ledger.js";
 import { enumerateObligationRows } from "./admission-mediator.js";
+import { drainRepairPrincipals } from "./drain-repair.js";
 
 const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -92,8 +98,10 @@ const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafe
 
 // ---- the durable retirement intent (stage.<opId>, the takeover intent's sibling) --------------
 
-/** One endpoint's EXACT pool list for the cleaner step — the op intent enumerates these and the
- *  cleaner profile's grant is minted from them (§13.9: never a pool wildcard). */
+/** One endpoint's EXACT pool list for the cleaner step — the cleaner profile's grant is minted
+ *  from these (§13.9: never a pool wildcard). A caller may HINT them on the intent; the barrier
+ *  UNIONS the hint with the pools it discovers from the target's own accepted pool obligations
+ *  (#F), so the actual cleaner inventory is always a superset of any hint. */
 export interface RetirementPoolSpec {
   endpoint: string;
   pools: string[];
@@ -109,7 +117,9 @@ export interface RetirementIntent {
   /** The gate generation the barrier freezes at (a retirement freeze never reopens, so there is
    *  no successor generation — the gate terminalizes at this one). */
   fromGeneration: number;
-  /** The exact (endpoint × pools) set the cleaner runs over. */
+  /** The caller's (endpoint × pools) HINT for the cleaner. The barrier unions it with the pools it
+   *  discovers from the target's accepted pool obligations (#F), so an empty hint is valid — the
+   *  discovery finds the real inventory (the auth-admin despawn rail passes `[]`). */
   endpoints: RetirementPoolSpec[];
   /** The streams whose last sequence the frontier step records (§13.1: the deployment's
    *  lifecycle-bounded streams). */
@@ -292,7 +302,7 @@ export async function runExactPoolCleaner(
   bind: PoolCleanerBind,
   args: {
     space: string; endpoint: string; pool: string;
-    /** Executor-authority, intent-closed lease/terminal seam; never cleaner-owned handles. */
+    /** Executor-authority, effective-inventory-closed lease/terminal seam; never cleaner-owned handles. */
     settleItem: SettleRetirementPoolItem;
     /** The retiring target this operation may re-bind items to. */
     targetUid: string;
@@ -316,7 +326,7 @@ export async function runExactPoolCleaner(
   try {
     consumer = await bind.js.consumers.get(stream, durable);
   } catch (e) {
-    throw new EpEnvelopeError("failed-precondition", `the cleaner cannot bind the pre-created pool durable ${durable} on ${stream}; the intent named a pool that is not provisioned (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
+    throw new EpEnvelopeError("failed-precondition", `the cleaner cannot bind the pre-created pool durable ${durable} on ${stream}; this operation's discovered inventory named a pool that is not provisioned (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
   }
   const cfg = (await consumer.info(false)).config;
   if (cfg.filter_subject !== expect.filter_subject)
@@ -441,11 +451,14 @@ export interface RetirementResult {
   frontiers: Record<string, number>;
 }
 
-/** Build the intent-closed executor settlement seam (§13.9): the returned function runs under
- *  the barrier's op-bounded authority and refuses any ref the durable intent does not cover —
- *  a foreign endpoint or unlisted pool, an unaccepted or non-pool decision, expiring a live
- *  item, or retiring an item accepted for a target outside this intent. The cleaner chooses
- *  refs; it can never borrow this authority beyond the intent (the confused-deputy closure). */
+/** Build the effective-inventory-closed executor settlement seam (§13.9): the returned function
+ *  runs under the barrier's op-bounded authority and refuses any ref outside its effective
+ *  inventory (the barrier-discovered `spec.pools`, hint ∪ accepted `oblig.<uid>.>` routes) or
+ *  this retirement's lifecycle — a foreign endpoint or a pool outside its discovered spec, an
+ *  unaccepted or non-pool decision, expiring a live item, or retiring an item accepted for a
+ *  target outside this intent's lifecycle. The cleaner chooses refs; it can never borrow this
+ *  authority beyond its discovered inventory or this retirement's lifecycle (the confused-deputy
+ *  closure). */
 export function settlementForIntent(
   work: WorkPoolContext,
   intent: RetirementIntent,
@@ -457,7 +470,7 @@ export function settlementForIntent(
   const allowedPools = new Set(spec.pools);
   return async ({ ref, itemBytes, disposition }) => {
     if (ref.endpoint !== spec.endpoint || !allowedPools.has(ref.pool))
-      throw new EpEnvelopeError("permission-denied", `the retirement executor for ${spec.endpoint} refuses item ${ref.endpoint}/${ref.pool}; the durable intent grants only its listed endpoint/pools (SPEC 13.1/13.9)`);
+      throw new EpEnvelopeError("permission-denied", `the retirement executor for ${spec.endpoint} refuses item ${ref.endpoint}/${ref.pool}; this operation's barrier-discovered cleaner inventory grants only its endpoint's pools (SPEC 13.1/13.9)`);
     const decSubject = epfSubject(space, ref.endpoint, ["dec", ref.acceptance.owner, ref.acceptance.actor, ref.acceptance.uid, ref.acceptance.id]);
     const decRaw = await readLastFact(work.jsm, epfStreamName(space), decSubject);
     if (decRaw === undefined)
@@ -483,21 +496,28 @@ export function settlementForIntent(
   };
 }
 
-/** One per-op credential under the §13.1 fence: its principal and its deny-new action. */
+/** One per-op credential under the §13.1 fence: its principal and its `retire` action. `retire`
+ *  is a REAL deny-new for the cleaner/executor (it closes their tracked bounded-lived connection);
+ *  for the applier/reconciler/canceller it is a documented NO-OP — those are self-minted
+ *  data-account bearers with no ledger row and per-call self-closing connections, so there is
+ *  nothing to revoke and kill-live is the whole containment ({@link drainRepairPrincipals}, #4). */
 interface OpCredential {
-  what: "cleaner" | "executor";
+  what: "cleaner" | "executor" | "applier" | "reconciler" | "canceller";
   principal: string;
   retire: () => Promise<void>;
 }
 
-/** The per-op credential fence (§13.1): deny-new (revoke every credential) AND kill-live
- *  (verified eviction of every principal), on the success AND the failure path. A revoke that
- *  THROWS must NOT skip any live eviction, and one principal's eviction failure must NOT skip
- *  the other's, or a bounded-lived connection survives the failed barrier: every containment
- *  action runs, every failure is captured, THEN the barrier fails loud on the first. The
- *  verified eviction is the load-bearing half (the connection is dead even if the deny-new
- *  revoke failed); a revoke failure still fails the barrier afterward so no frontier records
- *  while a credential may live, and the resume re-runs the whole fence. */
+/** The per-op credential fence (§13.1): run every credential's `retire` (the deny-new half, a
+ *  no-op for the no-row repair bearers) AND the KILL-LIVE half — a cluster-verified eviction of
+ *  every principal — on the success AND the failure path. A `retire` that THROWS must NOT skip any
+ *  live eviction, and one principal's eviction failure must NOT skip the other's, or a live
+ *  connection survives the failed barrier: every containment action runs, every failure is
+ *  captured, THEN the barrier fails loud on the first. The VERIFIED EVICTION is the load-bearing
+ *  half — for the repair bearers it is the ONLY half; the guarantee is that no LIVE connection
+ *  under the principal survives when the frontier closes (a still-unexpired bearer could open a
+ *  FRESH connect after the point-in-time scan — the named seed-dominated residual on
+ *  {@link drainRepairPrincipals}). A `retire` failure still fails the barrier afterward so no
+ *  frontier records while a credential may live, and the resume re-runs the whole fence. */
 async function fenceOpCredentials(deps: RetirementDeps, creds: OpCredential[]): Promise<void> {
   const retireFailures: Array<{ c: OpCredential; e: unknown }> = [];
   for (const c of creds) {
@@ -704,11 +724,65 @@ export async function runAgentRetirementBarrier(
     }
   }
 
+  // 4.5 THE DRAIN-REPAIR FENCE (§13.1, #4). The drain's confined repair executors — the commit
+  // APPLIER, the pool-route reconciler, and the effects canceller — mint short-lived per-op
+  // credentials INSIDE drainTargetObligations (drain-repair.ts) and close each after its one
+  // write. Each is a self-minted data-account bearer with NO ledger row (so there is no
+  // connect-time deny-new to revoke) and only a bounded JWT life. The GUARANTEE the fence adds is
+  // KILL-LIVE: a cluster-verified eviction confirms no LIVE connection under the principal survives
+  // when the frontier closes — an in-flight publish, or a close() whose socket error was swallowed,
+  // is KICKed and confirmed gone (the connections are minted `noReconnect`, so the KICK is durable
+  // in one round). The APPLIER is the priority: its records-KV LAST-VALUE write (last_by_subj on
+  // goal/cp) is returned to a normal reader REGARDLESS of the per-stream cutoff, so a LIVE
+  // post-frontier applier write would be an observable overwrite/DEL (the reconciler/canceller
+  // epw/epf appends only land past the interval and are excluded). Join all three into the SAME
+  // fence as the cleaner/executor BEFORE any frontier records, exactly where the drain that spawned
+  // them just returned. `retire` is a documented no-op (no ledger row + per-call self-closing
+  // connections = nothing to revoke). NOT covered, by design: a fresh malicious connect with a
+  // still-unexpired bearer AFTER this point-in-time scan — the seed-dominated named residual on
+  // {@link drainRepairPrincipals}. Op-derived and idempotent, so a crash-resume re-drains then
+  // re-runs this same fence.
+  await fenceOpCredentials(deps, drainRepairPrincipals(opId).map((r) => ({
+    what: r.what, principal: r.principal, retire: async () => {},
+  })));
+
+  // 4b. Build this operation's EFFECTIVE INVENTORY (#F) = obligation-discovered pools UNION the
+  // caller's optional hint. The auth-admin despawn rail cannot know the target's pool work and
+  // passes `[]`, so the barrier itself must DISCOVER every (endpoint, pool) the retiring lifecycle
+  // has ACCEPTED pool work on. Without discovery, the cleaner loop below runs zero times over an
+  // empty hint and the frontier closes over un-cleaned items: a bare live EPW is route-MATERIALIZED
+  // (the drain's `established`) but NOT retirement-terminal until the cleaner settles it (§13.1/13.9).
+  // Discover from the SAME stable, never-deleted `oblig.<uid>.>` set the drain just drove to
+  // quiescence — the head is `retiring`, so no new row can appear and the enumeration is
+  // deterministic across resumes. The `intent.endpoints` hint is NOT merely a discovery aid: it is a
+  // TRUSTED ADDITIVE AUTHORITY input, because every hinted pool enters the cleaner/executor grant
+  // directly below (a hinted pool with NO accepted obligation still gets a bounded per-op credential —
+  // the grant-widening the durable intent's trust buys). A compromised bearer's residual is scoped by
+  // the EXACT per-pool cleaner/executor GRANTS (the minted credential ACL), NOT by settlementForIntent,
+  // which a compromise simply bypasses; settlementForIntent binds only HONEST execution to the
+  // effective-inventory spec.pools + this intent's owner/actor/uid + the decision/horizon/retire-target
+  // checks. So the residual covers the WHOLE effective inventory, and no pool is claimed to hold this
+  // lifecycle's accepted work.
+  const cleanerPools = new Map<string, Set<string>>();
+  const addPool = (endpoint: string, pool: string): void => {
+    const e = endpointToken(endpoint);
+    (cleanerPools.get(e) ?? cleanerPools.set(e, new Set()).get(e)!).add(assertPoolToken(pool));
+  };
+  for (const spec of intent.endpoints) for (const pool of spec.pools) addPool(spec.endpoint, pool);
+  for (const r of await enumerateObligationRows(registryRecordsScanner(reg), `oblig.${intent.lifecycleUid}.>`)) {
+    if (r.row.state !== "accepted" || r.row.decision !== "epf" || r.row.route === undefined || !r.row.route.startsWith("pool.")) continue;
+    addPool(r.key.split(".")[2]!, r.row.route.slice("pool.".length));
+  }
+  const cleanerInventory: RetirementPoolSpec[] = [...cleanerPools]
+    .map(([endpoint, pools]) => ({ endpoint, pools: [...pools].sort() }))
+    .sort((a, b) => a.endpoint.localeCompare(b.endpoint));
+
   // 5. The exact-pool terminal cleaner, per (op × endpoint): the zero-write cleaner bind plus
   // the settlement-executor bind (§13.9 split), BOTH revoked and verified-evicted BEFORE any
-  // frontier records (§13.1 fence).
+  // frontier records (§13.1 fence). Runs over the DISCOVERED inventory, so every endpoint/pool the
+  // retiring lifecycle has accepted pool work on is settled before the frontier closes (#F).
   const cleaned: Record<string, PoolCleanResult> = {};
-  for (const spec of intent.endpoints) {
+  for (const spec of cleanerInventory) {
     await cleanEndpointPools(intent, spec, space, opId, deps, cleaned);
   }
 

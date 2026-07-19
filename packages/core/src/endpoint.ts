@@ -3088,10 +3088,17 @@ export class CotalEndpoint extends EventEmitter {
 
     // Heartbeat refresh with no real change: bump liveness quietly and don't
     // emit — otherwise the periodic keep-alive looks like a stream of "updates".
+    // A CHANGED lifecycleUid is never a heartbeat: it is a NEW LIFECYCLE reusing the same principal (a
+    // terminal same-name recreation — in user mode a retired lifecycle and its same-name successor
+    // share `<owner>.<actor>`; a supervised respawn keeps the uid and is unaffected), so it MUST notify
+    // watchers even when its status/activity match the prior lifecycle's lingering record. Omitting this
+    // left a same-principal successor invisible to presence-event consumers (e.g. the manager's
+    // readiness race), which then timed out "uncertain" on a healthy agent (#29).
     if (
       prev &&
       prev.status !== "offline" &&
       p.status !== "offline" &&
+      prev.lifecycleUid === p.lifecycleUid &&
       prev.status === p.status &&
       prev.activity === p.activity &&
       prev.attention === p.attention &&

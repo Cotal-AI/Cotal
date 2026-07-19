@@ -61,7 +61,13 @@ const dec = new TextDecoder();
 export function authAdminListenerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   return {
     publish: [
-      `${spacePrefix(space)}.ctl.${CONTROL_AUTH_ADMIN}.>`, // replies; the handler binds each to the sender's own reply subtree
+      // REPLIES ONLY. The handler only ever `msg.respond`s to `<request-subject>.reply.…` (boundReply,
+      // below), so the listener never needs to publish a bare REQUEST subject. Granting the request
+      // subtree (`…auth-admin.>`) would let a compromised listener credential self-publish a
+      // `retireLifecycle` as the lease holder and pass its own subject-derived lease check (self-forge);
+      // scoping to `*.*.reply.>` closes that. The requester credential (provision.ts) is already
+      // broker-bound to publish only its OWN `<owner>.<actor>` request subject.
+      `${spacePrefix(space)}.ctl.${CONTROL_AUTH_ADMIN}.*.*.reply.>`,
       "$JS.API.INFO",
       `$JS.API.STREAM.MSG.GET.KV_${managerBucket(space)}`,
     ],
@@ -155,6 +161,20 @@ export async function openAuthAdminListener(opts: {
     },
   });
 
+  // SINGLE-FLIGHT the barrier EXECUTION per opId (audit #1): each request still runs its OWN fresh
+  // lease re-check + idempotence, but concurrent same-opId requests (a manager nudge + a retry, or a boot
+  // resume racing the rail) share ONE runAgentRetirementBarrier, so the barrier body never dual-executes
+  // (dual contain/drain mutating past a frontier the other task closes). A joiner awaits the same result.
+  //
+  // The flight is BOUND to its operation coordinates (owner, actor, lifecycleUid). opId is caller-supplied
+  // at this generic rail (`retireOpId(uid)` is a manager convention, NOT a broker- or barrier-enforced
+  // bind), so a coordinate-BLIND join would let an ACTIVE lifecycle B reuse A's in-flight opId, skip the
+  // barrier's durable intent-coordinate check (retirement-barrier.ts), and receive A's `ok:true` naming B
+  // — freeing B's alias over a still-live principal (the exact alias-reuse class #1 exists to close). So a
+  // same-opId join whose coordinates differ is REFUSED as a full no-op; only a coordinate-IDENTICAL
+  // request (the intended nudge/retry) joins the in-flight barrier.
+  const barrierFlight = new Map<string, { owner: string; actor: string; lifecycleUid: string; promise: ReturnType<typeof runAgentRetirementBarrier> }>();
+
   const handle = async (principalTail: string, body: Uint8Array): Promise<{ ok: boolean; data?: unknown; error?: string }> => {
     const tokens = principalTail.split(".");
     if (tokens.length !== 2) return { ok: false, error: `auth-admin: the request subject must carry exactly <owner>.<actor>` };
@@ -204,10 +224,25 @@ export async function openAuthAdminListener(opts: {
     // EXECUTE (create-or-resume: the barrier's own freeze CAS + durable intent make the same
     // opId resumable and a re-request idempotent). The drain, cleaner, and repair credentials
     // all come from the plane's reviewed deps - this listener holds none of those rights.
-    const result = await runAgentRetirementBarrier(opts.reg, {
-      owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId,
-      endpoints: [], frontierStreams: retirementFrontierStreams(space),
-    }, opts.retirement);
+    const existing = barrierFlight.get(args.opId);
+    if (existing !== undefined &&
+        (existing.owner !== args.owner || existing.actor !== args.actor || existing.lifecycleUid !== args.lifecycleUid))
+      return { ok: false, error: `operation id ${args.opId} is already in flight for a different lifecycle (${existing.owner}/${existing.actor} ${existing.lifecycleUid}); this despawn of "${args.owner}/${args.actor}" (${args.lifecycleUid}) was a FULL no-op - nothing was retired and it is still running. NEXT: retry the despawn (the manager derives a distinct operation id per lifecycle).` };
+    let flight = existing?.promise;
+    if (flight === undefined) {
+      // The endpoint/pool inventory is an EMPTY HINT here (#F): a despawn cannot know the target's
+      // pool work, so the barrier DISCOVERS the real (endpoint, pools) cleaner inventory from the
+      // target's own accepted pool obligations. Passing `[]` is intentional, never a gap — the
+      // barrier never closes a frontier over un-cleaned accepted pool work (SPEC 13.1/13.9).
+      flight = runAgentRetirementBarrier(opts.reg, {
+        owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId,
+        endpoints: [], frontierStreams: retirementFrontierStreams(space),
+      }, opts.retirement);
+      const settle = flight;
+      void settle.catch(() => {}).finally(() => { if (barrierFlight.get(args.opId)?.promise === settle) barrierFlight.delete(args.opId); });
+      barrierFlight.set(args.opId, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, promise: flight });
+    }
+    const result = await flight;
     log(`auth-admin: retired ${args.owner}/${args.actor} (${args.lifecycleUid}) by despawn request from ${requester} (op ${args.opId})`);
     return { ok: true, data: { retired: true, lifecycleUid: args.lifecycleUid, opId: result.opId, evictedPrincipals: result.evictedPrincipals } };
   };
