@@ -171,16 +171,25 @@ export function findCotalRoot(start: string = process.cwd()): string {
 // persisted document with that shape any more. The pre-W4 monolith is migration INPUT only.
 
 const BROKER_FILE = "broker.json";
-const SPACE_ACCOUNT_FILE = "account.json";
+const SPACE_ACCOUNT_PREFIX = "account.";
+const SPACE_ACCOUNT_SUFFIX = ".json";
 
 /** Where the one broker trust record lives. */
 export function brokerAuthPath(dir: string): string {
   return join(dir, BROKER_FILE);
 }
 
-/** Where one space's own account record lives (guarded segment, same encoder as everything else). */
+/** Where one space's own account record lives (guarded segment, same encoder as everything else).
+ *
+ *  Deliberately a FLAT FILE beside `broker.json`, NOT `<space>/account.json`: `<authDir>/<space>/`
+ *  is already {@link userAuthStateDir}, and its bare EXISTENCE is how six call sites decide a space
+ *  is user-mode. Writing an account into that directory creates it for every space and turns every
+ *  static-mode space into a false user-mode read (the manager's registry-vs-disk reconcile then
+ *  refuses to start at all). A sibling namespace (`spaces/<space>/`) only moves the hazard onto a
+ *  space actually NAMED "spaces"; the flat form has no reachable collision short of a space named
+ *  `account.<other>.json`, and even that clashes file-vs-directory and fails loud on write. */
 export function spaceAccountPath(dir: string, space: string): string {
-  return join(dir, spaceSegment(space), SPACE_ACCOUNT_FILE);
+  return join(dir, `${SPACE_ACCOUNT_PREFIX}${spaceSegment(space)}${SPACE_ACCOUNT_SUFFIX}`);
 }
 
 /** Persist BROKER trust. `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting
@@ -285,8 +294,9 @@ export function listSpaceAccounts(dir: string): string[] {
   if (!existsSync(dir)) return [];
   const spaces: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (existsSync(join(dir, entry.name, SPACE_ACCOUNT_FILE))) spaces.push(decodeURIComponent(entry.name));
+    if (!entry.isFile()) continue;
+    if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
+    spaces.push(decodeURIComponent(entry.name.slice(SPACE_ACCOUNT_PREFIX.length, -SPACE_ACCOUNT_SUFFIX.length)));
   }
   const legacy = loadLegacySpaceAuth(dir);
   if (legacy && !spaces.includes(legacy.space)) spaces.push(legacy.space);

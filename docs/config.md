@@ -132,7 +132,8 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 
 | Path | What it is |
 |---|---|
-| `auth/auth.json` | Space trust material: the data-account signing seed (secret; the system-account seed is stripped before writing) |
+| `auth/broker.json` | Broker trust material: the operator seed and the system account (secret; the system-account signing seed is stripped before writing). One per broker, shared by every space on it |
+| `auth/account.<space>.json` | One space's own NATS data account and signing seed (secret). One file per space, all signed by the broker above |
 | `auth/creds/<name>.creds` | Per-agent minted NATS credentials |
 | `auth/server.conf` | Generated nats-server config for this space |
 | `agents/<name>.md` | Persona / agent files ([Agent files](agent-files.md)) |
