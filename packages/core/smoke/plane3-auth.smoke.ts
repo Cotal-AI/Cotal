@@ -218,7 +218,7 @@ try {
   const dlvJs = (dlv as unknown as {
     js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
   }).js;
-  await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id), JSON.stringify(legacy), { msgID: legacy.id });
+  await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), JSON.stringify(legacy), { msgID: legacy.id });
   check("unversioned persisted DLV entries terminate loudly", await until(() =>
     agentErrors.some((message) => message.includes("unauthenticated or unversioned DLV entry terminated"))));
   check("an unversioned DLV entry never reaches the application", !got.some((g) => g.text === "legacy-unversioned-dlv"));
