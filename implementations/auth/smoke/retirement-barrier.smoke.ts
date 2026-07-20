@@ -52,6 +52,9 @@ const SPACE = "retire";
 const EP = "term";
 const EP2 = "blocker";
 const POOL = "workpool";
+// A second pool used ONLY by E2, whose barrier aborts at the executor mint BEFORE its pool item is
+// cleaned; an own pool keeps that deliberately-orphaned item off every other scenario's pool.
+const POOL2 = "execpool";
 const MGR = "mgr-1";
 const NOW = 1_700_000_000_000;
 const D = contractDigest({ s: 1 });
@@ -126,9 +129,12 @@ try {
   const acceptPoolItem = async (args: {
     endpoint: string; caller: { owner: string; actor: string; uid: string }; id: string;
     target?: { owner: string; actor: string; lifecycleUid: string }; workExpiry: number; sourceSeq: number;
+    /** The pool the item routes to; defaults to POOL. */
+    pool?: string;
     /** Write the acceptance decision fact but NOT the EPW item (the crash-before-enqueue state). */
     skipEnqueue?: boolean;
   }): Promise<void> => {
+    const pool = args.pool ?? POOL;
     const from = { id: `${args.caller.owner}.${args.caller.actor}`, name: "c" };
     const request: Record<string, unknown> = {
       v: 1, id: args.id, op: { endpoint: args.endpoint, command: "run", inputDigest: D, outputDigest: D },
@@ -139,14 +145,14 @@ try {
       v: 1, id: args.id, decision: "accepted", fingerprint: fp(args.id), request,
       caller: { id: from.id, lifecycleUid: args.caller.uid },
       contractDigests: { input: D, output: D }, authzDecision: { revision: 1, epoch: 1 },
-      route: `pool.${POOL}`, workExpiry: args.workExpiry, sourceSeq: args.sourceSeq, ts: NOW,
+      route: `pool.${pool}`, workExpiry: args.workExpiry, sourceSeq: args.sourceSeq, ts: NOW,
     };
     if (args.target !== undefined) fact.target = args.target;
     const subject = epfSubject(SPACE, args.endpoint, ["dec", args.caller.owner, args.caller.actor, args.caller.uid, args.id]);
     parseDecisionFact(fact, subject); // the forge must be core-valid or the probe proves nothing
     if (!(await publishFactCreateOnly(js, subject, enc.encode(JSON.stringify(fact)))).won) throw new Error(`acceptance forge lost on ${subject}`);
     if (args.skipEnqueue !== true)
-      await js.publish(epwSubject(SPACE, args.endpoint, POOL, { ...args.caller, id: args.id }), enc.encode(JSON.stringify({ item: args.id })));
+      await js.publish(epwSubject(SPACE, args.endpoint, pool, { ...args.caller, id: args.id }), enc.encode(JSON.stringify({ item: args.id })));
   };
 
   const events: string[] = [];
@@ -254,7 +260,7 @@ try {
   const op1 = "1".repeat(26);
   const res1 = await runAgentRetirementBarrier(reg, {
     owner: "local", actor: "victim", lifecycleUid: uid1, opId: op1,
-    endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
+    frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
   }, mkDeps({ guardUid: uid1 }));
   c("the barrier revokes the family and live-evicts the alias + cleaner principals",
     res1.revokedRows >= 1 && res1.evictedPrincipals.includes("local.victim"), res1);
@@ -305,22 +311,33 @@ try {
     act2.mapping.lifecycleUid !== uid1 && act2.mapping.processEpoch === 1);
   const again = await runAgentRetirementBarrier(reg, {
     owner: "local", actor: "victim", lifecycleUid: uid1, opId: op1,
-    endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
+    frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
   }, mkDeps());
   c("re-running the completed op is idempotent (terminal recognized, frontiers returned, nothing re-moved)",
     again.revokedRows === 0 && again.frontiers[epfStreamName(SPACE)] === res1.frontiers[epfStreamName(SPACE)], again);
 
-  console.log("B. a live, unexpired, FOREIGN-target item wedges the barrier resumably");
+  console.log("B. a live, unexpired, FOREIGN-target item on a discovered pool wedges the barrier resumably");
   const act3 = await activateLifecycle(reg, { owner: "local", actor: "victim2", managerInstance: MGR });
   const uid3 = act3.mapping.lifecycleUid;
+  const tgt3 = { owner: "local", actor: "victim2", lifecycleUid: uid3 };
   const actLive = await activateLifecycle(reg, { owner: "local", actor: "bystander", managerInstance: MGR });
+  // victim2's OWN accepted pool item on EP2/POOL: with no caller hint, THIS is what puts EP2/POOL
+  // into the retirement's DISCOVERED inventory, so the cleaner drives this pool - and there meets
+  // the live foreign item below. (The cleaner settles victim2's own item `retired` on the first
+  // run, then stalls on the foreign one, so the resume settles only the foreign item `expired`.)
+  const cV2 = { owner: "local", actor: "caller", uid: "c".repeat(26) };
+  const v2o = await obtainEpfObligation(meds[EP2], mkReq(EP2, cV2), { target: tgt3, id: "v2p001", fingerprint: fp("v2p001"), sourceSeq: 9, route: `pool.${POOL}` });
+  await updateRecordEntry(recordsKv, v2o.key, { ...v2o.row, state: "accepted" }, v2o.revision);
+  await acceptPoolItem({ endpoint: EP2, caller: cV2, id: "v2p001", target: tgt3, workExpiry: NOW + 100_000, sourceSeq: 9 });
+  // The FOREIGN (bystander-target) live item sharing that same discovered pool: the cleaner can
+  // never settle it under victim2's retirement, so it wedges quiescence until it expires.
   const cBlk = { owner: "local", actor: "caller", uid: "f".repeat(26) };
   await acceptPoolItem({ endpoint: EP2, caller: cBlk, id: "blk001", target: { owner: "local", actor: "bystander", lifecycleUid: actLive.mapping.lifecycleUid }, workExpiry: NOW + 50_000, sourceSeq: 8 });
   const op3 = "3".repeat(26);
   await rejects("the cleaner refuses quiescence over a live foreign-target item (never settled, never ACKed) and the barrier fails resumable",
     () => runAgentRetirementBarrier(reg, {
       owner: "local", actor: "victim2", lifecycleUid: uid3, opId: op3,
-      endpoints: [{ endpoint: EP2, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, mkDeps({ guardUid: uid3 })), "unavailable");
   {
     const gate = await observeGate(reg, uid3);
@@ -337,12 +354,12 @@ try {
   await rejects("a SECOND retirement operation refuses while the first owns the freeze (one barrier at a time)",
     () => runAgentRetirementBarrier(reg, {
       owner: "local", actor: "victim2", lifecycleUid: uid3, opId: "4".repeat(26),
-      endpoints: [{ endpoint: EP2, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, mkDeps()), "failed-precondition");
   await rejects("the opId resumes only its OWN operation (intent identity is pinned)",
     () => runAgentRetirementBarrier(reg, {
       owner: "local", actor: "victim", lifecycleUid: uid1, opId: op3,
-      endpoints: [], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, mkDeps()), "permission-denied");
   await rejects("a stranger's opId has nothing to resume", () => resumeAgentRetirement(reg, "9".repeat(26), mkDeps()), "not-found");
   {
@@ -368,7 +385,7 @@ try {
   await rejects("a frontier record under a FOREIGN op refuses (a frontier records once, under its own retirement)",
     () => runAgentRetirementBarrier(reg, {
       owner: "local", actor: "poison", lifecycleUid: uid5, opId: "7".repeat(26),
-      endpoints: [], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, mkDeps()), "permission-denied");
   {
     const gate = await observeGate(reg, uid5);
@@ -382,7 +399,7 @@ try {
     await rejects("a frontierStream outside retirementFrontierStreams refuses (only granted lifecycle-data streams may be fenced)",
       () => runAgentRetirementBarrier(reg, {
         owner: "local", actor: "cset", lifecycleUid: uidCS, opId: "c".repeat(26),
-        endpoints: [], frontierStreams: [`KV_${epAuthBucket(SPACE)}`], // the AUTH store: a real stream, but NOT a frontier stream
+        frontierStreams: [`KV_${epAuthBucket(SPACE)}`], // the AUTH store: a real stream, but NOT a frontier stream
       }, mkDeps()), "failed-precondition");
     c("…and the gate was NOT moved (validation precedes the freeze CAS)",
       (await observeGate(reg, uidCS))?.row.state === "open");
@@ -418,7 +435,7 @@ try {
     };
     const res6 = await runAgentRetirementBarrier(reg, {
       owner: "local", actor: "acconly", lifecycleUid: uid6, opId: "6".repeat(26),
-      endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, deps6);
     c("the barrier DISCOVERS and drains an accepted-EPF-only endpoint before the cleaner/frontiers (accept-side reconciliation runs)",
       drainedEps.includes(EP) && res6.drainedEndpoints.includes(EP), { drainedEps, reported: res6.drainedEndpoints });
@@ -433,6 +450,12 @@ try {
     // fence must still verified-evict the cleaner principal, then fail the barrier loud.
     const act7 = await activateLifecycle(reg, { owner: "local", actor: "revfail", managerInstance: MGR });
     const uid7 = act7.mapping.lifecycleUid;
+    // revfail's OWN accepted pool item on EP/POOL: the DISCOVERED inventory the cleaner opens over
+    // (no caller hint drives it), so the injected openCleaner/retire path is actually reached.
+    const cRev = { owner: "local", actor: "caller", uid: "r".repeat(26) };
+    const rvo = await obtainEpfObligation(meds[EP], mkReq(EP, cRev), { target: { owner: "local", actor: "revfail", lifecycleUid: uid7 }, id: "rv0001", fingerprint: fp("rv0001"), sourceSeq: 33, route: `pool.${POOL}` });
+    await updateRecordEntry(recordsKv, rvo.key, { ...rvo.row, state: "accepted" }, rvo.revision);
+    await acceptPoolItem({ endpoint: EP, caller: cRev, id: "rv0001", target: { owner: "local", actor: "revfail", lifecycleUid: uid7 }, workExpiry: NOW + 100_000, sourceSeq: 33 });
     let evictedCleaner = false;
     let liveConn: NatsConnection | undefined;
     const deps7: RetirementDeps = {
@@ -448,7 +471,7 @@ try {
     await rejects("the barrier fails loud when the cleaner-credential revoke (deny-new) throws",
       () => runAgentRetirementBarrier(reg, {
         owner: "local", actor: "revfail", lifecycleUid: uid7, opId: "5".repeat(26),
-        endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+        frontierStreams: [epfStreamName(SPACE)],
       }, deps7), "unavailable");
     c("…but the cleaner principal was STILL verified-evicted (kill-live is not skipped by a deny-new failure)", evictedCleaner);
     c("…the live cleaner connection is dead, and no frontier recorded (fail-closed)",
@@ -459,11 +482,19 @@ try {
   {
     const actE2 = await activateLifecycle(reg, { owner: "local", actor: "execfail", managerInstance: MGR });
     const uidE2 = actE2.mapping.lifecycleUid;
+    // execfail's OWN accepted pool item on EP/POOL2: the DISCOVERED inventory (no caller hint), so
+    // the cleaner step runs and reaches the executor mint we fail below. It routes to POOL2 because
+    // the barrier aborts before this item is settled, and its own pool keeps that orphan off every
+    // other scenario's shared pool.
+    const cExe = { owner: "local", actor: "caller", uid: "z".repeat(26) };
+    const xfo = await obtainEpfObligation(meds[EP], mkReq(EP, cExe), { target: { owner: "local", actor: "execfail", lifecycleUid: uidE2 }, id: "xf0001", fingerprint: fp("xf0001"), sourceSeq: 34, route: `pool.${POOL2}` });
+    await updateRecordEntry(recordsKv, xfo.key, { ...xfo.row, state: "accepted" }, xfo.revision);
+    await acceptPoolItem({ endpoint: EP, caller: cExe, id: "xf0001", target: { owner: "local", actor: "execfail", lifecycleUid: uidE2 }, workExpiry: NOW + 100_000, sourceSeq: 34, pool: POOL2 });
     const mark = events.length;
     await rejects("the barrier fails loud when the executor mint throws (the gate stays frozen)",
       () => runAgentRetirementBarrier(reg, {
         owner: "local", actor: "execfail", lifecycleUid: uidE2, opId: "x".repeat(26),
-        endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+        frontierStreams: [epfStreamName(SPACE)],
       }, mkDeps({ failExecutorOpen: true, guardUid: uidE2 })));
     const tail = events.slice(mark);
     c("…the already-minted cleaner was fenced first (retired + principal evicted, no live cleaner)",
@@ -499,7 +530,7 @@ try {
     };
     await runAgentRetirementBarrier(reg, {
       owner: "local", actor: "late", lifecycleUid: uid8, opId: "9".repeat(26),
-      endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, deps8);
     const lateDecisionSubject = epfSubject(SPACE, EP, ["dec", caller8.owner, caller8.actor, caller8.uid, "late02"]);
     const lateDecision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), lateDecisionSubject), lateDecisionSubject);
@@ -513,7 +544,7 @@ try {
     const actRetire = await activateLifecycle(reg, { owner: "local", actor: "victim9", managerInstance: MGR });
     const intent = {
       kind: "retirement" as const, lifecycleUid: actRetire.mapping.lifecycleUid, owner: "local", actor: "victim9",
-      fromGeneration: 1, endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      fromGeneration: 1, frontierStreams: [epfStreamName(SPACE)],
     };
     const settle = settlementForIntent(work, intent, { endpoint: EP, pools: [POOL] }, SPACE, "g".repeat(26), () => clock);
     // An item legitimately in the LISTED pool, but accepted for a DIFFERENT live target: the
@@ -561,7 +592,7 @@ try {
     const mark = events.length;
     await runAgentRetirementBarrier(reg, {
       owner: "local", actor: "repairfence", lifecycleUid: uidH, opId: OP_H,
-      endpoints: [{ endpoint: EP, pools: [POOL] }], frontierStreams: [epfStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE)],
     }, mkDeps({ guardUid: uidH }));
     const tail = events.slice(mark);
     c("the drain-repair fence evicted ALL THREE per-op repair principals (applier/reconciler/canceller, #4)",
@@ -573,15 +604,15 @@ try {
       head!.mapping.state === "retired" && (await recordsKv.get(frontierKeyOf(uidH))) !== null);
   }
 
-  console.log("I. endpoints:[] must not close frontiers over un-cleaned accepted pool work (#F)");
+  console.log("I. discovery (the barrier takes no hint) must not close frontiers over un-cleaned accepted pool work (#F)");
   {
-    // The reachable defect (#F): the auth-admin control rail calls the barrier with `endpoints: []`,
-    // so the cleaner loop `for (const spec of cleanerInventory)` would run zero times if the inventory
-    // came only from the hint — even when accepted pool obligations target the retiring lifecycle. The
-    // drain's accept-side check treats a bare LIVE EPW item as route-established (materialized) and
-    // declares quiescence, but the item is never SETTLED (no `wrk` terminal, still pending on the
-    // pool). Under the DEFECT the barrier records the frontier and completes: an orphaned, still-live
-    // pool item survives past the retirement cutoff. The fix DISCOVERS the (endpoint, pools) inventory.
+    // The reachable defect (#F): the barrier takes NO caller pool hint, so the cleaner loop
+    // `for (const spec of cleanerInventory)` would run zero times unless the inventory is DISCOVERED
+    // from the target's own accepted pool obligations. The drain's accept-side check treats a bare
+    // LIVE EPW item as route-established (materialized) and declares quiescence, but the item is never
+    // SETTLED (no `wrk` terminal, still pending on the pool). Under the DEFECT the barrier records the
+    // frontier and completes: an orphaned, still-live pool item survives past the retirement cutoff.
+    // The fix DISCOVERS the (endpoint, pools) inventory from the `oblig.<uid>.>` set.
     const actF = await activateLifecycle(reg, { owner: "local", actor: "poolorphan", managerInstance: MGR });
     const uidF = actF.mapping.lifecycleUid;
     const tgtF = { owner: "local", actor: "poolorphan", lifecycleUid: uidF };
@@ -590,10 +621,10 @@ try {
     await updateRecordEntry(recordsKv, of.key, { ...of.row, state: "accepted" }, of.revision); // the canonicalizer accepted it
     await acceptPoolItem({ endpoint: EP, caller: cF, id: "orf001", target: tgtF, workExpiry: NOW + 100_000, sourceSeq: 21 }); // decision fact + LIVE EPW item
     const orfRef = { endpoint: EP, pool: POOL, acceptance: { ...cF, id: "orf001" } };
-    // Run with endpoints:[] — exactly what auth-admin.ts passes today.
+    // No hint is possible any more; the barrier must DISCOVER EP/POOL from the accepted obligation.
     const resF = await runAgentRetirementBarrier(reg, {
       owner: "local", actor: "poolorphan", lifecycleUid: uidF, opId: "f".repeat(26),
-      endpoints: [], frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
+      frontierStreams: [epfStreamName(SPACE), epwStreamName(SPACE)],
     }, mkDeps({ guardUid: uidF }));
     // FIX EXPECTATION: the barrier must NOT leave the accepted pool item un-settled. Either it
     // discovered EP/POOL and cleaned it (a `wrk` terminal + a quiescent pool), or it failed closed
@@ -655,7 +686,7 @@ try {
     await rejects("the drain REFUSES to create-only cancel a RUNNING action goal (never contradicts a real completion, fact#2)",
       () => runAgentRetirementBarrier(reg, {
         owner: "local", actor: "actiongoal", lifecycleUid: uidI, opId: opI,
-        endpoints: [], frontierStreams: [epfStreamName(SPACE)],
+        frontierStreams: [epfStreamName(SPACE)],
       }, cancelDeps), "unavailable");
     c("NO cancelled goal result was written over the running action (its completion is not preempted, fact#2)",
       (await readLastFact(jsm, epfStreamName(SPACE), resultSubjI)) === undefined);

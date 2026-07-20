@@ -264,7 +264,7 @@ try {
   // Production frontier set: EPF + EPW (the normative retirement contract, retirement-barrier.smoke
   // uses these). Step 6 does STREAM.INFO on each over the REAL barrier credential, so this proves
   // authorityBarrierGrants carries their INFO rows (the prior records-only F2 masked the gap).
-  const retireArgs = { owner: OWNER, actor: "worker3", lifecycleUid: uid3, opId: retireOp, endpoints: [], frontierStreams: [epfStreamName(space), epwStreamName(space)] };
+  const retireArgs = { owner: OWNER, actor: "worker3", lifecycleUid: uid3, opId: retireOp, frontierStreams: [epfStreamName(space), epwStreamName(space)] };
   const retireWedgeMsg = await rejects(() => runAgentRetirementBarrier(breg, retireArgs, wedgeDeps(failEvictor)));
   check("a retirement whose eviction cannot verify THROWS (fail-closed)", retireWedgeMsg.length > 0, retireWedgeMsg.slice(0, 80));
   const retireWedged = await observeGate(breg, uid3);
@@ -332,7 +332,7 @@ try {
   const retireOp4 = mintLifecycleUid();
   const wedge4 = await rejects(() => runAgentRetirementBarrier(breg, {
     owner: OWNER, actor: "worker4", lifecycleUid: uid4, opId: retireOp4,
-    endpoints: [], frontierStreams: [epfStreamName(space), epwStreamName(space)],
+    frontierStreams: [epfStreamName(space), epwStreamName(space)],
   }, wedgeDeps(failEvictor)));
   check("the retirement wedges at eviction with the accepted obligation still pending", wedge4.length > 0, wedge4.slice(0, 80));
 
@@ -404,13 +404,13 @@ try {
     // Provision the pool durable the way the real provisioner would (the pool carries accepted
     // work, so its consumer exists): #F now discovers `workpool` from the accepted obligation and
     // the terminal cleaner binds this PRE-CREATED durable to settle the re-enqueued item. Before
-    // #F the cleaner ran zero times (endpoints:[]), so the missing durable was never exercised.
+    // #F the cleaner ran zero times (no discovered pool), so the missing durable was never exercised.
     await (await jetstreamManager(writer.nc)).consumers.add(epwStreamName(space), poolConsumerConfig(space, EP, F4_POOL));
   }
   const retireOp5 = mintLifecycleUid();
   const wedge5 = await rejects(() => runAgentRetirementBarrier(breg, {
     owner: OWNER, actor: "worker5", lifecycleUid: uid5, opId: retireOp5,
-    endpoints: [], frontierStreams: [epfStreamName(space), epwStreamName(space)],
+    frontierStreams: [epfStreamName(space), epwStreamName(space)],
   }, wedgeDeps(failEvictor)));
   check("F4: the retirement wedges at eviction with covered accepted work still pending", wedge5.length > 0, wedge5.slice(0, 80));
   const repairLines: string[] = [];

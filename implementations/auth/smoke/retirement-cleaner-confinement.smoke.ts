@@ -234,7 +234,7 @@ try {
     // expired: an untargeted item already past its own horizon (the executor may settle any target expired).
     const callerX = { owner: "local", actor: "cx", uid: "x".repeat(26) };
     await forgeAccepted(callerX, "exp001", 10);
-    const intent = { kind: "retirement" as const, lifecycleUid: opL, owner: "local", actor: "victimx", fromGeneration: 1, endpoints: [{ endpoint: EP, pools: [POOL_A] }], frontierStreams: [] };
+    const intent = { kind: "retirement" as const, lifecycleUid: opL, owner: "local", actor: "victimx", fromGeneration: 1, frontierStreams: [] };
     const spec = { endpoint: EP, pools: [POOL_A] };
     const settle = settlementForIntent(liveExec.work, intent, spec, SPACE, opL, () => 1000); // clock well past the horizon
     const refX = { endpoint: EP, pool: POOL_A, acceptance: { ...callerX, id: "exp001" } };

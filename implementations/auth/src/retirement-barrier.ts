@@ -117,26 +117,9 @@ export interface RetirementIntent {
   /** The gate generation the barrier freezes at (a retirement freeze never reopens, so there is
    *  no successor generation — the gate terminalizes at this one). */
   fromGeneration: number;
-  /** The caller's (endpoint × pools) HINT for the cleaner. The barrier unions it with the pools it
-   *  discovers from the target's accepted pool obligations (#F), so an empty hint is valid — the
-   *  discovery finds the real inventory (the auth-admin despawn rail passes `[]`). */
-  endpoints: RetirementPoolSpec[];
   /** The streams whose last sequence the frontier step records (§13.1: the deployment's
    *  lifecycle-bounded streams). */
   frontierStreams: string[];
-}
-
-function assertPoolSpecs(v: unknown, what: string): RetirementPoolSpec[] {
-  if (!Array.isArray(v)) throw new EpEnvelopeError("failed-precondition", `${what} must be an array of { endpoint, pools } (SPEC 13.1)`);
-  for (const e of v) {
-    if (!isRec(e) || Object.keys(e).some((k) => k !== "endpoint" && k !== "pools"))
-      throw new EpEnvelopeError("failed-precondition", `${what} entries are closed { endpoint, pools } objects (SPEC 13.1)`);
-    endpointToken(e.endpoint as string);
-    if (!Array.isArray(e.pools) || e.pools.length === 0)
-      throw new EpEnvelopeError("failed-precondition", `${what} entry for "${String(e.endpoint)}" must list at least one exact pool (an empty list belongs to no entry at all, SPEC 13.9)`);
-    for (const p of e.pools) assertPoolToken(p as string);
-  }
-  return v as RetirementPoolSpec[];
 }
 
 function assertFrontierStreams(v: unknown, what: string, space: string): string[] {
@@ -160,14 +143,13 @@ function parseRetirementIntent(raw: Uint8Array, key: string, space: string): Ret
     throw new EpEnvelopeError("internal", `the operation intent ${key} is not JSON (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the operation intent ${key} is not an object`);
-  const allowed = new Set(["kind", "lifecycleUid", "owner", "actor", "fromGeneration", "endpoints", "frontierStreams"]);
+  const allowed = new Set(["kind", "lifecycleUid", "owner", "actor", "fromGeneration", "frontierStreams"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the operation intent ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (o.kind !== "retirement" || typeof o.lifecycleUid !== "string" || typeof o.owner !== "string" || o.owner.length === 0 ||
       typeof o.actor !== "string" || o.actor.length === 0 || !uint(o.fromGeneration) || o.fromGeneration < 1)
     throw new EpEnvelopeError("internal", `the operation intent ${key} does not validate as a retirement intent (SPEC 13.1)`);
   try {
     assertLifecycleToken(o.lifecycleUid);
-    assertPoolSpecs(o.endpoints, `intent ${key} endpoints`);
     assertFrontierStreams(o.frontierStreams, `intent ${key} frontierStreams`, space);
   } catch (e) {
     throw new EpEnvelopeError("internal", `the operation intent ${key} carries malformed coordinates: ${(e as Error).message}`);
@@ -598,7 +580,7 @@ export async function runAgentRetirementBarrier(
   reg: LifecycleRegistry,
   args: {
     owner: string; actor: string; lifecycleUid: string; opId: string;
-    endpoints: RetirementPoolSpec[]; frontierStreams: string[];
+    frontierStreams: string[];
   },
   deps: RetirementDeps,
 ): Promise<RetirementResult> {
@@ -614,7 +596,6 @@ export async function runAgentRetirementBarrier(
     if (intent.lifecycleUid !== args.lifecycleUid || intent.owner !== args.owner || intent.actor !== args.actor)
       throw new EpEnvelopeError("permission-denied", `the operation intent ${stageIntentKey(opId)} belongs to lifecycle ${intent.lifecycleUid} ("${intent.owner}/${intent.actor}"), not ${args.lifecycleUid} ("${args.owner}/${args.actor}"); an opId resumes only its OWN operation (SPEC 13.1)`);
   } else {
-    assertPoolSpecs(args.endpoints, "endpoints");
     assertFrontierStreams(args.frontierStreams, "frontierStreams", space);
     const head = await readLifecycleHeadForOperation(reg, args.owner, args.actor);
     if (head === undefined || head.mapping.state !== "active" || head.mapping.lifecycleUid !== args.lifecycleUid)
@@ -626,7 +607,7 @@ export async function runAgentRetirementBarrier(
       throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${gate0.row.state}" at generation ${gate0.row.generation}; a retirement freezes an OPEN, mintable gate (another operation owns a frozen one, SPEC 13.1)`);
     const fresh: RetirementIntent = {
       kind: "retirement", lifecycleUid: args.lifecycleUid, owner: args.owner, actor: args.actor,
-      fromGeneration: gate0.row.generation, endpoints: args.endpoints, frontierStreams: args.frontierStreams,
+      fromGeneration: gate0.row.generation, frontierStreams: args.frontierStreams,
     };
     await createRowByteIdempotent(authKv, stageIntentKey(opId), fresh);
     intent = await readRetirementIntent(authKv, opId, space);
@@ -746,29 +727,25 @@ export async function runAgentRetirementBarrier(
     what: r.what, principal: r.principal, retire: async () => {},
   })));
 
-  // 4b. Build this operation's EFFECTIVE INVENTORY (#F) = obligation-discovered pools UNION the
-  // caller's optional hint. The auth-admin despawn rail cannot know the target's pool work and
-  // passes `[]`, so the barrier itself must DISCOVER every (endpoint, pool) the retiring lifecycle
-  // has ACCEPTED pool work on. Without discovery, the cleaner loop below runs zero times over an
-  // empty hint and the frontier closes over un-cleaned items: a bare live EPW is route-MATERIALIZED
-  // (the drain's `established`) but NOT retirement-terminal until the cleaner settles it (§13.1/13.9).
-  // Discover from the SAME stable, never-deleted `oblig.<uid>.>` set the drain just drove to
-  // quiescence — the head is `retiring`, so no new row can appear and the enumeration is
-  // deterministic across resumes. The `intent.endpoints` hint is NOT merely a discovery aid: it is a
-  // TRUSTED ADDITIVE AUTHORITY input, because every hinted pool enters the cleaner/executor grant
-  // directly below (a hinted pool with NO accepted obligation still gets a bounded per-op credential —
-  // the grant-widening the durable intent's trust buys). A compromised bearer's residual is scoped by
-  // the EXACT per-pool cleaner/executor GRANTS (the minted credential ACL), NOT by settlementForIntent,
-  // which a compromise simply bypasses; settlementForIntent binds only HONEST execution to the
-  // effective-inventory spec.pools + this intent's owner/actor/uid + the decision/horizon/retire-target
-  // checks. So the residual covers the WHOLE effective inventory, and no pool is claimed to hold this
-  // lifecycle's accepted work.
+  // 4b. Build this operation's EFFECTIVE INVENTORY (#F) by DISCOVERY ALONE: every (endpoint, pool)
+  // the retiring lifecycle has ACCEPTED pool work on, read from the target's own obligation rows.
+  // The barrier takes NO caller-supplied pool hint. Discovery is the whole inventory because the only
+  // pools a retirement must clean are the ones the target itself accepted work on, and a hint that
+  // put a pool into the cleaner/executor grant without a backing obligation would be grant-widening
+  // authority with no production caller (the despawn rail never carried one). Without discovery the
+  // cleaner loop below would run zero times and the frontier would close over un-cleaned items: a
+  // bare live EPW is route-MATERIALIZED (the drain's `established`) but NOT retirement-terminal until
+  // the cleaner settles it (§13.1/13.9). Discover from the SAME stable, never-deleted `oblig.<uid>.>`
+  // set the drain just drove to quiescence: the head is `retiring`, so no new row can appear and the
+  // enumeration is deterministic across resumes. Every per-op cleaner/executor grant is thus scoped
+  // to EXACTLY the pools the target holds accepted work on, and settlementForIntent binds honest
+  // execution to that same discovered spec.pools + this intent's owner/actor/uid + the
+  // decision/horizon/retire-target checks. No granted pool can lack this lifecycle's accepted work.
   const cleanerPools = new Map<string, Set<string>>();
   const addPool = (endpoint: string, pool: string): void => {
     const e = endpointToken(endpoint);
     (cleanerPools.get(e) ?? cleanerPools.set(e, new Set()).get(e)!).add(assertPoolToken(pool));
   };
-  for (const spec of intent.endpoints) for (const pool of spec.pools) addPool(spec.endpoint, pool);
   for (const r of await enumerateObligationRows(registryRecordsScanner(reg), `oblig.${intent.lifecycleUid}.>`)) {
     if (r.row.state !== "accepted" || r.row.decision !== "epf" || r.row.route === undefined || !r.row.route.startsWith("pool.")) continue;
     addPool(r.key.split(".")[2]!, r.row.route.slice("pool.".length));
@@ -845,6 +822,6 @@ export async function resumeAgentRetirement(reg: LifecycleRegistry, opId: string
     throw new EpEnvelopeError("not-found", `no operation intent exists at ${stageIntentKey(opId)}; there is nothing to resume (SPEC 13.1)`);
   return runAgentRetirementBarrier(reg, {
     owner: intent.owner, actor: intent.actor, lifecycleUid: intent.lifecycleUid, opId,
-    endpoints: intent.endpoints, frontierStreams: intent.frontierStreams,
+    frontierStreams: intent.frontierStreams,
   }, deps);
 }

@@ -230,13 +230,13 @@ export async function openAuthAdminListener(opts: {
       return { ok: false, error: `operation id ${args.opId} is already in flight for a different lifecycle (${existing.owner}/${existing.actor} ${existing.lifecycleUid}); this despawn of "${args.owner}/${args.actor}" (${args.lifecycleUid}) was a FULL no-op - nothing was retired and it is still running. NEXT: retry the despawn (the manager derives a distinct operation id per lifecycle).` };
     let flight = existing?.promise;
     if (flight === undefined) {
-      // The endpoint/pool inventory is an EMPTY HINT here (#F): a despawn cannot know the target's
-      // pool work, so the barrier DISCOVERS the real (endpoint, pools) cleaner inventory from the
-      // target's own accepted pool obligations. Passing `[]` is intentional, never a gap — the
-      // barrier never closes a frontier over un-cleaned accepted pool work (SPEC 13.1/13.9).
+      // A despawn cannot know the target's pool work, and the barrier never takes a pool hint: it
+      // DISCOVERS the real (endpoint, pools) cleaner inventory from the target's own accepted pool
+      // obligations (#F). Discovery is never a gap - the barrier never closes a frontier over
+      // un-cleaned accepted pool work (SPEC 13.1/13.9).
       flight = runAgentRetirementBarrier(opts.reg, {
         owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId,
-        endpoints: [], frontierStreams: retirementFrontierStreams(space),
+        frontierStreams: retirementFrontierStreams(space),
       }, opts.retirement);
       const settle = flight;
       void settle.catch(() => {}).finally(() => { if (barrierFlight.get(args.opId)?.promise === settle) barrierFlight.delete(args.opId); });
