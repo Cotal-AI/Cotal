@@ -325,8 +325,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, a local
-  // project, or the registry (the running mesh / the `current` default).
+  // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
+  // selected `current` mesh, a local project, or the registry's only running mesh.
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
   const { space, server, auth } = target;
 
