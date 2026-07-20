@@ -1324,6 +1324,13 @@ export class Manager {
         inactive.push(`${entry.name} no longer holds retained principal ${expectedPrincipal}`);
         continue;
       }
+      // The late paths (commit/finalize) must prove the SAME incarnation the incarnation-exact
+      // readiness fence proved (§13.1): a principal-only match lets a wrong/absent-uid presence under
+      // the reused alias satisfy commit/finalize after a readiness timeout, undoing the fence.
+      if (managed.lifecycleUid !== entry.identity.lifecycleUid) {
+        inactive.push(`${entry.name} manager metadata incarnation ${managed.lifecycleUid} drifted from the inventory's ${entry.identity.lifecycleUid}`);
+        continue;
+      }
       if (managed.handle.name !== entry.name || managed.handle.kind !== entry.launch.runtime) {
         inactive.push(`${entry.name} is not attached to its exact retained ${entry.launch.runtime} handle`);
         continue;
@@ -1338,8 +1345,9 @@ export class Manager {
         continue;
       }
       if (!roster.some((presence) =>
-        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline"))
-        inactive.push(`${entry.name} principal ${expectedPrincipal} is not exactly present`);
+        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline" &&
+        presence.lifecycleUid === entry.identity.lifecycleUid))
+        inactive.push(`${entry.name} incarnation ${entry.identity.lifecycleUid} (principal ${expectedPrincipal}) is not exactly present`);
     }
     return inactive;
   }
@@ -2751,7 +2759,9 @@ export class Manager {
     return probeConnect(this.servers ?? DEFAULT_SERVER, { creds, timeoutMs: 5_000 });
   }
 
-  /** An uncertain resume remains non-destructive until exact-principal presence arrives later. */
+  /** An uncertain resume remains non-destructive until exact-principal AND exact-incarnation presence
+   *  arrives later. Same predicate as the readiness fence: a principal-only match would let a
+   *  wrong/absent-uid presence under the reused alias clear cleanup suppression on another incarnation. */
   private watchResumeAdoption(a: ManagedAgent): void {
     const wanted = this.managedPrincipal(a);
     const onPresence = (): void => {
@@ -2759,7 +2769,7 @@ export class Manager {
         this.ep.off("presence", onPresence);
         return;
       }
-      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline")) return;
+      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid)) return;
       if (!this.resumeRequired) a.suppressCleanup = false;
       this.ep.off("presence", onPresence);
     };
@@ -2798,7 +2808,9 @@ export class Manager {
     // holding a valid agent credential could set to "endpoint" to skip - so it is defense-in-depth,
     // NOT the authority boundary. This equality is: the manager (not the child) owns the expected
     // uid, so a ghost that advertises a wrong/absent uid never reports STARTED, whatever kind it
-    // claims. Presence omits the uid only for open-mode peers, which the manager never spawns.
+    // claims. The manager threads the uid into EVERY mode's launch (open included), so the child
+    // adopts it over a self-mint and publishes it in presence; the uid is absent only from a peer
+    // the manager never launched (a pure operator/daemon connection that never registers).
     const joined = (): boolean =>
       this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid);
 

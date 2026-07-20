@@ -718,6 +718,39 @@ let openInventory: ManagerResumeAgent;
   check("late adoption cannot release cleanup before commit", deprovisions === 0, deprovisions);
 }
 
+// Late adoption is incarnation-exact: a wrong/absent-uid presence under the reused alias must NOT
+// adopt an uncertain resume (that would undo the incarnation-exact readiness fence after a timeout);
+// only the exact recovered uid does. No resumeAttemptId => resumeRequired false => adoption may release.
+{
+  const handle = fakeHandle("worker");
+  const manager = managerWith(() => handle);
+  (manager as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 5;
+  let roster: Array<{ card: { id: string; name: string }; lifecycleUid?: string; status: string }> = [];
+  const presenceListeners = new Set<() => void>();
+  (manager as unknown as { ep: unknown }).ep = {
+    ref: () => ({ id: "local.manager", name: "manager", role: "manager" }),
+    getRoster: () => roster,
+    waitForPresenceSnapshot: async () => {},
+    on: (event: string, fn: () => void) => { if (event === "presence") presenceListeners.add(fn); },
+    off: (_event: string, fn: () => void) => { presenceListeners.delete(fn); },
+    releaseManagerLease: async () => {},
+    stop: async () => {},
+  };
+  const uncertain = await manager.resumePreserved(inventoryOf(openInventory));
+  const managed = (manager as unknown as { agents: Map<string, { suppressCleanup?: boolean }> }).agents.get("worker");
+  check("adoption setup: an uncertain resume is retained with cleanup suppressed", !uncertain.ok && managed?.suppressCleanup === true, { ok: uncertain.ok, suppress: managed?.suppressCleanup });
+  const alias = principalKey(DEV_OWNER, "open_principal_resume").key;
+  roster = [{ card: { id: alias, name: "worker" }, lifecycleUid: uidFor("ghostuid"), status: "idle" }];
+  for (const listener of [...presenceListeners]) listener();
+  check("late adoption ignores a wrong-incarnation presence under the reused alias", managed?.suppressCleanup === true, managed?.suppressCleanup);
+  roster = [{ card: { id: alias, name: "worker" }, status: "idle" }]; // absent uid is also not the incarnation
+  for (const listener of [...presenceListeners]) listener();
+  check("late adoption ignores an absent-incarnation presence", managed?.suppressCleanup === true, managed?.suppressCleanup);
+  roster = [{ card: { id: alias, name: "worker" }, lifecycleUid: uidFor("resume"), status: "idle" }];
+  for (const listener of [...presenceListeners]) listener();
+  check("late adoption accepts the exact recovered incarnation", managed?.suppressCleanup === false, managed?.suppressCleanup);
+}
+
 // Commit proves runtime and exact-principal liveness, not merely retained map membership.
 {
   const handle = silentExitHandle("worker");
@@ -730,6 +763,24 @@ let openInventory: ManagerResumeAgent;
   handle.exitSilently();
   const commit = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "exit_before_commit" });
   check("commit rejects an exited handle still present in manager map", !commit.ok && /runtime is not running/.test(commit.error ?? ""), commit.error);
+}
+
+// Commit proves the EXACT incarnation the readiness fence proved, not just the principal: a
+// wrong-uid presence under the reused alias (a ghost after the true incarnation drops) cannot
+// satisfy the late commit gate.
+{
+  const handle = fakeHandle("worker");
+  const manager = managerWith(() => handle, { resumeAttemptId: "commit_wrong_uid" });
+  const resumed = await control(manager, CONTROL_ADMIN, "resumePreserved", { attemptId: "commit_wrong_uid", inventory: inventoryOf(openInventory) });
+  check("commit-uid setup: resume activated on the exact incarnation", resumed.ok, resumed.error);
+  // Swap the roster to a ghost: same alias, DIFFERENT incarnation (the true uid presence is gone).
+  (manager as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
+    card: { id: principalKey(DEV_OWNER, "open_principal_resume").key, name: "worker" },
+    lifecycleUid: uidFor("ghostuid"),
+    status: "idle",
+  }];
+  const commit = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "commit_wrong_uid" });
+  check("commit refuses a wrong-incarnation presence under the reused alias", !commit.ok && /is not exactly present/.test(commit.error ?? ""), commit.error);
 }
 
 // Static resume validates the credential's embedded nkey against inventory and never mints another.
