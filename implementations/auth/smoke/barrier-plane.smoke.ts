@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, epwSubject, isReachable, mintLifecycleUid, parseEffectFact, parseWorkTerminalFact, poolConsumerConfig, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, workTerminalSubject, type EvictionResult } from "@cotal-ai/core";
+import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, isReachable, mintLifecycleUid, parseEffectFact, parseWorkTerminalFact, poolConsumerConfig, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, workTerminalSubject, type EvictionResult } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation, acceptSelfObligation } from "../src/admission-mediator.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";

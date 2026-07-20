@@ -216,10 +216,6 @@ async function agentExchange(actor: string, actorToken: string, owner: string): 
   return { status: res.status, body: (await res.json().catch(() => ({}))) as { token?: string; error?: string } };
 }
 const managedRowPath = (owner: string) => join(managedActorLedgerDir(dir), ledgerRowFilename(owner, AGENT));
-const rowHash = (owner: string): string | undefined => {
-  try { return (JSON.parse(readFileSync(managedRowPath(owner), "utf8")) as { tokenHash?: string }).tokenHash; }
-  catch { return undefined; }
-};
 
 let manager: InstanceType<typeof Manager> | undefined;
 let broker: ChildProcess | undefined;
@@ -378,7 +374,6 @@ try {
   const fp1 = await footprint();
   check("predecessor footprint exists (row + dm + dlv + acl)",
     fp1.row && fp1.dm.length > 0 && fp1.dlv.length > 0 && fp1.acl.length > 0, fp1);
-  const hash1 = rowHash(OWNER);
 
   // ================================================================================================
   // INT-2 — SWALLOWED revokeAgent: a failed user-mode ledger revoke must NOT free the name.

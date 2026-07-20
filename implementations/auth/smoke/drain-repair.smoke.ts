@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { contractDigest, createSpaceAuth, ensureAuthorityStores, epfEffectSubject, epfStreamName, isReachable, parseEffectFact, publishFactCreateOnly, readLastFact, recordsBucket, serverConfig, spacePrefix, createEndpointStreams, effectFactOf, effectCancelledFactOf, type AcceptanceFact } from "@cotal-ai/core";
+import { contractDigest, createSpaceAuth, ensureAuthorityStores, epfStreamName, isReachable, parseEffectFact, publishFactCreateOnly, readLastFact, recordsBucket, serverConfig, spacePrefix, createEndpointStreams, effectFactOf, effectCancelledFactOf, type AcceptanceFact } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { assertAppliableCommitKey, assertEffectsCancelSubject, assertPoolRepairSubject, drainApplierGrants, drainCancellerGrants, drainReconcilerGrants, makeDrainRepairers } from "../src/drain-repair.js";
 
