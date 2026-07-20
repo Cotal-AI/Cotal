@@ -152,9 +152,12 @@ export async function validateRetainedManagedAgent(input: {
 
   // This checks the token hash in constant time and re-walks the current delegation envelope.
   const row = ledgerAuthorizeAgentExchange(input.dir, input.owner, input.actor, input.actorToken);
+  if (!row.lifecycleUid)
+    throw new Error(`retained agent ${input.owner}.${input.actor} has no lifecycleUid on its current ledger row; re-grant it (bearers are lifecycle-bound from v0.4)`);
   return {
     owner: row.owner,
     actor: row.actor,
+    lifecycleUid: row.lifecycleUid,
     scope: [...row.scope],
     allowSubscribe: [...row.allowSubscribe],
     allowPublish: [...row.allowPublish],

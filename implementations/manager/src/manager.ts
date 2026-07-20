@@ -2525,6 +2525,11 @@ export class Manager {
       });
       if (adopted.owner !== entry.identity.owner || adopted.actor !== entry.identity.actor)
         throw new Error(`auth provider returned a replacement principal; expected ${entry.identity.owner}.${entry.identity.actor}`);
+      // Bind the inventory's uid to the CURRENT authority row BEFORE any spawn: a corrupt or
+      // admin-supplied inventory naming a different incarnation is refused at pre-effect validation,
+      // never left to broker-fail after the child is already running (SPEC §13.1).
+      if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
+        throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
       if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
           !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
           !sameStrings(adopted.scope, entry.launch.capabilities) ||

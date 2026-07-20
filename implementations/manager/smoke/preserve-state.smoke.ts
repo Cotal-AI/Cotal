@@ -222,6 +222,8 @@ let lastRetainedInput: { actorToken?: string; sentinelCreds?: string } | undefin
 let retainedAuthority = {
   owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa",
   actor: "worker",
+  // Must equal the user entry's inventory uid: the manager binds the two before any spawn.
+  lifecycleUid: uidFor("userworker"),
   scope: [] as string[],
   allowSubscribe: ["general"],
   allowPublish: [] as string[],
@@ -836,6 +838,17 @@ let openInventory: ManagerResumeAgent;
   check("user resume reuses exact owner/actor in launch", capturedLaunch?.userAuth?.owner === entry.identity.owner && capturedLaunch.userAuth.actor === entry.identity.actor, capturedLaunch?.userAuth);
   check("user resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("userworker"), capturedLaunch?.lifecycleUid);
   check("user bearer command is reconstructed from provider command", capturedLaunch?.userAuth?.bearerCmd.includes("agent-bearer") === true, capturedLaunch?.userAuth?.bearerCmd);
+
+  // A retained authority row whose incarnation uid differs from the inventory is refused BEFORE any
+  // spawn (the pre-effect uid binding), not left to broker-fail after the child is already running.
+  retainedAuthority = { ...retainedAuthority, lifecycleUid: uidFor("wronguid") };
+  let uidDriftSpawns = 0;
+  const uidMismatchManager = managerWith((name) => { uidDriftSpawns++; return fakeHandle(name); });
+  (uidMismatchManager as unknown as { userMode: boolean }).userMode = true;
+  const uidMismatch = await uidMismatchManager.resumePreserved(inventoryOf(entry));
+  check("user resume refuses a retained authority whose incarnation uid differs from the inventory, before any spawn",
+    !uidMismatch.ok && uidDriftSpawns === 0 && /not the inventory's/.test(JSON.stringify(uidMismatch)), JSON.stringify(uidMismatch));
+  retainedAuthority = { ...retainedAuthority, lifecycleUid: uidFor("userworker") };
 
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["other"] };
   const mismatchManager = managerWith((name) => fakeHandle(name));

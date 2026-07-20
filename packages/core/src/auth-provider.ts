@@ -156,6 +156,10 @@ export interface AuthTrustFingerprint {
 export interface RetainedAgentAuthority {
   owner: string;
   actor: string;
+  /** The incarnation UID the CURRENT ledger row carries. The manager binds it against the inventory
+   *  identity's uid before any spawn, so a retained record aimed at a different incarnation fails at
+   *  pre-effect validation rather than at the broker after the child is already running (SPEC §13.1). */
+  lifecycleUid: string;
   scope: string[];
   allowSubscribe: string[];
   allowPublish: string[];
