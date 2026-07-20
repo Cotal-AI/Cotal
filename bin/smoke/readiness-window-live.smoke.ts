@@ -77,7 +77,7 @@ const coreDist = join(import.meta.dirname, "..", "..", "packages", "core", "dist
 const CHILD = [
   "const{pathToFileURL}=require('node:url');",
   "setTimeout(()=>{import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
-  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
   "ep.on('error',()=>{});await ep.start();",
   "setInterval(()=>{},1000);});},Number(process.env.JOIN_DELAY_MS));",
 ].join("");
@@ -95,6 +95,7 @@ const slowCon: Connector = {
       COTAL_SPACE: o.space,
       COTAL_SERVERS: o.servers ?? "",
       COTAL_ID: o.id ?? "",
+      COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "",
       COTAL_NAME: o.name,
     },
   }),
