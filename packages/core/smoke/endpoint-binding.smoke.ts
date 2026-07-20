@@ -519,7 +519,7 @@ try {
     const canonRows = canonicalizerWorkGrants(SPACE, "manager");
     writeFileSync(join(sd2, "server.conf"), [
       `port: ${SPORT}`,
-      `jetstream { store_dir: "${join(sd2, "js")}" }`,
+      `jetstream { store_dir: ${JSON.stringify(join(sd2, "js"))} }`,
       "authorization {",
       "  users [",
       `    { user: "admin", password: "pw" }`,

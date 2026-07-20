@@ -76,7 +76,7 @@ const sd = mkdtempSync(join(tmpdir(), "cotal-medsmoke-"));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
-jetstream { store_dir: "${sd}" }
+jetstream { store_dir: ${JSON.stringify(sd)} }
 accounts { APP: { jetstream: enabled, users = [ { user: "auth", password: "pw" } ] } }
 `);
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });

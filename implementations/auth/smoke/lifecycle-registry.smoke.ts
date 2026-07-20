@@ -65,7 +65,7 @@ const sd = mkdtempSync(join(tmpdir(), "cotal-lifereg-"));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
-jetstream { store_dir: "${sd}" }
+jetstream { store_dir: ${JSON.stringify(sd)} }
 authorization {
   users = [
     { user: "admin", password: "pw" }

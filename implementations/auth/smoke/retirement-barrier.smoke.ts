@@ -75,7 +75,7 @@ writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
 system_account: SYS
-jetstream { store_dir: "${sd}" }
+jetstream { store_dir: ${JSON.stringify(sd)} }
 accounts {
   SYS: { users = [ { user: "sys", password: "pw" } ] }
   APP: {

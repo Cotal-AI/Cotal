@@ -77,7 +77,7 @@ const sd = mkdtempSync(join(tmpdir(), "cotal-credledger-"));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
-jetstream { store_dir: "${sd}" }
+jetstream { store_dir: ${JSON.stringify(sd)} }
 system_account: SYS
 accounts {
   SYS: { users = [ { user: "sys", password: "pw" } ] }

@@ -84,7 +84,7 @@ const medRows = admissionMediatorGrants(SPACE, EP, MED_CONN);
 const clnRows = retirementCleanerGrants(SPACE, EP, [POOL], CLN_CONN);
 writeFileSync(join(sd, "server.conf"), [
   `port: ${PORT}`,
-  `jetstream { store_dir: "${join(sd, "js")}" }`,
+  `jetstream { store_dir: ${JSON.stringify(join(sd, "js"))} }`,
   "authorization {",
   "  users [",
   `    { user: "auth", password: "pw" }`,

@@ -93,7 +93,7 @@ const PORT = 20000 + Math.floor(Math.random() * 40000);
 const sd = mkdtempSync(join(tmpdir(), "cotal-stauth-"));
 writeFileSync(join(sd, "server.conf"), [
   `port: ${PORT}`,
-  `jetstream { store_dir: "${join(sd, "js")}" }`,
+  `jetstream { store_dir: ${JSON.stringify(join(sd, "js"))} }`,
   "authorization {",
   "  users [",
   `    { user: "auth", password: "pw" }`,
