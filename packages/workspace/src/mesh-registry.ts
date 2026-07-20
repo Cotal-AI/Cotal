@@ -10,8 +10,8 @@ import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
  * Stored as **one JSON file per mesh** (`~/.cotal/meshes/<space>.json`) rather than a single
  * `meshes.json`: concurrent `up`/`down` never read-modify-write the same file (no lost-update race),
  * a crash damages at most one entry, and it mirrors the existing per-process pid files under
- * `~/.cotal`. A separate `~/.cotal/current-mesh` holds the default space for the N-running case
- * (the kubectl `current-context` analogue).
+ * `~/.cotal`. A separate `~/.cotal/current-mesh` holds the default space from any directory (the
+ * kubectl `current-context` analogue).
  *
  * Each record stores the mesh's **root path**, not its secrets — trust material stays in that
  * project's `.cotal/auth`; the registry just makes it findable from elsewhere.

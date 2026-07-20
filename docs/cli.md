@@ -304,10 +304,11 @@ cotal status [--space <s>] [--server <url>]
 ```
 
 `meshes` lists the running meshes on this machine; a `*` marks the `current` default a bare
-`cotal spawn` joins. `use <space>` sets that default when several are running. `status` is a
-read-only report across four sections: machine prerequisites, this folder's `.cotal/`, the
-recorded meshes, and a live snapshot of the selected mesh (roster, channels, membership feed).
-`status` takes only `--space` / `--server` to pick the mesh to inspect; it starts nothing.
+`cotal spawn` joins. `use <space>` sets that default; the selection applies from every directory,
+including inside another mesh's project. `status` is a read-only report across four sections:
+machine prerequisites, this folder's `.cotal/`, the recorded meshes, and a live snapshot of the
+selected mesh (roster, channels, membership feed). `status` takes only `--space` / `--server` to
+pick the mesh to inspect; it starts nothing.
 
 ## spawn
 

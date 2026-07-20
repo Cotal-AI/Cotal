@@ -6,7 +6,8 @@
  *
  * Covers every `resolveMeshTarget` source branch (0 / 1 / N+current / --space / local-project),
  * that completion lists the RESOLVED mesh's personas (not the cwd's) without opening the network,
- * and that a dead registry entry probes `unreachable` and is pruned.
+ * that `current` wins inside another project, and that a dead registry entry probes `unreachable`
+ * and is pruned.
  */
 import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -94,6 +95,15 @@ try {
     listPersonas(one.root).map((p) => p.name),
   );
 
+  // `cotal use` is authoritative even with one recorded mesh and from inside another project.
+  setCurrent("teamA");
+  const oneSelected = resolveMeshTarget(projB);
+  check("1 mesh + current: selection wins inside another project", oneSelected.source === "current" && oneSelected.root === projA, oneSelected);
+  setCurrent("gone");
+  const danglingLocal = resolveMeshTarget(projA);
+  check("dangling current: local project remains the fallback", danglingLocal.source === "local-recorded" && danglingLocal.root === projA, danglingLocal);
+  clearCurrent();
+
   // 2 meshes, no current → ambiguous: error names both spaces AND their roots.
   recordMesh(entry("teamB", projB));
   assert.throws(() => resolveMeshTarget(neutral), (e: Error) => /multiple meshes/.test(e.message) && e.message.includes(projA) && e.message.includes(projB));
@@ -119,11 +129,19 @@ try {
   const cur = resolveMeshTarget(neutral);
   check("N meshes + current: source is 'current' on the chosen root", cur.source === "current" && cur.root === projB, cur);
 
-  // A genuine local project always wins over the registry (source 'local-space').
+  // An explicit current selection must also win from inside another mesh's project. This is the
+  // contract exposed by `cotal use`: bare spawn no longer needs a matching `--space` flag.
   const sub = join(projA, "nested", "dir");
   mkdirSync(sub, { recursive: true });
+  const selected = resolveMeshTarget(sub);
+  check("current selection wins inside another local project", selected.source === "current" && selected.root === projB, selected);
+  const explicitFromLocal = resolveMeshTarget(sub, { space: "teamA" });
+  check("--space overrides current inside another local project", explicitFromLocal.source === "flag-space" && explicitFromLocal.root === projA, explicitFromLocal);
+
+  // With no selected current mesh, a genuine local project remains the fallback.
+  clearCurrent();
   const local = resolveMeshTarget(sub);
-  check("local project wins: source is 'local-recorded' (matched a registry entry by root)", local.source === "local-recorded" && local.root === projA, local);
+  check("without current, local project uses its recorded mesh", local.source === "local-recorded" && local.root === projA, local);
 
   // Registry `mode` is authoritative for auth: an OPEN mesh resolves credlessly EVEN IF its root
   // still has auth material on disk; an AUTH mesh loads it. Same root, opposite outcomes.
@@ -188,6 +206,7 @@ try {
 
   // Offline completion: lists the RESOLVED mesh's personas (current=teamB → projB), and is
   // synchronous — it cannot have awaited a network probe.
+  setCurrent("teamB");
   const prevCwd = process.cwd();
   process.chdir(neutral);
   try {

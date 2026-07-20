@@ -168,7 +168,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "use",
     group: "Mesh",
-    summary: "set the default mesh for a bare `cotal spawn` when several are running",
+    summary: "set the default mesh for a bare `cotal spawn` from any directory",
     positionals: "<space>",
     run: use,
     complete: useComplete,
