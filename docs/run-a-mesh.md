@@ -92,9 +92,10 @@ the registry; a missing provider or app throws, never silently falls back
 personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory joins the
 running mesh with the right credentials instead of mistaking the cwd for a space:
 
-- One mesh up → used automatically. Inside a project with its own `.cotal/`, that project
-  wins.
-- Several up → pick with `--space <name>`, or set a default with `cotal use <name>`.
+- `cotal use <name>` sets the default from every directory, including inside another mesh's
+  project. `--space <name>` overrides it for one command.
+- With no live selected default, a project with its own `.cotal/` resolves to that project's
+  mesh; otherwise one running mesh is used automatically and several are an error.
 - `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
 
 The registry stores a *path*, never a secret; trust material stays in each project's
