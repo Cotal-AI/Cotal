@@ -154,6 +154,17 @@ endpoint methods; those go into `core`, generalized.
   should read as a human contributor wrote them. Do not name or promote the agent or tool that
   produced them.
 
+## Changesets and PR text
+
+- **Changesets.** Packages are 0.x, so a breaking change is a **minor**, never a major (the bump
+  level is David's call). The `fixed` group versions every package in lockstep, so one changeset
+  bumps them all; list every package with a first-party change and write one clear summary.
+  Verify the plan with `pnpm changeset status` before committing.
+- **PR title** is a plain Conventional Commit subject (`!` marks a breaking change). **PR body**
+  states the full scope of the work, not just the headline.
+- **Never cite an internal `#NN` plan or campaign id as a GitHub issue** in a PR or commit: on
+  GitHub `#NN` auto-links to a real, unrelated issue. Reference an actual GitHub issue, or none.
+
 ## Research and web tools
 
 - **Research online first.** Before implementing a feature (NATS/JetStream APIs, MCP SDK,
