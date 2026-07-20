@@ -109,6 +109,12 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   collapses durable-but-away members. Broker-sourced membership needs the delivery daemon (auth
   mode) and is provisioned on a fresh `cotal up`.
 
+**Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
+the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
+raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines
+with a per-message *show more*; a channel-wide **expand / collapse all** in the header opens or
+closes every message at once.
+
 Append `?demo` (`http://127.0.0.1:7799/?demo`) to render the design reference as a static
 showcase with no mesh, including forward-looking elements that have no protocol backing yet
 (intent badges, approval requests, task-failed alerts). Live mode renders only what the god-view

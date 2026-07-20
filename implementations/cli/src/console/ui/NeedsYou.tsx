@@ -69,14 +69,14 @@ export function NeedsYou({
             <Box key={p.card.id} flexDirection="column">
               {selected ? (
                 <Text inverse bold color="cyan" wrap="truncate-end">
-                  {STATUS.waiting.dot + " " + p.card.name + role + "  " + ago(p.ts)}
+                  {STATUS.waiting.dot + " " + p.card.name + role + "  seen " + ago(p.ts)}
                 </Text>
               ) : (
                 <Text wrap="truncate-end">
                   <Text color={STATUS.waiting.color}>{STATUS.waiting.dot + " "}</Text>
                   <Text color={agentColor(p.card.name)}>{p.card.name}</Text>
                   {role ? <Text dimColor>{role}</Text> : null}
-                  <Text dimColor>{"  " + ago(p.ts)}</Text>
+                  <Text dimColor>{"  seen " + ago(p.ts)}</Text>
                 </Text>
               )}
               <Text dimColor wrap="truncate-end">

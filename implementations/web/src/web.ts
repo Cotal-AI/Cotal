@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import {
   CotalEndpoint,
@@ -86,11 +87,21 @@ function releasePid(path: string): void {
   }
 }
 
+// Message bodies render markdown via marked + DOMPurify (parse + sanitize). Serve their browser
+// builds straight from the package's own node_modules — resolved once, works in dev (src) and the
+// published/ext-added copy (dist) alike. marked exports only its ESM entry, so reach the sibling
+// UMD build; DOMPurify exports the minified bundle directly.
+const require_ = createRequire(import.meta.url);
+const jsType = "text/javascript; charset=utf-8";
 const PAGE: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
-  "/app.js": { path: join(here, "web/app.js"), type: "text/javascript; charset=utf-8" },
+  "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
+  "/md.js": { path: join(here, "web/md.js"), type: jsType },
+  "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
-  "/graph.js": { path: join(here, "web/graph.js"), type: "text/javascript; charset=utf-8" },
+  "/graph.js": { path: join(here, "web/graph.js"), type: jsType },
+  "/vendor/marked.umd.js": { path: join(dirname(require_.resolve("marked")), "marked.umd.js"), type: jsType },
+  "/vendor/purify.min.js": { path: require_.resolve("dompurify/dist/purify.min.js"), type: jsType },
 };
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
@@ -208,7 +219,19 @@ export async function web(args: ParsedArgs): Promise<void> {
       try { return json(res, await ep.readMembership()); }
       catch { return json(res, { asOf: undefined, members: [] }); }
     }
-    if (path === "/api/channels") return json(res, await ep.listChannels());
+    if (path === "/api/channels") {
+      // Resolve defaults at the endpoint so every web client renders the same channel policy the
+      // core applies; the registry's `config` holds only per-channel overrides.
+      const channels = await ep.listChannels();
+      return json(res, channels.map(({ channel, messages, config }) => ({
+        channel,
+        messages,
+        description: config?.description,
+        replay: ep.channelReplay(channel),
+        replayWindow: ep.channelReplayWindow(channel),
+        deliveryClass: ep.channelDeliveryClass(channel),
+      })));
+    }
     if (path === "/api/activity") {
       // Backfill the all-activity feed: merge recent channel history with DM history (the live
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged

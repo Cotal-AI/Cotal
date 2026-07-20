@@ -15,7 +15,7 @@ const MODES = ["chat", "unicast", "anycast"];
 const isDemo = new URLSearchParams(location.search).has("demo");
 
 let roster = [];
-let channels = new Map(); // name -> total message count
+let channels = new Map(); // name -> { messages, description?, replay, replayWindow?, deliveryClass }
 let unread = new Map(); // name -> messages seen since last viewed
 let dms = []; // raw DM messages (god-view), grouped client-side
 let selected = "*"; // "*" = all activity, else a channel name (null when a DM is open)
@@ -25,6 +25,7 @@ let activity = []; // {mode, msg} ring buffer for the all-activity view
 let channelMsgs = []; // messages for the selected channel
 let modes = new Set(MODES); // delivery modes currently shown
 let paused = false; // freeze auto-scroll so a value can be read
+let expandAll = false; // channel-wide: expand every clamped message body (else per-message toggle)
 
 const esc = (s) =>
   String(s).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
@@ -41,40 +42,31 @@ function ago(ts) {
 const agoShort = (ts) => (ago(ts) === "just now" ? "now" : ago(ts));
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-// ── Harness (host connector) branding ─────────────────────────────────────────
-// A brand colour + logo (drawn in currentColor) per connector, keyed by the card's meta.connector.
-// Claude and OpenCode use their official marks (public-domain SVG data from Simple Icons, CC0);
-// Hermes/Nous Research has no clean official mark, so it gets a custom messenger glyph. Unknown
-// connectors degrade to a neutral badge with the raw name (the compact roster form omits the icon).
-// Icons are inline SVG — no network, no extra files.
-const HARNESS = {
-  claude: {
-    label: "Claude Code",
-    color: "#d97757", // official Claude clay
-    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>`,
-  },
-  opencode: {
-    label: "OpenCode",
-    color: "#cdd6e0", // OpenCode is monochrome by brand; rendered light on the dark UI
-    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 24H2V0h20zM17 4.8H7v14.4h10z"/></svg>`,
-  },
-  hermes: {
-    label: "Hermes",
-    color: "#a78bfa", // no official mark — custom messenger glyph, violet
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 3 10.5l7 2.5 2.5 7L21 3Z"/><path d="M21 3 10 13"/></svg>`,
-  },
-};
-// Render the harness badge: a branded pill (icon + label) by default, or `{compact:true}` for a
-// bare colour icon (the roster row). The inline style only ever takes a value from HARNESS, never
-// raw card input, so meta.connector can't inject CSS.
+// Markdown rendering lives in md.js (window.COTAL_MD) — marked + DOMPurify, one source for every
+// message body. render() escapes+sanitizes untrusted agent text; never pass raw text to innerHTML.
+const MD = window.COTAL_MD;
+// Harness branding lives in harness.js (window.COTAL_HARNESS) — one source for monitor + graph.
+const HARNESS = window.COTAL_HARNESS || {};
+// Render the harness badge: a branded pill (svg + label) by default, or `{compact:true}` for a
+// bare colour icon (the roster row). Style values only ever come from HARNESS, never raw card input.
 function harnessBadge(connector, opts = {}) {
   if (!connector) return "";
   const h = HARNESS[connector];
   const color = h ? h.color : "var(--dim)";
   const text = h ? h.label : connector;
   if (opts.compact)
-    return h ? `<span class="harness-ico" style="color:${color}" title="harness · ${esc(text)}">${h.icon}</span>` : "";
-  return `<span class="harness-badge" style="--hc:${color}" title="agent harness · ${esc(text)}">${h ? h.icon : ""}<span class="hl">${esc(text)}</span></span>`;
+    return h ? `<span class="harness-ico" style="color:${color}" title="harness · ${esc(text)}">${h.svg}</span>` : "";
+  return `<span class="harness-badge" style="--hc:${color}" title="agent harness · ${esc(text)}">${h ? h.svg : ""}<span class="hl">${esc(text)}</span></span>`;
+}
+// Attention is advisory presence: open/absent are the same ("receives all") — only dnd/focus surface.
+// Shape + label (never colour alone). Returns "" for open/absent.
+function attentionChip(attention, opts = {}) {
+  if (attention !== "dnd" && attention !== "focus") return "";
+  const label = attention === "dnd" ? "dnd" : "focus";
+  const glyph = attention === "dnd" ? "◼" : "◉";
+  const title = attention === "dnd" ? "do not disturb — untagged channel chatter won't wake" : "focus — only DMs/anycast reach context";
+  if (opts.compact) return `<span class="att ${label}" title="${title}">${glyph}</span>`;
+  return `<span class="att-badge ${label}" title="${title}"><span class="att ${label}">${glyph}</span>${label}</span>`;
 }
 
 function setConn(live) {
@@ -84,21 +76,25 @@ function setConn(live) {
 }
 
 // ── Header: golden-signal tiles ───────────────────────────────────────────────
-function renderTiles(counts, oldest) {
+// Fifth tile is last-heartbeat freshness (Presence.ts), NOT blocked-duration — we cannot know
+// how long someone has been waiting (no statusSince on the wire). Label it honestly.
+function renderTiles(counts, stalest) {
   const tiles = [
     ["working", counts.working],
     ["waiting", counts.waiting],
     ["idle", counts.idle],
     ["offline", counts.offline],
-    ["oldest", oldest, "oldest unattended"],
+    ["oldest", stalest, "stalest live heartbeat"],
   ];
   $("tiles").innerHTML = tiles
-    .map(
-      ([k, n, lbl]) => `<div class="tile ${k}">
+    .map(([k, n, lbl]) => {
+      // Amber only when waiting > 0 — a zero-count alert is pure alarm fatigue.
+      const alert = k === "waiting" && Number(n) > 0 ? " alert" : "";
+      return `<div class="tile ${k}${alert}">
         <span class="bar"></span>
         <div class="c"><span class="n">${n}</span><span class="lbl">${lbl ?? k}</span></div>
-      </div>`,
-    )
+      </div>`;
+    })
     .join("");
 }
 
@@ -114,6 +110,7 @@ function peerRow(p) {
         <span class="name">${esc(p.name)}</span>
         ${p.harness ? harnessBadge(p.harness, { compact: true }) : ""}
         ${p.role ? `<span class="role">${esc(p.role)}</span>` : ""}
+        ${attentionChip(p.attention, { compact: true })}
         ${p.tag ? `<span class="tag">${esc(p.tag)}</span>` : ""}
       </div>
       ${p.act ? `<div class="act" title="${esc(p.act)}">${esc(p.act)}</div>` : ""}
@@ -149,44 +146,65 @@ function rosterRows() {
       status: p.status,
       act: p.activity,
       harness: p.card.meta?.connector,
+      attention: p.attention, // open/absent both render as nothing
       tag: p.status === "waiting" ? "needs input" : null,
     }));
 }
 
 // ── Sidebar: channels ─────────────────────────────────────────────────────────
+// deliveryClass as shape+letter (never colour alone): D = durable, L = live.
+function deliveryGlyph(dc) {
+  if (dc === "live") return `<span class="dclass live" title="live delivery — at-most-once">L</span>`;
+  if (dc === "durable") return `<span class="dclass durable" title="durable delivery — at-least-once for members">D</span>`;
+  return "";
+}
+// Replay state at a glance (shape, not colour alone): ↻ = on, struck ↻ = off. Unknown (a live
+// message that beat the registry) shows nothing rather than guessing a default.
+function replayGlyph(replay) {
+  if (replay === true) return `<span class="replay on" title="replay on — a join backfills retained history">↻</span>`;
+  if (replay === false) return `<span class="replay off" title="replay off — a join does not backfill history">↻</span>`;
+  return "";
+}
 function chanRow(ch) {
   const sel = !dmSel && ch.key === selected;
   const lead = ch.all ? `<span class="glyph">✸</span>` : `<span class="hash">#</span>`;
-  return `<div class="chan${sel ? " sel" : ""}${ch.muted ? " muted" : ""}" data-ch="${esc(ch.key)}">
-    <span class="l">${lead}<span class="name">${esc(ch.label)}</span></span>
+  return `<div class="chan${sel ? " sel" : ""}" data-ch="${esc(ch.key)}">
+    <span class="l">${lead}<span class="name">${esc(ch.label)}</span>${ch.dclass ? deliveryGlyph(ch.dclass) : ""}${replayGlyph(ch.replay)}</span>
     ${ch.mention ? `<span class="mention">${ch.mention}</span>` : ""}
     <span class="count">${ch.count}</span>
   </div>`;
 }
 function renderChannels() {
   const names = [...channels.keys()]; // insertion order (curated in demo, server order live)
-  const total = [...channels.values()].reduce((a, b) => a + b, 0);
+  const total = [...channels.values()].reduce((sum, ch) => sum + (ch.messages || 0), 0);
   const rows = [{ key: "*", all: true, label: "all activity", count: total }].concat(
-    names.map((n) => ({
-      key: n,
-      label: n,
-      count: channels.get(n),
-      mention: unread.get(n) || 0,
-      muted: channels.get(n) === 0,
-    })),
+    names.map((n) => {
+      const c = channels.get(n) || {};
+      return {
+        key: n,
+        label: n,
+        count: c.messages || 0,
+        mention: unread.get(n) || 0,
+        dclass: c.deliveryClass,
+        replay: c.replay,
+      };
+    }),
   );
   $("channels").innerHTML = rows.map(chanRow).join("");
   for (const el of $("channels").querySelectorAll(".chan")) el.onclick = () => select(el.dataset.ch);
 }
 
 // ── Sidebar: direct messages (per-peer roll-up → drill) ───────────────────────
-const SEP = "";
-function roleOf(name) {
-  const r = roster.find((x) => x.card?.name === name);
+const SEP = "\u0001";
+function peerById(id) {
+  return roster.find((x) => x.card?.id === id);
+}
+function roleOf(id) {
+  const r = peerById(id);
   return r?.card?.role;
 }
-function rosterStatus(name) {
-  const r = roster.find((x) => x.card?.name === name);
+function rosterStatus(id) {
+  const r = peerById(id);
   return r ? r.status : "offline";
 }
 // id→name resolution shared by the DM lens and the all-activity feed. `from` carries a full
@@ -205,7 +223,12 @@ function displayNameOf(x, idx) {
   if (!x) return "?";
   if (typeof x === "object") return x.name || displayNameOf(x.id, idx);
   if (idx.has(x)) return idx.get(x);
-  return /^[A-Z2-7]{32,}$/.test(x) ? x.slice(0, 6) + "…" : x; // unknown identity → short id
+  // Principal ids are exactly two NATS-safe tokens, owner.actor. Keep the opaque owner for
+  // namespace disambiguation, but require a long actor so ordinary dotted display names survive.
+  const principal = /^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/.exec(x);
+  if (principal && principal[2].length >= 32)
+    return `${principal[1]}.${principal[2].slice(0, 6)}…`;
+  return /^[A-Z2-7]{32,}$/.test(x) ? x.slice(0, 6) + "…" : x; // legacy bare identity
 }
 
 // Group raw DMs into per-peer rows; each peer lists its counterparties (conversations).
@@ -213,15 +236,22 @@ function displayNameOf(x, idx) {
 function dmPeers() {
   if (isDemo) return DEMO.dmPeers;
   const idx = nameIndex();
-  const nameOf = (x) => displayNameOf(x, idx);
   const conv = new Map();
   for (const m of dms) {
-    const a = nameOf(m.from),
-      b = nameOf(m.to);
-    if (a === "?" || b === "?" || a === b) continue;
-    const key = [a, b].sort().join(SEP);
-    if (!conv.has(key)) conv.set(key, { parts: [a, b].sort(), msgs: [] });
-    conv.get(key).msgs.push({ ts: time(m.ts), who: a, status: rosterStatus(a), body: bodyText(m), _ts: m.ts });
+    const from = m.from?.id;
+    const to = typeof m.to === "string" ? m.to : m.to?.id;
+    if (!from || !to || from === to) continue;
+    const parts = [from, to].sort();
+    const key = parts.join(SEP);
+    if (!conv.has(key)) conv.set(key, { parts, msgs: [] });
+    conv.get(key).msgs.push({
+      ts: time(m.ts),
+      who: from,
+      whoName: displayNameOf(from, idx),
+      status: rosterStatus(from),
+      body: bodyText(m),
+      _ts: m.ts,
+    });
   }
   const peers = new Map();
   for (const c of conv.values()) {
@@ -229,17 +259,26 @@ function dmPeers() {
     const last = c.msgs.length ? c.msgs[c.msgs.length - 1]._ts : 0;
     for (const p of c.parts) {
       const other = c.parts[0] === p ? c.parts[1] : c.parts[0];
-      if (!peers.has(p)) peers.set(p, { name: p, conversations: [], last: 0 });
+      if (!peers.has(p)) peers.set(p, { id: p, name: displayNameOf(p, idx), conversations: [], last: 0 });
       const pe = peers.get(p);
-      pe.conversations.push({ with: other, role: roleOf(other), status: rosterStatus(other), unread: 0, last, msgs: c.msgs });
+      pe.conversations.push({
+        with: other,
+        withName: displayNameOf(other, idx),
+        role: roleOf(other),
+        status: rosterStatus(other),
+        unread: 0,
+        last,
+        msgs: c.msgs,
+      });
       pe.last = Math.max(pe.last, last);
     }
   }
   return [...peers.values()]
     .map((p) => ({
+      id: p.id,
       name: p.name,
-      role: roleOf(p.name),
-      status: rosterStatus(p.name),
+      role: roleOf(p.id),
+      status: rosterStatus(p.id),
       unread: 0,
       threads: p.conversations.length,
       conversations: p.conversations.sort((a, b) => b.last - a.last),
@@ -248,7 +287,7 @@ function dmPeers() {
     .sort((a, b) => b.last - a.last);
 }
 function dmPeerRow(p, expanded) {
-  return `<div class="dm${expanded ? " sel" : ""}" data-dm="${esc(p.name)}">
+  return `<div class="dm${expanded ? " sel" : ""}" data-dm="${esc(p.id)}">
     <span class="caret">${expanded ? "▾" : "▸"}</span>
     <span class="l">
       <span class="dot ${p.status}">${GLYPH[p.status] ?? "○"}</span>
@@ -265,7 +304,7 @@ function dmSubRow(peer, c) {
     <span class="ln">↳</span>
     <span class="l">
       <span class="dot ${c.status}">${GLYPH[c.status] ?? "○"}</span>
-      <span class="nm">${esc(c.with)}</span>
+      <span class="nm">${esc(c.withName ?? c.with)}</span>
       ${c.role ? `<span class="role">${esc(c.role)}</span>` : ""}
     </span>
     ${c.unread ? `<span class="mention">${c.unread}</span>` : ""}
@@ -279,9 +318,9 @@ function renderDMs() {
   }
   let html = "";
   for (const p of peers) {
-    const expanded = !!dmSel && dmSel.peer === p.name;
+    const expanded = !!dmSel && dmSel.peer === p.id;
     html += dmPeerRow(p, expanded);
-    if (expanded) for (const c of p.conversations) html += dmSubRow(p.name, c);
+    if (expanded) for (const c of p.conversations) html += dmSubRow(p.id, c);
   }
   $("dms").innerHTML = html;
   for (const el of $("dms").querySelectorAll("[data-dm]")) {
@@ -297,6 +336,42 @@ function renderSidebarNav() {
 }
 
 // ── Feed rows (all-activity) ──────────────────────────────────────────────────
+// Progressive disclosure: long agent essays collapse to a few lines; full text one click away.
+// Never silently truncate — the expand control is the only path to the rest. Bodies render markdown
+// (md.js), so the clamp caps rendered height, not raw characters. `expandAll` opens every body at
+// once (the channel-wide toggle); an individual "show more" still flips one.
+const BODY_CLAMP_CHARS = 280;
+const isLong = (text) => !!text && text.length > BODY_CLAMP_CHARS;
+function bodyBlock(text) {
+  const html = MD.render(text || "");
+  if (!isLong(text)) return `<div class="body md">${html}</div>`;
+  const open = expandAll ? " open" : "";
+  const label = expandAll ? "show less" : "show more";
+  return `<div class="body md clamp${open}">
+    <div class="body-text">${html}</div>
+    <button type="button" class="body-more">${label}</button>
+  </div>`;
+}
+// The channel-wide expand/collapse-all control — rendered only when a list actually has clamped
+// bodies (nothing to toggle otherwise). Reuses the mode-chip look.
+function toggleAllChip(items, bodyOf = (x) => x.body) {
+  if (!items.some((x) => isLong(bodyOf(x)))) return "";
+  return `<span class="chip toggle-all" id="toggle-all" title="${expandAll ? "collapse every message" : "expand every message"}">${expandAll ? "⊟ collapse all" : "⊞ expand all"}</span>`;
+}
+function bindToggleAll(root) {
+  const el = root.querySelector("#toggle-all");
+  if (el) el.onclick = () => ((expandAll = !expandAll), renderCenter());
+}
+function bindBodyToggles(root) {
+  for (const btn of root.querySelectorAll(".body-more")) {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const block = btn.closest(".body");
+      const open = block.classList.toggle("open");
+      btn.textContent = open ? "show less" : "show more";
+    };
+  }
+}
 function rowHTML(e) {
   if (e.type === "sys") return `<div class="sys">${esc(e.text)}</div>`;
   if (e.type === "rollup")
@@ -315,7 +390,7 @@ function rowHTML(e) {
         ${tgt ? `<span class="tgt">${esc(tgt)}</span>` : ""}
         ${e.sub ? `<span class="subpill">${esc(e.sub)}</span>` : ""}
       </div>
-      <div class="body">${esc(e.body)}</div>
+      ${bodyBlock(e.body)}
     </div>
   </div>`;
 }
@@ -351,9 +426,9 @@ function renderAllActivity() {
       <span class="h">✸ All activity</span>
       <span class="sub">${esc(sub)}</span>
       <span class="ctrls">
+        ${toggleAllChip(rows)}
         ${MODES.map((m) => `<span class="chip mode${modes.has(m) ? " on" : ""}" data-mode="${m}">${m}</span>`).join("")}
         <span class="chip pause${paused ? " on" : ""}" id="pause">${paused ? "▶ resume" : "⏸ pause"}</span>
-        <span class="chip static">muted · 2</span>
       </span>
     </div>
     <div class="feed">${rows.length ? rows.map(rowHTML).join("") : `<div class="empty">waiting for messages…</div>`}</div>`;
@@ -365,6 +440,8 @@ function renderAllActivity() {
     };
   const pause = center.querySelector("#pause");
   if (pause) pause.onclick = () => ((paused = !paused), renderAllActivity());
+  bindToggleAll(center);
+  bindBodyToggles(center);
   const feed = center.querySelector(".feed");
   if (atBottom && !paused) feed.scrollTop = feed.scrollHeight;
 }
@@ -378,7 +455,7 @@ function cmsgHTML(m) {
     <span class="dot ${m.status}">${GLYPH[m.status] ?? "●"}</span>
     <div class="c">
       <div class="l1"><span class="who">${esc(m.who)}</span>${m.role ? `<span class="role">${esc(m.role)}</span>` : ""}</div>
-      <div class="body">${esc(m.body)}</div>
+      ${bodyBlock(m.body)}
       ${m.thread ? `<span class="thread">${esc(m.thread)}</span>` : ""}
     </div>
   </div>`;
@@ -386,49 +463,63 @@ function cmsgHTML(m) {
 function channelMembers(msgs) {
   const seen = new Map();
   for (const msg of msgs) {
-    const n = msg.from?.name;
-    if (!n || seen.has(n)) continue;
-    seen.set(n, { name: n, role: msg.from?.role, status: rosterStatus(n) });
+    const id = msg.from?.id;
+    if (!id || seen.has(id)) continue;
+    seen.set(id, { name: msg.from?.name ?? "?", role: msg.from?.role, status: rosterStatus(id) });
   }
   return [...seen.values()];
 }
 function renderChannel() {
   const name = selected;
+  const meta = channels.get(name) || {};
   let items, memberCount, msgCount, desc;
   if (isDemo) {
     items = DEMO.cv.messages;
     memberCount = DEMO.cv.members.length;
-    msgCount = channels.get(name) ?? 51;
-    desc = name === "team.backend" ? "Backend coordination — channels, endpoint, NATS.  ·  " : "";
+    msgCount = meta.messages ?? 51;
+    desc = name === "team.backend" ? "Backend coordination — channels, endpoint, NATS." : meta.description || "";
   } else {
     items = channelMsgs.map((msg) => ({
       ts: time(msg.ts),
-      status: rosterStatus(msg.from?.name),
+      status: rosterStatus(msg.from?.id),
       who: msg.from?.name ?? "?",
       role: msg.from?.role,
       body: bodyText(msg),
     }));
     memberCount = channelMembers(channelMsgs).length;
-    msgCount = channels.get(name) ?? items.length;
-    desc = "";
+    msgCount = meta.messages ?? items.length;
+    desc = meta.description || "";
   }
+  // Effective policy chips from /api/channels (server-resolved; never re-derived in the browser).
+  const policy = [];
+  if (meta.deliveryClass) policy.push(`<span class="chip policy" title="effective delivery class">${esc(meta.deliveryClass)}</span>`);
+  if (meta.replay === false) policy.push(`<span class="chip policy" title="join does not backfill history">replay off</span>`);
+  else if (meta.replay === true)
+    policy.push(`<span class="chip policy" title="join backfills retained history">${meta.replayWindow ? `replay ${esc(meta.replayWindow)}` : "replay on"}</span>`);
   const sub = name.includes(".") ? `subtree of ${name.split(".")[0]}.>` : "";
+  const purpose = [desc, `${plural(memberCount, "member")}`, `${plural(msgCount, "message")}`]
+    .filter(Boolean)
+    .map((b) => esc(String(b)))
+    .join("  ·  ");
   $("center").innerHTML = `
     <div class="ch-head">
       <div class="row">
         <div class="title"><span class="h"># ${esc(name)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</div>
         <div class="ctrls">
+          ${toggleAllChip(items)}
           <span class="chip mode on">👥 ${plural(memberCount, "member")}</span>
-          <span class="chip mode on">✦ summarize</span>
-          <span class="chip static">🔕 mute</span>
+          ${policy.join("")}
+          ${isDemo ? `<span class="chip static" title="demo only">✦ summarize</span><span class="chip static" title="demo only">🔕 mute</span>` : ""}
           ${isDemo ? "" : `<span class="chip danger" id="ch-del" title="Delete this channel and all its messages">🗑 delete</span>`}
         </div>
       </div>
-      <div class="purpose">${esc(desc)}${plural(memberCount, "member")}  ·  ${plural(msgCount, "message")}</div>
+      <div class="purpose">${purpose}</div>
     </div>
     <div class="clist">${items.length ? items.map(cmsgHTML).join("") : `<div class="empty">no messages</div>`}</div>`;
   const list = $("center").querySelector(".clist");
   list.scrollTop = list.scrollHeight;
+  bindToggleAll($("center"));
+  bindBodyToggles($("center"));
   const del = $("center").querySelector("#ch-del");
   if (del) del.onclick = () => deleteChannel(name);
 }
@@ -456,32 +547,33 @@ async function deleteChannel(name) {
 }
 
 // ── Direct-messages thread (centre) ───────────────────────────────────────────
-function dmMsgHTML(m, peer, withName) {
-  const to = m.who === peer ? withName : peer;
+function dmMsgHTML(m, peer, peerName, withName) {
+  const to = m.who === peer ? withName : peerName;
   return `<div class="cmsg">
     <span class="ts">${esc(m.ts)}</span>
     <span class="dot ${m.status}">${GLYPH[m.status] ?? "●"}</span>
     <div class="c">
-      <div class="l1"><span class="who">${esc(m.who)}</span><span class="dir">→ ${esc(to)}</span></div>
-      <div class="body">${esc(m.body)}</div>
+      <div class="l1"><span class="who">${esc(m.whoName ?? m.who)}</span><span class="dir">→ ${esc(to)}</span></div>
+      <div class="body md">${MD.render(m.body)}</div>
     </div>
   </div>`;
 }
 function renderDMThread() {
   const peer = dmSel.peer;
-  const pe = dmPeers().find((p) => p.name === peer);
+  const pe = dmPeers().find((p) => p.id === peer);
   const conv = pe && (pe.conversations.find((c) => c.with === dmSel.with) || pe.conversations[0]);
-  const withName = conv ? conv.with : dmSel.with;
+  const peerName = pe?.name ?? displayNameOf(peer, nameIndex());
+  const withName = conv?.withName ?? displayNameOf(dmSel.with, nameIndex());
   const msgs = conv ? conv.msgs : []; // display-ready (ts, who, status, body) for demo + live
   $("center").innerHTML = `
     <div class="ch-head">
       <div class="row">
-        <div class="title"><span class="h">${esc(peer)} ↔ ${esc(withName)}</span><span class="dtag">direct</span></div>
-        <div class="ctrls"><span class="chip static">🔕 mute</span></div>
+        <div class="title"><span class="h">${esc(peerName)} ↔ ${esc(withName)}</span><span class="dtag">direct</span></div>
+        <div class="ctrls"></div>
       </div>
       <div class="purpose">unicast · private to the two of them  ·  ${plural(msgs.length, "message")}</div>
     </div>
-    <div class="clist">${msgs.length ? msgs.map((m) => dmMsgHTML(m, peer, withName)).join("") : `<div class="empty">no messages</div>`}</div>`;
+    <div class="clist">${msgs.length ? msgs.map((m) => dmMsgHTML(m, peer, peerName, withName)).join("") : `<div class="empty">no messages</div>`}</div>`;
   const list = $("center").querySelector(".clist");
   list.scrollTop = list.scrollHeight;
 }
@@ -500,13 +592,18 @@ function cardHTML(c) {
   </div>`;
 }
 function waitingCards() {
+  // Sort by name (stable, honest) — p.ts is last heartbeat, not time-entered-waiting, so we
+  // must not present heartbeat order as an age-ordered priority queue.
   return roster
     .filter((p) => p.status === "waiting")
-    .sort((a, b) => b.ts - a.ts)
+    .sort(
+      (a, b) =>
+        a.card.name.localeCompare(b.card.name) || a.card.id.localeCompare(b.card.id),
+    )
     .map((p) => ({
       tone: "amber",
       cat: "WAITING",
-      age: ago(p.ts),
+      age: `seen ${ago(p.ts)}`, // Presence.ts = last heartbeat, not blocked-duration
       title: `${p.card.name} is waiting`,
       role: p.card.role,
       // p.activity is the Claude Code Notification text (the actual blocking prompt/permission).
@@ -516,14 +613,22 @@ function waitingCards() {
 }
 function renderRail() {
   const cards = isDemo ? DEMO.cards : waitingCards();
-  $("rail").className = "rail";
-  $("rail").innerHTML =
-    `<div class="rail-head"><span class="t">NEEDS YOU</span>${cards.length ? `<span class="n">${cards.length}</span>` : ""}</div>` +
-    (cards.length
-      ? cards.map(cardHTML).join("") +
-        `<div class="rail-foot">Everything else stays quiet in the feed.</div>`
-      : `<div class="empty">nothing waiting — all clear ✓</div>`);
-  for (const el of $("rail").querySelectorAll(".card[data-agent]"))
+  const main = $("main");
+  const rail = $("rail");
+  // Always-present lane, not always full width: collapse to a strip when nothing needs a human.
+  if (!cards.length) {
+    main.classList.add("rail-thin");
+    rail.className = "rail collapsed";
+    rail.innerHTML = `<div class="rail-collapsed" title="nothing waiting">NEEDS YOU · all clear</div>`;
+    return;
+  }
+  main.classList.remove("rail-thin");
+  rail.className = "rail";
+  rail.innerHTML =
+    `<div class="rail-head"><span class="t">NEEDS YOU</span><span class="n">${cards.length}</span></div>` +
+    cards.map(cardHTML).join("") +
+    `<div class="rail-foot">Everything else stays quiet in the feed.</div>`;
+  for (const el of rail.querySelectorAll(".card[data-agent]"))
     el.onclick = () => selectAgent(el.dataset.agent);
 }
 
@@ -549,12 +654,20 @@ function renderAgentDetail() {
   const meta = card.meta || {};
   const waiting = p.status === "waiting";
   const who = card.role ? `${esc(card.name)}<span class="crole">${esc(card.role)}</span>` : esc(card.name);
-  const since = waiting ? `waiting ${esc(ago(p.ts))}` : `${esc(p.status)} · ${esc(ago(p.ts))}`;
+  // p.ts is last heartbeat (Presence.ts), not status-entered-at — never say "waiting 4m".
+  const since = `${esc(p.status)} · seen ${esc(ago(p.ts))}`;
 
+  // Model when known; harness agent with no model → "not reported"; no harness and no model → nothing.
+  const modelBadge = meta.model
+    ? `<span class="d-badge model" title="model">${esc(meta.model)}${meta.variant ? `<span class="var"> · ${esc(meta.variant)}</span>` : ""}</span>`
+    : meta.connector
+      ? `<span class="d-badge model muted" title="host did not report a model">not reported</span>`
+      : "";
   const badges = [
     card.kind ? `<span class="d-badge">${esc(card.kind)}</span>` : "",
     harnessBadge(meta.connector),
-    meta.model ? `<span class="d-badge model" title="model">${esc(meta.model)}</span>` : "",
+    modelBadge,
+    attentionChip(p.attention), // open/absent → ""
   ].join("");
   const desc = card.description ? `<div class="d-desc">${esc(card.description)}</div>` : "";
   const blocked = waiting
@@ -570,8 +683,17 @@ function renderAgentDetail() {
         .map((s) => `<div class="d-skill"><span class="nm">${esc(s.name || s.id)}</span>${s.description ? `<span class="dsc">${esc(s.description)}</span>` : ""}</div>`)
         .join("")}</div>`
     : "";
-  // Any other meta beyond the badges (connector → harness, model), generically rendered (escaped, key-sorted).
-  const extra = Object.entries(meta).filter(([k]) => k !== "connector" && k !== "model").sort(([a], [b]) => a.localeCompare(b));
+  // Per-channel attention overrides (quiet/muted). Advisory receive-side presentation, not ACL.
+  const modeEntries = Object.entries(p.channelModes || {}).sort(([a], [b]) => a.localeCompare(b));
+  const channelModes = modeEntries.length
+    ? `<div class="d-chips">${modeEntries
+        .map(([ch, m]) => `<span class="d-chip mode-${esc(m)}" title="per-channel attention">#${esc(ch)} · ${esc(m)}</span>`)
+        .join("")}</div>`
+    : "";
+  // Any other meta beyond the badges (connector/model/variant already first-class), generically rendered.
+  const extra = Object.entries(meta)
+    .filter(([k]) => k !== "connector" && k !== "model" && k !== "variant")
+    .sort(([a], [b]) => a.localeCompare(b));
   const metaKv = extra.length
     ? `<div class="d-kv">${extra
         .map(([k, v]) => `<div class="row"><span class="k">${esc(k)}</span><span class="v">${esc(typeof v === "string" ? v : JSON.stringify(v))}</span></div>`)
@@ -590,6 +712,7 @@ function renderAgentDetail() {
       ${badges ? `<div class="d-badges">${badges}</div>` : ""}
       ${desc}
       ${blocked}
+      ${sec("Channel attention", channelModes)}
       ${sec("Tags", tags)}
       ${sec("Skills", skills)}
       ${sec("Metadata", metaKv)}
@@ -608,9 +731,11 @@ function renderCenter() {
 function refreshDerived() {
   const counts = { working: 0, waiting: 0, idle: 0, offline: 0 };
   for (const p of roster) counts[p.status] = (counts[p.status] ?? 0) + 1;
-  const waiting = roster.filter((p) => p.status === "waiting");
-  const oldest = waiting.length ? agoShort(Math.min(...waiting.map((p) => p.ts))) : "—";
-  renderTiles(counts, oldest);
+  // Stalest heartbeat among LIVE peers only — offline ages grow forever and are pure noise in a
+  // golden-signal slot. Among live peers this catches a lapsed heartbeat before the offline flip.
+  const live = roster.filter((p) => p.status !== "offline" && typeof p.ts === "number");
+  const stalest = live.length ? agoShort(Math.min(...live.map((p) => p.ts))) : "—";
+  renderTiles(counts, stalest);
   $("online-c").textContent = roster.filter((p) => p.status !== "offline").length;
   renderRoster(rosterRows()); // online list; offline peers drop out but still ride the header tiles
   renderDMs(); // peer statuses may have changed
@@ -640,7 +765,7 @@ async function select(key) {
 }
 function selectDM(peer, w) {
   agentSel = null;
-  const pe = dmPeers().find((p) => p.name === peer);
+  const pe = dmPeers().find((p) => p.id === peer);
   dmSel = { peer, with: w || (pe && pe.conversations[0] ? pe.conversations[0].with : null) };
   selected = null;
   renderSidebarNav();
@@ -653,7 +778,25 @@ async function refresh() {
   roster = await (await fetch("/api/roster")).json();
   refreshDerived();
   const list = await (await fetch("/api/channels")).json();
-  channels = new Map(list.map((c) => [c.channel, c.messages]));
+  // L2 shape is flat {channel,messages,description?,replay,replayWindow?,deliveryClass}.
+  // Tolerate a nested-config server briefly (pre-restart) without re-deriving defaults.
+  channels = new Map(
+    list.map((c) => {
+      if (c.replay !== undefined || c.deliveryClass !== undefined || (c.description && !c.config))
+        return [c.channel, c];
+      const cfg = c.config || {};
+      return [
+        c.channel,
+        {
+          messages: c.messages,
+          description: cfg.description,
+          replay: cfg.replay,
+          replayWindow: cfg.replayWindow,
+          deliveryClass: cfg.deliveryClass,
+        },
+      ];
+    }),
+  );
   dms = await (await fetch("/api/dms?limit=500")).json();
   renderSidebarNav();
   if (agentSel) {
@@ -679,7 +822,10 @@ function onMessage(entry) {
     renderDMs();
   }
   if (msg.channel) {
-    channels.set(msg.channel, (channels.get(msg.channel) ?? 0) + 1);
+    // A live message can beat the next channel-registry refresh. Keep its count but leave the
+    // effective policy unknown until the server supplies the resolved L2 row.
+    const ch = channels.get(msg.channel);
+    channels.set(msg.channel, { ...(ch ?? {}), messages: (ch?.messages ?? 0) + 1 });
     if (!dmSel && selected === msg.channel) {
       channelMsgs.push(msg);
       if (channelMsgs.length > 500) channelMsgs.shift();
@@ -741,10 +887,10 @@ const DEMO = {
     { type: "msg", mode: "chat", ts: "10:51", who: "linus", role: "reviewer", target: "#team.review", body: "left 2 comments on PR #42 — small nits" },
   ],
   cards: [
-    { tone: "amber", cat: "WAITING", age: "4m", title: "alice is blocked", desc: "Needs OPENAI_API_KEY to keep planning the auth module.", primary: "Provide key", secondary: "Open thread" },
-    { tone: "red", cat: "FAILED", age: "1m", title: "bob's task failed", desc: "2 tests failing in channels.ts after the refactor.", primary: "Inspect", secondary: "Retry" },
-    { tone: "orange", cat: "UNCLAIMED", age: "3m", title: "Anycast request unhandled", desc: "@reviewer · review PR #51 — no peer has claimed it.", primary: "Assign…", secondary: "Claim" },
-    { tone: "blue", cat: "APPROVAL", age: "just now", title: "dave requests approval", desc: "Wants to force-push to main — irreversible.", primary: "Approve", secondary: "Deny" },
+    { tone: "amber", cat: "WAITING", age: "seen 4m", title: "alice is blocked", desc: "Needs OPENAI_API_KEY to keep planning the auth module.", primary: "Provide key", secondary: "Open thread" },
+    { tone: "red", cat: "FAILED", age: "seen 1m", title: "bob's task failed", desc: "2 tests failing in channels.ts after the refactor.", primary: "Inspect", secondary: "Retry" },
+    { tone: "orange", cat: "UNCLAIMED", age: "seen 3m", title: "Anycast request unhandled", desc: "@reviewer · review PR #51 — no peer has claimed it.", primary: "Assign…", secondary: "Claim" },
+    { tone: "blue", cat: "APPROVAL", age: "seen just now", title: "dave requests approval", desc: "Wants to force-push to main — irreversible.", primary: "Approve", secondary: "Deny" },
   ],
   cv: {
     messages: [
@@ -765,23 +911,23 @@ const DEMO = {
     ],
   },
   dmPeers: [
-    { name: "alice", role: "planner", status: "waiting", unread: 2, threads: 3, conversations: [
+    { id: "alice", name: "alice", role: "planner", status: "waiting", unread: 2, threads: 3, conversations: [
       { with: "bob", role: "builder", status: "working", unread: 0, msgs: ab },
       { with: "dave", role: "builder", status: "working", unread: 1, msgs: ad },
       { with: "scout", role: "observer", status: "idle", unread: 1, msgs: as },
     ] },
-    { name: "bob", role: "builder", status: "working", unread: 0, threads: 2, conversations: [
+    { id: "bob", name: "bob", role: "builder", status: "working", unread: 0, threads: 2, conversations: [
       { with: "alice", role: "planner", status: "waiting", unread: 0, msgs: ab },
       { with: "dave", role: "builder", status: "working", unread: 0, msgs: bd },
     ] },
-    { name: "dave", role: "builder", status: "working", unread: 1, threads: 2, conversations: [
+    { id: "dave", name: "dave", role: "builder", status: "working", unread: 1, threads: 2, conversations: [
       { with: "alice", role: "planner", status: "waiting", unread: 1, msgs: ad },
       { with: "bob", role: "builder", status: "working", unread: 0, msgs: bd },
     ] },
-    { name: "linus", role: "reviewer", status: "working", unread: 0, threads: 1, conversations: [
+    { id: "linus", name: "linus", role: "reviewer", status: "working", unread: 0, threads: 1, conversations: [
       { with: "maya", role: "researcher", status: "idle", unread: 0, msgs: lm },
     ] },
-    { name: "maya", role: "researcher", status: "idle", unread: 0, threads: 1, conversations: [
+    { id: "maya", name: "maya", role: "researcher", status: "idle", unread: 0, threads: 1, conversations: [
       { with: "linus", role: "reviewer", status: "working", unread: 0, msgs: lm },
     ] },
   ],
@@ -795,12 +941,12 @@ function renderDemo() {
   renderRoster(DEMO.roster);
   // Counts sum to 112 → the "all activity" total matches the reference.
   channels = new Map([
-    ["general", 24],
-    ["planning", 12],
-    ["team.backend", 51],
-    ["team.frontend", 18],
-    ["team.review", 7],
-    ["incidents", 0],
+    ["general", { messages: 24, replay: true, deliveryClass: "durable" }],
+    ["planning", { messages: 12, replay: true, deliveryClass: "durable" }],
+    ["team.backend", { messages: 51, replay: true, deliveryClass: "durable" }],
+    ["team.frontend", { messages: 18, replay: true, deliveryClass: "durable" }],
+    ["team.review", { messages: 7, replay: true, deliveryClass: "durable" }],
+    ["incidents", { messages: 0, replay: true, deliveryClass: "durable" }],
   ]);
   unread = new Map([["planning", 2], ["team.review", 1]]);
   renderSidebarNav();
@@ -808,6 +954,124 @@ function renderDemo() {
   renderRail();
 }
 
+// ── Resizable sidebars ─────────────────────────────────────────────────────────
+// Left nav + right rail widths are drag-adjustable and persisted per browser. The centre column is
+// minmax(0,1fr), so it just absorbs the remainder; we only clamp the sides so the centre can't be
+// squeezed away. Double-click a handle to reset that side.
+const SIDES = {
+  left: { cssVar: "--nav-w", key: "cotal.navW", def: 300, min: 200, max: 520, other: "right" },
+  right: { cssVar: "--rail-w", key: "cotal.railW", def: 340, min: 240, max: 560, other: "left" },
+};
+const sideW = (side) =>
+  parseInt(getComputedStyle(document.documentElement).getPropertyValue(SIDES[side].cssVar)) || SIDES[side].def;
+function clampSide(side, px) {
+  const s = SIDES[side];
+  const hardMax = Math.min(s.max, window.innerWidth - sideW(s.other) - 360); // keep the centre ≥ 360px
+  return Math.round(Math.max(s.min, Math.min(Math.max(hardMax, s.min), px)));
+}
+const applySide = (side, px) => document.documentElement.style.setProperty(SIDES[side].cssVar, px + "px");
+function setupResizers() {
+  for (const side of Object.keys(SIDES)) {
+    const saved = Number(localStorage.getItem(SIDES[side].key));
+    if (saved) applySide(side, clampSide(side, saved));
+  }
+  const bind = (id, side) => {
+    const el = $(id);
+    if (!el) return;
+    el.onpointerdown = (e) => {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("drag");
+      const startX = e.clientX, startW = sideW(side);
+      const move = (ev) => applySide(side, clampSide(side, side === "left" ? startW + (ev.clientX - startX) : startW - (ev.clientX - startX)));
+      const up = () => {
+        el.classList.remove("drag");
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        localStorage.setItem(SIDES[side].key, String(sideW(side)));
+      };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+    };
+    el.ondblclick = () => (applySide(side, SIDES[side].def), localStorage.removeItem(SIDES[side].key));
+  };
+  bind("rz-left", "left");
+  bind("rz-right", "right");
+  // A shrinking window can leave a side too wide for the new centre floor — re-clamp both.
+  window.addEventListener("resize", () => { for (const side of Object.keys(SIDES)) applySide(side, clampSide(side, sideW(side))); });
+}
+
+// ── Resizable nav sections (ONLINE / CHANNELS / DIRECT MESSAGES) ─────────────────
+// Two vertical handles split the three stacked sections. Roster + channels carry explicit heights
+// (persisted per browser); dms takes the remainder. Handle 1 (roster|channels) trades height
+// between those two and leaves dms fixed; handle 2 (channels|dms) grows channels and shrinks the
+// dms remainder. Double-click either handle to reset the split.
+const NAV_MIN = { roster: 90, channels: 110, dms: 90 };
+const NAV_HANDLES = 14; // two 7px handles
+function setupNavResizers() {
+  const nav = document.querySelector("aside.nav");
+  const rosterSec = $("sec-roster"), channelsSec = $("sec-channels");
+  if (!nav || !rosterSec || !channelsSec) return;
+  const hOf = (el) => el.getBoundingClientRect().height;
+  const setH = (cssVar, px) => document.documentElement.style.setProperty(cssVar, Math.round(px) + "px");
+
+  // Handle 1: keep roster+channels sum constant so dms stays put.
+  const dragRoster = (dy, r0, c0) => {
+    const sum = r0 + c0;
+    const roster = Math.max(NAV_MIN.roster, Math.min(sum - NAV_MIN.channels, r0 + dy));
+    setH("--roster-h", roster);
+    setH("--channels-h", sum - roster);
+  };
+  // Handle 2: grow channels; the dms remainder shrinks (floored at its min).
+  const dragChannels = (dy, c0) => {
+    const room = nav.clientHeight - hOf(rosterSec) - NAV_HANDLES - NAV_MIN.dms;
+    setH("--channels-h", Math.max(NAV_MIN.channels, Math.min(room, c0 + dy)));
+  };
+  const persist = () => {
+    localStorage.setItem("cotal.rosterH", String(Math.round(hOf(rosterSec))));
+    localStorage.setItem("cotal.channelsH", String(Math.round(hOf(channelsSec))));
+  };
+  const reset = () => {
+    document.documentElement.style.removeProperty("--roster-h");
+    document.documentElement.style.removeProperty("--channels-h");
+    localStorage.removeItem("cotal.rosterH");
+    localStorage.removeItem("cotal.channelsH");
+  };
+  const bind = (id, onDrag, startVals) => {
+    const el = $(id);
+    if (!el) return;
+    el.onpointerdown = (e) => {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("drag");
+      const startY = e.clientY, vals = startVals();
+      const move = (ev) => onDrag(ev.clientY - startY, ...vals);
+      const up = () => {
+        el.classList.remove("drag");
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        persist();
+      };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+    };
+    el.ondblclick = reset;
+  };
+  bind("rz-roster", dragRoster, () => [hOf(rosterSec), hOf(channelsSec)]);
+  bind("rz-channels", dragChannels, () => [hOf(channelsSec)]);
+
+  // Restore persisted heights (px), clamped to the current nav height.
+  const savedR = Number(localStorage.getItem("cotal.rosterH")), savedC = Number(localStorage.getItem("cotal.channelsH"));
+  if (savedR || savedC)
+    requestAnimationFrame(() => {
+      const navH = nav.clientHeight;
+      if (savedR) setH("--roster-h", Math.max(NAV_MIN.roster, Math.min(savedR, navH - NAV_MIN.channels - NAV_MIN.dms - NAV_HANDLES)));
+      if (savedC) setH("--channels-h", Math.max(NAV_MIN.channels, Math.min(savedC, navH - hOf(rosterSec) - NAV_MIN.dms - NAV_HANDLES)));
+    });
+}
+
+setupResizers();
+setupNavResizers();
 if (isDemo) {
   document.title = "Cotal · demo";
   renderDemo();
