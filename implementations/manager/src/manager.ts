@@ -2650,6 +2650,12 @@ export class Manager {
           id: authority.id,
           creds: authority.creds,
           userAuth: authority.userAuth,
+          // Recover the ORIGINAL incarnation uid (never a fresh mint on resume): the child endpoint
+          // binds its lifecycle-keyed dm/dlv/chathist durables by this exact value, and its creds pin
+          // the same names. Omitting it here (as the pre-fix resume path did) leaves the resumed child
+          // with no COTAL_LIFECYCLE_UID: static/user fail the connector auth gate and open self-mints a
+          // fresh uid that orphans the preserved durables and never matches the readiness fence.
+          lifecycleUid: entry.identity.lifecycleUid,
           servers: this.servers,
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,

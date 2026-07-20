@@ -143,13 +143,17 @@ function managerWith(
     resumeAttemptId: opts.resumeAttemptId,
     resumeDurableCommitToken: opts.resumeDurableCommitToken,
   });
-  const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; userOwner?: string }> }).agents;
+  const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; userOwner?: string; lifecycleUid?: string }> }).agents;
   (manager as unknown as { runtime: unknown }).runtime = { kind: "fake", spawn: runtimeSpawn };
   (manager as unknown as { probeStaticCredential: () => Promise<{ ok: true }> }).probeStaticCredential = async () => ({ ok: true });
   (manager as unknown as { ep: unknown }).ep = {
     ref: () => ({ id: "local.manager", name: "manager", role: "manager" }),
+    // The real endpoint publishes the incarnation's lifecycleUid in presence whenever it has one
+    // (endpoint.ts publishPresence); the readiness lifecycle fence matches on it, so the fake roster
+    // must carry it too or a resumed agent (which now recovers its uid) never reports STARTED.
     getRoster: () => [...agents.values()].map((a) => ({
       card: { id: a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key, name: a.name },
+      lifecycleUid: a.lifecycleUid,
       status: "idle",
     })),
     waitForPresenceSnapshot: async () => {},
@@ -168,12 +172,18 @@ const control = (manager: Manager, tier: string, op: string, args: Record<string
     tier,
   );
 
+// A deterministic valid incarnation uid ([a-z0-9]{26,32}) per agent, so preserved inventory carries
+// the exact value a real ManagedAgent would (spawn mints it, resume recovers it) and the smoke can
+// assert it threads inventory -> LaunchOpts unchanged.
+const uidFor = (name: string): string => (name.replace(/[^a-z0-9]/g, "") + "0".repeat(26)).slice(0, 26);
+
 function managed(name: string, id: string, handle: AgentHandle, source: "manifest" | "persona" = "manifest") {
   return {
     name,
     role: "worker",
     agent: "preserve-connector",
     id,
+    lifecycleUid: uidFor(name),
     seed: "TOP-SECRET-SEED",
     spawner: "local.manager",
     startedAt: 1_700_000_000_000,
@@ -416,7 +426,7 @@ let openInventory: ManagerResumeAgent;
     space: "preserve-smoke",
     name: "worker",
     role: "worker",
-    identity: { mode: "open", id: "open_principal_resume" },
+    identity: { mode: "open", id: "open_principal_resume", lifecycleUid: uidFor("resume") },
     launch: {
       connector: "preserve-connector",
       runtime: "fake",
@@ -437,6 +447,9 @@ let openInventory: ManagerResumeAgent;
   const reply = result.agents[0]?.reply;
   check("open resume succeeds under the exact retained name", result.ok && reply?.ok && (reply.data as { name?: string })?.name === "worker", JSON.stringify(result));
   check("open resume reuses the exact retained principal", capturedLaunch?.id === "open_principal_resume", capturedLaunch?.id);
+  // The recovered incarnation uid MUST reach the child launch (never a fresh mint): its lifecycle-keyed
+  // durables are named by it, and the readiness fence matches presence on it.
+  check("open resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("resume"), capturedLaunch?.lifecycleUid);
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,
@@ -475,6 +488,7 @@ let openInventory: ManagerResumeAgent;
   ep.waitForPresenceSnapshot = () => new Promise<void>((resolveSnapshot) => { releaseSnapshot = resolveSnapshot; });
   ep.getRoster = () => [{
     card: { id: principalKey(DEV_OWNER, openInventory.identity.mode === "open" ? openInventory.identity.id : "").key, name: openInventory.name },
+    lifecycleUid: openInventory.identity.mode === "open" ? openInventory.identity.lifecycleUid : undefined,
     status: spawned || !survivorOffline ? "idle" : "offline",
   }];
   const resumePending = control(replacement, CONTROL_ADMIN, "resumePreserved", { attemptId, inventory: survivorInventory });
@@ -629,7 +643,7 @@ let openInventory: ManagerResumeAgent;
   const invalid: ManagerResumeAgent = {
     ...openInventory,
     name: "invalid-second",
-    identity: { mode: "open", id: "invalid_second" },
+    identity: { mode: "open", id: "invalid_second", lifecycleUid: uidFor("invalidsecond") },
     launch: {
       ...openInventory.launch,
       source: { kind: "persona", ref: "missing", configPath: missing, configSha256: "0".repeat(64) },
@@ -658,7 +672,7 @@ let openInventory: ManagerResumeAgent;
   const second: ManagerResumeAgent = {
     ...openInventory,
     name: "worker-two",
-    identity: { mode: "open", id: "open_principal_two" },
+    identity: { mode: "open", id: "open_principal_two", lifecycleUid: uidFor("workertwo") },
   };
   const result = await control(manager, CONTROL_ADMIN, "resumePreserved", {
     attemptId: "partial_resume",
@@ -723,31 +737,32 @@ let openInventory: ManagerResumeAgent;
   const credsDir = join(authDir(root), "creds");
   mkdirSync(credsDir, { recursive: true });
   const credsPath = join(credsDir, "static-worker.creds");
-  const retainedCreds = await mintCreds(auth, identity, "agent");
+  const retainedCreds = await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id) });
   writeFileSync(credsPath, retainedCreds, { mode: 0o600 });
   const manager = managerWith((name) => fakeHandle(name));
   (manager as unknown as { auth: unknown }).auth = auth;
   const entry: ManagerResumeAgent = {
     ...openInventory,
     name: "static-worker",
-    identity: { mode: "static", id: identity.id, credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
+    identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
     launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: personaPath, configSha256: digest(personaPath) } },
     dependencies: [personaPath],
   };
   capturedLaunch = undefined;
   const ok = await manager.resumePreserved(inventoryOf(entry));
   check("static resume accepts matching retained credential", ok.ok && capturedLaunch?.id === identity.id && capturedLaunch?.creds === credsPath, ok);
+  check("static resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor(identity.id), capturedLaunch?.lifecycleUid);
 
   const mismatchManager = managerWith((name) => fakeHandle(name));
   (mismatchManager as unknown as { auth: unknown }).auth = auth;
-  const mismatch = await mismatchManager.resumePreserved(inventoryOf({ ...entry, identity: { mode: "static", id: newIdentity().id, credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } } }));
+  const mismatch = await mismatchManager.resumePreserved(inventoryOf({ ...entry, identity: { mode: "static", id: newIdentity().id, lifecycleUid: uidFor("mismatch"), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } } }));
   check("static resume fails closed on credential/principal mismatch", !mismatch.ok && /does not match inventory principal/.test(mismatch.agents[0]?.reply.error ?? ""), mismatch.agents);
 
-  const replacementCreds = await mintCreds(auth, newIdentity(), "agent");
+  const replacementCreds = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: uidFor("replacement") });
   writeFileSync(credsPath, retainedCreds, { mode: 0o600 });
   const spawnDriftEntry: ManagerResumeAgent = {
     ...entry,
-    identity: { mode: "static", id: identity.id, credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
+    identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
   };
   let driftSpawns = 0;
   let probeCalls = 0;
@@ -764,16 +779,16 @@ let openInventory: ManagerResumeAgent;
   writeFileSync(credsPath, retainedCreds, { mode: 0o600 });
   const commitEntry: ManagerResumeAgent = {
     ...entry,
-    identity: { mode: "static", id: identity.id, credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
+    identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
   };
   const secondIdentity = newIdentity();
   const secondCredsPath = join(credsDir, "static-worker-two.creds");
-  const secondCreds = await mintCreds(auth, secondIdentity, "agent");
+  const secondCreds = await mintCreds(auth, secondIdentity, "agent", { lifecycleUid: uidFor(secondIdentity.id) });
   writeFileSync(secondCredsPath, secondCreds, { mode: 0o600 });
   const secondCommitEntry: ManagerResumeAgent = {
     ...commitEntry,
     name: "static-worker-two",
-    identity: { mode: "static", id: secondIdentity.id, credential: { kind: "file", path: secondCredsPath, sha256: digest(secondCredsPath) } },
+    identity: { mode: "static", id: secondIdentity.id, lifecycleUid: uidFor(secondIdentity.id), credential: { kind: "file", path: secondCredsPath, sha256: digest(secondCredsPath) } },
   };
   const commitDriftManager = managerWith((name) => fakeHandle(name), {
     resumeAttemptId: "static_commit_drift",
@@ -805,6 +820,7 @@ let openInventory: ManagerResumeAgent;
       mode: "user",
       owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa",
       actor: "worker",
+      lifecycleUid: uidFor("userworker"),
       actorToken: { kind: "file", path: actorTokenPath, sha256: digest(actorTokenPath) },
       sentinelCredential: { kind: "file", path: sentinelPath, sha256: digest(sentinelPath) },
       health: { kind: "file", path: healthPath },
@@ -818,6 +834,7 @@ let openInventory: ManagerResumeAgent;
   check("provider receives retained token and sentinel contents", lastRetainedInput?.actorToken === "retained-token" && lastRetainedInput?.sentinelCreds === "retained-sentinel", lastRetainedInput);
   check("user resume never calls grantAgent", retainedGrantCalls === 0, retainedGrantCalls);
   check("user resume reuses exact owner/actor in launch", capturedLaunch?.userAuth?.owner === entry.identity.owner && capturedLaunch.userAuth.actor === entry.identity.actor, capturedLaunch?.userAuth);
+  check("user resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("userworker"), capturedLaunch?.lifecycleUid);
   check("user bearer command is reconstructed from provider command", capturedLaunch?.userAuth?.bearerCmd.includes("agent-bearer") === true, capturedLaunch?.userAuth?.bearerCmd);
 
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["other"] };
