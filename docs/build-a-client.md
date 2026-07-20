@@ -68,9 +68,11 @@ map to.
 
 4. **Presence heartbeat**: [SPEC §6](../SPEC.md#6-presence-and-discovery). Write your own
    presence key on the heartbeat interval and derive peers' `offline` from stale timestamps and
-   KV deletes. From v0.4 a conformant card MUST advertise `protocolVersion: "0.4"` (and, in auth
-   mode, your `lifecycleUid`); a peer that omits `protocolVersion` reads as pre-0.4 and is not
-   addressed on the control-surface rails ([SPEC §6](../SPEC.md#6-presence-and-discovery),
+   KV deletes. From v0.4 your AgentCard MUST advertise `protocolVersion: "0.4"`, and in auth mode
+   your presence record MUST carry your `lifecycleUid` (§6; advisory for display, since authority
+   checks use the trusted lifecycle mapping, not presence); a peer that omits `protocolVersion`
+   reads as pre-0.4 and is not addressed on the control-surface rails
+   ([SPEC §6](../SPEC.md#6-presence-and-discovery),
    [§13.11](../SPEC.md#1311-the-hard-cut)). *See it:* run [`cotal console`](watch-a-mesh.md) and watch your endpoint appear
    in the roster and go stale when you stop heartbeating.
 
@@ -81,7 +83,7 @@ map to.
    `historical=true` and no live/backfill duplicates.
 
 6. **DM + anycast**: [SPEC §8](../SPEC.md#8-nats--jetstream-binding). Bind (do not create) your
-   `dm_<owner>-<actor>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
+   `dm_<owner>-<actor>-<lifecycleUid>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
    a reference peer unicasts to you and anycasts to your role; exactly one anycast consumer wins.
 
 7. **Receive-side checks**: [SPEC §4](../SPEC.md#4-delivery-modes),
