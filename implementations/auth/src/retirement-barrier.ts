@@ -6,9 +6,9 @@
  *
  * The barrier, in the NORMATIVE order (§13.1) — every boundary crash-resumable from the durable
  * `stage.<opId>` intent, and only the SAME operation resumes it:
- *  1. durable retirement intent (create-only, captured BEFORE any movement; it carries the
- *     caller's endpoint/pool HINT and the frontier stream set — the barrier DISCOVERS the real
- *     cleaner inventory from the target's own accepted pool obligations, §13.1 #F);
+ *  1. durable retirement intent (create-only, captured BEFORE any movement; it carries only the
+ *     frontier stream set: the barrier DISCOVERS the whole cleaner inventory from the target's
+ *     own accepted pool obligations, taking no caller-supplied pool hint, §13.1 #F);
  *  2. CAS the issuance gate `open → frozen` carrying the intent (the bar: a staged mint loses
  *     its finalize touch) — a retirement freeze NEVER reopens (§13.1: its only exit is the
  *     terminal);
@@ -99,9 +99,8 @@ const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafe
 // ---- the durable retirement intent (stage.<opId>, the takeover intent's sibling) --------------
 
 /** One endpoint's EXACT pool list for the cleaner step — the cleaner profile's grant is minted
- *  from these (§13.9: never a pool wildcard). A caller may HINT them on the intent; the barrier
- *  UNIONS the hint with the pools it discovers from the target's own accepted pool obligations
- *  (#F), so the actual cleaner inventory is always a superset of any hint. */
+ *  from these (§13.9: never a pool wildcard). The barrier DISCOVERS this inventory from the
+ *  target's own accepted pool obligations (#F); it takes no caller-supplied hint. */
 export interface RetirementPoolSpec {
   endpoint: string;
   pools: string[];
@@ -435,7 +434,7 @@ export interface RetirementResult {
 
 /** Build the effective-inventory-closed executor settlement seam (§13.9): the returned function
  *  runs under the barrier's op-bounded authority and refuses any ref outside its effective
- *  inventory (the barrier-discovered `spec.pools`, hint ∪ accepted `oblig.<uid>.>` routes) or
+ *  inventory (the barrier-discovered `spec.pools`, the accepted `oblig.<uid>.>` routes) or
  *  this retirement's lifecycle — a foreign endpoint or a pool outside its discovered spec, an
  *  unaccepted or non-pool decision, expiring a live item, or retiring an item accepted for a
  *  target outside this intent's lifecycle. The cleaner chooses refs; it can never borrow this
