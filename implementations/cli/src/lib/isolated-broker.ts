@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
-  chmodSync,
   constants,
   copyFileSync,
   lstatSync,
@@ -18,6 +17,7 @@ import { createServer } from "node:net";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   backupProfilePermissions,
+  hardenPrivate,
   isReachable,
   restoreProfilePermissions,
   type BackupPermissionScope,
@@ -47,7 +47,11 @@ export function ensurePrivateAttemptsDir(root: string): PrivateAttemptsDirectory
     const stat = lstatSync(current, { bigint: true });
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`maintenance path is not a real directory: ${current}`);
     if (process.getuid && stat.uid !== BigInt(process.getuid())) throw new Error(`maintenance path is not owned by the current user: ${current}`);
-    chmodSync(current, 0o700);
+    // This tree holds the store clone, quarantine, sanitized snapshots, and the broker `.conf`
+    // (plaintext maintenance creds). `hardenPrivate` reasserts 0700 on POSIX and sets an
+    // inheritable owner-only NTFS ACL on win32 — where both the create mode AND the getuid
+    // ownership check above are no-ops — so children born here inherit the private ACL. Fails closed.
+    hardenPrivate(current, "dir");
   }
   const canonical = realpathSync.native(current);
   if (canonical !== current) throw new Error(`maintenance attempt directory is not canonical: ${current}`);
@@ -101,7 +105,7 @@ function copyTree(source: string, destination: string): void {
   const sourceStat = lstatSync(source);
   if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw new Error(`backup source store is not a real directory: ${source}`);
   mkdirSync(destination, { mode: 0o700 });
-  chmodSync(destination, 0o700);
+  hardenPrivate(destination, "dir"); // clone subtree is store bytes — private on win32 too
   for (const name of readdirSync(source)) {
     const from = join(source, name);
     const to = join(destination, name);
@@ -128,6 +132,7 @@ export function createAttemptClone(root: string, sourceStore: string, attemptId:
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`backup attempt clone already exists: ${path}`);
     throw error;
   }
+  hardenPrivate(path, "dir"); // clone root holds the full store copy — private on win32 too
   const stat = lstatSync(path, { bigint: true });
   const identity = { dev: stat.dev, ino: stat.ino };
   try {
@@ -334,6 +339,10 @@ export async function startIsolatedBroker(options: {
   writeFileSync(configPath, authenticatedConfig(account, port, options.storeDir, logins), { flag: "wx", mode: 0o600 });
   writeFileSync(logPath, "", { flag: "wx", mode: 0o600 });
   writeFileSync(pidsPath, "", { flag: "wx", mode: 0o600 });
+  // The `.conf` embeds the plaintext maintenance login. `wx` above keeps the exclusive create
+  // (never write over a pre-planted file); harden the win32 ACL after, where mode 0o600 is a no-op.
+  // The attempts dir is already hardened inheritable, but harden the secret file explicitly too.
+  hardenPrivate(configPath, "file");
   const fileIdentity = (path: string): IsolatedRunFile => {
     const stat = lstatSync(path, { bigint: true });
     return { path, dev: stat.dev.toString(), ino: stat.ino.toString() };

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  chmodSync,
   constants,
   fsyncSync,
   lstatSync,
@@ -22,6 +21,7 @@ import {
   deliveryBucket,
   downloadStreamSnapshot,
   finalizeStreamRestore,
+  hardenPrivate,
   initiateStreamRestore,
   LEASE_TTL_MS,
   managerBucket,
@@ -253,8 +253,12 @@ function isManagerFinalizeEvidence(
 }
 
 function createOwnedDirectory(path: string): void {
+  // The restore target, quarantine, and sanitized dirs hold whole-stream snapshots (chat + DMs).
+  // `hardenPrivate` reasserts 0700 on POSIX and sets an owner-only NTFS ACL on win32, where the
+  // create mode is a no-op — and fails closed if it cannot, so a snapshot never lands under an
+  // inherited permissive ACL.
   mkdirSync(path, { mode: 0o700 });
-  chmodSync(path, 0o700);
+  hardenPrivate(path, "dir");
 }
 
 function canonicalFuturePath(path: string): string {
