@@ -8,6 +8,8 @@ import {
   AmbiguousPeerError,
   DEFAULT_SERVER,
   mintCreds,
+  mintLifecycleUid,
+  assertLifecycleToken,
   newIdentity,
   provisionAgent,
   type Delivery,
@@ -44,7 +46,7 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
 }
 
 export async function join(args: ParsedArgs): Promise<void> {
-  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; tls?: boolean };
+  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean };
 
   // A join link carries server + auth + space; explicit flags still override it.
   const link = values.link ? parseJoinLink(values.link) : undefined;
@@ -57,6 +59,45 @@ export async function join(args: ParsedArgs): Promise<void> {
     creds: values.creds ? readFileSync(values.creds, "utf8") : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
+  // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
+  // COTAL_LIFECYCLE_UID) is scoped STRICTLY to an explicit --creds join: that credential's durable
+  // grants name exact lifecycle-keyed resources, so the uid minted alongside it is the only one the
+  // broker will bind, and it is REQUIRED (never invented). Every OTHER path leaves it undefined so
+  // the endpoint self-mints a fresh per-session identity at construction: an open/token/link/bare
+  // join must NOT inherit an ambient shell's COTAL_LIFECYCLE_UID (that would reuse another
+  // incarnation's uid). Auth-mode self-provision (below) mints its own.
+  const flagUid = values["lifecycle-uid"];
+  const envUid = process.env.COTAL_LIFECYCLE_UID?.trim() || undefined;
+  // An EXPLICIT --lifecycle-uid without --creds is a misuse (refuse loudly). An AMBIENT
+  // COTAL_LIFECYCLE_UID without --creds is just a shell leaking a spawned agent's env - silently
+  // IGNORE it (an open/token/link/bare join never inherits another incarnation's uid; it
+  // self-mints). Only WITH --creds is either read, as the launcher's pairing.
+  if (flagUid !== undefined && !values.creds) {
+    console.error(
+      c.red(`✗ --lifecycle-uid applies only to an explicit `) +
+        c.bold("--creds") +
+        c.red(` join - an open/token/link/bare join self-mints a fresh per-session lifecycle. Drop the flag, or pass --creds.`),
+    );
+    process.exit(1);
+  }
+  let lifecycleUid: string | undefined = values.creds ? (flagUid ?? envUid) : undefined;
+  if (lifecycleUid !== undefined) {
+    try {
+      assertLifecycleToken(lifecycleUid);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
+  if (values.creds && lifecycleUid === undefined) {
+    console.error(
+      c.red(`✗ --creds is lifecycle-paired (SPEC 13.1): pass `) +
+        c.bold("--lifecycle-uid <uid>") +
+        c.red(` (or set COTAL_LIFECYCLE_UID) with the uid minted alongside this credential at provision time. `) +
+        c.red(`The credential's durable grants name exact lifecycle-keyed resources; a made-up uid would name durables it cannot bind.`),
+    );
+    process.exit(1);
+  }
 
   let space: string;
   let server: string;
@@ -96,6 +137,11 @@ export async function join(args: ParsedArgs): Promise<void> {
     await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
     if (target.auth) {
       const identity = newIdentity();
+      // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
+      // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
+      // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
+      // A launcher-supplied uid (flag/env, resolved above) wins; the session mints only when bare.
+      lifecycleUid ??= mintLifecycleUid();
       const prov = new CotalEndpoint({
         space,
         servers: server,
@@ -120,6 +166,7 @@ export async function join(args: ParsedArgs): Promise<void> {
           allowPublish: [channel],
           role: values.role,
           durableMembership: false,
+          lifecycleUid,
         });
         await prov.stop();
       } catch (e) {
@@ -135,6 +182,9 @@ export async function join(args: ParsedArgs): Promise<void> {
     space,
     servers: server,
     ...auth,
+    // Absent for a bare open/token join: the endpoint self-mints its per-session lifecycle at
+    // construction. Set for auth joins: self-provisioned above, or --creds-paired (never invented).
+    lifecycleUid,
     channels: [channel],
     card: {
       name,

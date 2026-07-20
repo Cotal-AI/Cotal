@@ -70,6 +70,10 @@ export type ChannelMode = "quiet" | "muted";
 /** Live presence record. Stored in the space's KV bucket under key = card.id. */
 export interface Presence {
   card: AgentCard;
+  /** This incarnation's lifecycle UID (SPEC §6/§13.1: MUST in auth mode from v0.4) — the value the
+   *  alias currently maps to, published so peers/observers can attribute the alias's live occupant.
+   *  Advisory observability, never authority (authority is the ledger/broker grants). */
+  lifecycleUid?: string;
   status: PresenceStatus;
   /** Freeform "what I'm doing right now". */
   activity?: string;
@@ -155,6 +159,11 @@ export interface MembershipRecord {
    *  just the owner token and not an nkey. Membership is per-principal (a human's two agents are distinct
    *  members). Renaming the serialized field to `principal` is a KV-record migration, deliberately deferred. */
   owner: string;
+  /** The member incarnation's lifecycle UID (SPEC §13.1). Membership rows are lifecycle-keyed
+   *  (`<channel>/<owner>.<actor>.<uid>`), so the join/leave cursors ride the lifecycle and a
+   *  same-alias successor starts unjoined; fan-out addresses the row's RECORDED lifecycle
+   *  (`dinbox.<owner>.<actor>.<uid>`), never the alias's current occupant. */
+  lifecycleUid: string;
   state: MembershipState;
   /** CHAT stream seq captured at join — durable eligibility is `seq > joinCursor`. */
   joinCursor: number;

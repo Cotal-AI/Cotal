@@ -39,14 +39,30 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { isReachable, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { admissionMediatorGrants, EpEnvelopeError, ensureAuthorityStores, isReachable, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, type IdpBridge } from "./idp.js";
-import type { UserTokenView } from "./token.js";
+import type { UserTokenView, ValidatedUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader } from "./authority-client.js";
+import { authorizeConnectCredential } from "./connect-reader.js";
+import { ensureRootCredential } from "./root-credential.js";
+import { observeGate, openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
+import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
+import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
+import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
+import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
+import { resumeAgentRetirement, type RetirementDeps } from "./retirement-barrier.js";
+import { makeRetirementCleaners } from "./retirement-cleaner.js";
+import { makeDrainRepairers } from "./drain-repair.js";
+import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
+import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
   ledgerAclResolver,
@@ -79,6 +95,292 @@ const FAILED_EXCHANGE_PER_MIN = 30;
 const BAD_CAP_PER_MIN = 30;
 
 type Values = Record<string, string | undefined>;
+
+/** The service's AUTHORITY PLANE (R1, SPEC 13.1): the two self-minted data-account connections
+ *  behind (a) the composed connect authorizer — the file-ledger arm PLUS the credential deny-new
+ *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
+ *  ensure both exchange arms stamp `act.credentialId` from. */
+export interface AuthAuthorityPlane {
+  authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
+  mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
+   *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
+   *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
+   *  kept minting would look healthy while a successor reclaims its scanners). Never resolves on a
+   *  clean close. */
+  fenced: Promise<string>;
+  close(): Promise<void>;
+}
+
+/**
+ * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
+ * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
+ * the MINT WRITER connects first and ensures both authority stores exist with their normative
+ * shape ({@link ensureAuthorityStores}; the reader's bind proof requires them), then the
+ * lifecycle registry binds (its own §13.12 shape proof), then the supervised CONNECT READER
+ * binds + proves. Any failure throws — the daemon refuses to come up rather than serving
+ * connects it cannot credential-check (no file-only fallback).
+ *
+ * These are STATIC data-account users (signed by the data-account signing key), so they never
+ * transit the auth callout — the callout cannot deadlock on its own reader.
+ */
+export async function openAuthAuthorityPlane(opts: {
+  server: string;
+  space: string;
+  /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
+  dir: string;
+  dataAccount: { pub: string; signingSeed: string };
+  log: (line: string) => void;
+  /** SMOKE-ONLY eviction override for the barrier executor's boot resume. Production
+   *  compositions never set this: the real capability is the delivery daemon's
+   *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminEvictor}). */
+  probeEvictor?: EvictPrincipal;
+  /** SMOKE-ONLY plane-liveness override for the plane claim's stale-reclaim adjudication.
+   *  Production compositions never set this: the real oracle is the delivery daemon's
+   *  `ctl.delivery-admin` rail ({@link makeDeliveryAdminPlaneOracle}). */
+  probePlaneOracle?: PlaneLivenessOracle;
+  /** SMOKE-ONLY scanner-death injector: receives kill switches for the two plane-owned scanner
+   *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
+   *  no natural failure to inject). Production compositions never set this. */
+  probePlaneDeath?: (kill: { ledger: () => Promise<void>; records: () => Promise<void> }) => void;
+}): Promise<AuthAuthorityPlane> {
+  const { server, space, dataAccount, log } = opts;
+  const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
+  let registry;
+  try {
+    await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
+    registry = await openLifecycleRegistry(writer.nc, space);
+  } catch (e) {
+    await writer.close();
+    throw e;
+  }
+  let reader;
+  try {
+    reader = await openSupervisedConnectReader({ server, space, dataAccount, log });
+  } catch (e) {
+    await writer.close();
+    throw e;
+  }
+  // The BARRIER EXECUTOR: the third self-minted connection, with its own registry bind — the
+  // mint writer stays the minimal issuance credential ("barriers are NOT this credential's
+  // job") and the barrier's stage-write authority lives here alone. The barrier profile holds NO
+  // auth-stream `CONSUMER.CREATE` (nats-server#8274): its family/intent/lineage enumeration runs
+  // on the SEALED auth-ledger scanner, a FOURTH self-minted connection whose CREATE-capable
+  // credential never escapes ({@link openAuthLedgerScannerCandidate}), threaded into the barrier
+  // registry. The retirement barrier's OBLIGATION drain (§13.8, records stream) enumerates the
+  // same way and for the same #8274 reason: a FIFTH self-minted connection, the SEALED records
+  // scanner ({@link openRecordsScannerCandidate}), is opened co-located and threaded into the SAME
+  // barrier registry (the ONE records scanner per space the composition owns). The mint-writer
+  // registry above carries neither scanner — only the barrier registry enumerates.
+  //
+  // THE PLANE CLAIM (#29 HIGH 3, SPEC 13.13) gates the whole block: both scanner connections open
+  // FIRST as INERT candidates (non-reconnecting, identities captured, no scan capability exists),
+  // then the claim is taken by broker-atomic create/CAS on the ONE `plane` auth-KV key. Only the
+  // WINNER activates the branded scanners; a loser closes both candidates and this open REFUSES
+  // with the operator-legible copy (live peer / inconclusive / concurrent). A stale held claim is
+  // reclaimed on LIVENESS ALONE: both claimed tuples conclusively absent under a COMPLETE CONNZ
+  // sweep, adjudicated over the delivery-admin rail (auth holds no $SYS). A mid-life scanner
+  // disconnect FENCES the plane: the guard refuses every later scan, the sibling closes, and the
+  // in-flight enumeration's result is discarded by the post-scan claim check.
+  let barrier;
+  let ledgerCand: LedgerScannerCandidate | undefined;
+  let recordsCand: RecordsScannerCandidate | undefined;
+  let hold: PlaneClaimHold | undefined;
+  let scanner: AuthLedgerScanner | undefined;
+  let recordsScanner: RecordsScanner | undefined;
+  let barrierReg;
+  let closing = false;
+  // The plane-fatal channel (fact HIGH: a fenced plane must never keep serving): the mid-life
+  // fence resolves it, every authority operation refuses from then on, and the composition root
+  // downs the daemon. A clean close never resolves it.
+  let fatalReason: string | undefined;
+  let fireFatal!: (reason: string) => void;
+  const fenced = new Promise<string>((r) => { fireFatal = r; });
+  try {
+    barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
+    ledgerCand = await openAuthLedgerScannerCandidate({ server, space, dataAccount, log });
+    recordsCand = await openRecordsScannerCandidate({ server, space, dataAccount, log });
+    const oracle = opts.probePlaneOracle ?? makeDeliveryAdminPlaneOracle({ space, server, dataAccount, log });
+    hold = await acquirePlaneClaim({ nc: barrier.nc, space, ledger: ledgerCand.tuple, records: recordsCand.tuple, oracle, log });
+    scanner = ledgerCand.activate(hold.guard);
+    recordsScanner = recordsCand.activate(hold.guard);
+    // Mid-life disconnect = the FENCING event (security req: an owned scanner that dies must not
+    // leave the plane half-running). First death wins: fence the guard with the ux state-3 copy,
+    // close the sibling so a successor's reclaim isn't blocked by a half-dead pair, log loud.
+    const fenceOnDeath = (role: "auth-ledger" | "records", sibling: () => Promise<void>) => {
+      if (closing) return;
+      const copy = scannerDeathCopy(space, role);
+      hold?.fence(copy);
+      fatalReason = fatalReason ?? copy;
+      fireFatal(copy);
+      log(`auth-plane: ${copy}`);
+      void sibling().catch(() => {});
+    };
+    void ledgerCand.gone.then(() => fenceOnDeath("auth-ledger", () => recordsCand?.close() ?? Promise.resolve()));
+    void recordsCand.gone.then(() => fenceOnDeath("records", () => ledgerCand?.close() ?? Promise.resolve()));
+    const lc = ledgerCand, rc = recordsCand;
+    opts.probePlaneDeath?.({ ledger: () => lc.close(), records: () => rc.close() });
+    barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
+  } catch (e) {
+    // Clean-close order even on a failed open: scan-capable clients first, THEN the claim release
+    // (held → released is valid only once neither scanner can act), then the rest.
+    closing = true;
+    await recordsCand?.close();
+    await ledgerCand?.close();
+    await hold?.release();
+    await barrier?.close();
+    await reader.close();
+    await writer.close();
+    throw e;
+  }
+  const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ space, server, dataAccount, log });
+  // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed
+  // §13.9 profiles only. The obligation drain runs per endpoint on a SHORT-LIVED client minted
+  // with that endpoint's admission-mediator profile (the daemon owns no standing mediator; the
+  // drain is the first production mediator composition), sharing the plane's ONE sealed records
+  // scanner. The per-op cleaner/executor credentials come from the piece-2 split factory.
+  //
+  // THE CONFINED DRAIN REPAIRERS (#29 HIGH 1 functional closure): the mediator hands CLOSED,
+  // already-validated repair commands; the per-op executors ({@link makeDrainRepairers}) mint an
+  // exact-coordinate credential per repair, execute, and close. Covered classes now COMPLETE on
+  // resume instead of freezing: an accepted self-commit re-applies (or classifies landed /
+  // superseded), an accepted pool route re-enqueues create-only. THREE distinct operator
+  // outcomes (ux):
+  //  1. auto-completed - the retirement finishes; the repair is logged, no freeze message;
+  //  2. a covered-class repair that still cannot land names its SPECIFIC reason (an out-of-class
+  //     commit key refuses in the executor with the confused-deputy copy; a CAS loss reports
+  //     "another writer moved the record" and the next pass re-classifies);
+  //  3. accepted EFFECTS work terminalizes through the RETIREMENT-CANCEL terminal (§13.8 option
+  //     (i)): a first-terminal-wins cancelled marker on the SAME completion coordinate — an
+  //     action's goal union already carries the first-class `cancelled` state, a non-action
+  //     effect gets the EffectCancelledFact union member. Never a forged success: a reader sees
+  //     the effect did NOT run and which retirement cancelled it; a racing real completion wins
+  //     by landing first.
+  const repairers = makeDrainRepairers({ server, space, dataAccount, log });
+  const retirement: RetirementDeps = {
+    evictPrincipal,
+    drainTargetObligations: async (endpoint, targetUid, opId) => {
+      const drain = await openAuthorityClient({
+        server, space, dataAccount,
+        label: `cotal:ep-drain:${space}:${endpoint}`,
+        grants: (id) => admissionMediatorGrants(space, endpoint, id),
+        log,
+      });
+      try {
+        await drainTargetForEndpoint(await openAdmissionMediator(drain.nc, space, endpoint, { recordsScanner }), targetUid, {
+          applyCommit: repairers.applyCommitFor(opId),
+          reconcilePoolRoute: repairers.reconcilePoolRouteFor(opId),
+          cancelEffectsRoute: repairers.cancelEffectsRouteFor(opId),
+        });
+      } finally {
+        await drain.close();
+      }
+    },
+    ...makeRetirementCleaners({ server, space, dataAccount, log }),
+    now: Date.now,
+  };
+  // Boot crash-resume BEFORE the plane answers anything (SPEC 13.1): finish every takeover this
+  // executor owes from its durable intents. A garbled intent store fails the boot (we cannot
+  // know what we owe); an individual resume failure is LOUD but non-fatal — that alias stays
+  // frozen (nothing mints for it, fail-closed) while every other alias keeps working, and a
+  // later restart re-drives it.
+  try {
+    await resumeOpenOperations(barrierReg, evictPrincipal, retirement, log);
+  } catch (e) {
+    closing = true;
+    await recordsScanner.close();
+    await scanner.close();
+    await hold.release();
+    await barrier.close();
+    await reader.close();
+    await writer.close();
+    throw e;
+  }
+  // The AUTH CONTROL RAIL (#29 piece 3, SPEC 13.2 CONTROL_AUTH_ADMIN): serve the generic
+  // "retire a lifecycle" op over a dedicated minimal listener credential. Every executing right
+  // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
+  // scanner exactly like the boot resume); the listener only authorizes (subject attribution +
+  // the FRESH space-manager-lease holder check) and dispatches.
+  let authAdmin: AuthAdminListener | undefined;
+  try {
+    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, log });
+  } catch (e) {
+    closing = true;
+    await recordsScanner.close();
+    await scanner.close();
+    await hold.release();
+    await barrier.close();
+    await reader.close();
+    await writer.close();
+    throw e;
+  }
+  const fileArm = ledgerAuthorizeConnect(opts.dir);
+  // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
+  // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
+  // window, not the operator — the agent cannot "restart the auth service", so it gets a retryable
+  // unavailability, while the operator's state-3 copy stays on the log and the exit line.
+  const refuseIfFenced = () => {
+    if (fatalReason !== undefined)
+      throw new EpEnvelopeError("unavailable",
+        `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
+  };
+  return {
+    authorizeConnect: async (t) => {
+      refuseIfFenced();
+      fileArm(t);
+      await authorizeConnectCredential(reader.current(), t, Date.now);
+    },
+    mintConnectCredential: (args) => {
+      refuseIfFenced();
+      return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` });
+    },
+    fenced,
+    close: async () => {
+      // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
+      // clients down, then `held → released` (never released while either scanner can still
+      // act), then the barrier that wrote it.
+      closing = true;
+      await authAdmin?.close();
+      await reader.close();
+      await recordsScanner.close();
+      await scanner.close();
+      await hold.release();
+      await barrier.close();
+      await writer.close();
+    },
+  };
+}
+
+/**
+ * Boot crash-resume (SPEC 13.1): enumerate the durable operation intents and finish every
+ * barrier this executor OWES — an intent is owed exactly when its gate is still FROZEN by that
+ * opId (completed and lost operations leave their intent behind by design and are skipped).
+ * A frozen TAKEOVER resumes through {@link resumeAgentTakeover}; session-derived descendants
+ * fail loud inside the barrier until the session reconciler is wired (the #29 trigger slice).
+ * A frozen RETIREMENT resumes through {@link resumeAgentRetirement} with the plane's assembled
+ * {@link RetirementDeps} (#29 piece 4); its failure is equally loud and non-fatal.
+ */
+async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: EvictPrincipal, retirement: RetirementDeps, log: (line: string) => void): Promise<void> {
+  for (const it of await enumerateOperationIntents(reg)) {
+    const gate = await observeGate(reg, it.lifecycleUid);
+    if (gate === undefined || gate.row.state !== "frozen" || gate.row.op?.opId !== it.opId) continue;
+    if (it.kind === "retirement") {
+      try {
+        const r = await resumeAgentRetirement(reg, it.opId, retirement);
+        log(`auth-barrier: resumed retirement ${it.opId} for ${it.lifecycleUid} (${r.revokedRows} row(s) revoked, ${r.evictedPrincipals.length} principal(s) verified-evicted, ${r.drainedEndpoints.length} endpoint(s) drained, ${Object.keys(r.cleaned).length} pool(s) cleaned, ${Object.keys(r.frontiers).length} frontier stream(s))`);
+      } catch (e) {
+        log(`auth-barrier: resuming retirement ${it.opId} for ${it.lifecycleUid} FAILED (${e instanceof Error ? e.message : String(e)}) - the gate stays frozen and nothing mints for this alias until a resume succeeds (fail-closed)`);
+      }
+      continue;
+    }
+    try {
+      const r = await resumeAgentTakeover(reg, it.opId, { evictPrincipal });
+      log(`auth-barrier: resumed takeover ${it.opId} for ${it.lifecycleUid} (epoch ${r.toEpoch}, ${r.revokedRows} row(s) revoked, ${r.evictedPrincipals.length} principal(s) verified-evicted)`);
+    } catch (e) {
+      log(`auth-barrier: resuming takeover ${it.opId} for ${it.lifecycleUid} FAILED (${e instanceof Error ? e.message : String(e)}) - the gate stays frozen and nothing mints for this alias until a resume succeeds (fail-closed)`);
+    }
+  }
+}
 
 /** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`
  *  (loopback HTTP port; default ephemeral). All persisted material must already exist (the
@@ -133,6 +435,16 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   if (!(await isReachable(server, { creds: callout.calloutCreds })))
     throw new Error(`auth-service: can't reach the broker at ${server} with the callout creds - is the mesh up (with the callout account preloaded)?`);
 
+  // ---- The authority plane (R1): stores ensured + registry + supervised reader, BEFORE the
+  // callout exists — a connect must never be answered without the credential arm bound.
+  const plane = await openAuthAuthorityPlane({
+    server,
+    space,
+    dir,
+    dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+    log: (l) => console.error(l),
+  });
+
   // ---- Plane 2: the callout, on its own callout-account connection ----
   const nc: NatsConnection = await connect({
     servers: server,
@@ -145,7 +457,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     space,
     token: { key: issuer.localKeySet(), issuer: issuer.issuer },
-    authorizeActor: ledgerAuthorizeConnect(dir),
+    authorizeActor: plane.authorizeConnect,
     permissionsFor: calloutPermissions(ledgerAclResolver(dir)),
     log: (l) => console.error(l),
   });
@@ -160,11 +472,12 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     spaceSecret: ownerSecret,
     issuer,
     authorizeActor: ledgerAuthorizeGrant(dir),
+    mintConnectCredential: plane.mintConnectCredential,
   });
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps, space, dir }));
+  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps, space, dir, mintConnectCredential: plane.mintConnectCredential }));
   await new Promise<void>((resolvePort, reject) => {
     http.once("error", reject);
     http.listen(port, "127.0.0.1", () => resolvePort());
@@ -180,6 +493,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const stop = async () => {
     clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
     http.close();
+    await plane.close().catch(() => {});
     await nc.close().catch(() => {});
     process.exit(0);
   };
@@ -188,14 +502,24 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
 
   // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
   // owns restarts, and a callout that silently stopped answering would hang every user connect.
-  await (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
-    clearAuthServiceInfo(dir);
-    if (err) {
-      console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
+  // A FENCED plane is equally fatal (SPEC 13.13): its scanners are no longer whole, every authority
+  // operation already refuses, and a daemon that stayed up would look healthy while a successor
+  // reclaims — down the whole service instead.
+  await Promise.race([
+    (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
+      clearAuthServiceInfo(dir);
+      if (err) {
+        console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
+        process.exit(1);
+      }
+      process.exit(0);
+    }),
+    plane.fenced.then((reason) => {
+      clearAuthServiceInfo(dir);
+      console.error(`✗ auth-service: ${reason} - exiting`);
       process.exit(1);
-    }
-    process.exit(0);
-  });
+    }),
+  ]);
 }
 
 interface HandlerCtx {
@@ -207,6 +531,9 @@ interface HandlerCtx {
   space: string;
   /** The provider state dir — the AGENT grant type reads its ledger rows fresh per exchange. */
   dir: string;
+  /** The authority plane's root-credential ensure — the agent-exchange arm stamps from it (the
+   *  human arm stamps inside the bridge). */
+  mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
 /** Route one HTTP request. Local-only surface: /jwks (public keys, cacheable), /exchange (IdP JWT →
@@ -275,12 +602,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
           return send(400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
         try {
           const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
+          if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
+            throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
+          // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
+          // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
+          // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
+          const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
           const token = await ctx.issuer.issue({
             owner,
             space: ctx.space,
             actor,
             scope: grant.scope,
             parent: grant.parent,
+            // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
+            // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
+            // still-unexpired bearer dies at the alias's respawn instead of minting the
+            // successor's broker authority.
+            lifecycleUid: grant.lifecycleUid,
+            credentialId,
             ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
           });
           const { exp } = decodeJwt(token);

@@ -42,6 +42,7 @@ import {
   CONTROL_ADMIN,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
+  CONTROL_AUTH_ADMIN,
   type ControlTier,
   chatStream,
   dmStream,
@@ -57,6 +58,8 @@ import {
   membersBucket,
   aclBucket,
   aclKey,
+  assertLifecycleToken,
+  type DeprovisionTarget,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -68,6 +71,10 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
+import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, type EpCapability } from "./endpoint-grants.js";
+import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
+import { effectsBindGrants, poolOwnerBindGrants } from "./endpoint-binding.js";
+import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
@@ -84,6 +91,7 @@ export type Profile =
   | "supervisor"
   | "provisioner"
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
+  | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "operator"
   | "purger"
   | "backup"
@@ -99,7 +107,11 @@ export type Profile =
   // the authority), so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
   | "control-caller-privileged" // ps/start → ctl.<privileged>.<id> only (no cross-agent reach)
   | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
-  | "deployer"; // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+  | "deployer" // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+  // v0.4 control surface (SPEC §13.9): the per-instance endpoint serve credential — EXACTLY the
+  // instance's registered rails + epoch-pinned egress, no agent baseline. Consumes only an
+  // authorizeServeGrant-branded tuple; re-minted on takeover with the new epoch.
+  | "endpoint-serve";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -148,6 +160,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs .cotal/membership-rw.creds for the SAME nkey, delivery-admin reloadCreds reconnects the rw feed explicitly, and source re-read is only a backstop (D5 slice 5 class 2)" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
+  "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
@@ -159,9 +172,19 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
+  "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
+// RUNTIME integrity (the afa715b class): the matrix and every policy freeze at module load
+// (a post-import `defaultTtlSeconds = undefined` would otherwise mint a NON-EXPIRING credential
+// out of a one-shot profile, executed repro), and the mint path below reads a PRIVATE TTL
+// snapshot taken here, never the live export.
+for (const p of Object.values(CREDENTIAL_LIFETIMES)) Object.freeze(p);
+Object.freeze(CREDENTIAL_LIFETIMES);
+const LIFETIME_TTL_SNAP: ReadonlyMap<string, number | undefined> = new Map(
+  Object.entries(CREDENTIAL_LIFETIMES).map(([k, p]) => [k, p.defaultTtlSeconds]),
+);
 
 export function credentialLifetime(kind: CredentialKind): CredentialLifetimePolicy {
   return CREDENTIAL_LIFETIMES[kind];
@@ -350,17 +373,54 @@ export interface MintOpts {
    *  publish to the privileged control subject (start/purge/definePersona/named stop).
    *  Default-deny when absent — nats-server rejects the publish, no handler involved. */
   capabilities?: string[];
+  /** v0.4 endpoint request capabilities (SPEC §13.9 caller rows): each mints its exact
+   *  request-publish rows (+ optional journal-append row) and, when any is present, the
+   *  caller's own reply-rail read row. Requires {@link MintOpts.lifecycleUid} — the rows pin
+   *  the full caller triple. Default-deny when absent. */
+  endpointCapabilities?: EpCapability[];
+  /** The caller's lifecycle UID (SPEC §13.1), minted by the managing authority BEFORE the
+   *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
+   *  forge-locks it as the third caller token. */
+  lifecycleUid?: string;
+  /** v0.4 SERVE identity (SPEC §13.9 serve rows), `endpoint-serve` profile ONLY: mints the
+   *  instance's queue-qualified class subscribes (no plain class-rail subscribe exists on any
+   *  credential), the plain scatter and own `inst` rails for the FULL registered command set
+   *  plus the derived `describe`, the own epoch-pinned timer-fire read, and the epoch-pinned
+   *  egress (reply/epe/ept-schedule/epr). MUST be the branded ARTIFACT `authorizeServeGrant`
+   *  returned — a raw literal, a structural copy, or a diverging value refuses at the mint, and
+   *  the mint context is bound to the artifact (same space; the minted principal IS the
+   *  registered owner). The freshness FENCE is the durable issuance gate ({@link serveIssuance}
+   *  / SPEC §13.1), not this artifact. Every other profile refuses it (a serve credential is
+   *  per-instance, never an agent-baseline cred). The `$JS.API` bind rows (effects/pool
+   *  durables) ride the D14 credential assembly, not this subject-space builder. */
+  endpointServe?: EpServeGrant;
+  /** v0.4 SERVE mint fence (SPEC §13.1), `endpoint-serve` profile ONLY and REQUIRED there: the
+   *  durable, single-key issuance gate whose revision-pinned CAS `mintCreds` must WIN to release
+   *  the serve credential. Both the takeover and re-registration barriers freeze this same gate,
+   *  so a mint racing either loses the CAS and releases nothing. Production wires it to the
+   *  credential ledger's endpoint family `epgate.<endpoint>.<instanceId>` (the auth
+   *  implementation's `kvServeIssuanceGate`); a test provides a faithful CAS fake. */
+  serveIssuance?: EpIssuanceGate;
   /** Delivery-daemon shard seam (`delivery` profile only). N=1 is the only operating mode; these do
    *  not change permissions in this build (the daemon owns the whole space at N=1). Present so the
    *  N>1 follow-up is a small diff. Default `{0,1}`. */
   shard?: number;
   shards?: number;
-  /** The departed agent's id whose id-keyed footprint a `deprovisioner` cred may tear down. REQUIRED
-   *  for that profile (it throws without one): the grants are pinned to exactly this target's `dm_<id>`
-   *  / `dlv_<id>` durables + ACL row, so a leaked deprovisioner cred can delete ONE dead agent's
-   *  footprint and nothing else — never a peer's, never the role-shared `svc_<role>`. Ignored by every
-   *  other profile. */
-  deprovisionTarget?: string;
+  /** The departed LIFECYCLE whose footprint a `deprovisioner` cred may tear down: the target's
+   *  principal PLUS the exact lifecycle uid being retired (SPEC §13.1). REQUIRED for that profile (it
+   *  throws without one): the grants are pinned to exactly this incarnation's
+   *  `dm_<o>-<a>-<uid>`/`dlv_<o>-<a>-<uid>` durables + `<o>.<a>.<uid>` ACL row, so a leaked or
+   *  REPLAYED deprovisioner cred can delete ONE retired incarnation's footprint and nothing else —
+   *  never a peer's, never the role-shared `svc_<role>`, and structurally never a same-alias
+   *  successor's (its names carry a different uid). Ignored by every other profile. */
+  deprovisionTarget?: DeprovisionTarget;
+  /** `retirement-requester` profile only: the REQUESTING principal (the current space-manager's
+   *  own `owner`/`actor`) whose auth-admin control subject the credential may publish. The
+   *  subject IS the attribution (SPEC 13.2 `CONTROL_AUTH_ADMIN`): the auth service's rail
+   *  compares the subject-attributed principal against the FRESH space-manager lease holder, so
+   *  a requester minted by a manager that later lost its lease is refused AT THE RAIL. Ignored
+   *  by every other profile. */
+  retirementRequester?: { owner: string; actor: string };
   /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
    *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
    *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
@@ -390,7 +450,7 @@ function userValidDates(kind: CredentialKind, opts: MintOpts): { exp?: number } 
       throw new Error("mintCreds: expiresAt must be a non-negative integer timestamp (seconds)");
     return { exp: opts.expiresAt };
   }
-  const ttl = opts.expiresInSeconds ?? CREDENTIAL_LIFETIMES[kind].defaultTtlSeconds;
+  const ttl = opts.expiresInSeconds ?? LIFETIME_TTL_SNAP.get(kind);
   if (ttl === undefined) return {};
   if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("mintCreds: expiresInSeconds must be a positive integer");
   return { exp: Math.floor(Date.now() / 1000) + ttl };
@@ -417,18 +477,23 @@ export interface ProvisionOpts extends MintOpts {
  *  opens). It pre-creates the agent's own mailboxes and records its read ACL; it does NOT host Plane-3
  *  delivery (that is the server-side delivery daemon). */
 export interface DurableProvisioner {
-  provisionDmInbox(owner: string, actor: string): Promise<void>;
-  /** Pre-create the agent's bind-only Plane-3 DELIVER durable (`dlv_<owner>-<actor>`, filtered to
-   *  `dlv.<owner>.<actor>`) so it can BIND its per-member durable handoff without holding CONSUMER.CREATE
-   *  on the DLV stream. */
-  provisionDlvInbox(owner: string, actor: string): Promise<void>;
-  /** Record the agent's read ACL (`allowSubscribe`) in the durable ACL registry, keyed by the agent's
-   *  owner+actor principal dot-form — the same act as baking it into the JWT, persisted so the
-   *  **server-side delivery daemon** can re-authorize the agent's durable entries and validate its
-   *  runtime durable-joins (it holds no in-memory ledger). Replaces the old manager-written boot
+  /** Pre-create the lifecycle's bind-only DM durable (`dm_<owner>-<actor>-<uid>`). The implementation
+   *  captures the DM stream's ACTIVATION FRONTIER (its `last_seq` at first creation) and starts
+   *  delivery at frontier+1 (SPEC :467) — a same-alias successor inherits no predecessor DMs.
+   *  Idempotent PER LIFECYCLE: a re-provision of the same uid keeps the existing durable (and so the
+   *  ORIGINAL frontier — the activation moment does not move on manager restart). */
+  provisionDmInbox(owner: string, actor: string, lifecycleUid: string): Promise<void>;
+  /** Pre-create the lifecycle's bind-only Plane-3 DELIVER durable (`dlv_<owner>-<actor>-<uid>`,
+   *  filtered to the lifecycle-scoped `dlv.<owner>.<actor>.<uid>`) so it can BIND its per-member
+   *  durable handoff without holding CONSUMER.CREATE on the DLV stream. */
+  provisionDlvInbox(owner: string, actor: string, lifecycleUid: string): Promise<void>;
+  /** Record the lifecycle's read ACL (`allowSubscribe`) in the durable ACL registry, keyed
+   *  `<owner>.<actor>.<lifecycleUid>` (SPEC §13.1) — the same act as baking it into the JWT, persisted
+   *  so the **server-side delivery daemon** can re-authorize the agent's durable entries and validate
+   *  its runtime durable-joins (it holds no in-memory ledger). Replaces the old manager-written boot
    *  membership: boot durable membership is now the agent SELF-JOINING its durable channels via the
    *  daemon's `ctl.delivery` op at connect. */
-  commitAcl(principal: string, allowSubscribe: string[]): Promise<void>;
+  commitAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
   provisionTaskQueue(role: string): Promise<void>;
 }
 
@@ -440,6 +505,10 @@ export interface MintPrincipal {
   owner: string;
   actor: string;
   connId: string;
+  /** The incarnation's lifecycle UID (SPEC §13.1). REQUIRED for the `agent` profile — its
+   *  dm/dlv/chathist grants are lifecycle-keyed EXACT names, so a credential cannot name another
+   *  incarnation's resources. Other profiles ignore it. */
+  lifecycleUid?: string;
 }
 
 /** Resolve a {@link MintPrincipal} for the STATIC/dev mint path from an {@link Identity} + optional
@@ -447,11 +516,16 @@ export interface MintPrincipal {
  *  id, so the agent's lane is `local.<id>`. The connection nkey is always the identity's id here (the
  *  creds bind to it). User mode does NOT flow through here — the callout mints directly with the
  *  server-derived owner + ledger actor. */
-function principalOf(identity: Identity, principal?: { owner: string; actor: string }): MintPrincipal {
+function principalOf(
+  identity: Identity,
+  principal?: { owner: string; actor: string },
+  lifecycleUid?: string,
+): MintPrincipal {
   return {
     owner: principal?.owner ?? DEV_OWNER,
     actor: principal?.actor ?? identity.id,
     connId: identity.id,
+    ...(lifecycleUid !== undefined ? { lifecycleUid } : {}),
   };
 }
 
@@ -468,7 +542,14 @@ export async function provisionAgent(
   identity: Identity,
   opts: ProvisionOpts = {},
 ): Promise<string> {
-  const allowSubscribe = await provisionAgentDurables(provisioner, principalOf(identity, opts.principal), opts);
+  if (!opts.lifecycleUid)
+    throw new Error("provisionAgent: a lifecycleUid is required - the agent's broker footprint is lifecycle-keyed (SPEC 13.1); mint one with mintLifecycleUid() and persist it with the agent");
+  const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
+  const allowSubscribe = await provisionAgentDurables(
+    provisioner,
+    { owner: pr.owner, actor: pr.actor, lifecycleUid: opts.lifecycleUid },
+    opts,
+  );
   return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
 }
 
@@ -479,9 +560,10 @@ export async function provisionAgent(
  *  Returns the resolved read ACL so both callers scope from the same computed set. */
 export async function provisionAgentDurables(
   provisioner: DurableProvisioner,
-  pr: { owner: string; actor: string },
+  pr: { owner: string; actor: string; lifecycleUid: string },
   opts: ProvisionOpts = {},
 ): Promise<string[]> {
+  const uid = assertLifecycleToken(pr.lifecycleUid); // hard cut: every provisioned footprint is lifecycle-keyed (SPEC 13.1)
   const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
   // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
@@ -494,16 +576,16 @@ export async function provisionAgentDurables(
       throw new Error(
         `provisionAgent: subscribe "${ch}" is not within allowSubscribe [${allowSubscribe.join(", ")}]`,
       );
-  await provisioner.provisionDmInbox(pr.owner, pr.actor);
-  await provisioner.provisionDlvInbox(pr.owner, pr.actor);
+  await provisioner.provisionDmInbox(pr.owner, pr.actor, uid);
+  await provisioner.provisionDlvInbox(pr.owner, pr.actor, uid);
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
   // server-side delivery daemon can re-authorize this agent's durable entries + validate its runtime
   // durable-joins — it holds no in-memory ledger. The agent SELF-JOINS its durable boot channels via the
   // daemon at connect (no manager-written boot membership). `durableMembership:false` (an explicit
   // live-only launcher, e.g. `cotal spawn --live-only`) opts out of the ACL row → the daemon never
   // authorizes a durable backstop for it, so it stays live-only.
-  // ACL is keyed by the agent's owner+actor principal dot-form (per-agent read authority).
-  if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, allowSubscribe);
+  // ACL is keyed by the lifecycle-scoped dot-form <owner>.<actor>.<uid> (per-incarnation read authority).
+  if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
   if (opts.role) await provisioner.provisionTaskQueue(opts.role);
   return allowSubscribe;
 }
@@ -523,8 +605,13 @@ export async function mintCreds(
   opts: MintOpts = {},
 ): Promise<string> {
   const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
-  const pr = principalOf(identity, opts.principal);
-  const perms = permissionsFor(profile, auth.space, pr, opts);
+  const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
+  // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor
+  // refuses "endpoint-serve" (so a direct caller can never obtain unfenced serve rows), and only
+  // this fenced path calls the row builder.
+  const perms = profile === "endpoint-serve"
+    ? endpointServePermissions(auth.space, pr, opts)
+    : permissionsFor(profile, auth.space, pr, opts);
   const validDates = userValidDates(profile, opts);
   const userJwt = await encodeUser(
     profile,
@@ -536,8 +623,39 @@ export async function mintCreds(
     { ...perms, tags: principalTags(pr.owner, pr.actor) },
     { signer, ...validDates },
   );
-  const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
-  return new TextDecoder().decode(creds);
+  // Build the credential string FULLY before the fence: nothing fallible may run AFTER a winning
+  // CAS, or a post-CAS throw would leave a committed ledger row with no released credential (an
+  // orphan authority record). fmtCreds only wraps the already-signed JWT with the seed, so it is
+  // done here and the fence is the mint's LAST step.
+  const creds = new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
+  // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
+  // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
+  // coordinates) is durably staged and its revision-pinned CAS wins the instance's single issuance
+  // gate (still `open` at the authorized epoch + registrationRevision + nameAuthorityRevision). A
+  // takeover, re-registration, or name transfer that froze the gate first makes this lose and
+  // release nothing. A read is never a fence, so this is a CAS write, not an in-memory mark.
+  if (profile === "endpoint-serve") {
+    if (!opts.serveIssuance)
+      throw new Error("mintCreds: endpoint-serve requires opts.serveIssuance (the durable issuance-gate seam; the mint releases only on its revision-pinned CAS win, SPEC 13.1)");
+    await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
+      // PER-ISSUED-JWT id (digest of the credential): every issuance (a standing renewal included)
+      // has distinct bytes (fresh exp/iat), so it writes a DISTINCT ledger row and never overwrites
+      // or resurrects a prior one. The create-only / idempotent-if-identical guarantee lives at the
+      // finalize/stage seam (the SAME credential object staged twice), not the mint layer. The
+      // stable nkey rides separately as `credentialKey` for broker revocation. KEY-SAFE digest
+      // form (`sha256-<hex>`, never the §13.7 `sha256:` artifact form): the id becomes a segment
+      // of the durable `epcred.` KV key, whose grammar has no ":" — the digest property (a
+      // byte-identical retry maps to the SAME id) is what matters, not the separator.
+      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialKey: identity.id,
+      holderActor: pr.actor,
+      // A serve credential is minted directly by the provisioner authority, so its §13.1 issuance
+      // lineage is the root anchor (not owner/actor principal components).
+      sourceChain: ["root"],
+      ...(validDates.exp !== undefined ? { exp: validDates.exp } : {}),
+    });
+  }
+  return creds;
 }
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
@@ -563,6 +681,12 @@ export function permissionsFor(
   // chosen nonce (untrusted), so a metacharacter here would escalate the inbox grant to every inbox.
   // Assert once, for all profiles (each early-returning profile builds its own inbox from pr.connId).
   assertInboxConnId(pr.connId);
+  // Extraneous serve-artifact refusal, hoisted ABOVE the profile dispatch: every early-return
+  // profile (delivery/supervisor/observer/...) must refuse it too, not just the agent tail, or a
+  // misconfigured sensitive mint is silently masked (MintOpts: every other profile refuses it).
+  // The "endpoint-serve" profile is excluded so its own arm below keeps the call-mintCreds redirect.
+  if (opts.endpointServe && profile !== "endpoint-serve")
+    throw new Error(`permissionsFor: endpointServe rides the dedicated "endpoint-serve" profile - a serve credential is per-instance authority (SPEC 13.9), never folded into a "${profile}" cred`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
@@ -572,8 +696,18 @@ export function permissionsFor(
     // full principal dot-form for user-mode agents, or a bare static/dev actor id (keyed under
     // DEV_OWNER) — see {@link deprovisionTargetPrincipal}.
     if (!opts.deprovisionTarget)
-      throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget (the departed agent's actor id)");
+      throw new Error("permissionsFor: deprovisioner requires opts.deprovisionTarget ({principal, lifecycleUid} of the departed incarnation)");
     return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
+  }
+  if (profile === "retirement-requester") {
+    // Ephemeral request+reply on the auth-admin rail (#29 piece 3): publish EXACTLY the
+    // requester's own control subject + subscribe its own reply subtree and inbox. No store
+    // reads, no barrier/scanner/plane authority - the requester only asks; the auth plane
+    // holds every executing right and re-checks the lease at serve time.
+    if (!opts.retirementRequester)
+      throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester ({owner, actor} of the requesting manager)");
+    const req = controlServiceSubject(space, CONTROL_AUTH_ADMIN, opts.retirementRequester.owner, opts.retirementRequester.actor);
+    return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
   if (profile === "backup") {
@@ -592,6 +726,10 @@ export function permissionsFor(
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, CONTROL_PRIVILEGED); // ps/start (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, CONTROL_ADMIN); // stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? CONTROL_ADMIN); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
+  if (profile === "endpoint-serve")
+    // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
+    // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
+    throw new Error("permissionsFor: endpoint-serve rows are emitted only by mintCreds behind the §13.1 issuance fence; call mintCreds");
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
@@ -607,14 +745,18 @@ export function permissionsFor(
     // creates on CHAT + the presence KV. No chat/inst/svc/ctl publish → can't post.
     //   observer — sub chat.> only; DM_<space>/svc never named → DMs + anycast structurally
     //     invisible (step-6 inbox scoping means it can't sniff deliveries either).
-    //   admin — sub widened to the whole space so the dashboard's tap also sees DMs (inst.>)
-    //     and anycast (svc.>) live, PLUS DM-stream read verbs so it can backfill DM history.
-    //     A deliberate god-view: DMs are plaintext + ACL-gated, so mint this only for a trusted
-    //     audit dashboard. CONSUMER.CREATE on DM_<space> is the DM-confidentiality surface —
-    //     granted here ONLY for this elevated read-only profile, never to agents.
+    //   admin — sub widened to the MESSAGING plane, enumerated (SPEC 13.9/13.11): the
+    //     dashboard's tap also sees DMs (inst.>) and anycast (svc.>) live, PLUS DM-stream read
+    //     verbs so it can backfill DM history. A deliberate god-view over messaging only: a
+    //     space-wide `>` would additionally plain-subscribe every v0.4 endpoint request rail
+    //     (collecting the reply nonces the queue-qualified-only rule protects) and every
+    //     core-only session frame, so the ep/epe/epf/epj/ept/epr/epw/eps/epc planes are
+    //     deliberately excluded. DMs are plaintext + ACL-gated, so mint this only for a
+    //     trusted audit dashboard. CONSUMER.CREATE on DM_<space> is the DM-confidentiality
+    //     surface — granted here ONLY for this elevated read-only profile, never to agents.
     const sub =
       profile === "admin"
-        ? [`${spacePrefix(space)}.>`, inbox]
+        ? [`${spacePrefix(space)}.chat.>`, `${spacePrefix(space)}.inst.>`, `${spacePrefix(space)}.svc.>`, inbox]
         : [`${spacePrefix(space)}.chat.>`, inbox];
     const allow = [
       "$JS.API.INFO",
@@ -675,8 +817,11 @@ export function permissionsFor(
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);
   const manager = opts.manager ?? CONTROL_PRIVILEGED;
-  const chatHistD = chatHistDurable(pr.owner, pr.actor), dmD = dmDurable(pr.owner, pr.actor);
-  const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor); // Plane-3 per-member delivery (bind-only)
+  if (!pr.lifecycleUid)
+    throw new Error("permissionsFor(agent): a lifecycleUid is required - the agent's dm/dlv/chathist grants are lifecycle-keyed exact names (SPEC 13.1)");
+  const uid = assertLifecycleToken(pr.lifecycleUid);
+  const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
+  const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
   const svcD = opts.role ? taskDurable(opts.role) : undefined;
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
@@ -767,6 +912,30 @@ export function permissionsFor(
     // broker-enforced half of the tier split; the manager's per-op checks stay on top of it.
     pubAllow.push(controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor));
   }
+  // v0.4 endpoint rails (SPEC §13.9 caller rows). EVERY agent gets the Appendix-B BASELINE set
+  // (wildcard describe + delivery join/leave/list + self-mode lifecycle + the reply rail), keyed
+  // on the SAME lifecycle uid as the agent's durables; the spawn capability adds the owner-mode
+  // manager lifecycle set. Beyond the baseline stays default-deny: only minted capabilities
+  // produce rows, each pinning the full caller triple (§13.1 lifecycle UID included; the nonce
+  // is the only wildcard token).
+  // ONE lifecycle uid keys the whole caller rail (§13.1/§13.2 forge-lock: one credential names one
+  // incarnation). `uid` is the already-asserted pr.lifecycleUid; the baseline, the spawn set, AND
+  // the explicit capabilities ALL build their caller triple from it. opts.lifecycleUid is a public
+  // seam (the IdP-adapter path) that must AGREE, never a second source of truth for the triple: a
+  // divergent value would mint two reply rails on one credential, so it fails loud here.
+  const epCaller = { owner: pr.owner, actor: pr.actor, uid };
+  const baseline = epBaselineGrantRows(space, epCaller);
+  pubAllow.push(...baseline.pub);
+  const epSub: string[] = [...baseline.sub];
+  if (opts.capabilities?.includes("spawn"))
+    pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);
+  if (opts.endpointCapabilities?.length) {
+    if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
+      throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);
+    const rows = epCallerGrantRows(space, opts.endpointCapabilities, epCaller);
+    pubAllow.push(...rows.pub);
+    for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
+  }
   // Explicit create-deny (defense-in-depth over default-deny) on the two streams whose
   // create-time filter_subject is the attack surface — DM (private content) and TASK
   // (cross-role work-stealing). Covers the bare ephemeral form (no trailing token), the
@@ -804,7 +973,7 @@ export function permissionsFor(
     controlReplies.push(`${controlServiceSubject(space, CONTROL_PRIVILEGED, pr.owner, pr.actor)}.reply.>`);
   if (opts.capabilities?.includes("admin"))
     controlReplies.push(`${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat] } };
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat, ...epSub] } };
 }
 
 /** The long-lived SUPERVISOR permission set (closure (ii), residual 2) — the always-on manager daemon
@@ -1035,6 +1204,52 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string
   };
 }
 
+/** ENDPOINT-SERVE (v0.4, SPEC §13.9 "Serve grants") — the per-instance serve credential:
+ *  EXACTLY the instance's registered rails and nothing else. Subscribe: the queue-qualified
+ *  class rail, the plain scatter rail, and the own-instance rail for the FULL registered
+ *  command set plus the derived `describe`, and the own epoch-pinned timer-fire subjects;
+ *  publish: the epoch-pinned egress (reply / `epe` events / `ept` schedule requests / `epr`
+ *  record-write ingress) plus, from the branded snapshot only, the §13.9 bind rows: the shared
+ *  `eff_<e>` effects bind iff the surface is journal-class and each owned `pool_<e>_<pool>`
+ *  bind (bind-only + `$JS.API.INFO`; an ephemeral-only poolless endpoint emits none). No agent
+ *  baseline of any kind — no chat/DM/anycast/presence/ctl, no broad `$JS.>`. The value MUST be the
+ *  branded ARTIFACT `authorizeServeGrant` returned, and its mint context binds: same space, and
+ *  the minted principal is the registered owner. This builds the ROWS; the RELEASE fence is the
+ *  durable issuance-gate CAS `mintCreds` runs (SPEC §13.1) — a raw/copied/diverging value or a
+ *  foreign space/principal refuses here, and a stale incarnation loses the gate CAS. */
+function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
+  if (!opts.endpointServe)
+    throw new Error("permissionsFor: endpoint-serve requires opts.endpointServe (the authorized serve artifact)");
+  // The fence is INSEPARABLE from serve-row emission: a serve credential's rows are only ever
+  // valid when released behind the §13.1 issuance CAS, so this builder refuses to emit them
+  // without the gate seam — closing the exported-permissionsFor bypass where a direct signer
+  // could obtain unfenced serve rows past the brand/space/owner check. `mintCreds` runs the CAS.
+  if (!opts.serveIssuance)
+    throw new Error("permissionsFor: endpoint-serve requires opts.serveIssuance (serve rows are emitted only behind the §13.1 issuance fence; mintCreds runs its CAS before release)");
+  const snap = assertServeGrantMintable(opts.endpointServe, { space, holderOwner: pr.owner });
+  // Rail subscribe rows cover the EPHEMERAL commands only (journal commands ride epj, never the
+  // request rails) + the derived describe; the descriptor surface stays full. The class comes
+  // from the brand-verified artifact surface, not the caller.
+  const ephemeralCommands = snap.commands.filter((cmd) => opts.endpointServe!.surface[cmd].class === "ephemeral");
+  const rows = epServeGrantRows(space, {
+    endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, ephemeralCommands,
+  });
+  // §13.9:2473 bind rows, from the BRANDED snapshot only (journal class is registered truth,
+  // pools are the authorizing provisioner's pre-created durables): a journal-class instance
+  // binds the shared `eff_<e>` effects durable, a pool-owning one binds each owned
+  // `pool_<e>_<pool>` — all bind-only (INFO/MSG.NEXT/ACK, never create/delete), plus the one
+  // `$JS.API.INFO` a pull consumer needs. An ephemeral-only poolless endpoint emits NONE of
+  // these rows (default-deny both directions).
+  const bindRows: string[] = [];
+  if (snap.journalClass) bindRows.push(...effectsBindGrants(space, snap.endpoint));
+  for (const pool of snap.pools) bindRows.push(...poolOwnerBindGrants(space, snap.endpoint, pool));
+  if (bindRows.length > 0) bindRows.push("$JS.API.INFO");
+  return {
+    pub: { allow: [...rows.pub, ...bindRows] },
+    sub: { allow: [...rows.sub, `_INBOX_${pr.connId}.>`] },
+  };
+}
+
 /** DEPLOYER (PR 1.5) — the `cotal spawn -f` manifest-deploy authority. `spawn -f` drives ONE
  *  `connectProbe` endpoint that both READS live state (roster/presence watch, channel registry,
  *  membership feed, manager-singleton lease) AND control-CALLS the running manager's admin tier
@@ -1212,21 +1427,24 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
  *  the absent ACL) if fired while T is still alive. It CANNOT read T's bodies, impersonate T, reach any peer, or
  *  delete a stream — and it is ephemeral (one per-exit teardown, minted then dropped). Contained and
  *  recoverable (re-provision T). */
-function deprovisionerPermissions(space: string, pr: MintPrincipal, targetActor: string): Record<string, unknown> {
+function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionTarget: DeprovisionTarget): Record<string, unknown> {
   const DM = dmStream(space), DLV = dlvStream(space);
-  const t = deprovisionTargetPrincipal(targetActor);
+  const t = deprovisionTargetPrincipal(deprovisionTarget);
   const target = principalKey(t.owner, t.actor);
   return {
     pub: {
       allow: [
         "$JS.API.INFO", // jetstreamManager bootstrap
-        // Delete the target's two bind-only durables BY EXACT NAME — no `.>`, no cross-agent reach.
-        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(t.owner, t.actor)}`,
-        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(t.owner, t.actor)}`,
-        // Purge the target's read-ACL row (own-target key only — the reader then treats it as an unknown
-        // owner). `kvm.open` binds the pre-created bucket; the purge rides `$KV.<aclBucket>.<key>`.
+        // Delete the target LIFECYCLE's two bind-only durables BY EXACT NAME — no `.>`, no cross-agent
+        // reach, and no reach into a same-alias successor: its names carry a different uid, so a
+        // replayed teardown is broker-DENIED there (SPEC 13.1 / Appendix "deprovisioner").
+        `$JS.API.CONSUMER.DELETE.${DM}.${dmDurable(t.owner, t.actor, t.lifecycleUid)}`,
+        `$JS.API.CONSUMER.DELETE.${DLV}.${dlvDurable(t.owner, t.actor, t.lifecycleUid)}`,
+        // Purge the target lifecycle's read-ACL row (own-target exact key only — the reader then treats
+        // it as an unknown owner). `kvm.open` binds the pre-created bucket; the purge rides
+        // `$KV.<aclBucket>.<key>`.
         `$JS.API.STREAM.INFO.KV_${aclBucket(space)}`,
-        `$KV.${aclBucket(space)}.${aclKey(target.key)}`,
+        `$KV.${aclBucket(space)}.${aclKey(target.key, t.lifecycleUid)}`,
       ],
     },
     // Replies only: the CONSUMER.DELETE PubAcks + KV purge ack land on the per-connection inbox. NO chat/DM/ctl
@@ -1285,9 +1503,11 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys.
     `$JS.API.STREAM.INFO.${DKV}`, `$JS.API.STREAM.MSG.GET.${DKV}`,
     `$KV.${deliveryBucket(space)}.lease.*`,
-    // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY principal — the
-    // owner+actor slots widen to `.*.*` (dinbox/dlv are per-agent now).
-    `${p}.dinbox.*.*`, `${p}.dlv.*.*`,
+    // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY lifecycle — the
+    // identity slots widen to `.*.*.*` (owner+actor+lifecycleUid: dinbox/dlv are per-LIFECYCLE now,
+    // SPEC 13.1; NATS subject arity is exact, so the old two-token form is broker-denied on every
+    // three-token write).
+    `${p}.dinbox.*.*.*`, `${p}.dlv.*.*.*`,
     // ctl.delivery control REPLIES ONLY (requests arrive on the sub below; the daemon only ever
     // m.respond()s to a requester's reply subject `ctl.delivery.<owner>.<actor>.reply.<n>`). Scoped to
     // the `.reply.>` leaf so the daemon can't publish to the request subjects themselves — tighter than a

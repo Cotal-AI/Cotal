@@ -19,7 +19,7 @@
  */
 import { decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertValidOwnerToken } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "@cotal-ai/core";
 
 /** Current normative token-shape version. Bump only with a SPEC change; validators reject
  *  anything else (older = downgrade, newer = from-the-future misconfig). */
@@ -61,6 +61,16 @@ export interface UserTokenActor {
   scope?: string[];
   /** The spawning principal (`<owner>.<actor>` dot-form), when this agent was spawned by another. */
   parent?: string;
+  /** The ledger row's lifecycle UID this bearer was minted against (SPEC 13.1). The callout's
+   *  connect authorization requires exact equality with the CURRENT row; a bearer minted for a
+   *  retired incarnation is refused, never resolved to the successor. */
+  lifecycleUid?: string;
+  /** The credential-ledger row id this bearer was issued under (SPEC 13.1: `cred.<uid>.<credid>`).
+   *  The connect boundary leader-reads that row and refuses a bearer whose credential row is
+   *  revoked or absent (the deny-new lever) — and for a root credential, whose credid is not the
+   *  lifecycle head's `currentCredentialId`. Grammar-asserted here (well-formed only); the STATE
+   *  match is the connect boundary's job, exactly like {@link lifecycleUid}. */
+  credentialId?: string;
   /** Exchange-authorized elevated view ({@link USER_TOKEN_VIEWS}); absent = agent profile. */
   view?: UserTokenView;
 }
@@ -75,11 +85,26 @@ export interface ValidatedUserToken {
   scope: string[];
   /** The validated actor claim. */
   act: UserTokenActor;
+  /** The credential-ledger row id this bearer was minted under (== `act.credentialId`, hoisted for
+   *  the connect boundary's leader-served revocation read). Absent on a pre-cut bearer. */
+  credentialId?: string;
   /** Token-shape version (== {@link USER_TOKEN_VER}). */
   ver: number;
   /** Bearer expiry (unix seconds) — the callout binds the minted NATS user JWT's lifetime to it,
    *  so broker access dies with the bearer (the v1 revocation lever, enforced server-side). */
   exp: number;
+}
+
+/** A KV-safe key segment: the ledger's `cred.` key alphabet. Kept local to the validator (not
+ *  imported from the credential ledger) so the trust boundary carries no KV dependency. */
+const CREDENTIAL_ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/** Assert a `credentialId` claim is a bounded dotted KV-safe id (mirrors the ledger's
+ *  `cred.<uid>.<credid>` tail grammar; the STATE match is the connect boundary's job). Shared by
+ *  the mint side (the issuer, so the mint ↔ validate inverse holds) and this validator. THROWS. */
+export function assertCredentialIdClaim(v: unknown): asserts v is string {
+  if (typeof v !== "string" || v.length === 0 || v.length > 256 || !v.split(".").every((s) => CREDENTIAL_ID_SEGMENT.test(s)))
+    throw new Error(`user token: act.credentialId ${JSON.stringify(v)} is not a bounded dotted KV-safe credential id`);
 }
 
 export interface ValidateUserTokenOpts {
@@ -162,6 +187,22 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     throw new Error(
       `user token: act.view "${String(act.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - unknown views fail closed`,
     );
+  // Lifecycle claim (SPEC 13.1): grammar-asserted when present. Presence/absence POLICY lives at the
+  // connect boundary (ledgerAuthorizeConnect requires it on EVERY bearer, views included) and the
+  // mint boundary (the idp bridge and the agent exchange stamp it from the grant row); the validator
+  // only guarantees a present claim is well-formed, so no garbled uid reaches an equality check.
+  if (act.lifecycleUid !== undefined) {
+    if (typeof act.lifecycleUid !== "string")
+      throw new Error("user token: act.lifecycleUid must be a string token when present");
+    assertLifecycleToken(act.lifecycleUid, "user token act.lifecycleUid");
+  }
+  // Credential claim (SPEC 13.1): grammar-asserted when present, same posture as lifecycleUid. The
+  // grammar mirrors the ledger's `cred.<uid>.<credid>` tail (bounded dotted KV-safe segments) but
+  // is checked LOCALLY on purpose — the trust-boundary validator must not depend on the KV
+  // credential ledger. The connect boundary matches this credid against the real leader-served
+  // row (active + principal-bound; root also head-current); the validator only guarantees a
+  // present claim is a well-formed, KV-safe id, so no garbled id reaches that read.
+  if (act.credentialId !== undefined) assertCredentialIdClaim(act.credentialId);
 
   const scope = payload.scope === undefined ? [] : payload.scope;
   if (!(Array.isArray(scope) && scope.every((s) => typeof s === "string")))
@@ -171,7 +212,8 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, view: act.view },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view },
+    credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
     exp: payload.exp,
   };

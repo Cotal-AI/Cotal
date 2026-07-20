@@ -32,9 +32,10 @@ One-line definitions of the terms used across these docs and the spec. The base 
 - **Connector**: an adapter that bridges an agent harness (Claude Code, OpenCode, Hermes, …) to
   the mesh, exposing the `cotal_*` tools. [connect-claude.md](connect-claude.md)
 
-- **Control plane**: the request/reply layer on `ctl` subjects plus the infra roles behind it
-  (the manager and the delivery daemon) that provision and supervise a mesh.
-  [architecture.md](architecture.md)
+- **Control plane**: the request/reply layer (from v0.4 the endpoint control surface, on the
+  `ep` rails) plus the infra roles behind it (the manager and the delivery daemon) that
+  provision and supervise a mesh.
+  [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04), [architecture.md](architecture.md)
 
 - **Delivery class (`live` / `durable`)**, a channel's per-channel delivery guarantee: `live`
   is at-most-once; `durable` adds a per-member backstop (at-least-once within retention). Distinct
@@ -66,6 +67,11 @@ One-line definitions of the terms used across these docs and the spec. The base 
 - **Join link**: a `cotal://` / `cotals://` URL encoding broker host, space, optional credential,
   and optional channels, the onboarding half of the contract.
   [SPEC §10](../SPEC.md#10-connection-and-onboarding)
+
+- **Lifecycle UID (`lifecycleUid`)**: an unguessable, never-reused id of one managed lifecycle
+  under a principal; it distinguishes a live instance from a same-name successor and keys that
+  incarnation's durable state. Advisory in presence, authoritative in the trusted lifecycle
+  mapping. [SPEC §13.1](../SPEC.md#131-lifecycle-identity), [§6](../SPEC.md#6-presence-and-discovery)
 
 - **Manager**, the agent supervisor and provisioner host: spawns and manages agent nodes over a
   pluggable runtime, and pre-creates the durables and membership records agents can't create
@@ -103,6 +109,11 @@ One-line definitions of the terms used across these docs and the spec. The base 
 - **Provisioner**: the privileged, signing-capable role that mints scoped credentials and writes
   the durables and membership records agents cannot write themselves.
   [SPEC §7](../SPEC.md#7-channels), [Appendix B](../SPEC.md#appendix-b-profile-acls)
+
+- **Retirement**: the terminal teardown of a lifecycle when an agent is despawned, stopped, or
+  supervision-escalated (settle in-flight work, evict its credentials, record it retired). The
+  freed name is held reserved until it completes, which is what makes reusing an agent's name
+  safe. [SPEC §13.1](../SPEC.md#131-lifecycle-identity), [identity & auth](identity-and-auth.md)
 
 - **Role / service**: a named anycast target a group of agents share; a message to the role
   reaches one of them. [SPEC §1](../SPEC.md#1-scope-and-terminology), [§4](../SPEC.md#4-delivery-modes)

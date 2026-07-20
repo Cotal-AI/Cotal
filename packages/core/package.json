@@ -31,6 +31,8 @@
     "@nats-io/kv": "^3.4.0",
     "@nats-io/nkeys": "^2.0.3",
     "@nats-io/transport-node": "^3.4.0",
+    "ajv": "^8.20.0",
+    "json-canonicalize": "^2.0.0",
     "yaml": "^2.9.0"
   },
   "files": [

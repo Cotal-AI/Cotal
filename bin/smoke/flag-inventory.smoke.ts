@@ -44,8 +44,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   use: { flags: [], positionals: true },
   join: {
     flags: [
-      ...TARGET, "channel:string", "kind:string", "link:string", "name:string", "role:string",
-      "tls:boolean", "token:string",
+      ...TARGET, "channel:string", "kind:string", "lifecycle-uid:string", "link:string",
+      "name:string", "role:string", "tls:boolean", "token:string",
     ],
     positionals: false,
   },

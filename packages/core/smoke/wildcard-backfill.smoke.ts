@@ -22,7 +22,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CotalEndpoint, seedChannelRegistry, isReachable,
+  CotalEndpoint, seedChannelRegistry, isReachable, mintLifecycleUid,
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -48,7 +48,7 @@ const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.te
 interface Rec { channel?: string; text: string; historical: boolean; kind?: MessageMeta["kind"] }
 function recorder(name: string, id: string, channels: string[]) {
   const got: Rec[] = [];
-  const ep = new CotalEndpoint({ space, servers, card: { name, kind: "agent", id }, channels });
+  const ep = new CotalEndpoint({ space, servers, card: { name, kind: "agent", id }, channels, lifecycleUid: mintLifecycleUid() });
   ep.on("error", () => {});
   ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
     got.push({ channel: m.channel, text: textOf(m), historical: meta?.historical ?? false, kind: meta?.kind });
@@ -71,7 +71,7 @@ try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
 
   // A single publisher with concrete channels on both fresh subtrees (publishes must be concrete).
-  const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["wbk.security", "wbk.a.b", "tld.security"] });
+  const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["wbk.security", "wbk.a.b", "tld.security"], lifecycleUid: mintLifecycleUid() });
   A.on("error", () => {});
   await A.start();
   await sleep(300);

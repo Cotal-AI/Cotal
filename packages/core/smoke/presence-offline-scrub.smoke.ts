@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isReachable, presenceBucket, type Presence } from "../src/index.js";
+import { CotalEndpoint, isReachable, mintLifecycleUid, presenceBucket, principalKey, DEV_OWNER, type Presence } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -40,7 +40,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
 
-  const ep = new CotalEndpoint({ space, servers, channels: ["general"], card: { name: "otto", kind: "agent", id } });
+  const ep = new CotalEndpoint({ space, servers, channels: ["general"], card: { name: "otto", kind: "agent", id }, lifecycleUid: mintLifecycleUid() });
   ep.on("error", () => {});
   await ep.start();
   await ep.setAttention("dnd");
@@ -50,7 +50,8 @@ try {
   // A direct wire consumer of the presence KV (like a dashboard), bypassing observer-side scrub.
   const nc = await connect({ servers });
   const kv = await new Kvm(nc).open(presenceBucket(space));
-  const read = async (): Promise<Presence | undefined> => (await kv.get(id))?.json<Presence>();
+  // Presence is keyed by the PRINCIPAL dot-form (`local.<id>` = card.id under the owner+actor grammar), not the raw id.
+  const read = async (): Promise<Presence | undefined> => (await kv.get(principalKey(DEV_OWNER, id).key))?.json<Presence>();
 
   const live = await read();
   check("LIVE raw record carries attention + channelModes", live?.attention === "dnd" && live?.channelModes?.general === "muted");

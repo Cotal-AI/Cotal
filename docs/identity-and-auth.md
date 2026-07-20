@@ -96,7 +96,9 @@ files to hand out, and revoking a grant actually bites.
 any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
 revocation bites here too) → a local exchange turns it into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints
-a scoped credential on the spot. The operator grants access with
+a scoped credential on the spot. Every bearer also names a **root credential** row in the
+space's credential ledger, proved live at each connect, so revoking that one credential
+bites at the very next connect. The operator grants access with
 `cotal actor grant <actor> --sub <their id>`; a bare grant is the full envelope (all
 channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
@@ -104,10 +106,18 @@ No ledger row, no access; there is no allow-by-default.
 **One auth service per space** hosts both halves: the NATS auth callout and the loopback
 token exchange. It starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for
-the creds it mints); the operator seed never enters it. If it
+the creds it mints); the operator seed never enters it. It also owns the space's two authority
+stores (lifecycle records and the credential ledger), provisions them at boot, and refuses
+connects it cannot credential-check against them; there is no fallback path. If it
 dies while the broker lives, re-running `cotal up` heals it, and a boot whose auth
 service never became ready exits non-zero, so automation never reads a dead identity
-plane as success.
+plane as success. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
+service takes a broker-backed ownership claim, so a second same-space auth process refuses
+with instructions instead of silently splitting the plane, and a crashed one's claim is
+reclaimed only once the broker confirms its connections are gone — a verdict trusted only
+on a standalone broker (a clustered one refuses the reclaim, since a partitioned member
+could still hold them). If the claim's connections die mid-run, the service downs itself
+loudly instead of serving from a half-dead plane.
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
@@ -116,6 +126,24 @@ less) and refreshes ahead of each expiry. Rows are runtime grants: every start r
 the secret, every stop or despawn revokes the row, so a non-running agent holds no
 standing authority. Manifest deploys (`up -f`) stamp the logged-in owner into the launch,
 so those agents are yours too.
+
+**Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
+drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the
+agent's standing mint authority (its ledger row, so a copied token can no longer mint a fresh
+credential), deletes its broker footprint (the lifecycle-keyed durables + read-ACL row), and asks
+the auth service to *retire* the lifecycle (settle in-flight work, evict the departed credentials,
+record it retired). The name is held *reserved pending retirement* until **all** of that completes —
+the broker-footprint cleanup, the standing-authority revoke, **and** the lifecycle retirement, not the
+retirement alone — so a same-name respawn in the gap is refused with
+a plain reason and a retry hint rather than quietly handing the alias to a new agent while
+the old lifecycle's teardown is still running. Only once the broker footprint is gone, the standing
+authority is revoked, and the retirement is confirmed does the name free, and `cotal spawn <same-name>`
+gives you a fresh agent cleanly. This is what makes reusing an agent's name safe: the old lifecycle is
+fully torn down before the new one takes the alias. If a step cannot complete — the auth service is
+unreachable, or the standing-authority revoke fails — the despawn still stops the agent and *holds* the
+name; **a same-name `cotal spawn` re-drives the whole teardown** and finishes it (retrying the despawn
+does not — the agent is already stopped), and the operator copy tells you to recover the stack
+(`cotal supervise`) rather than reusing the name over an unretired predecessor.
 
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:
 everything under their owner (their CLI, every agent they spawn, every agent those

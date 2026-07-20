@@ -52,6 +52,9 @@ export interface ActorGrant {
   scope?: string[];
   /** The spawning principal (`<owner>.<actor>` dot-form), when the ledger records one. */
   parent?: string;
+  /** The row's lifecycle UID (SPEC 13.1) — stamped into the bearer so a predecessor incarnation's
+   *  still-unexpired bearer can never be minted the successor's broker authority at connect. */
+  lifecycleUid?: string;
 }
 
 export interface CreateIdpBridgeOpts {
@@ -67,6 +70,18 @@ export interface CreateIdpBridgeOpts {
    *  it get? MUST return an {@link ActorGrant} object to allow; throw to deny. There is no
    *  allow-by-default — a hook that returns anything else fails the exchange. */
   authorizeActor: (owner: string, actor: string) => ActorGrant | Promise<ActorGrant>;
+  /** The ROOT-credential ensure (R1, SPEC 13.1): returns the incarnation's live root credential
+   *  id, minting it release-last on first exchange; throws to deny. Its result rides
+   *  `act.credentialId`, which the connect arm requires against the LIVE `cred.` row. REQUIRED and
+   *  construction-validated (like {@link authorizeActor}): a bridge that could mint a CLAIMLESS
+   *  bearer is a silent-degrade hazard — in ANY composition that wires this public bridge without
+   *  the v0.4 deny-new arm, a claimless bearer means the credential-liveness check has nothing to
+   *  bite and deny-new never engages at all. The public v0.4 mint API therefore MUST NOT be able
+   *  to emit a claimless shape whose safety depends on a separate component being wired. A
+   *  genuinely different connect-authority model gets its own explicit constructor that still
+   *  emits a conformant credential id. (`validateUserToken` stays tolerant of an absent claim so
+   *  the CONNECT boundary owns the signed deny-new denial for pre-cut/forged tokens.) */
+  mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
 /** A successful exchange: the minted bearer plus what a caller needs to cache/refresh it. */
@@ -131,6 +146,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
   if (!opts.idp.key) throw new Error("idp bridge: idp.key (the pinned JWKS resolver / public key) is required");
   if (typeof opts.authorizeActor !== "function")
     throw new Error("idp bridge: an authorizeActor ledger hook is required - there is no allow-by-default");
+  if (typeof opts.mintConnectCredential !== "function")
+    throw new Error("idp bridge: a mintConnectCredential hook is required (SPEC 13.1, R1) - the v0.4 bridge must stamp every bearer's incarnation root credential; a claimless mint would silently disable deny-new in any composition without the connect arm");
   return {
     exchange: async (idpToken, req) => {
       assertValidOwnerToken(req.actor);
@@ -156,6 +173,15 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
               `cotal actor grant ${req.actor} --owner ${owner} --scope ${[...(grant.scope ?? []), need].join(",")}  (the upsert replaces the scope list; the operator can confirm with \`cotal actor list\`)`,
           );
       }
+      // Lifecycle-BIND every human bearer at the MINT boundary (SPEC 13.1), views included: the
+      // grant row's uid rides act.lifecycleUid and the callout requires exact equality with the
+      // CURRENT row at every connect, so a predecessor's still-unexpired bearer (agent OR
+      // elevated view) dies at the alias's re-grant. A grant without a uid is a pre-cut row and
+      // cannot mint - minting claimless would only defer the same refusal to every connect.
+      if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
+        throw new Error(
+          `idp bridge: the grant for actor "${req.actor}" carries no lifecycleUid - re-grant it (bearers are lifecycle-bound from v0.4)`,
+        );
       // Cap the minted bearer's lifetime to the IdP proof's REMAINING life: the Cotal bearer must not
       // outlive the session proof it rests on. Otherwise a near-expired (or stolen just-before-expiry)
       // IdP JWT would exchange for a full MAX_TOKEN_TTL_SEC bearer, widening authority past the upstream
@@ -165,12 +191,20 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       if (idpRemaining <= 0)
         throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
       const ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
+      // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
+      // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
+      // bearer bytes are signed, so the row the connect arm requires is durable before any
+      // bearer naming it exists. Views included: EVERY bearer carries the claim. The hook is
+      // required at construction, so this never mints a claimless bearer.
+      const credentialId = await opts.mintConnectCredential({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
       const token = await opts.issuer.issue({
         owner,
         space: opts.space,
         actor: req.actor,
         scope: grant.scope,
         parent: grant.parent,
+        lifecycleUid: grant.lifecycleUid,
+        credentialId,
         view: req.view,
         ttlSec,
       });

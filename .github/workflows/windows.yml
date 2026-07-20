@@ -80,15 +80,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/nats-bin
-          key: nats-server-v2.10.22-${{ runner.os }}
+          key: nats-server-v2.12.12-${{ runner.os }}
       # Checksum-pinned (supply-chain gate). PowerShell `-ne` is case-insensitive, so the uppercase
       # Get-FileHash output compares equal to the lowercase pin.
       - name: Install nats-server
         if: steps.nats.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $NatsVersion = "v2.10.22"
-          $Sha256 = "33c8a0c6feb441ec4c7007e0af9ef2a45356d6809cd08ec4871a3d659fc74e91"
+          $NatsVersion = "v2.12.12"
+          $Sha256 = "66e2ab6250083794321905e1f79db4f4ea53465d84ba0760e9b00d022133050e"
           $Name = "nats-server-$NatsVersion-windows-amd64"
           $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
           Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
@@ -127,13 +127,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/nats-bin
-          key: nats-server-v2.10.22-${{ runner.os }}
+          key: nats-server-v2.12.12-${{ runner.os }}
       - name: Install nats-server
         if: steps.nats.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $NatsVersion = "v2.10.22"
-          $Sha256 = "33c8a0c6feb441ec4c7007e0af9ef2a45356d6809cd08ec4871a3d659fc74e91"
+          $NatsVersion = "v2.12.12"
+          $Sha256 = "66e2ab6250083794321905e1f79db4f4ea53465d84ba0760e9b00d022133050e"
           $Name = "nats-server-$NatsVersion-windows-amd64"
           $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
           Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip

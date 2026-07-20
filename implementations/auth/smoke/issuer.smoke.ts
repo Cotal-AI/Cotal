@@ -119,6 +119,32 @@ await rejects("a non-string space is refused at mint",
   () => issuer.issue({ owner, space: 123 as unknown as string, actor: "agent_1" }), "space");
 check("issued owner is a well-formed derived token", assertDerivedOwnerToken(v1.owner) === v1.owner);
 
+// ---- credential-ledger claim (R1 deny-new): mint ↔ validate inverse on `act.credentialId` ----
+{
+  const tc = await issuer.issue({ owner, space: SPACE, actor: "agent_1", credentialId: "root0001" });
+  const vc = await validateUserToken(tc, V);
+  check("a credentialId claim round-trips through issue ↔ validate (both act + hoisted)",
+    vc.act.credentialId === "root0001" && vc.credentialId === "root0001");
+  const tnone = await issuer.issue({ owner, space: SPACE, actor: "agent_1" });
+  check("a bearer without a credentialId validates with the claim absent (pre-cut path)",
+    (await validateUserToken(tnone, V)).credentialId === undefined);
+  const tdot = await issuer.issue({ owner, space: SPACE, actor: "agent_1", credentialId: "sess_9a.c" });
+  check("a dotted credentialId (the session `<sid>.c` shape) round-trips",
+    (await validateUserToken(tdot, V)).credentialId === "sess_9a.c");
+  // Mint-side inverse: a garbled credid must fail at MINT, never sign a bearer the validator rejects.
+  await rejects("a credentialId with a wildcard is refused at mint", () => issuer.issue({ owner, space: SPACE, actor: "agent_1", credentialId: "root.*" }), "credentialId");
+  await rejects("an empty-segment credentialId is refused at mint", () => issuer.issue({ owner, space: SPACE, actor: "agent_1", credentialId: "a..b" }), "credentialId");
+  await rejects("a non-string credentialId is refused at mint", () => issuer.issue({ owner, space: SPACE, actor: "agent_1", credentialId: 7 as unknown as string }), "credentialId");
+  // Validate-side: a raw bearer forged with a garbled credid (bypassing the mint assert) is refused.
+  const now = Math.floor(Date.now() / 1000);
+  const forged = await new SignJWT({ scope: [], ver: USER_TOKEN_VER, act: { owner, actor: "agent_1", credentialId: "bad/seg" } })
+    .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: key2.kid })
+    .setSubject(owner).setIssuer(ISS).setAudience(SPACE)
+    .setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 60)
+    .sign(key2.privateKey);
+  await rejects("a bearer carrying a KV-unsafe credentialId is rejected at validation", () => validateUserToken(forged, V), "credentialId");
+}
+
 // ---- exact-audience: a multi-aud bearer signed by the REAL active key must still be rejected ----
 {
   const t = Math.floor(Date.now() / 1000);

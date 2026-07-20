@@ -14,7 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { executeEviction } from "./evict-exec.js";
+import { executeEviction, executePlaneLiveness } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -185,12 +185,15 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
   // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
   // rw connection via this hook.
-  await ep.startPlane3((owner) => ep.aclForOwner(owner), {
+  await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
     reloadMembershipCreds: async () =>
       membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
     evictPrincipal: (principal) => executeEviction(server, principal),
+    // Plane-claim liveness oracle (#29 HIGH 3): read-only $SYS CONNZ per call; the auth plane's
+    // stale-claim reclaim gates on this verdict (any refusal/unknown blocks takeover, fail-closed).
+    planeConnLiveness: (query) => executePlaneLiveness(server, query),
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,

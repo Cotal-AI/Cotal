@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -45,10 +45,11 @@ try {
 
   // Provision an agent for boot durable channel "review" (durable-class by default) — ACL written.
   const aId = newIdentity();
-  const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review"], subscribe: ["review"] });
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
+  const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review"], subscribe: ["review"], lifecycleUid: uidA });
 
   // Agent connects with NO delivery daemon running → boot self-join hits NoResponders → reconcile pending.
-  agent = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: ["review"], watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice", kind: "agent" } });
+  agent = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: ["review"], lifecycleUid: uidA, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice", kind: "agent" } });
   agent.on("error", () => {}); await agent.start();
   await wait(500);
   check("with no daemon at first connect, the boot channel has NO durable membership (degraded)", agent.hasDurableMembership("review") === false);
@@ -56,7 +57,7 @@ try {
   // Now bring the delivery daemon up. reconcileBootJoin retries (capped backoff) and should establish it.
   daemon = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {}); await daemon.start();
-  await daemon.startPlane3((owner) => daemon!.aclForOwner(owner));
+  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
 
   // Wait for the reconcile loop's backoff tick(s) to land the membership (first retry ~1s, then 2s, 4s…).
   let established = false;

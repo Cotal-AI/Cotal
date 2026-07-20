@@ -314,10 +314,12 @@ export interface PersistentConsumerCheckpoint {
   streamState: Pick<BackupStreamState, "messages" | "first_seq" | "last_seq">;
 }
 
-function principalFromDurable(name: string, prefix: string): { owner: string; actor: string } | undefined {
+function principalFromDurable(name: string, prefix: string): { owner: string; actor: string; lifecycleUid: string } | undefined {
   if (!name.startsWith(prefix)) return undefined;
-  const match = /^([A-Za-z0-9_]+)-([A-Za-z0-9_]+)$/.exec(name.slice(prefix.length));
-  return match ? { owner: match[1], actor: match[2] } : undefined;
+  // Lifecycle-keyed durables (SPEC §13.1): dm_/dlv_ names carry the uid — `<owner>-<actor>-<lifecycleUid>`
+  // (owner/actor are `[A-Za-z0-9_]`, the uid is `[a-z0-9]`, so exactly three dash-separated tokens).
+  const match = /^([A-Za-z0-9_]+)-([A-Za-z0-9_]+)-([a-z0-9]+)$/.exec(name.slice(prefix.length));
+  return match ? { owner: match[1], actor: match[2], lifecycleUid: match[3] } : undefined;
 }
 
 function expectedConsumerConfig(space: string, stream: string, name: string): Partial<ConsumerConfig> {
@@ -325,11 +327,11 @@ function expectedConsumerConfig(space: string, stream: string, name: string): Pa
   if (stream === inboxStream(space) && name === INBOX_READER_DURABLE) return inboxReaderConfig(space);
   if (stream === dmStream(space)) {
     const principal = principalFromDurable(name, "dm_");
-    if (principal) return dmDurableConfig(space, principal.owner, principal.actor);
+    if (principal) return dmDurableConfig(space, principal.owner, principal.actor, principal.lifecycleUid);
   }
   if (stream === dlvStream(space)) {
     const principal = principalFromDurable(name, "dlv_");
-    if (principal) return dlvDurableConfig(space, principal.owner, principal.actor);
+    if (principal) return dlvDurableConfig(space, principal.owner, principal.actor, principal.lifecycleUid);
   }
   if (stream === taskStream(space) && /^svc_[A-Za-z0-9_-]+$/.test(name))
     return { ...taskDurableConfig(space, name.slice("svc_".length)), deliver_policy: DeliverPolicy.All };

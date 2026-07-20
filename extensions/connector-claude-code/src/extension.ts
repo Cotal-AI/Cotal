@@ -67,6 +67,7 @@ export const claudeConnector: Connector = {
     if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1";
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
+    if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
 

@@ -11,14 +11,17 @@ import {
   canonicalBackupStreamConfig,
   chatStream,
   consumerConfigFromCheckpoint,
+  dlvDurable,
   dlvDurableConfig,
   dlvStream,
+  dmDurable,
   dmDurableConfig,
   dmStream,
   downloadStreamSnapshot,
   fanoutDurableConfig,
   inboxReaderConfig,
   inboxStream,
+  mintLifecycleUid,
   principalKey,
   restoreProfilePermissions,
   spaceBackupInventory,
@@ -83,12 +86,16 @@ function consumer(stream: string, name: string, partial: Partial<ConsumerConfig>
   };
 }
 
-const pk = principalKey("local", "agent_1");
+// Lifecycle-keyed durables (SPEC §13.1): the NAME carries the uid, so the config's durable_name and
+// the reconstructed expected-config (principalFromDurable) both parse the 3-segment dm_/dlv_ form.
+const uid = mintLifecycleUid();
+const dmName = dmDurable("local", "agent_1", uid);
+const dlvName = dlvDurable("local", "agent_1", uid);
 const infos = [
   consumer(chatStream(space), "fanout", fanoutDurableConfig(space), 7),
   consumer(inboxStream(space), "reader", inboxReaderConfig(space), 5),
-  consumer(dmStream(space), `dm_${pk.name}`, dmDurableConfig(space, "local", "agent_1"), 3),
-  consumer(dlvStream(space), `dlv_${pk.name}`, dlvDurableConfig(space, "local", "agent_1"), 2),
+  consumer(dmStream(space), dmName, dmDurableConfig(space, "local", "agent_1", uid), 3),
+  consumer(dlvStream(space), dlvName, dlvDurableConfig(space, "local", "agent_1", uid), 2),
   consumer(taskStream(space), "svc_worker", {
     ...taskDurableConfig(space, "worker"),
     deliver_policy: DeliverPolicy.All,
@@ -123,8 +130,8 @@ assert.throws(
   /noncanonical delivery policy/,
 );
 
-const migrated = consumer(dmStream(space), `dm_${pk.name}`, {
-  ...dmDurableConfig(space, "local", "agent_1"),
+const migrated = consumer(dmStream(space), dmName, {
+  ...dmDurableConfig(space, "local", "agent_1", uid),
   deliver_policy: DeliverPolicy.StartSequence,
   opt_start_seq: 20,
 }, 0);
@@ -235,7 +242,7 @@ const restoreCheckpoint = restoreProfilePermissions(space, connId, {
   checkpoint: dmCheckpoint,
 }) as { pub: { allow: string[] } };
 assert.deepEqual(restoreCheckpoint.pub.allow, [
-  `$JS.API.CONSUMER.CREATE.${dmCheckpoint.stream}.${dmCheckpoint.name}.${dmDurableConfig(space, "local", "agent_1").filter_subject}`,
+  `$JS.API.CONSUMER.CREATE.${dmCheckpoint.stream}.${dmCheckpoint.name}.${dmDurableConfig(space, "local", "agent_1", uid).filter_subject}`,
   `$JS.API.CONSUMER.INFO.${dmCheckpoint.stream}.${dmCheckpoint.name}`,
 ]);
 assert.ok(!restoreCheckpoint.pub.allow.some((subject) => subject.includes("MSG.NEXT") || subject.includes("MSG.GET")));

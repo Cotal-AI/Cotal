@@ -16,6 +16,7 @@
  */
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mintLifecycleUid } from "@cotal-ai/core";
 import { SignJWT, decodeJwt, decodeProtectedHeader, exportJWK, generateKeyPair } from "jose";
 import type { CryptoKey, JWK } from "jose";
 import { betterAuth } from "better-auth";
@@ -95,16 +96,24 @@ check("BA /token returns a JWT for the session", tokenRes.status === 200 && type
 // The bridge, wired exactly as an operator would: pinned resolver on BA's real JWKS endpoint.
 const cotalKey = await generateSigningKey();
 const cotalIssuer = createUserTokenIssuer({ issuer: "https://auth.cotal.test", key: cotalKey });
+// A deterministic root-credential mint stub (R1): the bridge REQUIRES the hook, but these Plane-1
+// exchange tests never run the connect arm, so a fixed grammar-valid id is enough to prove the
+// claim rides through issue↔validate. `credCalls` lets a test assert the hook is actually invoked.
+const credCalls: Array<{ owner: string; actor: string; lifecycleUid: string }> = [];
+const mintStub = async (a: { owner: string; actor: string; lifecycleUid: string }): Promise<string> => { credCalls.push(a); return "root0001"; };
 const hookCalls: Array<{ owner: string; actor: string }> = [];
+const hookUid = mintLifecycleUid();
 const bridge = createIdpBridge({
   idp: { issuer: origin, audience: origin, key: pinnedJwksResolver(`${origin}/api/auth/jwks`) },
   space: SPACE,
   spaceSecret: SECRET,
   issuer: cotalIssuer,
+  mintConnectCredential: mintStub,
   authorizeActor: (owner, actor) => {
     hookCalls.push({ owner, actor });
     if (actor === "denied_agent") throw new Error("ledger: actor not authorized for this owner");
-    return { scope: ["chat"], parent: `${owner}.spawner_1` };
+    // Grants are lifecycle-bound from v0.4: the bridge refuses a uid-less grant at mint.
+    return { scope: ["chat"], parent: `${owner}.spawner_1`, lifecycleUid: hookUid };
   },
 });
 
@@ -118,6 +127,8 @@ check("minted bearer round-trips validateUserToken with the full principal",
   v.owner === expectedOwner && v.space === SPACE && v.act.actor === "agent_1");
 check("scope + parent came from the LEDGER HOOK, server-authored",
   v.act.scope?.join() === "chat" && v.act.parent === `${expectedOwner}.spawner_1` && hookCalls[0]?.owner === expectedOwner);
+check("the bearer carries the root credential id from the mint hook (R1: every v0.4 bearer is credential-bound)",
+  v.credentialId === "root0001" && credCalls.some((c) => c.owner === expectedOwner && c.actor === "agent_1" && typeof c.lifecycleUid === "string"));
 check("re-login is deterministic (same sub → same owner)",
   (await bridge.exchange(idpJwt, { actor: "agent_2" })).owner === expectedOwner);
 {
@@ -163,14 +174,30 @@ const synth = createIdpBridge({
   space: SPACE,
   spaceSecret: SECRET,
   issuer: cotalIssuer,
-  authorizeActor: () => ({}),
+  mintConnectCredential: mintStub,
+  authorizeActor: () => ({ lifecycleUid: mintLifecycleUid() }),
 });
 
 check("synthetic happy path exchanges (control for the rejects below)",
   (await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).owner === deriveOwnerToken(SECRET, JSON.stringify([IDP_ISS, "human-42"])));
-check("an empty grant object mints a scopeless bearer (explicit allow, no scope)",
+check("a scopeless grant mints a scopeless bearer (explicit allow, no scope)",
   (await validateUserToken((await synth.exchange(await mintIdp(baseIdp), { actor: "agent_1" })).token,
     { key: cotalIssuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE })).scope.length === 0);
+{
+  // Grants are lifecycle-bound from v0.4 (SPEC 13.1): a uid-less grant cannot mint a bearer of
+  // ANY shape - the connect gate would refuse it anyway, so the bridge fails at the earlier
+  // boundary with the re-grant instruction.
+  const uidless = createIdpBridge({
+    idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey },
+    space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer,
+    mintConnectCredential: mintStub,
+    authorizeActor: () => ({}),
+  });
+  let refused = false;
+  try { await uidless.exchange(await mintIdp(baseIdp), { actor: "agent_1" }); }
+  catch (e) { refused = String(e).includes("no lifecycleUid"); }
+  check("a grant without a lifecycleUid refuses at mint (bearers are lifecycle-bound)", refused);
+}
 
 // The minted Cotal bearer must NOT outlive the IdP proof it rests on: request the max TTL against a
 // near-expiry IdP JWT and assert the bearer exp is capped to the IdP's remaining life (~30s), not now+900.
@@ -221,6 +248,7 @@ await rejects("a missing sub is rejected",
   const badGrant = createIdpBridge({
     idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey },
     space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer,
+    mintConnectCredential: mintStub,
     authorizeActor: () => null as never,
   });
   await rejects("a hook returning a non-object is a DENY (no allow-by-default)",
@@ -235,7 +263,11 @@ await rejects("a missing idp.audience pin fails at construction",
 await rejects("a missing idp.key fails at construction",
   () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: undefined as never }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "key");
 await rejects("a missing authorizeActor hook fails at construction",
-  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: undefined as never }), "hook");
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: undefined as never, mintConnectCredential: mintStub }), "hook");
+// R1: the mint hook is REQUIRED at construction — a public bridge that could mint a claimless
+// bearer would silently disable deny-new in any composition without the connect arm.
+await rejects("a missing mintConnectCredential hook fails at construction (v0.4 never mints claimless)",
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({ lifecycleUid: mintLifecycleUid() }), mintConnectCredential: undefined as never }), "mintConnectCredential");
 
 // The derivation encoding is INJECTIVE: a '|'-straddling issuer/sub pair cannot collide.
 check("derivation encoding is injective — ('a','b|c') and ('a|b','c') derive different owners",

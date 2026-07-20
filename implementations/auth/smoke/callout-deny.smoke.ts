@@ -15,7 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, generateKeyPair } from "jose";
-import { createSpaceAuth, isReachable, serverConfig } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
+// One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
+const smokeUid = mintLifecycleUid();
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -67,7 +69,7 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => { throw new Error(DENY_REASON); }, // deny EVERY actor, with a non-ASCII reason
-    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"] })),
+    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: [] })),
     log: (l) => calloutLog.push(l),
   });
   // Barrier: flush so the callout's SUBSCRIBE is registered server-side BEFORE the deny-connect fires.

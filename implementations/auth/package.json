@@ -29,7 +29,9 @@
     "@nats-io/jwt": "0.0.10-5",
     "@nats-io/nkeys": "^2.0.3",
     "@nats-io/transport-node": "^3.4.0",
-    "jose": "^6.2.3"
+    "jose": "^6.2.3",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/kv": "^3.4.0"
   },
   "devDependencies": {
     "better-auth": "^1.6.23"

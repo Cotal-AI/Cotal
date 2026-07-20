@@ -12,7 +12,7 @@ structureless by comparison.
 
 Concretely, today:
 
-- Every subject is scoped to it: `cotal.<space>.{chat,inst,svc,ctl}.…`
+- Every subject is scoped to it: `cotal.<space>.{chat,inst,svc,ep,…}.…`
   ([SPEC §3](../SPEC.md#3-subject-layout)).
 - Each space has its own streams (`CHAT_<space>` / `DM_<space>` / `TASK_<space>`) and its own
   presence KV bucket ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).

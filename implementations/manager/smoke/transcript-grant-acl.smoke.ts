@@ -72,7 +72,9 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
-  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" })),
+  // A real presence record carries the incarnation's lifecycleUid (SPEC 13.1/§6); the manager's
+  // readiness fence requires it to equal the minted uid, so the fake roster must carry it too.
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 
 // The exact `tr-<name>` sanitizer the real connectors use (connector-core); the manager grants whatever

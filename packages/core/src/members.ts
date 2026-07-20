@@ -45,8 +45,9 @@ export async function readMember(
   kv: KV,
   channel: string,
   owner: string,
+  lifecycleUid: string,
 ): Promise<{ record: MembershipRecord; revision: number } | undefined> {
-  const e = await kv.get(memberKey(channel, owner));
+  const e = await kv.get(memberKey(channel, owner, lifecycleUid));
   if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
   try {
     return { record: e.json<MembershipRecord>(), revision: e.revision };
@@ -64,10 +65,10 @@ export async function readMember(
  * deterministically.
  */
 export async function commitMember(kv: KV, next: MembershipRecord): Promise<MembershipRecord> {
-  const key = memberKey(next.channel, next.owner);
+  const key = memberKey(next.channel, next.owner, next.lifecycleUid);
   const data = new TextEncoder().encode(JSON.stringify(next));
   for (let attempt = 0; attempt < 5; attempt++) {
-    const cur = await readMember(kv, next.channel, next.owner);
+    const cur = await readMember(kv, next.channel, next.owner, next.lifecycleUid);
     if (!cur) {
       try {
         await kv.create(key, data);
@@ -99,11 +100,12 @@ export async function tombstoneMember(
   kv: KV,
   channel: string,
   owner: string,
+  lifecycleUid: string,
   leaveCursor: number,
   writerIdentity: string,
   expectedGeneration?: number,
 ): Promise<MembershipRecord | undefined> {
-  const cur = await readMember(kv, channel, owner);
+  const cur = await readMember(kv, channel, owner, lifecycleUid);
   if (!cur) return undefined;
   // Stale-leave guard: a leave is for the generation the agent joined with (`expectedGeneration`,
   // captured at durableJoin). If the record has since moved to a NEWER generation — the agent left
@@ -138,12 +140,13 @@ export async function activateMember(
   kv: KV,
   channel: string,
   owner: string,
+  lifecycleUid: string,
   expectedGeneration: number,
   expectedJoinCursor: number,
 ): Promise<MembershipRecord | undefined> {
-  const key = memberKey(channel, owner);
+  const key = memberKey(channel, owner, lifecycleUid);
   for (let attempt = 0; attempt < 5; attempt++) {
-    const cur = await readMember(kv, channel, owner);
+    const cur = await readMember(kv, channel, owner, lifecycleUid);
     if (!cur) return undefined; // record gone
     const r = cur.record;
     // Only flip OUR exact open pending join. A different generation (rejoin), a different joinCursor, or
@@ -165,8 +168,8 @@ export async function activateMember(
 /** Permanently remove a membership record (GC / footprint deletion — revocation deletes the footprint
  *  AFTER invalidating creds). Distinct from {@link tombstoneMember}, which keeps the record so late
  *  durable entries are denied by the cursor; only call this past the retention horizon. */
-export async function deleteMember(kv: KV, channel: string, owner: string): Promise<void> {
-  await kv.purge(memberKey(channel, owner));
+export async function deleteMember(kv: KV, channel: string, owner: string, lifecycleUid: string): Promise<void> {
+  await kv.purge(memberKey(channel, owner, lifecycleUid));
 }
 
 /**
@@ -190,7 +193,7 @@ export async function listMembers(
     // "owner" here IS the full principal `<owner>.<actor>`, so `filter.owner` compares to it directly.
     if (filter.channel !== undefined && parsed.channel !== filter.channel) continue;
     if (filter.owner !== undefined && parsed.principal !== filter.owner) continue;
-    const rec = await readMember(kv, parsed.channel, parsed.principal);
+    const rec = await readMember(kv, parsed.channel, parsed.principal, parsed.lifecycleUid);
     if (rec) out.push(rec.record);
   }
   return out;

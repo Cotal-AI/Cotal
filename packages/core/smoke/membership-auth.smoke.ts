@@ -20,6 +20,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -124,17 +125,19 @@ try {
   // Host Plane-3 so provisionAgent's boot membership write (durable-class boot channels → durable-active
   // records) lands — channelMembers reads that registry.
   const agentId = newIdentity();
+  const agentUid = mintLifecycleUid(); // ag1's one lifecycle uid (SPEC §13.1)
   // Plane-3's ACL resolver is keyed by the agent PRINCIPAL (dot-form `local.<nkey>`), not the raw nkey.
-  await dlv.startPlane3((id) => (id === principalKey(DEV_OWNER, agentId.id).key ? ["general"] : undefined));
+  await dlv.startPlane3((owner) => (owner === principalKey(DEV_OWNER, agentId.id).key ? ["general"] : undefined));
 
   // An agent: provision its bind-only durables + boot membership, mint scoped creds, join #general.
-  const agentCreds = await provisionAgent(mgr, auth, agentId, { subscribe: ["general"], allowPublish: ["general"], role: "worker" });
+  const agentCreds = await provisionAgent(mgr, auth, agentId, { subscribe: ["general"], allowPublish: ["general"], role: "worker", lifecycleUid: agentUid });
   const agent = new CotalEndpoint({
     space,
     servers: SERVERS,
     creds: agentCreds,
-    card: { name: "ag1", role: "worker", kind: "agent" },
+    card: { name: "ag1", role: "worker", kind: "agent", id: agentId.id },
     channels: ["general"],
+    lifecycleUid: agentUid,
     heartbeatMs: 300,
     ttlMs: 1500,
   });
@@ -161,7 +164,7 @@ try {
   const obsId = newIdentity(), admId = newIdentity(), agtId = newIdentity();
   check("observer CANNOT read the members registry", (await canReadMembers(obsId, await mintCreds(auth, obsId, "observer"))) === false);
   check("admin CANNOT read the members registry", (await canReadMembers(admId, await mintCreds(auth, admId, "admin"))) === false);
-  check("agent CANNOT read the members registry", (await canReadMembers(agtId, await mintCreds(auth, agtId, "agent", { allowSubscribe: ["general"] }))) === false);
+  check("agent CANNOT read the members registry", (await canReadMembers(agtId, await mintCreds(auth, agtId, "agent", { allowSubscribe: ["general"], lifecycleUid: mintLifecycleUid() }))) === false);
 
   await agent.stop();
   await dlv.stop();

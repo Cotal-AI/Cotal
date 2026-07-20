@@ -61,11 +61,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/nats-bin
-          key: nats-server-v2.10.22-${{ runner.os }}
+          key: nats-server-v2.12.12-${{ runner.os }}
       - name: Install nats-server
         if: steps.nats.outputs.cache-hit != 'true'
         run: |
-          NATS_VERSION=v2.10.22
+          NATS_VERSION=v2.12.12
           curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
           tar -xzf /tmp/nats-server.tar.gz -C /tmp
           mkdir -p ~/nats-bin
@@ -93,11 +93,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/nats-bin
-          key: nats-server-v2.10.22-${{ runner.os }}
+          key: nats-server-v2.12.12-${{ runner.os }}
       - name: Install nats-server
         if: steps.nats.outputs.cache-hit != 'true'
         run: |
-          NATS_VERSION=v2.10.22
+          NATS_VERSION=v2.12.12
           curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" -o /tmp/nats-server.tar.gz
           tar -xzf /tmp/nats-server.tar.gz -C /tmp
           mkdir -p ~/nats-bin

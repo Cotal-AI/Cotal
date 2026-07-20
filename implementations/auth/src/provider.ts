@@ -208,7 +208,7 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label }) {
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid }) {
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
@@ -223,6 +223,7 @@ export const cotalAuthProvider: AuthProvider = {
       ...(parent ? { parent } : {}),
       ...(label ? { label } : {}),
       tokenHash,
+      lifecycleUid,
     });
     return { actorToken, sentinelCreds: callout.sentinelCreds };
   },

@@ -31,11 +31,13 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
   openMembersRegistry,
   commitMember,
+  DEV_OWNER,
   type MembershipRecord,
   type Delivery,
 } from "../src/index.js";
@@ -82,10 +84,18 @@ try {
   });
   mgr.on("error", (e: Error) => console.error("  ! mgr", e.message));
   await mgr.start();
+  // The provisioner cred (`mgr`) onboards agents but cannot publish chat NOR read the members registry
+  // (least-privilege split, PR 1.5). Posts ride a separate `operator` cred; the members/channelMembers
+  // reads ride the `delivery` cred (`dlv`) below — the same split plane3-auth uses.
+  const poster = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "operator"),
+    card: { name: "poster", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false,
+  });
+  poster.on("error", (e: Error) => console.error("  ! poster", e.message));
+  await poster.start();
   // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the
   // manager — the manager cred no longer carries the Plane-3 inject grants (closure (i)).
-  // The manager stays provisioner + publisher (its multicast posts chat AS the operator;
-  // the daemon's fan-out reads CHAT and delivers). Only the HOST endpoint moves here.
+  // Only the HOST endpoint moves here; the daemon's fan-out reads CHAT and delivers.
   const dlvId = newIdentity();
   const dlv = new CotalEndpoint({
     space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
@@ -100,13 +110,17 @@ try {
   // durable boot channels via the daemon's ctl.delivery op at connect — so channelMembers('general')
   // below lists alice only AFTER she connects (+ self-joins), which startPlane3 here serves.
   const aId = newIdentity();
-  const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"] });
-  await dlv.startPlane3((id) => (id === aId.id ? ["general", "review"] : undefined));
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
+  // Dev/static principal: owner=DEV_OWNER ("local"), actor=the nkey. Member rows, channelMembers().id,
+  // and the reader's aclFor all key by this dot-form under the owner+actor grammar.
+  const aPrincipal = `${DEV_OWNER}.${aId.id}`;
+  const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"], lifecycleUid: uidA });
+  await dlv.startPlane3((owner) => (owner === aPrincipal ? ["general", "review"] : undefined));
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
     card: { id: aId.id, name: "alice", kind: "agent" },
-    channels: ["general"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["general"], lifecycleUid: uidA, heartbeatMs: 500, ttlMs: 2000,
   });
   const got: string[] = [];
   a.on("error", () => {});
@@ -115,21 +129,21 @@ try {
   await wait(400); // connect + boot-membership hydration round-trip
 
   // ───────────── (3) BOOT MEMBERSHIP via SELF-JOIN at connect (v3) ─────────────
-  const genMembers = await mgr.channelMembers("general");
+  const genMembers = await dlv.channelMembers("general");
   check(
     "boot durable membership is established by the agent's self-join at connect (v3 — no provision-time write)",
-    genMembers.some((m) => m.id === aId.id),
+    genMembers.some((m) => m.id === aPrincipal),
     genMembers,
   );
   // ...a launcher that opts out of durable (durableMembership:false — direct `cotal spawn`) gets NO ACL
   // row, so even if it connected the daemon would refuse its self-join — and here it never connects, so
   // it never appears as a durable member (live-only).
   const ghostId = newIdentity();
-  await provisionAgent(mgr, auth, ghostId, { subscribe: ["general"], allowSubscribe: ["general"], durableMembership: false });
-  const ghostMembers = await mgr.channelMembers("general");
+  await provisionAgent(mgr, auth, ghostId, { subscribe: ["general"], allowSubscribe: ["general"], durableMembership: false, lifecycleUid: mintLifecycleUid() });
+  const ghostMembers = await dlv.channelMembers("general");
   check(
     "a live-only launcher (durableMembership:false, never self-joined) is NOT a durable member",
-    !ghostMembers.some((m) => m.id === ghostId.id),
+    !ghostMembers.some((m) => m.id === `${DEV_OWNER}.${ghostId.id}`),
     ghostMembers,
   );
 
@@ -149,27 +163,27 @@ try {
   kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
   const pending: MembershipRecord = {
-    channel: "review", owner: aId.id, state: "durable-active", joinCursor: 0,
+    channel: "review", owner: aPrincipal, lifecycleUid: uidA, state: "durable-active", joinCursor: 0,
     generation: 1, activated: false, writerIdentity: seedId.id, updatedAt: Date.now(),
   };
   await commitMember(kv, pending);
 
-  const reviewPending = await mgr.channelMembers("review");
+  const reviewPending = await dlv.channelMembers("review");
   check(
     "channelMembers HIDES an activation-pending (activated:false) member — surface never overstates",
-    !reviewPending.some((m) => m.id === aId.id),
+    !reviewPending.some((m) => m.id === aPrincipal),
     reviewPending,
   );
   // ...but leave-discovery (ownerMemberships) DOES return it, so leaveChannel can close a non-activated
   // record that still routes under the pure-interval predicate (critic BLOCKER-1 leave-discovery gap).
-  const pendingOwned = await mgr.ownerMemberships(aId.id);
+  const pendingOwned = await dlv.ownerMemberships(aPrincipal, uidA);
   check(
     "ownerMemberships INCLUDES the activation-pending record (leaveChannel can discover + close it)",
     pendingOwned.some((m) => m.channel === "review" && m.activated === false),
     pendingOwned,
   );
 
-  await mgr.multicast("activation-pending-delivers", { channel: "review" });
+  await poster.multicast("activation-pending-delivers", { channel: "review" });
   check(
     "an activation-pending in-interval member RECEIVES the post via the backstop (fan-out ROUTED + reader TRANSFERRED on the interval, not on `activated` — closes both leaks)",
     await until(() => got.includes("activation-pending-delivers")),
@@ -178,16 +192,17 @@ try {
 
   // Flip to activated → now a confirmed, complete member.
   await commitMember(kv, { ...pending, activated: true, updatedAt: Date.now() });
-  const reviewActive = await mgr.channelMembers("review");
+  const reviewActive = await dlv.channelMembers("review");
   check(
     "channelMembers LISTS the member once activation completes (completeness honesty)",
-    reviewActive.some((m) => m.id === aId.id),
+    reviewActive.some((m) => m.id === aPrincipal),
     reviewActive,
   );
   await kvNc.close();
 
   await a.stop();
   await dlv.stop();
+  await poster.stop();
   await mgr.stop();
   console.log(`\nPLANE-3 ACTIVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {

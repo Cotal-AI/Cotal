@@ -186,6 +186,7 @@ const baseCommands: Command[] = [
       { name: "kind", type: "string", value: "<k>", description: "endpoint kind" },
       { name: "link", type: "string", value: "<url>", description: "join link" },
       { name: "token", type: "string", value: "<t>", description: "join token" },
+      { name: "lifecycle-uid", type: "string", value: "<uid>", description: "lifecycle uid paired with --creds (minted with the credential at provision time)" },
       { name: "tls", type: "boolean", description: "connect over TLS" },
     ],
     run: join,

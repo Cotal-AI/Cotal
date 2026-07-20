@@ -25,6 +25,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -116,13 +117,16 @@ try {
   // ---- agent A: boots subscribed ONLY to "general"; read ACL also covers "review". It durable-joins
   //      "review" but never live-subscribes it, so a review post can reach it ONLY via Plane-3. ----
   const aId = newIdentity();
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
   const aCreds = await provisionAgent(mgr, auth, aId, {
     subscribe: ["general"],
     allowSubscribe: ["general", "review"],
+    lifecycleUid: uidA,
   });
   // The reader re-auths against the owner's CURRENT ACL — supply it the way the manager does from its
   // managed set. Agent B (below) is authorized for "general" only (not "review").
   const bId = newIdentity();
+  const uidB = mintLifecycleUid(); // bob's one lifecycle uid (SPEC §13.1)
   // Dev/static principals: owner=DEV_OWNER ("local"), actor=the nkey. The reader re-auths against the
   // member PRINCIPAL dot-form (`local.<nkey>`), and durableJoin/LeaveFor key the members registry by it.
   const aPrincipal = `${DEV_OWNER}.${aId.id}`;
@@ -146,7 +150,7 @@ try {
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,
     card: { id: aId.id, name: "alice", kind: "agent" },
-    channels: ["general"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["general"], lifecycleUid: uidA, heartbeatMs: 500, ttlMs: 2000,
   });
   const got: { ch?: string; text: string; kind: string; durable: boolean }[] = [];
   const agentErrors: string[] = [];
@@ -163,7 +167,7 @@ try {
   await wait(300);
 
   // ---- durable join + delivery ----
-  const r = await dlv.durableJoinFor(aPrincipal, "review");
+  const r = await dlv.durableJoinFor(aPrincipal, "review", uidA);
   check("durableJoinFor('review') reports durable:true (record committed + reader hosted)", r.durable === true, r);
 
   await poster.multicast("hello-durable", { channel: "review" });
@@ -214,7 +218,7 @@ try {
   const dlvJs = (dlv as unknown as {
     js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
   }).js;
-  await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id), JSON.stringify(legacy), { msgID: legacy.id });
+  await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), JSON.stringify(legacy), { msgID: legacy.id });
   check("unversioned persisted DLV entries terminate loudly", await until(() =>
     agentErrors.some((message) => message.includes("unauthenticated or unversioned DLV entry terminated"))));
   check("an unversioned DLV entry never reaches the application", !got.some((g) => g.text === "legacy-unversioned-dlv"));
@@ -245,7 +249,7 @@ try {
   check("steady-state fan-out delivers a later post", await until(() => got.some((g) => g.text === "second")));
 
   // ---- leave = hard read boundary (interval) ----
-  await dlv.durableLeaveFor(aPrincipal, "review");
+  await dlv.durableLeaveFor(aPrincipal, "review", uidA);
   await wait(150);
   const beforeLeave = got.length;
   await poster.multicast("after-leave", { channel: "review" });
@@ -272,24 +276,24 @@ try {
   const aJs = jetstream(aNc);
   check(
     "agent CANNOT create a consumer on the INBOX (mixed pre-auth) stream — fan-out target is unreadable",
-    await denied(() => aJsm.consumers.add(inboxStream(space), { name: `steal_${randomUUID().slice(0, 6)}`, filter_subject: dinboxSubject(space, DEV_OWNER, aId.id), ack_policy: AckPolicy.None })),
+    await denied(() => aJsm.consumers.add(inboxStream(space), { name: `steal_${randomUUID().slice(0, 6)}`, filter_subject: dinboxSubject(space, DEV_OWNER, aId.id, uidA), ack_policy: AckPolicy.None })),
   );
   check(
     "agent CANNOT create a consumer on the DLV stream (bind-only — create denied)",
-    await denied(() => aJsm.consumers.add(dlvStream(space), { name: `make_${randomUUID().slice(0, 6)}`, filter_subject: dlvSubject(space, DEV_OWNER, aId.id), ack_policy: AckPolicy.Explicit })),
+    await denied(() => aJsm.consumers.add(dlvStream(space), { name: `make_${randomUUID().slice(0, 6)}`, filter_subject: dlvSubject(space, DEV_OWNER, aId.id, uidA), ack_policy: AckPolicy.Explicit })),
   );
   check(
     "agent CANNOT publish into its own dinbox (only the manager fans out)",
-    await denied(() => aJs.publish(dinboxSubject(space, DEV_OWNER, aId.id), "forged")),
+    await denied(() => aJs.publish(dinboxSubject(space, DEV_OWNER, aId.id, uidA), "forged")),
   );
   check(
     "agent CANNOT publish into its own dlv (only the trusted reader transfers)",
-    await denied(() => aJs.publish(dlvSubject(space, DEV_OWNER, aId.id), "forged")),
+    await denied(() => aJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), "forged")),
   );
   await aNc.close();
 
   // ---- a peer (B) cannot bind A's DELIVER durable ----
-  const bCreds = await provisionAgent(mgr, auth, bId, { subscribe: ["general"], allowSubscribe: ["general"] });
+  const bCreds = await provisionAgent(mgr, auth, bId, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uidB });
   const bNc = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(new TextEncoder().encode(bCreds)),
@@ -301,7 +305,7 @@ try {
   check(
     "a peer CANNOT bind another agent's dlv_<owner> durable (name-scoped grant)",
     await denied(async () => {
-      const c = await bJs.consumers.get(dlvStream(space), dlvDurable(DEV_OWNER, aId.id));
+      const c = await bJs.consumers.get(dlvStream(space), dlvDurable(DEV_OWNER, aId.id, uidA));
       await c.next({ expires: 1000 });
     }),
   );

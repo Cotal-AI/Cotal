@@ -29,8 +29,10 @@ Declining is fine: the hints stay `npx cotal-ai …`, and the background process
 Requirements:
 
 - Node 20 or newer.
-- A `nats-server` binary. One ships with the package. If you already have `nats-server`
-  on your PATH, Cotal uses that instead.
+- A `nats-server` binary, version 2.12 or newer (the control surface uses its message
+  schedules and per-message TTLs, and fails loud at connect against an older broker). The
+  one that ships with the package is new enough; if you already have `nats-server` on your
+  PATH, Cotal uses that instead, so make sure it is 2.12+.
 
 ## First run
 

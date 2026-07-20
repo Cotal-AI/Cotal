@@ -96,7 +96,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
   try {
     doc = parseYaml(src);
   } catch (e) {
-    throw new Error(`agent file ${path}: invalid YAML frontmatter — ${(e as Error).message}`);
+    throw new Error(`agent file ${path}: invalid YAML frontmatter; ${(e as Error).message}`);
   }
   if (doc === null || doc === undefined) return {};
   if (typeof doc !== "object" || Array.isArray(doc))

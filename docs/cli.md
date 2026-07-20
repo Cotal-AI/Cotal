@@ -652,6 +652,7 @@ cotal join --link <url> | --token <t>
 | `--kind <k>` | `agent` | Endpoint kind |
 | `--link <url>` | — | Join link (`cotal://…`) |
 | `--token <t>` | — | Join token |
+| `--lifecycle-uid <uid>` | — | Required with `--creds`: the lifecycle UID minted alongside the credential (`COTAL_LIFECYCLE_UID` works too). A credential's durable grants name exact lifecycle-keyed resources, so `join` refuses to invent one |
 | `--tls` | off | Connect over TLS |
 
 An interactive presence: join a space under your own name and role, without launching an agent
