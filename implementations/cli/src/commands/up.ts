@@ -39,7 +39,7 @@ import {
   type CompletionResult,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { acquireMaintenanceLock, assertStoreIdentity, assertUserAuthInfo, assessRestoreClaim, authDir, beginOrdinaryResume, bindOrdinaryResumeListener, clearCurrent, consumeRetiredMaintenance, findMesh, getCurrent, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessOwnerStatus, markOrdinaryResumeActive, markOrdinaryResumeDegraded, readMaintenanceJournal, readMaintenanceResumeDocument, readStoreIdentity, recordMesh, recordOrdinaryResumeManagerCommit, releaseMaintenanceLock, removeMesh, replaceDeadOrdinaryResumeListener, retireOrdinaryResume, sameStoreIdentity, saveSpaceAuth, setCurrent, type JsonValue, type ManagerCommitEvidence, type ManagerFinalizeEvidence, type MeshEntry, type ProcessOwner, type RestoreListenerProof, type UserAuthInfo, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, assertSingleSpaceBroker, assertStoreIdentity, assertUserAuthInfo, assessRestoreClaim, authDir, beginOrdinaryResume, bindOrdinaryResumeListener, clearCurrent, consumeRetiredMaintenance, findMesh, getCurrent, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessOwnerStatus, markOrdinaryResumeActive, markOrdinaryResumeDegraded, readMaintenanceJournal, readMaintenanceResumeDocument, readStoreIdentity, recordMesh, recordOrdinaryResumeManagerCommit, releaseMaintenanceLock, removeMesh, replaceDeadOrdinaryResumeListener, retireOrdinaryResume, sameStoreIdentity, saveSpaceAuth, setCurrent, type JsonValue, type ManagerCommitEvidence, type ManagerFinalizeEvidence, type MeshEntry, type ProcessOwner, type RestoreListenerProof, type UserAuthInfo, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -135,6 +135,9 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
+    // A restore rewrites the shared store and the trust root under it, from an artifact that names
+    // one space (see `cotal backup`) - it cannot leave the root's other tenants standing.
+    assertSingleSpaceBroker(authDir(cotalRoot()), "cotal up --restore");
     const prepared = await prepareRestore(cotalRoot(), values as RestoreFlags);
     pendingRestores.set(prepared.attemptId, prepared);
     const next = {

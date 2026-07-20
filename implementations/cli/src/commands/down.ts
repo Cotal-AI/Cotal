@@ -4,6 +4,8 @@ import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   abortMaintenanceCut,
   acquireMaintenanceLock,
+  assertSingleSpaceBroker,
+  authDir,
   beginMaintenanceCut,
   clearPreservationPrepareIntent,
   completeMaintenanceCut,
@@ -67,6 +69,10 @@ export function downComplete(argv: string[]): CompletionResult {
 export async function down(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string };
   const requested = [...new Set(args.positionals)];
+  // Every non-manifest `down` stops the shared broker and its per-space daemons; none of them can
+  // address one space, so a multi-space root is refused up front rather than at the space-blind
+  // pidfile lookup below. A manifest teardown (`-f`/`--run`) names its own space and is exempt.
+  if (!values.file && !values.run) assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
   if (values["preserve-state"]) {
     if (requested.length || values.file || values.run || values["dry-run"])
       throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --file, --run, or --dry-run");

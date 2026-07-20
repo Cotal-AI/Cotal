@@ -10,7 +10,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, authDir, findCotalRoot, getCurrent, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, authDir, findCotalRoot, getCurrent, isWorkspaceTargetError, listSpaceAccounts, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveSpace, webUp, WEB_URL } from "../lib/status.js";
@@ -50,11 +50,22 @@ async function printMachine(): Promise<void> {
 }
 
 function printProject(root: string, cmd: string): void {
+  const spaces = listSpaceAccounts(authDir(root));
+  section("This Folder");
+  row("root", root);
+  // A root holding several accounts has no single "this folder's space", and the process rows below
+  // are keyed by one. Report the tenant list instead of letting the space-blind read throw: a status
+  // that cannot describe a multi-space broker is worse than a refusal, because the broker-wide
+  // lifecycle refusals send the operator here to see what the root actually holds.
+  if (spaces.length > 1) {
+    row("auth", c.green(`${spaces.length} spaces · ${spaces.join(", ")}`));
+    row("personas", personaSummary(root));
+    console.log(c.dim("  per-space process state is not reported on a multi-space root yet"));
+    return;
+  }
   const auth = loadSoleSpaceAuth(authDir(root));
   const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
   const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
-  section("This Folder");
-  row("root", root);
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
   let nats: Proc | undefined;

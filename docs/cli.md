@@ -189,7 +189,11 @@ One configurable cleanup verb; every target requires `--force`.
   registry entry; the next `cotal up` mints a fresh identity.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
-alive or any same-root recorded broker endpoint remains reachable (run `cotal down` first). Personas
+alive or any same-root recorded broker endpoint remains reachable (run `cotal down` first). They
+also refuse outright on a root that holds accounts for several spaces: the store and the broker
+trust record are shared by every space on the broker, so both targets would take out all of them
+and no `--space` can narrow that. `down`, `backup` and `up --restore` refuse there for the same
+reason. `cotal status` lists the tenants on such a root. Personas
 (`.cotal/agents`) and logs are never touched. A custom
 store location is not recorded anywhere, so `--store-dir` must repeat whatever the mesh was
 launched with. Custom cleanup targets must contain either the Cotal store-generation marker or a

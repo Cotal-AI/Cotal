@@ -20,6 +20,7 @@ import {
 } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock,
+  assertSingleSpaceBroker,
   assertStoreIdentity,
   authDir,
   claimMaintenanceReady,
@@ -331,6 +332,10 @@ export async function backup(args: ParsedArgs): Promise<void> {
     throw new Error("usage: cotal backup create <dir> [--only full|registry] [--store-dir <dir>]");
   const selected = selection(values.only);
   const root = cotalRoot();
+  // The artifact snapshots the whole store but commits to ONE space's trust chain
+  // (`cotal-space-auth-root/v1`), so on a multi-space broker it would silently restore as a
+  // single-tenant root. Refuse rather than emit an artifact that cannot describe what it holds.
+  assertSingleSpaceBroker(authDir(root), "cotal backup");
   const live = liveMeshProcesses(root);
   if (live.length) throw new Error(`backup is offline-only; still running: ${live.join(", ")}. Run \`cotal down --preserve-state\` first`);
   const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));

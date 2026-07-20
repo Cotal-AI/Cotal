@@ -289,6 +289,22 @@ export function soleSpaceOf(dir: string): string | undefined {
   return spaces[0];
 }
 
+/** Refuse a BROKER-WIDE operation on a root that hosts several spaces.
+ *
+ *  Distinct from {@link soleSpaceOf}'s ambiguity, and the distinction is the whole point: the
+ *  broker process, its JetStream store and the single `.cotal/auth` broker record are shared by
+ *  every space on the root, so naming a space cannot scope `down`, `clean store|all`, `backup` or a
+ *  restore - they would apply to all of them regardless. Sending the operator after a `--space` they
+ *  cannot use (two of these commands do not even take one) is a dead end dressed as advice, so this
+ *  refusal names the blast radius and stops, and stays a refusal until per-space teardown exists. */
+export function assertSingleSpaceBroker(dir: string, operation: string): void {
+  const spaces = listSpaceAccounts(dir);
+  if (spaces.length > 1)
+    throw new Error(
+      `${operation} is broker-wide, and this broker hosts ${spaces.length} spaces (${spaces.join(", ")}) - it would apply to every one of them, and naming a single space cannot scope it; a per-space form does not exist yet`,
+    );
+}
+
 /** Every space that has an account record under this auth dir. The broker's tenant list on disk. */
 export function listSpaceAccounts(dir: string): string[] {
   if (!existsSync(dir)) return [];

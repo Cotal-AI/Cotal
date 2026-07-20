@@ -6,6 +6,8 @@ import {
   DELIVERY_CREDS_KEY,
   acquireMaintenanceLock,
   agentSecretKeysUnder,
+  assertSingleSpaceBroker,
+  authDir,
   cleanupRestoreFallback,
   localProcessPath,
   meshesForRoot,
@@ -81,6 +83,10 @@ export async function clean(args: ParsedArgs): Promise<void> {
   }
 
   const root = cotalRoot();
+  // `store` deletes the broker's single JetStream store and `all` additionally deletes the broker
+  // trust record every space account is signed under - both erase all tenants at once. Refuse
+  // before the lock, so a multi-space root never enters a maintenance transaction it cannot finish.
+  assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);
   const lock = acquireMaintenanceLock(root);
   let removed: string[];
   try {
