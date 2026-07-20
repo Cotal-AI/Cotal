@@ -71,6 +71,7 @@ For protocol implementers:
 | Doc | Answers |
 |---|---|
 | [Build a client](build-a-client.md) | How do I implement a conformant client in another language? |
+| [Embedding Cotal](embedding.md) | How do I build a service on the published `@cotal-ai/*` packages? |
 
 ## Concepts
 
@@ -112,6 +113,7 @@ For people changing how Cotal is built or shipped (not needed to use it).
 |---|---|
 | [Roadmap](roadmap.md) | What is deferred, and where each area is headed. |
 | [Release](release.md) | How we version and publish. |
+| [Substrate stability](stability.md) | What can I build a product on, and what will the v0.4 cut break? |
 | [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
 
 Each runnable example documents itself in its own `examples/*/README.md`. Working

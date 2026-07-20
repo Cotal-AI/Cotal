@@ -102,8 +102,9 @@ channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` na
 No ledger row, no access; there is no allow-by-default.
 
 **One auth service per space** hosts both halves: the NATS auth callout and the loopback
-token exchange. It starts with the broker, is torn down by `cotal down`, and is the only
-standing holder of the data-account signing key; the operator seed never enters it. If it
+token exchange. It starts with the broker, is torn down by `cotal down`, and holds the
+data-account signing key for the callout (a running manager is the other standing holder, for
+the creds it mints); the operator seed never enters it. If it
 dies while the broker lives, re-running `cotal up` heals it, and a boot whose auth
 service never became ready exits non-zero, so automation never reads a dead identity
 plane as success.
@@ -148,6 +149,61 @@ sentence naming the exact recovery, and static agent/observer/admin minting is r
 outright. The refusal is deny-new: a static cred signed before the space flipped stays
 broker-valid until the signing key is rotated ([security model](security.md)).
 
+## The IdP callout contract
+
+Any OIDC identity provider that issues **EdDSA/Ed25519** JWTs plugs in here directly; a provider that
+issues RS256 or ES256 tokens (many managed OIDC services do) needs a host-side normalization or
+re-issuance adapter first, because the reference bridge pins the token algorithm to EdDSA. The
+reference implementation ships **Better Auth** as a
+dev and test fixture only (it is a `devDependency` of `@cotal-ai/auth`; the only code that imports
+it is the `dev-idp.ts` harness and the smoke tests, never the runtime `src`). The one runtime
+coupling to an IdP is the `idp.ts` bridge plus the `auth-provider` extension. The bridge core
+(`createIdpBridge`) is IdP-generic for **EdDSA** tokens (issuer, audience, JWKS as configuration).
+The stock end-to-end flow around it, though, is **Better-Auth-shaped**: `cotalAuthProvider` pins
+`<base>/jwks` and issuer/audience to the IdP origin, and the login client speaks Better Auth's
+device-code endpoints (`/device/code`, `/device/token`, `/token`) with an opaque revocable session.
+So a Better-Auth-shaped EdDSA IdP uses the stock flow directly; **any other production IdP is a
+hosted-composability gap, not a configuration change**. A host integrates it by building its own
+login and provider wiring on the low-level primitives (`createIdpBridge`, `createUserTokenIssuer`),
+not by reusing the stock provider. Note that importing `@cotal-ai/auth` self-registers
+`cotalAuthProvider`, and `resolveAuthProvider()` throws when two providers are registered, so a host
+on the registry-resolution path must not also register its own. Whatever the path, never loosen the
+issuer/audience/JWKS pins to force-fit an IdP.
+
+The bridge (`createIdpBridge`) exchanges a verified IdP token for a Cotal bearer in three steps:
+
+1. **Bearer validation.** Verify the IdP's JWT offline against its **pinned JWKS**, with the token
+   algorithm pinned to EdDSA. Keys resolve only through the pinned JWKS: a token carrying embedded
+   key material (`jku`/`jwk`/`x5u`/`x5c`) is rejected, so the token can never influence key
+   resolution. Issuer and audience are checked, and the minted Cotal bearer is capped to the
+   upstream proof's remaining lifetime.
+2. **Owner derivation.** The opaque per-space owner derives deterministically from the JSON-array
+   encoding of `[idp issuer, sub]`, namespaced by issuer so no issuer/sub pair can straddle a
+   delimiter, and re-login re-lands the same person in the same lanes. The owner-token *format*
+   (`u_` followed by 26 base32-lower characters) is normative
+   ([SPEC section 2](../SPEC.md#2-identity)). At the contract level the *derivation* from an
+   identity is a pluggable edge, but the reference `createIdpBridge` fixes it
+   (`deriveOwnerForIdpSubject`) and takes no derivation callback, so what a host configures is the
+   IdP, not the derivation. **The encoding is frozen:** changing it, or changing the IdP issuer
+   string, re-keys every owner in the space, which is a migration on the order of rotating the space
+   secret.
+3. **Actor authorization and mint.** The operator's ledger hook authorizes the `(owner, actor)` pair
+   and is the only source of the bearer's `scope`/`parent`; the issuer then mints the Cotal bearer,
+   re-asserting every claim shape.
+
+A host wires this with the IdP's own coordinates and nothing from `@cotal-ai/auth` changes:
+
+```ts
+import { createIdpBridge, pinnedJwksResolver, createUserTokenIssuer } from "@cotal-ai/auth";
+const bridge = createIdpBridge({
+  idp: { issuer: idpIssuer, audience, key: pinnedJwksResolver(jwksUri) }, // your production IdP
+  space,
+  spaceSecret,                 // identity-plane owner-derivation secret (>=32 bytes), held by the auth service at runtime
+  issuer: createUserTokenIssuer({ issuer: cotalIssuer, key: signingKey }), // mints the Cotal bearer
+  authorizeActor: (owner, actor) => grantFromLedger(owner, actor), // your ledger, returns an ActorGrant
+});
+```
+
 ## Joining
 
 A single **join link** carries server, auth, and space
@@ -166,10 +222,10 @@ credential's identity as its card id.
 
 - **The signing key is hot** on the mint/manager box of a static-auth mesh; the "real
   boundary" holds given operator-controlled cred distribution. On a per-user-auth mesh
-  the data-account signing key is confined to the auth service (the callout stage,
-  shipped for user mode); a copied signing *seed* still stays valid for its identity
-  until the signing key is rotated. Rotation remains the revocation lever for trust
-  material.
+  the data-account signing key is held by the auth service (the callout stage) and by any
+  running manager, which loads the trust bundle and self-mints its supervisor cred and
+  renewals from it; a copied signing *seed* still stays valid for its identity until the
+  signing key is rotated. Rotation remains the revocation lever for trust material.
 - **Static agent creds are long-lived; the machinery's are not.** One-shot command creds
   expire in minutes and the standing daemon creds in 24h with the manager renewing them
   (`cotal doctor auth` is the one diagnosis and repair surface). But a static *agent*
