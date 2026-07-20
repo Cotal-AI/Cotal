@@ -18,6 +18,7 @@ import {
   registerCotalTools,
   feedbackLine,
   ORIENTATION_BOOTSTRAP,
+  MESH_FIRST_STEER,
   formatInjection,
   fmtFrom,
   channelMeta,
@@ -179,6 +180,7 @@ async function main(): Promise<void> {
         `${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
         `${ORIENTATION_BOOTSTRAP} ` +
         feedbackLine(config) +
+        `${MESH_FIRST_STEER} ` +
         `Other agents coordinate with you here as lateral peers. ` +
         `Peer messages may arrive as <channel source="cotal" from="<name>" role="<role>" ` +
         `kind="dm|channel|anycast" channel="<name>">…</channel> — read them and, when a reply is ` +

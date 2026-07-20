@@ -23,7 +23,7 @@ built yet.
 | Area | Direction |
 |---|---|
 | **Signed envelopes + DID identity** | Non-repudiation: authenticity that survives an untrusted relay or federation hop, not just a single trusted broker. Instance ids are shaped to become `did:key`. ([SPEC §11](../SPEC.md#11-versioning-and-extensibility)) |
-| **Auth-callout onboarding** | Shipped for per-user-auth spaces: the auth service mints scoped creds *at connect* and confines the data-account signing key ([identity & auth](identity-and-auth.md)). Remaining: the join-link bootstrap-token variant for static meshes. |
+| **Auth-callout onboarding** | Shipped for per-user-auth spaces: the auth service mints scoped creds *at connect* from the data-account signing key, which a running manager also holds ([identity & auth](identity-and-auth.md)). Remaining: the join-link bootstrap-token variant for static meshes. |
 | **Credential revocation / TTL** | User-auth spaces have it (short bearers, ledger revocation, live-connection eviction); command and daemon creds are bounded and renewed everywhere. Remaining: TTL on static *agent* creds, where despawn still cuts the session, not the credential, and signing-key rotation is the only per-cred revocation. ([Security model](security.md)) |
 | **Sessions + moderator** | Managed group membership (admit/remove). Channels today carry no roster of their own. |
 | **Artifact delivery** | Large payloads move to a per-space JetStream Object Store; the message carries a reference part. Part shape reserved, transfer not built. ([SPEC §5](../SPEC.md#5-envelopes)) |

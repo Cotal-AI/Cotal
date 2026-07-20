@@ -65,8 +65,13 @@ export interface DmPeer {
 /** Derived operator signals — golden-signal counts, who needs attention, the DM roll-up. */
 export interface MeshSignals {
   counts: StatusCounts;
-  waiting: Presence[]; // agents blocked / needing input, oldest-first
-  oldestWaitingTs?: number; // "oldest unattended"
+  /** Agents blocked / needing input, name-ordered. NOT age-ordered: presence carries no
+   *  status-transition time, so how long a peer has been blocked is not knowable from the wire. */
+  waiting: Presence[];
+  /** Oldest heartbeat among LIVE agents — a liveness signal ("is anyone going quiet?"), NOT a
+   *  blocked-duration. {@link Presence.ts} is republished every heartbeat, so it can never say how
+   *  long an agent has been waiting. Undefined when no agent is live. */
+  stalestLiveTs?: number;
   dms: DmPeer[]; // per-peer DM roll-up (only populated when DMs are visible)
 }
 
@@ -392,11 +397,16 @@ export class MeshView extends EventEmitter {
     const agents = this.roster.filter((p) => p.card.kind === "agent");
     const counts: StatusCounts = { working: 0, waiting: 0, idle: 0, offline: 0 };
     for (const p of agents) if (p.status in counts) counts[p.status as keyof StatusCounts]++;
-    const waiting = agents.filter((p) => p.status === "waiting").sort((a, b) => a.ts - b.ts);
+    // Name-ordered, deliberately not by `ts`: that is the last heartbeat, so sorting by it and
+    // presenting the result as a priority queue would imply an age we cannot compute.
+    const waiting = agents
+      .filter((p) => p.status === "waiting")
+      .sort((a, b) => a.card.name.localeCompare(b.card.name) || a.card.id.localeCompare(b.card.id));
+    const live = agents.filter((p) => p.status !== "offline");
     return {
       counts,
       waiting,
-      oldestWaitingTs: waiting.length ? waiting[0].ts : undefined,
+      stalestLiveTs: live.length ? Math.min(...live.map((p) => p.ts)) : undefined,
       dms: this.rollupDms(),
     };
   }
@@ -415,7 +425,7 @@ export class MeshView extends EventEmitter {
       const b = this.nameOf(d.toId);
       if (!a || !b || a === b) continue;
       const parts = [a, b].sort() as [string, string];
-      const k = parts.join(" ");
+      const k = parts.join("\u0000");
       let c = conv.get(k);
       if (!c) conv.set(k, (c = { parts, msgs: [], last: 0 }));
       c.msgs.push({ ts: d.ts, from: a, to: b, text: d.text });

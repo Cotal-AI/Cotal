@@ -36,5 +36,9 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.6"
   }
 }

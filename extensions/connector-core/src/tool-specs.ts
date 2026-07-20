@@ -517,7 +517,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use when the team needs another agent.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
         role: z

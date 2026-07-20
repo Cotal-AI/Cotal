@@ -13,7 +13,7 @@
  */
 import { z } from "zod";
 import { isConcreteChannel } from "@cotal-ai/core";
-import { cotalToolSpecs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, MESH_FIRST_STEER, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 
@@ -32,6 +32,7 @@ const SEND_GUIDELINES = [
     '"agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT ' +
     "specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs " +
     "makes peers ping-pong wake-ups in an endless loop.",
+  MESH_FIRST_STEER,
 ];
 
 function toParameters(schema: z.ZodRawShape | undefined): TSchema {

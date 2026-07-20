@@ -98,6 +98,11 @@
       #legend .sw-dot { width: 8px; height: 8px; border-radius: 50%; }
       #legend .ring { width: 8px; height: 8px; border-radius: 50%; flex: none;
         background: transparent; box-shadow: 0 0 0 1.5px currentColor inset; }
+      /* Offline is hollow dashed (shape channel), not a filled/inset-solid ring. */
+      #legend .ring.off {
+        background: transparent; box-shadow: none;
+        border: 1.5px dashed currentColor;
+      }
 
       /* ── detail panel (right, floating) ── */
       #detail {
@@ -135,6 +140,10 @@
       .d-row { display: flex; gap: 10px; font-size: 11.5px; line-height: 1.4; }
       .d-row .k { color: var(--faint); min-width: 64px; flex: none; }
       .d-row .v { color: var(--fg); word-break: break-word; }
+      .d-row .v.muted { color: var(--faint); font-style: italic; }
+      .d-row .v .hmark { margin-right: 4px; font-weight: 700; }
+      .d-row .v.att-dnd { color: #db6d28; font-weight: 600; }
+      .d-row .v.att-focus { color: var(--chat); font-weight: 600; }
       .d-msgs { display: flex; flex-direction: column; gap: 5px; }
       .d-msg { font-size: 11px; line-height: 1.45; padding: 7px 10px 8px; border-radius: 6px;
         background: #ffffff06; border-left: 2px solid var(--line); }
@@ -195,13 +204,16 @@
         <span class="ls">agents</span>
         <span class="row"><span class="ring" style="color:var(--working)"></span> working</span>
         <span class="row"><span class="ring" style="color:var(--waiting)"></span> waiting · needs input</span>
-        <span class="row"><span class="ring" style="color:var(--idle)"></span> idle / offline</span>
+        <span class="row"><span class="ring" style="color:var(--idle)"></span> idle (filled)</span>
+        <span class="row"><span class="ring off" style="color:var(--idle);opacity:.85"></span> offline (hollow dashed)</span>
+        <span class="row"><span style="font-size:12px;color:#db6d28;font-weight:700">◼</span> dnd · <span style="font-size:12px;color:var(--chat);font-weight:700">◉</span> focus</span>
       </div>
     </div>
 
     <aside id="detail" class="glass"></aside>
     <div class="hint" id="hint">click a node for detail · scroll to zoom · drag to pan</div>
 
+    <script src="/harness.js"></script>
     <script src="/graph.js"></script>
   </body>
 </html>

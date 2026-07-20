@@ -26,6 +26,33 @@
   const MEM_OFF = "#5a6472"; // a durable member whose presence is offline ("member, currently offline")
   const TRAFFIC_COLD = 0.02; // heat below which a NON-member (traffic-only) spoke is pruned
   const FEED_STALE_MS = 45000; // membership feed older than this reads "stale" (daemon polls ~15s)
+  // Harness branding from harness.js (one source with the monitor). Canvas uses .glyph; DOM uses .svg.
+  const HARNESS = window.COTAL_HARNESS || {};
+  const harnessLabel = (k) => (HARNESS[k] ? HARNESS[k].label : k);
+  const harnessColor = (k) => (HARNESS[k] ? HARNESS[k].color : "#8b949e");
+  const harnessGlyph = (k) => (HARNESS[k] ? HARNESS[k].glyph : "·");
+  // Attention: open/absent are identical (receives all) — only dnd/focus surface.
+  const attMark = (a) => (a === "dnd" ? "◼" : a === "focus" ? "◉" : "");
+  /** Fit `provider/model · variant` into maxChars. Prefer dropping the provider prefix over the
+   *  variant — "gpt-5.6-sol · xhigh" carries more per pixel than "openai/gpt-5.6-sol ·…". */
+  function fitModelLabel(model, variant, maxChars) {
+    let core = String(model);
+    const withVar = (m) => (variant ? `${m} · ${variant}` : m);
+    let s = withVar(core);
+    if (s.length <= maxChars) return s;
+    if (core.includes("/")) {
+      core = core.slice(core.lastIndexOf("/") + 1);
+      s = withVar(core);
+      if (s.length <= maxChars) return s;
+    }
+    if (variant) {
+      const suf = ` · ${variant}`;
+      const room = maxChars - suf.length;
+      if (room >= 4) return `${core.slice(0, room - 1)}…${suf}`;
+      return String(variant).length <= maxChars ? String(variant) : `${String(variant).slice(0, maxChars - 1)}…`;
+    }
+    return core.length <= maxChars ? core : `${core.slice(0, maxChars - 1)}…`;
+  }
 
   // ── state ──
   const hubs = new Map(); // channel -> hub node
@@ -88,7 +115,7 @@
     const id = typeof ref === "object" ? ref.id || ref.name : ref;
     if (!id) return null;
     let a = agents.get(id);
-    if (!a) { a = Object.assign({ kind: "agent", id, name: (typeof ref === "object" && ref.name) || shortId(id), role: typeof ref === "object" ? ref.role : undefined, status: "idle", present: false, activity: "", harness: undefined, ts: 0, live: [], durable: [], memberOf: new Map(), r: 6.5, charge: -190, mass: 1, phase: (hash(id) % 1000) / 1000 * 6.283 }, spawn(id, 70)); agents.set(id, a); reheat(); }
+    if (!a) { a = Object.assign({ kind: "agent", id, name: (typeof ref === "object" && ref.name) || shortId(id), role: typeof ref === "object" ? ref.role : undefined, status: "idle", present: false, activity: "", harness: undefined, model: undefined, variant: undefined, attention: undefined, ts: 0, live: [], durable: [], memberOf: new Map(), r: 6.5, charge: -190, mass: 1, phase: (hash(id) % 1000) / 1000 * 6.283 }, spawn(id, 70)); agents.set(id, a); reheat(); }
     else if (typeof ref === "object" && ref.name) a.name = ref.name;
     return a;
   }
@@ -143,30 +170,65 @@
     alpha += (0 - alpha) * 0.0228;
   }
 
-  // ── traffic ──
+  // ── traffic (visuals are decoration; graph STATE is not) ──
+  // Particle/bloom arrays are bounded. A backgrounded tab stops rAF, so an unbounded queue + the
+  // chat onArrive fan-out (one comet per other member) detonates into thousands of particles on
+  // return — measured peak 8042 from 120 backlogged chats. Gate enqueue on visibility; hard-cap
+  // both arrays (drop oldest; dropped onArrive is skipped — heat already applied on the state path).
+  const PARTICLE_CAP = 240;
+  const BLOOM_CAP = 80;
+  const tabVisible = () => document.visibilityState === "visible";
   const mk = (a, b, color, onArrive, curve) => ({ a, b, t: 0, dur: curve ? 1.4 : 1.1, color, onArrive: onArrive || null, curve: !!curve, trail: [] });
+  function pushParticle(p) {
+    if (!tabVisible()) return false;
+    particles.push(p);
+    while (particles.length > PARTICLE_CAP) particles.shift(); // drop oldest; skip its onArrive
+    return true;
+  }
+  function pushBloom(b) {
+    if (!tabVisible()) return false;
+    blooms.push(b);
+    while (blooms.length > BLOOM_CAP) blooms.shift();
+    return true;
+  }
+  /** Apply fan-out spoke heat without enqueueing comets (used when visuals are gated off). */
+  function heatFanOut(channel, from) {
+    for (const e of edges.values()) if (e.chan === channel && e.a !== from) e.heat = 1;
+  }
   function onMessage({ mode, senderId, msg }) {
     if (!msg) return;
     const from = ensureAgent(senderId ? { id: senderId, name: msg.from?.name, role: msg.from?.role } : msg.from);
     if (from) { from.ts = now(); from.present = true; } // a live sender is a live presence (roster event may lag)
-    const animate = !filter.paused && filter[mode];
+    // Visual gate: pause chip, mode filter, AND tab visibility. State (heat/recent/roster) always applies.
+    const animate = !filter.paused && filter[mode] && tabVisible();
     let toName = null;
     if (mode === "chat" && msg.channel) {
       const h = ensureHub(msg.channel);
       if (from) chatHit(from, msg.channel, now()).heat = 1;
       // inbound: sender → hub, then the hub flashes and fans the post back out to every other member on
       // the channel (their spokes glow as the wave reaches them) — a real broadcast.
-      if (animate && from && h) particles.push(mk(from, h, MODE.chat, () => {
-        blooms.push({ x: h.x, y: h.y, t: 0, dur: 0.95, color: MODE.chat, r0: h.r });
-        for (const e of edges.values()) if (e.chan === msg.channel && e.a !== from) { e.heat = 1; particles.push(mk(h, e.a, MODE.chat, null, false)); }
-      }));
+      if (animate && from && h) {
+        pushParticle(mk(from, h, MODE.chat, () => {
+          pushBloom({ x: h.x, y: h.y, t: 0, dur: 0.95, color: MODE.chat, r0: h.r });
+          for (const e of edges.values()) if (e.chan === msg.channel && e.a !== from) {
+            e.heat = 1;
+            pushParticle(mk(h, e.a, MODE.chat, null, false));
+          }
+        }));
+      } else if (from && h) {
+        // No comet: still heat every member spoke so the skeleton reflects the broadcast on return.
+        heatFanOut(msg.channel, from);
+      }
     } else if (mode === "unicast") {
       const to = typeof msg.to === "string" ? agents.get(msg.to) : msg.to && agents.get(msg.to.id);
       toName = to?.name || (typeof msg.to === "string" ? shortId(msg.to) : msg.to?.name);
-      if (from && to && from !== to) { dmHit(from, to, now()).heat = 1; if (animate) particles.push(mk(from, to, MODE.unicast, null, true)); }
+      if (from && to && from !== to) {
+        dmHit(from, to, now()).heat = 1;
+        if (animate) pushParticle(mk(from, to, MODE.unicast, null, true));
+      }
     } else if (mode === "anycast") {
       toName = "@" + (msg.toService || "");
-      if (animate && from) blooms.push({ x: from.x, y: from.y, t: 0, dur: 1.0, color: MODE.anycast, r0: from.r });
+      if (animate && from) pushBloom({ x: from.x, y: from.y, t: 0, dur: 1.0, color: MODE.anycast, r0: from.r });
     }
     recent.push({ mode, from: from?.name, fromId: from?.id, to: toName, chan: msg.channel, text: partsText(msg), ts: msg.ts || now() });
     if (recent.length > 80) recent.shift();
@@ -177,7 +239,12 @@
     for (const p of list) {
       if (p.card?.kind === "endpoint") continue;
       const a = ensureAgent({ id: p.card.id, name: p.card.name, role: p.card.role });
-      a.status = p.status; a.activity = p.activity || ""; a.role = p.card.role; a.harness = p.card.meta?.connector; a.ts = p.ts;
+      a.status = p.status; a.activity = p.activity || ""; a.role = p.card.role;
+      a.harness = p.card.meta?.connector; a.model = p.card.meta?.model; a.variant = p.card.meta?.variant;
+      a.attention = p.attention; // open/absent both mean receives-all; only dnd/focus render
+      // Card legibility fields the detail panel renders (same source as the Monitor's Agent Detail).
+      a.description = p.card.description; a.tags = p.card.tags; a.channelModes = p.channelModes;
+      a.ts = p.ts;
       a.present = true; // in the roster = a live presence (the authority for isOffline)
       seen.add(a.id);
     }
@@ -333,22 +400,61 @@
       ctx.lineWidth = 1.5; ctx.strokeStyle = rgba(MODE.chat, 0.95 * dim); ctx.stroke();
       ctx.fillStyle = rgba("#cfe2ff", dim); ctx.font = "600 12.5px var(--font), sans-serif"; ctx.fillText("#" + h.name, h.x, h.y + h.r + 13);
     }
-    // Label gate counts VISIBLE agents (what's actually drawn), not agents.size — the Map also holds
-    // hidden offline ghosts (durable members kept for "member, currently offline"), which would push the
-    // count past the threshold and suppress every label even with only a handful of agents online.
-    let shown = 0; for (const a of agents.values()) if (!isHidden(a)) shown++;
     for (const a of agents.values()) {
       if (isHidden(a)) continue;
-      const col = STAT[a.status] || STAT.idle, focus = a === hover || a === sel, off = a.status === "offline";
+      const col = STAT[a.status] || STAT.idle, focus = a === hover || a === sel, off = a.status === "offline", idle = a.status === "idle";
       const r = a.r + Math.sin(t * 0.8 + a.phase) * 0.4;
       if (a.status === "waiting") { const pulse = 0.5 + 0.5 * Math.sin(t * 1.7); for (const o of [0, 0.5]) { ctx.beginPath(); ctx.arc(a.x, a.y, r + 5 + ((pulse + o) % 1) * 9, 0, 2 * Math.PI); ctx.strokeStyle = rgba(STAT.waiting, (1 - ((pulse + o) % 1)) * 0.45); ctx.lineWidth = 1.6; ctx.stroke(); } }
       // wide reader (subscribes `>`/`*`): a faint dashed halo — "reads all channels" without a spoke per hub
       if (a.wideReader) { ctx.save(); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.arc(a.x, a.y, r + 4.5, 0, 2 * Math.PI); ctx.strokeStyle = rgba(MEM_LIVE, off ? 0.3 : 0.6); ctx.lineWidth = 1.2; ctx.stroke(); ctx.restore(); }
-      ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = focus ? 20 : off ? 3 : 13;
-      const g = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, r); g.addColorStop(0, rgba(col, off ? 0.5 : 1)); g.addColorStop(0.55, rgba(col, off ? 0.2 : 0.55)); g.addColorStop(1, "#141b26");
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, 2 * Math.PI); ctx.fill(); ctx.restore();
-      ctx.lineWidth = 2; ctx.strokeStyle = rgba(col, off ? 0.6 : 1); ctx.stroke();
-      if (focus || a.status === "waiting" || shown <= 16) { ctx.fillStyle = focus ? "#ffffff" : "#cdd6e2"; ctx.font = (focus ? "600 " : "500 ") + "11px var(--font), sans-serif"; ctx.fillText(a.name, a.x, a.y - r - 8); }
+      // Shape channel (never colour alone): offline = hollow ring; idle = filled disc; working/waiting = filled + glow.
+      ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = focus ? 20 : off ? 0 : idle ? 6 : 13;
+      if (off) {
+        ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, 2 * Math.PI);
+        ctx.fillStyle = "#141b26"; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = rgba(col, 0.85); ctx.setLineDash([2.5, 2]); ctx.stroke(); ctx.setLineDash([]);
+      } else {
+        const g = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, r); g.addColorStop(0, rgba(col, 1)); g.addColorStop(0.55, rgba(col, 0.55)); g.addColorStop(1, "#141b26");
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, 2 * Math.PI); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = rgba(col, 1); ctx.stroke();
+      }
+      ctx.restore();
+      // Attention mark (dnd/focus only) — glyph at node rim, sized for rest-scale legibility.
+      const am = attMark(a.attention);
+      if (am && !off) {
+        ctx.fillStyle = a.attention === "dnd" ? "#db6d28" : MODE.chat;
+        ctx.font = "700 11px var(--font), sans-serif";
+        ctx.fillText(am, a.x + r + 2, a.y - r - 1);
+      }
+      // Labels track SCREEN SPACE, not global node count. A count gate hid every name on a real
+      // 19-agent mesh (David's "don't hide model names") and zoom never helped. Rule:
+      //   • viewport cull — off-screen nodes cost nothing
+      //   • name when the node's on-screen footprint can hold text (or focus/waiting)
+      //   • model/harness when zoomed further (or focus) — density follows cam.scale
+      const sx = cam.x + a.x * cam.scale, sy = cam.y + a.y * cam.scale;
+      const inView = sx >= -40 && sx <= W + 40 && sy >= -40 && sy <= H + 40;
+      const foot = 2 * r * cam.scale; // on-screen diameter in CSS px
+      const showName = focus || a.status === "waiting" || (inView && foot >= 8);
+      const showModel = focus || (inView && foot >= 16);
+      if (showName) {
+        ctx.fillStyle = focus ? "#ffffff" : "#cdd6e2";
+        ctx.font = (focus ? "600 " : "500 ") + "11px var(--font), sans-serif";
+        ctx.fillText(a.name, a.x, a.y - r - 8);
+      }
+      if (showModel) {
+        // Budget scales with on-screen footprint (same axis as the label gate). Never eat the
+        // variant to save chars — if we must shorten, drop the provider prefix first
+        // ("openai/gpt-5.6-sol · xhigh" → "gpt-5.6-sol · xhigh"), then trim the model id.
+        const maxChars = focus ? 56 : Math.max(20, Math.min(56, Math.round(foot * 2.2)));
+        let sub = "";
+        if (a.model) sub = fitModelLabel(a.model, a.variant, maxChars);
+        else if (a.harness) sub = harnessLabel(a.harness);
+        if (sub) {
+          ctx.fillStyle = focus ? "#b6c2d1" : "#8b949e";
+          ctx.font = "500 9.5px var(--font), sans-serif";
+          ctx.fillText(sub, a.x, a.y - r - (showName ? 19 : 8));
+        }
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -440,6 +546,16 @@
       const activeIds = new Set(recent.filter((m) => m.chan === sel.name && m.fromId).map((m) => m.fromId));
       const memberRow = (a) => { const off = a.status === "offline" || (a.memberOf && a.memberOf.get(sel.name) === "durable"); const dotCol = STAT[a.status] || STAT.idle; return `<span class="mtag"><span class="dot" style="background:${off ? MEM_OFF : dotCol}"></span>${esc(a.name)}${activeIds.has(a.id) ? '<span class="act">active</span>' : ""}${off ? '<span class="off">offline</span>' : ""}</span>`; };
       const memberList = mem.length ? `<div class="d-tags">${mem.map(memberRow).join("")}</div>` : `<div class="d-block muted">${hiddenOff ? `${hiddenOff} member${hiddenOff === 1 ? "" : "s"} offline (hidden)` : "no subscribers yet"}</div>`;
+      // Effective channel policy (from /api/channels, server-resolved). Delivery class = durability;
+      // replay = whether a join backfills. Omit a row the feed didn't carry (never guess a default).
+      const deliveryRow = sel.deliveryClass
+        ? `<div class="d-row"><span class="k">delivery</span><span class="v">${esc(sel.deliveryClass)} · ${sel.deliveryClass === "durable" ? "at-least-once for members" : "at-most-once"}</span></div>`
+        : "";
+      const replayRow = sel.replay === true
+        ? `<div class="d-row"><span class="k">replay</span><span class="v">${sel.replayWindow ? "on · " + esc(sel.replayWindow) : "on"}</span></div>`
+        : sel.replay === false
+          ? `<div class="d-row"><span class="k">replay</span><span class="v muted">off</span></div>`
+          : "";
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">channel</div>
         <div class="d-who">#${esc(sel.name)}</div>
@@ -447,6 +563,8 @@
         <div class="d-rows">
           <div class="d-row"><span class="k">subscribers</span><span class="v">${hiddenOff ? `${mem.length} shown <span style="color:var(--faint)">+${hiddenOff} offline hidden</span>` : `${mem.length} agent${mem.length === 1 ? "" : "s"}`}</span></div>
           <div class="d-row"><span class="k">messages</span><span class="v">${sel.msgs || 0}</span></div>
+          ${deliveryRow}
+          ${replayRow}
         </div>
         <div class="d-section"><div class="d-label">members</div>${memberList}</div>
         <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${recentRows((m) => m.chan === sel.name)}</div></div>`;
@@ -457,13 +575,41 @@
       const liveSet = (sel.live || []).filter((c) => c !== ">" && c !== "*").map((c) => `<span class="ctag">#${esc(c)}</span>`).join("");
       const durOnly = (sel.durable || []).filter((c) => !(sel.live || []).includes(c)).map((c) => `<span class="ctag off">#${esc(c)}</span>`).join("");
       const subs = wideChip || liveSet || durOnly ? `<div class="d-tags">${wideChip}${liveSet}${durOnly}</div>` : `<div class="d-block muted">no channel subscriptions</div>`;
+      // Identity rows: branded harness (not raw key); model · variant when known; "not reported" only for harness agents.
+      const hLabel = sel.harness ? harnessLabel(sel.harness) : "";
+      const hColor = sel.harness ? harnessColor(sel.harness) : "";
+      const harnessRow = sel.harness
+        ? `<div class="d-row"><span class="k">harness</span><span class="v"><span class="hmark" style="color:${hColor}">${esc(harnessGlyph(sel.harness))}</span> ${esc(hLabel)}</span></div>`
+        : "";
+      const modelRow = sel.harness
+        ? `<div class="d-row"><span class="k">model</span><span class="v${sel.model ? "" : " muted"}">${sel.model ? esc(sel.model) + (sel.variant ? ` · ${esc(sel.variant)}` : "") : "not reported"}</span></div>`
+        : sel.model
+          ? `<div class="d-row"><span class="k">model</span><span class="v">${esc(sel.model)}${sel.variant ? ` · ${esc(sel.variant)}` : ""}</span></div>`
+          : "";
+      const att = attMark(sel.attention);
+      const attRow = att
+        ? `<div class="d-row"><span class="k">attention</span><span class="v att-${esc(sel.attention)}">${att} ${esc(sel.attention)}</span></div>`
+        : "";
+      // The card's own description (AgentCard.description) — the same legibility text the Monitor shows.
+      const descBlock = sel.description ? `<div class="d-block">${esc(sel.description)}</div>` : "";
+      const tagsSection = (sel.tags || []).length
+        ? `<div class="d-section"><div class="d-label">tags</div><div class="d-tags">${sel.tags.map((t) => `<span class="ctag">${esc(t)}</span>`).join("")}</div></div>`
+        : "";
+      // Per-channel attention overrides (quiet / muted) — advisory receive-side, not ACL.
+      const modeEntries = Object.entries(sel.channelModes || {}).sort(([a], [b]) => a.localeCompare(b));
+      const modesSection = modeEntries.length
+        ? `<div class="d-section"><div class="d-label">channel modes</div><div class="d-tags">${modeEntries.map(([ch, m]) => `<span class="ctag${m === "muted" ? " off" : ""}">#${esc(ch)} · ${esc(m)}</span>`).join("")}</div></div>`
+        : "";
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
         <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status)}</div>
+        ${descBlock}
         <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
+        ${(harnessRow || modelRow || attRow) ? `<div class="d-rows">${harnessRow}${modelRow}${attRow}</div>` : ""}
         <div class="d-section"><div class="d-label">subscribes</div>${subs}</div>
-        ${sel.harness ? `<div class="d-rows"><div class="d-row"><span class="k">harness</span><span class="v">${esc(sel.harness)}</span></div></div>` : ""}
+        ${modesSection}
+        ${tagsSection}
         <div class="d-section"><div class="d-label">recent</div><div class="d-msgs">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`;
     }
     el.classList.add("open"); $("dx").onclick = closeDetail;
@@ -487,6 +633,19 @@
   // is normalized to px so a mouse notch and a trackpad swipe both feel right.
   canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.user = true; const px = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H : 1), f = Math.exp(-px * 0.0015), ns = Math.max(0.3, Math.min(3, cam.scale * f)), w = toWorld(e.clientX, e.clientY); cam.scale = ns; cam.x = e.clientX - w.x * ns; cam.y = e.clientY - w.y * ns; }, { passive: false });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
+  // Backgrounded tab: drop in-flight decoration (rAF is frozen, so mid-flight comets would otherwise
+  // detonate their onArrive fan-out on return). State (edges/roster/recent) is untouched. On return:
+  // reset lastT so the first frame doesn't integrate a multi-minute dt, and reheat physics so a node
+  // set that changed while hidden can re-settle instead of sitting cold.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      particles.length = 0;
+      blooms.length = 0;
+    } else {
+      lastT = performance.now();
+      reheat();
+    }
+  });
   $("modes").onclick = (e) => { const c = e.target.closest(".chip"); if (!c) return; const m = c.dataset.mode; filter[m] = !filter[m]; c.classList.toggle("on", filter[m]); };
   $("pause").onclick = () => { filter.paused = !filter.paused; $("pause").classList.toggle("on", filter.paused); $("pause").textContent = filter.paused ? "▶ resume" : "⏸ pause"; };
   $("hideOffline").onclick = () => { filter.hideOffline = !filter.hideOffline; $("hideOffline").classList.toggle("on", filter.hideOffline); recomputeHubEmpty(); if (sel && isHidden(sel)) closeDetail(); if (hover && isHidden(hover)) hover = null; reheat(); if (sel) renderDetail(); };
@@ -502,7 +661,7 @@
       fetch("/api/activity?limit=400").then((r) => r.json()).catch(() => []), fetch("/api/dms?limit=400").then((r) => r.json()).catch(() => []),
     ]);
     $("space").textContent = "· " + meta.space;
-    for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; }
+    for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
     updateRoster(roster);
     applyMembership(membership); // authoritative spokes BEFORE traffic seeding (no skeleton flicker)
     for (const e of activity) { const m = e.msg; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }

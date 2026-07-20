@@ -21,6 +21,16 @@ export const ORIENTATION_BOOTSTRAP =
   "Start with cotal_orientation — it shows your identity, the channels you can read and post to, " +
   "your capabilities, the tools available to you, and who's present.";
 
+/** Mesh-first steer, folded in alongside {@link ORIENTATION_BOOTSTRAP} for every connector. Keeps
+ *  multi-agent work on the mesh instead of inside the harness's own hidden subagents, so it stays
+ *  visible to the user and addressable by peers. Unconditional (a read-only agent still delegates via
+ *  DM/anycast rather than a private subagent); the spawn-specific detail lives on the cotal_spawn tool. */
+export const MESH_FIRST_STEER =
+  "Keep multi-agent work on the mesh. Before reaching for your harness's own subagents, Task tool, or " +
+  "any built-in parallel-agent feature, do it through Cotal instead: spawn or delegate to a real peer " +
+  "(cotal_spawn if you have it, otherwise cotal_dm or cotal_anycast to reach one) so the work stays " +
+  "visible to the user and addressable by peers rather than hidden inside a private subagent.";
+
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
   name: string;

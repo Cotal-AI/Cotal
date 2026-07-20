@@ -31,7 +31,11 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   another agent's DMs or another role's work queue ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
   It still can send well-formed hostile content to channels it is allowed on
   (see *Prompt-facing data*) and flood within its limits (see *availability* under *What v0
-  does not protect*).
+  does not protect*). These are **broker-enforced** guarantees and assume the peer has no host
+  filesystem or process access to the account signer: the default single-host manager and container
+  compositions do not isolate the signer from a same-uid agent, which could then mint `admin` and
+  read any DM. Isolating it is a hosted-composition concern (see [Embedding Cotal](embedding.md) and
+  [Deploy](deploy.md)).
 - **Buggy or lazy receiver:** sender authenticity depends on the receiver enforcing the
   `from.id`-equals-subject-sender check; a client that skips it accepts spoofed senders. The
   check is therefore normative: receivers MUST reject on mismatch
@@ -99,8 +103,9 @@ The guarantees, at a glance, each enforced by the broker per
   verbs (`STREAM.DELETE`/`PURGE`, cross-agent stop, per-agent provisioning) ride ephemeral
   per-command creds (teardown / control-caller-admin / deployer / provisioner). What stays hot on
   a static-auth mesh is the account **signing key** on the mint/manager box (a compromise there
-  can still mint fresh creds); on a per-user-auth mesh it is confined to the auth service (the
-  callout stage, shipped for user mode; [identity & auth](identity-and-auth.md)).
+  can still mint fresh creds); on a per-user-auth mesh it is held by the auth service (the callout
+  stage) and by any running manager, which self-mints its supervisor cred and renewals from it
+  ([identity & auth](identity-and-auth.md)).
 - **`spawn` is host-launch authority:** launch options are a raw passthrough (no allow/deny
   list), so a persona holding `capabilities: [spawn]` can drive the connector's full launch
   surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode

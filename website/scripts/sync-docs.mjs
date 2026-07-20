@@ -56,6 +56,7 @@ const groups = [
       'docs/connect-hermes.md',
       'docs/agent-frameworks.md',
       'docs/build-a-client.md',
+      'docs/embedding.md',
     ],
   },
   {
@@ -89,7 +90,7 @@ const groups = [
   },
   {
     label: 'Project',
-    files: ['docs/roadmap.md', 'docs/release.md', 'docs/setup-internals.md'],
+    files: ['docs/roadmap.md', 'docs/release.md', 'docs/stability.md', 'docs/setup-internals.md'],
   },
 ];
 

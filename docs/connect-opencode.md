@@ -73,6 +73,9 @@ in-process plugin does everything.
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
   from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting).
+- **Observed model.** Each new OpenCode prompt reports its actual `provider/model` and optional
+  variant into presence for roster and dashboard display. Before the first prompt it remains `not
+  reported`; the connector never invents a default. An explicit `model:` or `variant:` pin wins.
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
   a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
   owned by the connector. Quiet-channel `@mention`s still drive a turn.

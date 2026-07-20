@@ -24,7 +24,10 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
+  clearPreservationCommitIntent,
   clearPreservationPrepareIntent,
+  readPreservationCommitIntent,
+  writePreservationCommitIntent,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
   readPreservationPrepareIntent,
@@ -1322,6 +1325,30 @@ if (process.platform !== "win32") {
   clearPreservationPrepareIntent(lock);
   check("cleared prepare intent reads as undefined again", readPreservationPrepareIntent(p.root) === undefined);
   clearPreservationPrepareIntent(lock);
+  releaseMaintenanceLock(lock);
+}
+
+// The commit intent is written AFTER cut-intent but BEFORE the child-stopping RPC, so a crash in
+// that window proves the stop may already have run and recovery must not delete the cut.
+{
+  const p = project("commit-intent");
+  const lock = acquireMaintenanceLock(p.root);
+  check("no commit intent reads as undefined", readPreservationCommitIntent(p.root) === undefined);
+  expectCode("commit intent without a cut-intent journal is refused", "invalid-transition", () =>
+    writePreservationCommitIntent(lock, { attemptId: "commit-1" }));
+  const resume = writeMaintenanceResumeDocument(lock, { version: 1, inventory: [], launch: { server: normalEndpoint } });
+  beginMaintenanceCut(lock, {
+    attemptId: "commit-1", space: "commit-space", mode: "auth", sourcePath: p.store, resume,
+    launch: { server: normalEndpoint },
+  });
+  expectCode("commit intent for a different attempt than the journal is refused", "invalid-transition", () =>
+    writePreservationCommitIntent(lock, { attemptId: "commit-2" }));
+  writePreservationCommitIntent(lock, { attemptId: "commit-1" });
+  check("commit intent survives a crash and names the committing attempt",
+    readPreservationCommitIntent(p.root)?.attemptId === "commit-1");
+  clearPreservationCommitIntent(lock);
+  check("cleared commit intent reads as undefined again", readPreservationCommitIntent(p.root) === undefined);
+  clearPreservationCommitIntent(lock);
   releaseMaintenanceLock(lock);
 }
 
