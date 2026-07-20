@@ -1165,15 +1165,18 @@ export class CotalEndpoint extends EventEmitter {
     await this.publishPresence();
   }
 
-  /** Overlay the host's live model onto the card's display-only `meta.model` and republish presence.
-   *  For connectors that learn the actual model only *after* launch (e.g. Claude Code's `SessionStart`
-   *  hook payload) rather than from an operator pin. Display-only discovery metadata; a no-op when the
-   *  value is empty or already current (no redundant publish). The mutated card is read live by every
-   *  later publish, so even a pre-connect call surfaces on the first presence write. */
-  async setCardModel(model: string): Promise<void> {
+  /** Overlay the host's live model and optional variant onto the card's display-only metadata, then
+   *  republish presence. For connectors that learn their actual selection only after launch (e.g.
+   *  Claude Code's `SessionStart` hook). The mutated card is read live by every later publish, so even
+   *  a pre-connect call surfaces on the first presence write. */
+  async setCardModel(model: string, variant?: string): Promise<void> {
     const m = model.trim();
-    if (!m || this.card.meta?.model === m) return;
-    this.card.meta = { ...(this.card.meta ?? {}), model: m };
+    const v = variant?.trim();
+    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v)) return;
+    const meta: Record<string, unknown> = { ...(this.card.meta ?? {}), model: m };
+    if (v) meta.variant = v;
+    else delete meta.variant;
+    this.card.meta = meta;
     await this.publishPresence();
   }
 
@@ -1188,6 +1191,12 @@ export class CotalEndpoint extends EventEmitter {
    *  true. Reads the live cache, so it reflects runtime registry edits. */
   channelReplay(channel: string): boolean {
     return effectiveReplay(this.channelConfigs.get(channel), this.channelDefaults);
+  }
+
+  /** Effective replay window for a channel (per-channel override ?? space default), or undefined
+   * for the full retained window. Only meaningful when {@link channelReplay} is true. */
+  channelReplayWindow(channel: string): string | undefined {
+    return this.channelConfigs.get(channel)?.replayWindow ?? this.channelDefaults.replayWindow;
   }
 
   /** Effective delivery class for a channel (per-channel override ?? space default ?? "durable"),

@@ -100,7 +100,7 @@ type Hooks = Awaited<ReturnType<typeof cotal>>;
 const fire = (hooks: Hooks, event: unknown) => hooks.event!({ event } as never);
 const chatMessage = (hooks: Hooks) =>
   (hooks as Hooks & {
-    "chat.message"?: (input: { sessionID?: string }, output: { parts?: { type: string; text?: string }[] }) => Promise<void>;
+    "chat.message"?: (input: { sessionID?: string; model?: { providerID: string; modelID: string }; variant?: string }, output: { parts?: { type: string; text?: string }[] }) => Promise<void>;
   })["chat.message"]!;
 
 // A plain peer that posts ambient channel traffic at the agent.
@@ -130,6 +130,8 @@ try {
     await sleep(100);
   }
   check("the opencode plugin came online (Otto live in the publisher roster)", pub.getRoster().some((p) => p.card.name === "Otto"));
+  const otto = () => pub.getRoster().find((p) => p.card.name === "Otto");
+  check("model is not invented before the first OpenCode prompt", otto()?.card.meta?.model === undefined, otto()?.card.meta);
 
   // (1) a live channel message drives a turn — baseline push works.
   await pub.multicast("hello team", { channel: "team" });
@@ -145,8 +147,15 @@ try {
   await sleep(500);
   check("quiet channel traffic does not drive prompt_async", prompts.length === 1, prompts);
   const nativePrompt = { parts: [{ type: "text", text: "human native prompt" }] };
-  await chatMessage(hooks)({ sessionID: SID }, nativePrompt);
+  await chatMessage(hooks)({
+    sessionID: SID,
+    model: { providerID: "openai", modelID: "gpt-5" },
+    variant: "high",
+  }, nativePrompt);
   check("quiet traffic does not inject into the next native prompt", nativePrompt.parts[0]?.text === "human native prompt", nativePrompt);
+  for (let i = 0; i < 50 && otto()?.card.meta?.model !== "openai/gpt-5"; i++) await sleep(100);
+  check("chat.message publishes OpenCode's observed provider/model", otto()?.card.meta?.model === "openai/gpt-5", otto()?.card.meta);
+  check("chat.message publishes OpenCode's observed variant", otto()?.card.meta?.variant === "high", otto()?.card.meta);
 
   // A native/model failure still must not turn quiet traffic into an automatic retry payload.
   await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });

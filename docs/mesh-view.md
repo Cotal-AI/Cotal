@@ -80,11 +80,20 @@ interface MeshSnapshot {
 ```ts
 interface MeshSignals {
   counts:  { working: number; waiting: number; idle: number; offline: number };  // golden-signal tiles
-  waiting: Presence[];              // agents blocked / needing input, oldest-first
-  oldestWaitingTs?: number;         // "oldest unattended"
+  waiting: Presence[];              // agents blocked / needing input, name-ordered
+  stalestLiveTs?: number;           // oldest heartbeat among live agents (liveness, not blocked-duration)
   dms:     DmPeer[];                // per-peer DM roll-up (only populated when DMs are visible)
 }
 ```
+
+**Why `waiting` is not age-ordered.** `Presence.ts` is the *last heartbeat*, republished on every
+beat (2 s by default) — it is not the time the agent entered its current status, and the wire
+carries no such field. So "how long has this agent been blocked" is **not knowable** from presence,
+and no surface may claim it. `waiting` is therefore name-ordered, and the fifth golden-signal tile
+reports `stalestLiveTs` — the oldest heartbeat among *live* agents, which answers "is a peer going
+quiet?" and self-clears when that peer drops to offline. Offline agents are excluded: their
+heartbeat age only grows, so including them would pin the tile to an ever-increasing number that
+can never be acted on.
 
 `dms` groups unicast traffic into per-peer conversations (`DmPeer → DmThread → DmMessage`), only
 the pairs that actually talked, never the n² cross-product. It is populated only when DMs are
@@ -104,6 +113,10 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
 | msgs/s, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
+| attention mode (`dnd` / `focus`) | `agents[].attention` |  |  | ✓ roster + detail + graph |
+| per-channel attention (`quiet` / `muted`) | `agents[].channelModes` |  |  | ✓ agent detail |
+| harness, model, variant | `agents[].card.meta` |  |  | ✓ badges + graph |
+| channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
 
 Both interactive surfaces render every model field. The console adds the signals as an always-on
 tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) folds the feed
@@ -135,5 +148,12 @@ on the live surfaces, design intent until the wire grows to support them:
 - **No fallbacks.** If the observer cannot do what a surface needs, throw; do not silently degrade.
 - **Status is shape *and* colour.** `● working · ◐ waiting · ○ idle · ⨯/⊘ offline`, never colour
   alone (accessibility).
+- **Never render what the wire cannot say.** A surface shows a value only if the protocol actually
+  carries it. Where it does not, say so plainly — an agent whose harness never reported a model
+  reads *"not reported"*, never a guessed default; a heartbeat age is labelled as a heartbeat age,
+  never as a blocked-duration. A confident wrong number costs more trust than an honest gap.
+- **`open` attention is silent.** `attention: "open"` and an absent `attention` mean the same thing
+  (receives everything), so neither renders a badge. Only `dnd` and `focus` surface — a marker on
+  every peer is noise, and the point of the signal is that it stands out.
 
 For the operator-facing walkthrough of these surfaces, see [Watch a mesh](watch-a-mesh.md).

@@ -374,6 +374,10 @@ export const cotal: Plugin = async () => {
 
     "chat.message": async (input, output) => {
       if (!ours(input.sessionID)) return;
+      // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
+      // default: before the first prompt the dashboard truthfully shows "not reported".
+      if (input.model)
+        await agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant);
       injectIntoPrompt(output);
     },
 
