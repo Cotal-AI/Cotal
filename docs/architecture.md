@@ -30,16 +30,17 @@ Identity is an A2A `AgentCard` whose instance id is shaped to later become a **D
 
 ## One wire, mapped onto NATS
 
-The whole protocol rides four subject kinds, with the sender encoded in the subject
+The messaging plane rides three subject kinds, with the sender encoded in the subject
 itself, where the server can police it, rather than in a self-asserted payload field
-([SPEC §3](../SPEC.md#3-subject-layout)):
+([SPEC §3](../SPEC.md#3-subject-layout)); the endpoint control surface adds its own rails
+([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)):
 
 | Delivery | Subject |
 |---|---|
 | multicast | `cotal.<space>.chat.<owner>.<actor>.<channel…>` |
 | unicast | `cotal.<space>.inst.<toOwner>.<toActor>.<owner>.<actor>` |
 | anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` |
-| control | `cotal.<space>.ctl.<service>.<owner>.<actor>` |
+| endpoint (control) | `cotal.<space>.ep.<one\|all\|inst\|reply>.…` ([§13.2](../SPEC.md#132-grammar)) |
 
 The sender is a **principal**, an `owner.actor` pair: the account the agent acts on behalf
 of, then the agent's own handle under it ([identity & auth](identity-and-auth.md)). Two
@@ -48,7 +49,8 @@ forgery in the subject grammar itself.
 
 Behind the subjects, each space gets three **JetStream streams** (chat / DM / task, for
 storage, per-reader bookmarks, and history), **KV buckets** for presence and the channel
-registry, and the control plane as request/reply. Rather than re-implementing delivery
+registry, and the endpoint control surface on its own rails and streams
+([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)). Rather than re-implementing delivery
 guarantees, Cotal uses the native NATS mechanisms: streams for at-least-once and late
 join, queue groups for anycast load-balancing, KV TTL for liveness ([SPEC §8](../SPEC.md#8-nats--jetstream-binding);
 the reasoning: [presence & delivery](presence-and-delivery.md)). Isolation is one NATS
@@ -137,7 +139,8 @@ messages redeliver on the rebound durables, so nothing is lost across the gap. A
 ## Manager: a supervisor, not an orchestrator
 
 The CLI does not spawn agents itself; a long-lived **manager** owns their lifecycle,
-asked over the mesh (it is the control plane's first real consumer). It owns process
+asked over the mesh (the manager is itself an endpoint on the control surface,
+[§13](../SPEC.md#13-endpoint-control-surface-v04)). It owns process
 lifecycle and config binding (start / stop / restart, binding env and policy) and has
 no say in what work the agents do. Agents coordinate laterally; the manager only births
 and configures them.
@@ -155,8 +158,8 @@ and configures them.
   upgrade path ([roadmap](roadmap.md)).
 - **Control schema:** `start {role, name, agent, model?, variant?}` · `models {agent?,
   refresh?}` · `stop {name, graceful?}` · `definePersona {name, persona, model?}` · `ps` ·
-  `status` · `attach` · `bind`, request/reply messages any authorized node can send,
-  policy-gated ([identity & auth](identity-and-auth.md)).
+  `status` · `attach` · `bind`, endpoint commands ([§13.5](../SPEC.md#135-verbs)) any
+  authorized node can send, policy-gated ([identity & auth](identity-and-auth.md)).
 - **Bounded spawn.** A synchronous gate caps concurrent + in-flight agents and a
   minimum-lifetime floor bounds spawn↔despawn churn, so a capability-holding but
   compromised peer cannot fork-bomb the host.
@@ -174,7 +177,12 @@ and configures them.
 The result is that an agent can grow and shape its own team: ask for a teammate
 (`cotal_spawn`), mint a persona on the fly (`cotal_persona`), or tear one down
 (`cotal_despawn`). Every newcomer joins as a peer, not as a child of whoever requested
-it. Destructive space-wide operations (history purge) stay operator-only.
+it. Each managed agent runs under a durable **lifecycle**: a despawn retires it (settling
+and evicting the old incarnation) before its name frees for reuse, and a supervised restart
+recovers the same lifecycle rather than minting a new one, so durables and credentials key
+on the lifecycle, not the reusable name ([SPEC §13.1](../SPEC.md#131-lifecycle-identity);
+[identity & auth](identity-and-auth.md)). Destructive space-wide operations (history purge)
+stay operator-only.
 
 ## Observers
 

@@ -57,8 +57,10 @@ The rule: **never merge trust roots.** The staged path, from
 - **Inbound buffer/policy defaults**: queue vs coalesce vs immediate injection.
 - **Agent-directed control ops**: manager lifecycle ops exist; the agent-directed set
   (directive, set-role, pause/resume) is still open.
-- **Coordination primitives**, advisory intent records and leases: in or out, and what
-  shape.
+- **Coordination primitives**: settled for the endpoint control surface. v0.4 defines goals and
+  a decision journal, competitive work pools, and leases/obligations
+  ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)); whether a lighter *advisory* intent
+  record also belongs on the chat plane is still open.
 - **Collaboration patterns**: agents are declared today ([agent files](agent-files.md));
   how a user declares the patterns *between* them (who delegates to whom) is open.
 

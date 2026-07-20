@@ -45,7 +45,9 @@ Mix connector types freely within a roster (`agent: claude` / `agent: opencode` 
 - **An external broker**, reachable from the container. `cotal up` binds loopback by default; a
   broker containers dial out to needs `cotal up --host 0.0.0.0` (and auth, the default). Point
   `COTAL_SERVERS` at it: `nats://host.docker.internal:4222` for a broker on your machine, or
-  `tls://broker.host:4222` for a hosted one. The deploy tree never runs the broker.
+  `tls://broker.host:4222` for a hosted one. The deploy tree never runs the broker. The broker
+  must be nats-server 2.12 or newer (the v0.4 control surface floor); agents fail loud at connect
+  against an older one.
 - **The account signer:** on the host beside your broker, `cotal mint --signer` writes
   `signer.json`: account signing material with no operator key.
 - **A model credential per connector type** (see below).
