@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER } from "@cotal-ai/connector-core";
 import { startSidecar } from "./sidecar.js";
 
 /** Hermes API line this connector is written + pinned against (see pyproject.toml). A different
@@ -73,7 +73,7 @@ function setupProfile(home: string, opts: { model?: string; persona?: string }):
   // Persona → SOUL.md (Hermes' identity file) — the one place a system prompt can be set. Append the
   // orientation bootstrap so the agent orients first; gated on persona so we don't clobber the default SOUL.
   if (opts.persona)
-    writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${ORIENTATION_BOOTSTRAP}\n`);
+    writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${ORIENTATION_BOOTSTRAP}\n\n${MESH_FIRST_STEER}\n`);
 }
 
 /** Assert the installed hermes-agent is on the pinned API line, or throw. No silent degrade: a
