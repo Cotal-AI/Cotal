@@ -76,6 +76,12 @@ import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, typ
 import { effectsBindGrants, poolOwnerBindGrants } from "./endpoint-binding.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
+import {
+  backupProfilePermissions,
+  restoreProfilePermissions,
+  type BackupPermissionScope,
+  type RestorePermissionScope,
+} from "./backup.js";
 
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
 export type Profile =
@@ -88,6 +94,8 @@ export type Profile =
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "operator"
   | "purger"
+  | "backup"
+  | "restore"
   | "delivery"
   | "membership-rw"
   // PR 1.5 — the CLI-surface profiles that finish scoping (and DELETE) the former allow-all `manager`.
@@ -155,6 +163,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
+  backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
+  restore: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline restore initiation or exact-ID upload phase, memory-only" },
   probe: { class: "one-shot", defaultTtlSeconds: 60, note: "connect-only preflight" },
   "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
   "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },
@@ -422,6 +432,10 @@ export interface MintOpts {
   expiresInSeconds?: number;
   /** Absolute JWT `exp` timestamp in seconds. Used by cutover/test code that needs already-expired creds. */
   expiresAt?: number;
+  /** `backup` profile only: one discriminated inspector or snapshot phase. */
+  backup?: BackupPermissionScope;
+  /** `restore` profile only: one discriminated initiate, upload, validate, or checkpoint phase. */
+  restore?: RestorePermissionScope;
 }
 
 /** Compute a minted credential's `{ exp? }` from an explicit override or the centralized matrix
@@ -519,8 +533,9 @@ function principalOf(
  *  TASK) durables, RECORD its read ACL in the durable registry (unless `durableMembership:false`), and
  *  mint its scoped creds. Live delivery is the agent's own core subscription — there is no per-instance
  *  chat durable. Boot durable MEMBERSHIP is not written here: the agent self-joins its durable channels
- *  via the server-side delivery daemon's `ctl.delivery` op at connect. A live-only launcher
- *  (`durableMembership:false`, e.g. direct `cotal spawn`) gets no ACL row and stays live-only. */
+ *  via the server-side delivery daemon's `ctl.delivery` op at connect. A deliberately live-only
+ *  launcher (`durableMembership:false`, e.g. `cotal spawn --live-only`) gets no ACL row, so the
+ *  daemon never authorizes a durable backstop for it. */
 export async function provisionAgent(
   provisioner: DurableProvisioner,
   auth: SpaceAuth,
@@ -566,8 +581,8 @@ export async function provisionAgentDurables(
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
   // server-side delivery daemon can re-authorize this agent's durable entries + validate its runtime
   // durable-joins — it holds no in-memory ledger. The agent SELF-JOINS its durable boot channels via the
-  // daemon at connect (no manager-written boot membership). `durableMembership:false` (a live-only
-  // launcher, e.g. direct `cotal spawn` with no daemon) opts out of the ACL row → the daemon never
+  // daemon at connect (no manager-written boot membership). `durableMembership:false` (an explicit
+  // live-only launcher, e.g. `cotal spawn --live-only`) opts out of the ACL row → the daemon never
   // authorizes a durable backstop for it, so it stays live-only.
   // ACL is keyed by the lifecycle-scoped dot-form <owner>.<actor>.<uid> (per-incarnation read authority).
   if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
@@ -695,6 +710,14 @@ export function permissionsFor(
     return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
+  if (profile === "backup") {
+    if (!opts.backup) throw new Error("permissionsFor: backup requires opts.backup");
+    return backupProfilePermissions(space, pr.connId, opts.backup);
+  }
+  if (profile === "restore") {
+    if (!opts.restore) throw new Error("permissionsFor: restore requires opts.restore");
+    return restoreProfilePermissions(space, pr.connId, opts.restore);
+  }
   if (profile === "operator") return operatorPermissions(space, pr); // human-CLI client (send/dm/ask) (closure (ii))
   if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight (PR 1.5)
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
@@ -1248,6 +1271,7 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
 function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier = CONTROL_ADMIN): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
+  const DLVKV = `KV_${deliveryBucket(space)}`;
   // Read verbs for a KV bucket SCANNED/WATCHED via an ordered consumer (presence, channel registry, and
   // the membership feed — `readMembership` enumerates keys via `kv.keys()`): existence + kv.get (both
   // STREAM.MSG.GET and keyed DIRECT.GET forms) + the ordered consumer. NO `$KV.<bucket>` publish → no write.
@@ -1273,6 +1297,7 @@ function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier
         ...kvScan(CHKV), // channel registry read (readChannelRegistry + classifyChannels)
         ...kvScan(MSHIP), // membership FEED read (readMembership → detectUnmanagedActors) — the membership_ bucket
         ...kvPointRead(MGRKV), // manager-singleton lease keyed read (waitManagerReady) — point-get, NO write, NO watch
+        ...kvPointRead(DLVKV), // delivery-lease keyed read (preserve-state quiescence proof) — point-get, NO write, NO watch
         "$JS.FC.>", // ordered-consumer flow control
         // ONE control tier — launch + ps readiness. Static operator deploy creds ride CONTROL_ADMIN
         // (the historical shape); the user-mode `deployer` VIEW rides CONTROL_PRIVILEGED so the

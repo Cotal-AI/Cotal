@@ -54,6 +54,9 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
 - The persona is written as Hermes' `SOUL.md` (its system-prompt file), the one place a system
   prompt can be set.
+- Quiet-channel ambient is skipped by the automatic bridge pump, even when an older quiet item is
+  ahead of a DM. `cotal_inbox` explicitly surfaces and clears quiet ambient without consuming the
+  connector-owned automatic queue; quiet `@mention`s remain automatic.
 
 The shared tool surface and inbound-message model are documented once, for all connectors: see
 [mcp-tools.md](mcp-tools.md) and [connect-claude.md](connect-claude.md).

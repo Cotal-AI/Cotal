@@ -2,9 +2,6 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
-  RetentionPolicy,
-  DiscardPolicy,
-  StorageType,
   type ConsumerConfig,
   type JetStreamManager,
 } from "@nats-io/jetstream";
@@ -42,6 +39,11 @@ import {
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
+import {
+  BACKUP_MAX_MSGS_PER_SUBJECT,
+  BACKUP_PLANE3_DEDUP_WINDOW_MS,
+  canonicalBackupStreamConfig,
+} from "./backup-config.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
@@ -49,7 +51,7 @@ const PRESENCE_TTL_MS = 6_000;
 /** Per-(sender,channel)-subject retention cap on the chat stream — the bound past which the
  *  oldest message on a subject is discarded (`DiscardPolicy.Old`). Also the horizon of focus
  *  recall: only the last {@link MAX_MSGS_PER_SUBJECT} per sender-subject are recallable. */
-export const MAX_MSGS_PER_SUBJECT = 1000;
+export const MAX_MSGS_PER_SUBJECT = BACKUP_MAX_MSGS_PER_SUBJECT;
 
 /** JetStream message-dedup window on the Plane-3 streams: a `Nats-Msg-Id`
  *  (`<msgId>:<owner>:<generation>`) repeated within this window is collapsed. Sized generous (2h) so
@@ -61,7 +63,7 @@ export const MAX_MSGS_PER_SUBJECT = 1000;
  *  redelivery duplicates within a SESSION, but it is in-memory and reset on agent restart, so it is
  *  NOT a cross-restart guarantee. A persistent per-owner delivery ledger would lift the bound; not
  *  built (the 2h horizon covers the realistic crash/redelivery lag). Keep the window ≥ worst-case lag. */
-export const PLANE3_DEDUP_WINDOW_MS = 2 * 60 * 60 * 1000;
+export const PLANE3_DEDUP_WINDOW_MS = BACKUP_PLANE3_DEDUP_WINDOW_MS;
 
 /** Bound on the trusted reader's in-flight (un-acked) entries per owner — an offline owner with a large
  *  backlog can't stall the reader's own redelivery by pinning unbounded pending. */
@@ -132,8 +134,7 @@ export function standaloneConnectOpts(auth: StandaloneAuth = {}): Record<string,
 }
 
 /**
- * Create (idempotently) the three backing streams for a space — CHAT (multicast backlog +
- * history), DM (per-instance inboxes), TASK (anycast work queue).
+ * Create (idempotently) the five message streams for a space.
  *
  * This is **privileged**: under auth mode `STREAM.CREATE` is denied to regular agents
  * (streams are space infrastructure, not per-agent), so it runs once at setup
@@ -144,55 +145,8 @@ export async function createSpaceStreams(
   jsm: JetStreamManager,
   space: string,
 ): Promise<void> {
-  const p = spacePrefix(space);
-  await jsm.streams.add({
-    name: chatStream(space),
-    subjects: [`${p}.chat.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_msgs_per_subject: MAX_MSGS_PER_SUBJECT, // capped per-channel backlog (buffer + history)
-    discard: DiscardPolicy.Old,
-    // Direct Get API stays enabled on CHAT (harmless: agents hold no DIRECT.GET grant). Per-channel
-    // history reads no longer use it — they go through contained single-filter ephemeral consumers
-    // (endpoint `collectHistory`) so the read ACL bounds them. NEVER set on DM/TASK: direct-get
-    // would bypass the consumer-create deny that is DM's confidentiality boundary.
-    allow_direct: true,
-  });
-  await jsm.streams.add({
-    name: dmStream(space),
-    subjects: [`${p}.inst.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-  });
-  await jsm.streams.add({
-    name: taskStream(space),
-    subjects: [`${p}.svc.>`],
-    retention: RetentionPolicy.Workqueue,
-    storage: StorageType.File,
-  });
-  // Plane-3 (SPEC §8). INBOX = the mixed pre-auth store (fan-out target; agents hold no grant — see
-  // permissionsFor). DLV = the per-member post-auth handoff the agent binds + acks. Both per-owner
-  // (one subject per owner), capped per-owner backlog (DiscardPolicy.Old; an evicted entry is a
-  // delivery miss, surfaced, never a satisfied durable guarantee — SPEC §7). `duplicate_window`
-  // collapses a catch-up/fan-out double of the same Nats-Msg-Id. No Direct Get on either.
-  await jsm.streams.add({
-    name: inboxStream(space),
-    subjects: [`${p}.dinbox.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_msgs_per_subject: MAX_MSGS_PER_SUBJECT,
-    discard: DiscardPolicy.Old,
-    duplicate_window: nanos(PLANE3_DEDUP_WINDOW_MS),
-  });
-  await jsm.streams.add({
-    name: dlvStream(space),
-    subjects: [`${p}.dlv.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_msgs_per_subject: MAX_MSGS_PER_SUBJECT,
-    discard: DiscardPolicy.Old,
-    duplicate_window: nanos(PLANE3_DEDUP_WINDOW_MS),
-  });
+  for (const stream of [chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)])
+    await jsm.streams.add(canonicalBackupStreamConfig(space, stream));
 }
 
 /**
@@ -331,20 +285,21 @@ export async function setupSpaceStreams(opts: {
 }): Promise<void> {
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds }) });
   try {
-    await createSpaceStreams(await jetstreamManager(nc), opts.space);
+    const jsm = await jetstreamManager(nc);
+    await createSpaceStreams(jsm, opts.space);
     // The presence + channels KV buckets are streams too — pre-create them so agents (denied
     // KV stream-create) can open them. Idempotent. Presence is TTL'd (liveness); the channel
     // registry is durable config, so no TTL.
     const kvm = new Kvm(nc);
     await kvm.create(presenceBucket(opts.space), { ttl: PRESENCE_TTL_MS });
-    await kvm.create(channelBucket(opts.space));
+    await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${channelBucket(opts.space)}`));
     // Durable-membership registry (Plane-3): privileged-write, no TTL (durable config, like the
     // channel registry). Pre-created so the delivery daemon (and open-mode self) can OPEN it; agents
     // hold no grant. Idempotent.
-    await kvm.create(membersBucket(opts.space));
+    await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${membersBucket(opts.space)}`));
     // Durable read-ACL registry (Plane-3 keystone): privileged-write, no TTL. The manager records an
     // agent's read ACL here at mint; the delivery daemon re-auths every durable entry against it.
-    await kvm.create(aclBucket(opts.space));
+    await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${aclBucket(opts.space)}`));
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
     // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). `history:1`
     // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the

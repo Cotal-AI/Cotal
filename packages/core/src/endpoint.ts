@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import {
   connect,
   credsAuthenticator,
+  headers,
   tokenAuthenticator,
   nanos,
   AuthorizationError,
@@ -126,6 +127,13 @@ import {
 } from "./subjects.js";
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
+const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
+
+interface Plane3DeliveryFrame {
+  version: 1;
+  channel: string;
+  msg: CotalMessage;
+}
 
 /** Space joined when none is given on the CLI (the `cotal-<space>` cmux tab, etc.). */
 export const DEFAULT_SPACE = "main";
@@ -2237,13 +2245,16 @@ export class CotalEndpoint extends EventEmitter {
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
     if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
     const seq = m.seq;
+    const normalizedMsg = authenticatedChannelMessage(msg, channel);
     if ((await this.deliveryClassFresh(channel)) === "durable") {
       for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
         if (!durableEligible(rec, seq)) continue;     // routing fast-filter (reader re-checks)
         // Address the member row's RECORDED lifecycle: a retired row (tombstone pending) routes to the
         // retired lifecycle's inbox, never the alias's new occupant (SPEC 13.1 cross-plane scoping).
-        await this.publishDinbox(rec.owner, rec.lifecycleUid, { msg, channel, seq, reason: "durable-channel", generation: rec.generation });
+        // Store the AUTHENTICATED-channel copy (main's normalization): the durable frame validates
+        // msg.channel === frame.channel, and payload to/toService are stripped.
+        await this.publishDinbox(rec.owner, rec.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation });
       }
     } else {
       for (const name of msg.mentions ?? []) {
@@ -2256,7 +2267,7 @@ export class CotalEndpoint extends EventEmitter {
         try { row = await this.aclForAlias(owner); }
         catch (e) { this.emit("error", e as Error); continue; }
         if (!row || !channelInAllow(row.allowSubscribe, channel)) continue; // @mention can't bypass the read ACL
-        await this.publishDinbox(owner, row.lifecycleUid, { msg, channel, seq, reason: "live-mention", generation: 0 });
+        await this.publishDinbox(owner, row.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
       }
     }
     m.ack();
@@ -2317,10 +2328,21 @@ export class CotalEndpoint extends EventEmitter {
       if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
     }
     try {
-      await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(entry.msg), {
-        // Lifecycle-keyed for the same stream-wide-dedupe reason as publishDinbox: a predecessor's
-        // transferred copy must never suppress a successor's (disjoint lifecycles, same alias).
+      // DLV has no original chat subject, so preserve the channel the trusted fan-out reader derived
+      // from CHAT. Never let the publisher-controlled payload label choose connector attention.
+      const frame: Plane3DeliveryFrame = {
+        version: 1,
+        channel: entry.channel,
+        msg: authenticatedChannelMessage(entry.msg, entry.channel),
+      };
+      const frameHeaders = headers();
+      frameHeaders.set(PLANE3_FRAME_HEADER, "1");
+      // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
+      // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
+      // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
+      await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(frame), {
         msgID: `${entry.msg.id}:${owner}:${pr.lifecycleUid}:${entry.generation}`,
+        headers: frameHeaders,
       });
     } catch {
       // Transfer failed — keep the entry pending (redeliver), bounded by the same ceiling so a poison
@@ -2351,8 +2373,21 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        let msg: CotalMessage;
-        try { msg = m.json<CotalMessage>(); } catch (e) { this.emit("error", e as Error); try { m.term(); } catch { /* draining */ } continue; }
+        // The header is minted only by the trusted DLV writer. A body-only discriminator is
+        // insufficient because old Cotal envelopes permit unknown fields and could imitate it.
+        if (m.headers?.get(PLANE3_FRAME_HEADER) !== "1") {
+          this.emit("error", new Error("plane-3 delivery: unauthenticated or unversioned DLV entry terminated"));
+          try { m.term(); } catch { /* draining */ }
+          continue;
+        }
+        let raw: unknown;
+        try { raw = m.json<unknown>(); } catch (e) { this.emit("error", e as Error); try { m.term(); } catch { /* draining */ } continue; }
+        if (!isPlane3DeliveryFrame(raw)) {
+          this.emit("error", new Error("plane-3 delivery: malformed versioned DLV entry terminated"));
+          try { m.term(); } catch { /* draining */ }
+          continue;
+        }
+        const msg = authenticatedChannelMessage(raw.msg, raw.channel);
         if (msg.from?.id === this.card.id) { m.ack(); continue; } // own echo (defensive)
         const delivery: Delivery = { ack: () => m.ack(), nak: () => m.nak(), durable: true };
         this.emit("message", msg, delivery, { historical: false, kind: "channel" } satisfies MessageMeta);
@@ -2624,7 +2659,7 @@ export class CotalEndpoint extends EventEmitter {
           // entry and takes THIS durable ack handle) — so the durable copy is acked only once handled.
         }
         const delivery: Delivery = { ack: () => m.ack(), nak: () => m.nak(), durable: true };
-        this.emit("message", msg, delivery, {
+        this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
           kind: kindFromParsed(parsed.kind),
         } satisfies MessageMeta);
@@ -2687,7 +2722,7 @@ export class CotalEndpoint extends EventEmitter {
         if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
-        this.emit("message", msg, delivery, {
+        this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
           kind: kindFromParsed(parsed.kind),
         } satisfies MessageMeta);
@@ -2890,7 +2925,7 @@ export class CotalEndpoint extends EventEmitter {
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
-      this.emit("message", msg, noop, { historical: true, kind: "channel" } satisfies MessageMeta);
+      this.emit("message", authenticatedMessage(msg, parsed), noop, { historical: true, kind: "channel" } satisfies MessageMeta);
       n++;
     }
     return n;
@@ -2935,7 +2970,7 @@ export class CotalEndpoint extends EventEmitter {
       // Same authenticity guard as the tail/backfill; skip our own echoes.
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
-      collected.push(msg);
+      collected.push(authenticatedMessage(msg, parsed));
     }
     const dropped = await this.channelDropped(subject, sinceSeq);
     return { messages: collected, dropped };
@@ -3167,6 +3202,55 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   }
 }
 
+/** Routing fields in the envelope are advisory. Surface a channel label only from the authenticated
+ * chat subject, so connector attention cannot be bypassed with a mismatched payload `channel`. */
+function authenticatedMessage(msg: CotalMessage, parsed: ParsedSubject): CotalMessage {
+  return parsed.kind === "chat" ? authenticatedChannelMessage(msg, parsed.rest) : msg;
+}
+
+function authenticatedChannelMessage(msg: CotalMessage, channel: string): CotalMessage {
+  if (msg.channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
+  const { to: _to, toService: _toService, ...base } = msg;
+  return { ...base, channel } as CotalMessage;
+}
+
+function isPlane3DeliveryFrame(value: unknown): value is Plane3DeliveryFrame {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 3 || !keys.includes("version") || !keys.includes("channel") || !keys.includes("msg")) return false;
+  if (value.version !== 1 || typeof value.channel !== "string" || !isConcreteChannel(value.channel)) return false;
+  return isCotalMessage(value.msg) && value.msg.channel === value.channel;
+}
+
+function isCotalMessage(value: unknown): value is CotalMessage {
+  if (!isRecord(value)) return false;
+  const routes = ["channel", "to", "toService"].filter((key) => key in value);
+  if (routes.length !== 1 || typeof value[routes[0]!] !== "string") return false;
+  if (typeof value.id !== "string" || typeof value.ts !== "number" || !Number.isFinite(value.ts) ||
+      typeof value.space !== "string" || !isEndpointRef(value.from) || !Array.isArray(value.parts) ||
+      !value.parts.every(isMessagePart)) return false;
+  if (value.mentions !== undefined && (!Array.isArray(value.mentions) || !value.mentions.every((name) => typeof name === "string"))) return false;
+  if (value.replyTo !== undefined && typeof value.replyTo !== "string") return false;
+  if (value.contextId !== undefined && typeof value.contextId !== "string") return false;
+  return true;
+}
+
+function isEndpointRef(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === "string" && typeof value.name === "string" &&
+    (value.role === undefined || typeof value.role === "string");
+}
+
+function isMessagePart(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "text") return typeof value.text === "string";
+  if (value.kind === "data") return Object.prototype.hasOwnProperty.call(value, "data");
+  return /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(value.kind);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention
  *  toggle isn't swallowed as a quiet heartbeat. Absent and empty compare equal. */
@@ -3381,10 +3465,12 @@ export async function isReachable(
 
 /** What a connect attempt told us about the server — the distinction {@link isReachable} flattens.
  *  `auth-required` means a server answered but rejected these creds (so it IS up); `stale-auth`
- *  means the server is up and the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded
- *  lifetime (the broker's "authentication expired", or a cred that is locally provably expired) —
- *  the D5 credential-death event, whose repair is `doctor auth`, never a registry prune;
- *  `unreachable` means nothing answered (refused / timeout / a stale registry entry). */
+ *  means the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded lifetime, either because
+ *  the broker said "authentication expired" or because the cred is LOCALLY PROVABLY expired (its own
+ *  JWT `exp` is past). The local check is decided without a round-trip, so a slow or failed connect
+ *  never downgrades a dead cred to `unreachable`; the repair is `doctor auth` either way, never a
+ *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
+ *  the cred is not provably dead (refused / timeout / a stale registry entry). */
 export type ProbeResult =
   | { ok: true }
   | { ok: false; reason: "auth-required" }
@@ -3411,19 +3497,21 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
-    if (e instanceof AuthorizationError) {
-      // The broker's denial is generic; local knowledge isn't. A presented cred that is PROVABLY
-      // expired by its own JWT is stale-auth (credential death), not "wrong mesh/creds" — the
-      // repair differs (doctor auth vs re-target), so the classification must too. Unreadable
-      // content stays a plain rejection (no false stale diagnosis from garbage).
-      if (typeof opts.creds === "string") {
-        try {
-          if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
-        } catch { /* not introspectable; keep the wire truth */ }
-      }
-      return { ok: false, reason: "auth-required" };
+    // A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) —
+    // and that is knowable LOCALLY, without the network, so it is decided FIRST, before the error
+    // type. On the wire the broker's rejection and the socket close race: a slow CI/Windows handshake
+    // can surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError,
+    // which used to misclassify a dead cred. Reading the cred removes that timing dependency entirely,
+    // so the classification is deterministic. Unreadable content falls through to the wire truth (no
+    // false stale diagnosis from garbage).
+    if (typeof opts.creds === "string") {
+      try {
+        if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
+      } catch { /* not introspectable — keep the wire truth */ }
     }
+    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
+    // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
+    if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
     return { ok: false, reason: "unreachable" };
   }
 }

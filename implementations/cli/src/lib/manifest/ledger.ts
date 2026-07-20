@@ -15,10 +15,10 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, readdirSync, renameSync, lstatSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 import { assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink } from "@cotal-ai/core";
-import { authDir } from "@cotal-ai/workspace";
+import { agentSecretFilePaths } from "@cotal-ai/workspace";
 
 export const LEDGER_VERSION = "cotal-ledger/v1";
 
@@ -208,12 +208,11 @@ export function findLedgerByRun(root: string, runId: string): { path: string; le
 }
 
 /** Derive an owned agent's cred path under the known auth root — `<root>/.cotal/auth/creds/<name>.creds`
- *  — from the SPAWNED name, rejecting any name that escapes the creds dir. The ledger never stores a
- *  cred path; teardown derives it here and the caller deletes it no-follow ({@link unlinkFileNoFollow}). */
+ *  — from the SPAWNED name. The ledger never stores a cred path; teardown derives it here through
+ *  the workspace's single filename source for the kind (`agentSecretFilePaths`, whose guarded
+ *  segment refuses any name that could escape the creds dir), so teardown can never derive a
+ *  DIFFERENT path than provisioning wrote. */
 export function ownedCredPath(root: string, spawnedName: string): string {
-  assertValidName(spawnedName);
-  const dir = resolve(authDir(root), "creds");
-  const path = resolve(dir, `${spawnedName}.creds`);
-  if (dirname(path) !== dir) throw new Error(`unsafe owned agent name "${spawnedName}" - cred path escapes ${dir}`);
-  return path;
+  assertValidName(spawnedName); // manifest-level refusal first, with the ledger's own phrasing
+  return agentSecretFilePaths(root, spawnedName).creds;
 }

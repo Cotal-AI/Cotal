@@ -1,5 +1,82 @@
 # cotal-ai
 
+## 0.12.0
+
+### Patch Changes
+
+- Updated dependencies [be66729]
+- Updated dependencies [046f485]
+- Updated dependencies [47d2584]
+- Updated dependencies [4e0e641]
+  - @cotal-ai/cli@0.12.0
+  - @cotal-ai/core@0.12.0
+  - @cotal-ai/workspace@0.12.0
+  - @cotal-ai/manager@0.12.0
+  - @cotal-ai/connector-core@0.12.0
+  - @cotal-ai/auth@0.12.0
+  - @cotal-ai/delivery@0.12.0
+
+## 0.11.6
+
+### Patch Changes
+
+- 7b24953: Rebind extension peer links to the current Cotal host before lazy import, allowing global installs and source worktrees to share one extension prefix. Keep the Hermes launcher self-contained so it does not resolve a mutable host peer after launch.
+- Updated dependencies [7b24953]
+  - @cotal-ai/workspace@0.11.6
+  - @cotal-ai/cli@0.11.6
+  - @cotal-ai/auth@0.11.6
+  - @cotal-ai/delivery@0.11.6
+  - @cotal-ai/manager@0.11.6
+  - @cotal-ai/core@0.11.6
+  - @cotal-ai/connector-core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- 446ccc4: Resolve package-manager bin symlinks before locating the connector seed generation and bundled payloads.
+- Updated dependencies [446ccc4]
+  - @cotal-ai/cli@0.11.5
+  - @cotal-ai/core@0.11.5
+  - @cotal-ai/workspace@0.11.5
+  - @cotal-ai/manager@0.11.5
+  - @cotal-ai/delivery@0.11.5
+  - @cotal-ai/connector-core@0.11.5
+  - @cotal-ai/auth@0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 1935221: Ship the built-in agent connectors (claude, opencode, hermes, pi) as removable `cotal ext` plugins. They are seeded on first run through the same `ext add` path a third party uses, resolved lazily per spawn, and deletable with `cotal ext remove`; they are no longer hardcoded imports or dependencies of `cotal-ai`.
+- Updated dependencies [1935221]
+- Updated dependencies [5634ae4]
+  - @cotal-ai/core@0.11.4
+  - @cotal-ai/workspace@0.11.4
+  - @cotal-ai/cli@0.11.4
+  - @cotal-ai/manager@0.11.4
+  - @cotal-ai/connector-core@0.11.4
+  - @cotal-ai/auth@0.11.4
+  - @cotal-ai/delivery@0.11.4
+
+## 0.11.3
+
+### Patch Changes
+
+- 1a954e8: Add the Pi host-native connector with confirmed custom-message delivery, cooperative shutdown, and a standalone extension artifact.
+- Updated dependencies [1a954e8]
+  - @cotal-ai/pi@0.11.3
+  - @cotal-ai/core@0.11.3
+  - @cotal-ai/workspace@0.11.3
+  - @cotal-ai/cli@0.11.3
+  - @cotal-ai/manager@0.11.3
+  - @cotal-ai/delivery@0.11.3
+  - @cotal-ai/connector-core@0.11.3
+  - @cotal-ai/connector-claude-code@0.11.3
+  - @cotal-ai/connector-hermes@0.11.3
+  - @cotal-ai/connector-opencode@0.11.3
+  - @cotal-ai/auth@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes

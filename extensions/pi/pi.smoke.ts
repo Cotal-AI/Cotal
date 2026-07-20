@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
+import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
 import cotalMesh from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
@@ -36,9 +36,10 @@ class FakeMesh {
   drained: string[] = [];
   statuses: Array<{ status: string; activity?: string }> = [];
   modes = new Map<string, "quiet" | "muted">();
+  pullOnly = new Set<string>();
 
-  peekInbox(): InboxItem[] {
-    return [...this.items];
+  peekInbox(scope: InboxScope = "all"): InboxItem[] {
+    return this.items.filter((value) => scope === "all" || (scope === "pull-only") === this.pullOnly.has(value.id));
   }
 
   drainInbox(limit?: number): InboxItem[] {
@@ -46,6 +47,16 @@ class FakeMesh {
     const drained = this.items.splice(0, count);
     this.drained.push(...drained.map((value) => value.id));
     return drained;
+  }
+
+  drainInboxIds(ids: readonly string[]): ExactDrainResult {
+    const wanted = new Set(ids);
+    const drained = this.items.filter((value) => wanted.has(value.id));
+    this.items = this.items.filter((value) => !wanted.has(value.id));
+    this.drained.push(...drained.map((value) => value.id));
+    for (const value of drained) this.pullOnly.delete(value.id);
+    const present = new Set(drained.map((value) => value.id));
+    return { items: drained, missingIds: [...wanted].filter((id) => !present.has(id)) };
   }
 
   channelMode(channel?: string): "quiet" | "muted" | undefined {
@@ -102,7 +113,7 @@ function confirm(driver: PiDriver, details: CotalBatchDetails): void {
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-// Prefix commit, zero guard, eviction, mismatch, and late duplicate behavior.
+// Exact-id commit, zero guard, eviction, interleaving, and late duplicate behavior.
 {
   const mesh = new FakeMesh();
   const ledger = new InboxTurn(mesh);
@@ -111,19 +122,27 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
 
   mesh.items = [item("m2"), item("new")];
   const evicted = ledger.commitConfirmed(["m1", "m2"]);
-  ok(evicted.drained === 1 && mesh.drained.at(-1) === "m2", "an older evicted id may precede an exact front prefix");
+  ok(evicted.drained === 1 && mesh.drained.at(-1) === "m2", "an older evicted id may precede an exact-id commit");
 
   mesh.items = [item("unrelated"), item("m4")];
-  const mismatch = ledger.commitConfirmed(["m3", "m4"]);
-  ok(mismatch.drained === 0 && Boolean(mismatch.error), "a mismatch must acknowledge no unrelated message");
-  ok(mesh.items[0]?.id === "unrelated", "the unrelated front message must remain buffered");
-  mesh.drainInbox(1);
-  ok(ledger.discardTombstonedFront() === 1, "the confirmed duplicate is discarded only after reaching the front");
+  const exact = ledger.commitConfirmed(["m3", "m4"]);
+  ok(exact.drained === 1 && exact.tombstoned === 1, "exact completion drains only the present confirmed id");
+  ok(mesh.items[0]?.id === "unrelated", "exact completion never drains an unrelated physical prefix");
 
   mesh.items = [];
   ledger.commitConfirmed(["late"]);
   mesh.items.push(item("late"));
-  ok(ledger.discardTombstonedFront() === 1, "a late duplicate of an absent confirmed id is not surfaced twice");
+  ok(ledger.discardTombstoned() === 1, "a late duplicate of an absent confirmed id is not surfaced twice");
+
+  mesh.items = [item("quiet", { kind: "channel", channel: "quiet" }), item("dm")];
+  mesh.pullOnly.add("quiet");
+  ledger.commitConfirmed(["buried-late"]);
+  mesh.items.splice(1, 0, item("buried-late"));
+  ok(ledger.discardTombstoned() === 1, "a pull-only item cannot bury a tombstoned late duplicate");
+  ok(
+    mesh.items.map((value) => value.id).join() === "quiet,dm" && mesh.peekInbox("automatic")[0]?.id === "dm",
+    "exact tombstone cleanup preserves quiet traffic and leaves later automatic work deliverable",
+  );
 }
 
 // Queue/start/provider confirmation is not acknowledgement; terminal completion is.
@@ -177,6 +196,45 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   driver.onSessionStart(context());
   ok(mesh.drained[0] === "echo", "only an own channel multicast is treated as an echo");
   ok(host.sent[0]?.details.ids.join() === "self-anycast", "self-selected anycast is surfaced");
+}
+
+// A buried own echo cannot let older pull-only traffic block a later DM.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [
+    item("quiet", { kind: "channel", channel: "quiet" }),
+    item("echo", { kind: "channel", channel: "general", fromId: "self" }),
+    item("dm"),
+  ];
+  mesh.pullOnly.add("quiet");
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  ok(mesh.drained.includes("echo"), "a buried own echo is discarded by exact id");
+  ok(host.sent[0]?.details.ids.join() === "dm", "the DM passes older pull-only traffic and the buried echo");
+  ok(mesh.items.some((value) => value.id === "quiet"), "quiet ambient remains buffered for explicit pull");
+}
+
+// Pi wake decisions use the receive-time lane, never the channel's current mode.
+{
+  const automatic = new FakeMesh();
+  automatic.items = [item("auto", { kind: "channel", channel: "changing" })];
+  automatic.modes.set("changing", "quiet");
+  const automaticHost = new FakeHost();
+  const automaticDriver = new PiDriver(automatic as unknown as MeshAgent);
+  automaticDriver.bind(automaticHost);
+  automaticDriver.onSessionStart(context());
+  ok(automaticHost.sent[0]?.details.ids.join() === "auto", "normal→quiet does not strand receive-time automatic Pi traffic");
+
+  const pulled = new FakeMesh();
+  pulled.items = [item("pull", { kind: "channel", channel: "changing" })];
+  pulled.pullOnly.add("pull");
+  const pullHost = new FakeHost();
+  const pullDriver = new PiDriver(pulled as unknown as MeshAgent);
+  pullDriver.bind(pullHost);
+  pullDriver.onSessionStart(context());
+  ok(pullHost.sent.length === 0, "quiet→normal does not release receive-time pull-only Pi traffic");
 }
 
 // Mention and DM arrivals serialize behind one unconfirmed trigger.
@@ -417,7 +475,9 @@ for (const assistant of [
   driver.bind(host);
   driver.onSessionStart(ctx);
   const details = host.sent[0]!.details;
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  // Wait well past the 5ms watchdog so it has reliably FIRED before the assertion — a 10ms wait races
+  // the 5ms timer on Windows' coarse (~15ms) granularity, where both round to the same tick.
+  await new Promise((resolve) => setTimeout(resolve, 120));
   ok(driver.state === "held" && mesh.drained.length === 0, "watchdog expiry holds without acknowledgement");
   mesh.items.push(item("new"));
   driver.onIncoming();

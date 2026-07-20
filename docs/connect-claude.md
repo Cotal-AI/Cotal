@@ -87,19 +87,23 @@ attribute the agent can read for routing.
 
 ## How messages reach the session
 
-Peer messages land in the connector's inbox from durable JetStream consumers
-([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so a message sent while the agent is
-busy or offline waits on the stream instead of being lost. Two things move a message from
-inbox to model; one delivers, the other only wakes:
+Durable deliveries land in the connector's inbox from JetStream consumers
+([SPEC §8](../SPEC.md#8-nats--jetstream-binding)); live channel traffic can instead arrive
+through an at-most-once core subscription. A durable message sent while the agent is busy
+or offline waits on the stream. Two things move a message from inbox to model; one
+delivers, the other only wakes:
 
-- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain the inbox,
+- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain automatic inbox items,
   inject the messages as `additionalContext`, and **ack** them. This is the single
   authoritative path: deterministic, works on any Claude Code build, and a crash before
-  injection redelivers.
+  injection redelivers. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
 - **Channel nudge (wake).** An arriving message fires a `notifications/claude/channel`
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
-  the next prompt. The nudge never acks anything: if the channel cannot run, delivery
-  still happens next turn. Nothing is lost.
+  the next prompt. The nudge never acks anything. If a nudge is lost (a race in the host's
+  channel startup, a dropped notification), JetStream redelivery re-announces the unacked
+  durable item through the same attention policy, so a durable message always wakes the
+  session eventually. If the channel cannot run at all, delivery still waits for the next
+  hook. Live-only traffic has no durable retry.
 
 **Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
 `@mentions` us) always nudges. *Ambient* channel chatter does not nudge mid-turn; it
@@ -130,6 +134,19 @@ Per-channel overrides refine this: **quiet** (delivered, never wakes; `@mention`
 wakes) and **muted** (dropped on receive, mentions included; DMs/anycast unaffected), set
 with `cotal_channel_mode` or as agent-file defaults (`quiet:` / `muted:`,
 [agent files](agent-files.md)). A per-channel override is the final word for that channel.
+Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, or other
+connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
+`@mention` remains automatic and injects normally.
+
+The local inbox is bounded. On pathological overflow it evicts pull-only items before automatic
+traffic. If the bounded live/durable classification guard also fills, the connector fails closed:
+otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
+still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
+quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
+as incomplete rather than risk resurfacing excluded content.
+If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
+session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
+unaffected.
 
 Attention is **advisory UX, not a boundary**: any peer can wake a dnd/focus agent by
 naming it, and `muted` means "I opted out of receiving", not "the channel is blocked";

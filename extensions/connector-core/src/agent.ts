@@ -83,9 +83,21 @@ interface Pending {
   item: InboxItem;
   /** Ack the backing stream message — called only once the item is actually surfaced. */
   ack: () => void;
+  /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
+  pullOnly: boolean;
 }
 
 const MAX_INBOX = 200;
+const CLASSIFICATION_CAP = 4096;
+const FOCUS_EXCLUSION_CAP = 4096;
+const PROTECTED_DISPOSITION_CAP = 4096;
+
+export type InboxScope = "all" | "automatic" | "pull-only";
+
+export interface ExactDrainResult {
+  items: InboxItem[];
+  missingIds: string[];
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -99,9 +111,10 @@ function sleep(ms: number): Promise<void> {
  * Connecting is resilient: {@link start} kicks off a background retry loop so the
  * MCP server is responsive immediately even if the mesh isn't up yet.
  *
- * Emits `"incoming"` (InboxItem) after each message is buffered, so a push layer
- * (the channel) can deliver it immediately; `"mention-wake"` (InboxItem) when a `focus`-mode
- * agent is @-mentioned on a channel — the body was acked-and-dropped (not buffered), so this
+ * Emits `"incoming"` (InboxItem) when a message is buffered or an unacked durable copy
+ * redelivers, so a push layer can apply its normal delivery policy again; `"mention-wake"`
+ * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
+ * acked-and-dropped (not buffered), so this
  * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
  * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
  * endpoint faults.
@@ -120,6 +133,17 @@ export class MeshAgent extends EventEmitter {
    *  got wrong (it acked at receive time, before handling). Two rotating windows bound memory. */
   private handledIds = new Set<string>();
   private handledIdsPrev = new Set<string>();
+  /** Receive-time classes for overflow-evicted, unhandled channel ambient. Capacity exhaustion
+   *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
+   *  live/durable copy changing from quiet to automatic. */
+  private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
+  private classificationUnsafe = false;
+  /** Terminal receive-time decisions that must survive the live→durable transition: successfully
+   *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
+   *  corresponding whole class fail-closed for the rest of the session. */
+  private protectedPullOnlyIds = new Set<string>();
+  private protectedDropIds = new Set<string>();
+  private dropUnsafe = false;
   private _connected = false;
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
@@ -132,6 +156,12 @@ export class MeshAgent extends EventEmitter {
   /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
    *  published after it ("since you entered focus"). Undefined unless in focus. */
   private focusSince?: number;
+  private enteringFocus = false;
+  /** IDs received under quiet/muted while focused must never reappear through stream recall after a
+   *  mode toggle. If this bounded exclusion history fills, recall for the affected channel fails
+   *  closed and reports the channel as incomplete. */
+  private focusExcludedIds = new Map<string, string>();
+  private focusRecallUnsafeChannels = new Set<string>();
   private stopping = false;
 
   constructor(config: AgentConfig) {
@@ -255,16 +285,25 @@ export class MeshAgent extends EventEmitter {
       if (delivery.durable) delivery.ack();
       return;
     }
+    if (this.protectedPullOnlyIds.has(m.id) || this.protectedDropIds.has(m.id)) {
+      if (delivery.durable) delivery.ack();
+      return;
+    }
     // Duplicate id still PENDING — keep ONE entry. Take the freshest ack handle, but NEVER downgrade a
     // durable (committing) ack to a live no-op. Two cases produce a duplicate: same-path JetStream
     // redelivery (always durable → upgrade to the fresh handle), and the cross-path live/durable
     // transition window. There, if the DURABLE copy arrived first and a LIVE copy lands second,
     // overwriting with the live no-op would leave the durable copy uncommitted → JS redelivers it → it
     // double-surfaces. So only a durable delivery may replace the stored handle; a live duplicate is
-    // dropped as-is.
+    // dropped as-is. A durable duplicate also re-announces the still-pending item through the
+    // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
+    // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
     const existing = this.inbox.find((p) => p.item.id === m.id);
     if (existing) {
-      if (delivery.durable) existing.ack = delivery.ack;
+      if (delivery.durable) {
+        existing.ack = delivery.ack;
+        this.emit("incoming", existing.item);
+      }
       return;
     }
     if (!meta)
@@ -274,34 +313,104 @@ export class MeshAgent extends EventEmitter {
     // scoped, so they bypass this entirely and always buffer). Evaluated BEFORE the global mode:
     //  - `muted` → hard drop, incl. @mention (a mention rides the channel; you can't keep it if you
     //    dropped the channel). Acking does NOT delete (Limits-retained) but it's not locally recallable.
-    //  - `quiet` → buffer (read it on your terms); no ambient wake (the gate's job); an @mention still
-    //    wakes. Overrides global `focus` so "retain this channel, just don't wake me" stays expressible.
+    //  - `quiet` → buffer ambient as pull-only; an @mention remains automatic. Overrides global
+    //    `focus` so "retain this channel, but only surface ambient on explicit pull" stays expressible.
     // Focus (global, only when NOT overridden): channel ambient AND @mentions are acked-and-dropped —
     // they stay recallable via cotal_inbox (recallAmbient); an @mention still *wakes* (mention-wake),
     // body pulled (F4=B), never auto-injected (the mention tag is payload-forgeable).
     if (item.kind === "channel") {
       const cm = this.channelModes.get(item.channel ?? "");
-      if (cm === "muted") {
+      // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
+      // appear in post-watermark recall if it lands after the server captured the frontier.
+      if (this.enteringFocus) this.excludeFromFocus(item);
+      if (this.dropUnsafe) {
+        this.excludeFromFocus(item);
         delivery.ack();
         return;
       }
-      if (cm !== "quiet" && this._attention === "focus") {
+      if (cm === "muted") {
+        this.evictedClassifications.delete(item.id);
+        this.excludeFromFocus(item);
+        this.protectDisposition(item.id, "drop");
+        delivery.ack();
+        return;
+      }
+      const remembered = this.evictedClassifications.get(item.id);
+      if (remembered) this.evictedClassifications.delete(item.id);
+      const snapshottedPullOnly = !item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet");
+      if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
+      // Current normal+focus remains the stronger hard gate unless this exact id was previously
+      // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
+      if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
+        this.protectDisposition(item.id, "drop");
         delivery.ack();
         if (item.mentionsMe) this.emit("mention-wake", item);
         return;
       }
+      const pullOnly = snapshottedPullOnly || (!item.mentionsMe && this.classificationUnsafe);
+      if (pullOnly) this.excludeFromFocus(item);
+      this.buffer(item, delivery.ack, pullOnly);
+      return;
     }
-    this.inbox.push({ item, ack: delivery.ack });
+    this.buffer(item, delivery.ack, false);
+  }
+
+  private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
+    this.inbox.push({ item, ack, pullOnly });
     if (this.inbox.length > MAX_INBOX) {
-      // Pathological backlog: ack the overflow so it stops redelivering.
-      for (const p of this.inbox.splice(0, this.inbox.length - MAX_INBOX)) p.ack();
+      // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
+      // bounded local loss: evicted items are acked without being marked handled.
+      let excess = this.inbox.length - MAX_INBOX;
+      while (excess-- > 0) {
+        let index = this.inbox.findIndex((p) => p.pullOnly);
+        if (index < 0) index = 0;
+        const [evicted] = this.inbox.splice(index, 1);
+        this.rememberEvicted(evicted);
+        evicted.ack();
+      }
     }
     this.emit("incoming", item);
   }
 
+  private rememberEvicted(p: Pending): void {
+    if (p.item.kind !== "channel" || p.item.mentionsMe || !p.item.channel) return;
+    if (this.classificationUnsafe) return;
+    if (!this.evictedClassifications.has(p.item.id) && this.evictedClassifications.size >= CLASSIFICATION_CAP) {
+      this.classificationUnsafe = true;
+      this.evictedClassifications.clear();
+      return;
+    }
+    this.evictedClassifications.set(p.item.id, { pullOnly: p.pullOnly, channel: p.item.channel });
+  }
+
+  private excludeFromFocus(item: InboxItem): void {
+    if ((!this.enteringFocus && this._attention !== "focus") || item.kind !== "channel" || !item.channel) return;
+    if (!this.focusExcludedIds.has(item.id) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
+      const oldest = this.focusExcludedIds.entries().next().value as [string, string] | undefined;
+      if (oldest) {
+        this.focusExcludedIds.delete(oldest[0]);
+        this.focusRecallUnsafeChannels.add(oldest[1]);
+      }
+    }
+    this.focusExcludedIds.set(item.id, item.channel);
+  }
+
+  private protectDisposition(id: string, disposition: "pull-only" | "drop"): void {
+    const ids = disposition === "drop" ? this.protectedDropIds : this.protectedPullOnlyIds;
+    if ((disposition === "drop" ? this.dropUnsafe : this.classificationUnsafe) || ids.has(id)) return;
+    if (ids.size >= PROTECTED_DISPOSITION_CAP) {
+      if (disposition === "drop") this.dropUnsafe = true;
+      else this.classificationUnsafe = true;
+      ids.clear();
+      return;
+    }
+    ids.add(id);
+  }
+
   /** Normalize a wire message into an {@link InboxItem}. `kind` is the **authenticated** class
    *  from {@link MessageMeta} (subject-derived), never the forgeable payload `to`/`toService`;
-   *  `channel`/`service` stay payload-read as display labels only. Shared by live ingest and
+   *  core has already normalized `channel` from the authenticated chat subject, while `service`
+   *  remains a payload display label. Shared by live ingest and
    *  focus recall ({@link recallAmbient}). */
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
     const text = m.parts
@@ -325,21 +434,61 @@ export class MeshAgent extends EventEmitter {
     };
   }
 
-  /** Return pending messages and ack them — call only when they're actually surfaced to the model. */
-  drainInbox(limit?: number): InboxItem[] {
-    const n = limit && limit > 0 ? Math.min(limit, this.inbox.length) : this.inbox.length;
-    const taken = this.inbox.splice(0, n);
+  /** Return pending messages in stable receive order. Automatic delivery excludes quiet ambient;
+   *  pull-only is the explicit cotal_inbox lane. */
+  peekInbox(scope: InboxScope = "all"): InboxItem[] {
+    return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
+  }
+
+  /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
+  drainInbox(limit?: number, scope: InboxScope = "all"): InboxItem[] {
+    const eligible = this.inbox.filter((p) => this.inScope(p, scope));
+    const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
+    const selected = eligible.slice(0, n);
+    const ids = new Set(selected.map((p) => p.item.id));
+    this.inbox = this.inbox.filter((p) => !ids.has(p.item.id));
+    return this.commitPending(selected);
+  }
+
+  /** Ack exact surfaced ids without assuming they still form the physical inbox prefix. Every
+   *  requested id is marked handled, including an item overflow-evicted during the turn. */
+  drainInboxIds(ids: readonly string[]): ExactDrainResult {
+    const requested = [...new Set(ids)];
+    const wanted = new Set(requested);
+    const selected = this.inbox.filter((p) => wanted.has(p.item.id));
+    const present = new Set(selected.map((p) => p.item.id));
+    const pullOnly = new Map(selected.map((p) => [p.item.id, p.pullOnly]));
+    for (const id of requested) {
+      const remembered = this.evictedClassifications.get(id);
+      if (!pullOnly.has(id) && remembered) pullOnly.set(id, remembered.pullOnly);
+    }
+    this.inbox = this.inbox.filter((p) => !present.has(p.item.id));
+    const items = this.commitPending(selected);
+    for (const id of requested) {
+      if (!present.has(id)) this.markHandled(id, pullOnly.get(id) ?? false);
+      this.evictedClassifications.delete(id);
+    }
+    return { items, missingIds: requested.filter((id) => !present.has(id)) };
+  }
+
+  private commitPending(taken: Pending[]): InboxItem[] {
     for (const p of taken) {
       p.ack();
-      this.markHandled(p.item.id);
+      this.markHandled(p.item.id, p.pullOnly);
+      this.evictedClassifications.delete(p.item.id);
     }
     return taken.map((p) => p.item);
+  }
+
+  private inScope(p: Pending, scope: InboxScope): boolean {
+    return scope === "all" || (scope === "pull-only" ? p.pullOnly : !p.pullOnly);
   }
 
   /** Record an id as surfaced/handled, for {@link ingest}'s commit-aware cross-path dedup. Bounded via
    *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
    *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
-  private markHandled(id: string): void {
+  private markHandled(id: string, pullOnly = false): void {
+    if (pullOnly) this.protectDisposition(id, "pull-only");
     this.handledIds.add(id);
     if (this.handledIds.size >= 4096) {
       this.handledIdsPrev = this.handledIds;
@@ -347,13 +496,14 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
-  /** Return pending messages without acking them (they stay on the stream). */
-  peekInbox(): InboxItem[] {
-    return this.inbox.map((p) => p.item);
+  inboxCount(scope: InboxScope = "all"): number {
+    return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
   }
 
-  inboxCount(): number {
-    return this.inbox.length;
+  /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */
+  inboxScope(id: string): Exclude<InboxScope, "all"> | undefined {
+    const pending = this.inbox.find((p) => p.item.id === id);
+    return pending ? (pending.pullOnly ? "pull-only" : "automatic") : undefined;
   }
 
   /** Count of buffered messages that count as *directed* for a wake decision: real dm/anycast
@@ -367,15 +517,15 @@ export class MeshAgent extends EventEmitter {
   /** Buffered items that should WAKE a Stop→idle flush — the mode-and-channel-aware predicate the
    *  connectors use instead of branching on attention themselves:
    *  - directed (dm/anycast) or an @mention → always (a quiet @mention still wakes; muted never buffers);
-   *  - NORMAL ambient (no per-channel override) → only under global `open` (today's behavior);
-   *  - QUIET ambient → never (it rides the next human turn, not a proactive wake).
+   *  - NORMAL automatic ambient → only under global `open` (today's behavior);
+   *  - receive-time pull-only ambient → never.
    *  Subsumes {@link directedPendingCount}: in `dnd`/`focus` (no override) the open term is false, so it
    *  equals the directed count; in `open` it adds normal ambient but excludes quiet-channel ambient. */
   pendingWake(): number {
     return this.inbox.filter((p) => {
       const it = p.item;
+      if (p.pullOnly) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
-      if (this.channelMode(it.channel) === "quiet") return false;
       return this._attention === "open";
     }).length;
   }
@@ -427,17 +577,31 @@ export class MeshAgent extends EventEmitter {
 
   /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
    *  (recall surfaces ambient published after it); leaving focus clears it. Requires a live
-   *  connection only for `focus` (it reads the stream frontier). Ambient already *buffered* when
-   *  focus is entered (e.g. held in dnd, or arriving during the frontier read) is not retroactively
-   *  ack-dropped — it injects once on the next drain; only ambient arriving *after* the switch is
-   *  ack-dropped. We don't purge the buffer: a pre-watermark item wouldn't be recallable, so
-   *  dropping it would lose it. */
+    *  connection only for `focus` (it reads the stream frontier). Ambient already *buffered* when
+    *  focus is entered is not retroactively ack-dropped. Traffic retained during the asynchronous
+    *  frontier read is tagged out of recall, so it surfaces once from its receive-time lane whether
+    *  it landed just before or after the captured frontier. Only ambient arriving after the local
+    *  switch is ack-dropped. */
   async setAttention(mode: AttentionMode): Promise<void> {
     if (mode === "focus") {
       this.assertConnected();
-      this.focusSince = await this.ep.chatFrontier();
+      this.focusExcludedIds.clear();
+      this.focusRecallUnsafeChannels.clear();
+      this.enteringFocus = this._attention !== "focus";
+      try {
+        this.focusSince = await this.ep.chatFrontier();
+      } catch (error) {
+        this.enteringFocus = false;
+        this.focusExcludedIds.clear();
+        this.focusRecallUnsafeChannels.clear();
+        throw error;
+      }
+      this.enteringFocus = false;
     } else {
+      this.enteringFocus = false;
       this.focusSince = undefined;
+      this.focusExcludedIds.clear();
+      this.focusRecallUnsafeChannels.clear();
     }
     this._attention = mode;
     // Mirror to presence (advisory observability — peers can see "they're in focus"). Best-effort:
@@ -459,13 +623,14 @@ export class MeshAgent extends EventEmitter {
     const droppedChannels: string[] = [];
     for (const channel of this.ep.joinedChannels()) {
       if (!isConcreteChannel(channel)) continue;
-      // Skip any channel with a per-channel override: `muted` must NOT resurface via recall (you opted
-      // out of receiving it at all), and `quiet` overrides focus so its messages were buffered live —
-      // recalling them would duplicate what's already in the inbox. Only NORMAL channels' focus-
-      // ack-dropped ambient is recalled.
-      if (this.channelModes.has(channel)) continue;
+      if (this.focusRecallUnsafeChannels.has(channel)) {
+        droppedChannels.push(channel);
+        continue;
+      }
       const { messages, dropped } = await this.ep.recallChannel(channel, this.focusSince);
-      for (const m of messages) items.push(this.toInboxItem(m, "channel", true));
+      for (const m of messages) {
+        if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
+      }
       if (dropped) droppedChannels.push(channel);
     }
     items.sort((a, b) => a.ts - b.ts);

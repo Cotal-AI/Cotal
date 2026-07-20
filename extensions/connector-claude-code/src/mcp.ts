@@ -65,14 +65,14 @@ const claudeHandle: HookHandle = async (agent, ev) => {
         await agent.setAttention("open"); // F3: reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently deaf
         // Boot push: a one-line note per subscribed channel (if the registry has loaded),
         // plus any messages waiting. Both are advisory context.
-        const parts = [agent.channelBriefing(), formatInjection(agent.drainInbox())].filter(Boolean);
+        const parts = [agent.channelBriefing(), formatInjection(agent.drainInbox(undefined, "automatic"))].filter(Boolean);
         return withContext(parts.length ? parts.join("\n\n") : undefined);
       }
       case "UserPromptSubmit":
         pendingTool = undefined; // new turn — the previous block (if any) is resolved
         mirror?.flush(ev.transcript_path);
         await agent.setStatus("working");
-        return withContext(formatInjection(agent.drainInbox()));
+        return withContext(formatInjection(agent.drainInbox(undefined, "automatic")));
       case "PreToolUse":
         // Remember what Claude is about to do; if it needs permission, the Notification
         // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
@@ -103,8 +103,7 @@ const claudeHandle: HookHandle = async (agent, ev) => {
         // focus agent declined.) Stop can't inject context itself, so we must NOT drain here —
         // that would ack with no vehicle to the model and silently lose the messages.
         // Mode-and-channel-aware (pendingWake): open flushes held normal ambient too; dnd/focus and
-        // per-channel `quiet` wake only for held DIRECTED items (held quiet/dnd ambient alone must not
-        // wake — it would empty-wake busy-loop; it rides the next human turn).
+        // per-channel `quiet` wake only for held DIRECTED items (quiet ambient remains pull-only).
         if (agent.pendingWake() > 0) agent.requestWake();
         return {};
       case "SessionEnd":
@@ -190,7 +189,7 @@ async function main(): Promise<void> {
         `chatter stops waking you; it still arrives on your next turn) or focus (only DMs and ` +
         `@mentions reach your context — pull the held chatter with cotal_inbox). ` +
         `To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still ` +
-        `delivered + readable, never wakes you; @mentions still wake) or muted (you stop receiving ` +
+        `buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving ` +
         `it, @mentions included). ` +
         `Reply only when a reply is actually needed — a silent acknowledgement is correct; ` +
         `"agreed/thanks/good point" messages are noise. And @-mention a peer only when you need ` +
@@ -212,7 +211,7 @@ async function main(): Promise<void> {
   let channelActive = false;
   const nudge = (item?: InboxItem, pullHint?: string): void => {
     if (!channelActive) return;
-    const n = agent.inboxCount();
+    const n = agent.inboxCount("automatic");
     const content = pullHint
       ? `📨 ${pullHint}`
       : item
@@ -229,14 +228,13 @@ async function main(): Promise<void> {
   // Mode-aware wake. A *directed* message (DM, anycast, or an @mention of us) always nudges, so the
   // addressee sees it promptly — woken now if idle, at the next turn boundary if busy. *Ambient*
   // channel chatter nudges only in `open` while idle (suppressed mid-turn, never in dnd/focus), and a
-  // per-channel `quiet` channel never ambient-nudges (its ambient was buffered to read on the agent's
-  // own terms; a `quiet` @mention still nudges via directedOrMention). `muted` ambient never reaches
+  // receive-time pull-only ambient never nudges (a quiet @mention remains automatic). `muted` never reaches
   // here (ack-dropped at ingest); in `focus`, ambient/mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
+    const automatic = agent.inboxScope(item.id) === "automatic";
     const directedOrMention = item.kind !== "channel" || item.mentionsMe;
-    const quiet = item.kind === "channel" && agent.channelMode(item.channel) === "quiet";
-    const ambientWakes = !quiet && agent.attention === "open" && agent.status !== "working";
-    if (directedOrMention || ambientWakes) nudge(item);
+    const ambientWakes = agent.attention === "open" && agent.status !== "working";
+    if (automatic && (directedOrMention || ambientWakes)) nudge(item);
   });
   // Focus-only: a channel @mention was acked-and-dropped (not buffered) but still wakes us to PULL it
   // — F4=B (wake-only). Its body isn't injected; cotal_inbox recalls it.

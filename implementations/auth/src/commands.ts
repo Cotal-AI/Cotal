@@ -6,8 +6,8 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import { authDir, CLI_USER_ACTOR, findCotalRoot, homeCotalDir, loadMeshes, loadSpaceAuth, resolveSpace, userAuthStateDir, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { authDir, CLI_USER_ACTOR, findCotalRoot, homeCotalDir, loadMeshes, loadSpaceAuth, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -101,11 +101,14 @@ async function runLogout(args: ParsedArgs): Promise<void> {
   });
 }
 
-/** The space-scoped provider state dir the `actor` commands operate on (`userAuthStateDir` — the
- *  multi-space-ready layout; nothing user-auth lives flat in `.cotal/auth/`). */
-function actorStateDir(space?: string): { dir: string; space: string } {
+/** The space-scoped provider state the `actor` commands operate on: the ledger dir
+ *  (`userAuthStateDir` — the multi-space-ready layout; nothing user-auth lives flat in
+ *  `.cotal/auth/`) plus the local secret store (these are workstation commands — the ledger
+ *  machine — so the workspace FS composition IS the correct one, not a fallback). */
+function actorState(space?: string): { dir: string; space: string; store: SecretStore } {
   const s = space ?? resolveSpace(process.cwd());
-  return { dir: userAuthStateDir(findCotalRoot(), s), space: s };
+  const root = findCotalRoot();
+  return { dir: userAuthStateDir(root, s), space: s, store: workspaceSecretStore(root) };
 }
 
 /** Resolve the operator's target (owner) for `actor grant`/`revoke`: an explicit derived `--owner`
@@ -114,14 +117,17 @@ function actorStateDir(space?: string): { dir: string; space: string } {
  *  IS the machine that ran `cotal up --user-auth`, where the authoritative ledger lives. Without
  *  them a grant would write an INERT LOCAL row and print a misleading success while the mesh's real
  *  ledger is untouched (an off-machine `--owner` cannot mutate authority), so we refuse instead. */
-function resolveGrantOwner(dir: string, values: { owner?: string; sub?: string }): string {
+async function resolveGrantOwner(
+  st: { dir: string; space: string; store: SecretStore },
+  values: { owner?: string; sub?: string },
+): Promise<string> {
   if (values.owner && values.sub) throw new Error("pass --owner OR --sub, not both");
   if (!values.owner && !values.sub) throw new Error("say who: --sub <IdP subject> (shown by `cotal login`) or --owner <u_…>");
-  const secret = loadOwnerSecret(dir);
-  const idp = loadPinnedIdp(dir);
+  const secret = await loadOwnerSecret(st.store, st.space);
+  const idp = loadPinnedIdp(st.dir);
   if (!secret || !idp)
     throw new Error(
-      `user auth is not enabled for this space here (no owner secret/IdP pin under ${dir}). The actor ledger lives on the machine that ran \`cotal up --user-auth --idp <url>\`; run the \`actor\` commands there`,
+      `user auth is not enabled for this space here (no owner secret/IdP pin for "${st.space}"). The actor ledger lives on the machine that ran \`cotal up --user-auth --idp <url>\`; run the \`actor\` commands there`,
     );
   if (values.owner) return values.owner;
   return deriveOwnerForIdpSubject(secret, idp.issuer, values.sub!);
@@ -178,7 +184,8 @@ async function runActor(args: ParsedArgs): Promise<void> {
     space?: string; sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
     "allow-publish"?: string; role?: string; label?: string; parent?: string;
   };
-  const { dir, space } = actorStateDir(values.space);
+  const st = actorState(values.space);
+  const { dir, space } = st;
   await legibly(async () => {
     if (sub === "list") {
       const rows = loadActorLedger(dir);
@@ -194,7 +201,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
     }
     if (sub === "grant") {
       if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]");
-      const owner = resolveGrantOwner(dir, values);
+      const owner = await resolveGrantOwner(st, values);
       // Default = the FULL grant (all channels, spawn + the stock role): `actor grant` is an
       // operator act of letting a user in, so omitting flags means "fully", and narrowing is the
       // explicit choice (`--allow-subscribe general --scope ''`). The user's agents are still
@@ -214,7 +221,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
     }
     if (sub === "revoke") {
       if (!actor) throw new Error("usage: cotal actor revoke <actor> --sub <IdP subject>|--owner <u_…>");
-      const owner = resolveGrantOwner(dir, values);
+      const owner = await resolveGrantOwner(st, values);
       if (!revokeActor(dir, owner, actor)) {
         if (findManagedActor(dir, owner, actor))
           throw new Error(`${owner}.${actor} is a managed agent - its grant lives with its process: stop it if manager-owned (\`cotal stop --name ${actor}\`), or if it was a killed foreground spawn, respawn the same name (\`cotal spawn\`) to rotate the grant`);

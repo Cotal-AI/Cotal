@@ -63,18 +63,9 @@ importers:
       '@cotal-ai/cli':
         specifier: workspace:*
         version: link:../implementations/cli
-      '@cotal-ai/connector-claude-code':
-        specifier: workspace:*
-        version: link:../extensions/connector-claude-code
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../extensions/connector-core
-      '@cotal-ai/connector-hermes':
-        specifier: workspace:*
-        version: link:../extensions/connector-hermes
-      '@cotal-ai/connector-opencode':
-        specifier: workspace:*
-        version: link:../extensions/connector-opencode
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../packages/core
@@ -84,12 +75,28 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
-      '@cotal-ai/pi':
-        specifier: workspace:*
-        version: link:../extensions/pi
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace
+    devDependencies:
+      '@cotal-ai/connector-claude-code':
+        specifier: workspace:*
+        version: link:../extensions/connector-claude-code
+      '@cotal-ai/connector-hermes':
+        specifier: workspace:*
+        version: link:../extensions/connector-hermes
+      '@cotal-ai/connector-opencode':
+        specifier: workspace:*
+        version: link:../extensions/connector-opencode
+      '@cotal-ai/pi':
+        specifier: workspace:*
+        version: link:../extensions/pi
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
 
   examples/01-lateral-coordination:
     dependencies:
@@ -148,17 +155,16 @@ importers:
         version: 4.22.4
 
   extensions/connector-claude-code:
-    dependencies:
+    devDependencies:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.29.0
-        version: 1.29.0(zod@4.4.3)
-    devDependencies:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
@@ -180,37 +186,32 @@ importers:
         version: link:../../packages/core
 
   extensions/connector-hermes:
-    dependencies:
+    devDependencies:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
-      tsx:
-        specifier: ^4.22.4
-        version: 4.22.4
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   extensions/connector-opencode:
-    dependencies:
+    devDependencies:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
-    devDependencies:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
       '@opencode-ai/plugin':
-        specifier: ^1.16.2
-        version: 1.16.2
-      '@opencode-ai/sdk':
         specifier: ^1.16.2
         version: 1.16.2
       esbuild:
@@ -230,17 +231,10 @@ importers:
         version: 4.23.0
 
   extensions/pi:
-    dependencies:
+    devDependencies:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
-      typebox:
-        specifier: ^1.1.0
-        version: 1.3.6
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -253,6 +247,12 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1
+      typebox:
+        specifier: ^1.1.0
+        version: 1.3.6
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   extensions/tmux:
     devDependencies:
@@ -302,6 +302,15 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       ink:
         specifier: ^6.0.0
         version: 6.8.0(@types/react@19.2.17)(react@19.2.7)

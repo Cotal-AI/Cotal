@@ -18,6 +18,7 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -46,6 +47,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const cli = (...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number) => {
   try {
@@ -68,6 +70,19 @@ const cliIn = (cwd: string, ...args: string[]) => spawnSync(TSX, [CLI, ...args],
 const pids: number[] = [];
 let startedOccupant = false;
 try {
+  ok("detached summary omits unavailable mode-dependent components", renderDetachedSummary({
+    pid: 42,
+    delivery: false,
+    authService: false,
+    manager: false,
+  }) === "✓ running in the background: nats-server (pid 42) - stop with: cotal down");
+  ok("detached summary reports partial component availability independently", renderDetachedSummary({
+    pid: 42,
+    delivery: true,
+    authService: false,
+    manager: false,
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal down");
+
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
   // broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
@@ -87,7 +102,12 @@ try {
   // 1) the full stack comes up from ONE command, JWT-authed by default.
   const up = cli("up", "--detach", "--server", SERVER);
   ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
-  ok("up --detach reports the background mesh", /mesh running in the background/.test(up.stdout), up.stdout);
+  ok(
+    "auth up reports the exact running component set",
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(up.stdout)),
+    up.stdout,
+  );
+  ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], ["delivery.pid", "delivery daemon"], ["manager.pid", "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
@@ -120,6 +140,20 @@ try {
   }
   ok("all pid files removed by down", (["nats.pid", "delivery.pid", "manager.pid"] as const).every((f) => !existsSync(join(root, ".cotal", f))));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
+
+  // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
+  // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
+  ok("static auth material remains before the open-mode reporting check", existsSync(join(root, ".cotal", "auth")));
+  const open = cli("up", "--detach", "--open", "--server", SERVER);
+  ok("open up --detach exits 0", open.status === 0, open.stdout + open.stderr);
+  ok(
+    "open up reports the exact running component set",
+    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: cotal down$/m.test(plain(open.stdout)),
+    open.stdout,
+  );
+  ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
+  const openDown = cli("down");
+  ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {

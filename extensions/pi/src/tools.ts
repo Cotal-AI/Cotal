@@ -4,9 +4,8 @@
  * One source of truth → the cotal_* surface can't drift across adapters: a pi peer gets
  * the same tools (send/dm/anycast, roster, channels, status, spawn where capable).
  *
- * The one pi-specific tool is `cotal_inbox`: this connector DRIVES delivery (the loop
- * surfaces each batch into a turn and acks on completion), so the agent's inbox tool is
- * READ-ONLY — it peeks (never drains), or it would race the loop's ack.
+ * The one pi-specific tool is `cotal_inbox`: the driver keeps ownership of automatic traffic,
+ * while the tool destructively pulls only quiet ambient (plus read-only focus recall).
  *
  * Schemas: the shared spec carries a Zod raw shape; pi's `registerTool` takes a TypeBox
  * TSchema. TypeBox schemas are plain JSON Schema, so we render Zod → JSON Schema (Zod 4's
@@ -18,10 +17,9 @@ import { cotalToolSpecs, type MeshAgent, type AgentConfig } from "@cotal-ai/conn
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 
-const READONLY_INBOX_DESCRIPTION =
-  "Show the peer messages currently waiting for you (incl. focus-mode recall). You don't normally " +
-  "need this — the connector delivers peer messages into your turns automatically; use it to " +
-  "re-check what's pending mid-task. Read-only: it never consumes them.";
+const PULL_INBOX_DESCRIPTION =
+  "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic " +
+  "stays queued; in focus mode, normal channel recall is also shown read-only.";
 
 /** Mesh etiquette, appended to the system prompt while the send tools are active. The first
  *  line is load-bearing: with loop-owned delivery removed, plain chat output goes nowhere —
@@ -90,7 +88,7 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
     pi.registerTool({
       name: spec.name,
       label: spec.title,
-      description: readonlyInbox ? READONLY_INBOX_DESCRIPTION : spec.description,
+       description: readonlyInbox ? PULL_INBOX_DESCRIPTION : spec.description,
       parameters: readonlyInbox ? Type.Object({}) : toParameters(spec.schema),
       promptGuidelines: spec.name === "cotal_send" ? SEND_GUIDELINES : undefined,
       renderCall: SEND_TOOLS.has(spec.name)
@@ -98,7 +96,7 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
         : undefined,
       async execute(_id, params) {
         const args: Record<string, unknown> = readonlyInbox
-          ? { peek: true }
+          ? { scope: "pull-only" }
           : { ...((params ?? {}) as Record<string, unknown>) };
         if (spec.name === "cotal_send" && typeof args.channel === "string") {
           const channel = args.channel.replace(/^#+/, "");

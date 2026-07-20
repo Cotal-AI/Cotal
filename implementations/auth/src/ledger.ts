@@ -34,7 +34,7 @@
  * live grant from the operator).
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   assertDerivedOwnerToken,
@@ -97,6 +97,15 @@ function spaceDir(dir: string, kind: ActorKind): string {
   return join(dir, kind === "interactive" ? ACTORS_DIR : MANAGED_DIR);
 }
 
+function assertRowSpaceDirectory(dir: string, kind: ActorKind): string | undefined {
+  const path = spaceDir(dir, kind);
+  if (!existsSync(path)) return undefined;
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isDirectory())
+    throw new Error(`${path}: actor row space must be a real directory, not a symlink or non-directory`);
+  return path;
+}
+
 /** The row's filename IS its principal dot-form + `.json` — both segments are grammar-asserted
  *  (owner `u_` + base32, actor a plain token), so the name is filesystem-safe by construction. */
 function rowPath(dir: string, kind: ActorKind, owner: string, actor: string): string {
@@ -111,10 +120,16 @@ function rowPath(dir: string, kind: ActorKind, owner: string, actor: string): st
  *  managed row without a valid one has a corrupted grant — both deny with the repair). */
 function readRow(path: string, kind: ActorKind): ActorRow {
   let parsed: RowFile;
+  let fd: number | undefined;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8")) as RowFile;
+    if (lstatSync(path).isSymbolicLink()) throw new Error("actor grant must be a regular non-symlink file");
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!fstatSync(fd).isFile()) throw new Error("actor grant must be a regular non-symlink file");
+    parsed = JSON.parse(readFileSync(fd, "utf8")) as RowFile;
   } catch (e) {
     throw new Error(`${path}: unreadable actor grant (${e instanceof Error ? e.message : String(e)}) - fix or remove the row; a broken row denies its actor and fails ledger listings`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
   if (parsed === null || typeof parsed !== "object" || parsed.ver !== LEDGER_VER)
     throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
@@ -135,11 +150,21 @@ function readRow(path: string, kind: ActorKind): ActorRow {
  *  from an authorization listing. */
 export function loadActorLedger(dir: string): Array<ActorRow & { kind: ActorKind }> {
   const out: Array<ActorRow & { kind: ActorKind }> = [];
+  const principals = new Set<string>();
   for (const kind of ["interactive", "managed-agent"] as const) {
-    const d = spaceDir(dir, kind);
-    if (!existsSync(d)) continue;
-    for (const f of readdirSync(d).filter((f) => f.endsWith(".json")).sort())
-      out.push({ ...readRow(join(d, f), kind), kind });
+    const d = assertRowSpaceDirectory(dir, kind);
+    if (!d) continue;
+    for (const f of readdirSync(d).filter((f) => f.endsWith(".json")).sort()) {
+      const row = readRow(join(d, f), kind);
+      const expected = ledgerRowFilename(row.owner, row.actor);
+      if (f !== expected)
+        throw new Error(`${join(d, f)}: actor grant filename does not match its principal (expected ${expected}) - refusing a ledger state runtime lookup would ignore`);
+      const principal = `${row.owner}.${row.actor}`;
+      if (principals.has(principal))
+        throw new Error(`actor "${row.actor}" is granted in BOTH the interactive and managed row spaces - a broken ledger denies`);
+      principals.add(principal);
+      out.push({ ...row, kind });
+    }
   }
   return out;
 }
@@ -148,8 +173,14 @@ export function loadActorLedger(dir: string): Array<ActorRow & { kind: ActorKind
  *  corrupt file for THIS principal throws — deny with the reason, not a miss. */
 function findIn(dir: string, kind: ActorKind, owner: string, actor: string): ActorRow | undefined {
   const p = rowPath(dir, kind, owner, actor);
+  if (!assertRowSpaceDirectory(dir, kind)) return undefined;
   if (!existsSync(p)) return undefined;
-  return readRow(p, kind);
+  const row = readRow(p, kind);
+  if (row.owner !== owner || row.actor !== actor)
+    throw new Error(
+      `${p}: actor grant principal "${row.owner}.${row.actor}" does not match requested canonical principal "${owner}.${actor}" - refusing to authenticate one row as another`,
+    );
+  return row;
 }
 
 export function findInteractiveActor(dir: string, owner: string, actor: string): ActorRow | undefined {
@@ -514,7 +545,16 @@ export function ledgerAuthorizeAgentExchange(
   owner: string,
   actor: string,
   actorToken: string,
-): { scope: string[]; parent?: string; lifecycleUid?: string } {
+): {
+  owner: string;
+  actor: string;
+  scope: string[];
+  allowSubscribe: string[];
+  allowPublish: string[];
+  role?: string;
+  parent?: string;
+  lifecycleUid?: string;
+} {
   const deny = () =>
     new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
   let row: ActorRow | undefined;
@@ -532,5 +572,14 @@ export function ledgerAuthorizeAgentExchange(
   // revoking the spawner bites its agents at their next ≤ AGENT_BEARER_TTL_SEC refresh), the same
   // posture as the connect boundary's "bearer scope vs CURRENT row" check.
   assertWithinSpawnerGrant(dir, row, "exchange");
-  return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}), ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}) };
+  return {
+    owner: row.owner,
+    actor: row.actor,
+    scope: row.scope,
+    allowSubscribe: row.allowSubscribe,
+    allowPublish: row.allowPublish,
+    ...(row.role ? { role: row.role } : {}),
+    ...(row.parent ? { parent: row.parent } : {}),
+    ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),
+  };
 }

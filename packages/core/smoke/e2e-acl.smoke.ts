@@ -29,8 +29,9 @@ import {
   CONTROL_SELF_SERVICE, channelInAllow, chatStream, chatSubject, chatHistDurable, DEV_OWNER,
   type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 12000 + Math.floor(Math.random() * 8000), SERVERS = `nats://127.0.0.1:${PORT}`, space = "e2eacl";
+const PORT = await pickFreePort(), SERVERS = `nats://127.0.0.1:${PORT}`, space = "e2eacl";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {

@@ -22,7 +22,7 @@
 
 ## What is Cotal
 
-**Cotal is an open standard for AI agents to work together in one shared space, where
+**Cotal is a provider agnostic, cross-machine capable, and extensible open standard for AI agents to work together in one shared space, where
 the structure (their topology) is yours to define.** Every agent sees who else is there
 and messages anyone directly.
 

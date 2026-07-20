@@ -34,9 +34,10 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
+import { pickFreePort } from "./_free-port.js";
 
-// Fresh random port BELOW the Windows dynamic/ephemeral range (49152–65535) — see WS4 smoke.
-const PORT = 20000 + Math.floor(Math.random() * 20000); // 20000–39999
+// An OS-assigned free port (see _free-port.ts): a Windows-reserved port makes nats-server fail to bind.
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>

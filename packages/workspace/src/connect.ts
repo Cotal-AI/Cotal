@@ -13,6 +13,7 @@ import {
 } from "@cotal-ai/core";
 import { c } from "./colors.js";
 import { findCotalRoot, userAuthStateDir } from "./auth-paths.js";
+import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, getCurrent, removeMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
@@ -115,7 +116,8 @@ export async function userViewAuth(conn: Connection, view: string): Promise<User
     );
   }
   const dir = userAuthStateDir(conn.root, conn.space);
-  const mint = () => provider.userCredentials({ dir, space: conn.space, actor: CLI_USER_ACTOR, view });
+  const store = workspaceSecretStore(conn.root);
+  const mint = () => provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR, view });
   const { bearer, sentinelCreds } = await mint();
   const { owner, actor } = principalFromBearer(bearer);
   return { bearer, sentinelCreds, owner, actor, source: () => mint().then((r) => r.bearer) };
@@ -245,6 +247,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
   }
   try {
     const { bearer, sentinelCreds } = await provider.userCredentials({
+      store: workspaceSecretStore(target.root),
       dir: userAuthStateDir(target.root, target.space),
       space: target.space,
       actor: CLI_USER_ACTOR,

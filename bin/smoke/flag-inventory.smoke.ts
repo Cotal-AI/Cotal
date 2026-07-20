@@ -31,11 +31,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "restore:string", "restore-only:string", "accept-missing-source:boolean",
       "store-dir:string", "user-auth:boolean",
     ],
     positionals: false,
   },
-  down: { flags: ["dry-run:boolean", "file:string:f", "run:string"], positionals: true },
+  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "store-dir:string"], positionals: true },
+  backup: { flags: ["only:string", "store-dir:string"], positionals: true },
   meshes: { flags: [], positionals: false },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean"], positionals: true },
@@ -57,10 +59,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
-      "file:string:f", "model:string", "name:string", "no-transcript:boolean", "opt:string",
-      "prompt:string", "resume:string", "role:string", "runtime:string", "server:string",
-      "share-tools:string", "space:string", "subscribe:string", "transcript:boolean",
-      "variant:string",
+      "file:string:f", "live-only:boolean", "model:string", "name:string", "no-transcript:boolean",
+      "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
+      "server:string", "share-tools:string", "space:string", "subscribe:string",
+      "transcript:boolean", "variant:string",
     ],
     positionals: true,
   },
@@ -73,7 +75,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: [], positionals: true },
-  ext: { flags: [], positionals: true },
+  ext: { flags: ["force:boolean", "repair:boolean", "reset:boolean"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
     flags: ["allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string", "signer:boolean"],
@@ -86,7 +88,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
   // The unified cleanup verb: `history clear`'s grammar + the local-state targets' --store-dir.
-  clean: { flags: [...TARGET, "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
+  clean: { flags: [...TARGET, "attempt:string", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server
   // moved to implementations/delivery as `feedback-intake`.
   feedback: {
@@ -97,7 +99,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-port:string", "launch:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
+    flags: ["console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
     positionals: false,
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).

@@ -1,5 +1,23 @@
 # @cotal-ai/connector-hermes
 
+## 0.12.0
+
+## 0.11.6
+
+## 0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 1935221: Ship the built-in agent connectors (claude, opencode, hermes, pi) as removable `cotal ext` plugins. They are seeded on first run through the same `ext add` path a third party uses, resolved lazily per spawn, and deletable with `cotal ext remove`; they are no longer hardcoded imports or dependencies of `cotal-ai`.
+
+## 0.11.3
+
+### Patch Changes
+
+- @cotal-ai/connector-core@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes

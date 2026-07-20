@@ -50,7 +50,7 @@ export function managerHasDeliveryMarker(): boolean {
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
 export function startManagerDetached(
-  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string } = {},
+  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
 ): number {
   const fd = openSync(cotalPath("manager.log"), "a");
   const [node, ...self] = selfArgv();
@@ -65,8 +65,12 @@ export function startManagerDetached(
     ...(o.spawn?.length ? ["--spawn", o.spawn.join(",")] : []),
     // A resolved mesh-manifest launch spec (cotal up -f): the manager materializes + boots each agent.
     ...(o.launch ? ["--launch", o.launch] : []),
+    ...(o.resumeAttempt ? ["--resume-attempt", o.resumeAttempt] : []),
+    ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
   ];
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd] });
+  // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
+  // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
+  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
   writeFileSync(PID_PATH(), String(child.pid));
@@ -81,7 +85,7 @@ export function startManagerDetached(
  *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
  *  taken as-is. */
 export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string } = {},
+  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
 ): { running: boolean } {
   if (managerUp()) return { running: true };
   startManagerDetached(o);

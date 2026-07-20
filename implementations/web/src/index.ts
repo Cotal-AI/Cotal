@@ -16,6 +16,7 @@ const webCommand: Command = {
   flags: [
     ...targetFlags,
     { name: "port", type: "string", value: "<n>", description: "HTTP port (default 7799)" },
+    { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down web`)" },
     { name: "no-open", type: "boolean", description: "don't open the browser" },
   ],
   run: web,

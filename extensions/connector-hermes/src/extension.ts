@@ -2,13 +2,15 @@ import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
 
-/** The launcher (run via tsx, which loads both) owns the mesh endpoint and supervises the Hermes
- *  gateway as a child — see launch.ts. Resolve `.ts` when this module loads from source (dev) and
- *  `.js` when it loads from the build: the package's `import` resolves to dist/, so a hardcoded
- *  `./launch.ts` would point at a file tsc never emits. */
-const ENTRY_EXT = import.meta.url.includes("/dist/") ? "js" : "ts";
-const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
-const LAUNCH_ENTRY = fileURLToPath(new URL(`./launch.${ENTRY_EXT}`, import.meta.url));
+/** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
+ *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
+ *  this same node, so an installed plugin needs no `tsx` on disk. From SOURCE (dev, the package's
+ *  `import` resolves to src/), run the `.ts` entry through tsx. */
+const FROM_BUILD = import.meta.url.includes("/dist/");
+const LAUNCH_ENTRY = fileURLToPath(new URL(`./launch.${FROM_BUILD ? "js" : "ts"}`, import.meta.url));
+const LAUNCH_COMMAND = FROM_BUILD
+  ? process.execPath
+  : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
 /**
  * The Hermes (Nous Research) connector. Unlike Claude Code / Codex — where the harness *is* the
@@ -67,7 +69,7 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = model;
       env.COTAL_MODEL = model;
     }
-    return { command: TSX, args: [LAUNCH_ENTRY], env };
+    return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env };
   },
 };
 

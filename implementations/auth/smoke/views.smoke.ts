@@ -116,6 +116,10 @@ console.log("B. view → required-scope policy table");
 check('deployer is spawn-gated (own-team deploys are spawn-grade)', VIEW_REQUIRED_SCOPE.deployer === "spawn");
 for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer"))
   check(`${view} is admin-gated (operator authority)`, VIEW_REQUIRED_SCOPE[view] === "admin");
+check(
+  "backup/restore are not name-only views (exact stream/session confinement needs operation-bound credentials)",
+  !USER_TOKEN_VIEWS.some((view) => view === ("backup" as UserTokenView) || view === ("restore" as UserTokenView)),
+);
 
 // ---------- C. the callout profile switch ----------
 console.log("C. callout profile switch");

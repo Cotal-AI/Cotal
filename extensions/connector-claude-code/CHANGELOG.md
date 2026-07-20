@@ -1,5 +1,27 @@
 # @cotal-ai/connector-claude-code
 
+## 0.12.0
+
+### Patch Changes
+
+- 046f485: Re-announce an unacked durable message on JetStream redelivery, so a wake the host dropped (e.g. during Claude's channel startup window) recovers at the next redelivery instead of leaving the agent a zombie until an unrelated message arrives.
+
+## 0.11.6
+
+## 0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 1935221: Ship the built-in agent connectors (claude, opencode, hermes, pi) as removable `cotal ext` plugins. They are seeded on first run through the same `ext add` path a third party uses, resolved lazily per spawn, and deletable with `cotal ext remove`; they are no longer hardcoded imports or dependencies of `cotal-ai`.
+
+## 0.11.3
+
+### Patch Changes
+
+- @cotal-ai/connector-core@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes

@@ -41,12 +41,13 @@ import {
   CONTROL_SELF_SERVICE,
   type Delivery,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-// Fresh random port per run + await-exit on every broker kill (below): a fixed port plus a SIGKILL
+// Fresh OS-assigned port per run + await-exit on every broker kill (below): a fixed port plus a SIGKILL
 // that doesn't await the child's exit leaks the broker, and the next run collides with the squatter
 // (the "Authorization Violation" contamination reviewers hit). The mid-test reconnect restart reuses
 // THIS port, so it too must await the old process's exit before respawning, or it races the dying one.
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promise<boolean> => {

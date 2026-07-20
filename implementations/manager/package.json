@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/manager",
   "description": "Cotal agent supervisor: spawns and manages mesh nodes via a pluggable runtime (pty/tmux/cmux/orca).",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/start-model-preflight.smoke.ts && tsx smoke/start-overrides.smoke.ts",
+    "test": "tsx smoke/start-model-preflight.smoke.ts && tsx smoke/start-overrides.smoke.ts && tsx smoke/preserve-state.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\"",
     "prepublishOnly": "pnpm run build"

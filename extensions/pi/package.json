@@ -1,7 +1,12 @@
 {
   "name": "@cotal-ai/pi",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "extensions/pi"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,23 +25,22 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json && esbuild src/standalone.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/standalone.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/standalone.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/standalone.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
     "test": "pnpm run build && tsx pi.smoke.ts && tsx pi-sdk.smoke.ts && node --input-type=module -e \"await import('./dist/standalone.js'); console.log('pi standalone smoke: import passed')\"",
     "prepublishOnly": "pnpm run build"
   },
-  "dependencies": {
-    "@cotal-ai/connector-core": "workspace:*",
-    "typebox": "^1.1.0",
-    "zod": "^4.4.3"
-  },
   "peerDependencies": {
-    "@cotal-ai/core": "workspace:*"
+    "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/connector-core": "workspace:*",
     "@earendil-works/pi-ai": "0.79.10",
     "@earendil-works/pi-coding-agent": "0.79.10",
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "typebox": "^1.1.0",
+    "zod": "^4.4.3"
   },
   "files": [
     "dist"

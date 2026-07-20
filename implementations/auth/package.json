@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/auth",
-  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 \u2194 Plane 2).",
-  "version": "0.11.2",
+  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 ↔ Plane 2).",
+  "version": "0.12.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,6 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/views.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

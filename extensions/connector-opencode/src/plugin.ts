@@ -10,8 +10,9 @@
  *  • maps OpenCode bus events to presence (idle | working | waiting | offline);
  *  • owns ONE session (created at boot) and drives it: it injects each inbox batch as a turn through
  *    the authenticated OpenCode server HTTP API (the same server the TUI is attached to), acking ON
- *    TURN COMPLETION (so a crash/error redelivers). Pending peer messages are also injected into
- *    the next native prompt creation when a human/API prompt starts in the attached session.
+ *    TURN COMPLETION (so a crash/error redelivers). Automatic pending messages are also injected
+ *    into the next native prompt creation when a human/API prompt starts in the attached session;
+ *    quiet ambient remains pull-only.
  *    Delivery is **attention-aware** (open/dnd/focus) and never interrupts a running turn.
  *
  * Identity comes from COTAL_* env (the plugin runs in the opencode process and inherits it).
@@ -254,7 +255,7 @@ export const cotal: Plugin = async () => {
       if (override) {
         parts.push({ type: "text", text: override });
       } else {
-        const items = agent.peekInbox();
+        const items = agent.peekInbox("automatic");
         if (items.length === 0) return;
         ids = items.map((i) => i.id);
         const inj = formatInjection(items);
@@ -288,17 +289,12 @@ export const cotal: Plugin = async () => {
     }
   }
 
-  /** Ack the surfaced batch — but only the leading run STILL at the front of the inbox, matched by
-   *  id. MeshAgent evicts from the FRONT at MAX_INBOX, so a long turn on a chatty channel can shift
-   *  our surfaced prefix out; matching by id (not a raw count) means we never ack the wrong, newer
-   *  messages. Evicted items were already acked by the overflow; any surfaced survivor that no
-   *  longer leads is left unacked → redelivered (re-answered, never lost). */
+  /** Ack exactly the surfaced ids. Quiet ambient may be physically interleaved ahead of them, and
+   *  overflow may already have removed some; MeshAgent marks every confirmed id handled while only
+   *  acking entries still present. */
   function ackSurfaced(): void {
     if (surfaced.length === 0) return;
-    const front = agent.peekInbox();
-    let n = 0;
-    while (n < surfaced.length && n < front.length && front[n].id === surfaced[n]) n++;
-    if (n > 0) agent.drainInbox(n);
+    agent.drainInboxIds(surfaced);
     surfaced = [];
   }
 
@@ -312,7 +308,7 @@ export const cotal: Plugin = async () => {
    *  text part so we don't need to manufacture OpenCode's internal part IDs. */
   function injectIntoPrompt(output: { parts?: unknown[] }): void {
     if (driving || awaitingTurnEnd) return; // drive() already injected, or one surfaced batch is open
-    const items = agent.peekInbox();
+    const items = agent.peekInbox("automatic");
     if (items.length === 0) return;
     const inj = formatInjection(items);
     if (!inj) return;
@@ -331,8 +327,8 @@ export const cotal: Plugin = async () => {
    *  TUI, a `/reconnect`, etc). Clear `busy` regardless of who drove it: it's the COALESCE guard, so
    *  a turn the connector didn't drive must still release it or every later push wedges behind a
    *  finished turn. Ack only what WE surfaced (gated on awaitingTurnEnd — a human turn surfaced
-   *  nothing), then flush the next buffered batch — mode-aware, so bare ambient (dnd/focus) doesn't
-   *  self-wake (it rides the next directed/human turn). A truly stray idle (nothing was running and
+    *  nothing), then flush the next buffered batch — mode-aware, so bare ambient (dnd/focus) doesn't
+    *  self-wake. A truly stray idle (nothing was running and
    *  we drove nothing) is ignored, so it can't mis-ack or empty-drive. */
   function completeTurn(): void {
     if (!busy && !awaitingTurnEnd) return; // stray/duplicate idle — no turn to close
@@ -348,14 +344,14 @@ export const cotal: Plugin = async () => {
 
   // Inbound mesh → drive (never interrupt a running turn — matches Claude). A directed message
   // (DM / anycast / @mention) drives when idle; ambient channel chatter drives only in `open` while
-  // idle (dnd/focus hold it for the next turn), and a per-channel `quiet` channel never ambient-drives
-  // (read on the agent's terms; a `quiet` @mention still drives). `muted` ambient never reaches here
+  // idle (dnd/focus hold it for the next turn), and receive-time pull-only ambient never drives
+  // (a quiet @mention remains automatic). `muted` ambient never reaches here
   // (ack-dropped at ingest); in `focus`, ambient/@mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
     if (busy) return; // buffer; chat.message or completeTurn drives at the next safe boundary
+    const automatic = agent.inboxScope(item.id) === "automatic";
     const directed = item.kind !== "channel" || item.mentionsMe;
-    const quiet = item.kind === "channel" && agent.channelMode(item.channel) === "quiet";
-    if (directed || (!quiet && agent.attention === "open")) void drive();
+    if (automatic && (directed || agent.attention === "open")) void drive();
   });
   agent.on("mention-wake", (item: InboxItem) => {
     // Focus: the @mention body was acked-and-dropped at ingest — wake a turn to PULL it (recall).

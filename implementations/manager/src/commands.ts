@@ -43,6 +43,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // before the manager comes up or any agent is spawned.
   const roster = v.roster ? loadRoster(v.roster) : [];
   const launchSpec = v.launch ? loadLaunchSpec(v.launch) : undefined;
+  if (v["resume-attempt"] && (v.roster || v.launch || v.spawn)) {
+    console.error(c.red("✗ --resume-attempt cannot be combined with --roster, --launch, or --spawn; retained agents resume only through the attempt-bound admin control op"));
+    process.exit(1);
+  }
+  if (v["resume-commit-token"] && !v["resume-attempt"]) {
+    console.error(c.red("✗ --resume-commit-token requires --resume-attempt"));
+    process.exit(1);
+  }
   if (!(await isReachable(server))) {
     console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
     process.exit(1);
@@ -53,7 +61,18 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // `.cotal/manager.log` for a detached `cotal up` daemon).
   let mgr: Manager;
   try {
-    mgr = new Manager({ space, servers: server, runtime, consolePort });
+    // The published-binary supervisor resolves connectors from the operator manifest (seeded +
+    // `ext add`ed), NOT from static imports — `bin/cotal.ts` no longer registers any. A direct
+    // library `Manager` keeps the registry-only default (opt-in preserved).
+    mgr = new Manager({
+      space,
+      servers: server,
+      runtime,
+      consolePort,
+      installedExtensions: true,
+      resumeAttemptId: v["resume-attempt"],
+      resumeDurableCommitToken: v["resume-commit-token"],
+    });
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -67,7 +86,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   );
   // Register shutdown handlers before any spawning, so a Ctrl-C during the (possibly slow,
   // staggered) boot tears the manager and its spawned teammates down rather than orphaning them.
-  const shutdown = () => void mgr.stop().then(() => process.exit(0));
+  const shutdown = () => void mgr.stop()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      process.exitCode = 1;
+      console.error(c.red(`✗ ${(e as Error).message}`));
+    });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   // Declarative boot: bring up each rostered agent through the same spawn path as a detached spawn.
@@ -117,7 +141,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
         continue;
       }
-      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner));
+      const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner, launchSpec.runId));
       if (!reply.ok) {
         console.error(c.red(`✗ ${la.name}: ${reply.error}`));
         continue;
@@ -141,7 +165,7 @@ const managerCommands: Command[] = [
     name: "supervise",
     group: "Manager",
     summary:
-      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>]",
+      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
@@ -149,6 +173,8 @@ const managerCommands: Command[] = [
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
+      { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },
+      { name: "resume-commit-token", type: "string", value: "<token>", description: "durable resume commit evidence for crash recovery" },
       { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
     ],
     requiredExtensions: (args) => {

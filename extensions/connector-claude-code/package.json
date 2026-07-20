@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-claude-code",
   "description": "Cotal connector for Claude Code: an installed plugin that joins a session to the mesh.",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,19 +19,17 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json && pnpm run bundle",
-    "bundle": "esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outdir=dist --out-extension:.js=.cjs",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outdir=dist --out-extension:.js=.cjs",
     "prepublishOnly": "pnpm run build"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@cotal-ai/connector-core": "workspace:*"
   },
   "peerDependencies": {
     "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/connector-core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4"
   },

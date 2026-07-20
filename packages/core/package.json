@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/core",
   "description": "The Cotal protocol: endpoint, subjects, message types, the NATS client layer, and the extension contracts.",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,7 +20,9 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/resolve.smoke.ts",
+    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts",
+    "smoke:backup": "tsx smoke/backup.smoke.ts",
+    "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

@@ -13,11 +13,6 @@ import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl.
 import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
-import "@cotal-ai/connector-claude-code"; // registers the `claude` connector that spawn / start resolve
-import "@cotal-ai/connector-opencode"; // registers the `opencode` connector (native in-process plugin)
-import "@cotal-ai/connector-hermes"; // registers the `hermes` connector (Nous Research gateway as a mesh peer)
-import "@cotal-ai/pi"; // registers the `pi` connector (mesh extension loaded into the user's own pi)
-import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { registry } from "@cotal-ai/core";
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
@@ -29,15 +24,15 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
   throw e;
 });
 
-// The manager's built-in default agent type is "cotal" (when COTAL_DEFAULT_AGENT is unset); make it
-// a real Claude coder so a bare cotal_spawn / `cotal spawn --detach <persona>` (no --agent) brings
-// up a Claude Code session. Revisited at the start→spawn merge (stage 2a): still needed — the
-// default rides the MANAGER side of the control plane, not the removed CLI verb.
-registry.register({ ...claudeConnector, name: "cotal" });
-
+// The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
+// install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
+// connector (and like the `@cotal-ai/orca` runtime already is). `runCli` seeds them on first run and
+// materializes each lazily when a command resolves it; the default agent is `COTAL_DEFAULT_AGENT`
+// (else claude), resolved manager-side. The old `"cotal"` default-agent alias is gone with them.
+//
 // Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
-// runtimes, and local process components all self-register from those packages. Library roots keep
-// the explicit-import model.
+// runtimes, connectors, and local process components all self-register from those packages. Library
+// roots keep the explicit-import model.
 const argv = process.argv.slice(2);
 await runCli(registry, argv, { extensions: true });

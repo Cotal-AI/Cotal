@@ -34,10 +34,11 @@ import {
 } from "@cotal-ai/core";
 import { controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { controlShutdown } from "../src/control-shutdown.js";
+import { pickFreePort } from "./_free-port.js";
 
-// A fresh random port BELOW the Windows dynamic/ephemeral range (49152–65535): a port the OS may have
-// already reserved makes nats-server fail to bind and the wait below time out as a phantom flake.
-const PORT = 20000 + Math.floor(Math.random() * 20000); // 20000–39999
+// An OS-assigned free port (see _free-port.ts): a port Windows has reserved makes nats-server fail
+// to bind and the wait below time out as a phantom flake.
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>

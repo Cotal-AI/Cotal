@@ -23,11 +23,12 @@ import {
   setupSpaceStreams,
   type Delivery,
 } from "./src/index.js";
+import { pickFreePort } from "./smoke/_free-port.js";
 
-// Fresh random port per run + await-exit on the broker kill (finally): a FIXED port plus a SIGKILL that
+// Fresh OS-assigned port per run + await-exit on the broker kill (finally): a FIXED port plus a SIGKILL that
 // doesn't await the child's exit leaks the broker, and the next run collides with the squatter (the
 // "Authorization Violation" reviewers hit). Same leak-class fix the channels/self-serve smokes carry.
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>

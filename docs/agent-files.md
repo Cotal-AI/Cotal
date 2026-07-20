@@ -41,7 +41,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. Default `[general]`. |
 | `allowSubscribe` | string[] | The **read ACL**: channels it *may* read. Wildcard subtrees allowed (`team.>`). Omitted ⇒ same as `subscribe`. |
 | `allowPublish` | string[] | The **post ACL**: channels it may publish to. **Omitted ⇒ deny**; posting is the dangerous capability, declare it explicitly. |
-| `quiet` | string[] | Per-channel attention *default*: delivered but never wakes this agent (per-channel dnd). Concrete channels within the read ACL. |
+| `quiet` | string[] | Per-channel attention *default*: ambient stays buffered and pull-only until `cotal_inbox`; `@mention`s remain automatic. Concrete channels within the read ACL. |
 | `muted` | string[] | Per-channel attention *default*: dropped on receive, `@mentions` included. |
 | `model` | string | Model override handed to the agent CLI (Claude: `opus` / full id; OpenCode: `provider/model`). |
 | `variant` | string | Connector-defined model variant (e.g. an OpenCode variant, see `cotal models`). |

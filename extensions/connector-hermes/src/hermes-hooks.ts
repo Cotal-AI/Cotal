@@ -48,7 +48,7 @@ export const hermesHookHandle: HookHandle = async (agent, ev) => {
         pendingTool = undefined;
         await agent.setStatus("idle");
         // Now idle: if ambient messages were held while busy, ask the bridge to flush them.
-        if (agent.inboxCount() > 0) agent.requestWake();
+        if (agent.pendingWake() > 0) agent.requestWake();
         return {};
       case "gateway_shutdown":
         await agent.setStatus("offline");

@@ -1,5 +1,7 @@
-import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { createConnection, createServer } from "node:net";
+import { hostname } from "node:os";
 import {
   mkdirSync,
   writeFileSync,
@@ -9,11 +11,14 @@ import {
   statSync,
   readSync,
   closeSync,
+  lstatSync,
+  rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
+  CONTROL_ADMIN,
   createSpaceAuth,
   serverConfig,
   mintCreds,
@@ -21,6 +26,7 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
+  standaloneConnectOpts,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
   mkSecretDir,
@@ -32,6 +38,7 @@ import {
   type FlagSpec,
   type CompletionResult,
 } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
 import {
   assertUserAuthInfo,
   authDir,
@@ -45,15 +52,39 @@ import {
   removeMesh,
   setCurrent,
   userAuthStateDir,
+  workspaceSecretStore,
   type MeshEntry,
   type UserAuthInfo,
+  acquireMaintenanceLock,
+  assertStoreIdentity,
+  assessRestoreClaim,
+  beginOrdinaryResume,
+  bindOrdinaryResumeListener,
+  consumeRetiredMaintenance,
+  markOrdinaryResumeActive,
+  markOrdinaryResumeDegraded,
+  replaceDeadOrdinaryResumeListener,
+  localProcessOwnerStatus,
+  readMaintenanceJournal,
+  readMaintenanceResumeDocument,
+  readStoreIdentity,
+  recordOrdinaryResumeManagerCommit,
+  releaseMaintenanceLock,
+  retireOrdinaryResume,
+  sameStoreIdentity,
+  type JsonValue,
+  type ManagerCommitEvidence,
+  type ManagerFinalizeEvidence,
+  type ProcessOwner,
+  type RestoreListenerProof,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
+import { renderDetachedSummary } from "../lib/up-report.js";
+import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
 import { managerHasDeliveryMarker, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -61,6 +92,41 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { failManifest } from "./topology.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
+import { askManager, type ControlAuth } from "../lib/control.js";
+import {
+  bindPreparedRestoreListener,
+  isManagerCommitResult,
+  isManagerFinalizeResult,
+  isManagerCommittedRestore,
+  markPreparedRestoreActive,
+  markPreparedRestoreDegraded,
+  prepareRestore,
+  recordPreparedRestoreManagerCommit,
+  rehydratePreparedRestore,
+  replacePreparedDeadRestoreListener,
+  type PreparedRestore,
+  type RestoreFlags,
+} from "../lib/restore.js";
+
+const pendingRestores = new Map<string, PreparedRestore>();
+interface PendingOrdinaryResume {
+  root: string;
+  attemptId: string;
+  space: string;
+  mode: "open" | "auth" | "user";
+  server: string;
+  storeDir: string;
+  runtime?: string;
+  detached: boolean;
+  inventory: JsonValue;
+  journalState: "resume-intent" | "resume-active" | "resume-committed" | "resume-degraded";
+  managerCommit?: ManagerCommitEvidence;
+  serverName: string;
+  serverNonce: string;
+  /** Present when a live bound listener from a prior coordinator should be adopted, not respawned. */
+  adoptProof?: RestoreListenerProof;
+}
+const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [
@@ -69,6 +135,9 @@ export const upFlags: FlagSpec[] = [
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
+  { name: "restore", type: "string", value: "<dir>", description: "restore an offline backup before exposing the normal listener" },
+  { name: "restore-only", type: "string", value: "<registry>", description: "restore only the registry component" },
+  { name: "accept-missing-source", type: "boolean", description: "explicit disaster consent when the inode-bound preserved source is absent" },
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
@@ -86,39 +155,287 @@ export function upComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, upFlags);
   if (flag?.name === "runtime")
     return { items: ["pty", ...extensionNames("runtime")].filter((v, i, a) => a.indexOf(v) === i).map((value) => ({ value })), directive: "nofiles" };
+  if (flag?.name === "restore-only")
+    return { items: [{ value: "registry" }], directive: "nofiles" };
+  if (flag?.name === "restore") return { items: [], directive: "default" };
   const items = upFlags.map((f) => ({ value: `--${f.name}`, description: f.description }));
   return { items, directive: items.length ? "nofiles" : "default" };
 }
 
 export async function up(args: ParsedArgs): Promise<void> {
-  const values = args.values as { server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string; channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean };
+  const values = args.values as {
+    server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
+    channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
+    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean;
+    __restoreAttempt?: string;
+    __ordinaryResumeAttempt?: string;
+  };
+  if (values.restore) {
+    if (values.file || values.channels)
+      throw new Error("--restore cannot be combined with --file/-f or --channels");
+    const prepared = await prepareRestore(cotalRoot(), values as RestoreFlags);
+    pendingRestores.set(prepared.attemptId, prepared);
+    const next = {
+      ...values,
+      restore: undefined,
+      "restore-only": undefined,
+      "accept-missing-source": undefined,
+      __restoreAttempt: prepared.attemptId,
+      space: values.space ?? prepared.space,
+      server: values.server ?? prepared.server,
+      host: values.host ?? prepared.host,
+      runtime: values.runtime ?? prepared.runtime,
+      open: prepared.mode === "open",
+      "user-auth": prepared.mode === "user",
+    };
+    try {
+      await up({ ...args, values: next });
+    } catch (error) {
+      pendingRestores.delete(prepared.attemptId);
+      markPreparedRestoreDegraded(prepared.root, prepared.attemptId, (error as Error).message);
+      throw error;
+    }
+    return;
+  }
+  if (values["restore-only"] || values["accept-missing-source"])
+    throw new Error("--restore-only and --accept-missing-source require --restore <dir>");
+  if (!values.__restoreAttempt && !values.__ordinaryResumeAttempt && !values.file) {
+    const root = cotalRoot();
+    const lock = acquireMaintenanceLock(root);
+    let pending: PendingOrdinaryResume | undefined;
+    let recoveredRestore: PreparedRestore | undefined;
+    try {
+      const journal = readMaintenanceJournal(root);
+      if (journal?.state === "restore-ready") {
+        // Ordinary up NEVER rolls back an in-progress restore: a live attempt's target may still be
+        // written by its isolated broker. Refuse with the exact recovery recourse instead.
+        const attempt = journal.restore.attemptId;
+        const assessment = assessRestoreClaim(journal);
+        if (assessment === "live")
+          throw new Error(`cotal up is refused: restore attempt ${attempt} is in progress (claim live until ${journal.claim.deadline}); wait for it to complete or become provably stale`);
+        if (assessment === "ambiguous")
+          throw new Error(`cotal up is refused: restore attempt ${attempt} owners cannot be proven dead; inspect the recorded coordinator, watchdog, and broker processes before recovery`);
+        throw new Error(`cotal up is refused: stale restore attempt ${attempt} holds the store; roll it back with \`cotal clean restore-attempt --attempt ${attempt} --force\`, or recover it with \`cotal up --restore\``);
+      }
+      if (journal && (journal.state === "commit-intent" || journal.state === "manager-committed" || journal.state === "degraded")) {
+        recoveredRestore = rehydratePreparedRestore(root, journal);
+        pendingRestores.set(recoveredRestore.attemptId, recoveredRestore);
+      } else if (journal?.state === "active") {
+        if (!isManagerCommittedRestore(journal))
+          throw new Error(`restore attempt ${journal.restore.attemptId} is active without durable manager commit evidence`);
+        if (!journal.listenerProof)
+          throw new Error(`restore attempt ${journal.restore.attemptId} is active without a bound listener proof`);
+        const status = localProcessOwnerStatus(journal.listenerProof.processOwner);
+        if (status === "unknown")
+          throw new Error(`restore attempt ${journal.restore.attemptId} active listener ownership is ambiguous; refusing ordinary startup`);
+        if (status === "alive") {
+          recoveredRestore = rehydratePreparedRestore(root, journal);
+          pendingRestores.set(recoveredRestore.attemptId, recoveredRestore);
+        }
+      } else if (journal?.state === "ready") {
+        const resume = readMaintenanceResumeDocument(root, journal.resume);
+        const attemptId = `resume-${randomUUID()}`;
+        const launch = resume.launch as { server?: unknown; storeDir?: unknown };
+        const agents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
+        const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
+        if (runtimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${runtimes.join(", ")}`);
+        const resumeServer = values.server ?? (typeof launch.server === "string" ? launch.server : DEFAULT_SERVER);
+        const requestedStore = values["store-dir"] ?? (typeof launch.storeDir === "string" ? launch.storeDir : journal.source.path);
+        // Ordinary up resumes the exact preserved source: a different valid store passed via
+        // --store-dir must not consume this maintenance cut under the recorded space's trust.
+        if (!sameStoreIdentity(readStoreIdentity(resolve(requestedStore)), journal.source))
+          throw new Error(`--store-dir ${requestedStore} is not the preserved source store; ordinary up resumes exactly ${journal.source.path}`);
+        // Journal the CANONICAL identity-checked path, never the caller's spelling: a relative or
+        // symlinked spelling re-resolved later (other cwd, retargeted link) could open another store.
+        const resumeStore = journal.source.path;
+        if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
+          throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
+        const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
+        const serverNonce = randomUUID().replaceAll("-", "");
+        const serverName = `${attemptId}-${serverNonce}`;
+        beginOrdinaryResume(lock, {
+          attemptId,
+          launch: {
+            server: resumeServer,
+            storeDir: resumeStore,
+            runtime: resumeRuntime,
+            detached: Boolean(values.detach),
+            serverName,
+            serverNonce,
+          },
+        });
+        pending = {
+          root,
+          attemptId,
+          space: journal.space,
+          mode: journal.mode,
+          server: resumeServer,
+          storeDir: resumeStore,
+          runtime: resumeRuntime,
+          detached: Boolean(values.detach),
+          inventory: resume.inventory,
+          journalState: "resume-intent",
+          serverName,
+          serverNonce,
+        };
+        pendingOrdinaryResumes.set(attemptId, pending);
+      } else if (journal && (journal.state === "resume-intent" || journal.state === "resume-active" || journal.state === "resume-committed" || journal.state === "resume-degraded")) {
+        const resume = readMaintenanceResumeDocument(root, journal.resume);
+        const launch = journal.ordinaryResume.launch as {
+          server?: unknown; storeDir?: unknown; runtime?: unknown; detached?: unknown;
+          serverName?: unknown; serverNonce?: unknown;
+        };
+        const attemptId = journal.ordinaryResume.attemptId;
+        // Recovery re-asserts the source identity rather than trusting the journaled spelling.
+        assertStoreIdentity(journal.source);
+        // The bound listener decides re-entry: a live exact listener is ADOPTED, a provably dead
+        // one is durably retired before a fresh spawn, ambiguity refuses, and a manager-committed
+        // resume never replaces the listener its durable token is bound to.
+        let adoptProof: RestoreListenerProof | undefined;
+        let recoveredProof = journal.listenerProof;
+        let recoveredState: PendingOrdinaryResume["journalState"] = journal.state;
+        if (recoveredProof) {
+          const status = localProcessOwnerStatus(recoveredProof.processOwner);
+          if (status === "unknown")
+            throw new Error(`resume attempt ${attemptId} listener ownership is ambiguous; refusing replacement`);
+          if (status === "alive") {
+            adoptProof = recoveredProof;
+          } else if (journal.state === "resume-committed") {
+            throw new Error(`resume attempt ${attemptId} is manager-committed but its bound listener is dead; preserving the commit token and retained suppression`);
+          } else {
+            if (journal.state === "resume-active") {
+              markOrdinaryResumeDegraded(lock, "bound resume listener died after activation", [{
+                action: "repair",
+                description: "Retire the dead listener and re-run the same-principal activation.",
+                paths: [journal.source.path],
+              }]);
+              recoveredState = "resume-degraded";
+            }
+            replaceDeadOrdinaryResumeListener(lock, recoveredProof);
+            recoveredProof = undefined;
+          }
+        }
+        const freshNonce = randomUUID().replaceAll("-", "");
+        const serverNonce = adoptProof?.serverNonce ??
+          (recoveredProof || typeof launch.serverNonce !== "string" || journal.listenerReplacements?.length
+            ? freshNonce
+            : launch.serverNonce);
+        const serverName = adoptProof?.serverName ?? `${attemptId}-${serverNonce}`;
+        pending = {
+          root,
+          attemptId,
+          space: journal.space,
+          mode: journal.mode,
+          server: typeof launch.server === "string" ? launch.server : DEFAULT_SERVER,
+          storeDir: journal.source.path,
+          runtime: typeof launch.runtime === "string" ? launch.runtime : "pty",
+          detached: launch.detached === true,
+          inventory: resume.inventory,
+          journalState: recoveredState,
+          managerCommit: journal.state === "resume-committed" ? journal.managerCommit : undefined,
+          serverName,
+          serverNonce,
+          ...(adoptProof ? { adoptProof } : {}),
+        };
+        pendingOrdinaryResumes.set(attemptId, pending);
+      } else if (journal?.state === "resume-retired") {
+        consumeRetiredMaintenance(lock);
+      } else if (journal) {
+        throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
+      }
+    } finally {
+      releaseMaintenanceLock(lock);
+    }
+    if (recoveredRestore) {
+      try {
+        await up({
+          ...args,
+          values: {
+            ...values,
+            __restoreAttempt: recoveredRestore.attemptId,
+            space: recoveredRestore.space,
+            server: recoveredRestore.server,
+            host: recoveredRestore.host,
+            "store-dir": recoveredRestore.targetPath,
+            runtime: recoveredRestore.runtime,
+            detach: recoveredRestore.detached,
+            open: recoveredRestore.mode === "open",
+            "user-auth": recoveredRestore.mode === "user",
+          },
+        });
+      } catch (error) {
+        markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+      return;
+    }
+    if (pending) {
+      try {
+        await up({
+          ...args,
+          values: {
+            ...values,
+            __ordinaryResumeAttempt: pending.attemptId,
+            space: pending.space,
+            server: pending.server,
+            "store-dir": pending.storeDir,
+            runtime: pending.runtime,
+            detach: pending.detached,
+            open: pending.mode === "open",
+            "user-auth": pending.mode === "user",
+          },
+        });
+      } catch (error) {
+        markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+      return;
+    }
+  }
   const wantUser = Boolean(values["user-auth"]);
   // The auth-mode flags contradict each other loudly, never silently (a user-auth space quietly
   // started open would run agents on the wrong identity plane — the exact failure per-user-auth
   // exists to prevent).
   if (wantUser && values.open) {
-    console.error(c.red("✗ --user-auth and --open contradict - a user-auth space cannot run unauthenticated"));
-    process.exit(1);
+    throw new Error("--user-auth and --open contradict - a user-auth space cannot run unauthenticated");
   }
   if (values.idp && !wantUser && !values.file) {
-    console.error(c.red('✗ --idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest'));
-    process.exit(1);
+    throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
   // port / runtime / space / auth without editing it.
   if (values.file) {
-    await upManifest(values.file, {
-      dryRun: Boolean(values["dry-run"]),
-      server: values.server,
-      host: values.host,
-      space: values.space,
-      runtime: values.runtime,
-      open: values.open,
-      userAuth: wantUser,
-      idp: values.idp,
-    });
+    if (values["dry-run"]) {
+      await upManifest(values.file, {
+        dryRun: true,
+        server: values.server,
+        host: values.host,
+        space: values.space,
+        runtime: values.runtime,
+        open: values.open,
+        userAuth: wantUser,
+        idp: values.idp,
+      });
+      return;
+    }
+    const lock = acquireMaintenanceLock(cotalRoot());
+    try {
+      assertOrdinaryUpAllowed(cotalRoot());
+      await upManifest(values.file, {
+        dryRun: Boolean(values["dry-run"]),
+        server: values.server,
+        host: values.host,
+        space: values.space,
+        runtime: values.runtime,
+        open: values.open,
+        userAuth: wantUser,
+        idp: values.idp,
+      });
+    } finally {
+      releaseMaintenanceLock(lock);
+    }
     return;
   }
   // `--runtime <name>` selects the backend the mesh's manager spawns agents through. The `-f` path
@@ -127,9 +444,47 @@ export async function up(args: ParsedArgs): Promise<void> {
   // process, so an uninstalled/unreachable runtime fails loud HERE (with the `cotal ext add`
   // recourse) instead of a silent fallback in a detached child. No fallbacks. (`pty`/unset: no-op.)
   if (values.runtime) await preflightRuntime(values.runtime);
-  let server = values.server ?? DEFAULT_SERVER;
-  const host = values.host ?? "127.0.0.1";
-  if (await isReachable(server)) {
+  const resumeAttempt = values.__restoreAttempt ?? values.__ordinaryResumeAttempt;
+  let startupLock = resumeAttempt ? undefined : acquireMaintenanceLock(cotalRoot());
+  const releaseStartupLock = () => {
+    if (!startupLock) return;
+    releaseMaintenanceLock(startupLock);
+    startupLock = undefined;
+  };
+  try {
+    if (startupLock) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
+    let server = values.server ?? DEFAULT_SERVER;
+    const host = values.host ?? "127.0.0.1";
+    const restoredAttempt = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+    if (restoredAttempt?.reentry) {
+      if (!restoredAttempt.listenerProof)
+        throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof; preserving recovery state`);
+      const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
+      if (ownerStatus === "alive") {
+        await resumeProvenRestoreListener(restoredAttempt);
+        return;
+      }
+      if (ownerStatus === "unknown")
+        throw new Error(`restore attempt ${resumeAttempt} listener ownership is ambiguous; refusing replacement`);
+      if (restoredAttempt.managerCommit)
+        throw new Error(`restore attempt ${resumeAttempt} is manager-committed but its bound listener is dead; preserving the commit token and retained suppression`);
+      if (await isReachable(restoredAttempt.server))
+        throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
+      replacePreparedDeadRestoreListener(restoredAttempt);
+    }
+    const ordinaryAttempt = resumeAttempt ? pendingOrdinaryResumes.get(resumeAttempt) : undefined;
+    if (ordinaryAttempt?.adoptProof) {
+      // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
+      // instead of spawning a competitor over the same store.
+      await resumeProvenOrdinaryListener(ordinaryAttempt);
+      return;
+    }
+    if (ordinaryAttempt?.journalState === "resume-committed")
+      throw new Error(`resume attempt ${resumeAttempt} is manager-committed but has no adoptable bound listener; preserving the commit token and retained suppression`);
+    const listenerReachable = await isReachable(server);
+    if (resumeAttempt && listenerReachable)
+      throw new Error(`resume attempt ${resumeAttempt} refuses the unproven occupied listener at ${server}`);
+    if (listenerReachable) {
     const space = values.space ?? resolveSpace(process.cwd());
     const root = cotalRoot();
     // A broker is already on this port. Same root means "this project is already up" unless the
@@ -171,6 +526,7 @@ export async function up(args: ParsedArgs): Promise<void> {
             space: held.space,
             operatorSeed: auth.operator.seed,
             account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+            store: workspaceSecretStore(root),
             dir: stateDir,
             idpUrl: values.idp,
           });
@@ -223,7 +579,8 @@ export async function up(args: ParsedArgs): Promise<void> {
   }
 
   if (values.detach) {
-    const { pid, source, authService } = await startMeshDetached({
+    const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+    const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
       server,
       storeDir: values["store-dir"],
       space: values.space,
@@ -232,13 +589,39 @@ export async function up(args: ParsedArgs): Promise<void> {
       channels: values.channels,
       host,
       runtime: values.runtime,
+      resumeAttempt,
+      resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
+      ...(restored ? {
+        boundListener: {
+          serverName: restored.serverName,
+          serverNonce: restored.serverNonce,
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt),
+          verify: async () => { await provePreparedRestoreListener(restored); },
+        },
+      } : ordinaryAttempt ? {
+        boundListener: {
+          serverName: ordinaryAttempt.serverName,
+          serverNonce: ordinaryAttempt.serverNonce,
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt),
+          verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
+        },
+      } : {}),
+      skipPostStart: Boolean(resumeAttempt),
     });
     console.log(c.dim(`Started nats-server (${source}).`));
-    console.log(c.green(`✓ mesh running in the background (pid ${pid}) - stop with: cotal down`));
+    console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager })));
+    if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
+      throw new Error("smoke-injected failure after restore listener readiness");
     // A user mesh whose auth service never became ready is recorded + running (a re-`cotal up`
     // heals it), but this `up` did NOT deliver what was asked — automation must see that in the
     // exit code, not only in the red line above.
     if (!authService) process.exitCode = 1;
+    await completeResumeActivation(
+      resumeAttempt,
+      controlPlane && authService,
+      !authService ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
+      server,
+    );
     return;
   }
 
@@ -247,12 +630,27 @@ export async function up(args: ParsedArgs): Promise<void> {
   ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
   refuseOpenOverUserState(Boolean(values.open), space);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
+  if (values.__ordinaryResumeAttempt) {
+    // Final identity re-assertion immediately before JetStream opens: the journaled canonical path
+    // must still be the exact preserved inode (no symlink retarget or replacement since intent).
+    const resumeJournal = readMaintenanceJournal(cotalRoot());
+    if (!resumeJournal || !("ordinaryResume" in resumeJournal))
+      throw new Error(`resume attempt ${values.__ordinaryResumeAttempt} lost its durable journal before the store open`);
+    if (!sameStoreIdentity(readStoreIdentity(storeDir), resumeJournal.source))
+      throw new Error(`resume store ${storeDir} no longer matches the preserved source identity; refusing to open JetStream over it`);
+  }
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined) : undefined;
   const port = Number(new URL(server).port) || 4222;
-  const natsArgs = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
+  const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+  const natsArgs = [
+    ...(setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host]),
+    ...(restored ? ["--name", restored.serverName]
+      : ordinaryAttempt ? ["--name", ordinaryAttempt.serverName]
+      : []),
+  ];
   const { bin, source } = await resolveNatsServer();
 
   console.log(
@@ -261,23 +659,55 @@ export async function up(args: ParsedArgs): Promise<void> {
     ),
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
+  const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, natsArgs, { stdio: "inherit" });
+  let activationFinished = !resumeAttempt;
+  if (child.pid) writeFileSync(cotalPath("nats.pid"), String(child.pid));
+  if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
+  if (restored) try {
+    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt);
+  } catch (error) {
+    await stopUnboundRestoreListener(child);
+    removeMatchingNatsPid(child.pid ?? 0);
+    throw error;
+  }
+  if (ordinaryAttempt) try {
+    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt);
+  } catch (error) {
+    await stopUnboundRestoreListener(child);
+    removeMatchingNatsPid(child.pid ?? 0);
+    throw error;
+  }
+  releaseStartupLock();
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
-    process.exit(1);
+    if (!resumeAttempt) process.exit(1);
   });
   // The control plane is coupled to the broker: stop the delivery daemon AND the detached manager
   // (AND the space's user-auth service) when this `up` stops (Ctrl-C), so none outlives the broker
   // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
   // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
   // auth service's pid is space-scoped so no other space's daemon can ever be hit.
-  const stop = () => { stopDelivery(); stopManager(); stopAuthService(space); child.kill("SIGTERM"); };
+  // stopDelivery is async (its creds delete goes through the secret store); the rest of the teardown
+  // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
+  // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
+  const stop = () => {
+    void stopDelivery()
+      .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
+      .then(() => {
+        stopManager();
+        stopAuthService(space);
+        child.kill("SIGTERM");
+      });
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
-  child.on("exit", (code) => {
-    stopDelivery();
+  child.on("exit", async (code) => {
+    rmSync(cotalPath("nats.pid"), { force: true });
+    // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
+    await stopDelivery().catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     stopManager();
     stopAuthService(space);
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
@@ -288,11 +718,19 @@ export async function up(args: ParsedArgs): Promise<void> {
       removeMesh(space);
       if (getCurrent() === space) clearCurrent();
     }
-    process.exit(code ?? 0);
+    if (activationFinished) process.exit(code ?? 0);
   });
 
-  if (await waitReady(server, setup?.creds)) {
-    await postStart(server, space, setup, seedFile);
+  const ready = await waitReady(server, setup?.creds);
+  if (!ready) {
+    child.kill("SIGTERM");
+    const reason = `nats-server did not become ready at ${server}`;
+    markPendingResumeDegraded(resumeAttempt ?? "", reason);
+    throw new Error(reason);
+  }
+  if (restored) await provePreparedRestoreListener(restored);
+  {
+    if (!resumeAttempt) await postStart(server, space, setup, seedFile);
     // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
     // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
     // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
@@ -312,9 +750,580 @@ export async function up(args: ParsedArgs): Promise<void> {
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     // Class-2 credential renewal is NOT wired here: the MANAGER is the renewal owner (it is resident
     // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
-    await startDeliveryWithBroker(space, server, { runtime: values.runtime });
+    const controlPlane = await startDeliveryWithBroker(space, server, {
+      runtime: values.runtime,
+      resumeAttempt,
+      resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
+    });
+    if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
+      throw new Error("smoke-injected failure after restore listener readiness");
+    await completeResumeActivation(
+      resumeAttempt,
+      controlPlane && svc.ok,
+      !svc.ok ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
+      server,
+    );
+    activationFinished = true;
   }
   await new Promise<void>(() => {});
+  } finally {
+    releaseStartupLock();
+  }
+}
+
+function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {
+  const maintenance = readMaintenanceJournal(root);
+  if (!maintenance) return;
+  if (maintenance.state === "active") {
+    if (!isManagerCommittedRestore(maintenance))
+      throw new Error(`restore attempt ${maintenance.restore.attemptId} is active without durable manager commit evidence`);
+    if (!maintenance.listenerProof)
+      throw new Error(`restore attempt ${maintenance.restore.attemptId} is active without a bound listener proof`);
+    const status = localProcessOwnerStatus(maintenance.listenerProof.processOwner);
+    if (status !== "dead")
+      throw new Error(`restore attempt ${maintenance.restore.attemptId} active listener ownership is ${status}; refusing ordinary startup`);
+    // Relaunching after restore must serve the exact recorded active target, not whatever store the
+    // caller happens to name — the journal's provenance would otherwise describe a different mesh.
+    if (!storeDir)
+      throw new Error(`restore attempt ${maintenance.restore.attemptId} is active; relaunch with bare \`cotal up\` over the recorded target ${maintenance.restore.target.path}`);
+    if (!sameStoreIdentity(readStoreIdentity(resolve(storeDir)), maintenance.restore.target))
+      throw new Error(`ordinary startup after restore must use the recorded active target store ${maintenance.restore.target.path}, not ${storeDir}`);
+    return;
+  }
+  if (maintenance.state === "ready") throw new Error("ordinary resume must begin through the attempt-bound startup path");
+  throw new Error(`cotal up is refused while maintenance state is ${maintenance.state}; follow the recorded restore recovery`);
+}
+
+function markPendingResumeDegraded(attemptId: string, reason: string): void {
+  const ordinary = pendingOrdinaryResumes.get(attemptId);
+  if (ordinary) {
+    const lock = acquireMaintenanceLock(ordinary.root);
+    try {
+      const journal = readMaintenanceJournal(ordinary.root);
+      if (journal && (journal.state === "resume-intent" || journal.state === "resume-active"))
+        markOrdinaryResumeDegraded(lock, reason, [{
+          action: "repair",
+          description: "Preserve the store and retained resume inventory; repair forward, then retry the same-principal activation.",
+          paths: [journal.source.path],
+        }]);
+    } finally {
+      releaseMaintenanceLock(lock);
+    }
+    return;
+  }
+  const restored = pendingRestores.get(attemptId);
+  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason);
+}
+
+async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
+  if (mode === "open") return {};
+  const auth = loadSpaceAuth(authDir(root));
+  if (!auth) throw new Error("same-principal resume requires the existing space trust material");
+  const identity = newIdentity();
+  return {
+    creds: await mintCreds(auth, identity, "control-caller-admin", {
+      expiresAt: Math.floor((Date.now() + 30 * 60 * 1000) / 1000),
+    }),
+  };
+}
+
+function restoreListenerOwner(pid: number, nonce: string, startedAt: string): ProcessOwner {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("restore listener spawn returned no pid");
+  return { pid, host: hostname(), startedAt, id: `restore-listener-${nonce}` };
+}
+
+function removeMatchingNatsPid(pid: number): void {
+  const path = cotalPath("nats.pid");
+  try {
+    const stat = lstatSync(path);
+    if (stat.isFile() && !stat.isSymbolicLink() && readFileSync(path, "utf8") === String(pid))
+      rmSync(path);
+  } catch { /* absent, changed, or not owned by this spawn */ }
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolveExit) => {
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const finish = (exited: boolean) => {
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolveExit(exited);
+    };
+    child.once("exit", onExit);
+  });
+}
+
+async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, 5_000)) return;
+  child.kill("SIGKILL");
+  if (!await waitForChildExit(child, 5_000))
+    throw new Error(`unbound restore listener process ${child.pid ?? "unknown"} did not exit`);
+}
+
+function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string): void {
+  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt));
+}
+
+function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner): void {
+  bindPreparedRestoreListener(prepared, processOwner);
+  if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND === "1") process.exit(86);
+}
+
+function sameProcessOwner(a: ProcessOwner, b: ProcessOwner): boolean {
+  return a.pid === b.pid && a.host === b.host && a.startedAt === b.startedAt && a.id === b.id;
+}
+
+function sameRestoreListenerProof(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
+  return a.attemptId === b.attemptId && a.serverName === b.serverName &&
+    a.serverNonce === b.serverNonce && sameProcessOwner(a.processOwner, b.processOwner) &&
+    a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target);
+}
+
+function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<string, unknown>> {
+  return new Promise((resolveInfo, rejectInfo) => {
+    let settled = false;
+    let socket: ReturnType<typeof createConnection> | undefined;
+    const finish = (error?: Error, info?: Record<string, unknown>) => {
+      if (settled) return;
+      settled = true;
+      socket?.destroy();
+      if (error) rejectInfo(error);
+      else resolveInfo(info!);
+    };
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      rejectInfo(new Error(`invalid restore listener endpoint ${endpoint}`));
+      return;
+    }
+    socket = createConnection({ host: url.hostname, port: Number(url.port) || 4222 });
+    socket.setTimeout(timeoutMs);
+    let input = "";
+    socket.on("data", (chunk: Buffer) => {
+      input += chunk.toString("utf8");
+      if (input.length > 64 * 1024) return finish(new Error("restore listener INFO exceeds 64 KiB"));
+      const newline = input.indexOf("\r\n");
+      if (newline < 0) return;
+      const line = input.slice(0, newline);
+      const brace = line.indexOf("{");
+      if (!/^INFO\b/.test(line) || brace < 0)
+        return finish(new Error("restore listener did not present a NATS INFO greeting"));
+      try {
+        const info = JSON.parse(line.slice(brace)) as unknown;
+        if (!info || typeof info !== "object" || Array.isArray(info))
+          throw new Error("INFO is not an object");
+        finish(undefined, info as Record<string, unknown>);
+      } catch (error) {
+        finish(new Error(`restore listener presented invalid NATS INFO: ${(error as Error).message}`));
+      }
+    });
+    socket.on("timeout", () => finish(new Error("restore listener INFO timed out")));
+    socket.on("error", (error) => finish(new Error(`restore listener INFO failed: ${error.message}`)));
+    socket.on("close", () => finish(new Error("restore listener closed before NATS INFO")));
+  });
+}
+
+async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<RestoreListenerProof> {
+  const proof = prepared.listenerProof;
+  if (!proof) throw new Error(`restore attempt ${prepared.attemptId} has no bound listener proof`);
+  if (proof.attemptId !== prepared.attemptId || proof.serverName !== prepared.serverName ||
+      proof.serverNonce !== prepared.serverNonce || proof.serverEndpoint !== prepared.server ||
+      proof.serverName !== `${proof.attemptId}-${proof.serverNonce}` || !/^[0-9a-f]{32}$/.test(proof.serverNonce) ||
+      proof.processOwner.id !== `restore-listener-${proof.serverNonce}`)
+    throw new Error(`restore attempt ${prepared.attemptId} listener proof does not match its launch record`);
+  const journal = readMaintenanceJournal(prepared.root);
+  if (!journal || (journal.state !== "commit-intent" && journal.state !== "manager-committed" && journal.state !== "degraded" && journal.state !== "active") ||
+      journal.restore.attemptId !== prepared.attemptId || !journal.listenerProof ||
+      !sameRestoreListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
+    throw new Error(`restore attempt ${prepared.attemptId} listener proof does not exactly match durable recovery state`);
+  if (proof.processOwner.host !== hostname())
+    throw new Error(`restore attempt ${prepared.attemptId} listener process ownership is not live and local`);
+  try {
+    process.kill(proof.processOwner.pid, 0);
+  } catch {
+    throw new Error(`restore attempt ${prepared.attemptId} listener process ownership is not live and local`);
+  }
+  const pidPath = join(prepared.root, ".cotal", "nats.pid");
+  let exactPidFile = false;
+  try {
+    const stat = lstatSync(pidPath);
+    exactPidFile = stat.isFile() && !stat.isSymbolicLink() &&
+      readFileSync(pidPath, "utf8") === String(proof.processOwner.pid);
+  } catch { /* absent or unprovable */ }
+  if (!exactPidFile)
+    throw new Error(`restore attempt ${prepared.attemptId} listener pidfile does not match its process proof`);
+  const target = readStoreIdentity(prepared.targetPath);
+  if (!sameStoreIdentity(target, proof.target) || !sameStoreIdentity(journal.restore.target, proof.target))
+    throw new Error(`restore attempt ${prepared.attemptId} target identity changed`);
+  const mesh = findMesh(prepared.space);
+  if (mesh && (mesh.server !== prepared.server || mesh.root !== prepared.root || mesh.mode !== prepared.mode))
+    throw new Error(`restore attempt ${prepared.attemptId} conflicts with the recorded mesh identity`);
+
+  const info = await readNatsInfo(proof.serverEndpoint);
+  if (info.server_name !== proof.serverName)
+    throw new Error(`restore attempt ${prepared.attemptId} reached a foreign NATS server name/nonce`);
+
+  const auth = await resumeControlAuth(prepared.root, prepared.mode);
+  const nc = await connect({
+    servers: prepared.server,
+    ...standaloneConnectOpts(auth),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    if (nc.info?.server_name !== proof.serverName)
+      throw new Error(`restore attempt ${prepared.attemptId} authenticated to a foreign NATS server name/nonce`);
+    if (!nc.info.jetstream) throw new Error(`restore attempt ${prepared.attemptId} listener has no JetStream`);
+  } finally {
+    await nc.drain().catch(() => {});
+  }
+  return proof;
+}
+
+function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string): void {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("resume listener spawn returned no pid");
+  const lock = acquireMaintenanceLock(pending.root);
+  try {
+    const journal = readMaintenanceJournal(pending.root);
+    if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId)
+      throw new Error(`resume listener bind does not match attempt ${pending.attemptId}`);
+    bindOrdinaryResumeListener(lock, {
+      attemptId: pending.attemptId,
+      serverName: pending.serverName,
+      serverNonce: pending.serverNonce,
+      processOwner: { pid, host: hostname(), startedAt, id: `resume-listener-${pending.serverNonce}` },
+      serverEndpoint: pending.server,
+      target: journal.source,
+    });
+  } finally {
+    releaseMaintenanceLock(lock);
+  }
+}
+
+/** Prove the recovered attempt's live bound listener IS ours end-to-end before adoption: launch
+ *  binding, durable journal match, local pid + exact pidfile, source identity, mesh identity, the
+ *  raw NATS INFO server name, and an authenticated connect confirming name + JetStream. */
+async function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<RestoreListenerProof> {
+  const proof = pending.adoptProof;
+  if (!proof) throw new Error(`resume attempt ${pending.attemptId} has no bound listener proof`);
+  if (proof.attemptId !== pending.attemptId || proof.serverName !== pending.serverName ||
+      proof.serverNonce !== pending.serverNonce || proof.serverEndpoint !== pending.server ||
+      proof.serverName !== `${proof.attemptId}-${proof.serverNonce}` || !/^[0-9a-f]{32}$/.test(proof.serverNonce) ||
+      proof.processOwner.id !== `resume-listener-${proof.serverNonce}`)
+    throw new Error(`resume attempt ${pending.attemptId} listener proof does not match its launch record`);
+  const journal = readMaintenanceJournal(pending.root);
+  if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId ||
+      !journal.listenerProof || !sameRestoreListenerProof(journal.listenerProof, proof) ||
+      journal.ordinaryResume.launch.server !== proof.serverEndpoint)
+    throw new Error(`resume attempt ${pending.attemptId} listener proof does not exactly match durable recovery state`);
+  if (proof.processOwner.host !== hostname())
+    throw new Error(`resume attempt ${pending.attemptId} listener process ownership is not live and local`);
+  try {
+    process.kill(proof.processOwner.pid, 0);
+  } catch {
+    throw new Error(`resume attempt ${pending.attemptId} listener process ownership is not live and local`);
+  }
+  const pidPath = join(pending.root, ".cotal", "nats.pid");
+  let exactPidFile = false;
+  try {
+    const stat = lstatSync(pidPath);
+    exactPidFile = stat.isFile() && !stat.isSymbolicLink() &&
+      readFileSync(pidPath, "utf8") === String(proof.processOwner.pid);
+  } catch { /* absent or unprovable */ }
+  if (!exactPidFile)
+    throw new Error(`resume attempt ${pending.attemptId} listener pidfile does not match its process proof`);
+  const source = readStoreIdentity(pending.storeDir);
+  if (!sameStoreIdentity(source, proof.target) || !sameStoreIdentity(journal.source, proof.target))
+    throw new Error(`resume attempt ${pending.attemptId} preserved source identity changed`);
+  const mesh = findMesh(pending.space);
+  if (mesh && (mesh.server !== pending.server || mesh.root !== pending.root || mesh.mode !== pending.mode))
+    throw new Error(`resume attempt ${pending.attemptId} conflicts with the recorded mesh identity`);
+
+  const info = await readNatsInfo(proof.serverEndpoint);
+  if (info.server_name !== proof.serverName)
+    throw new Error(`resume attempt ${pending.attemptId} reached a foreign NATS server name/nonce`);
+
+  const auth = await resumeControlAuth(pending.root, pending.mode);
+  const nc = await connect({
+    servers: pending.server,
+    ...standaloneConnectOpts(auth),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    if (nc.info?.server_name !== proof.serverName)
+      throw new Error(`resume attempt ${pending.attemptId} authenticated to a foreign NATS server name/nonce`);
+    if (!nc.info.jetstream) throw new Error(`resume attempt ${pending.attemptId} listener has no JetStream`);
+  } finally {
+    await nc.drain().catch(() => {});
+  }
+  return proof;
+}
+
+/** Light wire check for a freshly SPAWNED ordinary-resume listener: the greeted server must carry
+ *  the attempt's exact name/nonce (the full seven-point prove is for adopting a survivor). */
+async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
+  const info = await readNatsInfo(pending.server);
+  if (info.server_name !== pending.serverName)
+    throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
+}
+
+async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
+  await proveOrdinaryResumeListener(pending);
+  const svc = await ensureRecoveredUserAuth(pending);
+  recordOurMesh({
+    space: pending.space,
+    server: pending.server,
+    root: pending.root,
+    mode: pending.mode,
+    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+    ts: new Date().toISOString(),
+  });
+  const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, {
+    runtime: pending.runtime,
+    resumeAttempt: pending.attemptId,
+    resumeCommitToken: pending.managerCommit?.durableCommitToken,
+  });
+  await completeResumeActivation(
+    pending.attemptId,
+    controlPlane && svc.ok,
+    !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
+    pending.server,
+  );
+}
+
+async function ensureRecoveredUserAuth(
+  prepared: Pick<PreparedRestore, "mode" | "root" | "space" | "server">,
+): Promise<{ ok: boolean; userAuth?: UserAuthInfo }> {
+  if (prepared.mode !== "user") return { ok: true };
+  const auth = loadSpaceAuth(authDir(prepared.root));
+  if (!auth) throw new Error("restored user-auth listener has no retained trust material");
+  const stateDir = userAuthStateDir(prepared.root, prepared.space);
+  const provider = await resolveAuthProvider().prepareServer({
+    space: prepared.space,
+    operatorSeed: auth.operator.seed,
+    account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    store: workspaceSecretStore(prepared.root),
+    dir: stateDir,
+  });
+  return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
+}
+
+async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<void> {
+  await provePreparedRestoreListener(prepared);
+  const svc = await ensureRecoveredUserAuth(prepared);
+  recordOurMesh({
+    space: prepared.space,
+    server: prepared.server,
+    root: prepared.root,
+    mode: prepared.mode,
+    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+    ts: new Date().toISOString(),
+  });
+  const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, {
+    runtime: prepared.runtime,
+    resumeAttempt: prepared.attemptId,
+    resumeCommitToken: prepared.managerCommit?.durableCommitToken,
+  });
+  await completeResumeActivation(
+    prepared.attemptId,
+    controlPlane && svc.ok,
+    !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
+    prepared.server,
+  );
+}
+
+async function completeResumeActivation(
+  attemptId: string | undefined,
+  healthy: boolean,
+  reason: string,
+  server: string,
+): Promise<void> {
+  if (!attemptId) return;
+  const ordinary = pendingOrdinaryResumes.get(attemptId);
+  const restored = pendingRestores.get(attemptId);
+  const pending = ordinary ?? restored;
+  if (!pending) throw new Error(`resume activation lost attempt context ${attemptId}`);
+  if (!healthy) {
+    markPendingResumeDegraded(attemptId, reason);
+    throw new Error(reason);
+  }
+  let journal = readMaintenanceJournal(pending.root);
+  if (!journal) throw new Error(`resume attempt ${attemptId} lost its durable workspace journal`);
+  if (restored) {
+    if (!("restore" in journal) || journal.restore.attemptId !== attemptId)
+      throw new Error(`restore activation journal does not match attempt ${attemptId}`);
+    if (journal.state === "active") {
+      restored.cleanupStage();
+      pendingRestores.delete(attemptId);
+      return;
+    }
+  } else {
+    if (!("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== attemptId)
+      throw new Error(`ordinary resume journal does not match attempt ${attemptId}`);
+    if (journal.state === "resume-retired") {
+      const lock = acquireMaintenanceLock(ordinary!.root);
+      try { consumeRetiredMaintenance(lock); }
+      finally { releaseMaintenanceLock(lock); }
+      pendingOrdinaryResumes.delete(attemptId);
+      return;
+    }
+  }
+
+  let managerCommit: ManagerCommitEvidence | undefined;
+  if (restored && (journal.state === "manager-committed" ||
+      (journal.state === "degraded" && journal.managerCommit))) {
+    managerCommit = journal.managerCommit;
+    restored.managerCommit = managerCommit;
+    restored.journalState = journal.state;
+  } else if (ordinary && journal.state === "resume-committed") {
+    managerCommit = journal.managerCommit;
+    ordinary.journalState = "resume-committed";
+  }
+
+  const auth = await resumeControlAuth(pending.root, pending.mode);
+  const readinessDeadline = Date.now() + 20_000;
+  for (;;) {
+    const ready = await askManager(pending.space, server, "ps", undefined, auth, CONTROL_ADMIN, 2_000);
+    if (!ready.error?.startsWith("no manager reachable")) break;
+    if (Date.now() >= readinessDeadline) {
+      markPendingResumeDegraded(attemptId, ready.error);
+      throw new Error(ready.error);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  const resumed = await askManager(
+    pending.space,
+    server,
+    "resumePreserved",
+    {
+      attemptId,
+      inventory: restored?.selection === "registry"
+        ? { ...(pending.inventory as Record<string, unknown>), agents: [] }
+        : pending.inventory as Record<string, unknown>,
+    },
+    auth,
+    CONTROL_ADMIN,
+    10 * 60 * 1000,
+  );
+  if (!resumed.ok) {
+    const detail = resumed.data ? ` (${JSON.stringify(resumed.data)})` : "";
+    const message = `${resumed.error ?? "retained-agent resume failed"}${detail}`;
+    markPendingResumeDegraded(attemptId, message);
+    throw new Error(message);
+  }
+  if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_PRESERVED === "1") process.exit(88);
+  if (ordinary && !managerCommit) {
+    const lock = acquireMaintenanceLock(ordinary.root);
+    try {
+      const current = readMaintenanceJournal(ordinary.root);
+      if (current?.state !== "resume-active") {
+        markOrdinaryResumeActive(lock, {
+          operation: "resumePreserved",
+          attemptId,
+          state: "awaitingCommit",
+          observedAt: new Date().toISOString(),
+        });
+      }
+      ordinary.journalState = "resume-active";
+    } finally {
+      releaseMaintenanceLock(lock);
+    }
+  }
+  if (!managerCommit) {
+    const committed = await askManager(
+      pending.space,
+      server,
+      "commitResume",
+      { attemptId },
+      auth,
+      CONTROL_ADMIN,
+      40_000,
+    );
+    if (!committed.ok) {
+      const message = committed.error ?? "manager resume commit failed";
+      markPendingResumeDegraded(attemptId, message);
+      throw new Error(message);
+    }
+    if (!isManagerCommitResult(committed.data, attemptId)) {
+      const message = `manager resume commit returned invalid awaiting-finalize evidence for attempt ${attemptId}`;
+      markPendingResumeDegraded(attemptId, message);
+      throw new Error(message);
+    }
+    managerCommit = committed.data;
+    if (ordinary) {
+      const lock = acquireMaintenanceLock(ordinary.root);
+      try {
+        recordOrdinaryResumeManagerCommit(lock, managerCommit);
+        ordinary.journalState = "resume-committed";
+        ordinary.managerCommit = managerCommit;
+      } finally {
+        releaseMaintenanceLock(lock);
+      }
+    } else {
+      recordPreparedRestoreManagerCommit(restored!, managerCommit);
+    }
+    if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT === "1") process.exit(89);
+  } else {
+    const recommitted = await askManager(
+      pending.space,
+      server,
+      "commitResume",
+      { attemptId },
+      auth,
+      CONTROL_ADMIN,
+      40_000,
+    );
+    // A surviving manager that already finalized legitimately answers {state:"active"} with the
+    // exact durable token: accept both committed shapes idempotently, then reissue the token-bound
+    // finalize (itself idempotent) below.
+    const recovered = recommitted.ok ? recommitted.data as { attemptId?: unknown; state?: unknown; durableCommitToken?: unknown } : undefined;
+    const exactToken = Boolean(recovered && typeof recovered === "object" &&
+      recovered.attemptId === attemptId &&
+      recovered.durableCommitToken === managerCommit.durableCommitToken &&
+      (recovered.state === "awaitingFinalize" || recovered.state === "active"));
+    if (!exactToken)
+      throw new Error(`replacement manager did not recover the durable commit token for attempt ${attemptId}`);
+  }
+
+  const finalized = await askManager(
+    pending.space,
+    server,
+    "finalizeResume",
+    { attemptId, durableCommitToken: managerCommit.durableCommitToken },
+    auth,
+    CONTROL_ADMIN,
+    40_000,
+  );
+  if (!finalized.ok)
+    throw new Error(finalized.error ?? `manager resume finalize failed for attempt ${attemptId}`);
+  if (!isManagerFinalizeResult(finalized.data, attemptId))
+    throw new Error(`manager resume finalize returned invalid active evidence for attempt ${attemptId}`);
+  const finalizeEvidence: ManagerFinalizeEvidence = {
+    attemptId,
+    state: "active",
+    durableCommitToken: managerCommit.durableCommitToken,
+  };
+  if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_FINALIZE === "1") process.exit(91);
+
+  if (ordinary) {
+    const lock = acquireMaintenanceLock(ordinary.root);
+    try {
+      retireOrdinaryResume(lock, finalizeEvidence);
+      consumeRetiredMaintenance(lock);
+    } finally {
+      releaseMaintenanceLock(lock);
+    }
+    pendingOrdinaryResumes.delete(attemptId);
+  } else {
+    restored!.managerCommit = managerCommit;
+    markPreparedRestoreActive(restored!, finalizeEvidence);
+    restored!.cleanupStage();
+    pendingRestores.delete(attemptId);
+  }
 }
 
 /** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
@@ -395,7 +1404,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     process.exit(1);
   }
   // Connectors + their required binaries must exist before any mutation (no fallback).
-  const conn = preflightConnectors(prepared);
+  const conn = await preflightConnectors(prepared);
   if (conn) {
     console.error(c.red(`✗ connector preflight failed: ${conn}`));
     process.exit(1);
@@ -411,7 +1420,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     try {
       mkdirSync(cotalPath("nats"), { recursive: true });
       const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth);
-      owner = await resolveAuthProvider().ownerForLogin({ dir: setup.stateDir!, space: m.space });
+      owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
@@ -500,7 +1509,11 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
  *  `up -f` path hands THE manager its runtime + resolved launch spec here (one manager per space,
  *  so the launch can never be a second supervise). Returns whether the control plane came up, so a
  *  caller whose output claims a manager (the `up -f` launching line) can tell the truth. */
-async function startDeliveryWithBroker(space: string, server: string, mgr?: { runtime?: string; launch?: string }): Promise<boolean> {
+async function startDeliveryWithBroker(
+  space: string,
+  server: string,
+  mgr?: { runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string },
+): Promise<boolean> {
   try {
     await ensureControlPlane({ space, server, ...mgr });
     return true;
@@ -531,6 +1544,18 @@ export interface DetachOpts {
    *  carries this runtime + resolved launch-spec path — never a second supervise (singleton lease). */
   runtime?: string;
   launch?: string;
+  resumeAttempt?: string;
+  resumeCommitToken?: string;
+  /** Maintenance-bound listener (restore target or ordinary-resume source): named spawn, durable
+   *  ownership bind immediately after, wire verification after readiness. */
+  boundListener?: {
+    serverName: string;
+    serverNonce: string;
+    onSpawn(pid: number, startedAt: string): void;
+    verify(): Promise<void>;
+  };
+  /** Preservation/restore already established every canonical stream before listener exposure. */
+  skipPostStart?: boolean;
 }
 
 /**
@@ -542,7 +1567,7 @@ export interface DetachOpts {
  */
 export async function startMeshDetached(
   opts: DetachOpts = {},
-): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean }> {
+): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean; delivery: boolean; manager: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
   const useAuth = !opts.open;
   const space = opts.space ?? resolveSpace(process.cwd());
@@ -555,14 +1580,29 @@ export async function startMeshDetached(
   const host = opts.host ?? "127.0.0.1";
   const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth) : undefined;
   const port = Number(new URL(server).port) || 4222;
-  const args = setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host];
+  const args = [
+    ...(setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host]),
+    ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
+  ];
   const { bin, source } = await resolveNatsServer();
 
   const logPath = cotalPath("nats.log");
   const startOffset = existsSync(logPath) ? statSync(logPath).size : 0;
   const fd = openSync(logPath, "a");
+  const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
+  if (opts.boundListener) {
+    writeFileSync(cotalPath("nats.pid"), String(child.pid));
+    if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
+    try {
+      opts.boundListener.onSpawn(child.pid ?? 0, listenerStartedAt);
+    } catch (error) {
+      await stopUnboundRestoreListener(child);
+      removeMatchingNatsPid(child.pid ?? 0);
+      throw error;
+    }
+  }
   child.unref();
 
   let tailing = Boolean(opts.onLine);
@@ -572,10 +1612,12 @@ export async function startMeshDetached(
   tailing = false;
   if (!ready) {
     child.kill("SIGTERM");
+    if (opts.boundListener) rmSync(cotalPath("nats.pid"), { force: true });
     throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
   }
-  writeFileSync(cotalPath("nats.pid"), String(child.pid));
-  await postStart(server, space, setup, seedFile);
+  if (!opts.boundListener) writeFileSync(cotalPath("nats.pid"), String(child.pid));
+  if (opts.boundListener) await opts.boundListener.verify();
+  if (!opts.skipPostStart) await postStart(server, space, setup, seedFile);
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
   const svc = await startUserAuthService(space, server, setup);
   // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
@@ -588,8 +1630,21 @@ export async function startMeshDetached(
     ts: new Date().toISOString(),
   });
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
-  const controlPlane = await startDeliveryWithBroker(space, server, { runtime: opts.runtime, launch: opts.launch });
-  return { server, pid: child.pid ?? 0, source, controlPlane, authService: svc.ok };
+  const controlPlane = await startDeliveryWithBroker(space, server, {
+    runtime: opts.runtime,
+    launch: opts.launch,
+    resumeAttempt: opts.resumeAttempt,
+    resumeCommitToken: opts.resumeCommitToken,
+  });
+  return {
+    server,
+    pid: child.pid ?? 0,
+    source,
+    controlPlane,
+    authService: svc.ok,
+    delivery: useAuth && deliveryUp(),
+    manager: managerUp(),
+  };
 }
 
 /** THE FLIP, open-boot edition: `--open` must never boot a credless broker over a root whose
@@ -600,12 +1655,7 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
   if (!open) return;
   const stateDir = userAuthStateDir(cotalRoot(), space);
   if (!existsSync(stateDir)) return;
-  console.error(
-    c.red(
-      `✗ space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
-    ),
-  );
-  process.exit(1);
+  throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
 }
 
 /** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so an
@@ -627,12 +1677,7 @@ function ensureRootForSpace(useAuth: boolean, space: string): void {
     console.log(c.dim(`nearest mesh root ${root} is space "${existing.space}" - making this folder its own root for "${space}"`));
     return;
   }
-  console.error(
-    c.red(
-      `✗ this folder is the root of space "${existing.space}" (${authDir(root)}), so it can't also run "${space}" - drop \`--space\` to run "${existing.space}", or start "${space}" from a different folder (it becomes that mesh's own root)`,
-    ),
-  );
-  process.exit(1);
+  throw new Error(`this folder is the root of space "${existing.space}" (${authDir(root)}), so it can't also run "${space}" - drop \`--space\` to run "${existing.space}", or start "${space}" from a different folder (it becomes that mesh's own root)`);
 }
 
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
@@ -645,12 +1690,7 @@ async function claimSpace(space: string, server: string, root: string): Promise<
   const existing = findMesh(space);
   if (!existing || (existing.server === server && existing.root === root)) return;
   if (await isReachable(existing.server)) {
-    console.error(
-      c.red(
-        `✗ space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`,
-      ),
-    );
-    process.exit(1);
+    throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
   removeMesh(space); // the prior holder's broker is gone — reclaim the name
 }
@@ -760,8 +1800,7 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
   const path = explicit ? resolve(explicit) : cotalPath("channels.json");
   if (!existsSync(path)) {
     if (explicit) {
-      console.error(c.red(`channels file not found: ${path}`));
-      process.exit(1);
+      throw new Error(`channels file not found: ${path}`);
     }
     return undefined;
   }
@@ -793,12 +1832,7 @@ async function authSetup(
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && existsSync(stateDir)) {
-    console.error(
-      c.red(
-        `✗ space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`--user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`,
-      ),
-    );
-    process.exit(1);
+    throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
   }
   let prepared: AuthPrepared | undefined;
   if (user) {
@@ -811,12 +1845,12 @@ async function authSetup(
         space,
         operatorSeed: auth.operator.seed,
         account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+        store: workspaceSecretStore(cotalRoot()),
         dir: stateDir,
         idpUrl: user.idpUrl,
       });
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
-      process.exit(1);
+      throw e instanceof Error ? e : new Error(String(e));
     }
   }
   const port = Number(new URL(server).port) || 4222;

@@ -36,8 +36,9 @@ import {
   StaleMembershipWrite,
   type MembershipRecord,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 12000 + Math.floor(Math.random() * 8000);
+const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "memreg";
 const W = "writer_priv"; // the privileged writer identity (audit)

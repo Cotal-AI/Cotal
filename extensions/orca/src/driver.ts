@@ -1,10 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 const MAX_BUFFER = 16 * 1024 * 1024;
 const PROBE_CACHE_MS = 250;
 const MAX_WORKTREE_PARENT_PROBES = 12;
+const EXIT_WAIT_MS = 8_000;
 
 export interface OrcaWorktree {
   id: string;
@@ -37,6 +38,16 @@ interface TerminalResult {
 
 interface TerminalListResult {
   terminals?: OrcaTerminal[];
+}
+
+interface TerminalWaitResult {
+  wait?: {
+    handle?: string;
+    condition?: string;
+    satisfied?: boolean;
+    status?: string;
+    exitCode?: number;
+  };
 }
 
 type ExecError = Error & {
@@ -118,6 +129,55 @@ function execOrca(args: string[], opts: { cwd?: string } = {}): string {
   throw new Error(`orca CLI not found (tried ${tried.join(", ")}); install/register Orca CLI or set COTAL_ORCA_BIN`);
 }
 
+function execOrcaAsync(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<string> {
+  const explicit = !!process.env.COTAL_ORCA_BIN?.trim();
+  const bins = !explicit && selectedBin ? [selectedBin] : candidates();
+  const run = (index: number): Promise<string> => {
+    const bin = bins[index];
+    if (!bin) return Promise.reject(new Error(`orca CLI not found (tried ${bins.join(", ")})`));
+    return new Promise((resolvePromise, reject) => {
+      execFile(
+        bin,
+        args,
+        {
+          cwd: opts.cwd,
+          env: localCliEnv(),
+          encoding: "utf8",
+          maxBuffer: MAX_BUFFER,
+          timeout: opts.timeoutMs,
+        },
+        (err, stdout, stderr) => {
+          if (!err) {
+            if (!explicit) selectedBin = bin;
+            resolvePromise(stdout);
+            return;
+          }
+          const e = err as ExecError;
+          if (!selectedBin && e.code === "ENOENT" && index < bins.length - 1) {
+            void run(index + 1).then(resolvePromise, reject);
+            return;
+          }
+          if (stdout.trim()) {
+            try {
+              const envelope = JSON.parse(stdout) as OrcaEnvelope<unknown>;
+              if (envelope.ok === false) {
+                if (!explicit) selectedBin = bin;
+                resolvePromise(stdout);
+                return;
+              }
+            } catch {
+              /* fall through to the CLI diagnostic below */
+            }
+          }
+          const detail = (stderr.trim() || stdout.trim() || err.message).replace(/\s+/g, " ");
+          reject(new Error(`orca ${args.join(" ")} failed via ${bin} (exit ${e.status ?? "unknown"}): ${detail}`));
+        },
+      );
+    });
+  };
+  return run(0);
+}
+
 function parseEnvelope<T>(stdout: string, args: string[]): OrcaEnvelope<T> {
   try {
     return JSON.parse(stdout) as OrcaEnvelope<T>;
@@ -128,6 +188,13 @@ function parseEnvelope<T>(stdout: string, args: string[]): OrcaEnvelope<T> {
 
 function request<T>(args: string[], opts: { cwd?: string } = {}): OrcaEnvelope<T> {
   return parseEnvelope<T>(execOrca(args, opts), args);
+}
+
+async function requestAsync<T>(
+  args: string[],
+  opts: { cwd?: string; timeoutMs?: number } = {},
+): Promise<OrcaEnvelope<T>> {
+  return parseEnvelope<T>(await execOrcaAsync(args, opts), args);
 }
 
 function requireOk<T>(args: string[], opts: { cwd?: string } = {}): T {
@@ -246,6 +313,89 @@ export function terminalAlive(terminal: Pick<OrcaTerminal, "handle" | "ptyId">):
   } catch {
     // Status drives teardown. An unreachable CLI is not positive evidence that the agent exited.
     return true;
+  }
+}
+
+async function waitTerminalExit(handle: string, timeoutMs: number): Promise<void> {
+  const args = [
+    "terminal",
+    "wait",
+    "--terminal",
+    handle,
+    "--for",
+    "exit",
+    "--timeout-ms",
+    String(timeoutMs),
+    "--json",
+  ];
+  const result = await requestAsync<TerminalWaitResult>(args, { timeoutMs: timeoutMs + 250 });
+  if (result.ok === false) {
+    const code = result.error?.code ?? "unknown_error";
+    throw new OrcaCliError(code, `orca terminal wait failed for ${handle}: ${result.error?.message ?? code}`);
+  }
+  const wait = result.result?.wait;
+  if (wait?.condition !== "exit" || wait.satisfied !== true || wait.status !== "exited")
+    throw new Error(`orca terminal wait returned no authoritative exit for ${handle}`);
+}
+
+async function currentTerminalForWait(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  deadline: number,
+): Promise<OrcaTerminal | undefined> {
+  let remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error(`orca: timed out while resolving terminal ${terminal.handle}`);
+  const listedResult = await requestAsync<TerminalListResult>(["terminal", "list", "--json"], {
+    timeoutMs: remaining,
+  });
+  if (listedResult.ok === false) {
+    const code = listedResult.error?.code ?? "unknown_error";
+    throw new OrcaCliError(code, `orca terminal list failed: ${listedResult.error?.message ?? code}`);
+  }
+  const listed = (listedResult.result?.terminals ?? []).find((candidate) =>
+    terminal.ptyId ? candidate.ptyId === terminal.ptyId : candidate.handle === terminal.handle,
+  );
+  if (listed) return { ...terminal, ...listed };
+  if (terminal.ptyId) return undefined;
+
+  remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error(`orca: timed out while resolving terminal ${terminal.handle}`);
+  const shown = await requestAsync<TerminalResult>(
+    ["terminal", "show", "--terminal", terminal.handle, "--json"],
+    { timeoutMs: remaining },
+  );
+  if (shown.ok === false) {
+    const code = shown.error?.code ?? "";
+    if (/not_found|stale|closed/i.test(code)) return undefined;
+    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
+  }
+  if (!shown.result?.terminal)
+    throw new Error(`orca terminal show returned no authoritative state for ${terminal.handle}`);
+  return shown.result.terminal;
+}
+
+/** Await Orca's provider-native terminal exit condition, following one or more handle rotations by
+ * stable ptyId. The native wait is bounded so it cannot outlive the manager's preservation cut. */
+export async function waitManagedTerminalExit(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  timeoutMs = EXIT_WAIT_MS,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let current = { ...terminal };
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`orca: terminal ${terminal.handle} did not exit within ${timeoutMs}ms`);
+    try {
+      await waitTerminalExit(current.handle, remaining);
+      terminalCache = undefined;
+      return;
+    } catch (err) {
+      if (!(err instanceof OrcaCliError) || !/not_found|stale|closed/i.test(err.code)) throw err;
+      terminalCache = undefined;
+      const rotated = await currentTerminalForWait(terminal, deadline);
+      if (!rotated) return;
+      if (rotated.handle === current.handle) throw err;
+      current = rotated;
+    }
   }
 }
 

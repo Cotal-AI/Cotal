@@ -1,5 +1,57 @@
 # @cotal-ai/cli
 
+## 0.12.0
+
+### Minor Changes
+
+- 4e0e641: Add the pluggable `SecretStore` seam (core `get`/`put`/`delete` contract + filesystem default) and route the durable hosted secret kinds through it: the delivery daemon creds and the auth store's callout account, issuer keys, owner secret, and service-key projection. Local `cotal up` is unchanged (the workspace `.cotal`-rooted filesystem store lands byte-for-byte on the existing paths); a hosted composition injects its own backend via `runAuthService`/`runDelivery`. `AuthProvider` methods now take a caller-composed `store`, and the new required `deprovisionSecrets` plus `clean all`'s seam-first ordering make a full local reset safe against split authority.
+
+### Patch Changes
+
+- be66729: Add offline full-space and registry-only backup, preservation cuts, authenticated operation-isolated
+  restore, conservative checkpoint recreation, same-principal resume, and explicit fallback cleanup.
+  Remove the incomplete channel export surface.
+- 47d2584: Foreground `cotal spawn` now provisions the full durable footprint (read-ACL row included), so a foreground agent gets the delivery daemon's durable backstop instead of silently running live-only and permanently losing every channel message posted while its connection blips. `--live-only` restores the old behavior explicitly. A foreground exit now also retires the agent's creds and broker footprint, mirroring the manager's despawn.
+- Updated dependencies [be66729]
+- Updated dependencies [47d2584]
+- Updated dependencies [4e0e641]
+  - @cotal-ai/core@0.12.0
+  - @cotal-ai/workspace@0.12.0
+
+## 0.11.6
+
+### Patch Changes
+
+- 7b24953: Rebind extension peer links to the current Cotal host before lazy import, allowing global installs and source worktrees to share one extension prefix. Keep the Hermes launcher self-contained so it does not resolve a mutable host peer after launch.
+- Updated dependencies [7b24953]
+  - @cotal-ai/workspace@0.11.6
+  - @cotal-ai/core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- 446ccc4: Resolve package-manager bin symlinks before locating the connector seed generation and bundled payloads.
+  - @cotal-ai/core@0.11.5
+  - @cotal-ai/workspace@0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 1935221: Ship the built-in agent connectors (claude, opencode, hermes, pi) as removable `cotal ext` plugins. They are seeded on first run through the same `ext add` path a third party uses, resolved lazily per spawn, and deletable with `cotal ext remove`; they are no longer hardcoded imports or dependencies of `cotal-ai`.
+- Updated dependencies [1935221]
+- Updated dependencies [5634ae4]
+  - @cotal-ai/core@0.11.4
+  - @cotal-ai/workspace@0.11.4
+
+## 0.11.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.11.3
+- @cotal-ai/workspace@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes

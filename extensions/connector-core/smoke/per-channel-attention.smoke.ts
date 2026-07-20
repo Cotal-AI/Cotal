@@ -2,7 +2,7 @@
  * Per-channel attention test (no test runner) — spins up its OWN nats-server and drives a MeshAgent
  * directly to verify quiet/muted overrides (.internal/plans/per-channel-attention.md §8):
  *   - muted: channel ambient AND @-mentions are ack-dropped at ingest (not buffered, no wake); a DM still arrives;
- *   - quiet: channel ambient is buffered (readable) but NOT wake-eligible (pendingWake excludes it); a quiet @-mention IS wake-eligible;
+ *   - quiet: channel ambient is buffered pull-only and never automatic; a quiet @-mention stays automatic;
  *   - precedence: quiet BUFFERS even under global focus (override wins); normal/muted still drop under focus;
  *   - boot seed: config.quiet/muted seed the map; reset on restart (a runtime setChannelMode is gone in a fresh agent);
  *   - presence mirror: setChannelMode/setAttention publish channelModes/attention to peers.
@@ -13,12 +13,21 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, seedChannelRegistry, mintLifecycleUid } from "@cotal-ai/core";
+import {
+  CotalEndpoint,
+  chatSubject,
+  isReachable,
+  mintLifecycleUid,
+  parsePrincipalKey,
+  seedChannelRegistry,
+  type CotalMessage,
+} from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "chanattnsmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -69,6 +78,23 @@ const reset = () => {
 const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["normal-ch", "quiet-ch", "muted-ch"], lifecycleUid: mintLifecycleUid() });
 pub.on("error", () => {});
 
+const rawChat = async (id: string, subjectChannel: string, payloadChannel: string): Promise<void> => {
+  const principal = parsePrincipalKey(pub.card.id);
+  if (!principal) throw new Error(`publisher has no principal: ${pub.card.id}`);
+  const msg: CotalMessage = {
+    id,
+    ts: Date.now(),
+    space,
+    from: pub.card,
+    channel: payloadChannel,
+    parts: [{ kind: "text", text: id }],
+  };
+  const js = (pub as unknown as {
+    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
+  }).js;
+  await js.publish(chatSubject(space, principal.owner, principal.actor, subjectChannel), JSON.stringify(msg), { msgID: id });
+};
+
 try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
 
@@ -114,11 +140,25 @@ try {
   await sleep(350);
   check("quiet ambient IS buffered (readable)", agent.inboxCount() === 1 && incoming.length === 1);
   check("quiet ambient is NOT wake-eligible (pendingWake)", agent.pendingWake() === 0);
+  check("quiet ambient is excluded from automatic delivery", agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only")[0]?.text === "quiet-ambient");
 
   await pub.multicast("quiet-mention", { channel: "quiet-ch", mentions: ["otto"] });
   await sleep(350);
   check("quiet @-mention is buffered", agent.inboxCount() === 2);
   check("quiet @-mention IS wake-eligible (only the mention)", agent.pendingWake() === 1);
+  check("quiet @-mention remains automatic", agent.peekInbox("automatic")[0]?.text === "quiet-mention");
+
+  reset();
+  await rawChat("quiet-subject-wins", "quiet-ch", "normal-ch");
+  await sleep(350);
+  check(
+    "subject-authenticated quiet channel overrides a mismatched payload label",
+    agent.peekInbox("pull-only")[0]?.channel === "quiet-ch" && agent.peekInbox("automatic").length === 0,
+  );
+  reset();
+  await rawChat("muted-subject-wins", "muted-ch", "normal-ch");
+  await sleep(350);
+  check("subject-authenticated muted channel cannot be bypassed by a payload label", agent.inboxCount() === 0);
 
   // ============ normal channel: wake-eligible under open, NOT under dnd ============
   reset();
@@ -127,6 +167,20 @@ try {
   check("normal ambient buffered + wake-eligible under open", agent.inboxCount() === 1 && agent.pendingWake() === 1);
   await agent.setAttention("dnd");
   check("same normal ambient is NOT wake-eligible under dnd", agent.pendingWake() === 0);
+  await agent.setAttention("open");
+
+  // Quiet can sit physically ahead of normal dnd ambient and a DM without joining or blocking
+  // their automatic FIFO lane. Under dnd, only the DM is wake-eligible.
+  reset();
+  await agent.setAttention("dnd");
+  await pub.multicast("dnd-quiet", { channel: "quiet-ch" });
+  await pub.multicast("dnd-normal", { channel: "normal-ch" });
+  await pub.unicast(agent.id, "dnd-dm");
+  await sleep(450);
+  check("[quiet, dnd ambient, DM] keeps quiet out of the automatic lane", agent.peekInbox("automatic").map((i) => i.text).join() === "dnd-normal,dnd-dm");
+  check("[quiet, dnd ambient, DM] preserves quiet in the pull lane", agent.peekInbox("pull-only").map((i) => i.text).join() === "dnd-quiet");
+  check("automatic-lane count excludes the older quiet item", agent.inboxCount("automatic") === 2);
+  check("under dnd only the DM wakes, while normal ambient can still ride that turn", agent.pendingWake() === 1);
   await agent.setAttention("open");
 
   // ============ precedence: quiet buffers even under global focus; normal/muted drop ============
@@ -157,13 +211,53 @@ try {
   check("recall SKIPS quiet channel (already buffered live, no duplicate)", !rtexts.includes("recall-quiet"));
   await agent.setAttention("open");
 
-  // ============ prospective mute: already-buffered items are NOT purged ============
+  // ============ receive-time snapshot: mode toggles never reclassify buffered items ============
   reset();
   await pub.multicast("pre-mute", { channel: "normal-ch" });
   await sleep(350);
   check("normal ambient buffered before mute", agent.inboxCount() === 1);
   await agent.setChannelMode("normal-ch", "muted");
   check("muting does NOT purge already-buffered items (prospective)", agent.inboxCount() === 1);
+  await agent.setChannelMode("normal-ch", "normal");
+
+  reset();
+  await pub.multicast("normal-before-quiet", { channel: "normal-ch" });
+  await sleep(350);
+  await agent.setChannelMode("normal-ch", "quiet");
+  check("normal→quiet does not suppress an already-automatic item", agent.peekInbox("automatic")[0]?.text === "normal-before-quiet" && agent.pendingWake() === 1);
+  agent.drainInbox();
+  await pub.multicast("quiet-before-normal", { channel: "normal-ch" });
+  await sleep(350);
+  await agent.setChannelMode("normal-ch", "normal");
+  check("quiet→normal does not release an old pull-only item", agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only")[0]?.text === "quiet-before-normal" && agent.pendingWake() === 0);
+
+  // ============ focus recall follows receive-time channel mode across toggles ============
+  reset();
+  await agent.setAttention("focus");
+  await pub.multicast("focus-normal-before-quiet", { channel: "normal-ch" });
+  await sleep(200);
+  await agent.setChannelMode("normal-ch", "quiet");
+  await pub.multicast("focus-quiet-after-toggle", { channel: "normal-ch" });
+  await sleep(300);
+  const pulledQuiet = agent.drainInbox(undefined, "pull-only");
+  const recallAfterQuiet = await agent.recallAmbient();
+  check("normal→quiet focus pull keeps the quiet item destructive and recalls the earlier normal item", pulledQuiet.some((i) => i.text === "focus-quiet-after-toggle") && recallAfterQuiet.items.some((i) => i.text === "focus-normal-before-quiet"));
+  check("normal→quiet focus recall does not duplicate the buffered quiet item", !recallAfterQuiet.items.some((i) => i.text === "focus-quiet-after-toggle"));
+  await agent.setAttention("open");
+  await agent.setChannelMode("normal-ch", "normal");
+
+  reset();
+  await agent.setChannelMode("normal-ch", "quiet");
+  await agent.setAttention("focus");
+  await pub.multicast("focus-quiet-before-normal", { channel: "normal-ch" });
+  await sleep(200);
+  await agent.setChannelMode("normal-ch", "normal");
+  await pub.multicast("focus-normal-after-toggle", { channel: "normal-ch" });
+  await sleep(300);
+  const recallAfterNormal = await agent.recallAmbient();
+  check("quiet→normal focus recall includes later normal traffic", recallAfterNormal.items.some((i) => i.text === "focus-normal-after-toggle"));
+  check("quiet→normal focus recall excludes the earlier buffered quiet item", !recallAfterNormal.items.some((i) => i.text === "focus-quiet-before-normal"));
+  await agent.setAttention("open");
   await agent.setChannelMode("normal-ch", "normal");
 
   // ============ presence mirror: peers see attention + channelModes (advisory) ============

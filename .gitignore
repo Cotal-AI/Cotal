@@ -5,6 +5,8 @@ dist/
 *.log
 .DS_Store
 remotion/out/
+# generated at prepack from the built connectors (bin/scripts/copy-seeded-connectors.mjs)
+bin/seeded-connectors/
 # local dev config (machine-specific paths); the plugin's is extensions/connector-claude-code/.mcp.json
 /.mcp.json
 .runs/
