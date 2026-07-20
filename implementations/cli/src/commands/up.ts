@@ -39,45 +39,7 @@ import {
   type CompletionResult,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import {
-  assertUserAuthInfo,
-  authDir,
-  loadSpaceAuth,
-  saveSpaceAuth,
-  clearCurrent,
-  findMesh,
-  getCurrent,
-  loadMeshes,
-  recordMesh,
-  removeMesh,
-  setCurrent,
-  userAuthStateDir,
-  workspaceSecretStore,
-  type MeshEntry,
-  type UserAuthInfo,
-  acquireMaintenanceLock,
-  assertStoreIdentity,
-  assessRestoreClaim,
-  beginOrdinaryResume,
-  bindOrdinaryResumeListener,
-  consumeRetiredMaintenance,
-  markOrdinaryResumeActive,
-  markOrdinaryResumeDegraded,
-  replaceDeadOrdinaryResumeListener,
-  localProcessOwnerStatus,
-  readMaintenanceJournal,
-  readMaintenanceResumeDocument,
-  readStoreIdentity,
-  recordOrdinaryResumeManagerCommit,
-  releaseMaintenanceLock,
-  retireOrdinaryResume,
-  sameStoreIdentity,
-  type JsonValue,
-  type ManagerCommitEvidence,
-  type ManagerFinalizeEvidence,
-  type ProcessOwner,
-  type RestoreListenerProof,
-} from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, assertStoreIdentity, assertUserAuthInfo, assessRestoreClaim, authDir, beginOrdinaryResume, bindOrdinaryResumeListener, clearCurrent, consumeRetiredMaintenance, findMesh, getCurrent, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessOwnerStatus, markOrdinaryResumeActive, markOrdinaryResumeDegraded, readMaintenanceJournal, readMaintenanceResumeDocument, readStoreIdentity, recordMesh, recordOrdinaryResumeManagerCommit, releaseMaintenanceLock, removeMesh, replaceDeadOrdinaryResumeListener, retireOrdinaryResume, sameStoreIdentity, saveSpaceAuth, setCurrent, type JsonValue, type ManagerCommitEvidence, type ManagerFinalizeEvidence, type MeshEntry, type ProcessOwner, type RestoreListenerProof, type UserAuthInfo, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -514,7 +476,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
       let userAuth = held.userAuth;
       if (held.mode === "user") {
-        const auth = loadSpaceAuth(authDir(root));
+        const auth = loadSpaceAuth(authDir(root), held.space);
         if (!auth) {
           console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} - \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
           process.exit(1);
@@ -817,7 +779,7 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
   if (mode === "open") return {};
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = loadSoleSpaceAuth(authDir(root));
   if (!auth) throw new Error("same-principal resume requires the existing space trust material");
   const identity = newIdentity();
   return {
@@ -1099,7 +1061,7 @@ async function ensureRecoveredUserAuth(
   prepared: Pick<PreparedRestore, "mode" | "root" | "space" | "server">,
 ): Promise<{ ok: boolean; userAuth?: UserAuthInfo }> {
   if (prepared.mode !== "user") return { ok: true };
-  const auth = loadSpaceAuth(authDir(prepared.root));
+  const auth = loadSpaceAuth(authDir(prepared.root), prepared.space);
   if (!auth) throw new Error("restored user-auth listener has no retained trust material");
   const stateDir = userAuthStateDir(prepared.root, prepared.space);
   const provider = await resolveAuthProvider().prepareServer({
@@ -1669,7 +1631,7 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
 function ensureRootForSpace(useAuth: boolean, space: string): void {
   if (!useAuth) return;
   const root = cotalRoot();
-  const existing = loadSpaceAuth(authDir(root));
+  const existing = loadSoleSpaceAuth(authDir(root));
   if (!existing || existing.space === space) return;
   const cwd = process.cwd();
   if (root !== cwd) {
@@ -1824,7 +1786,7 @@ async function authSetup(
   user?: { idpUrl?: string },
 ): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot());
-  let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
+  let auth: SpaceAuth | undefined = loadSpaceAuth(dir, space);
   if (!auth) {
     auth = await createSpaceAuth(space);
     saveSpaceAuth(dir, auth); // strips the $SYS seed on disk, but leaves the in-memory `auth` intact …
@@ -1855,7 +1817,7 @@ async function authSetup(
   }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  writeFileSync(confPath, serverConfig(auth, [auth], { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

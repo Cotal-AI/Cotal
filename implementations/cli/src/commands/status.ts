@@ -10,26 +10,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import {
-  authDir,
-  CLI_USER_ACTOR,
-  findCotalRoot,
-  getCurrent,
-  isWorkspaceTargetError,
-  loadExtensionsManifest,
-  loadMeshes,
-  loadSpaceAuth,
-  localProcessPath,
-  localProcessVisible,
-  preflightTarget,
-  resolveMeshTarget,
-  serverFlag,
-  spaceFlag,
-  userAuthStateDir,
-  workspaceSecretStore,
-  type LocalProcess,
-  type LocalProcessContext,
-} from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, authDir, findCotalRoot, getCurrent, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveSpace, webUp, WEB_URL } from "../lib/status.js";
@@ -69,7 +50,7 @@ async function printMachine(): Promise<void> {
 }
 
 function printProject(root: string, cmd: string): void {
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = loadSoleSpaceAuth(authDir(root));
   const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
   const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   section("This Folder");

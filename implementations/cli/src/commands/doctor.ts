@@ -8,15 +8,7 @@ import {
   type FlagValues,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import {
-  authDir,
-  findCotalRoot,
-  loadSpaceAuth,
-  readRenewalRecord,
-  remintDaemonCreds,
-  userAuthStateDir,
-  writeRenewalRecord,
-} from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, remintDaemonCreds, userAuthStateDir, writeRenewalRecord } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 
@@ -50,7 +42,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   }
   const values = args.values as FlagValues<typeof doctorFlags>;
   const root = findCotalRoot(process.cwd());
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = loadSoleSpaceAuth(authDir(root));
 
   console.log(c.bold("cotal doctor auth"));
   console.log(`  root ${root}`);

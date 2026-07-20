@@ -47,7 +47,7 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<vo
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-chanattn-auth-"));
 const auth = await createSpaceAuth(space);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {

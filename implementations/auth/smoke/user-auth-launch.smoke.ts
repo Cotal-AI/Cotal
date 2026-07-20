@@ -181,7 +181,7 @@ try {
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
 
   // The witness: a directly-minted static admin tap (pre-flip static+user coexist) on the chat wire.
-  const auth = loadSpaceAuth(authDir(root))!;
+  const auth = loadSoleSpaceAuth(authDir(root))!;
   witnessNc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "admin"))) });
   const got: CotalMessage[] = [];
   witnessNc.subscribe(chatSubject(SPACE, "*", "*", "general"), {

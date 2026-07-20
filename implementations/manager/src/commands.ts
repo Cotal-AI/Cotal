@@ -6,7 +6,7 @@ import {
   type Command,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, soleSpaceOf } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
@@ -18,7 +18,7 @@ type Values = Record<string, string | undefined>;
 /** The space to operate on: explicit `--space`, else this folder's `.cotal/auth` space, else the
  *  default — so a manually-run manager matches the folder's mesh instead of assuming the default. */
 function spaceFor(v: Values): string {
-  return v.space ?? loadSpaceAuth(authDir(findCotalRoot()))?.space ?? DEFAULT_SPACE;
+  return v.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE;
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.

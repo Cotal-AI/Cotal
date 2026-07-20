@@ -42,7 +42,7 @@ const space = `epuser-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), "cotal-epuser-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");

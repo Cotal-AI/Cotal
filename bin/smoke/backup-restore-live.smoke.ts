@@ -11,7 +11,7 @@ import { createSpaceAuth, mintCreds, newIdentity, probeConnect, rotateSystemAcco
 import {
   acquireMaintenanceLock,
   authDir,
-  loadSpaceAuth,
+  loadSoleSpaceAuth,
   prepareAlternateRestore,
   readMaintenanceJournal,
   releaseMaintenanceLock,
@@ -93,7 +93,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(ready.state, "ready");
 
     if (mode === "auth") {
-      const auth = loadSpaceAuth(authDir(root));
+      const auth = loadSoleSpaceAuth(authDir(root));
       assert.ok(auth, "static scenario retained its SpaceAuth");
       const clone = createAttemptClone(root, join(root, ".cotal", "nats"), `isolation-${Date.now()}`);
       const broker = await startIsolatedBroker({
@@ -178,7 +178,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         writeFileSync(authPath, originalAuthText);
       }
 
-      const validBeforeDrift = loadSpaceAuth(authDir(root));
+      const validBeforeDrift = loadSoleSpaceAuth(authDir(root));
       assert.ok(validBeforeDrift);
       const rotatedSystem = await rotateSystemAccount(validBeforeDrift);
       assert.equal(rotatedSystem.account.pub, validBeforeDrift.account.pub);

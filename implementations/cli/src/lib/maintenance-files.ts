@@ -5,7 +5,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { resolveAuthProvider, validateSpaceAuth } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore, type MaintenanceAuthMode } from "@cotal-ai/workspace";
+import { authDir, brokerAuthPath, loadSpaceAuth, spaceAccountPath, userAuthStateDir, workspaceSecretStore, type MaintenanceAuthMode } from "@cotal-ai/workspace";
 
 export interface AuthorityFingerprint {
   mode: MaintenanceAuthMode;
@@ -18,12 +18,30 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function rootChainCommitment(root: string, space: string): { account: string; sha256: string } {
-  const path = join(authDir(root), "auth.json");
-  if (!existsSync(path)) throw new Error(`restore requires existing trust material: ${path}`);
+function assertRegularFile(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`authority input is not a regular file: ${path}`);
-  const auth = validateSpaceAuth(loadSpaceAuth(authDir(root)), space);
+}
+
+function rootChainCommitment(root: string, space: string): { account: string; sha256: string } {
+  const dir = authDir(root);
+  const brokerFile = brokerAuthPath(dir);
+  const accountFile = spaceAccountPath(dir, space);
+  const legacyFile = join(dir, "auth.json");
+  // Trust is now TWO records (broker + this space's account); a pre-split root still carries the
+  // single monolith and is read as migration input. Guard whichever layout is actually on disk, with
+  // the same regular-file posture. The committed hash below is unchanged either way: it composes the
+  // same public fields, so `cotal-space-auth-root/v1` still verifies against existing artifacts.
+  if (existsSync(brokerFile) || existsSync(accountFile)) {
+    for (const p of [brokerFile, accountFile]) {
+      if (!existsSync(p)) throw new Error(`restore requires existing trust material: ${p}`);
+      assertRegularFile(p);
+    }
+  } else {
+    if (!existsSync(legacyFile)) throw new Error(`restore requires existing trust material: ${brokerFile}`);
+    assertRegularFile(legacyFile);
+  }
+  const auth = validateSpaceAuth(loadSpaceAuth(dir, space), space);
   // Commit only to validated public trust-chain material. Seeds remain outside the artifact while
   // every signed operator/system/data root and active data signer participates in drift detection.
   return {

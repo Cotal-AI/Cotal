@@ -58,7 +58,7 @@ const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 const space = `membership-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space); // sys.signingSeed lives in-memory here — mint the observer below
 const dir = mkdtempSync(join(tmpdir(), "cotal-membership-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const conns: Array<Awaited<ReturnType<typeof connect>>> = [];

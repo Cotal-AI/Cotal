@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth, userAuthStateDir } from "./auth-paths.js";
+import { authDir, findCotalRoot, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthStateDir } from "./auth-paths.js";
 import {
   findMesh,
   getCurrent,
@@ -136,17 +136,24 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
   let auth: SpaceAuth | undefined;
   let userAuth: UserAuthInfo | undefined;
   if (m.mode === "auth") {
-    auth = loadSpaceAuth(authDir(m.root));
-    // Defense in depth: the root's on-disk auth must still be for THIS space. A divergence (the root
+    // Space-KEYED load: ask for this entry's own space rather than "the" auth of the root, so a
+    // root serving several spaces can never hand back a neighbour's account.
+    auth = loadSpaceAuth(authDir(m.root), m.space);
+    // Defense in depth: the root's on-disk auth must still cover THIS space. A divergence (the root
     // was re-`up`ed as a different space without re-recording) would otherwise mint mesh-A creds
-    // against the entry for space B. Prune the stale entry and fail loud rather than connect wrong.
-    if (auth && auth.space !== m.space) {
-      removeMesh(m.space);
-      throw new MeshTargetError(
-        "stale-auth-root",
-        `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${auth.space}"`,
-        { space: m.space, root: m.root, found: auth.space },
-      );
+    // against the entry for space B. Now that the load is space-keyed the divergence surfaces as an
+    // ABSENT account rather than a mismatched one, so detect it by what the root DOES hold; prune
+    // the stale entry and fail loud rather than connect wrong.
+    if (!auth) {
+      const found = listSpaceAccounts(authDir(m.root));
+      if (found.length) {
+        removeMesh(m.space);
+        throw new MeshTargetError(
+          "stale-auth-root",
+          `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${found.join('", "')}"`,
+          { space: m.space, root: m.root, found: found.join(", ") },
+        );
+      }
     }
   } else if (m.mode === "user") {
     // A user entry without its metadata cannot produce an actionable login line — treat it as the
@@ -172,8 +179,10 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
 }
 
 function localTarget(root: string, server: string, source: MeshTarget["source"]): MeshTarget {
-  const auth = loadSpaceAuth(authDir(root));
-  const space = auth?.space ?? DEFAULT_SPACE;
+  // No registry entry and no explicit space, so the root itself must name exactly one space;
+  // `soleSpaceOf` fails loud rather than picking one when it holds several.
+  const space = soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+  const auth = loadSpaceAuth(authDir(root), space);
   // U10 guard: a user-auth space resolved WITHOUT its registry entry (pruned/never recorded) must
   // not silently static-mint — static creds DO work on a user-auth broker, which would connect the
   // operator on the wrong identity plane. The on-disk marker is the space-scoped user-auth state

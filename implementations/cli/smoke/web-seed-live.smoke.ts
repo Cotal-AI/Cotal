@@ -46,7 +46,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 
 try {
   const auth = await createSpaceAuth(space); // the account signing SEED
-  writeFileSync(conf, serverConfig(auth, { port, storeDir }));
+  writeFileSync(conf, serverConfig(auth, [auth], { port, storeDir }));
   const fd = openSync(log, "w");
   kids.push(spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] }));
 

@@ -16,6 +16,7 @@
  */
 import { join } from "node:path";
 import {
+  decode,
   encodeOperator,
   encodeAccount,
   encodeUser,
@@ -199,17 +200,64 @@ export function inspectCredHealth(creds: string, nowSec = Math.floor(Date.now() 
   return { state: "healthy", iat, exp, renewAt };
 }
 
-/** A space's persisted trust material. The `signingSeed` is the sensitive provisioner
- *  secret; everything else is public (JWTs) or recoverable. The system-account `signingSeed` is the ONE
- *  field {@link saveSpaceAuth} never writes to disk — it lives only in memory, just long enough at `cotal
- *  up` to mint the scoped membership-observer cred (see {@link mintMembershipObserverCreds}). */
-export interface SpaceAuth {
-  space: string;
+/** BROKER-level trust: the operator root and the system account. A nats-server trusts exactly ONE
+ *  operator and one system account, so this is the per-BROKER authority, not a per-space one. With
+ *  many spaces on one broker (W4) every space's accounts are signed by this one operator.
+ *
+ *  `sys.signingSeed` is minting capability for system-account users (the membership observer and the
+ *  connection evictor). It is in-memory only on a fresh {@link createBrokerAuth} and is NOT written
+ *  by the local filesystem persistence, so on that path a space added after first boot cannot mint
+ *  its `$SYS` users. A hosted composition that needs incremental space provisioning must hold this
+ *  seed in a BROKER-scoped secret store (never a tenant-scoped one, which would give each tenant its
+ *  own operator or duplicate the seed and so recreate multiple owners). */
+export interface BrokerAuth {
   operator: { seed: string; jwt: string };
-  account: { pub: string; seed: string; jwt: string; signingSeed: string; signingPub: string };
-  /** `signingSeed` is in-memory only (a fresh {@link createSpaceAuth}); NEVER persisted — minting a
-   *  system-account user is broker-admin capability, so no standing `$SYS` seed is left on disk. */
   sys: { pub: string; jwt: string; signingSeed?: string };
+}
+
+/** SPACE-level trust: one space's data account, signed by its broker's operator. This is the only
+ *  part of a space's trust material a space actually OWNS; broker trust is referenced, never owned
+ *  (a per-space restore or rotation must not be able to move the broker's root). The `signingSeed`
+ *  is the sensitive provisioner secret that mints this account's users. */
+export interface SpaceAccountAuth {
+  space: string;
+  account: { pub: string; seed: string; jwt: string; signingSeed: string; signingPub: string };
+}
+
+/** The COMPOSED read view of one space's full trust chain: broker authority plus that space's
+ *  account. Deliberately structurally identical to the pre-W4 single-space shape, so the many
+ *  existing readers compose rather than churn.
+ *
+ *  This is a read adapter, never a persistence authority: it is produced by loading the two
+ *  persisted records and validating their binding. Writing a composed value back as one document
+ *  would let a mutation made through space A resurrect a stale broker copy when space B next loads
+ *  it, which is exactly the ownership bug the split exists to prevent. */
+export interface SpaceAuth extends BrokerAuth, SpaceAccountAuth {}
+
+/** Compose the read view from its two persisted authorities. Fails loud when the space account was
+ *  not signed by THIS broker's operator: a self-consistent account signed by a FOREIGN operator is
+ *  perfectly valid on its own and would otherwise be rendered into the resolver as untrusted trust. */
+export function composeSpaceAuth(broker: BrokerAuth, spaceAccount: SpaceAccountAuth): SpaceAuth {
+  assertAccountSignedByBroker(broker, spaceAccount);
+  return { ...broker, ...spaceAccount };
+}
+
+/** The binding check behind {@link composeSpaceAuth} and registry admission: this space's data
+ *  account JWT must be issued by this broker's operator identity. */
+export function assertAccountSignedByBroker(broker: BrokerAuth, spaceAccount: SpaceAccountAuth): void {
+  if (!broker.operator.seed)
+    throw new Error("assertAccountSignedByBroker: broker operator material is required to verify the account binding");
+  let operatorPub: string;
+  try {
+    operatorPub = fromSeed(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
+  } catch {
+    throw new Error("assertAccountSignedByBroker: the broker operator seed is not a valid operator seed");
+  }
+  const claims = decode<{ iss?: string }>(spaceAccount.account.jwt);
+  if (claims.iss !== operatorPub)
+    throw new Error(
+      `space "${spaceAccount.space}" account was signed by ${claims.iss ?? "an unknown issuer"}, not this broker's operator ${operatorPub} - refusing to compose trust across brokers`,
+    );
 }
 
 // Unlimited account limits — without explicit limits a JWT account defaults to 0 conns
@@ -291,27 +339,45 @@ export async function rotateSystemAccount(auth: SpaceAuth): Promise<SpaceAuth> {
   };
 }
 
-/** Generate a fresh operator → account(+signing key) → system-account chain for a space. */
-export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
+/** Generate a fresh BROKER trust root: operator → system account. One per broker, NOT one per space.
+ *  `label` names the operator (cosmetic, but it lands in the operator JWT); multi-space brokers pass
+ *  a broker label, and the single-space compatibility path passes the space name so existing
+ *  operator names are unchanged.
+ *
+ *  The returned `sys.signingSeed` is the ONLY window in which system-account users (the membership
+ *  observer and the connection evictor) can be minted, because the local filesystem persistence does
+ *  not write it. Callers that need to add spaces later must retain it in a broker-scoped store. */
+export async function createBrokerAuth(label: string): Promise<BrokerAuth> {
   const okp = createOperator();
-  const akp = createAccount();
-  const askp = createAccount(); // account signing key — what mints users
   const syskp = createAccount();
   const sysPub = syskp.getPublicKey();
+  const operatorJwt = await encodeOperator(`cotal-${token(label)}`, okp, { system_account: sysPub });
+  const sysJwt = await encodeAccount("SYS", syskp, { limits: SYS_LIMITS }, { signer: okp });
+  const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+  return {
+    operator: { seed: dec(okp.getSeed()), jwt: operatorJwt },
+    sys: { pub: sysPub, jwt: sysJwt, signingSeed: dec(syskp.getSeed()) },
+  };
+}
 
-  const operatorJwt = await encodeOperator(`cotal-${token(space)}`, okp, { system_account: sysPub });
+/** Generate one space's data account (+ signing key), signed by an EXISTING broker operator. This is
+ *  the per-tenant half of provisioning: call it once per space against the same {@link BrokerAuth}
+ *  to put many spaces on one broker, each in its own NATS account. */
+export async function createSpaceAccountAuth(broker: BrokerAuth, space: string): Promise<SpaceAccountAuth> {
+  if (!broker.operator.seed)
+    throw new Error("createSpaceAccountAuth: the broker operator seed is required - a stripped broker cannot sign a new space account");
+  const okp = fromSeed(new TextEncoder().encode(broker.operator.seed));
+  const akp = createAccount();
+  const askp = createAccount(); // account signing key - what mints users
   const accountJwt = await encodeAccount(
     token(space),
     akp,
     { signing_keys: [askp.getPublicKey()], limits: DATA_LIMITS },
     { signer: okp },
   );
-  const sysJwt = await encodeAccount("SYS", syskp, { limits: SYS_LIMITS }, { signer: okp });
-
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
   return {
     space,
-    operator: { seed: dec(okp.getSeed()), jwt: operatorJwt },
     account: {
       pub: akp.getPublicKey(),
       seed: dec(akp.getSeed()),
@@ -319,10 +385,16 @@ export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
       signingSeed: dec(askp.getSeed()),
       signingPub: askp.getPublicKey(),
     },
-    // `signingSeed` carried in-memory ONLY (stripped by saveSpaceAuth) — the single window in which the
-    // scoped membership-observer system-account user can be minted (see mintMembershipObserverCreds).
-    sys: { pub: sysPub, jwt: sysJwt, signingSeed: dec(syskp.getSeed()) },
   };
+}
+
+/** Generate a fresh operator → account(+signing key) → system-account chain for a space.
+ *  The single-space composition of {@link createBrokerAuth} + {@link createSpaceAccountAuth}: one
+ *  broker whose only tenant is this space, which is exactly the pre-W4 shape. */
+export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
+  const broker = await createBrokerAuth(space);
+  const spaceAccount = await createSpaceAccountAuth(broker, space);
+  return { ...broker, ...spaceAccount };
 }
 
 /** Options shaping a minted user's permissions. */
@@ -1424,10 +1496,20 @@ export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Iden
   return new TextDecoder().decode(creds);
 }
 
-/** Render the `nats-server` config that trusts this space's operator and serves its
- *  accounts via the in-config MEMORY resolver. */
+/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts via
+ *  the in-config MEMORY resolver.
+ *
+ *  Broker trust (operator + system account) comes from `broker` and has exactly one owner; the
+ *  per-space data accounts are listed in `spaces`. Every space account is asserted to be signed by
+ *  THIS broker's operator before it is preloaded: rendering a foreign-signed account would either
+ *  refuse broker boot or, worse, advertise a tenant the broker cannot actually authenticate.
+ *
+ *  NOTE (W4): the MEMORY resolver is one static whole-broker map, so every mutation rewrites all of
+ *  it. Concurrent add/remove of spaces needs a broker-authoritative inventory with generation/CAS
+ *  and atomic promotion above this function; this renderer is deliberately pure. */
 export function serverConfig(
-  auth: SpaceAuth,
+  broker: BrokerAuth,
+  spaces: readonly SpaceAccountAuth[],
   opts: {
     port?: number;
     host?: string;
@@ -1437,6 +1519,14 @@ export function serverConfig(
     extraAccounts?: Array<{ pub: string; jwt: string }>;
   },
 ): string {
+  if (!spaces.length) throw new Error("serverConfig: at least one space account is required");
+  for (const s of spaces) assertAccountSignedByBroker(broker, s);
+  const seen = new Map<string, string>();
+  for (const s of [...spaces.map((s) => ({ pub: s.account.pub, what: `space "${s.space}"` })), ...(opts.extraAccounts ?? []).map((a) => ({ pub: a.pub, what: "an extra account" }))]) {
+    const prior = seen.get(s.pub);
+    if (prior) throw new Error(`serverConfig: account ${s.pub} is preloaded twice (${prior} and ${s.what}) - refusing to render an ambiguous resolver`);
+    seen.set(s.pub, s.what);
+  }
   const port = opts.port ?? 4222;
   const host = opts.host ?? "127.0.0.1";
   // A minted "agent" carries its full permission allow-list inline in its user JWT, which the
@@ -1451,12 +1541,12 @@ host: ${host}
 port: ${port}
 max_control_line: 65536
 jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
-operator: ${auth.operator.jwt}
-system_account: ${auth.sys.pub}
+operator: ${broker.operator.jwt}
+system_account: ${broker.sys.pub}
 resolver: MEMORY
 resolver_preload: {
-  ${auth.account.pub}: ${auth.account.jwt}
-  ${auth.sys.pub}: ${auth.sys.jwt}${(opts.extraAccounts ?? []).map((a) => `\n  ${a.pub}: ${a.jwt}`).join("")}
+${spaces.map((s) => `  ${s.account.pub}: ${s.account.jwt}`).join("\n")}
+  ${broker.sys.pub}: ${broker.sys.jwt}${(opts.extraAccounts ?? []).map((a) => `\n  ${a.pub}: ${a.jwt}`).join("")}
 }
 `;
 }

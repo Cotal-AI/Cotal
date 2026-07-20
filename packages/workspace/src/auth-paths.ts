@@ -1,6 +1,15 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { mkSecretDir, writeSecretFile, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import {
+  composeSpaceAuth,
+  mkSecretDir,
+  writeSecretFile,
+  writeSecretFileAtomic,
+  type BrokerAuth,
+  type SecretStore,
+  type SpaceAccountAuth,
+  type SpaceAuth,
+} from "@cotal-ai/core";
 
 /**
  * On-disk auth-material I/O for a local checkout's `.cotal/` — machine-local path resolution plus
@@ -150,18 +159,136 @@ export function findCotalRoot(start: string = process.cwd()): string {
   }
 }
 
-/** Persist the space trust material. The file holds the data-account signing seed — treat as a secret.
- *  The system-account `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting capability,
- *  so it never lands on disk (it lives only in the in-memory {@link createSpaceAuth} result). */
-export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
-  mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
-  const onDisk: SpaceAuth = { ...auth, sys: { pub: auth.sys.pub, jwt: auth.sys.jwt } };
-  writeSecretFile(join(dir, AUTH_FILE), JSON.stringify(onDisk, null, 2));
+// ---- broker trust and space accounts are SEPARATE persisted authorities (W4) ----
+//
+// A nats-server trusts exactly one operator and one system account, so broker trust is per-BROKER
+// and has exactly one owner on disk (`auth/broker.json`). Each space owns only its own data account
+// (`auth/<space>/account.json`) and REFERENCES broker trust rather than embedding it. Embedding it
+// per space is the bug this split exists to prevent: a rotation done through space A would update
+// A's embedded copy while space B kept loading a stale one and resurrected dead broker trust.
+//
+// The composed {@link SpaceAuth} is a READ view only (see core's `composeSpaceAuth`); there is no
+// persisted document with that shape any more. The pre-W4 monolith is migration INPUT only.
+
+const BROKER_FILE = "broker.json";
+const SPACE_ACCOUNT_FILE = "account.json";
+
+/** Where the one broker trust record lives. */
+export function brokerAuthPath(dir: string): string {
+  return join(dir, BROKER_FILE);
 }
 
-/** Load the space trust material, or undefined if auth was never set up here. */
-export function loadSpaceAuth(dir: string): SpaceAuth | undefined {
+/** Where one space's own account record lives (guarded segment, same encoder as everything else). */
+export function spaceAccountPath(dir: string, space: string): string {
+  return join(dir, spaceSegment(space), SPACE_ACCOUNT_FILE);
+}
+
+/** Persist BROKER trust. `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting
+ *  capability, so it never lands on disk (it lives only in the in-memory {@link createBrokerAuth}
+ *  result). A composition that must add spaces after first boot has to hold that seed in a
+ *  BROKER-scoped secret store instead; see core's `BrokerAuth`. */
+export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
+  if (!broker.operator.seed || !broker.operator.jwt || !broker.sys.pub)
+    throw new Error("saveBrokerAuth: refusing to persist blank broker trust - a stripped auth value cannot own the broker record");
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
+  const onDisk: BrokerAuth = { operator: broker.operator, sys: { pub: broker.sys.pub, jwt: broker.sys.jwt } };
+  writeSecretFile(brokerAuthPath(dir), JSON.stringify(onDisk, null, 2));
+}
+
+/** Load BROKER trust, or undefined if auth was never set up here. Reads the pre-W4 monolith as
+ *  MIGRATION INPUT when the broker record does not exist yet. */
+export function loadBrokerAuth(dir: string): BrokerAuth | undefined {
+  const f = brokerAuthPath(dir);
+  if (existsSync(f)) return JSON.parse(readFileSync(f, "utf8")) as BrokerAuth;
+  const legacy = loadLegacySpaceAuth(dir);
+  return legacy ? { operator: legacy.operator, sys: legacy.sys } : undefined;
+}
+
+/** Persist ONE space's account record. Never carries broker material. */
+export function saveSpaceAccountAuth(dir: string, spaceAccount: SpaceAccountAuth): void {
+  const target = spaceAccountPath(dir, spaceAccount.space);
+  mkSecretDir(dirname(target));
+  const onDisk: SpaceAccountAuth = { space: spaceAccount.space, account: spaceAccount.account };
+  writeSecretFile(target, JSON.stringify(onDisk, null, 2));
+}
+
+/** Load ONE space's account record, or undefined. Reads the pre-W4 monolith as MIGRATION INPUT when
+ *  the per-space record does not exist yet AND that monolith is for this same space - a monolith for
+ *  a DIFFERENT space must never satisfy a load for this one. */
+export function loadSpaceAccountAuth(dir: string, space: string): SpaceAccountAuth | undefined {
+  const f = spaceAccountPath(dir, space);
+  if (existsSync(f)) return JSON.parse(readFileSync(f, "utf8")) as SpaceAccountAuth;
+  const legacy = loadLegacySpaceAuth(dir);
+  if (!legacy || legacy.space !== space) return undefined;
+  return { space: legacy.space, account: legacy.account };
+}
+
+/** The pre-W4 single-document trust material. MIGRATION INPUT ONLY - nothing writes this shape now. */
+function loadLegacySpaceAuth(dir: string): SpaceAuth | undefined {
   const f = join(dir, AUTH_FILE);
   if (!existsSync(f)) return undefined;
   return JSON.parse(readFileSync(f, "utf8")) as SpaceAuth;
+}
+
+/** Load the COMPOSED read view of one space's trust chain, or undefined if either authority is
+ *  missing. The space key is REQUIRED: once a broker holds N accounts, a root-wide "the auth" load is
+ *  intrinsically ambiguous, and picking a default silently would let (for example) a manager bound to
+ *  space B mint B's agents into space A's account. Composition also asserts that this account really
+ *  was signed by this broker's operator. */
+export function loadSpaceAuth(dir: string, space: string): SpaceAuth | undefined {
+  const broker = loadBrokerAuth(dir);
+  const spaceAccount = loadSpaceAccountAuth(dir, space);
+  if (!broker || !spaceAccount) return undefined;
+  return composeSpaceAuth(broker, spaceAccount);
+}
+
+/** The composed trust of the ONE space this auth dir holds - the space-blind convenience for callers
+ *  that predate multi-space (a folder's own mesh, `mint` in a checkout, a status read). Fails loud
+ *  when the root holds several, via {@link soleSpaceOf}. Prefer {@link loadSpaceAuth} with an
+ *  explicit space wherever the caller can know it. */
+export function loadSoleSpaceAuth(dir: string): SpaceAuth | undefined {
+  const space = soleSpaceOf(dir);
+  return space ? loadSpaceAuth(dir, space) : undefined;
+}
+
+/** Persist a composed value by DECOMPOSING it into its two authorities. This is the migration-era
+ *  writer for the many existing callers that hold a composed {@link SpaceAuth}; it is safe because
+ *  there is exactly ONE broker record, so writing broker trust through any space updates the single
+ *  owner rather than a per-space copy. It refuses a stripped value outright: `stripSpaceAuth` blanks
+ *  the operator and system account, and decomposing that would blank broker persistence. */
+export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
+  saveBrokerAuth(dir, auth); // throws on a stripped/blank broker half
+  saveSpaceAccountAuth(dir, auth);
+}
+
+/** The ONE space this auth dir holds, for the legacy paths that predate multi-space and carry no
+ *  explicit space (a folder's "its own" space, a root-wide daemon remint). Undefined when the root
+ *  has no auth at all.
+ *
+ *  FAILS LOUD when the root holds several, rather than picking the first or a "current": a
+ *  space-blind caller that silently picks is exactly how a component bound to space B mints into
+ *  space A's account. Callers that can know their space must pass it explicitly instead of using
+ *  this; this exists so the remaining space-blind paths become a loud error rather than a wrong
+ *  answer the day a root holds two. */
+export function soleSpaceOf(dir: string): string | undefined {
+  const spaces = listSpaceAccounts(dir);
+  if (spaces.length === 0) return undefined;
+  if (spaces.length > 1)
+    throw new Error(
+      `${dir} holds accounts for ${spaces.length} spaces (${spaces.join(", ")}) - this operation has no explicit space and refuses to pick one; pass the space explicitly`,
+    );
+  return spaces[0];
+}
+
+/** Every space that has an account record under this auth dir. The broker's tenant list on disk. */
+export function listSpaceAccounts(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const spaces: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (existsSync(join(dir, entry.name, SPACE_ACCOUNT_FILE))) spaces.push(decodeURIComponent(entry.name));
+  }
+  const legacy = loadLegacySpaceAuth(dir);
+  if (legacy && !spaces.includes(legacy.space)) spaces.push(legacy.space);
+  return spaces.sort();
 }

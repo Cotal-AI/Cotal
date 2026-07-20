@@ -426,7 +426,10 @@ export class Manager {
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns.
-    this.auth = loadSpaceAuth(authDir(this.workspaceRoot));
+    // Space-KEYED: this manager is bound to exactly one space, so it must load THAT space's account.
+    // A root-wide load would let a manager for space B mint B's agents into space A's account the
+    // moment a root holds more than one.
+    this.auth = loadSpaceAuth(authDir(this.workspaceRoot), this.space);
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the

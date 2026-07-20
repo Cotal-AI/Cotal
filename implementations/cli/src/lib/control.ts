@@ -7,7 +7,7 @@ import {
   type ControlTier,
   type Profile,
 } from "@cotal-ai/core";
-import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth, soleSpaceOf } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
 import { connectOrExit, type ConnectFlags } from "./connect.js";
 
@@ -38,7 +38,7 @@ export async function resolveControlTarget(
   profile: Profile,
 ): Promise<{ space: string; server: string; auth: ControlAuth }> {
   const withSpace = flags.creds
-    ? { ...flags, space: flags.space ?? loadSpaceAuth(authDir(findCotalRoot()))?.space ?? DEFAULT_SPACE }
+    ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
   // USER MODE rides through: the control call connects with the operator's bearer (actor `cli`) and
   // publishes on its OWN ctl principal subject — the broker grants that publish only when the cli

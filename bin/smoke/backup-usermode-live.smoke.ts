@@ -149,7 +149,7 @@ const readJournal = () => JSON.parse(readFileSync(journalPath, "utf8")) as {
  *  rides the product's own ephemeral-consumer history path: the admin profile grants
  *  CONSUMER.CREATE on CHAT but NOT STREAM.MSG.GET, so a direct get would be denied. */
 async function chatHistory(): Promise<CotalMessage[]> {
-  const auth = loadSpaceAuth(authDir(root))!;
+  const auth = loadSoleSpaceAuth(authDir(root))!;
   const witness = new CotalEndpoint({
     space: SPACE,
     servers: SERVER,

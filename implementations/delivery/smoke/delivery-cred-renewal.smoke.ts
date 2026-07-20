@@ -70,7 +70,7 @@ const auth = await createSpaceAuth(space);
 const obsCreds = await mintMembershipObserverCreds(auth, newIdentity()); // while the $SYS seed is in memory
 const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity()); // same in-memory-$SYS-only window
 const dir = mkdtempSync(join(tmpdir(), "cotal-dlv-renew-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 // The daemon's ISOLATED workspace root — findCotalRoot(cwd) lands here, so the membership feed's

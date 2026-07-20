@@ -25,7 +25,7 @@ const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log
 const space = `delivery-couple-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-couple-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 let srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const credsPath = join(dir, "delivery.creds");
 

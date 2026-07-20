@@ -7,7 +7,7 @@ import {
   type Profile,
   type SecretStore,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "./auth-paths.js";
+import { authDir, loadSpaceAuth, soleSpaceOf } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
@@ -55,7 +55,13 @@ export interface RemintResult {
  *  re-read. Structured per-file results, never throws: a failed remint leaves the old cred running
  *  toward its loud expiry and the caller records/reports the failure. */
 export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
-  const auth = loadSpaceAuth(authDir(root));
+  // The daemon cred files are flat under `.cotal/` (space-independent while one root serves one
+  // space), so this path carries no explicit space and must resolve the root's own. `soleSpaceOf`
+  // fails LOUD on a root holding several rather than reminting against an arbitrary one: that is a
+  // caller/config error, distinct from the per-file remint failures this function reports instead
+  // of throwing. Giving this path an explicit space is part of the multi-space daemon fan-out.
+  const space = soleSpaceOf(authDir(root));
+  const auth = space ? loadSpaceAuth(authDir(root), space) : undefined;
   if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
   const s = store ?? workspaceSecretStore(root);
   const results: RemintResult[] = [];

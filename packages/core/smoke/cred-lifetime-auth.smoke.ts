@@ -70,7 +70,7 @@ async function tryConnect(creds: string, id: string): Promise<"ok" | "rejected">
 const space = `cred-life-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-credlife-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 try {
