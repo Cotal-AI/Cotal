@@ -1,6 +1,6 @@
 import { spawn as spawnProcess, execFile } from "node:child_process";
 import { rmSync } from "node:fs";
-import { join, dirname, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
   connectorServers,
@@ -10,7 +10,6 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
-  mkSecretDir,
   newIdentity,
   parseShareSelection,
   principalKey,
@@ -18,7 +17,6 @@ import {
   provisionAgentDurables,
   registry,
   resolveAuthProvider,
-  writeSecretFile,
   CotalEndpoint,
   type AgentDef,
   type CompletionResult,
@@ -33,6 +31,10 @@ import {
   CONTROL_PRIVILEGED,
 } from "@cotal-ai/core";
 import {
+  agentActorTokenKey,
+  agentCredsKey,
+  agentSecretFilePaths,
+  agentSentinelCredsKey,
   authDir,
   credsFlag,
   defaultAgentOverride,
@@ -42,6 +44,7 @@ import {
   launchFlags,
   loadMeshes,
   loadSpaceAuth,
+  materializeSecretToFile,
   mergeLaunchOptions,
   parseLaunchOptions,
   provenance,
@@ -453,9 +456,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       ...(values["live-only"] ? { durableMembership: false } : {}),
     });
     await prov.stop();
-    credsPath = join(authDir(target.root), "creds", `${name}.creds`);
-    mkSecretDir(dirname(credsPath)); // harden the creds dir before the cred lands
-    writeSecretFile(credsPath, creds);
+    // Store first (the source of truth), then materialize — the child's launch reads this FILE.
+    // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
+    const secrets = workspaceSecretStore(target.root);
+    credsPath = agentSecretFilePaths(target.root, name).creds;
+    await secrets.put(agentCredsKey(name), creds);
+    await materializeSecretToFile(secrets, agentCredsKey(name), credsPath);
     id = identity.id;
     provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
   }
@@ -480,6 +486,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const retireProvision = async (why: string): Promise<void> => {
     if (retired || !auth || !id || !credsPath) return;
     retired = true;
+    // The store delete is the authoritative removal; the rmSync clears the FS materialization
+    // (byte-identical locally). Best-effort-loud, like the broker teardown below.
+    await workspaceSecretStore(target.root).delete(agentCredsKey(name)).catch((e) =>
+      console.error(`! retire: dropping ${name}'s cred from the secret store failed: ${(e as Error).message}`));
     rmSync(credsPath, { force: true });
     console.error(`  ↩ retired creds for ${name} (${why})`);
     try {
@@ -602,10 +612,7 @@ async function provisionUserForeground(
   // loaded explicitly here for durable pre-creation only, never for the agent's identity.
   const infra = loadSpaceAuth(authDir(target.root));
   if (!infra) return fail(`space "${space}" has user-auth state but no auth.json under ${authDir(target.root)} - re-run \`cotal up --user-auth\` here`);
-  const credsDir = join(authDir(target.root), "creds");
-  const tokenPath = join(credsDir, `${name}.actor-token`);
-  const sentinelPath = join(credsDir, `${name}.sentinel.creds`);
-  const healthPath = join(credsDir, `${name}.auth-health.json`);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
   try {
     // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
     // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
@@ -648,9 +655,13 @@ async function provisionUserForeground(
     } finally {
       await prov.stop();
     }
-    mkSecretDir(credsDir);
-    writeSecretFile(tokenPath, grant.actorToken);
-    writeSecretFile(sentinelPath, grant.sentinelCreds);
+    // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
+    // sentinel handoff read FILES — materialize both at the canonical paths (byte-identical
+    // rewrites under this, the local FS, composition).
+    await store.put(agentActorTokenKey(name), grant.actorToken);
+    await store.put(agentSentinelCredsKey(name), grant.sentinelCreds);
+    await materializeSecretToFile(store, agentActorTokenKey(name), tokenPath);
+    await materializeSecretToFile(store, agentSentinelCredsKey(name), sentinelPath);
     rmSync(healthPath, { force: true });
     provenance.wrote(`actor grant ${owner}.${name} (user mode)`, tokenPath);
     const bearerCmd = [
@@ -679,6 +690,8 @@ async function provisionUserForeground(
       // teardown the rollback path below runs on a failed preflight.
       cleanup: async () => {
         await provider.revokeAgent({ dir, owner, actor: name });
+        await store.delete(agentActorTokenKey(name));
+        await store.delete(agentSentinelCredsKey(name));
         rmSync(tokenPath, { force: true });
         rmSync(sentinelPath, { force: true });
         rmSync(healthPath, { force: true });
@@ -692,6 +705,8 @@ async function provisionUserForeground(
     // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
     // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
     await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+    await store.delete(agentActorTokenKey(name)).catch(() => {});
+    await store.delete(agentSentinelCredsKey(name)).catch(() => {});
     rmSync(tokenPath, { force: true });
     rmSync(sentinelPath, { force: true });
     rmSync(healthPath, { force: true });

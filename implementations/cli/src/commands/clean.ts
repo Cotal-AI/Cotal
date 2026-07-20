@@ -5,6 +5,7 @@ import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type Aut
 import {
   DELIVERY_CREDS_KEY,
   acquireMaintenanceLock,
+  agentSecretKeysUnder,
   cleanupRestoreFallback,
   localProcessPath,
   meshesForRoot,
@@ -187,6 +188,18 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       }
     } catch (e) {
       failures.push(`${DELIVERY_CREDS_KEY}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Per-agent standing secrets (static creds / actor tokens / sentinel creds) are migrated
+    // kinds too. Despawn owns the primary delete; this is the crash-residue backstop, enumerated
+    // from the LOCAL creds dir (this surface IS the FS composition, per the doc above). Health
+    // files and unrecognizable strays are runtime state and fall to the raw removal below.
+    for (const key of agentSecretKeysUnder(root)) {
+      try {
+        await secrets.delete(key);
+        removed.push(`.cotal/${key}`);
+      } catch (e) {
+        failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     // Gate on registration: an open-mode composition may not register an auth provider, and a
     // reset there must not start failing. With one registered, its deprovision must SUCCEED

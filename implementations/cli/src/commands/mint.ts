@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
+import { resolve, dirname } from "node:path";
 import {
   agentFilePath,
   loadAgentFile,
@@ -11,7 +11,7 @@ import {
   type ParsedArgs,
   type Profile,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentCredsKey, agentSecretFilePaths, authDir, loadSpaceAuth, materializeSecretToFile, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 
@@ -92,9 +92,22 @@ export async function mint(args: ParsedArgs): Promise<void> {
   }
   const identity = newIdentity();
   const creds = await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role });
-  const out = resolve(values.out ?? join(dir, "creds", `${name}.creds`));
-  mkSecretDir(dirname(out));
-  writeSecretFile(out, creds);
+  let out: string;
+  if (values.out) {
+    // An operator-directed EXPORT to an explicit path — outside the canonical kind location,
+    // deliberately a plain file write, not a store entry.
+    out = resolve(values.out);
+    mkSecretDir(dirname(out));
+    writeSecretFile(out, creds);
+  } else {
+    // The default path IS the per-agent standing-cred kind's canonical location — a migrated
+    // kind: store first (the source of truth), then materialize the file consumers read.
+    const root = cotalRoot();
+    const secrets = workspaceSecretStore(root);
+    out = agentSecretFilePaths(root, name).creds;
+    await secrets.put(agentCredsKey(name), creds);
+    await materializeSecretToFile(secrets, agentCredsKey(name), out);
+  }
   console.log(c.green(`✓ minted ${profile} creds for "${name}"`));
   console.log(c.dim(`  id:    ${identity.id}`));
   console.log(c.dim(`  creds: ${out}`));
