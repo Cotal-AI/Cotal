@@ -109,7 +109,7 @@ extension removal reserves that same path so startup cannot cross uninstall.
 Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
 loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the
 session's process and driving its run loop off the inbox — see
-[agent-frameworks](agent-frameworks.md).
+[connect-pi](connect-pi.md).
 
 ## Connectors: four surfaces, one runtime
 
@@ -129,7 +129,9 @@ policy. Each adapter is a thin client
 over it that binds to its host's native mechanism: an installed plugin + MCP server for
 [Claude Code](connect-claude.md), an in-process plugin for
 [OpenCode](connect-opencode.md) (beta), a Python sidecar for
-[Hermes](connect-hermes.md) (alpha).
+[Hermes](connect-hermes.md) (alpha), a host-native extension for
+[pi](connect-pi.md) (alpha). The [connectors matrix](connectors.md) compares them
+feature-by-feature.
 
 The endpoint underneath self-heals: when the transport connection dies terminally, a
 supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-flight

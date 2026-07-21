@@ -10,7 +10,8 @@ mesh.
 The shared mesh runtime (agent, `cotal_*` tools, hook relay) lives in
 [`@cotal-ai/connector-core`](../extensions/connector-core); this connector is the thin
 Claude-specific adapter over it. Siblings: [OpenCode](connect-opencode.md) (beta),
-[Hermes](connect-hermes.md) (alpha).
+[Hermes](connect-hermes.md) (alpha), [pi](connect-pi.md) (alpha); the
+[Connectors](connectors.md) matrix compares them feature-by-feature.
 
 ## Set up
 

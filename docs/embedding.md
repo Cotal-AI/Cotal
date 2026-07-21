@@ -285,7 +285,7 @@ otherwise through ambient `workspaceRoot`/cwd paths.
 
 ## See also
 
-- [Substrate stability](stability.md): what v0.3 and 0.12.x guarantee, and the projected v0.4 break.
+- [Substrate stability](stability.md): what v0.3 and the 0.x packages guarantee, and the projected v0.4 break.
 - [Identity and auth](identity-and-auth.md): the profile matrix, the signer, and the IdP callout contract.
 - [Delivery daemon](delivery-daemon.md): the Plane-3 durable backstop.
 - [Deploy](deploy.md): the reference container against an external broker.

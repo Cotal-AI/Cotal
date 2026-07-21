@@ -15,6 +15,25 @@ export const OFFICIAL_CONNECTORS: Readonly<Record<string, string>> = {
   pi: "@cotal-ai/pi",
 };
 
+/** A first-party extension the umbrella (`cotal-ai`) bundles and versions in lockstep: its npm package
+ *  plus the repo-relative source dir the prepack copy and dev seeding resolve it from. This is the four
+ *  connectors PLUS the web dashboard — every first-party piece the binary ships and the seed reconcile
+ *  keeps at the binary's own version, so `npm i -g cotal-ai@X` carries them all at X with no separate
+ *  fetch and no version skew. A third-party `cotal ext add`ed package is NOT here; it versions on its
+ *  own line. web lives in `implementations/web` (the connectors under `extensions/`), hence the explicit
+ *  source dir rather than a derived `extensions/<name>`. */
+export interface SeededExtension {
+  readonly pkg: string;
+  readonly srcDir: string;
+}
+
+export const SEEDED_EXTENSIONS: Readonly<Record<string, SeededExtension>> = {
+  ...(Object.fromEntries(
+    Object.entries(OFFICIAL_CONNECTORS).map(([name, pkg]) => [name, { pkg, srcDir: `extensions/${pkg.split("/")[1]}` }]),
+  ) as Record<string, SeededExtension>),
+  web: { pkg: "@cotal-ai/web", srcDir: "implementations/web" },
+};
+
 /** The default connector/agent type when `COTAL_DEFAULT_AGENT` is unset (David's locked decision). */
 export const DEFAULT_CONNECTOR = "claude";
 

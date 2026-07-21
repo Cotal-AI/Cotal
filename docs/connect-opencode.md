@@ -101,6 +101,7 @@ The generic tool surface and the inbound-message model are shared across connect
 
 ## See also
 
+- [Connectors](connectors.md): the feature matrix across all connectors
 - [Run a mesh](run-a-mesh.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
-- [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect Hermes](connect-hermes.md)
+- [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect Hermes](connect-hermes.md) · [Connect pi](connect-pi.md)
 - [Deploy against an external broker](deploy.md): running OpenCode agents in containers

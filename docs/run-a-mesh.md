@@ -56,10 +56,11 @@ How a spawn resolves:
   picks `.cotal/agents/<name>.md`; `--config` takes an explicit ref or path. Set
   `COTAL_DEFAULT_PERSONA=<name-or-path>` to change the fallback. Fields and format:
   [agent files](agent-files.md).
-- **Harness.** Claude by default; `--agent opencode` / `--agent hermes` per spawn, or
-  `COTAL_DEFAULT_AGENT` to change the default. Per-connector guides:
+- **Harness.** Claude by default; `--agent opencode` / `--agent hermes` / `--agent pi` per
+  spawn, or `COTAL_DEFAULT_AGENT` to change the default. Compared in
+  [Connectors](connectors.md); per-connector guides:
   [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·
-  [Hermes](connect-hermes.md).
+  [Hermes](connect-hermes.md) · [pi](connect-pi.md).
 - **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
   `cotal models --agent opencode`: model ids plus available variants; pick one with
