@@ -70,6 +70,7 @@ export type MeshTargetErrorCode =
   | "ambiguous-target"
   | "default-occupied"
   | "stale-auth-root"
+  | "unreadable-auth"
   | "user-auth-unrecorded";
 
 /** Structured context for a {@link MeshTargetError} — enough for any surface to render its own
@@ -128,6 +129,42 @@ function personaRoot(root: string): string {
   return join(root, ".cotal", "agents");
 }
 
+/** Refuse to resolve a single mesh when ROOT's on-disk account inventory says it hosts more than
+ *  one tenant (or an unreadable one). The disk is the tenant authority ahead of the registry: a
+ *  broker with several account records is several tenants even if only one is registered, so any
+ *  path that would otherwise auto-pick (a bare local root, a `--server` that names this broker)
+ *  must refuse here. `--space` is the way to name one. A root with 0 or 1 accounts (open or
+ *  single-tenant) passes untouched. */
+/** Load a space's composed trust, converting a COMPOSITION failure into a typed target error. The
+ *  record can pass the on-disk shape gate yet fail to compose - a malformed account JWT, or a
+ *  well-formed one signed by a foreign operator - and `loadSpaceAuth` throws a raw error there.
+ *  Every resolver caller is a surface (`status`, `spawn`, the web dashboard) that must present a
+ *  legible failure, not crash on an uncaught throw, so the throw becomes `unreadable-auth`. An
+ *  absent record is not a failure here - it returns undefined, same as `loadSpaceAuth`. */
+function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
+  try {
+    return loadSpaceAuth(authDir(root), space);
+  } catch (e) {
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { space, root });
+  }
+}
+
+function assertRootIsSingleTenant(root: string): void {
+  const inv = accountInventory(authDir(root));
+  if (inv.corrupt.length > 0)
+    throw new MeshTargetError(
+      "ambiguous-target",
+      `${root} holds ${inv.corrupt.length} unreadable account record(s) (${inv.corrupt.join(", ")}) - the tenant list is uncertain; repair or remove them`,
+      { root },
+    );
+  if (inv.spaces.length > 1)
+    throw new MeshTargetError(
+      "ambiguous-target",
+      `${root}'s broker holds accounts for ${inv.spaces.length} spaces (${inv.spaces.join(", ")}) - name one with --space`,
+      { root, available: inv.spaces },
+    );
+}
+
 function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"]): MeshTarget {
   // Honor the recorded mode: an OPEN mesh connects credlessly even if its root still has auth
   // material on disk (e.g. a root that once ran auth mode). Loading it would make `spawn` mint
@@ -137,8 +174,11 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
   let userAuth: UserAuthInfo | undefined;
   if (m.mode === "auth") {
     // Space-KEYED load: ask for this entry's own space rather than "the" auth of the root, so a
-    // root serving several spaces can never hand back a neighbour's account.
-    auth = loadSpaceAuth(authDir(m.root), m.space);
+    // root serving several spaces can never hand back a neighbour's account. A record that will not
+    // COMPOSE into usable trust (malformed account JWT, or one signed by a foreign operator) throws
+    // inside `loadSpaceAuth`; convert it to a typed target error so a caller like `status` reports
+    // it and exits 0 instead of crashing on the raw compose throw.
+    auth = loadTrustOrThrow(m.root, m.space);
     // Defense in depth: the root's on-disk auth must still cover THIS space. A divergence (the root
     // was re-`up`ed as a different space without re-recording) would otherwise mint mesh-A creds
     // against the entry for space B. Now that the load is space-keyed the divergence surfaces as an
@@ -189,7 +229,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
   } catch (e) {
     throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
   }
-  const auth = loadSpaceAuth(authDir(root), space);
+  const auth = loadTrustOrThrow(root, space);
   // U10 guard: a user-auth space resolved WITHOUT its registry entry (pruned/never recorded) must
   // not silently static-mint — static creds DO work on a user-auth broker, which would connect the
   // operator on the wrong identity plane. The on-disk marker is the space-scoped user-auth state
@@ -255,7 +295,15 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `${onServer.length} spaces are recorded at ${flags.server} (${onServer.map((e) => e.space).join(", ")}) - name one with --space`,
         { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`) },
       );
-    if (onServer[0]) return targetFromEntry(onServer[0], flags.server, "flag-server");
+    if (onServer[0]) {
+      // `--server` names a BROKER, not a tenant. One registry row at that server does not prove the
+      // broker hosts one tenant: the row's own root may hold several account records on disk with
+      // only this one registered (a pruned/partial registration). The disk is the authority - if it
+      // shows several tenants (or an unreadable one), `--server` alone cannot pick, same as the bare
+      // local branch below.
+      assertRootIsSingleTenant(onServer[0].root);
+      return targetFromEntry(onServer[0], flags.server, "flag-server");
+    }
     return localTarget(findCotalRoot(cwd), flags.server, "flag-server");
   }
 
@@ -272,19 +320,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // here would silently resolve a multi-tenant root to whichever tenant kept its record - the
     // same auto-pick `soleSpaceOf` refuses on the unrecorded path. And an UNREADABLE record means
     // the tenant count itself is uncertain, which cannot resolve to a single mesh either.
-    const inv = accountInventory(authDir(root));
-    if (inv.corrupt.length > 0)
-      throw new MeshTargetError(
-        "ambiguous-target",
-        `this folder's auth dir holds ${inv.corrupt.length} unreadable account record(s) (${inv.corrupt.join(", ")}) - the tenant list is uncertain; repair or remove them`,
-        { root },
-      );
-    if (inv.spaces.length > 1)
-      throw new MeshTargetError(
-        "ambiguous-target",
-        `this folder's broker holds accounts for ${inv.spaces.length} spaces (${inv.spaces.join(", ")}) - name one with --space`,
-        { root, available: inv.spaces },
-      );
+    assertRootIsSingleTenant(root);
     // For a local project, if its mesh is in the registry, use the RECORDED server +
     // mode, not DEFAULT_SERVER: a project started with `--server …:4333` must spawn against :4333,
     // and a recorded OPEN mesh must not mint creds off stale `.cotal/auth` left on disk. Fall back

@@ -83,7 +83,21 @@ function printProject(root: string, cmd: string): void {
     console.log(c.dim("  per-space process state is not reported on a multi-space root yet"));
     return;
   }
-  const auth = loadSoleSpaceAuth(authDir(root));
+  // The inventory shape-check is necessary but not sufficient: a record can carry non-empty
+  // account fields yet fail COMPOSITION (a malformed account JWT, or one signed by a foreign
+  // operator - `composeSpaceAuth` throws on both). Status is the recovery command the broker-wide
+  // refusals point at, so it must exit 0 with guidance for ANY record it cannot load, not crash on
+  // the ones the cheap shape gate lets through. Frame the load failure the same as an unreadable
+  // record and stop.
+  let auth: ReturnType<typeof loadSoleSpaceAuth>;
+  try {
+    auth = loadSoleSpaceAuth(authDir(root));
+  } catch (e) {
+    row("auth", c.red(`unreadable trust material · ${(e as Error).message.split(" - ")[0]}`));
+    row("hint", `${(e as Error).message}`);
+    row("personas", personaSummary(root));
+    return;
+  }
   const userDisk = auth && hasUserAuthState(root, auth.space);
   const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));

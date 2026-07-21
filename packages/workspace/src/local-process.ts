@@ -1,4 +1,5 @@
-import { isAbsolute, join, normalize } from "node:path";
+import { readdirSync } from "node:fs";
+import { isAbsolute, join, normalize, dirname, basename } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceKey } from "./auth-paths.js";
 
@@ -40,7 +41,38 @@ export function localProcessPath(template: string, context: LocalProcessContext)
   const normalized = normalize(expanded);
   if (normalized === "." || isAbsolute(expanded) || normalized === ".." || normalized.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`))
     throw new Error(`local-process path must stay under .cotal: ${JSON.stringify(template)}`);
-  return join(context.root, ".cotal", normalized);
+  const canonical = join(context.root, ".cotal", normalized);
+  // A `{space}`-keyed file (the user-auth service pid/log) was written `auth-service.<encoded>.pid`
+  // before the hex re-key. `down`/`status` READ this path to find and stop the process; if only the
+  // canonical hex name is checked, a pre-upgrade auth-service - a callout SIGNER - is a live process
+  // whose legacy pidfile is skipped, so `down` exits 0 leaving it running (the customer-update-path
+  // invariant AGENTS.md calls load-bearing: an upgrade must never silently orphan a signer). Admit
+  // the legacy name too, BYTE-EXACT (a bare `existsSync` would case-fold on macOS/Windows and match
+  // another space's legacy file); both present is ambiguous and fails loud, mirroring the state-dir
+  // and registry legacy shims.
+  if (template.includes("{space}")) {
+    const legacy = join(context.root, ".cotal", normalize(template.replaceAll("{space}", encodeURIComponent(context.space))));
+    if (legacy !== canonical) {
+      const has = (p: string) => existsByteExact(p);
+      const canonicalExists = has(canonical);
+      const legacyExists = has(legacy);
+      if (legacyExists && canonicalExists)
+        throw new Error(`both ${canonical} and the pre-hex ${legacy} exist for space "${context.space}" - ambiguous process record; remove the stale one`);
+      if (legacyExists) return legacy;
+    }
+  }
+  return canonical;
+}
+
+/** Byte-exact existence: an entry named exactly `basename(p)` in its parent dir. `existsSync` on a
+ *  case-insensitive filesystem reports a case-folded sibling as present, which for a legacy pidfile
+ *  lookup would match a DIFFERENT space's file; this matches only the exact name. */
+function existsByteExact(p: string): boolean {
+  try {
+    return readdirSync(dirname(p)).includes(basename(p));
+  } catch {
+    return false; // parent absent → not present
+  }
 }
 
 export function localProcessVisible(process: LocalProcess, context: LocalProcessContext): boolean {

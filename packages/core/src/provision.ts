@@ -367,7 +367,9 @@ export async function rotateSystemAccount(auth: SpaceAuth): Promise<SpaceAuth> {
   // input generation is runtime-validated: persisted records reach here through a bare JSON cast,
   // and a string/float/unsafe value would launder through the arithmetic ("0"+1 is "01"; at 2^53,
   // gen+1 === gen) and destroy the successor discriminator.
-  const gen = auth.gen ?? 0;
+  // ONLY absence reads 0 (the pre-generation shape); an explicit null is tampering, same as any
+  // other malformed value - `?? 0` would launder it into a valid generation-0 predecessor.
+  const gen = auth.gen === undefined ? 0 : auth.gen;
   if (typeof gen !== "number" || !Number.isSafeInteger(gen) || gen < 0)
     throw new Error(`rotateSystemAccount: broker generation ${JSON.stringify(gen)} is not a non-negative integer - the loaded record is corrupt; restore it from backup`);
   return {

@@ -48,12 +48,12 @@ process.env.COTAL_HOME = home;
 const originalCwd = process.cwd();
 
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
-const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceAuth, mintCreds, newIdentity, rotateSystemAccount, stripSpaceAuth } = await import("@cotal-ai/core");
+const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceAuth, jwtIssuedAt, mintCreds, newIdentity, rotateSystemAccount, stripSpaceAuth } = await import("@cotal-ai/core");
 const {
   accountInventory, assertSingleSpaceBroker, authDir, agentCredsDir, brokerAuthPath, hasUserAuthState,
-  isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, recordMesh,
-  removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
-  userAuthSpacesOnDisk, userAuthStateDir,
+  isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, localProcessPath,
+  recordMesh, removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
+  spaceKey, userAuthSpacesOnDisk, userAuthStateDir,
 } = await import("@cotal-ai/workspace");
 const { down } = await import("../src/commands/down.js");
 const { clean } = await import("../src/commands/clean.js");
@@ -243,15 +243,24 @@ try {
   }
 
   console.log("\n12) the broker record is generation-safe: a STALE same-operator value cannot roll $SYS back");
-  const gen = await makeRoot("gen", ["only2"]);
-  roots.push(gen);
-  const genV0 = await reloadBroker(gen);
+  // PINNED same-second: mint the base and its rotation until their sys `iat` are EQUAL (retrying
+  // across a second boundary), because `iat` is second-resolution and cannot order two
+  // generations minted in one second - the live rollback the panel proved an iat-based guard
+  // cannot stop. Merely "no sleep" would let an iat-only regression pass on a boundary run; the
+  // equality is asserted, never assumed.
+  let gen!: string, genV0!: Awaited<ReturnType<typeof reloadBroker>>, genV1!: Awaited<ReturnType<typeof rotateSystemAccount>>;
+  for (let t = 0; ; t++) {
+    const root = await makeRoot("gen", ["only2"]);
+    roots.push(root);
+    const v0 = await reloadBroker(root);
+    const v1 = await rotateSystemAccount(composeSpaceAuth(v0, await createSpaceAccountAuth(v0, "only2")));
+    if (jwtIssuedAt(v1.sys.jwt) === jwtIssuedAt(v0.sys.jwt)) { gen = root; genV0 = v0; genV1 = v1; break; }
+    if (t >= 9) throw new Error("could not mint a same-second rotation pair in 10 tries");
+  }
+  check("the pair is genuinely same-second (equal iat) with DISTINCT authorities",
+    jwtIssuedAt(genV0.sys.jwt) === jwtIssuedAt(genV1.sys.jwt) && genV0.sys.pub !== genV1.sys.pub);
   check("a fresh record persists at generation 0", (genV0.gen ?? 0) === 0, genV0.gen);
   check("an idempotent re-save of the current value is allowed", (await refusal(() => saveBrokerAuth(authDir(gen), genV0))) === "");
-  // Deliberately NO sleep: `iat` is second-resolution, so a rotation minted in the SAME second as
-  // its predecessor is iat-equal yet a different authority - the live rollback the panel proved an
-  // iat-based guard cannot stop. Only the persisted generation orders these.
-  const genV1 = await rotateSystemAccount(composeSpaceAuth(genV0, await createSpaceAccountAuth(genV0, "only2")));
   saveBrokerAuth(authDir(gen), genV1);
   check("the rotation advanced the persisted generation", (await reloadBroker(gen)).gen === 1);
   const staleMsg = await refusal(() => saveBrokerAuth(authDir(gen), genV0));
@@ -263,10 +272,15 @@ try {
   const seq = mkdtempSync(join(tmpdir(), "cotal-multispace-seq-"));
   roots.push(seq);
   mkdirSync(join(seq, ".cotal"), { recursive: true });
-  const seqV0 = await createBrokerAuth("seq");
-  const seqV1 = await rotateSystemAccount(composeSpaceAuth(seqV0, await createSpaceAccountAuth(seqV0, "seqspace")));
+  let seqV0!: Awaited<ReturnType<typeof createBrokerAuth>>, seqV1!: Awaited<ReturnType<typeof rotateSystemAccount>>;
+  for (let t = 0; ; t++) {
+    seqV0 = await createBrokerAuth("seq");
+    seqV1 = await rotateSystemAccount(composeSpaceAuth(seqV0, await createSpaceAccountAuth(seqV0, "seqspace")));
+    if (jwtIssuedAt(seqV1.sys.jwt) === jwtIssuedAt(seqV0.sys.jwt)) break;
+    if (t >= 9) throw new Error("could not mint a same-second rotation-persisted-first pair in 10 tries");
+  }
   saveBrokerAuth(authDir(seq), seqV1);
-  check("rotation-persisted-first: the pre-rotation value STILL refuses (same second, no prior record)",
+  check("rotation-persisted-first: the pre-rotation value STILL refuses (pinned same-second, no prior record)",
     (await refusal(() => saveBrokerAuth(authDir(seq), seqV0))).includes("generation"));
   // Descent stays ergonomic: the SAVED value may rotate again without a reload (it IS the current
   // record); skipping a save in between is refused.
@@ -305,6 +319,25 @@ try {
   check("dual rotation off one base: the second equal-generation different-sys write is REFUSED",
     (await refusal(() => saveBrokerAuth(authDir(gen), raceB))).includes("generation"));
   check("…and the FIRST writer's system account is what persists", (await reloadBroker(gen)).sys.pub === raceA.sys.pub);
+  // An explicit `"gen": null` in the CURRENT record is tampering, never migration - a
+  // pre-generation record OMITS the field (the writer always emits a number). Defaulting null to 0
+  // would turn the doctored record into a "generation-0 predecessor" and re-admit the same-second
+  // stale rollback through it.
+  const nullDoc = JSON.parse(readFileSync(genRecordPath, "utf8"));
+  const nullDocValid = JSON.stringify(nullDoc, null, 2);
+  nullDoc.gen = null;
+  writeFileSync(genRecordPath, JSON.stringify(nullDoc, null, 2));
+  check("an explicit NULL generation refuses a stale sys write as corrupt (never reads as absent)",
+    (await refusal(() => saveBrokerAuth(authDir(gen), genV2))).includes("not a non-negative integer"));
+  check("…and refuses at the rotate step too (no ?? laundering)",
+    (await refusal(async () => rotateSystemAccount(composeSpaceAuth(await reloadBroker(gen), await createSpaceAccountAuth(raceA, "only2"))))).includes("not a non-negative integer"));
+  writeFileSync(genRecordPath, nullDocValid);
+  check("…and the doctored record never rolled sys back", (await reloadBroker(gen)).sys.pub === raceA.sys.pub);
+  // A malformed INCOMING generation refuses even when sys is byte-identical: a corrupt input never
+  // gets a success exit from a trust write, idempotent path included.
+  const idem = await reloadBroker(gen);
+  check("a malformed incoming generation refuses even on the byte-identical idempotent path",
+    (await refusal(() => saveBrokerAuth(authDir(gen), { ...idem, gen: "bad" as never }))).includes("not a non-negative integer"));
 
   console.log("\n13) a missing broker.json does not license a fresh operator while tenants exist");
   const orphan = await makeRoot("orphan", ["alpha", "beta"]);
@@ -356,6 +389,121 @@ try {
   check("split records take PRECEDENCE over a stray stripped monolith beside them",
     Boolean(loadSpaceAuth(authDir(solo), "solo")!.operator.seed));
   rmSync(join(authDir(solo), "auth.json"));
+
+  console.log("\n16) a legal legacy space name that ALIASES a canonical segment fails LOUD, never a static flip");
+  // A space literally named `space.<validhex>` has a pre-hex state dir whose name IS the canonical
+  // segment of a DIFFERENT space (`space.616c706861` = the legacy dir of this space AND alpha's
+  // canonical home). Nothing on disk says which tenant owns it, so migration must refuse - the old
+  // bug read it as static and let `mint` write admin creds onto a user-auth space.
+  const collide = await makeRoot("collide", ["realspace"]);
+  roots.push(collide);
+  const aliasName = "space.616c706861"; // encodeURIComponent(this) === alpha's canonical segment
+  const legacyAliasDir = join(authDir(collide), encodeURIComponent(aliasName));
+  mkdirSync(legacyAliasDir, { recursive: true });
+  writeFileSync(join(legacyAliasDir, "idp.json"), "{}");
+  check("hasUserAuthState on the colliding space THROWS ambiguous, not a silent static flip",
+    (await refusal(() => hasUserAuthState(collide, aliasName))).includes("ambiguous"));
+  check("a normal space's legacy dir still migrates unaffected (the guard is precise to the collision)",
+    (() => {
+      const legacyNorm = join(authDir(collide), encodeURIComponent("plainspace"));
+      mkdirSync(legacyNorm, { recursive: true });
+      writeFileSync(join(legacyNorm, "idp.json"), "{}");
+      return hasUserAuthState(collide, "plainspace") === true && existsSync(userAuthStateDir(collide, "plainspace")) && !existsSync(legacyNorm);
+    })());
+
+  console.log("\n17) --server names a BROKER: a partially-registered multi-tenant root refuses, not auto-picks");
+  const partial = await makeRoot("partial", ["alpha", "beta"]);
+  roots.push(partial);
+  recordMesh({ space: "alpha", server: "nats://127.0.0.1:9911", root: partial, mode: "auth", ts: new Date().toISOString() });
+  let srvPartialErr: unknown;
+  try { resolveMeshTarget(partial, { server: "nats://127.0.0.1:9911" }); } catch (e) { srvPartialErr = e; }
+  check("--server with one registry row but TWO accounts on that broker's root throws ambiguous-target",
+    isWorkspaceTargetError(srvPartialErr) && (srvPartialErr as { code: string }).code === "ambiguous-target", (srvPartialErr as Error)?.message);
+  check("…naming both tenants the disk proves, not the single recorded one",
+    String((srvPartialErr as Error)?.message).includes("alpha") && String((srvPartialErr as Error)?.message).includes("beta"));
+  removeMesh("alpha");
+  // Over-refusal guard: a GENUINELY single-tenant broker via --server must still resolve (disk N=1).
+  const oneTenant = await makeRoot("one-tenant", ["only9"]);
+  roots.push(oneTenant);
+  recordMesh({ space: "only9", server: "nats://127.0.0.1:9912", root: oneTenant, mode: "auth", ts: new Date().toISOString() });
+  check("--server on a genuinely single-tenant broker STILL resolves (no over-refusal)",
+    resolveMeshTarget(oneTenant, { server: "nats://127.0.0.1:9912" }).space === "only9");
+  removeMesh("only9");
+
+  console.log("\n18) the validated inventory validates the account SHAPE, so status never crashes on a semantic-empty record");
+  const shape = await makeRoot("shape", ["good"]); // a REAL account beside the corrupt one
+  roots.push(shape);
+  writeFileSync(spaceAccountPath(authDir(shape), "alpha"), JSON.stringify({ space: "alpha" })); // round-trips its name, but NO account material
+  const shapeInv = accountInventory(authDir(shape));
+  check("the semantic-empty record is CORRUPT while the REAL account beside it stays a valid tenant (no over-classification)",
+    shapeInv.spaces.join(",") === "good" && shapeInv.corrupt.length === 1, shapeInv);
+  check("loadSpaceAccountAuth refuses the empty one loud (never returns a record compose will crash on)",
+    (await refusal(() => loadSpaceAccountAuth(authDir(shape), "alpha"))).includes("missing its account material"));
+  check("…and still loads the good account fine (the shape check is precise)", Boolean(loadSpaceAuth(authDir(shape), "good")));
+
+  console.log("\n19) shape is necessary not sufficient: a record that passes shape but fails COMPOSITION is caught at the consumer");
+  // A non-empty-string `account.jwt` passes the cheap shape gate but breaks composeSpaceAuth - a
+  // malformed JWT (decode throws) or a well-formed one signed by a FOREIGN operator (iss mismatch).
+  // Inventory deliberately stays shape-only (the broker-wide-guard/resolver/repair paths have no
+  // broker to bind against), so the "can this compose into usable trust" check lives at the load.
+  // (a) malformed JWT: real broker.json + a shape-passing account whose jwt won't decode.
+  const badJwt = await makeRoot("badjwt", ["good9"]); // its own real broker.json, plus a real donor account
+  roots.push(badJwt);
+  const donorAcct = JSON.parse(readFileSync(spaceAccountPath(authDir(badJwt), "good9"), "utf8"));
+  writeFileSync(spaceAccountPath(authDir(badJwt), "alpha"), JSON.stringify({ space: "alpha", account: { ...donorAcct.account, jwt: "not-a-jwt" } }));
+  check("a shape-passing record with a MALFORMED account JWT fails loud at load (not a silent bad compose)",
+    (await refusal(() => loadSpaceAuth(authDir(badJwt), "alpha"))) !== "");
+  // (b) foreign operator: this root's own broker, but an account well-formed under a DIFFERENT operator.
+  const foreign = await makeRoot("foreign", []); // has its own broker.json (makeRoot writes it)
+  roots.push(foreign);
+  const foreignBroker = await createBrokerAuth("foreign-op");
+  saveSpaceAccountAuth(authDir(foreign), await createSpaceAccountAuth(foreignBroker, "alpha"));
+  check("a well-formed account signed by a FOREIGN operator fails loud at load (iss mismatch), never composes",
+    (await refusal(() => loadSpaceAuth(authDir(foreign), "alpha"))).includes("not this broker's operator"));
+
+  console.log("\n20) the ONE key builder is injective over Unicode: a lone surrogate is refused, real names pass");
+  // `Buffer.from(s,"utf8")` folds EVERY lone surrogate to U+FFFD, so without a guard `"\uD800"` and
+  // `"\uDFFF"` both key to `efbfbd` - two spaces collapse to one account/registry/state key and the
+  // undercount/aliasing class hex closed re-opens, sourced from malformed Unicode. Reject at the ONE
+  // builder; every legitimate name passes.
+  for (const bad of ["\uD800", "\uDFFF", "\uDBFF", "a\uD800b"])
+    check(`lone surrogate ${JSON.stringify(bad)} refused at spaceKey (no efbfbd collapse)`, (await refusal(() => spaceKey(bad))).includes("well-formed"));
+  check("distinct lone surrogates cannot collide on one account file (both refused before any write)",
+    spaceKey("😀") !== undefined && (await refusal(() => spaceKey("\uD800"))) !== "" && (await refusal(() => spaceKey("\uDFFF"))) !== "");
+  check("legitimate names still round-trip distinctly: café / 中 / 𝔘 / 😀 / U+FFFD",
+    new Set(["café", "中", "𝔘", "😀", "�"].map((s) => spaceKey(s))).size === 5);
+  const surRoot = await makeRoot("surrogate", []);
+  roots.push(surRoot);
+  check("saveSpaceAccountAuth refuses a lone-surrogate space (never writes account.efbfbd.json)",
+    (await refusal(async () => saveSpaceAccountAuth(authDir(surRoot), await createSpaceAccountAuth(await createBrokerAuth("s"), "\uD800")))).includes("well-formed"));
+
+  console.log("\n21) a {space}-keyed process file admits its PRE-HEX name so an upgrade never orphans the auth-service signer");
+  const upgrade = await makeRoot("upgrade", ["only21"]);
+  roots.push(upgrade);
+  const ctx21 = { root: upgrade, space: "only21", userAuth: true };
+  const legacyPidName = `auth-service.${encodeURIComponent("only21")}.pid`;
+  const hexPidName = `auth-service.${spaceKey("only21")}.pid`;
+  writeFileSync(join(authDir(upgrade), "..", legacyPidName), "4242"); // pre-hex build's pidfile
+  check("localProcessPath resolves to the pre-hex pidfile when the canonical hex one is absent",
+    localProcessPath("auth-service.{space}.pid", ctx21).endsWith(legacyPidName));
+  writeFileSync(join(authDir(upgrade), "..", hexPidName), "4343");
+  check("both the pre-hex AND canonical file present ⇒ fails loud (ambiguous), never silently picks",
+    (await refusal(() => localProcessPath("auth-service.{space}.pid", ctx21))).includes("ambiguous"));
+  rmSync(join(authDir(upgrade), "..", legacyPidName));
+  check("with only the canonical present it resolves to the hex name (no over-admission)",
+    localProcessPath("auth-service.{space}.pid", ctx21).endsWith(hexPidName));
+  rmSync(join(authDir(upgrade), "..", hexPidName));
+  check("a non-{space} template (nats.pid) is unaffected by the legacy lookup",
+    localProcessPath("nats.pid", ctx21).endsWith("nats.pid"));
+
+  console.log("\n22) a record that fails COMPOSITION surfaces as a typed target error (status exits 0, never a raw throw)");
+  const composeFail = await makeRoot("composefail", []);
+  roots.push(composeFail);
+  await saveSpaceAccountAuth(authDir(composeFail), await createSpaceAccountAuth(await createBrokerAuth("other-op"), "alpha")); // foreign-signed under composeFail's own broker
+  let composeErr: unknown;
+  try { resolveMeshTarget(composeFail, {}); } catch (e) { composeErr = e; }
+  check("resolveMeshTarget throws a typed unreadable-auth (a surface catches it and exits 0, not crashes)",
+    isWorkspaceTargetError(composeErr) && (composeErr as { code: string }).code === "unreadable-auth", (composeErr as Error)?.message);
 
   console.log(`\nMULTI-SPACE SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

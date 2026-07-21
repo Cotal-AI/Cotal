@@ -8,7 +8,8 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
@@ -16,6 +17,21 @@ import { cotalPath } from "./paths.js";
 
 const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
 const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
+
+/** The pidfile to READ for a space's auth service: the canonical hex name, or the pre-hex
+ *  `auth-service.<encoded>.pid` a build before the re-key wrote. `up`'s restart and its stop read
+ *  this so an upgrade never orphans the live callout SIGNER of a pre-upgrade auth-service. Byte-
+ *  exact (a bare `existsSync` case-folds a sibling space's file on macOS/Windows); both present is
+ *  ambiguous and fails loud. Starts always WRITE the canonical PID_PATH. */
+function readPidPath(space: string): string {
+  const canonical = PID_PATH(space);
+  const legacy = cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
+  if (legacy === canonical) return canonical;
+  const exact = (p: string) => { try { return readdirSync(dirname(p)).includes(basename(p)); } catch { return false; } };
+  const c = exact(canonical), l = exact(legacy);
+  if (c && l) throw new Error(`both ${canonical} and the pre-hex ${legacy} exist for space "${space}" - ambiguous auth-service record; remove the stale one`);
+  return l && !c ? legacy : canonical;
+}
 
 function alive(pid: number): boolean {
   try {
@@ -32,7 +48,7 @@ export { resolveAuthProvider } from "@cotal-ai/core";
 
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
 export function authServiceUp(space: string): boolean {
-  const p = PID_PATH(space);
+  const p = readPidPath(space);
   if (!existsSync(p)) return false;
   const pid = Number(readFileSync(p, "utf8").trim());
   return Number.isFinite(pid) && alive(pid);
@@ -138,7 +154,7 @@ export async function ensureAuthService(opts: {
 /** Stop THIS space's auth service if we started one. Scoped by the space-carrying pid file — never
  *  a root-global kill. */
 export function stopAuthService(space: string): void {
-  const p = PID_PATH(space);
+  const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
   if (!existsSync(p)) return;
   const pid = Number(readFileSync(p, "utf8").trim());
   if (Number.isFinite(pid)) {

@@ -40,7 +40,34 @@ export function spaceKey(space: string): string {
   if (!space) throw new Error("a space name is required");
   if (space === "." || space === "..")
     throw new Error(`"${space}" cannot name a space - its state would escape the space's own segment`);
+  // The hex key is injective ONLY over well-formed strings: `Buffer.from(s,"utf8")` maps EVERY lone
+  // surrogate to U+FFFD, so `"\uD800"`, `"\uDFFF"` and `"�"` would all key to `efbfbd` - two
+  // such spaces collapse to one `account.<key>.json`/`space.<key>` and the undercount/aliasing
+  // class hex was introduced to close re-opens, sourced from malformed Unicode instead of ASCII
+  // case. Reject the ill-formed input at THE one builder; every legitimate name (BMP, combining,
+  // supplementary/emoji via PAIRED surrogates) is well-formed and passes untouched.
+  if (!isWellFormedUnicode(space))
+    throw new Error(`"${space}" is not a well-formed Unicode string (unpaired surrogate) - it cannot name a space`);
   return Buffer.from(space, "utf8").toString("hex");
+}
+
+/** Whether every UTF-16 code unit is either a BMP scalar or part of a valid surrogate PAIR — i.e.
+ *  the string has no LONE surrogate. `String.prototype.isWellFormed` is ES2024 (past this build's
+ *  lib target), so scan the units directly. Paired surrogates (emoji/supplementary) pass; a stray
+ *  high or low surrogate fails. This is the exact predicate that makes {@link spaceKey}'s UTF-8 hex
+ *  injective — `Buffer.from` folds every lone surrogate to U+FFFD, collapsing distinct names. */
+function isWellFormedUnicode(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high not followed by low
+      i++; // valid pair — skip the low half
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return false; // lone low surrogate
+    }
+  }
+  return true;
 }
 
 /** THE per-space path/key segment — `space.<hex>`, the {@link spaceKey} under a fixed prefix so a
@@ -87,14 +114,21 @@ export function userAuthStateDir(root: string, space: string): string {
 
 /** One-time shim for state dirs written before the hex segment. Byte-exact only: the legacy name
  *  must appear verbatim in the directory listing — a mere `existsSync` would case-fold on
- *  macOS/Windows and migrate a DIFFERENT space's dir. Names that parse as a canonical segment
- *  belong to the new namespace and are never legacy; `creds` is the agent-creds dir, the one
+ *  macOS/Windows and migrate a DIFFERENT space's dir. `creds` is the agent-creds dir, the one
  *  legacy spelling that was always an alias rather than state, so it is excluded rather than
  *  renamed out from under every agent secret. Only a dir carrying a provider pin migrates — an
- *  empty husk is a crashed enable, not state. */
+ *  empty husk is a crashed enable, not state.
+ *
+ *  The one irreducibly AMBIGUOUS case fails LOUD: a space literally named `space.<validhex>` has a
+ *  pre-hex dir whose name IS a canonical segment of a DIFFERENT space (e.g. `space.616c706861` is
+ *  both that space's legacy dir and the canonical home of `alpha`). Nothing on disk can say which
+ *  space owns it, so migrating either way would misattribute state - silently reading it as static
+ *  (the old bug: a user-auth space flips, and `mint` writes static admin creds) or stealing another
+ *  tenant's canonical dir. Refuse and make the operator disambiguate, rather than infer ownership
+ *  from the directory spelling. */
 function migrateLegacyUserAuthState(root: string, space: string, canonical: string): void {
   const legacyName = encodeURIComponent(space);
-  if (legacyName === "creds" || spaceFromSegment(legacyName) !== undefined) return;
+  if (legacyName === "creds") return;
   if (existsSync(canonical)) return; // already canonical (hex cannot case-fold, so this is exact)
   const dir = authDir(root);
   let entries;
@@ -106,6 +140,10 @@ function migrateLegacyUserAuthState(root: string, space: string, canonical: stri
   }
   const hit = entries.find((e) => e.name === legacyName && e.isDirectory());
   if (!hit || !pathHasUserAuthMarker(join(dir, legacyName))) return;
+  if (spaceFromSegment(legacyName) !== undefined)
+    throw new Error(
+      `${join(dir, legacyName)} is ambiguous: it is the pre-hex user-auth state dir of space "${space}" AND a canonical segment of space "${spaceFromSegment(legacyName)}" - refusing to guess which tenant owns it. Move it to ${canonical} yourself if it belongs to "${space}", or remove it.`,
+    );
   renameSync(join(dir, legacyName), canonical);
 }
 
@@ -346,6 +384,17 @@ function spaceFromAccountFile(name: string): string | undefined {
   return space.length > 0 && accountFileKey(space) === key ? space : undefined;
 }
 
+/** Whether `v` carries the {@link SpaceAccountAuth} account material a reader will dereference. A
+ *  record can round-trip its `space` yet be semantically empty (`{"space":"alpha"}`, no `account`),
+ *  which a name-only check counts as a tenant - then `composeSpaceAuth`/`status` crash on
+ *  `account.jwt` of undefined. "Validated inventory" must mean the shape those readers compose, so
+ *  the fields they read (pub/jwt/signingSeed/signingPub, all non-empty strings) are required here. */
+function isAccountShape(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const a = v as Record<string, unknown>;
+  return (["pub", "jwt", "signingSeed", "signingPub"] as const).every((k) => typeof a[k] === "string" && (a[k] as string).length > 0);
+}
+
 /** Where one space's own account record lives: a FLAT file beside `broker.json`, keyed by
  *  {@link accountFileKey}. Flat (not `<space>/account.json`) because `<authDir>/<space>/` is
  *  {@link userAuthStateDir}; hex-keyed because a raw space name in the filename both aliased that
@@ -357,11 +406,15 @@ export function spaceAccountPath(dir: string, space: string): string {
 
 /** Runtime-validate a system-account generation. `readAuthRecord` is only a type CAST over JSON,
  *  so a hand-edited string/float/negative/unsafe value would otherwise flow into the successor
- *  arithmetic and destroy the discriminator ("0"+1 is "01"; at 2^53, gen+1 === gen). Absent reads
- *  as 0 (pre-generation records, migration); anything else must be a non-negative safe integer or
- *  the record is corrupt - fail closed BEFORE any idempotent/successor handling. */
+ *  arithmetic and destroy the discriminator ("0"+1 is "01"; at 2^53, gen+1 === gen). ONLY an
+ *  ABSENT field reads as 0 - that is the one shape a pre-generation record can have, because the
+ *  writer always emits a number. An explicit JSON `null` can only come from tampering/corruption,
+ *  and defaulting it would turn a doctored current record into a "generation-0 predecessor" and
+ *  re-arm the very rollback this field exists to refuse (found live in review). Every PRESENT
+ *  value must be a non-negative safe integer or the record is corrupt - fail closed BEFORE any
+ *  idempotent/successor handling. */
 function brokerGen(v: unknown, where: string): number {
-  if (v === undefined || v === null) return 0;
+  if (v === undefined) return 0;
   if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0)
     throw new Error(`${where}: system-account generation ${JSON.stringify(v)} is not a non-negative integer - the record is corrupt; restore it from backup`);
   return v;
@@ -399,12 +452,15 @@ export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
     // only as a belt against a hand-edited gen smuggling a provably OLDER sys back in.
     if (!existing.sys?.jwt)
       throw new Error(`${f} holds broker trust without a system-account JWT - the record is corrupt; restore it from backup before overwriting`);
+    // BOTH generations validate before EITHER branch: a malformed value refuses even on the
+    // byte-identical idempotent path, rather than being silently absorbed and rewritten - a
+    // corrupt input never gets a success exit from a trust write.
+    const persistedGen = brokerGen(existing.gen, f);
+    const incomingGen = brokerGen(broker.gen, "the value being written");
     const sysUnchanged = existing.sys.pub === broker.sys.pub && existing.sys.jwt === broker.sys.jwt;
     if (sysUnchanged) {
-      gen = brokerGen(existing.gen, f); // idempotent re-save of the current authority - the generation holds
+      gen = persistedGen; // idempotent re-save of the current authority - the generation holds
     } else {
-      const persistedGen = brokerGen(existing.gen, f);
-      const incomingGen = brokerGen(broker.gen, "the value being written");
       if (incomingGen !== persistedGen + 1)
         throw new Error(
           `${f} is at system-account generation ${persistedGen} and a system-account change must be its direct successor (generation ${persistedGen + 1}), but the value being written carries generation ${incomingGen} - refusing the stale write: it would resurrect a retired system account. Rotate from the current broker record and save that result.`,
@@ -478,6 +534,8 @@ export function loadSpaceAccountAuth(dir: string, space: string): SpaceAccountAu
   if (doc) {
     if (doc.space !== space)
       throw new Error(`${spaceAccountPath(dir, space)} holds space "${doc.space}", not "${space}" - the account record was renamed or corrupted`);
+    if (!isAccountShape(doc.account))
+      throw new Error(`${spaceAccountPath(dir, space)} is missing its account material (pub/jwt/signingSeed/signingPub) - the record is corrupt; restore it from backup`);
     return doc;
   }
   const legacy = loadLegacySpaceAuth(dir);
@@ -607,14 +665,19 @@ export function accountInventory(dir: string): { spaces: string[]; corrupt: stri
         corrupt.push(entry.name);
         continue;
       }
-      let doc: { space?: unknown };
+      let doc: { space?: unknown; account?: unknown };
       try {
-        doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown };
+        doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown; account?: unknown };
       } catch {
         corrupt.push(entry.name);
         continue;
       }
-      if (typeof doc.space !== "string" || doc.space !== fromName) {
+      // The name must round-trip AND the record must carry the account material it claims to.
+      // "Validated inventory" has to mean the shape a reader will compose, or a semantically-empty
+      // record (`{"space":"alpha"}`, no `account`) counts as a tenant here and then crashes the very
+      // `status`/compose path this inventory exists to keep fail-closed. Match the SpaceAccountAuth
+      // fields those readers dereference; a missing/blank one is corruption, not a tenant.
+      if (typeof doc.space !== "string" || doc.space !== fromName || !isAccountShape(doc.account)) {
         corrupt.push(entry.name);
         continue;
       }
