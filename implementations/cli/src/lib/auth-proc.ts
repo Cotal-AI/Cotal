@@ -33,18 +33,38 @@ function readPidPath(space: string): string {
   return l && !c ? legacy : canonical;
 }
 
-/** Whether a process EXISTS - the hardened probe shared with `down` (`commands/down.ts:170`): a
- *  successful `kill(pid,0)` OR an EPERM (the process exists but is owned by another user, so we
- *  cannot signal it) both mean alive; only ESRCH (and other definitely-gone errnos) mean dead.
- *  Mapping EPERM to "dead" is the bug the reclaim/stop contract cannot tolerate - it would treat a
- *  live-but-unsignalable signer as reclaimable and orphan it. Callers additionally require a
- *  POSITIVE pid before probing (a 0/negative value signals a whole process group). */
-function alive(pid: number): boolean {
+/** Parse a pidfile's content to a valid OS pid, or undefined. Strict on purpose: a pid must be a
+ *  positive SAFE integer. A fractional (`1.5`) or unsafe-integer (`2**53`) value is NOT a pid -
+ *  `process.kill` rejects it with `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE`, which {@link alive}
+ *  would then read as "not alive" and the reclaim/claim/stop paths as "proven dead", deleting an
+ *  UNATTRIBUTABLE record. So every pid function parses through here BEFORE probing/deleting/
+ *  signalling: undefined means unattributable (yield/refuse), never dead. Stricter than `down`'s
+ *  `Number.isInteger` variant, which would admit `2**53`. */
+function parsePid(raw: string): number | undefined {
+  const n = Number(raw.trim());
+  // A Node/POSIX pid is a positive int that fits in a 32-bit signed int; `process.kill` throws
+  // ERR_OUT_OF_RANGE past 2**31-1. Bound it here so an oversized value is rejected as syntax rather
+  // than reaching the probe (which would also refuse it, as UNKNOWN - this is the cheaper first line).
+  return Number.isInteger(n) && n > 0 && n <= 0x7fffffff ? n : undefined;
+}
+
+/** TRI-STATE liveness probe. The reclaim/claim/stop contract turns on ONE rule: only an actual
+ *  `ESRCH` proves a process is gone. A successful `kill(pid,0)` or an EPERM (it exists but is
+ *  another user's) means alive; ANY OTHER outcome - `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE` from
+ *  a syntactically-valid-but-unsignalable pid (a positive safe integer beyond the OS pid range,
+ *  e.g. 2**31 on this host), or any unknown errno - is UNKNOWN, never dead. A two-state
+ *  "alive-or-dead" boolean is the defect: it collapses "unknown" into "dead", so a value the kernel
+ *  will not accept gets its record deleted and a competitor launched. Callers reclaim/steal ONLY on
+ *  `dead`; `alive` and `unknown` both preserve. Pair with {@link parsePid} for syntax. */
+function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   try {
     process.kill(pid, 0);
-    return true;
+    return "alive";
   } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, just not ours to signal
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return "dead";
+    if (code === "EPERM") return "alive"; // exists, just not ours to signal
+    return "unknown"; // ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE / anything else - cannot attribute
   }
 }
 
@@ -77,24 +97,29 @@ export function reclaimDeadLegacyPid(space: string): void {
     rmSync(legacy, { force: true }); // empty = pre-protocol husk, safe to reclaim (as the canonical claim does)
     return;
   }
-  const pid = Number(trimmed);
-  if (!Number.isFinite(pid) || pid <= 0)
+  const pid = parsePid(trimmed);
+  if (pid === undefined)
     throw new Error(
       `pre-hex auth-service pidfile ${legacy} holds unattributable content ${JSON.stringify(trimmed)} - refusing to reclaim it or start a competing service; inspect or remove it manually`,
     );
-  if (alive(pid))
+  const state = probeLiveness(pid);
+  if (state === "alive")
     throw new Error(
       `a pre-hex auth-service is already running (pid ${pid}) at ${legacy} - refusing to start a second; run \`cotal down\` to stop it, then retry`,
     );
-  rmSync(legacy, { force: true }); // a positive PID proven dead - reclaim it
+  if (state === "unknown")
+    throw new Error(
+      `cannot determine whether pid ${pid} in ${legacy} is alive - refusing to reclaim an unattributable record or start a competing service; inspect or remove it manually`,
+    );
+  rmSync(legacy, { force: true }); // ESRCH-proven dead - reclaim it
 }
 
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
 export function authServiceUp(space: string): boolean {
   const p = readPidPath(space);
   if (!existsSync(p)) return false;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  return Number.isFinite(pid) && pid > 0 && alive(pid); // a 0/negative pid would probe a process GROUP
+  const pid = parsePid(readFileSync(p, "utf8")); // strict positive safe integer, or undefined
+  return pid !== undefined && probeLiveness(pid) === "alive"; // up only if provably present; dead/unknown → not up
 }
 
 /** EXCLUSIVE pidfile claim (#29 HIGH 3 belt): the slot is published ATOMICALLY and
@@ -134,13 +159,17 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
         continue; // vanished between publish-refusal and read - retry the claim once
       }
       const trimmed = raw.trim();
-      const pid = trimmed === "" ? Number.NaN : Number(trimmed);
-      if (Number.isFinite(pid) && pid > 0 && alive(pid)) return { livePid: pid };
-      if ((trimmed === "" || (Number.isFinite(pid) && pid > 0)) && attempt === 0) {
+      // Reclaim ONLY an empty pre-protocol slot or a pid ESRCH-proven dead. A live/EPERM holder is
+      // adopted; an unattributable record (garbled/fractional/unsignalable, or a probe that is not a
+      // clean ESRCH) is never stolen - yield.
+      const pid = parsePid(trimmed);
+      const state = pid === undefined ? undefined : probeLiveness(pid);
+      if (state === "alive") return { livePid: pid! };
+      if ((trimmed === "" || state === "dead") && attempt === 0) {
         try { rmSync(target); } catch { /* a sibling removed it first */ }
-        continue; // a dead holder, or an empty pre-protocol slot: reclaim ONCE
+        continue; // empty pre-protocol slot, or ESRCH-proven-dead holder: reclaim ONCE
       }
-      return undefined; // garbled content (or still contested after the retry): never steal
+      return undefined; // unattributable/unknown content (or still contested after the retry): never steal
     }
   }
   return undefined;
@@ -211,8 +240,8 @@ export function stopAuthService(space: string): void {
     rmSync(p, { force: true }); // empty husk: no process to signal
     return;
   }
-  const pid = Number(trimmed);
-  if (!Number.isFinite(pid) || pid <= 0)
+  const pid = parsePid(trimmed);
+  if (pid === undefined)
     throw new Error(
       `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
     );

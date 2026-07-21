@@ -577,9 +577,17 @@ try {
     check("a GARBLED legacy pidfile makes reclaim THROW (unattributable, never stolen)",
       (await refusal(() => reclaimDeadLegacyPid("garbled"))).includes("unattributable"));
     check("…and the garbled record is LEFT in place (no delete, no competing start)", existsSync(legacyPidPath("garbled")));
-    for (const bad of ["0", "-5"])
-      check(`a non-positive legacy pid ${JSON.stringify(bad)} is also unattributable → throws, file kept`,
-        (writeFileSync(legacyPidPath("garbled"), bad), (await refusal(() => reclaimDeadLegacyPid("garbled"))).includes("unattributable") && existsSync(legacyPidPath("garbled"))));
+    // Every value the kernel cannot map to a signalable process must REFUSE, never be misread as
+    // "proven dead" and reclaimed: non-positive, fractional, and syntactic garbage are caught by the
+    // strict parse ("unattributable"); a positive SAFE integer beyond the OS pid range (2**31 on
+    // this host) parses fine but `kill` throws a non-ESRCH error, so the tri-state probe returns
+    // UNKNOWN and reclaim refuses ("cannot determine"). Only a clean ESRCH is dead.
+    for (const bad of ["0", "-5", "1.5", "9007199254740992", " 12 x", "abc", "2147483648"]) {
+      writeFileSync(legacyPidPath("garbled"), bad);
+      const msg = await refusal(() => reclaimDeadLegacyPid("garbled"));
+      check(`a kernel-unsignalable legacy pid ${JSON.stringify(bad)} → reclaim REFUSES, file kept (never misread as dead)`,
+        msg !== "" && (msg.includes("unattributable") || msg.includes("cannot determine")) && existsSync(legacyPidPath("garbled")), msg);
+    }
     rmSync(legacyPidPath("garbled"), { force: true });
 
     // (d) LIVE legacy (our own pid) → reclaim refuses to start a second, and does NOT delete it.
