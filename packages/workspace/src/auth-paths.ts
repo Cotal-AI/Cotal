@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
-import { mkSecretDir, writeSecretFile, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { join, dirname, resolve, basename } from "node:path";
+import { assertLifecycleToken, mkSecretDir, writeSecretFile, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 
 /**
  * On-disk auth-material I/O for a local checkout's `.cotal/` — machine-local path resolution plus
@@ -66,19 +66,41 @@ export function agentSecretSegment(name: string): string {
 // One filename source per kind — the store key and the materialized path project the SAME name,
 // so the two can never drift apart (the `DELIVERY_CREDS_KEY` lesson, per kind).
 const agentFile = {
-  creds: (name: string) => `${agentSecretSegment(name)}.creds`,
-  actorToken: (name: string) => `${agentSecretSegment(name)}.actor-token`,
-  sentinelCreds: (name: string) => `${agentSecretSegment(name)}.sentinel.creds`,
+  creds: (base: string) => `${base}.creds`,
+  actorToken: (base: string) => `${base}.actor-token`,
+  sentinelCreds: (base: string) => `${base}.sentinel.creds`,
 };
+
+/** The per-INCARNATION filename base `<name>-<lifecycleUid>` (SPEC 13.1 naming discipline brought
+ *  to the FS): a manager-provisioned incarnation's secret family embeds its lifecycle UID, so a
+ *  stale or replayed teardown for a retired incarnation addresses names a same-alias successor
+ *  never uses — name-disjoint by construction, mirroring the broker-side `dm_<owner>-<actor>-<uid>`
+ *  discipline. Both halves are independently guarded (name alphabet, uid token); the uid's fixed
+ *  `[a-z0-9]{26,32}` entropy makes a cross-alias collision (`a-<uid>` vs name `a-...`) require the
+ *  same 26+-char random token, i.e. it does not occur. Standing OPERATOR secrets (`cotal mint`,
+ *  setup-seeded creds) stay on the name-keyed builders below — they have no lifecycle. */
+function agentIncarnationBase(name: string, lifecycleUid: string): string {
+  return `${agentSecretSegment(name)}-${assertLifecycleToken(lifecycleUid)}`;
+}
 
 /** Canonical {@link SecretStore} keys of the per-agent standing secrets, mirroring today's
  *  `.cotal/auth/creds/<name>.<kind>` layout byte-for-byte under the workspace FS composition.
  *  `<name>.creds` is the static-auth scoped cred; the actor token + sentinel cred are the
  *  user-mode pair a spawn mints. The transient `<name>.auth-health.json` is runtime state, NOT a
  *  secret kind — it stays plain-file. */
-export const agentCredsKey = (name: string): string => `auth/creds/${agentFile.creds(name)}`;
-export const agentActorTokenKey = (name: string): string => `auth/creds/${agentFile.actorToken(name)}`;
-export const agentSentinelCredsKey = (name: string): string => `auth/creds/${agentFile.sentinelCreds(name)}`;
+export const agentCredsKey = (name: string): string => `auth/creds/${agentFile.creds(agentSecretSegment(name))}`;
+export const agentActorTokenKey = (name: string): string => `auth/creds/${agentFile.actorToken(agentSecretSegment(name))}`;
+export const agentSentinelCredsKey = (name: string): string => `auth/creds/${agentFile.sentinelCreds(agentSecretSegment(name))}`;
+
+/** Lifecycle-keyed {@link SecretStore} keys of one INCARNATION's secret family — the manager-spawn
+ *  counterparts of the standing name-keyed keys above (see {@link agentIncarnationBase} for why the
+ *  uid is embedded). */
+export const agentLifecycleCredsKey = (name: string, lifecycleUid: string): string =>
+  `auth/creds/${agentFile.creds(agentIncarnationBase(name, lifecycleUid))}`;
+export const agentLifecycleActorTokenKey = (name: string, lifecycleUid: string): string =>
+  `auth/creds/${agentFile.actorToken(agentIncarnationBase(name, lifecycleUid))}`;
+export const agentLifecycleSentinelCredsKey = (name: string, lifecycleUid: string): string =>
+  `auth/creds/${agentFile.sentinelCreds(agentIncarnationBase(name, lifecycleUid))}`;
 
 /** The FS materialization paths of one agent's secret family (plus its non-secret health file) —
  *  built from the SAME filename source as the key builders. These are the paths subprocesses read
@@ -88,12 +110,48 @@ export function agentSecretFilePaths(root: string, name: string): {
   creds: string; actorToken: string; sentinelCreds: string; health: string;
 } {
   const dir = agentCredsDir(root);
+  const base = agentSecretSegment(name);
   return {
-    creds: join(dir, agentFile.creds(name)),
-    actorToken: join(dir, agentFile.actorToken(name)),
-    sentinelCreds: join(dir, agentFile.sentinelCreds(name)),
-    health: join(dir, `${agentSecretSegment(name)}.auth-health.json`),
+    creds: join(dir, agentFile.creds(base)),
+    actorToken: join(dir, agentFile.actorToken(base)),
+    sentinelCreds: join(dir, agentFile.sentinelCreds(base)),
+    health: join(dir, `${base}.auth-health.json`),
   };
+}
+
+/** The lifecycle-keyed FS materialization paths of one INCARNATION's secret family (plus its
+ *  non-secret health file) — same projection rule as {@link agentSecretFilePaths}, built from the
+ *  {@link agentIncarnationBase} so a retired incarnation's teardown can never address a same-alias
+ *  successor's files. */
+export function agentLifecycleSecretFilePaths(root: string, name: string, lifecycleUid: string): {
+  creds: string; actorToken: string; sentinelCreds: string; health: string;
+} {
+  const dir = agentCredsDir(root);
+  const base = agentIncarnationBase(name, lifecycleUid);
+  return {
+    creds: join(dir, agentFile.creds(base)),
+    actorToken: join(dir, agentFile.actorToken(base)),
+    sentinelCreds: join(dir, agentFile.sentinelCreds(base)),
+    health: join(dir, `${base}.auth-health.json`),
+  };
+}
+
+/** The store key of a materialized agent-secret FILE — `auth/creds/<basename>`, the same projection
+ *  the builders above apply, for callers that hold a RECORDED path (a resume inventory, a manifest
+ *  ledger) rather than the (name, uid) coordinates: under mixed generations the recorded path is
+ *  the truth, and its key must be derived from the SAME filename, never re-derived from the name
+ *  alone (which would silently address a different generation's row). Refuses a filename that no
+ *  valid provisioning could have written. */
+export function agentSecretKeyForFile(path: string): string {
+  const file = basename(path);
+  for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
+    if (!file.endsWith(suffix)) continue;
+    const base = file.slice(0, -suffix.length);
+    if (!/^[A-Za-z0-9_-]+$/.test(base))
+      throw new Error(`"${file}" is not a provisionable agent-secret filename (base alphabet: letters, digits, _ -)`);
+    return `auth/creds/${file}`;
+  }
+  throw new Error(`"${file}" is not an agent-secret filename (expected a .creds / .actor-token / .sentinel.creds suffix)`);
 }
 
 /** Enumerate the store keys of every per-agent standing secret currently materialized under this

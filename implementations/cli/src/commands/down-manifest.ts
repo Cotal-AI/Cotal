@@ -28,7 +28,7 @@ import {
   subjectMatches,
   unlinkFileNoFollow,
 } from "@cotal-ai/core";
-import { agentActorTokenKey, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
@@ -64,11 +64,11 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
 
   // 3) Resolve every owned path from validated IDs up front — a bad name fails the WHOLE teardown
   //    before any side effect (no partial "validated the one I'm deleting" flow).
-  let credPaths: Array<{ requested: string; name: string; id: string; path: string }>;
+  let credPaths: Array<{ requested: string; name: string; id: string; path: string; lifecycleUid?: string }>;
   let runDir: string | null;
   let specPath: string;
   try {
-    credPaths = ledger.created.agents.map((a) => ({ requested: a.requested, name: a.name, id: a.id, path: ownedCredPath(root, a.name) }));
+    credPaths = ledger.created.agents.map((a) => ({ requested: a.requested, name: a.name, id: a.id, path: ownedCredPath(root, a.name, a.lifecycleUid), lifecycleUid: a.lifecycleUid }));
     const runParent = realDirNoSymlink(root, ".cotal", "run"); // refuse a symlinked .cotal/run before deriving under it
     runDir = realDirNoSymlink(root, ".cotal", "run", ledger.runId);
     specPath = join(runParent ?? join(root, ".cotal", "run"), `${ledger.runId}.json`);
@@ -211,7 +211,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     // source of truth (byte-identical under the local FS composition), as does the delete.
     const gate = credMaterializationGate(cp.path);
     if (gate === "absent") continue; // no cred file — proven absent
-    const raw = gate === "ok" ? await secrets.get(agentCredsKey(cp.name)) : undefined;
+    const raw = gate === "ok" ? await secrets.get(agentSecretKeyForFile(cp.path)) : undefined;
     const sub = gate === "suspect" || raw === undefined ? null : credSubject(raw);
     if (sub === null) {
       console.error(c.yellow(`  ! ${cp.name} creds: unreadable/unverifiable - left in place (resolve by hand if it's a stale cred)`));
@@ -222,7 +222,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
       continue;
     }
     try {
-      await secrets.delete(agentCredsKey(cp.name));
+      await secrets.delete(agentSecretKeyForFile(cp.path));
       unlinkFileNoFollow(cp.path); // clear the materialization (locally the delete above WAS it)
       console.log(c.dim(`  • removed creds for ${cp.name}`));
     } catch (e) {
@@ -288,13 +288,17 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
 async function teardownUserModeAuthority(
   root: string,
   space: string,
-  cp: { requested: string; name: string; id: string; path: string },
+  cp: { requested: string; name: string; id: string; path: string; lifecycleUid?: string },
   owner: string,
   secrets: ReturnType<typeof workspaceSecretStore>,
   liveById: Map<string, { name: string; id: string }>,
   unresolvedCredIds: Set<string>,
 ): Promise<void> {
-  const files = agentSecretFilePaths(root, cp.name);
+  // A uid-carrying ledger row maps to the lifecycle-keyed family its spawn materialized; a
+  // pre-split row to the legacy name-keyed layout.
+  const files = cp.lifecycleUid
+    ? agentLifecycleSecretFilePaths(root, cp.name, cp.lifecycleUid)
+    : agentSecretFilePaths(root, cp.name);
   const tokenGate = credMaterializationGate(files.actorToken);
   const sentinelGate = credMaterializationGate(files.sentinelCreds);
   try {
@@ -315,8 +319,8 @@ async function teardownUserModeAuthority(
     if (foreign) {
       console.log(c.yellow(`  ~ ${cp.name}: a different live agent holds this name - its secret files are left in place (our grant row is revoked)`));
     } else if (tokenGate === "ok" || sentinelGate === "ok") {
-      await secrets.delete(agentActorTokenKey(cp.name));
-      await secrets.delete(agentSentinelCredsKey(cp.name));
+      await secrets.delete(agentSecretKeyForFile(files.actorToken));
+      await secrets.delete(agentSecretKeyForFile(files.sentinelCreds));
       unlinkFileNoFollow(files.actorToken); // the materializations (locally the deletes above WERE them)
       unlinkFileNoFollow(files.sentinelCreds);
       rmSync(files.health, { force: true });

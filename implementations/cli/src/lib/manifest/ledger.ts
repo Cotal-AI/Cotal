@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, readdirSync, renameSync, lstatSync } from 
 import { join } from "node:path";
 import { z } from "zod";
 import { assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink } from "@cotal-ai/core";
-import { agentSecretFilePaths } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, agentSecretFilePaths } from "@cotal-ai/workspace";
 
 export const LEDGER_VERSION = "cotal-ledger/v1";
 
@@ -38,6 +38,9 @@ const LedgerAgentSchema = z.strictObject({
   id: z.string().min(1),
   /** The resolved hash at spawn (drift/stale detection on re-apply). */
   hash: z.string().regex(HASH, "hash must be alphanumeric"),
+  /** The incarnation's lifecycle UID from the spawn reply (SPEC 13.1). Optional: rows written by a
+   *  pre-split generation carry none, and their creds stay filed under the name-keyed path. */
+  lifecycleUid: z.string().regex(/^[a-z0-9]{26,32}$/, "lifecycleUid must be a lifecycle uid token").optional(),
 });
 
 const LedgerSchema = z.strictObject({
@@ -207,12 +210,15 @@ export function findLedgerByRun(root: string, runId: string): { path: string; le
   return { path, ledger };
 }
 
-/** Derive an owned agent's cred path under the known auth root — `<root>/.cotal/auth/creds/<name>.creds`
- *  — from the SPAWNED name. The ledger never stores a cred path; teardown derives it here through
- *  the workspace's single filename source for the kind (`agentSecretFilePaths`, whose guarded
+/** Derive an owned agent's cred path under the known auth root from the SPAWNED name (+ the
+ *  recorded lifecycle uid when the row carries one). The ledger never stores a cred path; teardown
+ *  derives it here through the workspace's single filename source for the kind (the guarded
  *  segment refuses any name that could escape the creds dir), so teardown can never derive a
- *  DIFFERENT path than provisioning wrote. */
-export function ownedCredPath(root: string, spawnedName: string): string {
+ *  DIFFERENT path than provisioning wrote: a uid-carrying row maps to the lifecycle-keyed file its
+ *  spawn materialized, a pre-split row to the legacy name-keyed one. */
+export function ownedCredPath(root: string, spawnedName: string, lifecycleUid?: string): string {
   assertValidName(spawnedName); // manifest-level refusal first, with the ledger's own phrasing
-  return agentSecretFilePaths(root, spawnedName).creds;
+  return lifecycleUid
+    ? agentLifecycleSecretFilePaths(root, spawnedName, lifecycleUid).creds
+    : agentSecretFilePaths(root, spawnedName).creds;
 }

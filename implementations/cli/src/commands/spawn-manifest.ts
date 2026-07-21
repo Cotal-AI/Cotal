@@ -258,8 +258,10 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
           continue;
         }
-        const d = reply.data as { name: string; id: string; requested: string; hash: string };
-        agents.push({ requested: d.requested, name: d.name, id: d.id, hash: d.hash });
+        const d = reply.data as { name: string; id: string; requested: string; hash: string; lifecycleUid?: string };
+        // Record the incarnation uid so `down -f` derives the lifecycle-keyed cred path this spawn
+        // actually materialized (a pre-split manager's reply carries none → legacy name-keyed path).
+        agents.push({ requested: d.requested, name: d.name, id: d.id, hash: d.hash, lifecycleUid: d.lifecycleUid });
         launchedNow.push(d.name);
         console.log(c.green(`✓ launched ${d.name}`) + c.dim(` (${e.agent.agentType})`));
       }
