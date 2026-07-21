@@ -123,21 +123,31 @@ export function managerClusterArtifacts(): {
   return { document, rootDigest, manifest, closureDigest };
 }
 
-/** The handlers the manager supplies to back each served command (1a: just `status`). Kept as a
- *  narrow interface so the contract module stays broker-free and the manager owns all state. */
+/** The handlers the manager supplies to back each served command (1a: just `status`). Each
+ *  receives the serve CONTEXT (the broker-authenticated subject shape) so the manager can run its
+ *  shared admission chokepoint on the caller principal. Kept as a narrow interface so the contract
+ *  module stays broker-free and the manager owns all state. */
 export interface ManagerServiceHandlers {
-  status(): ManagerStatus | Promise<ManagerStatus>;
+  status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
 }
+
+/** The `status` command's compiled contract pair — exported for CALLERS (`epCall` pins the same
+ *  digests the cluster document registers; the generic invoke CLI later compiles these from the
+ *  describe answer instead). */
+export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } = {
+  input: STATUS_INPUT,
+  output: STATUS_OUTPUT,
+};
 
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes: each command's provenance-branded compiled
  *  contracts (matching the document's pinned digests exactly) plus its handler. 1a serves only
- *  `status`; the handler ignores its (void) input and returns the manager-health summary. */
+ *  `status`; the handler takes no (void) input and returns the manager-health summary. */
 export function managerCommandDefs(handlers: ManagerServiceHandlers): EpCommandDef[] {
   return [
     {
       command: "status",
       contract: { input: STATUS_INPUT, output: STATUS_OUTPUT },
-      handler: (_ctx: EpServeContext) => handlers.status(),
+      handler: (ctx: EpServeContext) => handlers.status(ctx),
     },
   ];
 }

@@ -66,6 +66,26 @@ import {
   type LifecycleStateTransport,
   type StaticManagedSlotRow,
 } from "@cotal-ai/core";
+// P2 item 1 (1a-serve): the manager as an ordinary v0.4 `service` endpoint — the §13.1
+// endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
+// the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
+import {
+  provisionEndpointGateOpen,
+  endpointRegistrationBarrier,
+  serveIssuanceGateKv,
+  registerServiceInstance,
+  authorizeServeGrant,
+  serveEndpoint,
+  EpEnvelopeError,
+  type EpServeContext,
+  type EpServeGrant,
+  type EpServeHandle,
+  type Identity,
+  type ServiceNameAuthority,
+} from "@cotal-ai/core";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, type ManagerStatus } from "./manager-service-contract.js";
+import type { NatsConnection } from "@nats-io/transport-node";
+import type { KV } from "@nats-io/kv";
 import {
   staticLifecycleTransport,
   activateStaticLifecycle,
@@ -434,6 +454,14 @@ export class Manager {
    *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
    *  coordinate every static activation records. */
   private readonly managerLifecycleUid = mintLifecycleUid();
+  /** P2 item 1 (1a-serve): the manager's v0.4 service-endpoint serve state — the serve handle +
+   *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
+   *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
+   *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
+   *  in user mode (the named 1a follow-up), and before registration completes. */
+  private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds: string };
+  /** Process start, for the served `status` uptime. */
+  private readonly startedAtMs = Date.now();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
    *  (name, lifecycleUid). The detached freeSlot teardown and every same-name-spawn nudge that
    *  re-drives it JOIN one promise instead of launching a SECOND, concurrent teardown. Without it,
@@ -635,6 +663,12 @@ export class Manager {
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
       this.credRenewTimer.unref?.();
     }
+    // P2 item 1 (1a-serve): register the manager as an ordinary v0.4 `service` endpoint (SPEC
+    // §13.7/§13.9) and DUAL-SERVE its typed 1a surface (`status`) on the ep rails beside the ctl
+    // tiers — nothing deleted. STATIC auth mode only for 1a; the user-mode registration (space-
+    // owner name authority) is the named follow-up. Fail-loud: a manager that cannot register
+    // its service endpoint does not start half-registered.
+    if (this.auth && !this.userMode) await this.registerManagerService();
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -688,6 +722,27 @@ export class Manager {
           } catch (e) {
             console.error(`! managed cred renewal ${a.name}: ${(e as Error).message} - the agent dies loud at this cred's expiry unless it is reminted`);
           }
+        }
+      }
+      // P2 item 1 (checklist 7): the manager is the `endpoint-serve` renewal owner for its OWN
+      // service credential — re-mint the SAME serve identity with a fresh bounded exp THROUGH the
+      // §13.1 mint fence over a scoped one-shot executor (every renewal stages a distinct ledger
+      // row and wins the gate CAS; never the standing connection). The serve connection's
+      // authenticator presents the refreshed credential on its next (re)connect.
+      if (this.serviceServe && this.auth) {
+        const s = this.serviceServe;
+        const authRef = this.auth;
+        try {
+          const health = inspectCredHealth(s.creds);
+          if (health.state !== "healthy") {
+            s.creds = await this.withEndpointServeExecutor(({ authKv }) =>
+              mintCreds(authRef, s.identity, "endpoint-serve", {
+                serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerLifecycleUid }),
+                endpointServe: s.grant,
+              }));
+          }
+        } catch (e) {
+          console.error(`! endpoint-serve renewal: ${(e as Error).message} - the manager's service endpoint dies loud at this cred's expiry unless it is re-registered`);
         }
       }
     } catch (e) {
@@ -1107,8 +1162,20 @@ export class Manager {
       await this.stopRetainedAgentsOnExit();
     }
     await this.ep.releaseManagerLease(this.leaseRevision);
+    await this.stopServiceServe();
     await this.ep.stop();
     await this.attach.stop();
+  }
+
+  /** Stop the v0.4 service-endpoint serve loop (drain subscriptions, await in-flight handlers)
+   *  and drop its dedicated connection. Best-effort by design — both exit paths (graceful stop,
+   *  lease-loss fail-close) must complete their remaining teardown even if the broker is gone. */
+  private async stopServiceServe(): Promise<void> {
+    const s = this.serviceServe;
+    if (!s) return;
+    this.serviceServe = undefined;
+    try { await s.handle.stop(); } catch { /* best effort */ }
+    try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
   }
 
   /** Refresh the singleton lease before the bucket TTL expires it. On loss (missed the TTL, or another
@@ -1128,6 +1195,7 @@ export class Manager {
         if (this.maintenanceState === "active" && !this.resumeRequired) await this.teardownManagedAgents();
         else await this.stopRetainedAgentsOnExit();
       } catch { /* best effort */ }
+      await this.stopServiceServe();
       try { await this.ep.stop(); } catch { /* best effort */ }
       try { await this.attach.stop(); } catch { /* best effort */ }
       process.exit(1);
@@ -1268,12 +1336,49 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
-    const release = this.beginLifecycle();
-    if (!release) return { ok: false, error: this.maintenanceError() };
+    const admission = this.admitControl(req.from.id);
+    if (admission.refusal !== undefined) return { ok: false, error: admission.refusal };
     try {
       return await this.handleActive(req, tier);
     } finally {
+      admission.release();
+    }
+  }
+
+  /** The ONE shared control-admission chokepoint (P2 item 1, checklist 3/8) BOTH dispatch doors
+   *  run — the v0.3 `ctl` door ({@link handle}) and the v0.4 `ep` service handlers
+   *  ({@link serveGated}): the maintenance/resume fence (`beginLifecycle`: a resume-pending or
+   *  non-active manager accepts no ordinary control work) and then the F5(a) membership gate
+   *  ({@link lifecycleMembershipRefusal}: a retiring/terminalizing/retired managed incarnation's
+   *  AUTHENTICATED principal holds no control authority even with a valid JWT). Refusal carries
+   *  WHICH fence refused so the ep door can map onto the §13.3 catalog; admission returns the
+   *  accepted-work release. Never re-implemented per door — a fence on one door is a bypass. */
+  private admitControl(caller: string):
+    | { refusal: string; fence: "maintenance" | "membership"; release?: undefined }
+    | { refusal?: undefined; release: () => void } {
+    const release = this.beginLifecycle();
+    if (!release) return { refusal: this.maintenanceError(), fence: "maintenance" };
+    const membership = this.lifecycleMembershipRefusal(caller);
+    if (membership) {
       release();
+      return { refusal: membership, fence: "membership" };
+    }
+    return { release };
+  }
+
+  /** Run one v0.4 service-command handler through the SHARED admission chokepoint
+   *  ({@link admitControl}) on the broker-authenticated caller principal, mapping the two fences
+   *  onto the §13.3 catalog: maintenance/resume → `unavailable`, F5(a) membership →
+   *  `permission-denied`. The serve boundary publishes the structured error reply. */
+  private async serveGated<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
+    const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    const admission = this.admitControl(caller);
+    if (admission.refusal !== undefined)
+      throw new EpEnvelopeError(admission.fence === "membership" ? "permission-denied" : "unavailable", admission.refusal);
+    try {
+      return await fn();
+    } finally {
+      admission.release();
     }
   }
 
@@ -1319,12 +1424,9 @@ export class Manager {
     // advisory in open mode (consistent with "open = single-trusted-host"). Thread it to every op
     // so authz (P2c) and the spawner ledger (P4b) can act on it.
     const caller = req.from.id;
-    // The F5(a) membership gate (Unit B): the AUTHENTICATED wire principal of a retiring,
-    // terminalizing, or retired managed incarnation holds NO control authority, even with a
-    // tier-valid JWT — refused before any op dispatch. A live managed principal and every
-    // non-managed principal (operator instruments) proceed to the tier/op rules below.
-    const membership = this.lifecycleMembershipRefusal(caller);
-    if (membership) return { ok: false, error: membership };
+    // The F5(a) membership gate (Unit B) already ran in the SHARED admission chokepoint
+    // ({@link admitControl}, called by `handle` before dispatching here) — the same helper the
+    // v0.4 ep door runs, so neither door can drift a weaker fence.
     const name = String(args.name ?? "").trim();
     // Op↔tier binding — the real enforcement per the split. The cred gates WHO can reach each
     // subject; this gates WHAT each subject will honor, fail-closed. A privileged op arriving on
@@ -3185,6 +3287,126 @@ export class Manager {
     } finally {
       await nc.drain().catch(() => nc.close());
     }
+  }
+
+  /** Run one §13.1 ENDPOINT-SERVE credential operation (P2 item 1, 1a-serve) over an ephemeral,
+   *  key-pinned `endpoint-serve-executor` connection: the credential's grants name exactly the
+   *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
+   *  gate CAS, the mint fence, and the spec/governance writes ride a one-shot scoped authority —
+   *  NEVER the manager's standing seed/supervisor connection (the panel's "no seed shortcut"). */
+  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV }) => Promise<T>): Promise<T> {
+    if (!this.auth) throw new Error("withEndpointServeExecutor: no space auth (an open mesh has no service registry)");
+    const identity = newIdentity();
+    const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
+      endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerLifecycleUid },
+    });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    try {
+      const kvm = new Kvm(nc);
+      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)) });
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
+  /** The served manager-level health summary (1a's one read-only command). */
+  private managerStatusData(): ManagerStatus {
+    return {
+      instanceId: this.managerLifecycleUid,
+      runtime: this.runtime.kind,
+      agentCount: this.agents.size,
+      uptimeMs: Date.now() - this.startedAtMs,
+    };
+  }
+
+  /** P2 item 1 (1a-serve): register the manager as an ordinary v0.4 `service` endpoint and serve
+   *  its typed 1a command surface (`status`) on the ep rails, dual-served beside the ctl tiers.
+   *  The whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
+   *  test that keeps "ordinary" honest): provision the §13.1 issuance gate, drive the
+   *  registration BARRIER's gate CAS, then release the serve credential only on the mint FENCE's
+   *  revision-pinned CAS win — all over the scoped one-shot executor ({@link
+   *  withEndpointServeExecutor}), never a seed-signed shortcut. Holding the signing seed only
+   *  AUTHORIZES the reserved single-label name (`manager`, operator name authority, static
+   *  DEV_OWNER; the user-mode space-owner registration is the named follow-up). */
+  private async registerManagerService(): Promise<void> {
+    if (!this.auth) throw new Error("registerManagerService: no space auth (an open mesh has no service registry)");
+    const auth = this.auth;
+    const iid = this.managerLifecycleUid;
+    const artifacts = managerClusterArtifacts();
+    // In-memory §13.7 content store: the manager is this document's AUTHOR, so registration and
+    // serve authorization verify against the exact artifacts it publishes from memory. The `epc`
+    // contract-store publication (for third-party digest fetches) joins the D8 loader slice;
+    // callers meanwhile read the descriptor through the served `describe`.
+    const store = new Map<string, unknown>([
+      [artifacts.rootDigest, artifacts.document],
+      [artifacts.closureDigest, artifacts.manifest],
+    ]);
+    const readClusterArtifact = (digest: string): unknown => store.get(digest);
+    // §13.9 name authority, static mode: `manager` is a core single-label name requiring OPERATOR
+    // authority — the manager holds the space signing seed, so it self-authorizes exactly its own
+    // name for exactly DEV_OWNER (never a general authority; any other (name, owner) refuses).
+    const authority: ServiceNameAuthority = {
+      authorize: (name, owner) => ({ authorized: name === MANAGER_ENDPOINT && owner === DEV_OWNER, revision: 0 }),
+    };
+    // The STABLE serve identity: minted BEFORE the gate so the gate binds this principal (§13.1
+    // serving-principal binding); renewals re-mint the same nkey with a fresh bounded exp.
+    const serveIdentity = newIdentity();
+    const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
+    const { grant, creds } = await this.withEndpointServeExecutor(async ({ recordsKv, authKv }) => {
+      // §13.1 pre-registration (checklist 1): the issuance gate, born open@gen0 bound to the
+      // serve principal. Idempotent for this principal; a different-principal re-provision of the
+      // same instance token conflicts (an instance token is never re-bound).
+      await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
+      const barrier = endpointRegistrationBarrier(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: mintLifecycleUid() });
+      const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
+      await registerServiceInstance(recordsKv, {
+        space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+      });
+      // processEpoch comes from the GATE (checklist 4: never derived from the uid string); the
+      // fence below is also the mint's §13.1 release CAS.
+      const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+      const observed = await fence.observe();
+      if (observed === null) throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished after registration`);
+      const grant = await authorizeServeGrant(recordsKv, {
+        space: this.space, endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
+        holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
+        readProcessEpoch: async () => {
+          const g = await fence.observe();
+          if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);
+          return g.processEpoch;
+        },
+      });
+      const creds = await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
+      return { grant, creds };
+    });
+    // The serve connection presents the CURRENT credential on every (re)connect (the state object
+    // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
+    // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
+    // registered surface for its whole incarnation.
+    const state = { handle: undefined as unknown as EpServeHandle, nc: undefined as unknown as NatsConnection, identity: serveIdentity, grant, creds };
+    const enc = new TextEncoder();
+    const nc = await connect({
+      servers: this.servers ?? DEFAULT_SERVER,
+      authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds))(nonce),
+      inboxPrefix: `_INBOX_${serveIdentity.id}`,
+      maxReconnectAttempts: -1,
+    });
+    nc.closed().then((err) => { if (err) console.error(`! manager service endpoint connection closed: ${err.message}`); });
+    try {
+      // 1a serves `status` (read-only, untargeted) + the derived `describe`. The descriptor is
+      // PUBLIC for 1a — its one command is the lowest read tier; the trusted per-caller view
+      // arrives with 1b's admin-scoped commands. Every handler runs the SHARED admission
+      // chokepoint ({@link serveGated}) — the same F5(a) + maintenance fence as the ctl door.
+      state.handle = serveEndpoint(nc, this.space, grant, managerCommandDefs({
+        status: (ctx) => this.serveGated(ctx, () => this.managerStatusData()),
+      }), { public: true });
+    } catch (e) {
+      await nc.drain().catch(() => nc.close());
+      throw e;
+    }
+    state.nc = nc;
+    this.serviceServe = state;
+    console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
   }
 
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS

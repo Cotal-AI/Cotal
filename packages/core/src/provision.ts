@@ -74,7 +74,7 @@ import {
 import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket } from "./endpoint-binding.js";
-import { recordsBucket } from "./endpoint-records.js";
+import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
@@ -1513,8 +1513,10 @@ function lifecycleExecutorPermissions(
  *  1a-serve): the manager mints this per registration/serve-mint op and drives the endpoint
  *  registration barrier's `epgate` CAS + the mint fence's `epcred` stage/revoke THROUGH it — never
  *  its standing seed/supervisor connection (critic #1's manager-specific "no seed shortcut"). Every
- *  WRITE is key-pinned to exactly ONE (endpoint, instanceId): the gate `epgate.<ep>.<iid>` and its
- *  serving ledger family `epcred.<ep>.<iid>.>`. A leaked/mis-constructed executor can move exactly
+ *  WRITE is key-pinned to exactly ONE (endpoint, instanceId): the gate `epgate.<ep>.<iid>`, its
+ *  serving ledger family `epcred.<ep>.<iid>.>`, and the registration's two records keys (the
+ *  instance's `svc` spec + the endpoint's governance head — `registerServiceInstance` drives the
+ *  slot-take/promote over this same connection). A leaked/mis-constructed executor can move exactly
  *  one endpoint instance's serve state and nothing else. The auth store is `allow_direct=false`, so
  *  reads are leader-served `STREAM.MSG.GET` (stream-scoped, NOT key-scoped — the key rides the
  *  payload); enumeration of the epcred family rides an ordered `keys()` consumer. NAMED RESIDUAL:
@@ -1525,26 +1527,38 @@ function endpointServeExecutorPermissions(
   pr: MintPrincipal,
   pin: { endpoint: string; instanceId: string },
 ): Record<string, unknown> {
-  const AUTH = epAuthBucket(space);
+  const AUTH = epAuthBucket(space), REC = recordsBucket(space);
   // DERIVED from (endpoint, instanceId) via the core builders — never a caller literal.
   const gateKey = epgateKey(pin.endpoint, pin.instanceId);
   const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
+  // The registration writes this ONE instance's spec key plus the endpoint's governance head
+  // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor).
+  const recordKeys = [
+    recordSpecKey(RECORD_KINDS.svc, [pin.endpoint, assertLifecycleToken(pin.instanceId, "instanceId")]),
+    recordAtomicKey(GOVERN_HEAD, [pin.endpoint]),
+  ];
   return {
     pub: {
       allow: [
         "$JS.API.INFO",
-        // The two key-pinned WRITE grants: the gate (provision create + barrier freeze/reopen CAS)
-        // and the serving ledger family (mint-fence stage + barrier revoke). The value-publish
-        // carries the key on the subject, so each grant names exactly this instance's keys.
+        // The key-pinned WRITE grants: the gate (provision create + barrier freeze/reopen CAS),
+        // the serving ledger family (mint-fence stage + barrier revoke), and the registration's
+        // two records-store keys (spec CAS + governance slot/promote). The value-publish carries
+        // the key on the subject, so each grant names exactly this instance's keys.
         `$KV.${AUTH}.${gateKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
+        ...recordKeys.map((k) => `$KV.${REC}.${k}`),
         // Leader-served reads (the auth store is allow_direct=false): stream-scoped MSG.GET (the
         // barrier/fence read the gate + each epcred row), plus the ordered consumer the epcred
-        // `keys()` enumeration binds. NAMED RESIDUAL: reads any auth row for its one-shot lifetime.
+        // `keys()` enumeration binds. The records store IS direct-servable, so its reads add the
+        // key-pinned DIRECT.GET forms beside the leader-served fallback. NAMED RESIDUAL: reads
+        // any row in both stores for its one-shot lifetime (metadata, no bearer bytes).
         `$JS.API.STREAM.MSG.GET.KV_${AUTH}`,
         `$JS.API.CONSUMER.CREATE.KV_${AUTH}.>`,
         `$JS.API.CONSUMER.INFO.KV_${AUTH}.>`,
         `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
+        ...recordKeys.map((k) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${k}`),
+        `$JS.API.STREAM.MSG.GET.KV_${REC}`,
       ],
     },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },
