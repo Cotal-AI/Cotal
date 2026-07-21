@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,7 +18,7 @@ import {
   type LaunchOpts,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir } from "@cotal-ai/workspace";
+import { authDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
@@ -889,6 +889,39 @@ let openInventory: ManagerResumeAgent;
   check("user resume reuses exact owner/actor in launch", capturedLaunch?.userAuth?.owner === entry.identity.owner && capturedLaunch.userAuth.actor === entry.identity.actor, capturedLaunch?.userAuth);
   check("user resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("userworker"), capturedLaunch?.lifecycleUid);
   check("user bearer command is reconstructed from provider command", capturedLaunch?.userAuth?.bearerCmd.includes("agent-bearer") === true, capturedLaunch?.userAuth?.bearerCmd);
+
+  // A retained inventory must pin the WHOLE secret family as ONE unit — {actorToken, sentinel,
+  // health} all the lifecycle triple OR all the legacy triple. Two negatives, both must refuse
+  // BEFORE any spawn (a rejected resume records nothing, so teardown never deletes a foreign file):
+  //
+  // (1) FOREIGN HEALTH PATH — the delete gadget: health is not a hashed retained reference, so a
+  //     corrupt inventory could once point it at an arbitrary workspace file that flowed into the
+  //     bearer argv and was rmSync'd at terminal teardown. The atomic pin refuses it.
+  {
+    const victim = join(root, "operator-owned-secret.txt");
+    writeFileSync(victim, "DO NOT DELETE ME", { mode: 0o600 });
+    const foreignHealth: ManagerResumeAgent = { ...entry, identity: { ...entry.identity, health: { kind: "file", path: victim } } };
+    let foreignHealthSpawns = 0;
+    const m = managerWith((name) => { foreignHealthSpawns++; return fakeHandle(name); });
+    (m as unknown as { userMode: boolean }).userMode = true;
+    const r = await m.resumePreserved(inventoryOf(foreignHealth));
+    check("user resume refuses a FOREIGN health path (delete gadget) before any spawn", !r.ok && foreignHealthSpawns === 0 && /one manager-owned secret family|foreign health/.test(JSON.stringify(r)), JSON.stringify(r));
+    check("the foreign (operator-owned) file SURVIVES the refused resume", existsSync(victim));
+  }
+  //
+  // (2) MIXED FAMILY — a lifecycle-keyed actor token paired with a legacy sentinel/health. Both
+  //     files exist and each is individually manager-owned, but they are not ONE family; the pin
+  //     refuses the mix (the old per-file OR-pin accepted it).
+  {
+    const lifecycleActor = agentLifecycleSecretFilePaths(root, "worker", uidFor("userworker")).actorToken;
+    writeFileSync(lifecycleActor, "retained-token", { mode: 0o600 });
+    const mixed: ManagerResumeAgent = { ...entry, identity: { ...entry.identity, actorToken: { kind: "file", path: lifecycleActor, sha256: digest(lifecycleActor) } } };
+    let mixedSpawns = 0;
+    const m = managerWith((name) => { mixedSpawns++; return fakeHandle(name); });
+    (m as unknown as { userMode: boolean }).userMode = true;
+    const r = await m.resumePreserved(inventoryOf(mixed));
+    check("user resume refuses a MIXED secret family (lifecycle token + legacy sentinel/health)", !r.ok && mixedSpawns === 0 && /one manager-owned secret family/.test(JSON.stringify(r)), JSON.stringify(r));
+  }
 
   // A retained authority row whose incarnation uid differs from the inventory is refused BEFORE any
   // spawn (the pre-effect uid binding), not left to broker-fail after the child is already running.

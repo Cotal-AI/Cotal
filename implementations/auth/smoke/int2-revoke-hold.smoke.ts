@@ -72,7 +72,7 @@ type LaunchSpec = import("@cotal-ai/core").LaunchSpec;
 type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn } = await import("node:child_process");
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -100,7 +100,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -401,7 +401,14 @@ try {
   // ---------- C. inject a revokeAgent FAILURE, then despawn ----------
   console.log("C) capture the actor token; make the ledger revoke FAIL; despawn");
   // A copied actor token: while the standing-mint-authority row lives, it exchanges->mints a bearer.
-  const predActorToken = readFileSync(join(credsDir, `${AGENT}.actor-token`), "utf8").trim();
+  // The actor token is filed lifecycle-keyed (`<name>.<uid>.actor-token`); recover the predecessor's
+  // uid from disk to read it.
+  const predUid = (() => {
+    const re = new RegExp(`^${AGENT}\\.([a-z0-9]{26,32})\\.actor-token$`);
+    for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
+    throw new Error(`no incarnation actor-token on disk for ${AGENT} in ${credsDir}`);
+  })();
+  const predActorToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, predUid).actorToken, "utf8").trim();
   check("predecessor actor token captured (models a copied token)", predActorToken.length > 0);
   const exBefore = await agentExchange(AGENT, predActorToken, OWNER);
   check("baseline: the captured actor token exchanges->mints a bearer while the agent is live (200)",

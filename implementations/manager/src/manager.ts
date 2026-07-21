@@ -2571,19 +2571,24 @@ export class Manager {
       throw new Error(`retained agent ${entry.name} is user-auth but the current manager is not`);
     try {
       const provider = resolveAuthProvider();
-      // Mirror the static branch's expected-path discipline: a CLOSED candidate set per file — the
-      // lifecycle-keyed derivation (this generation) or the name-keyed one (a pre-split inventory
-      // carried across the upgrade) — and the store reads below are keyed from the RECORDED path,
-      // so a retained record aimed at a foreign path can neither pass the pin nor address a
-      // different generation's store row.
+      // Mirror the static branch's expected-path discipline, but pin the WHOLE secret FAMILY as ONE
+      // unit: all three of {actorToken, sentinelCreds, health} must equal the lifecycle-keyed triple
+      // (this generation) OR the name-keyed triple (a pre-split inventory carried across the upgrade).
+      // A per-file OR-pin let a corrupt inventory MIX families (lifecycle token + legacy sentinel)
+      // and, worse, left `health` UNPINNED entirely — an arbitrary recorded health path flowed into
+      // the bearer argv and was `rmSync`'d at terminal teardown (inventory-as-delete-gadget). Pinning
+      // the atomic family closes both: `health` is pinned by PATH EQUALITY (never by file existence,
+      // so a transiently-absent health file still validates), and the store reads below key off the
+      // RECORDED path, so a foreign path can neither pass the pin nor address a different row.
       const lifecycleFiles = agentLifecycleSecretFilePaths(this.workspaceRoot, entry.name, entry.identity.lifecycleUid);
       const legacyFiles = agentSecretFilePaths(this.workspaceRoot, entry.name);
       const recordedToken = resolve(entry.identity.actorToken.path);
       const recordedSentinel = resolve(entry.identity.sentinelCredential.path);
-      const tokenOk = recordedToken === resolve(lifecycleFiles.actorToken) || recordedToken === resolve(legacyFiles.actorToken);
-      const sentinelOk = recordedSentinel === resolve(lifecycleFiles.sentinelCreds) || recordedSentinel === resolve(legacyFiles.sentinelCreds);
-      if (!tokenOk || !sentinelOk)
-        throw new Error(`retained identity references are not manager-owned paths under ${agentCredsDir(this.workspaceRoot)}`);
+      const recordedHealth = resolve(entry.identity.health.path);
+      const matchesFamily = (f: { actorToken: string; sentinelCreds: string; health: string }): boolean =>
+        recordedToken === resolve(f.actorToken) && recordedSentinel === resolve(f.sentinelCreds) && recordedHealth === resolve(f.health);
+      if (!matchesFamily(lifecycleFiles) && !matchesFamily(legacyFiles))
+        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot)} (no mixed families, no foreign health path)`);
       const secrets = workspaceSecretStore(this.workspaceRoot);
       const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken));
       const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel));

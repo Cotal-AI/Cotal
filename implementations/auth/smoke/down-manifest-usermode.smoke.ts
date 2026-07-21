@@ -130,9 +130,18 @@ agents:
   check("spawn -f exits 0 and launched worker", deploy.status === 0 && /launched worker/.test(deploy.out), deploy.out.slice(-1200));
 
   const credsDir = join(root, ".cotal", "auth", "creds");
+  // The manager files each incarnation's user secrets lifecycle-keyed: `<name>.<uid>.<kind>`. Find
+  // the current incarnation's file by prefix (robust to the uid); returns a never-matching sentinel
+  // path when none exists, so a post-teardown "gone" check reads false correctly.
+  const incFile = (name: string, kind: string): string => {
+    const re = new RegExp(`^${name}\\.[a-z0-9]{26,32}\\.${kind.replace(/\./g, "\\.")}$`);
+    let hit: string | undefined;
+    try { hit = readdirSync(credsDir).find((f) => re.test(f)); } catch { /* no creds dir yet */ }
+    return join(credsDir, hit ?? `${name}.__no-incarnation__.${kind}`);
+  };
   check("user-mode standing secrets exist (actor-token + sentinel)",
-    existsSync(join(credsDir, "worker.actor-token")) && existsSync(join(credsDir, "worker.sentinel.creds")));
-  check("no static worker.creds was written (user mode)", !existsSync(join(credsDir, "worker.creds")));
+    existsSync(incFile("worker", "actor-token")) && existsSync(incFile("worker", "sentinel.creds")));
+  check("no static creds file was written (user mode)", !existsSync(incFile("worker", "creds")) && !existsSync(join(credsDir, "worker.creds")));
   const manifestsDir = join(root, ".cotal", "manifests");
   const ledgers = readdirSync(manifestsDir).filter((f) => f.endsWith(".json"));
   check("exactly one ownership ledger exists", ledgers.length === 1, ledgers);
@@ -149,7 +158,7 @@ agents:
   await wait(500);
   check("manager is dead", (() => { try { process.kill(mgrPid, 0); return false; } catch { return true; } })());
   check("secrets still standing after the crash",
-    existsSync(join(credsDir, "worker.actor-token")) && existsSync(join(credsDir, "worker.sentinel.creds")));
+    existsSync(incFile("worker", "actor-token")) && existsSync(incFile("worker", "sentinel.creds")));
 
   console.log("5) fresh supervisor (empty roster) answers control");
   // The crashed holder's lease key lingers until the bucket TTL (MANAGER_LEASE_TTL_MS = 10s) and
@@ -170,12 +179,16 @@ agents:
   check("replacement manager answers ps", psOk, superviseOut.slice(-800));
 
   console.log("6) down -f removes the user-mode authority WITH the ledger");
+  // Resolve the exact incarnation files BEFORE teardown deletes them (a post-delete glob would
+  // trivially pass its own "gone" sentinel).
+  const workerTok = incFile("worker", "actor-token");
+  const workerSen = incFile("worker", "sentinel.creds");
   const down = await cotal(["down", "-f", manifest], { timeoutMs: 120_000 });
   check("down -f exits 0 (complete teardown)", down.status === 0, down.out.slice(-800));
   check("teardown reports the user-mode authority removal", /removed user-mode authority for worker/.test(down.out), down.out.slice(-800));
   check("ownership ledger is deleted (teardown complete)", readdirSync(manifestsDir).filter((f) => f.endsWith(".json")).length === 0);
-  check("actor token is gone", !existsSync(join(credsDir, "worker.actor-token")));
-  check("sentinel cred is gone", !existsSync(join(credsDir, "worker.sentinel.creds")));
+  check("actor token is gone", !existsSync(workerTok));
+  check("sentinel cred is gone", !existsSync(workerSen));
   const actors = await cotal(["actor", "list"], { timeoutMs: 30_000 });
   check("the grant row is revoked (actor list has no worker)", actors.status === 0 && !/\bworker\b/.test(actors.out), actors.out.slice(-400));
 
@@ -196,7 +209,7 @@ agents:
 `);
   const deploy2 = await cotal(["spawn", "-f", manifest2], { timeoutMs: 180_000 });
   check("second spawn -f exits 0", deploy2.status === 0 && /launched worker2/.test(deploy2.out), deploy2.out.slice(-800));
-  check("worker2 secrets exist", existsSync(join(credsDir, "worker2.actor-token")) && existsSync(join(credsDir, "worker2.sentinel.creds")));
+  check("worker2 secrets exist", existsSync(incFile("worker2", "actor-token")) && existsSync(incFile("worker2", "sentinel.creds")));
   // Crash the replacement supervisor + its child, again before any deprovision. The supervise
   // cmdline carries this run's unique random SPACE token, so the sweep is surgically scoped.
   const mgrPids2 = (() => { try { return execSync(`pgrep -f "supervise.*${SPACE}"`, { encoding: "utf8" }).trim().split("\n").filter(Boolean); } catch { return []; } })();
@@ -207,11 +220,13 @@ agents:
     try { process.kill(Number(p), "SIGKILL"); } catch { /* gone */ }
   }
   await wait(500);
-  check("worker2 secrets still standing after the second crash", existsSync(join(credsDir, "worker2.actor-token")));
-  // TAMPER: swap the token materialization for a symlink — the suspect gate's boundary input.
+  const worker2Tok = incFile("worker2", "actor-token"); // the exact incarnation path the teardown will look for
+  check("worker2 secrets still standing after the second crash", existsSync(worker2Tok));
+  // TAMPER: swap the token materialization for a symlink — the suspect gate's boundary input. The
+  // symlink must sit at the SAME lifecycle-keyed path the teardown derives from the ledger uid.
   writeFileSync(join(root, "decoy"), "not-a-secret");
-  rmSync(join(credsDir, "worker2.actor-token"));
-  symlinkSync(join(root, "decoy"), join(credsDir, "worker2.actor-token"));
+  rmSync(worker2Tok);
+  symlinkSync(join(root, "decoy"), worker2Tok);
   await wait(13_000); // the crashed holder's lease again lingers to the bucket TTL
   superviseChild = spawn("npx", ["tsx", BIN, "supervise", "--space", SPACE, "--server", SERVER], {
     cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: "ignore" });
@@ -225,7 +240,7 @@ agents:
   const down2 = await cotal(["down", "-f", manifest2], { timeoutMs: 120_000 });
   check("suspect: down -f exits 0 (a suspect file never shields the row)", down2.status === 0, down2.out.slice(-800));
   check("suspect: warns and leaves the tampered file in place",
-    /unreadable\/unverifiable/.test(down2.out) && existsSync(join(credsDir, "worker2.actor-token")), down2.out.slice(-600));
+    /unreadable\/unverifiable/.test(down2.out) && existsSync(worker2Tok), down2.out.slice(-600));
   check("suspect: second ledger is deleted (teardown completes)", readdirSync(manifestsDir).filter((f) => f.endsWith(".json")).length === 0);
   const actors2 = await cotal(["actor", "list"], { timeoutMs: 30_000 });
   check("suspect: worker2 grant row IS revoked (no standing authority)", actors2.status === 0 && !/\bworker2\b/.test(actors2.out), actors2.out.slice(-400));

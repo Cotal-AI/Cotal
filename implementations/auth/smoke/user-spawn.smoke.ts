@@ -71,7 +71,7 @@ type LaunchSpec = import("@cotal-ai/core").LaunchSpec;
 type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn, execFile } = await import("node:child_process");
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -93,7 +93,7 @@ const {
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
 } = await import("@cotal-ai/core");
 const { decodeJwt } = await import("jose");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
   actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp,
@@ -147,6 +147,20 @@ const CLIENT_ID = "cotal-cli";
 const dir = userAuthStateDir(root, SPACE); // the provider's space-scoped state dir (ledger, pin, discovery)
 const store = workspaceSecretStore(root); // the secret kinds ride the seam, keyed auth/<space>/…
 const credsDir = join(authDir(root), "creds");
+// The manager files each incarnation's user secrets lifecycle-keyed (`<name>.<uid>.<kind>`).
+// Recover the uid from the token/sentinel already on disk, then derive the whole family (so a
+// not-yet-written health file still resolves to the right path); `noIncFiles` asserts a name has NO
+// incarnation secrets left (for rollback/teardown "gone" checks, uid-agnostic).
+const incUid = (name: string): string => {
+  const re = new RegExp(`^${name}\\.([a-z0-9]{26,32})\\.(actor-token|sentinel\\.creds)$`);
+  for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
+  throw new Error(`no incarnation secret on disk for ${name} in ${credsDir}`);
+};
+const incFiles = (name: string) => agentLifecycleSecretFilePaths(root, name, incUid(name));
+const noIncFiles = (name: string): boolean => {
+  const re = new RegExp(`^${name}\\.[a-z0-9]{26,32}\\.`);
+  return !readdirSync(credsDir).some((f) => re.test(f));
+};
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
 // The agent CHILD: a REAL long-lived node process through the REAL pty runtime, connecting USER-MODE
@@ -273,8 +287,8 @@ function execBearer(argv: string[]): Promise<{ ok: boolean; stdout: string; stde
 const bearerArgvFor = (actor: string) => [
   process.execPath, ...process.execArgv, SELF, "agent-bearer",
   "--dir", dir, "--space", SPACE, "--owner", "", "--actor", actor,
-  "--token-file", join(credsDir, `${actor}.actor-token`),
-  "--health-file", join(credsDir, `${actor}.auth-health.json`),
+  "--token-file", incFiles(actor).actorToken,
+  "--health-file", incFiles(actor).health,
 ];
 const rowFile = (space: "interactive" | "managed", owner: string, actor: string) =>
   join(space === "interactive" ? actorLedgerDir(dir) : managedActorLedgerDir(dir), ledgerRowFilename(owner, actor));
@@ -359,7 +373,7 @@ try {
   const managedRowPath = rowFile("managed", OWNER, "alpha");
   try { managedRow = JSON.parse(readFileSync(managedRowPath, "utf8")); } catch { /* missing */ }
   check("a managed-actors row exists with a 64-hex tokenHash", typeof managedRow.tokenHash === "string" && /^[0-9a-f]{64}$/.test(managedRow.tokenHash), managedRow.tokenHash);
-  const alphaToken = readFileSync(join(credsDir, "alpha.actor-token"), "utf8").trim(); // capture for D + F
+  const alphaToken = readFileSync(incFiles("alpha").actorToken, "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
   const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });
   observer = new CotalEndpoint({
@@ -453,7 +467,7 @@ try {
   const deadRun = await execBearer(alphaBearerArgv);
   check("the agent bearer command fails when the auth service is down (names the `cotal up` recovery)", !deadRun.ok && /restart it with `cotal up`/.test(deadRun.stderr), deadRun.stderr.slice(0, 160));
   let deadHealth: { state?: string; reason?: string } = {};
-  try { deadHealth = JSON.parse(readFileSync(join(credsDir, "alpha.auth-health.json"), "utf8")); } catch { /* */ }
+  try { deadHealth = JSON.parse(readFileSync(incFiles("alpha").health, "utf8")); } catch { /* */ }
   check("the health file records state=failed with the restart copy", deadHealth.state === "failed" && /restart it with `cotal up`/.test(deadHealth.reason ?? ""), deadHealth);
   check("manager ps reports authHealth = auth-renewal-failed", manager.list().find((a) => a.name === "alpha")?.authHealth === "auth-renewal-failed", manager.list().find((a) => a.name === "alpha"));
 
@@ -477,7 +491,7 @@ try {
   // The orphan-rollback must run the USER-MODE teardown (revoke + shred), not just static durables —
   // so the managed row AND all three secret files are gone, and the grant can't mint a bearer.
   const gammaRowGone = !existsSync(rowFile("managed", OWNER, "gamma"));
-  const gammaFilesGone = ["gamma.actor-token", "gamma.sentinel.creds", "gamma.auth-health.json"].every((f) => !existsSync(join(credsDir, f)));
+  const gammaFilesGone = noIncFiles("gamma");
   check("the failed spawn left NO managed row and NO secret files (orphan rollback ran the user-mode teardown)", gammaRowGone && gammaFilesGone, { gammaRowGone, gammaFilesGone });
 
   // ---------- O. own-agent control (owner-domain attach/stop on the SPAWN tier) ----------
@@ -688,10 +702,11 @@ try {
 
   // ---------- F. revocation ----------
   console.log("F) manager teardown revokes the managed row + shreds files; the old token is uniformly denied");
+  const alphaFamily = incFiles("alpha"); // resolve the incarnation paths BEFORE teardown shreds them
   await manager.stop(); // teardown deprovisions alpha: user-mode revoke (row delete) + token/sentinel/health shred
   managerStopped = true;
   const rowGone = !existsSync(managedRowPath);
-  const filesGone = ["alpha.actor-token", "alpha.sentinel.creds", "alpha.auth-health.json"].every((f) => !existsSync(join(credsDir, f)));
+  const filesGone = [alphaFamily.actorToken, alphaFamily.sentinelCreds, alphaFamily.health].every((f) => !existsSync(f)) && noIncFiles("alpha");
   check("manager teardown deleted the managed row and shredded the token/sentinel/health files", rowGone && filesGone, { rowGone, filesGone });
   const revokedEx = await agentExchange("alpha", alphaToken, OWNER); // the OLD captured secret
   check("the old captured actor token is uniformly denied (401) after revocation", revokedEx.status === 401, { status: revokedEx.status, error: revokedEx.body.error });
