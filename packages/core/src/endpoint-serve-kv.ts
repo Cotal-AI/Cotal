@@ -15,7 +15,9 @@
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
-import { parseLedgerRow, type CredentialLedgerRow } from "./lifecycle-state.js";
+import { endpointToken, assertLifecycleToken } from "./endpoint-subjects.js";
+import { epgateKey, epcredRowKey, parseEndpointGate, parseLedgerRow, type CredentialLedgerRow } from "./lifecycle-state.js";
+import type { EpIssuanceGate, EpServeLedgerRow } from "./endpoint-service.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -58,4 +60,71 @@ export async function markLedgerRowRevoked(kv: KV, key: string): Promise<"revoke
     }
   }
   throw new EpEnvelopeError("unavailable", `revoking the row ${key} kept losing its pin; retry the barrier (SPEC 13.1)`);
+}
+
+/** The §13.1 endpoint-serve MINT FENCE over a bound KV — the `EpIssuanceGate` core's serve mint
+ *  (`mintCreds`, profile `endpoint-serve`) fences its release on: it stages the per-JWT `epcred.
+ *  <endpoint>.<instanceId>.<credentialId>` row, then a revision-pinned identical-bytes TOUCH of the
+ *  `epgate.<endpoint>.<instanceId>` key (a barrier that moved the gate since observation makes the
+ *  mint LOSE). Lifted from the auth session ledger (fact H3) so both the auth session redemption
+ *  and the manager's endpoint-serve wiring drive ONE fence; the auth `kvServeIssuanceGate` wraps
+ *  this by unwrapping its branded `SessionAuthStore` to `(kv, space)`. `space` is carried on the
+ *  observed gate for the core mint's space-bond defense (the KV IS the space bucket). */
+export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: string; instanceId: string }): EpIssuanceGate {
+  const endpoint = endpointToken(args.endpoint);
+  const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
+  const key = epgateKey(endpoint, instanceId);
+  return {
+    observe: async () => {
+      const entry = await kv.get(key);
+      if (!entry) return null; // no gate => the mint fails closed (core refuses a null observe)
+      if (entry.operation !== "PUT")
+        throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
+      const gate = parseEndpointGate(entry.value, key);
+      return {
+        space, endpoint, lifecycleUid: instanceId,
+        // Carry the gate's registered serving principal so the core mint fence can bind the minted
+        // owner.actor to it (§13.1:1056-1069: a sibling actor cannot win the gate).
+        principal: gate.principal,
+        state: gate.state, generation: gate.generation, processEpoch: gate.processEpoch,
+        registrationRevision: gate.registrationRevision, nameAuthorityRevision: gate.nameAuthorityRevision,
+        revision: entry.revision,
+      };
+    },
+    stage: async (row: EpServeLedgerRow) => {
+      // The staged row must BE this gate's instance — a foreign endpoint/instance row through this
+      // adapter is a caller bug, never silently redirected into another family.
+      if (row.endpoint !== endpoint || row.lifecycleUid !== instanceId)
+        throw new EpEnvelopeError("failed-precondition", `the staged serve row names ${row.endpoint}/${row.lifecycleUid} but this gate serves ${endpoint}/${instanceId}; a row never crosses families (SPEC 13.1)`);
+      if (typeof row.exp !== "number")
+        throw new EpEnvelopeError("failed-precondition", `the staged serve row for ${endpoint}/${instanceId} carries no expiry; the normative ledger row requires one (SPEC 13.1)`);
+      const ledgerRow: CredentialLedgerRow = {
+        credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
+        lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
+      };
+      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
+      // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
+      // this trusted path would itself refuse to read never lands durably.
+      parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
+      await createRowByteIdempotent(kv, rowKey, ledgerRow);
+    },
+    commit: async (expectedRevision: number) => {
+      const entry = await kv.get(key);
+      if (!entry || entry.operation !== "PUT" || entry.revision !== expectedRevision) return false;
+      if (parseEndpointGate(entry.value, key).state !== "open") return false;
+      try {
+        await kv.update(key, entry.value, expectedRevision);
+        return true;
+      } catch (e) {
+        if (isRawCasLoss(e)) return false; // a barrier froze/reopened since observation; the mint loses
+        throw new EpEnvelopeError("unavailable", `the serve-issuance gate touch for ${key} is ambiguous; the mint fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+      }
+    },
+    revoke: async (row: EpServeLedgerRow) => {
+      // `revoke` runs ONLY after a successful `stage` (finalizeServeIssuance's non-win cleanup), so
+      // the row MUST exist. markLedgerRowRevoked is idempotent on an already-revoked row and FAILS
+      // LOUD on an absent/DEL row (corruption, never a "never staged" idempotence case).
+      await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
+    },
+  };
 }
