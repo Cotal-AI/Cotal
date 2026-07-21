@@ -60,12 +60,24 @@ import type { KV } from "@nats-io/kv";
 import {
   EpEnvelopeError,
   assertLifecycleToken,
-  endpointToken,
-  parsePrincipalKey,
-  isPrincipalOwnerToken,
   isCasLoss as isRawCasLoss,
+  assertKeySegment,
+  assertCredentialIdTail,
+  assertHolderPrincipal,
+  assertSourceChain,
+  parseSourceMember,
+  SOURCE_ROOT,
+  credRowKey,
+  epcredRowKey,
+  parseLedgerRow,
+  type CredentialLedgerRow,
   type EvictionResult,
 } from "@cotal-ai/core";
+// The ledger-row GRAMMAR (family keys, closed row schema, boundary parser, lineage/holder
+// asserts) is the shared §13.1 state grammar in @cotal-ai/core (`lifecycle-state.ts`), so the
+// static lifecycle adapter writes/revokes rows in the ONE encoding this module reads (design
+// note B1). Re-exported here so the package surface is unchanged.
+export { credRowKey, epcredRowKey, parseSourceMember, SOURCE_ROOT, parseLedgerRow, type CredentialLedgerRow } from "@cotal-ai/core";
 import {
   registryStores,
   registryScanner,
@@ -85,67 +97,9 @@ const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
 // ---- key grammar ------------------------------------------------------------------------------
+// The KV-segment/credential-id/holder/source-chain asserts and the cred./epcred. family keys
+// live in the shared core grammar (imported above); only the auth-internal families remain here.
 
-/** One KV key segment: no dots (a segment separator), no wildcards, KV-safe. */
-const KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
-
-function assertKeySegment(v: unknown, what: string): string {
-  if (typeof v !== "string" || !KEY_SEGMENT.test(v))
-    throw new EpEnvelopeError("failed-precondition", `${what} ${JSON.stringify(v)} is not a KV-safe key segment (SPEC 13.1)`);
-  return v;
-}
-
-/** A credential id: one or more KV-safe segments (dots allowed BETWEEN segments — the session
- *  families use `<sessionId>.c` / `<sessionId>.s` — but never wildcards or empty segments). */
-function assertCredentialIdTail(v: unknown, what: string): string {
-  if (typeof v !== "string" || v.length === 0 || v.length > 256 || !v.split(".").every((s) => KEY_SEGMENT.test(s)))
-    throw new EpEnvelopeError("failed-precondition", `${what} ${JSON.stringify(v)} is not a bounded dotted credential id (SPEC 13.1)`);
-  return v;
-}
-
-/** A holder principal `<owner>.<actor>` with a REAL owner (derived `u_…` or the dev owner) —
- *  eviction is BY PRINCIPAL, so a row that cannot name an evictable principal never ledgers. */
-function assertHolderPrincipal(v: unknown, what: string): string {
-  const p = typeof v === "string" ? parsePrincipalKey(v) : null;
-  if (!p || !isPrincipalOwnerToken(p.owner))
-    throw new EpEnvelopeError("failed-precondition", `${what} ${JSON.stringify(v)} is not a principal dot-form the barrier can evict (SPEC 13.1)`);
-  return v as string;
-}
-
-export const SOURCE_ROOT = "root";
-
-/** Validate ONE sourceChain member — `root`, `handle.<issuerKeyId>.<id>`, or
- *  `session.<sessionId>` (SPEC 13.1) — and return its parsed shape. */
-export function parseSourceMember(member: unknown): { kind: "root" } | { kind: "handle"; issuerKeyId: string; id: string } | { kind: "session"; sessionId: string } {
-  if (member === SOURCE_ROOT) return { kind: "root" };
-  if (typeof member === "string" && member.startsWith("handle.")) {
-    const rest = member.slice("handle.".length).split(".");
-    if (rest.length === 2 && KEY_SEGMENT.test(rest[0]) && KEY_SEGMENT.test(rest[1]))
-      return { kind: "handle", issuerKeyId: rest[0], id: rest[1] };
-  }
-  if (typeof member === "string" && member.startsWith("session.")) {
-    const sid = member.slice("session.".length);
-    if (KEY_SEGMENT.test(sid)) return { kind: "session", sessionId: sid };
-  }
-  throw new EpEnvelopeError("failed-precondition", `sourceChain member ${JSON.stringify(member)} is not root | handle.<issuerKeyId>.<id> | session.<sessionId> (SPEC 13.1)`);
-}
-
-function assertSourceChain(v: unknown, what: string): string[] {
-  if (!Array.isArray(v) || v.length === 0)
-    throw new EpEnvelopeError("failed-precondition", `${what} must be a non-empty sourceChain (SPEC 13.1: the FULL verified lineage, never absent)`);
-  for (const m of v) parseSourceMember(m);
-  return v as string[];
-}
-
-/** The agent-family ledger key `cred.<lifecycleUid>.<credentialId>`. */
-export function credRowKey(lifecycleUid: string, credentialId: string): string {
-  return `cred.${assertLifecycleToken(lifecycleUid)}.${assertCredentialIdTail(credentialId, "credentialId")}`;
-}
-/** The endpoint-family ledger key `epcred.<endpoint>.<instanceId>.<credentialId>` (disjoint by
- *  explicit prefix, never arity, SPEC 13.1). */
-export function epcredRowKey(endpoint: string, instanceId: string, credentialId: string): string {
-  return `epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.${assertCredentialIdTail(credentialId, "credentialId")}`;
-}
 /** The per-ancestor lineage index key `bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>`. */
 export function bysrcKey(issuerKeyId: string, id: string, lifecycleUid: string, credentialId: string): string {
   return `bysrc.${assertKeySegment(issuerKeyId, "issuerKeyId")}.${assertKeySegment(id, "handle id")}.${assertLifecycleToken(lifecycleUid)}.${assertCredentialIdTail(credentialId, "credentialId")}`;
@@ -161,82 +115,8 @@ export function stageIntentKey(opId: string): string {
 }
 
 // ---- the normative ledger row (shared by the cred. and epcred. families) ----------------------
-
-/** The §13.1 credential-ledger row, closed. `lifecycleUid` is the HOLDER's KEY identity
- *  component: the managed agent's lifecycle UID in the `cred.` family, the endpoint instance's
- *  `instanceId` in the `epcred.` family (SPEC 13.1: `instanceId` is to an endpoint what
- *  `lifecycleUid` is to a managed agent). `endpoint` is present ONLY in the `epcred.` family
- *  (it forms the key there and is absent in `cred.`), so the KEY identity is never conflated
- *  with the eviction target. `holderPrincipal` is who the barrier KICKs: ALWAYS a CONNZ-
- *  attributable `<owner>.<actor>` dot-form (the caller principal in the `cred.` family; the
- *  serving instance's own connection principal in the `epcred.` family, recorded from the
- *  endpoint gate), NEVER the endpoint name (which CONNZ cannot attribute). */
-export interface CredentialLedgerRow {
-  credentialId: string;
-  holderPrincipal: string;
-  lifecycleUid: string;
-  /** The endpoint NAME whose token forms the `epcred.` key; present iff this is an endpoint-
-   *  family row, absent in the `cred.` family (which the lifecycleUid keys). */
-  endpoint?: string;
-  /** The FULL verified lineage at mint: `root` | `handle.<issuerKeyId>.<id>`… |
-   *  `session.<sessionId>` (SPEC 13.1 — for a handle redemption EVERY handle in the presented
-   *  chain, never only the leaf). */
-  sourceChain: string[];
-  /** Monotonic: `active → revoked` only; a revoked row is never deleted. */
-  state: "active" | "revoked";
-  exp: number;
-}
-
-/** Parse + validate a ledger row at its consuming boundary — closed schema, and the embedded
- *  identity MUST rebuild the row's own key, so a key-mismatched or family-swapped poison row
- *  never authorizes (SPEC 13.1/13.3). */
-export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRow {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
-  }
-  if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not an object`);
-  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "sourceChain", "state", "exp"]);
-  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
-  if (
-    typeof o.credentialId !== "string" || typeof o.holderPrincipal !== "string" || typeof o.lifecycleUid !== "string" ||
-    (o.state !== "active" && o.state !== "revoked") || !uint(o.exp)
-  )
-    throw new EpEnvelopeError("internal", `the credential-ledger row ${key} does not validate (id/holder/uid/state/exp); a garbled row never authorizes (SPEC 13.1)`);
-  try {
-    assertSourceChain(o.sourceChain, `row ${key} sourceChain`);
-    assertCredentialIdTail(o.credentialId, `row ${key} credentialId`);
-    // holderPrincipal is ALWAYS a CONNZ-attributable principal, in BOTH families (the barrier
-    // KICKs it; the endpoint name is NOT attributable and never sits here).
-    assertHolderPrincipal(o.holderPrincipal, `row ${key} holderPrincipal`);
-  } catch (e) {
-    throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries a malformed lineage/id/holder: ${(e as Error).message}`);
-  }
-  // KEY BINDING, per family: the row's own identity must rebuild its key exactly. The endpoint
-  // family keys on its own `endpoint` field (NOT holderPrincipal), so the key identity and the
-  // eviction target stay disjoint.
-  let expected: string;
-  if (key.startsWith("cred.")) {
-    if (o.endpoint !== undefined)
-      throw new EpEnvelopeError("internal", `the agent-family row ${key} carries an endpoint field (that belongs to the epcred family, SPEC 13.1)`);
-    expected = credRowKey(o.lifecycleUid, o.credentialId);
-  } else if (key.startsWith("epcred.")) {
-    if (typeof o.endpoint !== "string" || o.endpoint.length === 0)
-      throw new EpEnvelopeError("internal", `the endpoint-family row ${key} is missing its endpoint field (it forms the key, SPEC 13.1)`);
-    try {
-      expected = epcredRowKey(o.endpoint, o.lifecycleUid, o.credentialId);
-    } catch (e) {
-      throw new EpEnvelopeError("internal", `the credential-ledger row ${key} does not validate for the endpoint family: ${(e as Error).message}`);
-    }
-  } else {
-    throw new EpEnvelopeError("internal", `the credential-ledger row key ${key} is under neither ledger family prefix (SPEC 13.1)`);
-  }
-  if (expected !== key)
-    throw new EpEnvelopeError("internal", `the credential-ledger row at ${key} embeds an identity that rebuilds ${expected}; a key-mismatched row never authorizes (SPEC 13.1)`);
-  return o as unknown as CredentialLedgerRow;
-}
+// `CredentialLedgerRow` + `parseLedgerRow` (closed schema, per-family key binding) live in the
+// shared core grammar; re-exported above.
 
 /** Create-only write of a ledger/index row with the BYTE-IDENTICAL retry (a crashed writer's
  *  retry of its OWN deterministic row proceeds; foreign content under a staged name refuses —
