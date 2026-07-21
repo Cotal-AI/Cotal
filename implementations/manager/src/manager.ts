@@ -1167,6 +1167,17 @@ export class Manager {
         const managed = this.agents.get(entry.name);
         if (managed) managed.suppressCleanup = false;
       }
+      // Unit B (F3, distsys/security CONDITIONAL @ 9e13648): the boot sweep DEFERRED every active
+      // slot while a resume was pending (it could not know which would be adopted). Now adoption
+      // is complete and `this.agents` is EXACTLY the adopted set, so re-sweep to terminalize any
+      // active slot the resume did NOT claim — a durable ACTIVE ORPHAN (crashed after slot->active
+      // before agents.set, then not in the resumed inventory). This runs while `resumeRequired` is
+      // still true, so no ordinary spawn can race it (beginLifecycle refuses non-resume ops), and
+      // it closes both the alias wedge AND the F5(a) gap (the orphan's principal enters
+      // retiredPrincipals, so a copied JWT is refused). Best-effort + loud: a sweep failure must
+      // not fail the finalize (the next non-resume boot re-drives it), but it is never swallowed.
+      if (this.auth && !this.userMode)
+        await this.reconcileStaticLifecycles(true).catch((e) => console.error(`! post-resume static reconcile: ${(e as Error).message} - a durable active orphan may still wedge its alias until the next non-resume restart`));
       this.resumeFinalized = true;
       this.resumeRequired = false;
       return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
@@ -3259,7 +3270,7 @@ export class Manager {
    *  inventory may adopt them (this manager was started with a resume attempt), else their
    *  process is gone and they terminalize; `retired` rows seed the F5 refusal index. Runs under
    *  the lease, before control serving. */
-  private async reconcileStaticLifecycles(): Promise<void> {
+  private async reconcileStaticLifecycles(postAdoption = false): Promise<void> {
     if (!this.auth) return;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
@@ -3286,13 +3297,19 @@ export class Manager {
         this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
         continue;
       }
-      // A slot THIS process actively owns is never an orphan (a no-op at boot, where nothing is
-      // managed yet; load-bearing defense for any later re-drive of the sweep).
+      // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
+      // at the SAME uid is never an orphan (empty at boot; exactly the adopted set at the
+      // post-adoption sweep — the fix for the F3 resume hole).
       const live = this.agents.get(row.alias);
-      if (live !== undefined && live.lifecycleUid === row.lifecycleUid) continue;
-      const action = planStaticSlotResume(row, row.phase === "active" && this.resumeRequired);
+      const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
+      // Boot sweep with a resume PENDING: an active slot may yet be adopted (the resume path runs
+      // AFTER this boot sweep), so DEFER it — the post-adoption sweep terminalizes any the resume
+      // did not claim. provisioning/terminalizing NEVER defer (they are crashed operations, never
+      // an agent to adopt). At `postAdoption` (or a non-resume boot) nothing defers.
+      if (!postAdoption && row.phase === "active" && !adopted && this.resumeRequired) continue;
+      const action = planStaticSlotResume(row, adopted);
       if (action === "none") continue;
-      console.error(`static reconcile ${row.alias}: slot is ${row.phase} with no live process - driving its exact-op terminal (uid ${row.lifecycleUid})`);
+      console.error(`static reconcile ${row.alias}: slot is ${row.phase} with no live managed owner${postAdoption ? " after resume adoption" : ""} - driving its exact-op terminal (uid ${row.lifecycleUid})`);
       await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid });
     }
   }

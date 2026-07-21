@@ -295,6 +295,38 @@ try {
   check("the orphan's principal is refused at the control surface after reconcile", typeof M.lifecycleMembershipRefusal(principalKey(DEV_OWNER, orphanId.id).key) === "string");
   check("the LIVE agent (worker B) survived the reconcile untouched", M.agents.get("worker")?.lifecycleUid === uidB && (await readSlotOnly("worker"))?.phase === "active");
 
+  // ── 7b. F3 RESUME-PATH orphan (distsys/security4 CONDITIONAL @ 9e13648) ─────
+  // A durable ACTIVE slot NOT backed by a live managed agent, present while a resume is pending.
+  // The BOOT sweep must DEFER it (it might be adopted); the POST-ADOPTION sweep must terminalize
+  // it (it was not) and seed retiredPrincipals so F5(a) refuses its copied JWT.
+  const resOrphanId = newIdentity();
+  const resOrphanUid = mintLifecycleUid();
+  {
+    const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+      lifecycleExecutor: { owner: DEV_OWNER, actor: resOrphanId.id, lifecycleUid: resOrphanUid, slotKey: staticSlotKey(DEV_OWNER, "resorphan") },
+    });
+    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    try {
+      const kvm = new Kvm(nc);
+      const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
+      await activateStaticLifecycle(t, { owner: DEV_OWNER, alias: "resorphan", actor: resOrphanId.id, lifecycleUid: resOrphanUid, managerInstance: "smoke" });
+      const slot = await readStaticSlot(t, DEV_OWNER, "resorphan");
+      await casStaticSlot(t, { ...slot!.row, phase: "active" }, slot!.revision);
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+  (mgr as unknown as { resumeRequired: boolean }).resumeRequired = true;
+  await M.reconcileStaticLifecycles(); // BOOT sweep (resume pending): must DEFER the active orphan
+  check("BOOT sweep DEFERS a resume-pending active orphan (does not terminalize it)", (await readSlotOnly("resorphan"))?.phase === "active");
+  check("a deferred orphan's principal is NOT yet in the refusal index (still awaiting adoption)", M.lifecycleMembershipRefusal(principalKey(DEV_OWNER, resOrphanId.id).key) === undefined);
+  await (mgr as unknown as { reconcileStaticLifecycles: (p: boolean) => Promise<void> }).reconcileStaticLifecycles(true); // POST-ADOPTION sweep: not in this.agents -> terminalize
+  (mgr as unknown as { resumeRequired: boolean }).resumeRequired = false;
+  const rSettled = await until(async () => (await readSlotOnly("resorphan"))?.phase === "retired", 30_000, "the resume-path orphan's post-adoption terminal");
+  check("POST-ADOPTION sweep terminalized the unadopted active orphan (F3 resume-path fix)", rSettled);
+  check("the resume-path orphan's principal now REFUSES at the control surface (F5(a) closed on resume)", typeof M.lifecycleMembershipRefusal(principalKey(DEV_OWNER, resOrphanId.id).key) === "string");
+  check("worker B STILL survived both resume-path sweeps (live membership adopted)", M.agents.get("worker")?.lifecycleUid === uidB && (await readSlotOnly("worker"))?.phase === "active");
+
   // ── 8. F2: endpointCapabilities refusal ────────────────────────────────────
   const spawnEp = await mgr.startAgent({ name: "epcap", agent: "smoke-sl", ...({ endpointCapabilities: [{ endpoint: "x", verb: "call" }] } as Record<string, unknown>) });
   check("a static spawn carrying endpointCapabilities is REFUSED (F2, fail-closed in code)", spawnEp.ok === false && /endpointCapabilities/.test(spawnEp.ok ? "" : spawnEp.error), spawnEp);

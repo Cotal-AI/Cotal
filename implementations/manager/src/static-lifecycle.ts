@@ -306,8 +306,12 @@ export function planStaticSlotResume(row: StaticManagedSlotRow, adopted: boolean
       // exact-op terminal (runStaticTerminal is total over the partial durable states).
       return "drive-terminal";
     case "active":
-      // Adopted by the resume inventory -> the validated resume path owns it. NOT adopted ->
-      // the process is gone (a non-preserving restart): the incarnation is dead, terminalize.
+      // `adopted` is genuine live membership (the manager holds this incarnation as a managed
+      // agent). Adopted -> the live process owns it, leave it. NOT adopted -> the process is gone
+      // (a non-preserving restart, or an orphan the resume did not claim): the incarnation is
+      // dead, terminalize. The CALLER supplies `adopted` correctly per sweep: a boot sweep with a
+      // resume pending DEFERS active slots (adoption has not run yet) rather than passing a false
+      // adopted; the post-adoption sweep passes true membership.
       return adopted ? "none" : "drive-terminal";
     default: {
       const never: never = row.phase;
