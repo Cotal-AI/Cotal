@@ -13,6 +13,7 @@ lookup material for the commands, not a walkthrough; if you are new, start with
 ```bash
 npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 20+)
 cotal --help              # every command, grouped
+cotal --version           # cotal-ai version + each installed extension's (also `cotal -v`)
 cotal <command> --help    # one command's flags and usage
 ```
 
@@ -305,10 +306,11 @@ cotal status [--space <s>] [--server <url>]
 
 `meshes` lists the running meshes on this machine; a `*` marks the `current` default a bare
 `cotal spawn` joins. `use <space>` sets that default; the selection applies from every directory,
-including inside another mesh's project. `status` is a read-only report across four sections:
-machine prerequisites, this folder's `.cotal/`, the recorded meshes, and a live snapshot of the
-selected mesh (roster, channels, membership feed). `status` takes only `--space` / `--server` to
-pick the mesh to inspect; it starts nothing.
+including inside another mesh's project. `status` is a read-only report: machine prerequisites
+(starting with the installed `cotal-ai` version), the installed extensions and their versions, this
+folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
+membership feed). `status` takes only `--space` / `--server` to pick the mesh to inspect; it starts
+nothing.
 
 ## spawn
 

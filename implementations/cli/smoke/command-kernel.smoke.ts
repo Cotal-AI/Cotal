@@ -103,6 +103,24 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!out.includes("Unknown option"), "no usage error above the help");
 }
 
+// --- `-v` / `--version` print `cotal-ai <semver>` (+ any extensions) and short-circuit dispatch --
+{
+  const { runCli } = await import("../src/command.js");
+  for (const flag of ["-v", "--version"]) {
+    let out = "";
+    const realLog = console.log;
+    console.log = (s?: unknown) => void (out += `${s}\n`);
+    try {
+      await runCli(registry, [flag]);
+    } finally {
+      console.log = realLog;
+    }
+    // First line is always `cotal-ai <semver>`; any installed extensions follow indented (none in
+    // a bare unit env). Reaching here at all proves it short-circuited before command dispatch.
+    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${flag} prints the binary version`);
+  }
+}
+
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");
