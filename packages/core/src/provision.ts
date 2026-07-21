@@ -73,7 +73,7 @@ import {
 } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
 import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -1405,7 +1405,10 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, ...buckets].flatMap((s) => [
+  // The §13.7 CONTRACT store (EPC) joins the list for the static manager's start-time
+  // `ensureContractStore` (P2 item 1, 1c): create-or-verify only — the provisioner holds no
+  // artifact-publish grant on it (publication rides the scoped endpoint-serve executor).
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
@@ -1548,6 +1551,16 @@ function endpointServeExecutorPermissions(
         `$KV.${AUTH}.${gateKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((k) => `$KV.${REC}.${k}`),
+        // §13.7 contract-artifact publication (P2 item 1, 1c): the registration publishes the
+        // endpoint's cluster document, closure manifests, and schema roots to the EPC store so
+        // callers can fetch-verify-compile the registered digests. A digest subject is a SINGLE
+        // hex token (`epc.<64hex>`), so the grant is the single-token `epc.*` form (matching
+        // `contractPublisherGrants`), never the multi-token `epc.>`. Digest subjects cannot be
+        // key-pinned pre-mint; the store defends itself — create-only (deny-new CAS), content-
+        // addressed (verify-on-read makes a wrong-subject write unservable), deny_delete/purge.
+        // NAMED RESIDUAL: for its one-shot lifetime the executor can publish arbitrary NEW
+        // digest-addressed artifacts (unreferenced artifacts carry no authority).
+        `${spacePrefix(space)}.epc.*`,
         // Leader-served reads (the auth store is allow_direct=false): stream-scoped MSG.GET (the
         // barrier/fence read the gate + each epcred row), plus the ordered consumer the epcred
         // `keys()` enumeration binds. The records store IS direct-servable, so its reads add the

@@ -10,6 +10,7 @@
  * the service registry machinery.
  */
 import { spacePrefix } from "./subjects.js";
+import { epcStreamName } from "./endpoint-binding.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpTarget,
@@ -192,10 +193,25 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability
  *  rollup into `pub.allow`, and the caller's reply rail into `sub.allow` — ALWAYS present (the
- *  baseline implies the reply read even when no per-capability rows are minted). */
+ *  baseline implies the reply read even when no per-capability rows are minted). The §13.7
+ *  contract-store FETCH (the Direct Get API on the EPC stream) rides the baseline too: describe
+ *  answers digests, and a caller that may describe may fetch-verify-compile the schemas those
+ *  digests name (content-addressed public artifacts — a digest is the read capability; the
+ *  per-caller authorization surface is the describe VIEW, never the schema bytes). */
 export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: string[]; sub: string[] } {
   const base = epCallerGrantRows(space, baselineCallerCapabilities(), caller);
-  return { pub: [epDescribeAllGrantRow(space, caller), ...base.pub], sub: [epCallerReplyGrantRow(space, caller)] };
+  return {
+    pub: [
+      epDescribeAllGrantRow(space, caller),
+      // ONE subject-scoped Direct Get row (the `DIRECT.GET.<stream>.<subject>` form the client's
+      // last_by_subj read rides), pinned to the epc subject space — never the bare/stream-wide
+      // form. The D32 matrix audit exempts exactly this row shape from the untrusted-profile
+      // control-surface prohibition (the store is public content-addressed artifacts).
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      ...base.pub,
+    ],
+    sub: [epCallerReplyGrantRow(space, caller)],
+  };
 }
 
 /** One registered command's serve-subscribe rows (§13.9 "Serve subscribe"), per registered

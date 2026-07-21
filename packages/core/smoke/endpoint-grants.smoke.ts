@@ -67,12 +67,17 @@ c("empty capability set mints nothing", JSON.stringify(epCallerGrantRows("demo",
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
   baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
-c("baseline: delivery join/leave/list untargeted + manager stop self-mode, nothing else",
-  baseline.pub.length === 5
+c("baseline: delivery join/leave/list untargeted + manager stop self-mode + the ONE epc-subject-scoped store fetch, nothing else",
+  baseline.pub.length === 6
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
-  && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`),
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`)
+  // §13.7 store fetch rides the baseline (describe answers digests; a caller that may describe
+  // may fetch the schemas those digests name) — EXACTLY the epc-subject-scoped Direct Get form,
+  // never the bare/stream-wide row, and no epc PUBLISH row.
+  && baseline.pub.includes("$JS.API.DIRECT.GET.EPC_demo.cotal.demo.epc.>")
+  && baseline.pub.every((r) => !r.startsWith("cotal.demo.epc.")),
   JSON.stringify(baseline.pub));
 c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));

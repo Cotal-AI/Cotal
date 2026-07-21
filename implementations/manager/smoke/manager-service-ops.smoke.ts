@@ -35,6 +35,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, CONTROL_PRIVILEGED,
   controlServiceSubject, epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
+  contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
   registry,
   type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
@@ -135,6 +136,8 @@ try {
   const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }]);
 
   console.log("1. describe: the rev-2 document serves the full fan-out");
+  let clusterDigest: string | undefined;
+  let spawnInputDigest: string | undefined;
   {
     const replies: unknown[] = [];
     const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))) });
@@ -145,7 +148,9 @@ try {
     const d = replies[0] as { ok?: boolean; data?: { descriptor?: { clusters?: Array<{ commands?: string[]; document?: { revision?: number; commands?: Array<{ name: string; targeted: boolean; modes?: string[] }> } }> } } } | undefined;
     const cmds = d?.data?.descriptor?.clusters?.[0]?.commands ?? [];
     check("describe lists all 17 commands", cmds.length === 17 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
+    clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
+    spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
     check("the document is revision 2; despawn declares owner mode, stop declares self mode (child/ledger ABSENT everywhere)",
@@ -299,7 +304,40 @@ try {
       rInj.reply.ok === true && injRaw.length > 0 && !/^capabilities:/m.test(injRaw), injRaw);
   }
 
-  console.log("8. dual-serve intact");
+  console.log("8. the §13.7 contract store: fetch-verify-compile the registered digests (the item-5 caller path)");
+  {
+    const storeCtx = await contractStoreContext(A.nc, space);
+    const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
+    const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
+    check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
+      fetchedDoc.revision === 2 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+    const { manifest: inManifest, artifacts: inArts } = await fetchContractClosure(storeCtx, spawnInputDigest!, () => []);
+    const schema = JSON.parse(dec.decode(inArts.get(contractRefToHex(inManifest.root))!)) as Record<string, unknown>;
+    const recompiled = compileContract({ root: schema });
+    check("a fetched schema RECOMPILES to the registered closure digest (the generic-invoke round-trip)",
+      recompiled.closureDigest === spawnInputDigest, { got: recompiled.closureDigest, want: spawnInputDigest });
+    check("the recompiled validator enforces the same closed contract",
+      recompiled.validate({ name: "x" }) === true && recompiled.validate({ name: "x", bogus: 1 }) === false);
+  }
+
+  console.log("9. escalation negative: a spawn-cap-only agent cred is broker-refused on admin-class ep commands");
+  {
+    const S = await instrument([{ command: "spawn" }]); // spawn only - NO manager.admin capability
+    let refused: string | undefined;
+    try {
+      const r = await epCall(S.nc, space, { mode: "one" }, {
+        endpoint: MANAGER_ENDPOINT, command: "purge", contract: MANAGER_CONTRACTS.purge, caller: S.caller, args: {},
+      }, { deadlineMs: 2500, currentEpoch: async () => 0 });
+      refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+    } catch (e) {
+      refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+    }
+    check("purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: dropped by the broker, no reply)",
+      refused === "unavailable" || refused === "deadline-exceeded", refused);
+    await S.nc.drain().catch(() => S.nc.close());
+  }
+
+  console.log("10. dual-serve intact");
   {
     const psCtl = await A.ctl("ps", {});
     check("the legacy ctl rail still answers ps", psCtl.ok === true, psCtl);

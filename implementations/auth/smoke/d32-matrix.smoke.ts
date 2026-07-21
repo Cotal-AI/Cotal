@@ -517,10 +517,18 @@ const untrusted: Record<string, { pub: string[]; sub: string[] }> = {
   observer: decode(await mintCreds(auth, newIdentity(), "observer", { principal: { owner: "u_abc", actor: "obs" } })),
   admin: decode(await mintCreds(auth, newIdentity(), "admin", { principal: { owner: "u_abc", actor: "adm" } })),
 };
+// The ONE deliberate untrusted-profile read on a control-surface stream (P2 item 1, 1c): the
+// §13.7 CONTRACT store fetch, EXACTLY the epc-subject-scoped Direct Get row the agent baseline
+// mints. Safe by the store's construction — content-addressed public artifacts (schemas /
+// manifests / cluster documents; no secrets, no authority rows), create-only with
+// deny_delete/deny_purge, verify-on-read as the tamper boundary — and by the row's shape: the
+// subject-scoped form reads epc subjects only, never another stream's bodies. Any OTHER read
+// verb, any broader Direct Get form, and every non-EPC stream stay prohibited below.
+const EPC_FETCH_ROW = `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`;
 for (const [profile, rows] of Object.entries(untrusted)) {
   const reach = [...rows.pub, ...rows.sub].filter((r) =>
-    CS_STREAM.test(r) && /(CONSUMER\.CREATE|CONSUMER\.MSG\.NEXT|DIRECT\.GET|STREAM\.MSG\.GET)/.test(r));
-  c(`${profile}: no CONSUMER.CREATE/MSG.NEXT/DIRECT.GET/STREAM.MSG.GET on any control-surface stream`, reach.length === 0, reach);
+    r !== EPC_FETCH_ROW && CS_STREAM.test(r) && /(CONSUMER\.CREATE|CONSUMER\.MSG\.NEXT|DIRECT\.GET|STREAM\.MSG\.GET)/.test(r));
+  c(`${profile}: no CONSUMER.CREATE/MSG.NEXT/DIRECT.GET/STREAM.MSG.GET on any control-surface stream (sole exemption: the epc-subject-scoped store fetch)`, reach.length === 0, reach);
   const kvWrites = rows.pub.filter((r) => r.startsWith("$KV.cotal_records_d32m") || r.startsWith("$KV.cotal_auth_d32m"));
   c(`${profile}: no records/auth KV write rows`, kvWrites.length === 0, kvWrites);
 }

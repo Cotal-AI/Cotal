@@ -197,24 +197,47 @@ export async function createEndpointStreams(
     storage: StorageType.File,
     allow_direct: false,
   });
-  // EPC — content-addressed contract artifacts: one immutable message per digest subject,
-  // create-only mediated publication, NO age eviction (artifacts are permanent). allow_direct:
-  // the subject-scoped last-by-subject read IS the fetch path. Permanence is BROKER-ENFORCED,
-  // not just configured-by-omission: deny_delete/deny_purge reject the message-delete and purge
-  // APIs even from a stream-API-holding principal, so a digest subject cannot be emptied and
-  // re-created through them. Per §13.12 the flags alone are NOT the whole claim: permanence is
-  // their COMBINATION with the retention floor (no age eviction, no teardown), verify-on-read
-  // pinning WHAT a subject carries, and stream management held by no profile.
-  await jsm.streams.add({
-    name: epcStreamName(space),
-    subjects: [`${p}.epc.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_direct: true,
-    deny_delete: true,
-    deny_purge: true,
-  });
+  await ensureContractStore(jsm, space);
   await ensureAuthorityStores(jsm, kvm, space);
+}
+
+/**
+ * Ensure the per-space CONTRACT store (EPC) exists with its normative shape (§13.7/§13.12) —
+ * content-addressed artifacts, one immutable message per digest subject, create-only mediated
+ * publication, NO age eviction (artifacts are permanent). allow_direct: the subject-scoped
+ * last-by-subject read IS the fetch path. Permanence is BROKER-ENFORCED, not configured-by-
+ * omission: deny_delete/deny_purge reject the message-delete and purge APIs even from a
+ * stream-API-holding principal, so a digest subject cannot be emptied and re-created through
+ * them. Per §13.12 the flags alone are NOT the whole claim: permanence is their COMBINATION with
+ * the retention floor, verify-on-read pinning WHAT a subject carries, and stream management held
+ * by no profile.
+ *
+ * Create-or-verify, safe at every authority-daemon boot (the {@link ensureAuthorityStores}
+ * discipline): a fresh space gets the store created; an existing one is verified against the
+ * exact flags and a drift FAILS LOUD — a drifted authority store is an operator error, never
+ * silently adopted.
+ */
+export async function ensureContractStore(jsm: JetStreamManager, space: string): Promise<void> {
+  const name = epcStreamName(space);
+  const subject = `${spacePrefix(space)}.epc.>`;
+  if (await jsm.streams.info(name).catch(() => undefined) === undefined) {
+    await jsm.streams.add({
+      name,
+      subjects: [subject],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      allow_direct: true,
+      deny_delete: true,
+      deny_purge: true,
+    });
+  }
+  const cfg = (await jsm.streams.info(name)).config;
+  if (cfg.allow_direct !== true || cfg.deny_delete !== true || cfg.deny_purge !== true)
+    throw new Error(`the contract store ${name} has a drifted shape (allow_direct=${String(cfg.allow_direct)}, deny_delete=${String(cfg.deny_delete)}, deny_purge=${String(cfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  if (!Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== subject)
+    throw new Error(`the contract store ${name} does not carry exactly the subject ${subject} (got ${JSON.stringify(cfg.subjects)}); a stream that captures anything else is not the contract store - reprovision it (SPEC 13.12)`);
+  if (cfg.storage !== "file")
+    throw new Error(`the contract store ${name} has storage ${JSON.stringify(cfg.storage)}, not file; a non-durable contract store forgets permanent artifacts on restart - reprovision it (SPEC 13.12)`);
 }
 
 /**

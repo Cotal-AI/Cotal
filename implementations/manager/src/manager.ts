@@ -58,6 +58,10 @@ import {
   recordsBucket,
   epAuthBucket,
   ensureAuthorityStores,
+  ensureContractStore,
+  contractStoreContext,
+  publishContractArtifact,
+  contractArtifactCanonicalBytes,
   standaloneConnectOpts,
   STATIC_SLOT_PREFIX,
   rawDigest,
@@ -84,7 +88,7 @@ import {
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, type ManagerStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerStatus } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -3417,7 +3421,7 @@ export class Manager {
    *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
    *  gate CAS, the mint fence, and the spec/governance writes ride a one-shot scoped authority —
    *  NEVER the manager's standing seed/supervisor connection (the panel's "no seed shortcut"). */
-  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV }) => Promise<T>): Promise<T> {
+  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withEndpointServeExecutor: no space auth (an open mesh has no service registry)");
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
@@ -3426,7 +3430,7 @@ export class Manager {
     const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)) });
+      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
     } finally {
       await nc.drain().catch(() => nc.close());
     }
@@ -3457,9 +3461,9 @@ export class Manager {
     const iid = this.managerLifecycleUid;
     const artifacts = managerClusterArtifacts();
     // In-memory §13.7 content store: the manager is this document's AUTHOR, so registration and
-    // serve authorization verify against the exact artifacts it publishes from memory. The `epc`
-    // contract-store publication (for third-party digest fetches) joins the D8 loader slice;
-    // callers meanwhile read the descriptor through the served `describe`.
+    // serve authorization verify against the exact artifacts it publishes from memory. The DURABLE
+    // `epc` contract-store publication (for third-party digest fetches) runs below inside the same
+    // executor, BEFORE the registration that advertises the digests.
     const store = new Map<string, unknown>([
       [artifacts.rootDigest, artifacts.document],
       [artifacts.closureDigest, artifacts.manifest],
@@ -3475,7 +3479,16 @@ export class Manager {
     // serving-principal binding); renewals re-mint the same nkey with a fresh bounded exp.
     const serveIdentity = newIdentity();
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
-    const { grant, creds } = await this.withEndpointServeExecutor(async ({ recordsKv, authKv }) => {
+    const { grant, creds } = await this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {
+      // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
+      // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
+      // advertises their digests — so a caller can always fetch-verify-compile a registered
+      // digest (the item-5 generic-invoke read path). Create-only + content-addressed: a retry
+      // or a same-artifact republish is an idempotent lost-CAS. The registration itself still
+      // verifies against the in-memory copies (the manager is the author).
+      const storeCtx = await contractStoreContext(execNc, this.space);
+      for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest])
+        await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
       // §13.1 pre-registration (checklist 1): the issuance gate, born open@gen0 bound to the
       // serve principal. Idempotent for this principal; a different-principal re-provision of the
       // same instance token conflicts (an instance token is never re-bound).
@@ -3641,6 +3654,9 @@ export class Manager {
       const jsm = await jetstreamManager(nc);
       const kvm = new Kvm(nc);
       await ensureAuthorityStores(jsm, kvm, this.space);
+      // The §13.7 contract store joins the authority-store ensure (P2 item 1, 1c): the service
+      // registration that follows publishes the manager's cluster/schema artifacts into it.
+      await ensureContractStore(jsm, this.space);
       const recordsKv = await kvm.open(recordsBucket(this.space));
       const t = staticLifecycleTransport(recordsKv, recordsKv /* auth reads unused in the sweep */);
       const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${DEV_OWNER}.>`);

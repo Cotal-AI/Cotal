@@ -249,46 +249,69 @@ const ATTEMPT_STATE_OUTPUT_SCHEMA = {
   properties: { attemptId: { type: "string" }, state: { type: "string" } },
 } as const;
 
-// ---- the command table (ONE source for the document, the defs, and the caller contracts) -------
+// ---- the command table (ONE source for the document, the defs, the caller contracts, AND the
+// ---- published store artifacts) ----------------------------------------------------------------
 
-const VOID_CONTRACT: CompiledContract = compileContract({ root: VOID_SCHEMA });
-const cc = (root: unknown): CompiledContract => compileContract({ root: root as Record<string, unknown> });
-
-/** Handler key per command (the {@link ManagerServiceHandlers} method that backs it). */
+/** Handler key per command (the {@link ManagerServiceHandlers} method that backs it). Rows carry
+ *  the SOURCE schemas; the compiled pairs AND the store artifacts derive from them, so the served
+ *  validator, the registered digest, and the fetchable artifact can never drift apart. */
 interface CommandRow {
   name: string;
   capability: string;
-  input: CompiledContract;
-  output: CompiledContract;
+  input: unknown;
+  output: unknown;
   targeted: boolean;
   modes?: EpAuthzMode[];
   handler: keyof ManagerServiceHandlers;
 }
 
 const ROWS: CommandRow[] = [
-  { name: "status", capability: "manager.read", input: VOID_CONTRACT, output: cc(STATUS_OUTPUT_SCHEMA), targeted: false, handler: "status" },
-  { name: "ps", capability: "manager.read", input: VOID_CONTRACT, output: cc(PS_OUTPUT_SCHEMA), targeted: false, handler: "ps" },
-  { name: "inspect", capability: "manager.read", input: cc(INSPECT_INPUT_SCHEMA), output: cc(AGENT_ROW_SCHEMA), targeted: false, handler: "inspect" },
-  { name: "models", capability: "manager.read", input: cc(MODELS_INPUT_SCHEMA), output: cc(MODELS_OUTPUT_SCHEMA), targeted: false, handler: "models" },
-  { name: "spawn", capability: "manager.spawn", input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA), targeted: false, handler: "spawn" },
-  { name: "despawn", capability: "manager.lifecycle", input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA), targeted: true, modes: ["owner"], handler: "despawn" },
-  { name: "attach", capability: "manager.lifecycle", input: VOID_CONTRACT, output: cc(ATTACH_OUTPUT_SCHEMA), targeted: true, modes: ["owner"], handler: "attach" },
-  { name: "stop", capability: "manager.self", input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA), targeted: true, modes: ["self"], handler: "stopSelf" },
-  { name: "define-persona", capability: "manager.persona", input: cc(PERSONA_INPUT_SCHEMA), output: cc(PERSONA_OUTPUT_SCHEMA), targeted: false, handler: "definePersona" },
-  { name: "purge", capability: "manager.admin", input: cc(PURGE_INPUT_SCHEMA), output: cc(PURGE_OUTPUT_SCHEMA), targeted: false, handler: "purge" },
-  { name: "launch", capability: "manager.admin", input: cc(LAUNCH_INPUT_SCHEMA), output: cc(LAUNCH_OUTPUT_SCHEMA), targeted: false, handler: "launch" },
-  { name: "resume-preserved", capability: "manager.admin", input: cc(RESUME_INPUT_SCHEMA), output: cc(OPEN_OBJECT_SCHEMA), targeted: false, handler: "resumePreserved" },
-  { name: "commit-resume", capability: "manager.admin", input: cc(ATTEMPT_INPUT_SCHEMA), output: cc(COMMIT_RESUME_OUTPUT_SCHEMA), targeted: false, handler: "commitResume" },
-  { name: "finalize-resume", capability: "manager.admin", input: cc(FINALIZE_INPUT_SCHEMA), output: cc(ATTEMPT_STATE_OUTPUT_SCHEMA), targeted: false, handler: "finalizeResume" },
-  { name: "prepare-preservation", capability: "manager.admin", input: cc(ATTEMPT_INPUT_SCHEMA), output: cc(OPEN_OBJECT_SCHEMA), targeted: false, handler: "preparePreservation" },
-  { name: "commit-preservation", capability: "manager.admin", input: cc(ATTEMPT_INPUT_SCHEMA), output: cc(OPEN_OBJECT_SCHEMA), targeted: false, handler: "commitPreservation" },
-  { name: "abort-preservation", capability: "manager.admin", input: cc(ATTEMPT_INPUT_SCHEMA), output: cc(ATTEMPT_STATE_OUTPUT_SCHEMA), targeted: false, handler: "abortPreservation" },
+  { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
+  { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
+  { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
+  { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
+  { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
+  { name: "despawn", capability: "manager.lifecycle", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["owner"], handler: "despawn" },
+  { name: "attach", capability: "manager.lifecycle", input: VOID_SCHEMA, output: ATTACH_OUTPUT_SCHEMA, targeted: true, modes: ["owner"], handler: "attach" },
+  { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
+  { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
+  { name: "launch", capability: "manager.admin", input: LAUNCH_INPUT_SCHEMA, output: LAUNCH_OUTPUT_SCHEMA, targeted: false, handler: "launch" },
+  { name: "resume-preserved", capability: "manager.admin", input: RESUME_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "resumePreserved" },
+  { name: "commit-resume", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: COMMIT_RESUME_OUTPUT_SCHEMA, targeted: false, handler: "commitResume" },
+  { name: "finalize-resume", capability: "manager.admin", input: FINALIZE_INPUT_SCHEMA, output: ATTEMPT_STATE_OUTPUT_SCHEMA, targeted: false, handler: "finalizeResume" },
+  { name: "prepare-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "preparePreservation" },
+  { name: "commit-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "commitPreservation" },
+  { name: "abort-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: ATTEMPT_STATE_OUTPUT_SCHEMA, targeted: false, handler: "abortPreservation" },
 ];
 
+const cc = (root: unknown): CompiledContract => compileContract({ root: root as Record<string, unknown> });
+const COMPILED: Record<string, { input: CompiledContract; output: CompiledContract }> =
+  Object.fromEntries(ROWS.map((r) => [r.name, { input: cc(r.input), output: cc(r.output) }]));
+
 /** Per-command compiled contract pairs, exported for CALLERS (`epCall` pins the same digests the
- *  cluster document registers; the generic invoke CLI later compiles these from describe). */
+ *  cluster document registers; the generic invoke CLI compiles these from the STORE instead). */
 export const MANAGER_CONTRACTS: Readonly<Record<string, { input: CompiledContract; output: CompiledContract }>> =
-  Object.freeze(Object.fromEntries(ROWS.map((r) => [r.name, { input: r.input, output: r.output }])));
+  Object.freeze(COMPILED);
+
+/** Every §13.7 contract artifact the manager PUBLISHES to the EPC store at registration (P2 item
+ *  1, 1c): each DISTINCT schema root plus its single-member closure manifest — the two artifacts
+ *  a caller fetches at a command's input/output CLOSURE digest (`fetchContractClosure` walks
+ *  manifest → root) to recompile the digest-matching validators. The cluster document + ITS
+ *  manifest ride separately ({@link managerClusterArtifacts}). */
+export function managerContractArtifactValues(): unknown[] {
+  const values: unknown[] = [];
+  const seen = new Set<string>();
+  for (const r of ROWS) {
+    for (const source of [r.input, r.output]) {
+      const rootDigest = contractDigest(source);
+      if (seen.has(rootDigest)) continue;
+      seen.add(rootDigest);
+      values.push(source, { v: 1, root: rootDigest, members: [] });
+    }
+  }
+  return values;
+}
 
 /** The 1a `status` pair, kept as a named export (existing callers/smokes). */
 export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } = MANAGER_CONTRACTS.status;
@@ -322,8 +345,8 @@ export function managerClusterDocument(): {
       targeted: r.targeted,
       ...(r.modes ? { modes: r.modes } : {}),
       capability: r.capability,
-      inputDigest: r.input.closureDigest,
-      outputDigest: r.output.closureDigest,
+      inputDigest: COMPILED[r.name].input.closureDigest,
+      outputDigest: COMPILED[r.name].output.closureDigest,
     })),
   };
 }
@@ -376,7 +399,7 @@ export interface ManagerServiceHandlers {
 export function managerCommandDefs(handlers: ManagerServiceHandlers): EpCommandDef[] {
   return ROWS.map((r) => ({
     command: r.name,
-    contract: { input: r.input, output: r.output },
+    contract: COMPILED[r.name],
     handler: (ctx: EpServeContext) => handlers[r.handler](ctx),
   }));
 }
