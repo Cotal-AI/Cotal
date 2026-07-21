@@ -77,6 +77,7 @@ import {
   authorizeServeGrant,
   serveEndpoint,
   EpEnvelopeError,
+  type EpCommandDef,
   type EpServeContext,
   type EpServeGrant,
   type EpServeHandle,
@@ -1203,12 +1204,44 @@ export class Manager {
   }
 
   private async handle(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {
+    // The resume/preservation family deliberately sits BEFORE admitControl: these maintenance ops
+    // must run while `resumeRequired` fences ordinary work. Each body lives in a door-shared
+    // method (the v0.4 ep door serves the same ops through the same cores); the ctl door keeps
+    // the tier gate here, the ep door's gate is its admin-grade capability grant.
     if (req.op === "finalizeResume") {
       if (tier !== CONTROL_ADMIN)
         return { ok: false, error: "finalizeResume is admin-only; not allowed on this control subject" };
+      return this.opFinalizeResume(req.args);
+    }
+    if (req.op === "commitResume") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: "commitResume is admin-only; not allowed on this control subject" };
+      return this.opCommitResume(req.args);
+    }
+    if (req.op === "resumePreserved") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: "resumePreserved is admin-only; not allowed on this control subject" };
+      return this.opResumePreserved(req.args);
+    }
+    if (req.op === "preparePreservation" || req.op === "commitPreservation" || req.op === "abortPreservation") {
+      if (tier !== CONTROL_ADMIN)
+        return { ok: false, error: `${req.op} is admin-only; not allowed on this control subject` };
+      return this.opPreservationCtl(req.op, req.args);
+    }
+    const admission = this.admitControl(req.from.id);
+    if (admission.refusal !== undefined) return { ok: false, error: admission.refusal };
+    try {
+      return await this.handleActive(req, tier);
+    } finally {
+      admission.release();
+    }
+  }
+
+  private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
+    {
       let args: { attemptId: string; durableCommitToken: string };
       try {
-        args = parseResumeFinalizeArgs(req.args);
+        args = parseResumeFinalizeArgs(rawArgs);
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -1249,12 +1282,13 @@ export class Manager {
       this.resumeRequired = false;
       return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
     }
-    if (req.op === "commitResume") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: "commitResume is admin-only; not allowed on this control subject" };
+  }
+
+  private async opCommitResume(rawArgs: unknown): Promise<ControlReply> {
+    {
       let attemptId: string;
       try {
-        attemptId = parseResumeCommitArgs(req.args).attemptId;
+        attemptId = parseResumeCommitArgs(rawArgs).attemptId;
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -1278,11 +1312,12 @@ export class Manager {
         if (this.resumeCommitTask === task) this.resumeCommitTask = undefined;
       }
     }
-    if (req.op === "resumePreserved") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: "resumePreserved is admin-only; not allowed on this control subject" };
+  }
+
+  private async opResumePreserved(rawArgs: unknown): Promise<ControlReply> {
+    {
       try {
-        const args = parseResumeControlArgs(req.args);
+        const args = parseResumeControlArgs(rawArgs);
         const inventoryDigest = createHash("sha256").update(JSON.stringify(args.inventory)).digest("hex");
         if (!this.resumeAttemptId)
           return { ok: false, error: "resumePreserved requires a manager started with --resume-attempt" };
@@ -1311,37 +1346,29 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
-    if (req.op === "preparePreservation" || req.op === "commitPreservation" || req.op === "abortPreservation") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: `${req.op} is admin-only; not allowed on this control subject` };
-      if (this.resumeRequired) return { ok: false, error: this.maintenanceError() };
-      const attemptId = String(req.args?.attemptId ?? "").trim();
-      if (!attemptId) return { ok: false, error: `${req.op} requires attemptId` };
-      try {
-        if (req.op === "abortPreservation") {
-          this.abortPreservation(attemptId);
-          return { ok: true, data: { attemptId, state: "active" } };
-        }
-        const result = req.op === "preparePreservation"
-          ? await this.preparePreservation(attemptId)
-          : await this.commitPreservation(attemptId);
-        return result.ok
-          ? { ok: true, data: result }
-          : {
-              ok: false,
-              data: result,
-              error: `preservation incomplete: ${result.failures.map((f) => `${f.name}: ${f.error}`).join("; ")}`,
-            };
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
-    }
-    const admission = this.admitControl(req.from.id);
-    if (admission.refusal !== undefined) return { ok: false, error: admission.refusal };
+  }
+
+  private async opPreservationCtl(op: string, rawArgs: unknown): Promise<ControlReply> {
+    if (this.resumeRequired) return { ok: false, error: this.maintenanceError() };
+    const attemptId = String((rawArgs as Record<string, unknown> | undefined)?.attemptId ?? "").trim();
+    if (!attemptId) return { ok: false, error: `${op} requires attemptId` };
     try {
-      return await this.handleActive(req, tier);
-    } finally {
-      admission.release();
+      if (op === "abortPreservation") {
+        this.abortPreservation(attemptId);
+        return { ok: true, data: { attemptId, state: "active" } };
+      }
+      const result = op === "preparePreservation"
+        ? await this.preparePreservation(attemptId)
+        : await this.commitPreservation(attemptId);
+      return result.ok
+        ? { ok: true, data: result }
+        : {
+            ok: false,
+            data: result,
+            error: `preservation incomplete: ${result.failures.map((f) => `${f.name}: ${f.error}`).join("; ")}`,
+          };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
     }
   }
 
@@ -1380,6 +1407,76 @@ export class Manager {
     } finally {
       admission.release();
     }
+  }
+
+  /** The v0.4 typed command table (P2 item 1, slice 1b): every ordinary handler runs the SHARED
+   *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
+   *  door dispatches (checklist 8: one core, two thin doors). The resume/preservation family
+   *  deliberately BYPASSES serveGated — exactly as it sits before {@link admitControl} on the ctl
+   *  door (those ops must run while `resumeRequired` fences ordinary work) — riding its own state
+   *  fences; its ep gate is the admin-grade `manager.admin` capability grant (the 1b rule: static
+   *  admin-class commands are capability-gated + untargeted, never a fabricated ledger mode).
+   *
+   *  TIER SEMANTICS on the ep door (until the 1c grant-migration table lands): the mutating
+   *  handlers pass `admin=false`, i.e. the ctl PRIVILEGED semantics — own-child despawn/attach
+   *  ({@link authorizeNamed}), own-persona redefine. This is deliberate: every spawn-capable
+   *  agent cred ALREADY holds the Appendix-B owner-mode `despawn`/`attach` request rows (minted
+   *  ahead of serving, previously no-responder), so serving them with admin reach would silently
+   *  escalate those agents past their ctl privileged tier. Operator cross-agent reach stays on
+   *  the ctl admin tier until 1c mints the admin-grade ep instruments. */
+  private managerServiceDefs(): EpCommandDef[] {
+    const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
+    const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    // A ctl-core failure reply becomes the §13.3 structured error the serve boundary publishes.
+    // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
+    // only — the item-2 action model gives failures a typed channel.
+    const unwrap = (r: ControlReply): unknown => {
+      if (!r.ok) throw new EpEnvelopeError("failed-precondition", r.error ?? "the operation failed");
+      return r.data;
+    };
+    const targetAgent = (ctx: EpServeContext): ManagedAgent => {
+      const t = ctx.request.target!; // targeted commands only: the serve boundary enforced body-target presence + fresh currency
+      const a = this.findManagedByTarget(t);
+      if (!a) throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is not a live managed agent of this manager`);
+      return a;
+    };
+    return managerCommandDefs({
+      status: (ctx) => this.serveGated(ctx, () => this.managerStatusData()),
+      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(callerOf(ctx), false))),
+      inspect: (ctx) => this.serveGated(ctx, async () => {
+        const name = String(args(ctx).name ?? "").trim();
+        const row = this.list(await this.psOwnerFilter(callerOf(ctx), false)).find((x) => x.name === name);
+        if (!row) throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+        return row;
+      }),
+      models: (ctx) => this.serveGated(ctx, async () => {
+        const data = unwrap(await this.opModels(args(ctx)));
+        return { catalogs: Array.isArray(data) ? data : [data] };
+      }),
+      spawn: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opStart(args(ctx), callerOf(ctx)))),
+      despawn: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), false);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
+      }),
+      attach: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), false);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return unwrap(this.attachAuthorized(a));
+      }),
+      stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
+      definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      purge: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx)))),
+      launch: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opLaunch(args(ctx), callerOf(ctx), false))),
+      resumePreserved: async (ctx) => unwrap(await this.opResumePreserved(args(ctx))),
+      commitResume: async (ctx) => unwrap(await this.opCommitResume(args(ctx))),
+      finalizeResume: async (ctx) => unwrap(await this.opFinalizeResume(args(ctx))),
+      preparePreservation: async (ctx) => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx))),
+      commitPreservation: async (ctx) => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx))),
+      abortPreservation: async (ctx) => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx))),
+    });
   }
 
   private async commitResumeActivation(attemptId: string): Promise<ControlReply> {
@@ -3252,12 +3349,38 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
+    return this.despawnCore(a, caller, admin, args.graceful !== false);
+  }
+
+  /** The ONE named-terminal core both doors share (P2 item 1, checklist 8): the ctl named `stop`
+   *  and the v0.4 targeted `despawn` are the same terminal — authorize by the shared policy
+   *  ({@link authorizeNamed}: own-child / owner-domain on privileged, any on admin), stop, track.
+   *  The ep door runs the SAME two pieces separately so a policy denial surfaces as the §13.3
+   *  `permission-denied` (never a generic failure). */
+  private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean): Promise<ControlReply> {
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    const graceful = args.graceful !== false;
+    return this.despawnAuthorized(a, graceful, !admin);
+  }
+
+  /** The post-authorization terminal effect (both doors). `trackNonAdmin` mirrors the ctl door's
+   *  `trackStoppedHandle(a, !admin)` disposition. */
+  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean): ControlReply {
     this.stopHandle(a, graceful);
-    this.trackStoppedHandle(a, !admin);
-    return { ok: true, data: { name, stopped: true, graceful } };
+    this.trackStoppedHandle(a, trackNonAdmin);
+    return { ok: true, data: { name: a.name, stopped: true, graceful } };
+  }
+
+  /** Resolve a v0.4 TARGET triple (owner, actor, lifecycleUid — broker-validated subject/body
+   *  agreement, currency re-checked by the serve boundary's resolver) to the live managed agent it
+   *  names. Static agents key `(DEV_OWNER, nkey)`; user-mode agents store the principal dot-form
+   *  in `id`. A uid mismatch is a superseded incarnation — never resolved to its successor. */
+  private findManagedByTarget(t: { owner: string; actor: string; lifecycleUid: string }): ManagedAgent | undefined {
+    for (const a of this.agents.values()) {
+      const matches = a.userOwner ? a.id === principalKey(t.owner, t.actor).key : t.owner === DEV_OWNER && a.id === t.actor;
+      if (matches && a.lifecycleUid === t.lifecycleUid) return a;
+    }
+    return undefined;
   }
 
   /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
@@ -3393,13 +3516,27 @@ export class Manager {
     });
     nc.closed().then((err) => { if (err) console.error(`! manager service endpoint connection closed: ${err.message}`); });
     try {
-      // 1a serves `status` (read-only, untargeted) + the derived `describe`. The descriptor is
-      // PUBLIC for 1a — its one command is the lowest read tier; the trusted per-caller view
-      // arrives with 1b's admin-scoped commands. Every handler runs the SHARED admission
-      // chokepoint ({@link serveGated}) — the same F5(a) + maintenance fence as the ctl door.
-      state.handle = serveEndpoint(nc, this.space, grant, managerCommandDefs({
-        status: (ctx) => this.serveGated(ctx, () => this.managerStatusData()),
-      }), { public: true });
+      // The 1b typed surface + the derived `describe`. The descriptor stays PUBLIC in static
+      // mode: the broker grant (who holds each command's request-publish row) is the
+      // load-bearing authority tier, and a static single-operator mesh leaks nothing by listing
+      // command names; the trusted per-caller `view(caller)` scoping joins the user-mode
+      // registration follow-up (where actorScope is the trusted source). Every ordinary handler
+      // runs the SHARED admission chokepoint ({@link serveGated}).
+      state.handle = serveEndpoint(nc, this.space, grant, this.managerServiceDefs(), { public: true }, {
+        // The FRESH target resolver (§13.3) for the targeted commands (`despawn`/`attach`): the
+        // manager's live managed set IS the current-mapping authority for its own agents (the
+        // durable slot rows mirror it). Static mode carries no mapping-revision dimension, so
+        // the revision is the constant 0 — a caller that pins a revision pins 0.
+        resolveTarget: (t) => {
+          if (t.owner === DEV_OWNER) {
+            for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+            return undefined;
+          }
+          const key = principalKey(t.owner, t.actor).key;
+          for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+          return undefined;
+        },
+      });
     } catch (e) {
       await nc.drain().catch(() => nc.close());
       throw e;
@@ -3654,12 +3791,22 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    // attach grants terminal read+write — same scoping as despawn: own child (and, on a user
-    // mesh, the caller's owner-domain) on the privileged tier, any agent on admin.
+    return this.attachCore(a, caller, admin);
+  }
+
+  /** The shared attach core (both doors, checklist 8). attach grants terminal read+write — same
+   *  scoping as despawn: own child (and, on a user mesh, the caller's owner-domain) on the
+   *  privileged tier, any agent on admin. */
+  private async attachCore(a: ManagedAgent, caller: string, admin: boolean): Promise<ControlReply> {
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    // Only pty streams over the WS attach endpoint. External runtimes are watched natively,
-    // and each handle's attach() throws with the right per-runtime guidance.
+    return this.attachAuthorized(a);
+  }
+
+  /** The post-authorization attach effect (both doors). Only pty streams over the WS attach
+   *  endpoint; external runtimes are watched natively, and each handle's attach() throws with the
+   *  right per-runtime guidance. */
+  private attachAuthorized(a: ManagedAgent): ControlReply {
     if (a.handle.kind !== "pty") {
       try {
         a.handle.attach();
@@ -3667,7 +3814,7 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
-    return { ok: true, data: { ws: this.attach.url(name) } };
+    return { ok: true, data: { ws: this.attach.url(a.name) } };
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */
@@ -3696,6 +3843,9 @@ export class Manager {
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
         mesh: roster.get(a.name)?.status ?? "absent",
+        // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
+        // build a targeted (`despawn`/`attach`) request against THIS incarnation.
+        lifecycleUid: a.lifecycleUid,
         ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
       };
     });
