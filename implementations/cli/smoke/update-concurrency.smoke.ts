@@ -283,7 +283,13 @@ exit /b 1\r
     rmSync(extensionNpmMutationPath(), { force: true });
   } finally {
     if (wrapper && wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill("SIGKILL");
-    rmSync(root, { recursive: true, force: true });
+    // Windows can briefly hold a directory handle after the killed wrapper and detached shim exit, so a
+    // recursive rmdir races EBUSY. Retry with backoff and tolerate a leaked temp dir (CI is ephemeral).
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+      /* a leaked temp dir under the ephemeral runner is harmless; never fail the smoke on cleanup */
+    }
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
   }
