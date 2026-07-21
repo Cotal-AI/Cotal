@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
-  OFFICIAL_CONNECTORS,
+  SEEDED_EXTENSIONS,
   extensionPackageDir,
   installedExtensionVersion,
   loadExtensionsManifest,
@@ -231,7 +231,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
         verifyInstalled(name);
         refreshed.push(name);
       }
-    } else if (manifestRebuilt && installedExtensionVersion(OFFICIAL_CONNECTORS[name])) {
+    } else if (manifestRebuilt && installedExtensionVersion(SEEDED_EXTENSIONS[name].pkg)) {
       // The manifest was corrupt and quarantined, but this connector is STILL on disk: its entry was
       // lost with the manifest, not removed. Re-seed it to rebuild the record (a quarantined manifest
       // carries no reliable "removed" fact — only on-disk presence can distinguish the two).
@@ -416,7 +416,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
  *  entry file resolvable — so `--repair` can never clear the cursor and stamp success over a
  *  half-installed prefix (a surviving package.json with a missing main is still broken). */
 function verifyInstalled(name: string): void {
-  const pkg = OFFICIAL_CONNECTORS[name];
+  const pkg = SEEDED_EXTENSIONS[name].pkg;
   const entry = installedEntry(name);
   if (!entry) throw new Error(`connector "${name}" (${pkg}) was expected in the manifest after seeding but is absent - rerun \`cotal ext seed --repair\``);
   if (!installedExtensionVersion(pkg))
@@ -442,17 +442,17 @@ function mainEntryPresent(pkg: string): boolean {
 /** A seeded built-in is fully intact: recorded on disk (package.json + version) AND its main entry
  *  file present. A partial tear (main gone, package.json kept) is NOT intact. */
 function isIntact(name: string): boolean {
-  const pkg = OFFICIAL_CONNECTORS[name];
+  const pkg = SEEDED_EXTENSIONS[name].pkg;
   return installedExtensionVersion(pkg) !== undefined && mainEntryPresent(pkg);
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {
-  const pkg = OFFICIAL_CONNECTORS[name];
+  const pkg = SEEDED_EXTENSIONS[name].pkg;
   return loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
 }
 
 function officialNameOfPkg(pkg: string): string | undefined {
-  return SEED_BUILTINS.find((name) => OFFICIAL_CONNECTORS[name] === pkg);
+  return SEED_BUILTINS.find((name) => SEEDED_EXTENSIONS[name].pkg === pkg);
 }
 
 /** A DOWNGRADE never rewrites installed connector code without `--force`; an absent prior stamp counts

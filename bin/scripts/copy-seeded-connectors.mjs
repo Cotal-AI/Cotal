@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 const binRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = join(binRoot, "..");
@@ -23,10 +23,10 @@ const outRoot = join(binRoot, "seeded-connectors");
 rmSync(outRoot, { recursive: true, force: true });
 mkdirSync(outRoot, { recursive: true });
 
-for (const [name, pkg] of Object.entries(OFFICIAL_CONNECTORS)) {
-  const srcDir = join(repoRoot, "extensions", pkg.split("/")[1]);
+for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSIONS)) {
+  const srcDir = join(repoRoot, srcSubdir);
   if (!existsSync(join(srcDir, "dist"))) {
-    throw new Error(`connector ${pkg} is not built (no dist at ${srcDir}) - run \`pnpm build\` before packing cotal-ai`);
+    throw new Error(`first-party extension ${pkg} is not built (no dist at ${srcDir}) - run \`pnpm build\` before packing cotal-ai`);
   }
   const tmp = mkdtempSync(join(tmpdir(), "cotal-seed-"));
   try {

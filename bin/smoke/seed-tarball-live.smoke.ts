@@ -62,6 +62,12 @@ try {
   const cotalTgz = join(tgz, tarballs.find((f) => /^cotal-ai-\d/.test(f)) ?? "");
   const listing = execFileSync("tar", ["tzf", cotalTgz], { encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
+  check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
+  check(
+    "bundled web payload is self-contained (marked/dompurify shipped in dist, no runtime deps)",
+    listing.includes("package/seeded-connectors/web/dist/web/vendor/marked.umd.js") &&
+      listing.includes("package/seeded-connectors/web/dist/web/vendor/purify.min.js"),
+  );
   const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
 
@@ -89,15 +95,19 @@ try {
   for (const n of ["claude", "opencode", "hermes", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
+  check("seeded command:web (the dashboard) from the bundled payload", out.includes("command:web"), list.stderr);
 
   const manifest = JSON.parse(readFileSync(join(cfg, "cotal", "extensions", "extensions.json"), "utf8")) as {
     extensions: { pkg: string; spec: string; source?: string }[];
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
   check("connector installed from the durable store under the isolated config (pubDir branch)", Boolean(hermes && hermes.spec.startsWith(cfg)), hermes?.spec);
-  const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi"];
-  const allSeeded = manifest.extensions.filter((e) => officials.includes(e.pkg)).every((e) => e.source === "seeded");
-  check("all four recorded source:seeded (registered into the binary's single core)", allSeeded && manifest.extensions.filter((e) => officials.includes(e.pkg)).length === 4);
+  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
+  const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
+  const allSeeded = seededEntries.every((e) => e.source === "seeded");
+  check("all five first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 5);
+  const webEntry = manifest.extensions.find((e) => e.pkg === "@cotal-ai/web");
+  check("web installed from the durable store under the isolated config (bundled, not npm-fetched)", Boolean(webEntry && webEntry.spec.startsWith(cfg)), webEntry?.spec);
 
   // The launcher shim a connector's buildLaunch runs (`node dist/serve.js` / `dist/launch.js`) must be
   // PACKAGED — a build that emits only declarations for it passes install + import + materialize but

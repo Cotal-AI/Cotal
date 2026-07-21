@@ -93,9 +93,10 @@ fail-loud on collision.
   (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.pid` and
   `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
 
-The **web dashboard** is *not* part of `cotal up`. It ships as the `@cotal-ai/web` extension.
-`cotal setup` installs it automatically by reusing the same path as `cotal ext add @cotal-ai/web`
-(best-effort; failed install leaves the manual retry command). Start it with `cotal web`; it records
+The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
+extension and is seeded automatically by the boot reconcile — the same durable, version-locked path as
+the built-in connectors (`SEEDED_EXTENSIONS`) — so it always matches the CLI version and needs no
+separate install. Start it with `cotal web`; it records
 `.cotal/web.pid`, self-registers that process with `down`, and is addressed as
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
 Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status card.

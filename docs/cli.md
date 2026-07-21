@@ -541,7 +541,6 @@ user-auth mesh it rides the read-only admin view over your login, which needs le
 ## web
 
 ```bash
-cotal ext add @cotal-ai/web   # install once
 cotal web [--detach] [--port <n>] [--no-open] [--space <s>]
 ```
 
@@ -553,8 +552,9 @@ cotal web [--detach] [--port <n>] [--no-open] [--space <s>]
 | `--no-open` | off | Don't open the browser |
 
 The browser observability dashboard: presence, channels, and a live feed. It is **not** part of
-`cotal up`: it ships as the `@cotal-ai/web` extension (`cotal setup` installs it automatically; otherwise
-`cotal ext add @cotal-ai/web`). It self-registers `cotal web` into this surface and serves
+`cotal up`: it ships inside `cotal-ai` as the `@cotal-ai/web` extension, seeded automatically on first
+run (like the built-in connectors) so it always matches your CLI version. It self-registers `cotal web`
+into this surface and serves
 `http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need

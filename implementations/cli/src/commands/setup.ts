@@ -112,7 +112,6 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   // `cotal setup --demo` (or `--full`). Keeps the default first run to one agent, not a crowd.
   if (demo) seedDemoTeam(log);
 
-  await ensureWebExtension();
   await offerGlobalInstall(yes);
 
   markOnboarded(ONBOARD_VERSION);
@@ -265,7 +264,6 @@ export function claudePluginStep(): Step {
 async function runEnsure(demo: boolean): Promise<void> {
   seedDefaultAgent(); // ensure `cotal spawn` (no name) always has a default to launch
   if (demo) seedDemoTeam(); // `cotal setup --demo` on a configured machine: add the team, then card
-  await ensureWebExtension();
   await readyCard(process.cwd());
 }
 
@@ -279,32 +277,10 @@ function webInstalled(): boolean {
   }
 }
 
-/** Install the dashboard extension once, without turning setup into a launch command. This reuses the
- *  public `ext add` path in a child process so package install, peer linking, command verification,
- *  and manifest writes stay identical to an explicit `cotal ext add @cotal-ai/web`. Best-effort: setup is
- *  still useful on locked-down machines where npm/registry access is unavailable. */
-async function ensureWebExtension(): Promise<void> {
-  if (webInstalled()) return;
-  const spec = defaultWebExtensionSpec();
-  const s = p.spinner();
-  s.start("Installing the web dashboard extension");
-  const [bin, ...argv] = selfArgv();
-  const r = spawnSync(bin, [...argv, "ext", "add", spec], { encoding: "utf8" });
-  if (r.status === 0) {
-    s.stop("Installed the web dashboard extension");
-    if (r.stderr) process.stderr.write(r.stderr);
-    if (r.stdout) process.stdout.write(r.stdout);
-    return;
-  }
-  s.stop("Couldn't install the web dashboard extension");
-  const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-6).join("\n");
-  p.log.warn(`${tail ? `${tail}\n\n` : ""}Install it later with ${dim(`${displayCmd()} ext add @cotal-ai/web`)}.`);
-}
-
-function defaultWebExtensionSpec(): string {
-  const local = join(import.meta.dirname, "..", "..", "..", "web");
-  return existsSync(join(local, "package.json")) ? local : "@cotal-ai/web";
-}
+// The web dashboard is a first-party seeded extension now (@cotal-ai/web, in SEEDED_EXTENSIONS): the
+// boot reconcile installs and version-refreshes it from the umbrella's bundled payload, exactly like
+// the connectors. So setup no longer fetches it — by the time these steps run, the reconcile has
+// already seeded web at the binary's version.
 
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
  *  probes — displaying state is not depending on it), plus the key commands. */
