@@ -1,0 +1,6 @@
+{
+  "name": "cotal-skills",
+  "version": "0.1.0",
+  "description": "Cotal-authored Claude Code skills for coordinating agent teams on the mesh (starting with team-topology). Installed and removed independently of the cotal connector.",
+  "author": { "name": "Cotal" }
+}
