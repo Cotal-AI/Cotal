@@ -10,6 +10,7 @@ import {
 } from "./ext-loader.js";
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
+import { cliVersion, extensionVersions } from "./lib/version.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -120,6 +121,20 @@ export interface RunCliOptions {
  *  The single entry point a composition root calls — no hardcoded command list.
  *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  // `-v` / `--version` short-circuits before any extension seeding or dispatch: a side-effect-free
+  // print of this binary's version plus each installed extension's, read straight off disk. First,
+  // so it never triggers the connector reconcile. Plain text (no ANSI) — a `--version` line is
+  // routinely machine-read.
+  if (argv[0] === "-v" || argv[0] === "--version") {
+    const exts = extensionVersions();
+    const lines = [`cotal-ai ${cliVersion()}`];
+    if (exts.length) {
+      const pad = Math.max(...exts.map((e) => e.label.length));
+      for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
+    }
+    console.log(lines.join("\n"));
+    return;
+  }
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
   // On the published binary, keep the four built-in connectors seeded (first run + version bump)
   // through the SAME `ext add` path a third party uses. This runs BEFORE the manifest overlay so

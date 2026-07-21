@@ -31,6 +31,7 @@ import {
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
+import { cliVersion, extensionVersions } from "../lib/version.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveSpace, webUp, WEB_URL } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
@@ -50,9 +51,19 @@ export async function status(args: ParsedArgs): Promise<void> {
 
   console.log(c.bold("cotal status"));
   await printMachine();
+  printExtensions();
   printProject(root, cmd);
   await printRegistry();
   await printTarget(cwd, values, cmd);
+}
+
+/** The installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
+ *  versions. Skipped entirely when none are installed (e.g. a fresh binary before its first seed). */
+function printExtensions(): void {
+  const exts = extensionVersions();
+  if (!exts.length) return;
+  section("Extensions");
+  for (const e of exts) row(e.label, c.green(`v${e.version}`) + (e.pkg === e.label ? "" : c.dim(` · ${e.pkg}`)));
 }
 
 async function printMachine(): Promise<void> {
@@ -60,6 +71,7 @@ async function printMachine(): Promise<void> {
   const web = await webUp();
   const webExt = webInstalled();
   section("Machine");
+  row("cotal-ai", c.green(`v${cliVersion()}`));
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
   row("Claude plugin", m.claudePlugin ? c.green("installed") : c.dim("not installed"));
   row("Claude", m.agents.claude ? c.green("on PATH") : c.dim("not on PATH"));

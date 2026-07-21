@@ -95,13 +95,11 @@ function entryScript(): string {
 }
 
 /**
- * The seed generation: this `cotal-ai` binary's version. Ties a reconcile-refresh to the shipped
- * payload changing — including the bundled `connector-core`, so a `cotal-ai` upgrade re-seeds the
- * connectors that carry version-coupled behavior (e.g. the v0.4 lifecycle parse). Read from the
- * nearest `package.json` above the {@link entryScript} (`cotal-ai` published, or `bin/package.json` in
- * a dev `tsx bin/cotal.ts` run). Fails loud if unreadable — a generation-less seed can't gate refresh.
+ * This `cotal-ai` binary's published version — the nearest `package.json` above the {@link entryScript}
+ * (`cotal-ai` published, or `bin/package.json` in a dev `tsx bin/cotal.ts` run). Surfaced by
+ * `cotal --version` / `cotal -v` and `cotal status`. Fails loud if unreadable.
  */
-export function seedGeneration(): string {
+export function cliVersion(): string {
   const entry = entryScript();
   let dir = dirname(entry);
   for (;;) {
@@ -111,9 +109,19 @@ export function seedGeneration(): string {
       if (typeof version === "string" && version) return version;
     }
     const parent = dirname(dir);
-    if (parent === dir) throw new Error(`cannot determine the seed generation: no versioned package.json above ${entry}`);
+    if (parent === dir) throw new Error(`cannot determine the cotal version: no versioned package.json above ${entry}`);
     dir = parent;
   }
+}
+
+/**
+ * The seed generation: this binary's version ({@link cliVersion}). Ties a reconcile-refresh to the
+ * shipped payload changing — including the bundled `connector-core`, so a `cotal-ai` upgrade re-seeds
+ * the connectors that carry version-coupled behavior (e.g. the v0.4 lifecycle parse). Fails loud if
+ * unreadable — a generation-less seed can't gate refresh.
+ */
+export function seedGeneration(): string {
+  return cliVersion();
 }
 
 /** This module's repo root in a source checkout: `implementations/cli/{src,dist}/seed` → up 4. Only
