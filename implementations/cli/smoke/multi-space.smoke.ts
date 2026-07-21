@@ -535,30 +535,89 @@ try {
     check("unreadable-auth-dir resolver check skipped (needs a non-root POSIX runner)", true);
   }
 
-  console.log("\n24) a DEAD pre-hex auth-service pidfile is the both-present wedge; reclaim leaves ONE canonical record");
-  // A pre-upgrade crash leaves `auth-service.<encoded>.pid` (dead). readPidPath admits it, so a fresh
-  // start that claimed canonical WITHOUT reclaiming the dead legacy would leave BOTH files - and
-  // every later authServiceUp/down throws ambiguous (a permanent wedge). Section proves the wedge is
-  // real and that clearing the dead legacy (what reclaimDeadLegacyPid does at start) resolves it.
-  const { authServiceUp: authUp, claimAuthPidSlot } = await import("../src/lib/auth-proc.js");
+  console.log("\n24) the REAL reclaimDeadLegacyPid: dead/empty reclaimed, but garbled or LIVE legacy fails loud (never orphan an unattributable signer)");
+  // A pre-upgrade crash leaves `auth-service.<encoded>.pid`. readPidPath admits it, so a fresh start
+  // that claimed canonical WITHOUT reclaiming a dead legacy would leave BOTH files → every later
+  // authServiceUp/down throws ambiguous. reclaimDeadLegacyPid runs at the top of the start; it must
+  // reclaim only what the canonical claim would (empty, or a positive PID proven dead) and NEVER
+  // steal an unattributable record (garbled content, or a still-live legacy) - that is the live
+  // pre-hex signer this path exists not to orphan. Exercises the PRODUCTION helper directly.
+  const { authServiceUp: authUp, claimAuthPidSlot, reclaimDeadLegacyPid } = await import("../src/lib/auth-proc.js");
   const wedge = await makeRoot("wedge", []);
   roots.push(wedge);
   const prevCwd = process.cwd();
   process.chdir(wedge); // cotalPath resolves under findCotalRoot(cwd)
   try {
     const dot = join(wedge, ".cotal");
-    const legacyPid = join(dot, `auth-service.${encodeURIComponent("s24")}.pid`);
-    const hexPid = join(dot, `auth-service.${spaceKey("s24")}.pid`);
-    writeFileSync(legacyPid, "999999"); // dead pre-hex pid
-    check("authServiceUp reads a dead pre-hex pid as DOWN (readPidPath resolves the legacy name)", authUp("s24") === false);
-    writeFileSync(hexPid, "888888");
-    check("both dead-legacy + canonical present is the WEDGE: authServiceUp throws ambiguous", (await refusal(() => authUp("s24"))).includes("ambiguous"));
-    rmSync(hexPid, { force: true });
-    rmSync(legacyPid, { force: true }); // what reclaimDeadLegacyPid does before the canonical claim
-    const slot = claimAuthPidSlot("s24");
-    check("post-reclaim the canonical slot claims cleanly, one record", slot !== undefined && "fd" in slot &&
-      readdirSync(dot).filter((f) => f.startsWith("auth-service.") && f.endsWith(".pid")).length === 1);
-    check("…and authServiceUp no longer wedges", (await refusal(() => authUp("s24"))) === "");
+    const legacyPidPath = (space: string) => join(dot, `auth-service.${encodeURIComponent(space)}.pid`);
+    const authPids = () => readdirSync(dot).filter((f) => f.startsWith("auth-service.") && f.endsWith(".pid"));
+
+    // (a) DEAD legacy → reclaimed, and the canonical claim then yields ONE record (no wedge).
+    writeFileSync(legacyPidPath("dead"), "999999");
+    check("authServiceUp reads a dead pre-hex pid as DOWN", authUp("dead") === false);
+    // Guard against the empty/0 pid reading as UP: Number("")===0 and process.kill(0,0) probes THIS
+    // group (would falsely report up, so the empty husk never reaches the reclaimer). pid>0 guard.
+    writeFileSync(legacyPidPath("emptyup"), "");
+    check("authServiceUp reads an EMPTY pre-hex pidfile as DOWN (0 is not a positive pid), so it reaches the reclaimer",
+      authUp("emptyup") === false);
+    rmSync(legacyPidPath("emptyup"), { force: true });
+    reclaimDeadLegacyPid("dead"); // the real production call
+    check("reclaimDeadLegacyPid removed the DEAD legacy pidfile", !existsSync(legacyPidPath("dead")));
+    const slot = claimAuthPidSlot("dead");
+    check("…so the canonical claim yields exactly ONE record, no wedge", slot !== undefined && "fd" in slot && authPids().length === 1 && authPids()[0] === `auth-service.${spaceKey("dead")}.pid`, authPids());
+    rmSync(join(dot, `auth-service.${spaceKey("dead")}.pid`), { force: true });
+
+    // (b) EMPTY legacy (pre-protocol husk) → reclaimed.
+    writeFileSync(legacyPidPath("empty"), "");
+    reclaimDeadLegacyPid("empty");
+    check("an EMPTY legacy pidfile is reclaimed (pre-protocol husk)", !existsSync(legacyPidPath("empty")));
+
+    // (c) GARBLED legacy → NEVER stolen; reclaim throws, the file survives (start aborts loud).
+    writeFileSync(legacyPidPath("garbled"), "not-a-pid");
+    check("a GARBLED legacy pidfile makes reclaim THROW (unattributable, never stolen)",
+      (await refusal(() => reclaimDeadLegacyPid("garbled"))).includes("unattributable"));
+    check("…and the garbled record is LEFT in place (no delete, no competing start)", existsSync(legacyPidPath("garbled")));
+    for (const bad of ["0", "-5"])
+      check(`a non-positive legacy pid ${JSON.stringify(bad)} is also unattributable → throws, file kept`,
+        (writeFileSync(legacyPidPath("garbled"), bad), (await refusal(() => reclaimDeadLegacyPid("garbled"))).includes("unattributable") && existsSync(legacyPidPath("garbled"))));
+    rmSync(legacyPidPath("garbled"), { force: true });
+
+    // (d) LIVE legacy (our own pid) → reclaim refuses to start a second, and does NOT delete it.
+    writeFileSync(legacyPidPath("live"), String(process.pid));
+    check("a LIVE pre-hex legacy makes reclaim THROW (refuse to start a second signer)",
+      (await refusal(() => reclaimDeadLegacyPid("live"))).includes("already running"));
+    check("…and the live record is LEFT untouched (never orphan the running signer)", existsSync(legacyPidPath("live")));
+    rmSync(legacyPidPath("live"), { force: true });
+
+    // (d2) EPERM = the process EXISTS but is another user's - it must read as ALIVE, never reclaimed
+    // as "dead". pid 1 (init) is EPERM for a non-root process; guard so the check only runs when
+    // this host actually yields EPERM there (skip under root / in a container where pid 1 is us).
+    let initIsEperm = false;
+    try { process.kill(1, 0); } catch (e) { initIsEperm = (e as NodeJS.ErrnoException).code === "EPERM"; }
+    if (initIsEperm) {
+      writeFileSync(legacyPidPath("eperm"), "1");
+      check("an EPERM (live-but-unsignalable) legacy pid reads ALIVE → reclaim THROWS, record kept (no orphan)",
+        (await refusal(() => reclaimDeadLegacyPid("eperm"))).includes("already running") && existsSync(legacyPidPath("eperm")));
+      rmSync(legacyPidPath("eperm"), { force: true });
+    } else {
+      check("EPERM-live-pid reclaim check skipped (pid 1 is not EPERM on this runner)", true);
+    }
+
+    // (e) the DOWN-path twin: stopAuthService must honor the SAME contract - a garbled record is
+    // never removed without a kill (that orphans a live signer while reporting a clean stop).
+    const { stopAuthService } = await import("../src/lib/auth-proc.js");
+    const hexStop = join(dot, `auth-service.${spaceKey("stopg")}.pid`);
+    writeFileSync(hexStop, "not-a-pid");
+    check("stopAuthService THROWS on a garbled record (never silently drops an unattributable signer)",
+      (await refusal(() => stopAuthService("stopg"))).includes("unattributable"));
+    check("…and leaves the garbled record in place for manual inspection", existsSync(hexStop));
+    writeFileSync(hexStop, "0");
+    check("stopAuthService also refuses pid 0 (would signal the whole process group)",
+      (await refusal(() => stopAuthService("stopg"))).includes("unattributable") && existsSync(hexStop));
+    rmSync(hexStop, { force: true });
+    writeFileSync(hexStop, ""); // empty husk is safe to clear (nothing to signal)
+    stopAuthService("stopg");
+    check("stopAuthService clears an EMPTY husk (no process to orphan)", !existsSync(hexStop));
   } finally {
     process.chdir(prevCwd);
   }

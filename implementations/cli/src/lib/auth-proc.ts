@@ -33,12 +33,18 @@ function readPidPath(space: string): string {
   return l && !c ? legacy : canonical;
 }
 
+/** Whether a process EXISTS - the hardened probe shared with `down` (`commands/down.ts:170`): a
+ *  successful `kill(pid,0)` OR an EPERM (the process exists but is owned by another user, so we
+ *  cannot signal it) both mean alive; only ESRCH (and other definitely-gone errnos) mean dead.
+ *  Mapping EPERM to "dead" is the bug the reclaim/stop contract cannot tolerate - it would treat a
+ *  live-but-unsignalable signer as reclaimable and orphan it. Callers additionally require a
+ *  POSITIVE pid before probing (a 0/negative value signals a whole process group). */
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, just not ours to signal
   }
 }
 
@@ -49,11 +55,16 @@ export { resolveAuthProvider } from "@cotal-ai/core";
 /** Reclaim a DEAD pre-hex pidfile before a fresh start claims the canonical (hex) slot. A crash on
  *  a pre-upgrade build leaves `auth-service.<encoded>.pid`; the new start claims
  *  `auth-service.<hex>.pid` and, without this, BOTH would then exist - which `readPidPath` correctly
- *  refuses as ambiguous, wedging every later status/down. A start only reaches here when
- *  `authServiceUp` (via `readPidPath`) already read the service as down, so a legacy pid found here
- *  is dead; a still-LIVE legacy holder is left untouched (never steal an attributable live record -
- *  that path would have short-circuited before starting). Byte-exact match, no case-fold. */
-function reclaimDeadLegacyPid(space: string): void {
+ *  refuses as ambiguous, wedging every later status/down.
+ *
+ *  It reclaims ONLY what the canonical claim ({@link claimAuthPidSlot}) would: an empty slot (a
+ *  pre-protocol crash) or a positive finite PID proven DEAD. It NEVER deletes an unattributable
+ *  record - garbled/non-numeric/non-positive content, or a still-LIVE legacy holder - because that
+ *  is exactly the live pre-hex signer this whole path exists not to orphan (a torn or tampered
+ *  pidfile of a running service reads as garbled). Those cases THROW so the start aborts loud rather
+ *  than delete the record and launch a competing service. Byte-exact match, no case-fold. Exported
+ *  for the boundary smoke, which must exercise the real reclaim, not a stand-in. */
+export function reclaimDeadLegacyPid(space: string): void {
   const legacy = cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
   if (legacy === PID_PATH(space)) return;
   try {
@@ -61,9 +72,21 @@ function reclaimDeadLegacyPid(space: string): void {
   } catch {
     return; // parent dir gone → nothing to reclaim
   }
-  const pid = Number(readFileSync(legacy, "utf8").trim());
-  if (Number.isFinite(pid) && pid > 0 && alive(pid)) return; // live: leave the attributable record
-  rmSync(legacy, { force: true });
+  const trimmed = readFileSync(legacy, "utf8").trim();
+  if (trimmed === "") {
+    rmSync(legacy, { force: true }); // empty = pre-protocol husk, safe to reclaim (as the canonical claim does)
+    return;
+  }
+  const pid = Number(trimmed);
+  if (!Number.isFinite(pid) || pid <= 0)
+    throw new Error(
+      `pre-hex auth-service pidfile ${legacy} holds unattributable content ${JSON.stringify(trimmed)} - refusing to reclaim it or start a competing service; inspect or remove it manually`,
+    );
+  if (alive(pid))
+    throw new Error(
+      `a pre-hex auth-service is already running (pid ${pid}) at ${legacy} - refusing to start a second; run \`cotal down\` to stop it, then retry`,
+    );
+  rmSync(legacy, { force: true }); // a positive PID proven dead - reclaim it
 }
 
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
@@ -71,7 +94,7 @@ export function authServiceUp(space: string): boolean {
   const p = readPidPath(space);
   if (!existsSync(p)) return false;
   const pid = Number(readFileSync(p, "utf8").trim());
-  return Number.isFinite(pid) && alive(pid);
+  return Number.isFinite(pid) && pid > 0 && alive(pid); // a 0/negative pid would probe a process GROUP
 }
 
 /** EXCLUSIVE pidfile claim (#29 HIGH 3 belt): the slot is published ATOMICALLY and
@@ -174,17 +197,35 @@ export async function ensureAuthService(opts: {
 }
 
 /** Stop THIS space's auth service if we started one. Scoped by the space-carrying pid file — never
- *  a root-global kill. */
+ *  a root-global kill. Honors the same attribution contract as {@link claimAuthPidSlot}: it only
+ *  removes a record it can ACT on. An empty slot is a husk (nothing to signal, safe to clear); a
+ *  positive PID is signalled then removed; unattributable content (garbled, or a non-positive value
+ *  that would make `process.kill` signal a whole process GROUP) is NEVER removed and fails loud -
+ *  silently dropping it would orphan a live signer behind a torn/tampered pidfile while reporting a
+ *  clean stop. */
 export function stopAuthService(space: string): void {
   const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
   if (!existsSync(p)) return;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  if (Number.isFinite(pid)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      /* already gone */
-    }
+  const trimmed = readFileSync(p, "utf8").trim();
+  if (trimmed === "") {
+    rmSync(p, { force: true }); // empty husk: no process to signal
+    return;
   }
-  rmSync(p);
+  const pid = Number(trimmed);
+  if (!Number.isFinite(pid) || pid <= 0)
+    throw new Error(
+      `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
+    );
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (e) {
+    // ESRCH = already gone, so removing its record is safe. EPERM (exists, another user's) or any
+    // other errno means we could NOT stop it - removing the record would orphan a live signer while
+    // reporting a clean stop, so preserve it and fail loud.
+    if ((e as NodeJS.ErrnoException).code !== "ESRCH")
+      throw new Error(
+        `could not stop auth-service (pid ${pid}) at ${p} (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to remove a record for a process it could not signal; stop it manually`,
+      );
+  }
+  rmSync(p, { force: true });
 }
