@@ -12,7 +12,7 @@ deliberately *not* built yet, and the direction each area is headed.
 The core is running today: all three delivery modes over JetStream, presence and
 discovery, channel replay and durable delivery classes, JWT identity and per-agent ACLs on
 by default, a supervising manager with pluggable runtimes, connectors for Claude Code,
-OpenCode, and Hermes, the mesh manifest (`cotal.yaml`), and the console + web observers.
+OpenCode, Hermes, and pi, the mesh manifest (`cotal.yaml`), and the console + web observers.
 The [Quickstart](getting-started.md) is the fastest proof.
 
 ## Deferred, designed-for

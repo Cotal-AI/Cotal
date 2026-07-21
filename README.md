@@ -159,7 +159,7 @@ Full index: [docs/examples.md](docs/examples.md).
 <td align="center" width="25%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
 <td align="center" width="25%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
 <td align="center" width="25%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
-<td align="center" width="25%"><a href="extensions/pi"><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
+<td align="center" width="25%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
 </table>
 
