@@ -70,6 +70,8 @@ import {
   credRowKey,
   epcredRowKey,
   parseLedgerRow,
+  createRowByteIdempotent,
+  markLedgerRowRevoked,
   type CredentialLedgerRow,
   type EvictionResult,
 } from "@cotal-ai/core";
@@ -116,48 +118,12 @@ export function stageIntentKey(opId: string): string {
 
 // ---- the normative ledger row (shared by the cred. and epcred. families) ----------------------
 // `CredentialLedgerRow` + `parseLedgerRow` (closed schema, per-family key binding) live in the
-// shared core grammar; re-exported above.
-
-/** Create-only write of a ledger/index row with the BYTE-IDENTICAL retry (a crashed writer's
- *  retry of its OWN deterministic row proceeds; foreign content under a staged name refuses —
- *  a name never silently re-binds, SPEC 13.6 discipline). PACKAGE-INTERNAL: the session
- *  adapter writes its `epcred.` rows through this. */
-export async function createRowByteIdempotent(kv: KV, key: string, value: unknown): Promise<void> {
-  const bytes = JSON.stringify(value);
-  try {
-    await kv.create(key, enc.encode(bytes));
-  } catch (e) {
-    if (!isRawCasLoss(e))
-      throw new EpEnvelopeError("unavailable", `creating the row ${key} is ambiguous; the mint fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
-    const existing = await kv.get(key);
-    if (!existing || existing.operation !== "PUT" || dec.decode(existing.value) !== bytes)
-      throw new EpEnvelopeError("conflict", `the row ${key} exists with FOREIGN content; a staged name never silently re-binds (SPEC 13.1)`);
-  }
-}
-
-/** Idempotent monotonic revocation mark on a ledger row (revision-pinned CAS; a lost pin
- *  re-reads — terminal-now returns, still-active retries). An ABSENT key refuses: the ledger
- *  is never-deleted, so "revoke a row that does not exist" is a caller bug or corruption,
- *  never a silent success. PACKAGE-INTERNAL (the session adapter routes through this too). */
-export async function markLedgerRowRevoked(kv: KV, key: string): Promise<"revoked" | "already-revoked"> {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const entry = await kv.get(key);
-    if (!entry)
-      throw new EpEnvelopeError("failed-precondition", `no credential-ledger row exists at ${key}; a revocation mark needs its row (SPEC 13.1)`);
-    if (entry.operation !== "PUT")
-      throw new EpEnvelopeError("failed-precondition", `the credential-ledger row ${key} carries a ${entry.operation} marker; ledger rows are never deleted (corruption, not absence, SPEC 13.12)`);
-    const row = parseLedgerRow(entry.value, key);
-    if (row.state === "revoked") return "already-revoked";
-    try {
-      await kv.update(key, enc.encode(JSON.stringify({ ...row, state: "revoked" })), entry.revision);
-      return "revoked";
-    } catch (e) {
-      if (isRawCasLoss(e)) continue;
-      throw new EpEnvelopeError("unavailable", `revoking the row ${key} is ambiguous; the barrier retries (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
-    }
-  }
-  throw new EpEnvelopeError("unavailable", `revoking the row ${key} kept losing its pin; retry the barrier (SPEC 13.1)`);
-}
+// shared core grammar; re-exported above. The raw-KV credential-ledger row PRIMITIVES
+// (`createRowByteIdempotent` / `markLedgerRowRevoked`) are LIFTED to core `endpoint-serve-kv.ts`
+// (P2 item 1 "1a-gate", so the manager's endpoint-serve wiring shares one implementation without
+// importing this package); imported above for this module's own writes + re-exported here so the
+// package surface is unchanged.
+export { createRowByteIdempotent, markLedgerRowRevoked };
 
 // ---- source gates (srcgate.<issuerKeyId>.<id>) -------------------------------------------------
 
