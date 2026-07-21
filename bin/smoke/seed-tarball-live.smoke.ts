@@ -16,6 +16,7 @@
  * Run: pnpm smoke:seed-tarball:live
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,8 +63,48 @@ try {
   const cotalTgz = join(tgz, tarballs.find((f) => /^cotal-ai-\d/.test(f)) ?? "");
   const listing = execFileSync("tar", ["tzf", cotalTgz], { encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
+  check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
+  check(
+    "bundled web payload is self-contained (marked/dompurify shipped in dist, no runtime deps)",
+    listing.includes("package/seeded-connectors/web/dist/web/vendor/marked.umd.js") &&
+      listing.includes("package/seeded-connectors/web/dist/web/vendor/purify.min.js"),
+  );
   const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
+
+  // Every bundled payload must carry the umbrella's exact version — the reconcile stamps that version
+  // as the generation, so a skewed payload would be installed and treated as current (F1). The prepack
+  // asserts this too; the tarball is the last place to catch it before a customer install.
+  const umbrellaVersion = (JSON.parse(packedPkg) as { version: string }).version;
+  for (const n of ["claude", "opencode", "hermes", "pi", "web"]) {
+    const seededPkg = JSON.parse(
+      execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { encoding: "utf8" }),
+    ) as { version: string };
+    check(`bundled ${n} payload is version-locked to the umbrella (${umbrellaVersion})`, seededPkg.version === umbrellaVersion, seededPkg.version);
+  }
+
+  // The web dashboard ships marked/DOMPurify as opaque browser bytes in dist (not runtime deps), so
+  // its vendor-manifest.json is the auditable SBOM surface. Assert it lists both libs with a concrete
+  // version + license + sha512, and that each recorded hash matches the ACTUAL shipped bytes (F2) — so
+  // a drifted or tampered vendored lib can never pass unnoticed into a published binary.
+  const vendorBase = "package/seeded-connectors/web/dist/web/vendor";
+  const vendorManifest = JSON.parse(
+    execFileSync("tar", ["xzf", cotalTgz, "-O", `${vendorBase}/vendor-manifest.json`], { encoding: "utf8" }),
+  ) as { vendored: { file: string; package: string; version: string; license: string; sha512: string }[] };
+  const libs = new Map(vendorManifest.vendored.map((e) => [e.package, e]));
+  check(
+    "web vendor manifest lists marked + dompurify with version, license and sha512",
+    ["marked", "dompurify"].every((p) => {
+      const e = libs.get(p);
+      return Boolean(e && e.version && e.license && /^[0-9a-f]{128}$/.test(e.sha512));
+    }),
+    [...libs.keys()].join(","),
+  );
+  for (const e of vendorManifest.vendored) {
+    const bytes = execFileSync("tar", ["xzf", cotalTgz, "-O", `${vendorBase}/${e.file}`], { maxBuffer: 1 << 26 });
+    const actual = createHash("sha512").update(bytes).digest("hex");
+    check(`vendor manifest sha512 matches the shipped ${e.file}`, actual === e.sha512, `${actual.slice(0, 12)} vs ${e.sha512.slice(0, 12)}`);
+  }
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));
@@ -89,15 +130,19 @@ try {
   for (const n of ["claude", "opencode", "hermes", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
+  check("seeded command:web (the dashboard) from the bundled payload", out.includes("command:web"), list.stderr);
 
   const manifest = JSON.parse(readFileSync(join(cfg, "cotal", "extensions", "extensions.json"), "utf8")) as {
     extensions: { pkg: string; spec: string; source?: string }[];
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
   check("connector installed from the durable store under the isolated config (pubDir branch)", Boolean(hermes && hermes.spec.startsWith(cfg)), hermes?.spec);
-  const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi"];
-  const allSeeded = manifest.extensions.filter((e) => officials.includes(e.pkg)).every((e) => e.source === "seeded");
-  check("all four recorded source:seeded (registered into the binary's single core)", allSeeded && manifest.extensions.filter((e) => officials.includes(e.pkg)).length === 4);
+  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
+  const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
+  const allSeeded = seededEntries.every((e) => e.source === "seeded");
+  check("all five first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 5);
+  const webEntry = manifest.extensions.find((e) => e.pkg === "@cotal-ai/web");
+  check("web installed from the durable store under the isolated config (bundled, not npm-fetched)", Boolean(webEntry && webEntry.spec.startsWith(cfg)), webEntry?.spec);
 
   // The launcher shim a connector's buildLaunch runs (`node dist/serve.js` / `dist/launch.js`) must be
   // PACKAGED — a build that emits only declarations for it passes install + import + materialize but
