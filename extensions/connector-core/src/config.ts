@@ -20,6 +20,10 @@ export interface AgentConfig {
   id?: string;
   /** Minted creds file content (auth mode); the endpoint authenticates with it. */
   creds?: string;
+  /** The incarnation's lifecycle UID (SPEC §13.1) from the launcher (`COTAL_LIFECYCLE_UID`): the
+   *  endpoint binds its lifecycle-keyed dm/dlv/chathist durables by it — the same exact names its
+   *  credential pins, so a mismatch fails at the broker, never silently. */
+  lifecycleUid?: string;
   /** USER-MODE launch (a spawned agent on a user-auth mesh): the agent's owner+actor principal,
    *  the sentinel creds content it presents alongside its bearers, and the argv it EXECS for a
    *  fresh bearer (initial connect + every refresh — the exchange protocol stays behind that
@@ -155,6 +159,16 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     throw new Error("COTAL config: user-mode launch needs ALL of COTAL_OWNER, COTAL_ACTOR, COTAL_SENTINEL_CREDS, COTAL_BEARER_CMD — a partial set is a broken launcher, not a mode");
   if (userSet && credsPath)
     throw new Error("COTAL config: COTAL_CREDS (static auth) and COTAL_OWNER/... (user-mode auth) are mutually exclusive");
+  // FAIL-FAST at parse (SPEC 13.1): an AUTHED mesh agent (static creds OR user-mode) is a
+  // consuming, presence-registering endpoint whose dm/dlv/chathist durable names are lifecycle-
+  // keyed, so the launcher-minted uid is part of the identity set - a launch without it would
+  // only die later at the endpoint's fail-before-presence gate with a worse operator signal.
+  // Open mode stays uid-less here (the endpoint self-mints its per-session identity).
+  const lifecycleUid = env.COTAL_LIFECYCLE_UID?.trim() || undefined;
+  if ((credsPath || userSet === 4) && !lifecycleUid)
+    throw new Error(
+      "COTAL config: an authed launch (COTAL_CREDS or user-mode) requires COTAL_LIFECYCLE_UID - the launcher mints it at provision time (a broken launcher, not a mode)",
+    );
   let userAuth: AgentConfig["userAuth"];
   if (userSet === 4) {
     let bearerCmd: unknown;
@@ -175,6 +189,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   return {
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: env.COTAL_ID?.trim() || undefined,
+    lifecycleUid,
     creds: credsPath ? readFileSync(credsPath, "utf8") : undefined,
     userAuth,
     name,

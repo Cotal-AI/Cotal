@@ -57,8 +57,11 @@ for (const f of launchFlags) {
   assert.ok(START_OP_KEYS.has(key), `launch flag --${f.name} has no start-op key (${key})`);
 }
 
-// 3 — the MCP tool's params are a subset of the op vocabulary, names aligned.
-const spawnTool = cotalToolSpecs(configFromEnv(), "parity-smoke").find((t) => t.name === "cotal_spawn") as
+// 3 — the MCP tool's params are a subset of the op vocabulary, names aligned. The spec
+// enumeration needs A config, not the AMBIENT session's: pass an empty env (open-mode defaults)
+// so a connector-launched shell's COTAL_* vars (e.g. creds without a lifecycle uid) can't leak
+// in and trip the authed-launch parse gate — this smoke is about vocabulary, not identity.
+const spawnTool = cotalToolSpecs(configFromEnv({ COTAL_NAME: "parity-smoke" }), "parity-smoke").find((t) => t.name === "cotal_spawn") as
   | { name: string; schema: Record<string, unknown> }
   | undefined;
 assert.ok(spawnTool, "cotal_spawn tool spec exists");

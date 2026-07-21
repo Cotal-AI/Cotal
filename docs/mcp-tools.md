@@ -213,7 +213,7 @@ Unsubscribe from a channel mid-session; you stop receiving its messages. You can
 
 *spawn a new teammate*
 
-Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use when the team needs another agent.
+Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.
 
 - **Side-effect:** starts a new agent process via the manager.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive.

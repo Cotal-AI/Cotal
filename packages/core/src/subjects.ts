@@ -11,6 +11,8 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 
+import { randomBytes } from "node:crypto";
+
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
 /** Make a string safe to use as a single NATS subject token. */
@@ -176,6 +178,52 @@ export function principalKey(owner: string, actor: string): { key: string; name:
   return { key: `${owner}.${actor}`, name: `${owner}-${actor}` };
 }
 
+// ---- Lifecycle UID (SPEC §13.1) ----
+//
+// One grammar bounds both `lifecycleUid` and the endpoint-surface `instanceId` (§13.1/§13.2) —
+// deliberately a single definition so the bound cannot drift. Defined HERE (the module with no
+// local imports) because the messaging plane needs it for lifecycle-keyed resource names;
+// endpoint-subjects re-exports it for the endpoint rails.
+const LIFECYCLE_TOKEN = /^[a-z0-9]{26,32}$/;
+
+export function assertLifecycleToken(v: string, what = "lifecycleUid"): string {
+  if (!LIFECYCLE_TOKEN.test(v)) throw new Error(`${what} "${v}" is not a valid lifecycle token ([a-z0-9]{26,32})`);
+  return v;
+}
+
+/** Mint a fresh lifecycle UID: `[a-z0-9]{26,32}`, >=128 bits of CSPRNG entropy (SPEC §13.1). 20
+ *  random bytes (160 bits) render to at most 31 base36 chars; left-padding to 26 keeps the rare
+ *  short render in-grammar without losing entropy. The UID is minted ONCE per lifecycle by the
+ *  provisioning path and preserved across supervised restarts — never re-minted per process. */
+export function mintLifecycleUid(): string {
+  return assertLifecycleToken(BigInt(`0x${randomBytes(20).toString("hex")}`).toString(36).padStart(26, "0"));
+}
+
+/** The lifecycle-scoped JetStream-name form `<owner>-<actor>-<lifecycleUid>` (SPEC §13.1 "the UID is
+ *  part of the resource NAME"). Injective: owner/actor tokens ban `-` (see {@link principalKey}), the
+ *  UID is `[a-z0-9]` (dash-free), and `-` is the sole separator. */
+export function lifecycleNameKey(owner: string, actor: string, lifecycleUid: string): string {
+  return `${principalKey(owner, actor).name}-${assertLifecycleToken(lifecycleUid)}`;
+}
+
+/** The lifecycle-scoped subject/KV dot-form `<owner>.<actor>.<lifecycleUid>` (ACL rows, member-row
+ *  principals, dinbox/dlv subject tails). Injective: owner/actor are dot-free tokens and the UID is
+ *  `[a-z0-9]`, so exactly three dot-separated tokens. */
+export function lifecycleSubjectKey(owner: string, actor: string, lifecycleUid: string): string {
+  return `${principalKey(owner, actor).key}.${assertLifecycleToken(lifecycleUid)}`;
+}
+
+/** Inverse of {@link lifecycleSubjectKey}: split `<owner>.<actor>.<uid>` back into its three tokens,
+ *  or `null` if the string is not exactly that shape. */
+export function parseLifecycleSubjectKey(key: string): { owner: string; actor: string; lifecycleUid: string } | null {
+  if (typeof key !== "string") return null;
+  const parts = key.split(".");
+  if (parts.length !== 3) return null;
+  const [owner, actor, uid] = parts;
+  if (!/^[A-Za-z0-9_]+$/.test(owner) || !/^[A-Za-z0-9_]+$/.test(actor) || !LIFECYCLE_TOKEN.test(uid)) return null;
+  return { owner, actor, lifecycleUid: uid };
+}
+
 /** Principal key form for subjects and KV keys. Alias for callers/tests that need one form explicitly. */
 export function principalSubjectKey(owner: string, actor: string): string {
   return principalKey(owner, actor).key;
@@ -191,11 +239,24 @@ export function principalNameKey(owner: string, actor: string): string {
  *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
  *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
  *  subject builders (e.g. fan-out → `dinboxSubject`). */
-/** Resolve a deprovision target: a full principal dot-form (`u_….<actor>`, user-mode agents) or a
- *  bare static/dev actor id (an nkey pub — never contains a dot), keyed under {@link DEV_OWNER}.
- *  Shared by the deprovisioner permission pin and the teardown helper so they can't diverge. */
-export function deprovisionTargetPrincipal(target: string): { owner: string; actor: string } {
-  return parsePrincipalKey(target) ?? { owner: DEV_OWNER, actor: target };
+/** A deprovision target is a LIFECYCLE, never an alias (SPEC §13.1 "the teardown credential is
+ *  minted target-pinned to `(principal, lifecycleUid)` by exact name"): the principal dot-form
+ *  (`u_….<actor>`, user-mode agents) or a bare static/dev actor id (an nkey pub — never contains a
+ *  dot, keyed under {@link DEV_OWNER}), PLUS the lifecycle UID of exactly the incarnation being torn
+ *  down. A stale/replayed teardown for a retired lifecycle then names only retired resources — it is
+ *  broker-denied against a same-alias successor. */
+export interface DeprovisionTarget {
+  /** `<owner>.<actor>` dot-form, or a bare static actor id. */
+  principal: string;
+  /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
+  lifecycleUid: string;
+}
+
+/** Resolve a deprovision target to its `(owner, actor, lifecycleUid)` triple. Shared by the
+ *  deprovisioner permission pin and the teardown helper so they can't diverge. */
+export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string } {
+  const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
+  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid) };
 }
 
 export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
@@ -478,6 +539,16 @@ export const CONTROL_DELIVERY = "delivery" as const;
  *  cred is default-denied — nats-server is the boundary, same pattern as {@link CONTROL_ADMIN});
  *  the `delivery` cred holds the serve + bounded-reply side. */
 export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
+/** The AUTH service's control rail (#29 piece 3; SPEC 13.2 reserved): lifecycle-authority ops the
+ *  AUTH plane serves — the D5 split's other half (retirement is the auth plane's operation; it
+ *  never rides the DELIVERY daemon's rail). The surface is GENERIC — "retire a lifecycle
+ *  (owner, actor, lifecycleUid)" — never caller-specific: the manager's despawn is ONE caller,
+ *  and the serve-time authz (the space-manager-lease holder check, leader-read fresh per
+ *  request) is the auth service's, not the subject grammar's. Caller attribution is
+ *  SUBJECT-derived (`ctl.auth-admin.<owner>.<actor>`, broker-ACL-enforced): only a credential
+ *  minted with that principal's request-publish grant reaches it, and replies are bound under
+ *  the sender's own `<request>.reply.>` subtree. */
+export const CONTROL_AUTH_ADMIN = "auth-admin" as const;
 /** The three control-plane tiers the manager serves — values tie to the `CONTROL_*` service
  *  names so handler routing can't drift from the subject names. */
 export type ControlTier = typeof CONTROL_PRIVILEGED | typeof CONTROL_SELF_SERVICE | typeof CONTROL_ADMIN;
@@ -585,23 +656,32 @@ export function membersBucket(space: string): string {
   return `cotal_members_${token(space)}`;
 }
 
-/** KV key for one membership record: `<channel>/<principal>`, where `principal` is the member's
- *  owner+actor dot-form (`<owner>.<actor>` = {@link principalKey}`.key`) — membership is per-agent
- *  (owner+actor), not per-owner-shared. The channel is concrete (no `*`/`>`, validated at the write
- *  path) so it is dotted-but-`/`-free, and a principal dot-form is `[A-Za-z0-9_.]` (also `/`-free), so
- *  the single `/` separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`,
- *  `.`, and `[A-Za-z0-9_]` are all legal KV-key chars (`/^[-/=.\w]+$/`), so no encoding is needed. */
-export function memberKey(channel: string, principal: string): string {
-  return `${channel}/${principal}`;
+/** KV key for one membership record: `<channel>/<principal>.<lifecycleUid>`, where the tail is the
+ *  member's lifecycle-scoped dot-form ({@link lifecycleSubjectKey}, SPEC §13.1: membership rows are
+ *  lifecycle-keyed, so a same-alias successor starts unjoined and inherits no cursors — the
+ *  join/leave cursors ride this row). The channel is concrete (no `*`/`>`, validated at the write
+ *  path) so it is dotted-but-`/`-free, and the tail is `[A-Za-z0-9_.]` (also `/`-free), so the single
+ *  `/` separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, and
+ *  `[A-Za-z0-9_]` are all legal KV-key chars (`/^[-/=.\w]+$/`), so no encoding is needed. */
+export function memberKey(channel: string, principal: string, lifecycleUid: string): string {
+  return `${channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
-/** Inverse of {@link memberKey}: split a member key back into `{ channel, principal }`, or `null` if
- *  it isn't one (no `/`). Splits on the single separator — channels and principal dot-forms are both
- *  `/`-free (the `.` inside a principal is not a `/`). */
-export function parseMemberKey(key: string): { channel: string; principal: string } | null {
+/** Inverse of {@link memberKey}: split a member key back into `{ channel, principal, lifecycleUid }`,
+ *  or `null` if it isn't one (no `/`, or the tail is not a lifecycle-scoped dot-form). Splits on the
+ *  single `/`, then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last
+ *  dot separates the uid unambiguously. */
+export function parseMemberKey(key: string): { channel: string; principal: string; lifecycleUid: string } | null {
   const i = key.indexOf("/");
   if (i <= 0 || i >= key.length - 1) return null;
-  return { channel: key.slice(0, i), principal: key.slice(i + 1) };
+  const channel = key.slice(0, i);
+  const tail = key.slice(i + 1);
+  const dot = tail.lastIndexOf(".");
+  if (dot <= 0 || dot >= tail.length - 1) return null;
+  const principal = tail.slice(0, dot);
+  const uid = tail.slice(dot + 1);
+  if (!LIFECYCLE_TOKEN.test(uid) || parsePrincipalKey(principal) === null) return null;
+  return { channel, principal, lifecycleUid: uid };
 }
 
 /** Name of the KV bucket holding the durable read-ACL registry (Plane-3) for a space — a
@@ -614,12 +694,20 @@ export function aclBucket(space: string): string {
   return `cotal_acl_${token(space)}`;
 }
 
-/** KV key for one principal's read-ACL record: the member's owner+actor dot-form (`<owner>.<actor>` =
- *  {@link principalKey}`.key`) — the read ACL is per-agent (owner+actor), like membership. The dot-form
- *  is a legal KV key (`/^[-/=.\w]+$/`); pass it through UNCHANGED — do NOT run it through `token()`,
- *  which rewrites `.`→`_` and would alias distinct principals onto one key. */
-export function aclKey(principal: string): string {
-  return principal;
+/** KV key for one lifecycle's read-ACL record: `<owner>.<actor>.<lifecycleUid>` (SPEC §13.1: ACL rows
+ *  are lifecycle-keyed, so the deprovisioner's exact-key delete grant can never name a same-alias
+ *  successor's row). The dot-form is a legal KV key (`/^[-/=.\w]+$/`); pass it through UNCHANGED — do
+ *  NOT run it through `token()`, which rewrites `.`→`_` and would alias distinct principals onto one
+ *  key. Alias-level lookups that hold no uid enumerate `aclAliasFilter` and REFUSE ambiguity. */
+export function aclKey(principal: string, lifecycleUid: string): string {
+  return `${principal}.${assertLifecycleToken(lifecycleUid)}`;
+}
+
+/** KV key filter matching every lifecycle row of one alias: `<owner>.<actor>.*`. For the bounded
+ *  alias-level enumeration (join authz, deprovision-by-alias refusal): AT MOST ONE live row per alias
+ *  is the §13.1 invariant, and a reader that finds two MUST fail loud, never take first-match. */
+export function aclAliasFilter(principal: string): string {
+  return `${principal}.*`;
 }
 
 // ---- Authoritative channel membership (broker CONNZ → derived feed) ----
@@ -787,34 +875,39 @@ export function dlvStream(space: string): string {
   return `DLV_${token(space)}`;
 }
 
-/** Subject of a principal's mixed durable inbox: `cotal.<space>.dinbox.<owner>.<actor>` (one per agent —
- *  the fan-out delivers a per-member copy, and a member is a principal). Either identity slot accepts `*`
- *  for the daemon's fan-out write grant (`dinbox.*.*`). */
-export function dinboxSubject(space: string, owner: string, actor: string): string {
-  return `${spacePrefix(space)}.dinbox.${ownerToken(owner)}.${ownerToken(actor)}`;
+/** Subject of a lifecycle's mixed durable inbox: `cotal.<space>.dinbox.<owner>.<actor>.<lifecycleUid>`
+ *  (one per LIFECYCLE, SPEC §13.1: the fan-out delivers a per-member copy addressed to the member
+ *  row's recorded lifecycle, so a same-alias successor inherits no pending entries). Identity slots
+ *  accept `*` for the daemon's fan-out write grant (`dinbox.*.*.*`). */
+export function dinboxSubject(space: string, owner: string, actor: string, lifecycleUid: string): string {
+  return `${spacePrefix(space)}.dinbox.${ownerToken(owner)}.${ownerToken(actor)}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
-/** Subject of a principal's post-auth delivery: `cotal.<space>.dlv.<owner>.<actor>` (one per agent). */
-export function dlvSubject(space: string, owner: string, actor: string): string {
-  return `${spacePrefix(space)}.dlv.${ownerToken(owner)}.${ownerToken(actor)}`;
+/** Subject of a lifecycle's post-auth delivery: `cotal.<space>.dlv.<owner>.<actor>.<lifecycleUid>`. */
+export function dlvSubject(space: string, owner: string, actor: string, lifecycleUid: string): string {
+  return `${spacePrefix(space)}.dlv.${ownerToken(owner)}.${ownerToken(actor)}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
-/** Parse the principal out of a mixed-inbox subject `cotal.<space>.dinbox.<owner>.<actor>`, or null.
- *  The trusted reader is a SINGLE consumer over `dinbox.>` (all principals), so it recovers the
- *  per-message owner+actor from the subject (split only — the broker forge-locked the slots at write). */
-export function parseDinboxPrincipal(subject: string): { owner: string; actor: string } | null {
+/** Parse the lifecycle-scoped principal out of a mixed-inbox subject
+ *  `cotal.<space>.dinbox.<owner>.<actor>.<lifecycleUid>`, or null. The trusted reader is a SINGLE
+ *  consumer over `dinbox.>` (all principals), so it recovers the per-message owner+actor+lifecycle
+ *  from the subject (split only — the broker forge-locked the slots at write). A 5-segment pre-cut
+ *  subject parses to null and the reader refuses it loudly rather than delivering unattributed. */
+export function parseDinboxPrincipal(subject: string): { owner: string; actor: string; lifecycleUid: string } | null {
   const parts = subject.split(".");
-  // cotal.<space>.dinbox.<owner>.<actor>
-  return parts.length === 5 && parts[0] === ROOT && parts[2] === "dinbox"
-    ? { owner: parts[3], actor: parts[4] }
+  // cotal.<space>.dinbox.<owner>.<actor>.<lifecycleUid>
+  return parts.length === 6 && parts[0] === ROOT && parts[2] === "dinbox" && LIFECYCLE_TOKEN.test(parts[5])
+    ? { owner: parts[3], actor: parts[4], lifecycleUid: parts[5] }
     : null;
 }
 
-/** An agent's bind-only per-member consumer on {@link dlvStream} (filter `dlv.<owner>.<actor>`). The
- *  durable NAME is the principal's JetStream-safe dash-form (`dlv_<owner>-<actor>`) — a `.` is illegal
- *  in a durable name, so this uses {@link principalKey}`.name`, never the dot-form. */
-export function dlvDurable(owner: string, actor: string): string {
-  return `dlv_${principalKey(owner, actor).name}`;
+/** A lifecycle's bind-only per-member consumer on {@link dlvStream} (filter
+ *  `dlv.<owner>.<actor>.<lifecycleUid>`). The durable NAME is the lifecycle-scoped dash-form
+ *  (`dlv_<owner>-<actor>-<lifecycleUid>`, SPEC §13.1/§8): the UID in the NAME is what lets the
+ *  deprovisioner be target-pinned by exact name, so a stale teardown credential structurally cannot
+ *  reach a same-alias successor's consumer. */
+export function dlvDurable(owner: string, actor: string, lifecycleUid: string): string {
+  return `dlv_${lifecycleNameKey(owner, actor, lifecycleUid)}`;
 }
 
 /** The single privileged fan-out consumer on the CHAT stream (delivery-daemon-pumped; routing, not
@@ -845,18 +938,21 @@ export function chatDurable(owner: string, actor: string): string {
   return `chat_${principalKey(owner, actor).name}`;
 }
 
-/** Consumer name for an agent's short-lived chat **history** reads (join-backfill, focus-recall,
- *  drop-marker). A single per-agent name in the principal's JetStream-safe dash-form
- *  (`chathist_<owner>-<actor>`) so its create/info/fetch/delete grants name-scope to that principal —
- *  a peer can never bind it — while the per-read single `filter_subject` is what the create-time ACL
- *  pins to `allowSubscribe`. */
-export function chatHistDurable(owner: string, actor: string): string {
-  return `chathist_${principalKey(owner, actor).name}`;
+/** Consumer name for a lifecycle's short-lived chat **history** reads (join-backfill, focus-recall,
+ *  drop-marker). A single per-lifecycle name in the lifecycle-scoped dash-form
+ *  (`chathist_<owner>-<actor>-<lifecycleUid>`, SPEC §13.1) so its create/info/fetch/delete grants
+ *  name-scope to that lifecycle — a peer or a same-alias successor can never bind it — while the
+ *  per-read single `filter_subject` is what the create-time ACL pins to `allowSubscribe`. */
+export function chatHistDurable(owner: string, actor: string, lifecycleUid: string): string {
+  return `chathist_${lifecycleNameKey(owner, actor, lifecycleUid)}`;
 }
 
-/** Durable consumer name for an agent's private DM inbox — the principal's dash-form (`dm_<owner>-<actor>`). */
-export function dmDurable(owner: string, actor: string): string {
-  return `dm_${principalKey(owner, actor).name}`;
+/** Durable consumer name for a lifecycle's private DM inbox — the lifecycle-scoped dash-form
+ *  (`dm_<owner>-<actor>-<lifecycleUid>`, SPEC §13.1). The DM SUBJECTS (`inst.>`) keep the alias
+ *  grammar; the backing consumer is lifecycle-keyed and starts at the activation frontier
+ *  ({@link import("./streams.js").dmDurableConfig}), so a successor inherits no predecessor DMs. */
+export function dmDurable(owner: string, actor: string, lifecycleUid: string): string {
+  return `dm_${lifecycleNameKey(owner, actor, lifecycleUid)}`;
 }
 
 /** Durable consumer name (shared across instances of a role) for the task queue. */

@@ -17,6 +17,7 @@ import {
   CotalEndpoint,
   chatSubject,
   isReachable,
+  mintLifecycleUid,
   parsePrincipalKey,
   seedChannelRegistry,
   type CotalMessage,
@@ -59,6 +60,7 @@ const cfg: AgentConfig = {
   kind: "agent",
   tls: false,
   id: "otto_agent",
+  lifecycleUid: mintLifecycleUid(),
 };
 
 const agent = new MeshAgent(cfg);
@@ -73,7 +75,7 @@ const reset = () => {
   mentionWake = [];
 };
 
-const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["normal-ch", "quiet-ch", "muted-ch"] });
+const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["normal-ch", "quiet-ch", "muted-ch"], lifecycleUid: mintLifecycleUid() });
 pub.on("error", () => {});
 
 const rawChat = async (id: string, subjectChannel: string, payloadChannel: string): Promise<void> => {

@@ -37,6 +37,7 @@ import {
   chatSubject,
   chatDurable,
   chatHistDurable,
+  mintLifecycleUid,
   DEV_OWNER,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -102,8 +103,9 @@ try {
   // we only need the cred's grants, which is what nats-server enforces.
   const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const id = newIdentity();
-  const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed"] });
-  const chatHistD = chatHistDurable(DEV_OWNER, id.id);
+  const uid = mintLifecycleUid();
+  const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed"], lifecycleUid: uid });
+  const chatHistD = chatHistDurable(DEV_OWNER, id.id, uid);
   const ag = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(enc(agentCreds)),
@@ -169,7 +171,7 @@ try {
   // layer would rewrite (foo/bar → foo_bar) must fail loud, or the grant would alias the ACL.
   let aliasRejected = false;
   try {
-    await provisionAgent(noop, auth, newIdentity(), { subscribe: ["foo/bar"], allowSubscribe: ["foo/bar"] });
+    await provisionAgent(noop, auth, newIdentity(), { subscribe: ["foo/bar"], allowSubscribe: ["foo/bar"], lifecycleUid: mintLifecycleUid() });
   } catch {
     aliasRejected = true;
   }

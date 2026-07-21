@@ -23,6 +23,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -110,9 +111,9 @@ try {
   // enforces).
   const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const plainId = newIdentity();
-  const plainCreds = await provisionAgent(noop, auth, plainId, { subscribe: ["general"], allowPublish: ["general"] });
+  const plainCreds = await provisionAgent(noop, auth, plainId, { subscribe: ["general"], allowPublish: ["general"], lifecycleUid: mintLifecycleUid() });
   const capId = newIdentity();
-  const capCreds = await provisionAgent(noop, auth, capId, { subscribe: ["general"], allowPublish: ["general"], capabilities: ["spawn"] });
+  const capCreds = await provisionAgent(noop, auth, capId, { subscribe: ["general"], allowPublish: ["general"], capabilities: ["spawn"], lifecycleUid: mintLifecycleUid() });
 
   const plainSelf = controlServiceSubject(space, CONTROL_SELF_SERVICE, DEV_OWNER, plainId.id);
   const plainPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, plainId.id);

@@ -84,13 +84,15 @@ const ledgerDir = mkdtempSync(join(tmpdir(), "cotal-ctltrust-ledger-"));
 const ownerA = deriveOwnerToken(SECRET, "idp-subject-A");
 const ownerB = deriveOwnerToken(SECRET, "idp-subject-B");
 const ACL = { allowSubscribe: ["general"], allowPublish: ["general"] };
-grantActor(ledgerDir, { owner: ownerA, actor: "cli", scope: ["spawn"], ...ACL });     // spawn-capable ⇒ holds ctl.<A>.cli
+const aCliRow = grantActor(ledgerDir, { owner: ownerA, actor: "cli", scope: ["spawn"], ...ACL });     // spawn-capable ⇒ holds ctl.<A>.cli
 grantActor(ledgerDir, { owner: ownerA, actor: "victim", scope: [], ...ACL });          // no spawn ⇒ no ctl grant of its own
 grantActor(ledgerDir, { owner: ownerB, actor: "cli", scope: ["spawn"], ...ACL });      // a different owner's spawn-capable actor
 
 // ---------- the production issuer: mint A.cli's bearer directly (no IdP HTTP exchange) ----------
+// Lifecycle-bound to A.cli's row uid (SPEC 13.1): a directly-minted bearer must carry the row's
+// lifecycleUid or the callout's connect equality check refuses it.
 const issuer = createUserTokenIssuer({ issuer: ISS, key: await generateSigningKey() });
-const bearerAcli = await issuer.issue({ owner: ownerA, space, actor: "cli", scope: ["spawn"], ttlSec: 300 });
+const bearerAcli = await issuer.issue({ owner: ownerA, space, actor: "cli", scope: ["spawn"], lifecycleUid: aCliRow.lifecycleUid, ttlSec: 300 });
 
 let calloutNc: NatsConnection | undefined, witnessNc: NatsConnection | undefined, ncA: NatsConnection | undefined;
 let managerEp: CotalEndpoint | undefined;

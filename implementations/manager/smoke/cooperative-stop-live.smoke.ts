@@ -27,6 +27,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -99,9 +100,11 @@ try {
 
   const aliceId = newIdentity();
   const bobId = newIdentity();
+  const aliceUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
+  const bobUid = mintLifecycleUid();
   const acl = { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] };
-  const aliceCreds = await provisionAgent(mgr, auth, aliceId, { ...acl, role: "worker" });
-  const bobCreds = await provisionAgent(mgr, auth, bobId, { ...acl, role: "watcher" });
+  const aliceCreds = await provisionAgent(mgr, auth, aliceId, { ...acl, role: "worker", lifecycleUid: aliceUid });
+  const bobCreds = await provisionAgent(mgr, auth, bobId, { ...acl, role: "watcher", lifecycleUid: bobUid });
 
   // alice is the agent we cooperatively stop. A LONG ttl (30s) so an offline flip within the assert
   // window can ONLY be the cooperative leave, never TTL expiry.
@@ -111,6 +114,7 @@ try {
     creds: aliceCreds,
     card: { id: aliceId.id, name: "alice", role: "worker", kind: "agent" },
     channels: ["general"],
+    lifecycleUid: aliceUid,
     heartbeatMs: 500,
     ttlMs: 30_000,
   });
@@ -121,6 +125,7 @@ try {
     creds: bobCreds,
     card: { id: bobId.id, name: "bob", role: "watcher", kind: "agent" },
     channels: ["general"],
+    lifecycleUid: bobUid,
     heartbeatMs: 500,
     ttlMs: 30_000,
   });

@@ -33,8 +33,10 @@ for (const root of ["packages", "extensions", "implementations"]) {
 
 const summaries = new Set();
 for (const file of changelogs) {
+  const lines = readFileSync(file, "utf8").split("\n");
   let inSection = false;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (line.startsWith("## ")) {
       inSection = line.slice(3).trim() === version; // a `## <version>` header starts/ends a section
       continue;
@@ -42,14 +44,24 @@ for (const file of changelogs) {
     if (!inSection) continue;
     const m = line.match(/^- (?:[0-9a-f]{7,40}: )?(.+)$/); // a top-level changeset bullet (optional hash)
     if (!m) continue;
-    const summary = m[1].trim();
-    if (/^Updated dependencies\b/i.test(summary)) continue; // skip the dependency-bump bookkeeping
-    if (/^@?[\w./-]+@\d+\.\d+\.\d+/.test(summary)) continue; // skip bare `pkg@version` dep-bump lines
-    summaries.add(summary);
+    const first = m[1].trim();
+    if (/^Updated dependencies\b/i.test(first)) continue; // skip the dependency-bump bookkeeping
+    if (/^@?[\w./-]+@\d+\.\d+\.\d+/.test(first)) continue; // skip bare `pkg@version` dep-bump lines
+    // A changeset summary may span paragraphs: changesets renders the continuation as blank lines
+    // plus 2-space-indented text under the bullet. Capture that whole block (until the next
+    // top-level bullet, sub-header, or version header) so the summary is not truncated to one line.
+    const body = [];
+    while (i + 1 < lines.length && (lines[i + 1].trim() === "" || /^\s/.test(lines[i + 1]))) {
+      body.push(lines[++i]);
+    }
+    while (body.length && body[body.length - 1].trim() === "") body.pop(); // drop trailing blanks
+    summaries.add([first, ...body].join("\n"));
   }
 }
 
 if (summaries.size) {
   process.stdout.write("## Changes in this release\n\n");
+  // Each summary is `<first line>\n<already 2-space-indented continuation>`, so it re-emits as a
+  // valid multi-paragraph markdown list item under the bullet.
   for (const s of summaries) process.stdout.write(`- ${s}\n`);
 }

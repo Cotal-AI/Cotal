@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -17,6 +18,8 @@ import {
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
+  mintLifecycleUid,
+  mkSecretDir,
   newIdentity,
   parsePrincipalKey,
   parseShareSelection,
@@ -31,6 +34,8 @@ import {
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
   CONTROL_ADMIN,
+  CONTROL_AUTH_ADMIN,
+  controlServiceSubject,
 } from "@cotal-ai/core";
 import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
@@ -70,6 +75,14 @@ const DEPROVISION_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+
+/** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
+ *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
+ *  operation (the rail's idempotence table needs exactly one op per retiring incarnation). 26 hex
+ *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
+function retireOpId(lifecycleUid: string): string {
+  return createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
+}
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
@@ -126,12 +139,16 @@ export interface ManagerOptions {
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
 export type ManagerResumeIdentity =
-  | { mode: "open"; id: string }
-  | { mode: "static"; id: string; credential: { kind: "file"; path: string; sha256: string } }
+  // lifecycleUid is the agent's ORIGINAL incarnation uid (its durables are keyed by it): the resume
+  // must recover it, not mint a fresh one, or a later teardown would orphan the real durables. It is
+  // recorded here (from the live ManagedAgent) so recovery is uniform across all three modes.
+  | { mode: "open"; id: string; lifecycleUid: string }
+  | { mode: "static"; id: string; lifecycleUid: string; credential: { kind: "file"; path: string; sha256: string } }
   | {
       mode: "user";
       owner: string;
       actor: string;
+      lifecycleUid: string;
       actorToken: { kind: "file"; path: string; sha256: string };
       sentinelCredential: { kind: "file"; path: string; sha256: string };
       health: { kind: "file"; path: string };
@@ -301,6 +318,11 @@ interface ManagedAgent {
   /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
    *  the owner+actor principal dot-form (user mode). */
   id: string;
+  /** This incarnation's lifecycle UID (SPEC §13.1), minted once per spawn: the uid its
+   *  lifecycle-keyed broker footprint (`dm_…-<uid>`/`dlv_…-<uid>`/ACL row) carries and the ONLY
+   *  incarnation its teardown credential may name — a replayed teardown cannot reach a same-name
+   *  successor (its uid differs). */
+  lifecycleUid: string;
   /** Private nkey seed, kept so a later step can mint matching creds for this id. Static auth
    *  only — a user-mode agent has no static identity (its credential is its bearer). */
   seed?: string;
@@ -346,6 +368,29 @@ export class Manager {
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
+  /** Names RESERVED PENDING RETIREMENT (#29 piece 3): a despawned agent's name stays held until
+   *  the auth plane confirms its lifecycle's retirement TERMINAL over the auth-admin rail — the
+   *  alias-reuse gate that closes the same-name despawn→respawn race at its root. An UNCERTAIN
+   *  outcome (rail down, timeout) keeps the hold with the last attempt's copy; a same-name spawn
+   *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
+   *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
+   *  named residual this belt narrows, not replaces). */
+  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; startedAt: number; lastError?: string; standingAuthorityLive?: boolean }>();
+  /** SINGLE-FLIGHT guard for {@link requestRetirement} (audit #1): one in-flight rail round-trip per
+   *  (name, lifecycleUid). The detached `deprovision` call and every same-name-spawn nudge for THAT
+   *  lifecycle JOIN the same promise instead of stacking independent requests that dual-enter the
+   *  barrier; a fresh trigger after it settles re-drives. Keyed by (name, uid) — NOT name alone — so a
+   *  same-name SUCCESSOR (which can spawn after the hold clears but before this flight's `nc.close`
+   *  yield settles) never joins the predecessor's rail request and skips its own retirement. */
+  private retiringFlight = new Map<string, Promise<void>>();
+  /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
+   *  (name, lifecycleUid). The detached freeSlot teardown and every same-name-spawn nudge that
+   *  re-drives it JOIN one promise instead of launching a SECOND, concurrent teardown. Without it,
+   *  two teardowns race the NAME-KEYED ledger revoke: once the first frees the alias and a successor
+   *  mints its own row, the second's delayed revoke (which carries no lifecycle coordinate) would
+   *  delete the SUCCESSOR's standing authority. Keyed by (name, uid) so a later same-name lifecycle
+   *  gets its own flight; a fresh trigger after settle re-drives only if the hold still stands. */
+  private deprovisioningFlight = new Map<string, Promise<void>>();
   private readonly attach: AttachEndpoint;
   private ep!: CotalEndpoint;
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
@@ -470,6 +515,11 @@ export class Manager {
       servers: this.servers,
       channels: [],
       creds,
+      // The supervisor registers on the roster, and an authed presence-registering endpoint is
+      // lifecycle-keyed (SPEC 13.1, fail-before-presence). The manager process is the top of its
+      // own launch chain (the operator command IS its launcher), so it mints its incarnation's
+      // uid here - one per supervisor process, never reused across restarts.
+      lifecycleUid: mintLifecycleUid(),
       // The supervisor serves control + watches presence; it never consumes chat/dm/task
       // (no message handler). consume:false avoids binding consumers it doesn't use — and
       // under auth avoids trying to bind its own DM/task durables that nothing pre-created.
@@ -592,7 +642,7 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: { id: string; name: string; userOwner?: string }, context = ""): void {
+  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string }, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
@@ -873,13 +923,14 @@ export class Manager {
           mode: "user",
           owner: principal.owner,
           actor: principal.actor,
+          lifecycleUid: a.lifecycleUid,
           actorToken: { kind: "file", path: files.actorToken, sha256: this.fileDigestOrEmpty(files.actorToken) },
           sentinelCredential: { kind: "file", path: files.sentinelCreds, sha256: this.fileDigestOrEmpty(files.sentinelCreds) },
           health: { kind: "file", path: files.health },
         }
       : this.auth
-        ? { mode: "static", id: principal.actor, credential: { kind: "file", path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) } }
-        : { mode: "open", id: principal.actor };
+        ? { mode: "static", id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file", path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) } }
+        : { mode: "open", id: principal.actor, lifecycleUid: a.lifecycleUid };
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
       dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
@@ -1276,6 +1327,13 @@ export class Manager {
         inactive.push(`${entry.name} no longer holds retained principal ${expectedPrincipal}`);
         continue;
       }
+      // The late paths (commit/finalize) must prove the SAME incarnation the incarnation-exact
+      // readiness fence proved (§13.1): a principal-only match lets a wrong/absent-uid presence under
+      // the reused alias satisfy commit/finalize after a readiness timeout, undoing the fence.
+      if (managed.lifecycleUid !== entry.identity.lifecycleUid) {
+        inactive.push(`${entry.name} manager metadata incarnation ${managed.lifecycleUid} drifted from the inventory's ${entry.identity.lifecycleUid}`);
+        continue;
+      }
       if (managed.handle.name !== entry.name || managed.handle.kind !== entry.launch.runtime) {
         inactive.push(`${entry.name} is not attached to its exact retained ${entry.launch.runtime} handle`);
         continue;
@@ -1290,8 +1348,9 @@ export class Manager {
         continue;
       }
       if (!roster.some((presence) =>
-        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline"))
-        inactive.push(`${entry.name} principal ${expectedPrincipal} is not exactly present`);
+        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline" &&
+        presence.lifecycleUid === entry.identity.lifecycleUid))
+        inactive.push(`${entry.name} incarnation ${entry.identity.lifecycleUid} (principal ${expectedPrincipal}) is not exactly present`);
     }
     return inactive;
   }
@@ -1397,6 +1456,10 @@ export class Manager {
       role?: string;
       capabilities?: string[];
       label: string;
+      /** The incarnation's lifecycle UID: recorded on the ledger row (the callout mints the agent's
+       *  lifecycle-keyed grants from it) AND used for the provisioned durables/ACL row, so the
+       *  credential names and the broker footprint can never diverge. */
+      lifecycleUid: string;
     },
   ): Promise<{ owner: string; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
     const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
@@ -1440,11 +1503,13 @@ export class Manager {
         role: opts.role,
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
+        lifecycleUid: opts.lifecycleUid,
       });
-      // Durables + ACL row, principal-keyed — the same onboarding as static agents minus the mint
-      // (a user agent's credential is its bearer, minted by the callout per connect).
+      // Durables + ACL row, LIFECYCLE-keyed (SPEC 13.1) — the same onboarding as static agents minus
+      // the mint (a user agent's credential is its bearer, minted by the callout per connect from the
+      // ledger row's recorded lifecycleUid — the same value provisioned here).
       await this.withProvisioner((prov) =>
-        provisionAgentDurables(prov, { owner, actor: name }, {
+        provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
           subscribe: opts.subscribe,
           allowSubscribe: opts.allowSubscribe,
           role: opts.role,
@@ -1487,7 +1552,7 @@ export class Manager {
       rmSync(tokenPath, { force: true });
       rmSync(sentinelPath, { force: true });
       rmSync(healthPath, { force: true });
-      await this.deprovision({ id: principalKey(owner, name).key, name, userOwner: owner }).catch((err) =>
+      await this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner }).catch((err) =>
         console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
       return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
     }
@@ -1502,6 +1567,18 @@ export class Manager {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     this.agents.delete(a.name);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
+    // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
+    // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
+    // and the alias frees only when all of it completes (not the retirement alone). The detached
+    // deprovision below drives it; a failed revoke or an unreachable rail keeps the name held,
+    // re-driven by a retry. Gate on userMode BY
+    // CONSTRUCTION (NEW-1): a static-auth mint has no user-mode lifecycle head to retire, so the
+    // reservation + rail request simply don't apply there (the incidental nkey-parse used to mask
+    // this, but the intent is "user mode only", not "any principal-shaped id").
+    if (this.userMode) {
+      const p = parsePrincipalKey(a.id);
+      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, startedAt: Date.now() });
+    }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
@@ -1522,9 +1599,25 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; userOwner?: string }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string }): Promise<void> {
     if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
-    // Drop the local creds FIRST + unconditionally — a usable identity on disk, useless for a
+    // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
+    // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
+    // outlive the hold-clear and delete a successor's row. A fresh trigger after settle re-drives.
+    const key = JSON.stringify([a.name, a.lifecycleUid]); // ASCII-safe, delimiter-collision-free
+    const inflight = this.deprovisioningFlight.get(key);
+    if (inflight) return inflight;
+    const flight = this.driveDeprovision(a).finally(() => {
+      if (this.deprovisioningFlight.get(key) === flight) this.deprovisioningFlight.delete(key);
+    });
+    this.deprovisioningFlight.set(key, flight);
+    return flight;
+  }
+
+  /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
+  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string }): Promise<void> {
+    if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
+    // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
     // Migrated kinds: the store delete is the authoritative removal; the rmSync clears the FS
@@ -1542,22 +1635,141 @@ export class Manager {
       await secrets.delete(agentActorTokenKey(a.name));
       await secrets.delete(agentSentinelCredsKey(a.name));
       for (const f of [files.actorToken, files.sentinelCreds, files.health]) rmSync(f, { force: true });
+      // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
+      // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
+      // fresh connect credential. So a FAILED revoke must NOT be swallowed into a clean terminal (INT-2):
+      // mark the standing authority live on the hold so the retirement can never free the name (a freed
+      // name says "this lifecycle is fully gone" - false while the mint authority stands), and carry a
+      // legible operator copy. A retry re-drives this whole teardown (the same-name-spawn nudge routes
+      // through deprovision, not the rail alone), so the revoke is re-attempted, not stranded.
+      const holdRevoke = this.retiring.get(a.name);
+      if (holdRevoke && holdRevoke.lifecycleUid === a.lifecycleUid) holdRevoke.standingAuthorityLive = true;
       try {
         await resolveAuthProvider().revokeAgent({
           dir: userAuthStateDir(this.workspaceRoot, this.space),
           owner: a.userOwner,
           actor: a.name,
         });
+        const done = this.retiring.get(a.name);
+        if (done && done.lifecycleUid === a.lifecycleUid) done.standingAuthorityLive = false;
       } catch (e) {
+        const h = this.retiring.get(a.name);
+        if (h && h.lifecycleUid === a.lifecycleUid)
+          h.lastError = `the agent's standing mint authority could not be revoked (${(e as Error).message}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
         console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
       }
     }
-    const creds = await mintCreds(this.auth, newIdentity(), "deprovisioner", { deprovisionTarget: a.id });
+    await this.deprovisionBroker(a);
+    // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
+    // the auth-admin rail. The rail re-checks the space-manager lease at serve time; the terminal
+    // (or an already-retired answer) clears the name reservation. Failures keep the hold with
+    // their operator copy — legible, retryable, never a silent half-state.
+    await this.requestRetirement(a);
+  }
+
+  /** Request the auth-side retirement of a departed agent's lifecycle (#29 piece 3): an ephemeral
+   *  `retirement-requester` credential (request + reply only), the generic `retireLifecycle` op,
+   *  a STABLE opId (derived from the lifecycleUid, so every retry re-drives the SAME operation),
+   *  and the four-outcome handling in operator vocabulary. */
+  private async requestRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
+    if (!this.userMode) return; // NEW-1: lifecycle retirement is a user-mesh concept; a static mint has no head to retire
+    // SINGLE-FLIGHT per (name, lifecycleUid) (audit #1): the detached deprovision call and every
+    // same-name-spawn nudge for THIS lifecycle share ONE in-flight retirement, so concurrent triggers
+    // never stack independent rail requests that dual-enter runAgentRetirementBarrier. Keyed by
+    // (name, uid), NOT name alone: driveRetirement clears the hold on rail ok but then yields at
+    // `nc.close()` with the flight still stored, so the alias can free and a SUCCESSOR (new uid) spawn.
+    // A name-only key would let that successor's own teardown JOIN the predecessor's still-pending
+    // flight and never send its OWN retirement — leaving the successor's lifecycle unretired. The uid in
+    // the key gives the successor a disjoint flight (mirrors {@link deprovisioningFlight}). A fresh
+    // trigger after settle re-drives (a still-present hold => retirement not yet confirmed).
+    const key = JSON.stringify([a.name, a.lifecycleUid]);
+    const inflight = this.retiringFlight.get(key);
+    if (inflight) return inflight;
+    const flight = this.driveRetirement(a).finally(() => {
+      if (this.retiringFlight.get(key) === flight) this.retiringFlight.delete(key);
+    });
+    this.retiringFlight.set(key, flight);
+    return flight;
+  }
+
+  /** The rail round-trip for one retirement (wrapped by {@link requestRetirement}'s single-flight). */
+  private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
+    if (!this.auth) return; // guaranteed by requestRetirement; re-checked for the type narrowing below
+    const held = this.retiring.get(a.name);
+    const me = parsePrincipalKey(this.ep.ref().id);
+    const target = parsePrincipalKey(a.id);
+    if (!me || !target) {
+      if (held) held.lastError = "the manager or target principal could not be derived; the retirement was not requested";
+      return;
+    }
+    const uncertain = (why: string) =>
+      `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`;
+    try {
+      const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", { retirementRequester: { owner: me.owner, actor: me.actor } });
+      const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+      try {
+        const subject = controlServiceSubject(this.space, CONTROL_AUTH_ADMIN, me.owner, me.actor);
+        const m = await nc.request(
+          subject,
+          JSON.stringify({ op: "retireLifecycle", args: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid, opId: retireOpId(a.lifecycleUid) } }),
+          { timeout: 20_000, noMux: true, reply: `${subject}.reply.${randomUUID()}` },
+        );
+        const r = m.json<{ ok: boolean; data?: unknown; error?: string }>();
+        if (r.ok) {
+          // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
+          // lifecycle's - a late reply for a retired predecessor must never clear a successor's newer hold.
+          const cur = this.retiring.get(a.name);
+          if (cur && cur.lifecycleUid === a.lifecycleUid) {
+            if (cur.standingAuthorityLive) {
+              // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
+              // not yet revoked (a failed revoke). Freeing the name here would be a false terminal (a
+              // copied token could still mint), so keep the hold with its revoke-failure copy; a retry
+              // re-drives the full teardown (revoke included).
+              console.error(`despawn ${a.name}: the auth-plane lifecycle retired, but the standing mint authority is not yet revoked; the name stays held. ${cur.lastError ?? ""}`);
+            } else {
+              this.retiring.delete(a.name);
+              console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
+            }
+          } else {
+            console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
+          }
+        } else {
+          // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
+          // full-no-op statements included) - surface it INTACT, never flattened.
+          if (held) held.lastError = r.error ?? "the auth service refused the retirement without a reason";
+          console.error(`despawn ${a.name}: ${r.error ?? "the auth service refused the retirement without a reason"}`);
+        }
+      } finally {
+        await nc.close().catch(() => {});
+      }
+    } catch (e) {
+      const copy = uncertain((e as Error).message);
+      if (held) held.lastError = copy;
+      console.error(`despawn ${a.name}: ${copy}`);
+    }
+  }
+
+  /** The teardown's ASYNC BROKER PHASE: mint the ephemeral target-pinned deprovisioner cred and
+   *  delete the agent's broker footprint (dm_/dlv_ durables + read-ACL row). Split from
+   *  {@link deprovision} because it runs LAST in the ordered teardown chain — after the creds/secret
+   *  shred and the awaited ledger revoke, which precede it in that same single-flighted chain (the
+   *  revoke is awaited and can be deliberately slow, so it is not merely a synchronous prefix). The name
+   *  is NOT freed while any teardown phase is still in flight — the hold clears only after the
+   *  standing-authority revoke AND the lifecycle retirement both confirm (see {@link driveRetirement}) —
+   *  but the deletes here are still lifecycle-uid-pinned so even a replayed/stale teardown can never
+   *  reach a same-name successor's footprint (its names embed a different uid). */
+  private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
+    // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
+    // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
+    // against a same-name successor's footprint (its names embed a different uid).
+    const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", {
+      deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid },
+    });
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
     await withTimeout(
-      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, creds }),
+      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, creds }),
       DEPROVISION_TIMEOUT_MS,
       `deprovision ${a.name} (${a.id}): broker teardown timed out`,
     );
@@ -1599,7 +1811,7 @@ export class Manager {
    *  in-flight (reserved) slots. Lets a colliding spawn auto-number instead of being rejected, so
    *  callers never have to invent a unique name. */
   private uniqueName(base: string): string {
-    return firstFreeName(base, (n) => this.agents.has(n) || this.reserved.has(n));
+    return firstFreeName(base, (n) => this.agents.has(n) || this.reserved.has(n) || this.retiring.has(n));
   }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
@@ -1949,6 +2161,20 @@ export class Manager {
     }
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+    // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
+    // legibly (never a silent suffix), and the refusal re-drives the FULL durable teardown so
+    // "retry the spawn" is also the nudge. It routes through `deprovision` (not `requestRetirement`
+    // alone) so a retry re-drives the standing-authority revoke (INT-2) AND the broker cleanup before
+    // any hold-clear (C): the alias must not free while the durable teardown or the revoke is still
+    // outstanding. All the teardown ops are idempotent, and the rail request is single-flighted.
+    const held = this.retiring.get(identityName);
+    if (held !== undefined) {
+      void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner }).catch(() => {});
+      return {
+        ok: false,
+        error: `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
+      };
+    }
     if (variant && !connector.supportsModelVariant)
       return { ok: false, error: `${agent} connector does not support model variants (variant)` };
 
@@ -1977,11 +2203,15 @@ export class Manager {
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
     // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
     // static durable teardown (the freelance found this window leaking the managed grant + files).
-    let provisioned: { id: string; name: string; userOwner?: string } | undefined;
+    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
       const identity = newIdentity();
+      // The incarnation's lifecycle UID (SPEC 13.1), minted ONCE per spawn: every lifecycle-keyed
+      // broker resource (dm_/dlv_/chathist_ durables, ACL row, memberships) and the teardown
+      // credential carry it, so a same-name successor's footprint is name-disjoint by construction.
+      const lifecycleUid = mintLifecycleUid();
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
@@ -1998,6 +2228,7 @@ export class Manager {
           role,
           capabilities,
           label: ref,
+          lifecycleUid,
         });
         if ("error" in prep) {
           this.reserved.delete(name);
@@ -2005,7 +2236,7 @@ export class Manager {
         }
         userLaunch = prep.launch;
         userOwner = prep.owner;
-        provisioned = { id: principalKey(prep.owner, name).key, name, userOwner: prep.owner };
+        provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner };
       } else if (this.auth) {
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
@@ -2018,6 +2249,7 @@ export class Manager {
             allowPublish,
             role,
             capabilities,
+            lifecycleUid,
           }),
         );
         // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
@@ -2027,7 +2259,7 @@ export class Manager {
         credsPath = agentSecretFilePaths(this.workspaceRoot, name).creds;
         await secrets.put(agentCredsKey(name), creds);
         await materializeSecretToFile(secrets, agentCredsKey(name), credsPath);
-        provisioned = { id: identity.id, name }; // footprint now exists — the finally rolls it back if the spawn throws
+        provisioned = { id: identity.id, name, lifecycleUid }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
@@ -2055,6 +2287,10 @@ export class Manager {
         id: userLaunch ? undefined : identity.id,
         creds: credsPath,
         userAuth: userLaunch,
+        // The incarnation's lifecycle UID: the agent endpoint binds its lifecycle-keyed dm/dlv/
+        // chathist durables by this exact value (its creds pin the same names, so a mismatch fails
+        // at the broker, never silently).
+        lifecycleUid,
         servers: this.servers,
         configPath,
         model,
@@ -2086,6 +2322,7 @@ export class Manager {
         role,
         agent,
         id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
+        lifecycleUid,
         ...(userLaunch ? { userOwner } : { seed: identity.seed }),
         spawner: spawner ?? this.ep.ref().id,
         authorityParent: userLaunch && spawner && parsePrincipalKey(spawner) ? spawner : undefined,
@@ -2299,6 +2536,11 @@ export class Manager {
       });
       if (adopted.owner !== entry.identity.owner || adopted.actor !== entry.identity.actor)
         throw new Error(`auth provider returned a replacement principal; expected ${entry.identity.owner}.${entry.identity.actor}`);
+      // Bind the inventory's uid to the CURRENT authority row BEFORE any spawn: a corrupt or
+      // admin-supplied inventory naming a different incarnation is refused at pre-effect validation,
+      // never left to broker-fail after the child is already running (SPEC §13.1).
+      if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
+        throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
       if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
           !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
           !sameStrings(adopted.scope, entry.launch.capabilities) ||
@@ -2424,6 +2666,12 @@ export class Manager {
           id: authority.id,
           creds: authority.creds,
           userAuth: authority.userAuth,
+          // Recover the ORIGINAL incarnation uid (never a fresh mint on resume): the child endpoint
+          // binds its lifecycle-keyed dm/dlv/chathist durables by this exact value, and its creds pin
+          // the same names. Omitting it here (as the pre-fix resume path did) leaves the resumed child
+          // with no COTAL_LIFECYCLE_UID: static/user fail the connector auth gate and open self-mints a
+          // fresh uid that orphans the preserved durables and never matches the readiness fence.
+          lifecycleUid: entry.identity.lifecycleUid,
           servers: this.servers,
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,
@@ -2463,6 +2711,8 @@ export class Manager {
         role: entry.role,
         agent: entry.launch.connector,
         id: entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id,
+        // Recover the ORIGINAL incarnation uid the durables are keyed by (never a fresh mint on resume).
+        lifecycleUid: entry.identity.lifecycleUid,
         userOwner: entry.identity.mode === "user" ? entry.identity.owner : undefined,
         spawner: entry.spawner,
         authorityParent: entry.authorityParent,
@@ -2512,7 +2762,9 @@ export class Manager {
     return probeConnect(this.servers ?? DEFAULT_SERVER, { creds, timeoutMs: 5_000 });
   }
 
-  /** An uncertain resume remains non-destructive until exact-principal presence arrives later. */
+  /** An uncertain resume remains non-destructive until exact-principal AND exact-incarnation presence
+   *  arrives later. Same predicate as the readiness fence: a principal-only match would let a
+   *  wrong/absent-uid presence under the reused alias clear cleanup suppression on another incarnation. */
   private watchResumeAdoption(a: ManagedAgent): void {
     const wanted = this.managedPrincipal(a);
     const onPresence = (): void => {
@@ -2520,7 +2772,7 @@ export class Manager {
         this.ep.off("presence", onPresence);
         return;
       }
-      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline")) return;
+      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid)) return;
       if (!this.resumeRequired) a.suppressCleanup = false;
       this.ep.off("presence", onPresence);
     };
@@ -2553,7 +2805,17 @@ export class Manager {
     // through managedPrincipal or a static launch can never be seen joining (every static spawn would
     // resolve "uncertain"; caught by the lifecycle e2e).
     const wanted = this.managedPrincipal(a);
-    const joined = (): boolean => this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline");
+    // READINESS LIFECYCLE FENCE (SPEC 13.1): match the exact principal AND the exact lifecycle uid
+    // the manager minted for THIS spawn (presence carries it, §6/:315). The endpoint's own
+    // register-only broker proof is gated on the CLIENT-authored `card.kind`, which a managed child
+    // holding a valid agent credential could set to "endpoint" to skip - so it is defense-in-depth,
+    // NOT the authority boundary. This equality is: the manager (not the child) owns the expected
+    // uid, so a ghost that advertises a wrong/absent uid never reports STARTED, whatever kind it
+    // claims. The manager threads the uid into EVERY mode's launch (open included), so the child
+    // adopts it over a self-mint and publishes it in presence; the uid is absent only from a peer
+    // the manager never launched (a pure operator/daemon connection that never registers).
+    const joined = (): boolean =>
+      this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid);
 
     return await new Promise((resolve) => {
       let done = false;

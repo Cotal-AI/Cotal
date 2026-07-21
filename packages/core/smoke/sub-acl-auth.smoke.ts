@@ -18,6 +18,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -119,6 +120,7 @@ try {
   const aCreds = await provisionAgent(noop, auth, a, {
     subscribe: ["review.alpha"],
     allowSubscribe: ["review.>"],
+    lifecycleUid: mintLifecycleUid(),
   });
 
   // ALLOWED — own inbox prefix.
@@ -160,6 +162,7 @@ try {
   const bCreds = await provisionAgent(noop, auth, b, {
     subscribe: ["ops"],
     allowSubscribe: ["ops"],
+    lifecycleUid: mintLifecycleUid(),
   });
   check(
     "B: subscribe chat.*.ops (in its ACL) is allowed",

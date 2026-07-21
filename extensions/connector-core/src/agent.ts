@@ -178,6 +178,7 @@ export class MeshAgent extends EventEmitter {
       user: config.user,
       pass: config.pass,
       creds: config.creds,
+      lifecycleUid: config.lifecycleUid,
       // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
       // protocol lives entirely behind that command, this runtime just runs it and reads a line.
       bearer: config.userAuth ? () => execBearerCmd(config.userAuth!.bearerCmd) : undefined,
@@ -769,14 +770,13 @@ export class MeshAgent extends EventEmitter {
     await this.ep.setStatus(status);
   }
 
-  /** Record the host's *actual* model — learned after launch (e.g. from Claude Code's `SessionStart`
-   *  hook payload) — into the card's display-only `meta.model`, so peers see it in `cotal_roster` and
-   *  the web roster even when the operator never pinned one. An explicit pin (`config.model`, from the
-   *  agent file's `model:` or `COTAL_MODEL`) is authoritative and wins; this only fills the gap. Best-
-   *  effort presence mirror (no `assertConnected` — safe pre-connect; it rides the first publish). */
-  async setModel(model: string): Promise<void> {
+  /** Record the host's actual model and optional variant learned after launch, so peers see the
+   *  selection in `cotal_roster` and the web roster even when the operator never pinned one. Explicit
+   *  `model:` / `variant:` config wins; this only fills the gap. Best-effort presence mirror (no
+   *  `assertConnected` — safe pre-connect; it rides the first publish). */
+  async setModel(model: string, variant?: string): Promise<void> {
     if (this.config.model) return; // operator pin is authoritative — never override it with the runtime value
-    await this.ep.setCardModel(model);
+    await this.ep.setCardModel(model, this.config.variant ?? variant);
   }
 
   // ---- channel registry ----------------------------------------------------

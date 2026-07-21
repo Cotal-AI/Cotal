@@ -17,6 +17,7 @@ import {
   isReachable,
   createSpaceAuth,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   serverConfig,
   setupSpaceStreams,
@@ -81,6 +82,7 @@ try {
     creds: source,
     card: { id: sup.id, name: "mgr", kind: "endpoint" },
     consume: false,
+    lifecycleUid: mintLifecycleUid(), // authed + presence-registering: lifecycle-keyed (fail-before-presence gate)
     watchChannels: false,
     watchPresence: false,
     heartbeatMs: 300,

@@ -449,6 +449,7 @@ export interface MaintenancePaths {
   readonly journal: string;
   readonly resume: string;
   readonly prepareIntent: string;
+  readonly commitIntent: string;
   readonly lock: string;
   readonly reaper: string;
 }
@@ -513,6 +514,7 @@ export function maintenancePaths(root: string): MaintenancePaths {
     journal: join(versionDir, "journal.json"),
     resume: join(versionDir, "resume.json"),
     prepareIntent: join(versionDir, "prepare-intent.json"),
+    commitIntent: join(versionDir, "commit-intent.json"),
     lock: join(maintenanceDir, "lock.json"),
     reaper: join(maintenanceDir, "lock-reaper.json"),
   };
@@ -1759,6 +1761,70 @@ export function clearPreservationPrepareIntent(lock: MaintenanceLock): void {
   const paths = maintenancePaths(lock.root);
   try {
     unlinkSync(paths.prepareIntent);
+    fsyncDirectory(paths.versionDir);
+  } catch (error) {
+    if (errno(error) !== "ENOENT") throw error;
+  }
+}
+
+/** Written AFTER the cut-intent journal but BEFORE the manager is asked to stop its children, so a
+ *  coordinator crash in that window leaves proof the stop RPC may already have executed. Without it,
+ *  recovery sees a bare cut-intent and wrongly assumes nothing was stopped — then deletes the cut and
+ *  loses the retained inventory. Cleared once cut-committed is durably journaled. */
+export interface PreservationCommitIntent {
+  readonly attemptId: string;
+}
+
+function validCommitIntent(value: unknown): value is PreservationCommitIntent {
+  const intent = value as PreservationCommitIntent;
+  return Boolean(intent && typeof intent === "object" &&
+    exactObjectKeys(intent, ["attemptId"]) &&
+    typeof intent.attemptId === "string" && ATTEMPT_ID.test(intent.attemptId));
+}
+
+export function writePreservationCommitIntent(lock: MaintenanceLock, intent: PreservationCommitIntent): void {
+  assertLock(lock);
+  if (!validCommitIntent(intent))
+    maintenanceError("invalid-transition", "preservation commit intent is invalid", { root: lock.root });
+  const paths = maintenancePaths(lock.root);
+  ensureLayout(paths);
+  const journal = readMaintenanceJournal(lock.root);
+  if (!journal || journal.state !== "cut-intent" || journal.cut.attemptId !== intent.attemptId)
+    maintenanceError("invalid-transition", "commit intent requires a cut-intent journal for the same attempt", {
+      root: lock.root, paths: [paths.journal],
+    });
+  atomicWrite(paths.commitIntent, intent);
+}
+
+export function readPreservationCommitIntent(root: string): PreservationCommitIntent | undefined {
+  const paths = maintenancePaths(root);
+  let raw: string;
+  try {
+    const stat = lstatSync(paths.commitIntent);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024)
+      maintenanceError("journal-corrupt", "preservation commit intent is not a bounded regular file", { paths: [paths.commitIntent] });
+    raw = readFileSync(paths.commitIntent, "utf8");
+  } catch (error) {
+    if (errno(error) === "ENOENT") return undefined;
+    if (isMaintenanceError(error)) throw error;
+    maintenanceError("journal-corrupt", "preservation commit intent cannot be read", { paths: [paths.commitIntent] });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw!);
+  } catch {
+    maintenanceError("journal-corrupt", "preservation commit intent cannot be parsed", { paths: [paths.commitIntent] });
+  }
+  if (!validCommitIntent(parsed))
+    maintenanceError("journal-corrupt", "preservation commit intent is invalid", { paths: [paths.commitIntent] });
+  return parsed;
+}
+
+export function clearPreservationCommitIntent(lock: MaintenanceLock): void {
+  assertLock(lock);
+  const paths = maintenancePaths(lock.root);
+  try {
+    unlinkSync(paths.commitIntent);
     fsyncDirectory(paths.versionDir);
   } catch (error) {
     if (errno(error) !== "ENOENT") throw error;

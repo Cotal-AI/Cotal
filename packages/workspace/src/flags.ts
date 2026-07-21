@@ -12,8 +12,8 @@ export const serverFlag = { name: "server", type: "string", value: "<url>", desc
 export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection" } as const satisfies FlagSpec;
 
 /** The mesh-target bundle: which space, which broker, and (off-registry) which credential.
- *  Resolution order is `resolveMeshTarget`'s: explicit flags > the folder's project > the
- *  registry/`current` mesh. */
+ *  Resolution order is `resolveMeshTarget`'s: explicit flags > the selected `current` mesh > the
+ *  folder's project > the registry. */
 export const targetFlags = [spaceFlag, serverFlag, credsFlag] as const satisfies readonly FlagSpec[];
 
 /**

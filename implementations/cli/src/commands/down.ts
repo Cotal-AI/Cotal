@@ -7,17 +7,21 @@ import {
   assertSingleSpaceBroker,
   authDir,
   beginMaintenanceCut,
+  clearPreservationCommitIntent,
   clearPreservationPrepareIntent,
   completeMaintenanceCut,
   loadMeshes,
   localProcessPath,
   readMaintenanceJournal,
+  readMaintenanceResumeDocument,
+  readPreservationCommitIntent,
   readPreservationPrepareIntent,
   readStoreIdentity,
   recordPreservationManagerCommit,
   releaseMaintenanceLock,
   removeMeshesByRoot,
   sameStoreIdentity,
+  writePreservationCommitIntent,
   writePreservationPrepareIntent,
   type LocalProcess,
   type LocalProcessContext,
@@ -255,6 +259,20 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
   }
 }
 
+/** The principal keys of every retained agent in a preservation inventory — the dot-form ids that
+ *  appear in the presence roster, so a caller can tell which retained agents are still live. */
+function retainedPrincipalKeys(inventory: unknown): Set<string> {
+  const agents = ((inventory as { agents?: Array<{
+    identity?: { mode?: string; id?: string; owner?: string; actor?: string };
+  }> }).agents ?? []);
+  return new Set(agents.map((agent) => {
+    if (agent.identity?.mode === "user" && agent.identity.owner && agent.identity.actor)
+      return principalKey(agent.identity.owner, agent.identity.actor).key;
+    if (agent.identity?.id) return principalKey(DEV_OWNER, agent.identity.id).key;
+    return undefined;
+  }).filter((id): id is string => Boolean(id)));
+}
+
 async function preserveStateDown(storeOverride?: string): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
@@ -280,6 +298,9 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
 
     let attemptId: string;
     let resume;
+    // Set when recovery force-commits a cut whose manager died AFTER stopping children (commit-intent
+    // present): the shared commit block below is then skipped — the cut is already committed.
+    let managerCommitJournaled = false;
     if (existing?.state === "cut-intent" || existing?.state === "cut-committed") {
       attemptId = existing.cut.attemptId;
       resume = existing.resume;
@@ -290,11 +311,34 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         const manager = all.find((component) => component.name === "manager");
         if (!manager) throw new Error("local process registry has no manager descriptor");
         if (!processAlive(manager, context)) {
-          // Pre-commit, nothing was stopped with suppression: abandon instead of wedging.
-          abortMaintenanceCut(lock);
+          const committing = readPreservationCommitIntent(root);
+          if (!committing || committing.attemptId !== attemptId) {
+            // No commit intent recorded: the child-stopping RPC was never invoked, so nothing was
+            // stopped with suppression. Safe to abandon instead of wedging.
+            abortMaintenanceCut(lock);
+            clearPreservationPrepareIntent(lock);
+            throw new Error(`preservation attempt ${attemptId} lost its manager before commit; the cut intent was aborted - heal the stack with \`cotal up\` if needed, then rerun \`cotal down --preserve-state\``);
+          }
+          // Commit intent is durable: the manager was asked to stop its children and may already have
+          // done so. Deleting the cut here would lose the retained inventory (this was the bug). While
+          // the broker outlives the manager in this window, confirm no retained principal is still live
+          // before finishing forward; if the broker is already gone we cannot check, but preserving the
+          // cut still beats deleting it. Then journal cut-committed and finish WITHOUT the dead manager.
+          if (await isReachable(mesh.server)) {
+            const retained = retainedPrincipalKeys(readMaintenanceResumeDocument(root, existing.resume).inventory);
+            if (retained.size) {
+              const stillLive = (await readPresenceWithoutConsumer(mesh.space, mesh.server))
+                .roster.filter((presence) => retained.has(presence.card.id)).map((presence) => presence.card.id);
+              if (stillLive.length)
+                throw new Error(`preservation attempt ${attemptId} lost its manager mid-commit and ${stillLive.length} retained principal(s) are still live (${stillLive.join(", ")}); the cut intent is PRESERVED for inspection - stop them, then rerun \`cotal down --preserve-state\``);
+            }
+          }
+          recordPreservationManagerCommit(lock, { operation: "commitPreservation", attemptId, state: "preserved" });
+          clearPreservationCommitIntent(lock);
           clearPreservationPrepareIntent(lock);
-          throw new Error(`preservation attempt ${attemptId} lost its manager before commit; the cut intent was aborted - heal the stack with \`cotal up\` if needed, then rerun \`cotal down --preserve-state\``);
+          managerCommitJournaled = true;
         }
+        if (!managerCommitJournaled) {
         const retryTarget = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
@@ -318,6 +362,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           abortMaintenanceCut(lock);
           clearPreservationPrepareIntent(lock);
           throw new Error(`preservation attempt ${attemptId} no longer matches its manager's inventory (${(cause as Error).message}); the stale cut intent was aborted - rerun \`cotal down --preserve-state\``);
+        }
         }
       }
     } else {
@@ -352,15 +397,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       const plan = prepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
       if (!plan?.inventory || (plan.failures?.length ?? 0) !== 0 || (plan.state !== "prepared" && plan.state !== "preserved"))
         throw new Error("manager returned an invalid or incomplete preservation plan");
-      const inventoryAgents = ((plan.inventory as { agents?: Array<{
-        identity?: { mode?: string; id?: string; owner?: string; actor?: string };
-      }> }).agents ?? []);
-      const retainedPrincipals = new Set(inventoryAgents.map((agent) => {
-        if (agent.identity?.mode === "user" && agent.identity.owner && agent.identity.actor)
-          return principalKey(agent.identity.owner, agent.identity.actor).key;
-        if (agent.identity?.id) return principalKey(DEV_OWNER, agent.identity.id).key;
-        return undefined;
-      }).filter((id): id is string => Boolean(id)));
+      const retainedPrincipals = retainedPrincipalKeys(plan.inventory);
       let observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
       retainedPrincipals.add(observed.managerId);
       let unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
@@ -394,14 +431,19 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       clearPreservationPrepareIntent(lock);
     }
 
-    // The manager's preservation commitment is journaled BEFORE any process stops: from
-    // cut-committed onward, retries finish the remaining stopped/unreachable checks idempotently
-    // without requiring the (by then intentionally dead) manager.
-    if (existing?.state !== "cut-committed") {
+    // Stop the children through the manager, then journal cut-committed. A commit-intent marker is
+    // written FIRST (the stop RPC is about to execute) and cleared once cut-committed is durable, so a
+    // crash in the gap leaves proof the stop may already have run — recovery finishes forward instead
+    // of deleting the cut. `managerCommitJournaled` means a dead-manager recovery already committed above.
+    if (existing?.state !== "cut-committed" && !managerCommitJournaled) {
       const manager = all.find((component) => component.name === "manager");
       if (!manager) throw new Error("local process registry has no manager descriptor");
       if (!processAlive(manager, context))
         throw new Error("cannot complete preservation because the attempt-bound manager is not alive to prove every retained child stopped; recovery must preserve the cut-intent journal for inspection");
+      // Fault window: cut-intent journaled but the child-stopping RPC not yet invoked (no commit
+      // intent). A crash here is genuinely pre-commit — recovery MUST still abort, not finish forward.
+      if (process.env.COTAL_SMOKE_EXIT_AFTER_CUT_INTENT_BEFORE_COMMIT === "1") process.exit(93);
+      writePreservationCommitIntent(lock, { attemptId });
       const target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
       const commit = await askManager(
         target.space,
@@ -416,7 +458,12 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       const result = commit.data as { state?: string; failures?: unknown[] } | undefined;
       if (result?.state !== "preserved" || (result.failures?.length ?? 0) !== 0)
         throw new Error("manager could not prove every retained child stopped");
+      // Fault window: the manager has COMMITTED (children stopped, preservation irreversible) but the
+      // coordinator has not yet journaled cut-committed. A crash here leaves the journal at cut-intent
+      // WITH the commit-intent marker set — the exact window recovery must not treat as pre-commit.
+      if (process.env.COTAL_SMOKE_EXIT_AFTER_MANAGER_STOP_BEFORE_JOURNAL === "1") process.exit(92);
       recordPreservationManagerCommit(lock, { operation: "commitPreservation", attemptId, state: "preserved" });
+      clearPreservationCommitIntent(lock);
       if (process.env.COTAL_SMOKE_EXIT_AFTER_PRESERVATION_MANAGER_COMMIT === "1") process.exit(90);
     }
 

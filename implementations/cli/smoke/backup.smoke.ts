@@ -1,6 +1,7 @@
 /** Hermetic CLI backup artifact and maintenance-grammar smoke. */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.
 import { down } from "../src/commands/down.js";
 import { backupComplete, chunkQueue, isStoppedKvWatcher } from "../src/commands/backup.js";
 import { upComplete } from "../src/commands/up.js";
-import { ensurePrivateAttemptsDir } from "../src/lib/isolated-broker.js";
+import { createAttemptClone, ensurePrivateAttemptsDir } from "../src/lib/isolated-broker.js";
 import { isManagerCommitResult, isManagerFinalizeResult } from "../src/lib/restore.js";
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
@@ -78,6 +79,47 @@ try {
     mkdirSync(redirected);
     symlinkSync(redirected, join(redirectedRoot, ".cotal"));
     assert.throws(() => ensurePrivateAttemptsDir(redirectedRoot), /not a real directory/);
+  }
+
+  // The maintenance-attempt tree holds the store clone, quarantine, sanitized snapshots, and the
+  // broker `.conf` (plaintext creds) — the crown jewels. Assert privacy the way the boundary is
+  // actually enforced per platform: POSIX mode bits, and on win32 the NTFS ACL, since mode bits are
+  // a no-op there and privacy comes from hardenPrivate's icacls grant (mirrors secret-fs.smoke.ts).
+  const isWin = process.platform === "win32";
+  const winUser = isWin ? execFileSync("whoami", { encoding: "utf8" }).trim() : "";
+  const assertPrivateDir = (dir: string, label: string): void => {
+    if (!isWin) {
+      assert.equal(statSync(dir).mode & 0o777, 0o700, `${label} is 0700`);
+      return;
+    }
+    const acl = execFileSync("icacls", [dir], { encoding: "utf8" });
+    assert.ok(!/\bEveryone\b/i.test(acl) && !/\bAuthenticated Users\b/i.test(acl) && !/\\Users:/i.test(acl),
+      `${label} ACL strips Everyone / Authenticated Users / Users`);
+    assert.ok(/\\SYSTEM:/i.test(acl) && /\\Administrators:/i.test(acl) && acl.toLowerCase().includes(winUser.toLowerCase()),
+      `${label} ACL grants owner + SYSTEM + Administrators`);
+  };
+
+  {
+    // realpath-canonical root: ensurePrivateAttemptsDir refuses a non-canonical path, and macOS
+    // tmpdir is /var → /private/var symlinked.
+    mkdirSync(join(root, "priv-maint"));
+    const privRoot = realpathSync.native(join(root, "priv-maint"));
+    const attempts = ensurePrivateAttemptsDir(privRoot);
+    // Every level of the tree, not just the leaf — a permissive .cotal or maintenance parent would
+    // expose the attempts subtree by inheritance on win32.
+    assertPrivateDir(join(privRoot, ".cotal"), ".cotal");
+    assertPrivateDir(join(privRoot, ".cotal", "maintenance"), "maintenance");
+    assertPrivateDir(attempts.path, "attempts");
+
+    // A clone copies the whole store; the clone root and its bytes must be private too.
+    const sourceStore = join(root, "priv-source-store");
+    mkdirSync(sourceStore);
+    writeFileSync(join(sourceStore, "stream.dat"), Buffer.from([7, 8, 9]));
+    const clone = createAttemptClone(privRoot, sourceStore, "priv-attempt");
+    assertPrivateDir(clone.path, "attempt clone");
+    assert.deepEqual(readFileSync(join(clone.path, "stream.dat")), Buffer.from([7, 8, 9]));
+    clone.cleanup();
+    assert.ok(!existsSync(clone.path), "clone cleanup removes the clone");
   }
 
   const queue = chunkQueue();

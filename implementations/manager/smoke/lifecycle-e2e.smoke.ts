@@ -11,6 +11,8 @@
  *      and its just-minted footprint is rolled back (deprovisioned), not orphaned.
  *  3b. UNCERTAIN — a process that runs but never joins presence is reported {ok:false} "uncertain" and is
  *      KEPT (not deprovisioned — it may still be booting), distinct from both started and failed.
+ *  3c. FAIL BEFORE PRESENCE — a launch missing the launcher uid, or lying a different one while
+ *      consuming, dies with NO roster ghost (SPEC 13.1 fail-before-presence).
  *   4. SHUTDOWN teardown — Manager.stop() deprovisions every still-managed agent's footprint.
  *
  * Run: pnpm smoke:lifecycle-e2e   (needs nats-server + node on PATH)
@@ -27,6 +29,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
   openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable, DEV_OWNER, principalKey,
+  mintLifecycleUid, presenceBucket,
 } from "@cotal-ai/core";
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
@@ -59,7 +62,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-life-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk (loadSpaceAuth)
-for (const n of ["w1", "w2", "bad1", "idle1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "bypass1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
@@ -75,7 +78,12 @@ async function inspect<T>(fn: (jsm: Awaited<ReturnType<typeof jetstreamManager>>
 const consumerExists = (stream: string, name: string) =>
   inspect(async (jsm) => { try { await jsm.consumers.info(stream, name); return true; } catch { return false; } });
 const localPrincipal = (id: string) => principalKey(DEV_OWNER, id).key;
-const aclPresent = (id: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id))) !== undefined);
+// Every lifecycle-keyed broker resource (dm_/dlv_ durables, ACL row) carries the incarnation's uid
+// (SPEC §13.1). The Manager mints it internally per spawn and records it on the ManagedAgent — read it
+// there to predict the exact names. Capture it BEFORE a despawn/stop clears the agent from the map.
+const uidOf = (name: string): string =>
+  (mgr as unknown as { agents: Map<string, { lifecycleUid?: string }> }).agents.get(name)?.lifecycleUid ?? "";
+const aclPresent = (id: string, uid: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id), uid)) !== undefined);
 const credsFile = (name: string) => join(authDir(workspaceRoot), "creds", `${name}.creds`);
 /** Poll until `f()` matches `want`, up to `ms`. */
 async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promise<boolean> {
@@ -84,26 +92,55 @@ async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promi
   return (await f()) === want;
 }
 /** Does the whole local-principal footprint exist? (dm_local- + dlv_local- + acl + creds file) */
-async function footprint(id: string, name: string): Promise<{ dm: boolean; dlv: boolean; acl: boolean; creds: boolean }> {
+async function footprint(id: string, uid: string, name: string): Promise<{ dm: boolean; dlv: boolean; acl: boolean; creds: boolean }> {
   return {
-    dm: await consumerExists(DM, dmDurable(DEV_OWNER, id)),
-    dlv: await consumerExists(DLV, dlvDurable(DEV_OWNER, id)),
-    acl: await aclPresent(id),
+    dm: await consumerExists(DM, dmDurable(DEV_OWNER, id, uid)),
+    dlv: await consumerExists(DLV, dlvDurable(DEV_OWNER, id, uid)),
+    acl: await aclPresent(id, uid),
     creds: existsSync(credsFile(name)),
   };
 }
 
 // A connector that launches the real stub agent (joins presence) or a die-on-arrival process.
+// COTAL_LIFECYCLE_UID rides exactly as every stock connector forwards it (LaunchOpts → env).
 const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVERS), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+  ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 const stubCon: Connector = { kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 const dieCon: Connector = { kind: "connector", name: "e2e-die", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: ["-e", "process.exit(3)"], env: envFor(o) }) };
 // Runs but never connects/joins presence — exercises the UNCERTAIN outcome (no exit, no mesh join).
 const idleCon: Connector = { kind: "connector", name: "e2e-idle", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: ["-e", "setInterval(()=>{}, 1e9)"], env: envFor(o) }) };
+// The BROKEN-LAUNCHER shapes (residual #6, fail-before-presence): one DROPS the launcher uid off
+// the env (the pre-D15 connector shape), one LIES a different uid while consuming (the stub then
+// tries to bind lifecycle-keyed durables the credential/provisioner never named).
+const noUidCon: Connector = { kind: "connector", name: "e2e-nouid", requires: ["node"], buildLaunch: (o): LaunchSpec => {
+  const env = envFor(o);
+  delete env.COTAL_LIFECYCLE_UID;
+  return { command: "node", args: [STUB], env };
+} };
+const wrongUidCon: Connector = { kind: "connector", name: "e2e-wronguid", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
+  command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_E2E_CONSUME: "1" },
+}) };
+// The REGISTER-ONLY wrong-uid shape (consume:false): the broker proof is not a consumer bind but
+// the fail-before-presence dm_ durable proof, so a lied uid must still die with no roster ghost.
+const wrongUidRegCon: Connector = { kind: "connector", name: "e2e-wronguid-reg", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
+  command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid() },
+}) };
+// The AUTHORITY-BYPASS shape (panel #6 authority boundary): a child holding a valid agent
+// credential claims kind:"endpoint" (client metadata) to SKIP the library register-only dm_ proof,
+// register-only + a lied uid. The manager readiness LIFECYCLE FENCE (presence uid == the minted
+// uid) must still reject it — client-authored kind is not the authority boundary.
+const bypassKindCon: Connector = { kind: "connector", name: "e2e-bypass-kind", requires: ["node"], buildLaunch: (o): LaunchSpec => ({
+  command: "node", args: [STUB], env: { ...envFor(o), COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_E2E_KIND: "endpoint" },
+}) };
 registry.register(stubCon);
 registry.register(dieCon);
 registry.register(idleCon);
+registry.register(noUidCon);
+registry.register(wrongUidCon);
+registry.register(wrongUidRegCon);
+registry.register(bypassKindCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 
@@ -130,7 +167,8 @@ try {
   const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot });
   check("startAgent reports started (agent joined the mesh)", r1.ok === true, r1);
   const id1 = (r1.data as { id?: string } | undefined)?.id ?? "";
-  const fp1 = await footprint(id1, "w1");
+  const uid1 = uidOf("w1"); // capture the manager-minted uid while w1 is still managed (despawn clears it)
+  const fp1 = await footprint(id1, uid1, "w1");
   check("footprint exists after start — dm_ durable", fp1.dm, fp1);
   check("footprint exists after start — dlv_ durable", fp1.dlv, fp1);
   check("footprint exists after start — read-ACL row", fp1.acl, fp1);
@@ -140,9 +178,9 @@ try {
   console.log("2. despawn → footprint deprovisioned:");
   const callerId = (mgr as unknown as { ep: { ref: () => { id: string } } }).ep.ref().id;
   (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, admin: boolean) => unknown }).opStop({ name: "w1", graceful: false }, callerId, true);
-  check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1)), false), await footprint(id1, "w1"));
-  check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1)), false));
-  check("read-ACL row gone after despawn", await until(() => aclPresent(id1), false));
+  check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1, uid1)), false), await footprint(id1, uid1, "w1"));
+  check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)), false));
+  check("read-ACL row gone after despawn", await until(() => aclPresent(id1, uid1), false));
   check("creds file gone after despawn", await until(async () => existsSync(credsFile("w1")), false));
 
   // 3 — FAILED launch: process exits on arrival → {ok:false} + footprint rolled back.
@@ -163,18 +201,56 @@ try {
   check("startAgent reports {ok:false}", r3b.ok === false, r3b);
   check("failure names it 'uncertain'", /uncertain/i.test((r3b as { error?: string }).error ?? ""), (r3b as { error?: string }).error);
   const idleId = (mgr as unknown as { agents: Map<string, { id: string; agent: string }> }).agents.get("idle1")?.id ?? "";
-  check("uncertain agent is KEPT (still managed, not despawned)", idleId !== "" && (await footprint(idleId, "idle1")).creds, [...(mgr as unknown as { agents: Map<string, unknown> }).agents.keys()]);
-  check("uncertain agent NOT deprovisioned (footprint intact)", (await footprint(idleId, "idle1")).dm, await footprint(idleId, "idle1"));
+  const uidIdle = uidOf("idle1");
+  check("uncertain agent is KEPT (still managed, not despawned)", idleId !== "" && (await footprint(idleId, uidIdle, "idle1")).creds, [...(mgr as unknown as { agents: Map<string, unknown> }).agents.keys()]);
+  check("uncertain agent NOT deprovisioned (footprint intact)", (await footprint(idleId, uidIdle, "idle1")).dm, await footprint(idleId, uidIdle, "idle1"));
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000; // restore for w2 below
+
+  // 3c — FAIL BEFORE PRESENCE (SPEC 13.1, residual #6): an authed launch whose connector DROPS
+  // the launcher uid (a broken launcher, the pre-cut shape) or LIES a different one while
+  // consuming (the broker denies the lifecycle-keyed durable bind) must die with NO presence
+  // ghost — the roster never advertises an agent that could not prove its lifecycle. Assert by
+  // presence-key set difference: no key appears during either failed launch.
+  console.log("3c. missing/wrong launcher uid → fail BEFORE presence (no roster ghost):");
+  {
+    // Enumerate the presence bucket's keys via its backing stream's per-subject counts (no KV
+    // client needed): every present key is a `$KV.<bucket>.<key>` subject with messages.
+    const presenceKeys = (): Promise<string[]> =>
+      inspect(async (jsm) => {
+        const b = presenceBucket(space);
+        const info = await jsm.streams.info(`KV_${b}`, { subjects_filter: `$KV.${b}.>` });
+        return Object.keys(info.state.subjects ?? {});
+      });
+    const before = new Set(await presenceKeys());
+    const rNo = await mgr.startAgent({ name: "nouid1", agent: "e2e-nouid", cwd: repoRoot });
+    check("a launch whose connector DROPS the launcher uid never reports started", rNo.ok === false, rNo);
+    const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot });
+    check("a consuming launch that LIES a different uid never reports started (bind denied)", rWrong.ok === false, rWrong);
+    const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot });
+    check("a REGISTER-ONLY (consume:false) launch that lies a uid never reports started (dm_ proof denied)", rWrongReg.ok === false, rWrongReg);
+    const added = (await presenceKeys()).filter((k) => !before.has(k));
+    check("NONE of the fail-before-presence launches left a presence ghost (dropped/lying uid, consume or register-only)", added.length === 0, added);
+
+    // The AUTHORITY BOUNDARY (panel #6): a child claims kind:endpoint to SKIP the library dm_
+    // proof, so it DOES publish presence with its lied uid (a ghost record exists). The manager
+    // readiness LIFECYCLE FENCE rejects it anyway - client-authored kind is not the authority
+    // boundary; the manager owns the expected uid, so the ghost never reports STARTED.
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000;
+    const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot });
+    check("a kind:endpoint child with a lied uid never reports STARTED (manager readiness lifecycle fence, not client kind)",
+      rBypass.ok === false && /uncertain/i.test((rBypass as { error?: string }).error ?? ""), rBypass);
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000;
+  }
 
   // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
   console.log("4. manager stop() → still-managed footprint torn down:");
   const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot });
   check("second agent started", r4.ok === true, r4);
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
-  check("w2 footprint exists before stop", (await footprint(id2, "w2")).dm, await footprint(id2, "w2"));
+  const uid2 = uidOf("w2"); // capture before stop() clears the managed set
+  check("w2 footprint exists before stop", (await footprint(id2, uid2, "w2")).dm, await footprint(id2, uid2, "w2"));
   await mgr.stop(); // awaits teardownManagedAgents → deprovision
-  const fp2 = await footprint(id2, "w2");
+  const fp2 = await footprint(id2, uid2, "w2");
   check("w2 dm_ durable gone after stop()", !fp2.dm, fp2);
   check("w2 dlv_ durable gone after stop()", !fp2.dlv, fp2);
   check("w2 read-ACL row gone after stop()", !fp2.acl, fp2);

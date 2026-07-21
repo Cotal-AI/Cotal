@@ -267,7 +267,7 @@ export function App({
   return (
     <Box flexDirection="column" width={size.cols} height={size.rows}>
       <Tabs tabs={tabs} active={activeChannel} counts={counts} width={size.cols} />
-      <Tiles counts={mesh.signals.counts} oldestWaitingTs={mesh.signals.oldestWaitingTs} width={size.cols} />
+      <Tiles counts={mesh.signals.counts} stalestLiveTs={mesh.signals.stalestLiveTs} width={size.cols} />
       {mode === "dm" ? (
         <Dm
           dms={mesh.signals.dms}

@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
@@ -50,6 +50,7 @@ const cfg: AgentConfig = {
   kind: "agent",
   tls: false,
   id: "otto_agent",
+  lifecycleUid: mintLifecycleUid(),
 };
 
 const agent = new MeshAgent(cfg);
@@ -60,7 +61,7 @@ agent.on("incoming", (i: InboxItem) => incoming.push(i));
 agent.on("mention-wake", (i: InboxItem) => mentionWake.push(i));
 
 // A plain endpoint that publishes ambient/mentions/DMs at the agent.
-const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["open-ch", "quiet-ch"] });
+const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: ["open-ch", "quiet-ch"], lifecycleUid: mintLifecycleUid() });
 pub.on("error", () => {});
 
 try {

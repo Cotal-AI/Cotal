@@ -167,14 +167,27 @@ export function dmDurableConfig(
   space: string,
   owner: string,
   actor: string,
-  opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
+  lifecycleUid: string,
+  opts: { ackWaitMs?: number; inactiveThresholdMs?: number; activationFrontier?: number } = {},
 ): Partial<ConsumerConfig> {
+  // The DM SUBJECTS (`inst.>`) keep the alias grammar (SPEC §13.1 cross-plane scoping), so the
+  // lifecycle scoping lives in the consumer: the NAME carries the uid (exact-name deprovision) and
+  // delivery starts at the ACTIVATION FRONTIER — the DM stream sequence captured when this lifecycle
+  // was provisioned — so a same-alias successor inherits none of the predecessor's pending DMs
+  // (SPEC :467). `activationFrontier` = that captured `last_seq`; delivery begins at frontier+1.
+  // Callers that provision a genuinely fresh lifecycle pass the sequence they captured; 0 = from the
+  // stream start (an explicit choice, e.g. a stream created after the lifecycle in tests).
+  const frontier = opts.activationFrontier ?? 0;
+  if (!Number.isInteger(frontier) || frontier < 0)
+    throw new Error(`dmDurableConfig activationFrontier must be a non-negative integer, got ${String(frontier)}`);
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dmDurable(owner, actor),
+    durable_name: dmDurable(owner, actor, lifecycleUid),
     filter_subject: unicastRecvFilter(space, owner, actor), // inst.<owner>.<actor>.> — every DM to me
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
-    deliver_policy: DeliverPolicy.All,
+    ...(frontier > 0
+      ? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: frontier + 1 }
+      : { deliver_policy: DeliverPolicy.All }),
   };
   if (opts.inactiveThresholdMs) cfg.inactive_threshold = nanos(opts.inactiveThresholdMs);
   return cfg;
@@ -230,11 +243,14 @@ export function dlvDurableConfig(
   space: string,
   owner: string,
   actor: string,
+  lifecycleUid: string,
   opts: { ackWaitMs?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   const cfg: Partial<ConsumerConfig> = {
-    durable_name: dlvDurable(owner, actor),
-    filter_subject: dlvSubject(space, owner, actor),
+    durable_name: dlvDurable(owner, actor, lifecycleUid),
+    // dlv subjects are lifecycle-scoped (SPEC §13.1/Appendix): the reader hands off to THIS
+    // lifecycle's subject, so the filter itself confines the successor — no frontier needed here.
+    filter_subject: dlvSubject(space, owner, actor, lifecycleUid),
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
@@ -361,14 +377,17 @@ export async function clearChannel(opts: {
   }
 }
 
-/** Delete a departed dev/static agent's provisioning footprint (#159 Part B) — the teardown counterpart
- *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS agent actor under the
- *  reserved local owner: its two bind-only durables (`dm_local-<actor>`, `dlv_local-<actor>`) and its
- *  read-ACL row. Idempotent — a missing consumer / absent ACL row is a no-op (the agent may have exited
- *  before a durable was created, or a re-run).
+/** Delete a departed agent LIFECYCLE's provisioning footprint (#159 Part B) — the teardown counterpart
+ *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS incarnation: its two
+ *  bind-only durables (`dm_<o>-<a>-<uid>`, `dlv_<o>-<a>-<uid>`) and its lifecycle-keyed read-ACL row.
+ *  Idempotent — a missing consumer / absent ACL row is a no-op (the agent may have exited before a
+ *  durable was created, or a re-run). LIFECYCLE-EXACT by construction (SPEC §13.1): every name this
+ *  deletes embeds the target uid, so a stale/replayed teardown for a retired lifecycle names only
+ *  retired resources — it structurally cannot touch a same-alias successor, and the deprovisioner
+ *  cred's exact-name grants make a wrong-uid delete broker-DENIED, not just a no-op.
  *
  *  Does NOT touch the role-SHARED `svc_<role>` TASK durable (deleting it would break the role's other
- *  agents — it lives until space teardown), nor the ephemeral `chathist_local-<actor>` history consumers (they
+ *  agents — it lives until space teardown), nor the ephemeral `chathist_…-<uid>` history consumers (they
  *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
  *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
  *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
@@ -376,6 +395,7 @@ export async function deprovisionAgent(opts: {
   servers: string;
   space: string;
   targetId: string;
+  lifecycleUid: string;
   creds?: string;
 }): Promise<void> {
   const nc = await connect({
@@ -390,13 +410,13 @@ export async function deprovisionAgent(opts: {
   });
   try {
     // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
-    // local owner — the SAME resolution the deprovisioner cred's permission pin used, so the delete
-    // names and the grant can't diverge.
-    const t = deprovisionTargetPrincipal(opts.targetId);
+    // local owner, PLUS the exact lifecycle uid being torn down — the SAME resolution the
+    // deprovisioner cred's permission pin used, so the delete names and the grant can't diverge.
+    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid });
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor));
-    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key);
+    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
+    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
+    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key, t.lifecycleUid);
   } finally {
     await nc.drain();
   }

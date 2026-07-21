@@ -45,7 +45,9 @@ Mix connector types freely within a roster (`agent: claude` / `agent: opencode` 
 - **An external broker**, reachable from the container. `cotal up` binds loopback by default; a
   broker containers dial out to needs `cotal up --host 0.0.0.0` (and auth, the default). Point
   `COTAL_SERVERS` at it: `nats://host.docker.internal:4222` for a broker on your machine, or
-  `tls://broker.host:4222` for a hosted one. The deploy tree never runs the broker.
+  `tls://broker.host:4222` for a hosted one. The deploy tree never runs the broker. The broker
+  must be nats-server 2.12 or newer (the v0.4 control surface floor); agents fail loud at connect
+  against an older one.
 - **The account signer:** on the host beside your broker, `cotal mint --signer` writes
   `signer.json`: account signing material with no operator key.
 - **A model credential per connector type** (see below).
@@ -78,8 +80,10 @@ Two independent credentials, both set from **outside** the container:
 **Broker auth (the NATS mesh).** Mount the stripped `signer.json` read-only at
 `/workspace/.cotal/auth/auth.json`. Inside the container, each agent's own scoped creds are minted
 from it into a tmpfs (`/workspace/.cotal/auth/creds`, RAM only). The operator root-of-trust never
-enters a container; the worst a leaked signer allows is minting users within that one NATS
-account, which the account boundary already contains. See [Identity and auth](identity-and-auth.md).
+enters a container, so a leaked signer cannot escalate beyond its one NATS account. Inside that
+account, though, it is full compromise: it can mint `admin` (DM read) and destructive profiles, not
+just ordinary users. The account boundary contains cross-tenant escalation, not damage within the
+tenant. See [Identity and auth](identity-and-auth.md).
 
 **Model auth (the LLM provider).** Set each connector's credential as an env var; the supervisor
 forwards the named vars and each CLI reads only the ones it understands:

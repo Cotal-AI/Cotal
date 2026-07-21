@@ -25,9 +25,11 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
+  DEV_OWNER,
 } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
@@ -72,9 +74,13 @@ try {
 
   const ottoId = newIdentity();
   const pubbyId = newIdentity();
+  // Presence/roster entries key by the PRINCIPAL dot-form (`local.<id>` = card.id under the owner+actor grammar).
+  const ottoPrincipal = `${DEV_OWNER}.${ottoId.id}`;
+  const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
+  const pubbyUid = mintLifecycleUid();
   const chACL = { subscribe: channels, allowSubscribe: channels, allowPublish: channels };
-  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist" });
-  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL });
+  const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist", lifecycleUid: ottoUid });
+  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, lifecycleUid: pubbyUid });
 
   const cfg: AgentConfig = {
     space,
@@ -90,6 +96,7 @@ try {
     kind: "agent",
     tls: false,
     id: ottoId.id,
+    lifecycleUid: ottoUid,
   };
 
   // ---- boot seed from config (before connecting) ----
@@ -102,7 +109,7 @@ try {
   agent.on("incoming", (i: InboxItem) => incoming.push(i));
   agent.on("mention-wake", (i: InboxItem) => mentionWake.push(i));
 
-  const pub = new CotalEndpoint({ space, servers, creds: pubbyCreds, card: { name: "Pubby", kind: "agent", id: pubbyId.id }, channels });
+  const pub = new CotalEndpoint({ space, servers, creds: pubbyCreds, card: { name: "Pubby", kind: "agent", id: pubbyId.id }, channels, lifecycleUid: pubbyUid });
   pub.on("error", () => {});
 
   await pub.start();
@@ -112,7 +119,7 @@ try {
   await sleep(300);
 
   // ---- file-default modes are visible in presence at BOOT over the auth wire, before any toggle ----
-  const bootSeen = pub.getRoster().find((p) => p.card.id === ottoId.id);
+  const bootSeen = pub.getRoster().find((p) => p.card.id === ottoPrincipal);
   check("file-default channelModes visible in presence at boot under auth (no toggle yet)",
     bootSeen?.channelModes?.["quiet-ch"] === "quiet" && bootSeen?.channelModes?.["muted-ch"] === "muted");
 
@@ -156,13 +163,13 @@ try {
   await agent.setAttention("dnd");
   await agent.setChannelMode("normal-ch", "muted"); // runtime override on top of file defaults
   await sleep(500);
-  const seen = pub.getRoster().find((p) => p.card.id === ottoId.id);
+  const seen = pub.getRoster().find((p) => p.card.id === ottoPrincipal);
   check("peer reads Otto's global attention from presence (auth wire)", seen?.attention === "dnd");
   check("peer reads Otto's channelModes from presence (auth wire)",
     seen?.channelModes?.["normal-ch"] === "muted" && seen?.channelModes?.["quiet-ch"] === "quiet" && seen?.channelModes?.["muted-ch"] === "muted");
   await agent.setChannelMode("normal-ch", "normal");
   await sleep(400);
-  check("clearing a mode removes the key for the peer", pub.getRoster().find((p) => p.card.id === ottoId.id)?.channelModes?.["normal-ch"] === undefined);
+  check("clearing a mode removes the key for the peer", pub.getRoster().find((p) => p.card.id === ottoPrincipal)?.channelModes?.["normal-ch"] === undefined);
 
   // ---- reset on restart ----
   const fresh = new MeshAgent(cfg);

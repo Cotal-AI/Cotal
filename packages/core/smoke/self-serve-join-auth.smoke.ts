@@ -28,6 +28,7 @@ import {
   createSpaceAuth,
   mintCreds,
   provisionAgent,
+  mintLifecycleUid,
   serverConfig,
   newIdentity,
   setupSpaceStreams,
@@ -126,9 +127,11 @@ try {
   // Agent A: boots subscribed to ["general","ops"] (durable pre-created over both), read ACL also
   // covers review.> (so it can self-serve runtime joins under that subtree) but NOT "secret".
   const aId = newIdentity();
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1) — provision + creds + endpoint + members
   const aCreds = await provisionAgent(prov, auth, aId, {
     subscribe: ["general", "ops"],
     allowSubscribe: ["general", "ops", "review.>"],
+    lifecycleUid: uidA,
   });
   const a = new CotalEndpoint({
     space,
@@ -136,6 +139,7 @@ try {
     creds: aCreds,
     card: { id: aId.id, name: "alice", kind: "agent" },
     channels: ["general", "ops"],
+    lifecycleUid: uidA,
     heartbeatMs: 500,
     ttlMs: 2000,
   });
@@ -230,6 +234,8 @@ try {
   // a finite generation (fail-closed stale-leave guard), and listMemberships serves the caller's own
   // current memberships so a connecting agent can hydrate its boot generations.
   const acls: Record<string, string[]> = { [pkey(aId.id)]: ["general", "ops", "review.>"] };
+  // Membership rows are lifecycle-keyed (SPEC §13.1): the mediated join/leave carry the caller's uid.
+  const uids: Record<string, string> = { [pkey(aId.id)]: uidA };
   // Phase 2 Plane-3 host = a scoped `delivery` cred (`dlv`), NOT the deleted allow-all manager. The
   // supervisor cred (`sup`) serves the CONTROL_SELF_SERVICE tier below (its only job — no chat publish,
   // no members read), but the durableJoin/Leave/ownerMemberships ops the handler mediates run on the
@@ -247,14 +253,14 @@ try {
     const acl = acls[req.from.id];
     const args = req.args as { channel?: unknown; generation?: unknown };
     const ch = typeof args?.channel === "string" ? args.channel : "";
-    if (req.op === "listMemberships") return { ok: true, data: { memberships: await dlv.ownerMemberships(req.from.id) } };
+    if (req.op === "listMemberships") return { ok: true, data: { memberships: await dlv.ownerMemberships(req.from.id, uids[req.from.id]) } };
     if (req.op === "durableJoin") {
       if (!ch || !acl || !channelInAllow(acl, ch)) return { ok: false, error: `not in ACL: ${ch}` };
-      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch) };
+      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, uids[req.from.id]) };
     }
     if (req.op === "durableLeave") {
       if (typeof args?.generation !== "number") return { ok: false, error: "durableLeave: a finite generation is required (fail-closed)" };
-      await dlv.durableLeaveFor(req.from.id, ch, args.generation);
+      await dlv.durableLeaveFor(req.from.id, ch, uids[req.from.id], args.generation);
       return { ok: true, data: { channel: ch } };
     }
     return { ok: false, error: `unknown op: ${req.op}` };
@@ -312,7 +318,7 @@ try {
   const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, seedId, "delivery"))), inboxPrefix: `_INBOX_${seedId.id}`, maxReconnectAttempts: 0 });
   kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
-  const opsRec = (await readMember(kv, "ops", pkey(aId.id)))!.record;
+  const opsRec = (await readMember(kv, "ops", pkey(aId.id), uidA))!.record;
   await commitMember(kv, { ...opsRec, activated: false });
   const hidden = await dlv.channelMembers("ops");
   check("an activation-pending (activated:false) member is HIDDEN from channelMembers", !hidden.some((m) => m.id === pkey(aId.id)), hidden);
@@ -320,7 +326,7 @@ try {
   const opsLeave = await a.leaveChannel("ops");
   check("leaving an UN-hydrated, activation-pending boot durable channel succeeds (generation re-resolved on demand)", opsLeave.left === true, opsLeave);
   await wait(150);
-  const opsRecAfter = await readMember(kv, "ops", pkey(aId.id));
+  const opsRecAfter = await readMember(kv, "ops", pkey(aId.id), uidA);
   check("leave TOMBSTONES the activation-pending record (discovered despite activated:false — BLOCKER-1 leave-discovery)", opsRecAfter?.record.leaveCursor !== undefined, opsRecAfter?.record);
   await kvNc.close();
   got.length = 0;
@@ -333,12 +339,14 @@ try {
   //    mirror (plane3Channels). Leaving "ops" then tombstones the §7 boundary from that mirror — and if
   //    the mirror entry were missing, leaveChannel re-resolves the generation on demand (fail-closed).
   const bId = newIdentity();
+  const uidB = mintLifecycleUid(); // bob's one lifecycle uid (SPEC §13.1)
   acls[pkey(bId.id)] = ["ops"];
-  const bCreds = await provisionAgent(prov, auth, bId, { subscribe: ["ops"], allowSubscribe: ["ops"] });
+  uids[pkey(bId.id)] = uidB;
+  const bCreds = await provisionAgent(prov, auth, bId, { subscribe: ["ops"], allowSubscribe: ["ops"], lifecycleUid: uidB });
   const b = new CotalEndpoint({
     space, servers: SERVERS, creds: bCreds,
     card: { id: bId.id, name: "bob", kind: "agent" },
-    channels: ["ops"], heartbeatMs: 500, ttlMs: 2000,
+    channels: ["ops"], lifecycleUid: uidB, heartbeatMs: 500, ttlMs: 2000,
   });
   const gotB: string[] = [];
   b.on("error", () => {});

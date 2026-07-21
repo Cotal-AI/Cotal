@@ -40,6 +40,7 @@ import {
   assertDerivedOwnerToken,
   assertValidChannel,
   assertValidOwnerToken,
+  mintLifecycleUid,
   mkSecretDir,
   patternInAllow,
   writeSecretFile,
@@ -78,6 +79,12 @@ export interface ActorRow {
    *  defining shape), REFUSED in an interactive row (readRow fails closed on either violation).
    *  The plaintext secret is returned ONCE at grant time and never persisted. */
   tokenHash?: string;
+  /** The incarnation's lifecycle UID (SPEC §13.1): the value the auth callout mints this agent's
+   *  lifecycle-keyed grants from (`dm_…-<uid>`/`dlv_…-<uid>`/`chathist_…-<uid>`), rotated with the
+   *  row on each (re)spawn — a same-name successor's row carries a fresh uid, so a stale bearer's
+   *  next mint can never name the successor's broker resources. Absent on legacy/interactive rows:
+   *  the callout refuses to mint agent creds without one (the v0.4 hard cut). */
+  lifecycleUid?: string;
   /** ISO timestamp of the grant (audit). */
   grantedAt: string;
 }
@@ -251,7 +258,12 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
   const managedRefusal = () =>
     new Error(`actor "${row.actor}" is a managed agent - its grant is owned by the spawn lifecycle (respawn rewrites it, despawn revokes it); pick another actor name for an interactive grant`);
   if (findIn(dir, "managed-agent", row.owner, row.actor)) throw managedRefusal();
-  const full: ActorRow = { ...row, grantedAt: new Date().toISOString() };
+  // Every row carries a lifecycle UID (SPEC 13.1): the callout mints the agent's lifecycle-keyed
+  // grant names from it and refuses rows without one. An interactive (operator-authored) grant IS
+  // its lifecycle, so the writer mints one here when the caller did not; a re-grant (upsert)
+  // rotates it like the managed space does — an interactive session pre-creates no durables, so
+  // rotation orphans nothing.
+  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid ?? mintLifecycleUid(), grantedAt: new Date().toISOString() };
   writeRow(dir, "interactive", full);
   // Post-write compensation for the check-then-write race (an operator grant racing a spawn for
   // the same name): if the OTHER space's row appeared meanwhile, remove the just-written row and
@@ -376,7 +388,9 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
   const shadowRefusal = () =>
     new Error(`actor "${row.actor}" already has an interactive grant - a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
   if (findIn(dir, "interactive", row.owner, row.actor)) throw shadowRefusal();
-  const full: ActorRow = { ...row, grantedAt: new Date().toISOString() };
+  // Same rule as grantActor: every row carries a lifecycle UID; the spawn path passes the one it
+  // provisioned durables under, and a direct caller without one gets a fresh mint (never absent).
+  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid ?? mintLifecycleUid(), grantedAt: new Date().toISOString() };
   writeRow(dir, "managed-agent", full);
   // Symmetric post-write compensation (see grantActor) — at most one surviving row per principal.
   if (findIn(dir, "interactive", row.owner, row.actor)) {
@@ -417,7 +431,13 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
         `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`)`,
       );
     }
-    return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}) };
+    // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the
+    // row's current uid, so the connect boundary's exact-equality gate has a claim to check. A
+    // row without one is a pre-cut grant and cannot mint (re-grant rotates one in); minting a
+    // claimless bearer here would only defer the same refusal to every connect it attempts.
+    if (!row.lifecycleUid)
+      throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - re-grant it (bearers are lifecycle-bound from v0.4)`);
+    return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}), lifecycleUid: row.lifecycleUid };
   };
 }
 
@@ -433,6 +453,19 @@ export function ledgerAuthorizeConnect(dir: string): (t: ValidatedUserToken) => 
     for (const s of t.act.scope ?? [])
       if (!granted.has(s))
         throw new Error(`bearer scope "${s}" exceeds the actor's current grant - re-login to mint a fresh bearer`);
+    // LIFECYCLE EQUALITY (SPEC 13.1, EVERY bearer - no view carve-out): the bearer must name the
+    // CURRENT row's lifecycle uid EXACTLY. Row existence + scope alone would let a predecessor
+    // incarnation's still-unexpired bearer connect after a same-alias respawn/re-grant and be
+    // minted the SUCCESSOR's authority - for a non-view bearer that is the agent's exact
+    // lifecycle-keyed broker grants (the resolver reads the current row); for a VIEW bearer it is
+    // worse: the full ELEVATED profile (admin/purger/deployer), which never touches the resolver.
+    // SPEC "every minted connection also carries its lifecycle UID" + "re-authorized against the
+    // live grant ledger at every connect" covers views too. No missing-claim fallback: a
+    // claimless bearer of either shape is a pre-cut or forged shape and is refused.
+    if (t.act.lifecycleUid === undefined)
+      throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
+    if (t.act.lifecycleUid !== row.lifecycleUid)
+      throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - the alias was respawned; re-exchange for a fresh bearer`);
   };
 }
 
@@ -444,7 +477,28 @@ export function ledgerAclResolver(dir: string): AclResolver {
   return (t) => {
     const row = findActorUnified(dir, t.owner, t.act.actor);
     if (!row) throw new Error(`actor "${t.act.actor}" has no ledger row - no channel ACL to mint`);
-    return { allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish, ...(row.role ? { role: row.role } : {}) };
+    // The row's recorded lifecycle UID is what the callout mints the agent's lifecycle-keyed
+    // dm/dlv/chathist grants from (SPEC 13.1) — a row without one cannot mint an agent credential
+    // (core's permissionsFor("agent") refuses), the v0.4 hard cut for pre-cut rows: re-grant.
+    if (!row.lifecycleUid)
+      throw new Error(`actor "${t.act.actor}" has no lifecycleUid on its ledger row - re-grant (respawn) it; agent grants are lifecycle-keyed (SPEC 13.1)`);
+    // Mint from the VALIDATED BEARER CLAIM, never an independent current-row re-resolve: resolving
+    // the row's uid regardless of the bearer is exactly the stale-bearer crossover (a predecessor's
+    // bearer minted the successor's authority). ledgerAuthorizeConnect already enforced equality at
+    // the connect boundary; this re-assert keeps the resolver safe for any other composition.
+    if (t.act.lifecycleUid === undefined)
+      throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
+    if (t.act.lifecycleUid !== row.lifecycleUid)
+      throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - re-exchange for a fresh bearer`);
+    return {
+      allowSubscribe: row.allowSubscribe,
+      allowPublish: row.allowPublish,
+      ...(row.role ? { role: row.role } : {}),
+      lifecycleUid: t.act.lifecycleUid,
+      // The CURRENT grant's capabilities, so the mint re-contains the bearer against the row
+      // as of THIS read (the callout's fresh-row re-check), not only as of the connect gate.
+      scope: row.scope,
+    };
   };
 }
 
@@ -499,6 +553,7 @@ export function ledgerAuthorizeAgentExchange(
   allowPublish: string[];
   role?: string;
   parent?: string;
+  lifecycleUid?: string;
 } {
   const deny = () =>
     new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
@@ -525,5 +580,6 @@ export function ledgerAuthorizeAgentExchange(
     allowPublish: row.allowPublish,
     ...(row.role ? { role: row.role } : {}),
     ...(row.parent ? { parent: row.parent } : {}),
+    ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),
   };
 }

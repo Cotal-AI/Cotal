@@ -1,6 +1,6 @@
 /** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle. */
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type AddressInfo } from "node:net";
 import { cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -646,6 +646,60 @@ async function preservationCommitCrashScenario(): Promise<void> {
   }
 }
 
+/** The coordinator dies in the window between the manager stopping its children and the cut-committed
+ *  journal write, THEN the manager dies. The commit-intent marker lets recovery finish the cut forward
+ *  instead of deleting it and losing the retained inventory. A crash one step EARLIER (before the
+ *  marker, genuinely pre-commit) must still abort — proving the recovery is surgical, not eager. */
+async function preservationStopCrashRecoveryScenario(): Promise<void> {
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } };
+  const bootAndCrash = async (suffix: string, hook: string): Promise<{ root: string; home: string; server: string; space: string; run: (...a: string[]) => SpawnSyncReturns<string>; journalPath: string }> => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-preserve-stop-${suffix}-root-`)));
+    const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-preserve-stop-${suffix}-home-`)));
+    const port = await freePort();
+    const server = `nats://127.0.0.1:${port}`;
+    const space = `backup_preserve_stop_${suffix}`;
+    const env = { ...process.env, COTAL_HOME: home };
+    const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+    const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0, `${suffix} up`);
+    const mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
+    const crashed = spawnSync(tsx, [cliPath, "down", "--preserve-state"],
+      { cwd: root, env: { ...env, [hook]: "1" }, encoding: "utf8", timeout: 240_000 });
+    assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-intent", `${suffix} parked at cut-intent`);
+    if (alive(mgrPid)) process.kill(mgrPid, "SIGKILL");
+    await waitUntil(() => !alive(mgrPid), `${suffix} manager dead`);
+    return { root, home, server, space, run, journalPath };
+  };
+
+  // Case A — the fix: crash AFTER the manager committed (children stopped). Recovery must NOT delete
+  // the journal; it finishes the cut forward to ready with the inventory intact.
+  const a = await bootAndCrash("commit", "COTAL_SMOKE_EXIT_AFTER_MANAGER_STOP_BEFORE_JOURNAL");
+  try {
+    const recovered = a.run("down", "--preserve-state");
+    assert.equal(recovered.status, 0, `stop-window cut recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
+    assert.equal(existsSync(a.journalPath), true, "the preserved cut journal survives recovery (not deleted)");
+    assert.equal((JSON.parse(readFileSync(a.journalPath, "utf8")) as { state: string }).state, "ready");
+  } finally {
+    a.run("down");
+    rmSync(a.root, { recursive: true, force: true });
+    rmSync(a.home, { recursive: true, force: true });
+  }
+
+  // Case B — surgical: crash BEFORE the commit-intent marker (genuinely pre-commit, nothing stopped).
+  // Recovery must still abort, not finish forward.
+  const b = await bootAndCrash("precommit", "COTAL_SMOKE_EXIT_AFTER_CUT_INTENT_BEFORE_COMMIT");
+  try {
+    const aborted = b.run("down", "--preserve-state");
+    assert.notEqual(aborted.status, 0, "a genuinely pre-commit crash still aborts, not finishes forward");
+    assert.match(aborted.stderr, /lost its manager before commit; the cut intent was aborted/);
+    assert.equal(existsSync(b.journalPath), false, "the pre-commit cut is abandoned (nothing was stopped)");
+  } finally {
+    b.run("down");
+    rmSync(b.root, { recursive: true, force: true });
+    rmSync(b.home, { recursive: true, force: true });
+  }
+}
+
 /** Command races against a pre-commit restore: a live claim refuses ordinary up, repeated restore,
  *  and explicit rollback; a provably stale claim is recoverable by the explicit clean command. */
 async function restoreClaimRaceScenario(): Promise<void> {
@@ -776,6 +830,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
 
 await missingPidfileListenerScenario();
 await preservationCommitCrashScenario();
+await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
 await backupRestoreCycleScenario();
 await scenario("open");

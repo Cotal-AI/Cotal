@@ -15,13 +15,17 @@ const digest = z.string().regex(SHA256, "must be a lowercase SHA-256 digest");
 const stringList = z.array(z.string().min(1).max(512)).max(256);
 const fileRef = z.strictObject({ kind: z.literal("file"), path, sha256: digest });
 
+// The original incarnation UID (`[a-z0-9]{26,32}`, mirrors core assertLifecycleToken). A resumed
+// agent MUST recover it: its dm/dlv durables are keyed by it, so a fresh mint would orphan them.
+const lifecycleUid = z.string().regex(/^[a-z0-9]{26,32}$/, "must be a lifecycle uid token");
 const identity = z.discriminatedUnion("mode", [
-  z.strictObject({ mode: z.literal("open"), id: token }),
-  z.strictObject({ mode: z.literal("static"), id: token, credential: fileRef }),
+  z.strictObject({ mode: z.literal("open"), id: token, lifecycleUid }),
+  z.strictObject({ mode: z.literal("static"), id: token, lifecycleUid, credential: fileRef }),
   z.strictObject({
     mode: z.literal("user"),
     owner: token,
     actor: token,
+    lifecycleUid,
     actorToken: fileRef,
     sentinelCredential: fileRef,
     health: z.strictObject({ kind: z.literal("file"), path }),

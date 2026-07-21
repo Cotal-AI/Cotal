@@ -21,6 +21,10 @@ import {
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n); } };
 
+// A literal in-grammar lifecycle uid ([a-z0-9]{26,32}) — dm/dlv/dinbox resources are lifecycle-keyed
+// (SPEC §13.1), so the durable-name / subject builders now carry it.
+const UID = "abcdefghij0123456789klmnop"; // 26 chars, all [a-z0-9]
+
 // ── build + parse round-trip (chat / inst / svc / ctl / dinbox) ──
 const cs = chatSubject("demo", "u_abc", "act1", "team.backend");
 c("chat build", cs === "cotal.demo.chat.u_abc.act1.team.backend");
@@ -32,13 +36,13 @@ const pi = parseSubject(is)!;
 c("inst sender=sender-side, rest=recipient", pi.sender === "u_s.sa" && pi.rest === "u_r.ra");
 c("svc parse sender", parseSubject(anycastSubject("demo", "worker", "u_o", "a"))!.sender === "u_o.a");
 c("ctl parse rest=service", parseSubject(controlServiceSubject("demo", "manager", "u_o", "a"))!.rest === "manager");
-c("dinbox parse principal", JSON.stringify(parseDinboxPrincipal(dinboxSubject("demo", "u_o", "a"))) === JSON.stringify({ owner: "u_o", actor: "a" }));
+c("dinbox parse principal", JSON.stringify(parseDinboxPrincipal(dinboxSubject("demo", "u_o", "a", UID))) === JSON.stringify({ owner: "u_o", actor: "a", lifecycleUid: UID }));
 
 // ── wildcards, filters, durable-name forms ──
 c("chat wildcard grant (owner+actor *)", chatSubject("demo", "*", "*", "review") === "cotal.demo.chat.*.*.review");
 c("unicast recv filter", unicastRecvFilter("demo", "u_o", "a") === "cotal.demo.inst.u_o.a.>");
 c("anycast serve filter", anycastServeFilter("demo", "worker") === "cotal.demo.svc.worker.>");
-c("dm durable dash-form (JS-name-safe)", dmDurable("u_o", "a") === "dm_u_o-a");
+c("dm durable dash-form (JS-name-safe, lifecycle-keyed)", dmDurable("u_o", "a", UID) === `dm_u_o-a-${UID}`);
 c("principalKey two forms", principalKey("u_o", "a").key === "u_o.a" && principalKey("u_o", "a").name === "u_o-a");
 c("parsePrincipalKey inverse", JSON.stringify(parsePrincipalKey("u_o.a")) === JSON.stringify({ owner: "u_o", actor: "a" }));
 

@@ -234,8 +234,9 @@ function isGenuineSpace(root: string): boolean {
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
- *  3. A genuine local project (`cwd` walks up to a real `.cotal/`) — local wins, like `git config`.
- *  4. The registry: 0 ⇒ error; 1 ⇒ use it; N ⇒ `current` if set, else error naming each + its root.
+ *  3. The live `current` selected by `cotal use` — from any directory.
+ *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
+ *  5. The registry: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming each + its root.
  * No silent fallback — an unresolved target throws one human sentence.
  */
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
@@ -259,19 +260,24 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return localTarget(findCotalRoot(cwd), flags.server, "flag-server");
   }
 
+  const meshes = loadMeshes();
+  const current = getCurrent();
+  const cur = current ? meshes.find((m) => m.space === current) : undefined;
+  if (cur) return targetFromEntry(cur, cur.server, "current");
+
   const root = findCotalRoot(cwd);
   if (isGenuineSpace(root)) {
-    // Local project wins by root — but if its mesh is in the registry, use the RECORDED server +
+    // For a local project, if its mesh is in the registry, use the RECORDED server +
     // mode, not DEFAULT_SERVER: a project started with `--server …:4333` must spawn against :4333,
     // and a recorded OPEN mesh must not mint creds off stale `.cotal/auth` left on disk. Fall back
     // to the local default only when nothing is recorded for this root.
-    const recorded = loadMeshes().find((m) => resolve(m.root) === resolve(root));
+    const recorded = meshes.find((m) => resolve(m.root) === resolve(root));
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded");
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the
     // exact silent-wrong-mesh outcome this feature exists to prevent).
-    const onDefault = loadMeshes().find(
+    const onDefault = meshes.find(
       (m) => m.server === DEFAULT_SERVER && resolve(m.root) !== resolve(root),
     );
     if (onDefault)
@@ -283,13 +289,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return localTarget(root, DEFAULT_SERVER, "local-space");
   }
 
-  const meshes = loadMeshes();
   if (meshes.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
   if (meshes.length === 1) return targetFromEntry(meshes[0], meshes[0].server, "registry");
-
-  const current = getCurrent();
-  const cur = current ? findMesh(current) : undefined;
-  if (cur) return targetFromEntry(cur, cur.server, "current");
 
   const names = meshes.map((m) => `${m.space} (${m.root})`);
   throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {

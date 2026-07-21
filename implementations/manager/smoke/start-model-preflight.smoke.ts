@@ -87,7 +87,7 @@ let lastSpec: LaunchSpec | undefined;
   kind: "fake",
   spawn: (name, spec) => { lastSpec = spec; return fakeHandle(name); },
 };
-const agentsMap = () => (mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents;
+const agentsMap = () => (mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents;
 // Fake `ep` for the #159 B1 readiness race: getRoster() reports every currently-managed agent as LIVE, so
 // a just-spawned agent (already in `agents` when awaitReadiness runs) resolves "started" via the subscribe-
 // then-check — no timer wait. The "presence" event is only a wake, so on/off are no-ops. A custom `roster`
@@ -96,7 +96,7 @@ const fakeEp = (extra: Record<string, unknown> = {}, roster?: () => Array<{ card
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
-  getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" }))),
+  getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid }))),
   ...extra,
 });
 (mgr as unknown as { ep: unknown }).ep = fakeEp();

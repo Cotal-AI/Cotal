@@ -74,7 +74,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
-  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle" })),
+  getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 
 const recCon: Connector = { kind: "connector", name: "smoke-rec2", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) };

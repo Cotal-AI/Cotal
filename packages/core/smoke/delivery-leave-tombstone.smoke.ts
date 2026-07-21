@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -46,12 +46,13 @@ try {
   // Delivery daemon — hosts Plane-3 + serves ctl.delivery (validates join against the ACL registry).
   daemon = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {}); await daemon.start();
-  await daemon.startPlane3((owner) => daemon!.aclForOwner(owner));
+  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
 
   // Provision an agent with read ACL [review] (commitAcl writes it via the privileged provisioner).
   const aId = newIdentity();
-  const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review"], subscribe: ["review"] });
-  agent = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice", role: "agent", kind: "agent" } });
+  const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1) — durableLeave sends it
+  const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review"], subscribe: ["review"], lifecycleUid: uidA });
+  agent = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], consume: false, lifecycleUid: uidA, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice", role: "agent", kind: "agent" } });
   agent.on("error", () => {}); await agent.start();
 
   // Sanity: join succeeds while "review" is in the ACL.
@@ -62,7 +63,7 @@ try {
   // Narrow the agent's ACL to NOTHING (revocation) — as the broker would for a refused live sub. The ACL
   // registry is keyed by the agent's PRINCIPAL (dot-form `local.<nkey>`, how provisionAgent wrote it), so
   // the narrow must target that same key — a raw nkey would miss and leave the real ACL intact.
-  await mgr.commitAcl(principalKey(DEV_OWNER, aId.id).key, []);
+  await mgr.commitAcl(principalKey(DEV_OWNER, aId.id).key, uidA, []);
   await wait(150);
 
   // JOIN is now rejected (join stays current-ACL-gated).

@@ -18,6 +18,8 @@
         --tint-green: #1f2d24; --tint-amber: #2a2417; --peer-amber: #221e12; --tag-amber: #3a2e12;
         --sel: #15233a; --intent: #10203a; --intent-badge: #16345c; --rollup: #12161d;
         --font: "Work Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        --nav-w: 300px; --rail-w: 340px; /* side-panel widths — drag-adjustable + persisted (app.js) */
+        --roster-h: 34%; --channels-h: 32%; /* nav section heights — drag-adjustable (dms = remainder) */
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; }
@@ -62,24 +64,78 @@
       .tile .n { font-size: 17px; font-weight: 700; color: var(--fg); line-height: 1.1; }
       .tile .lbl { font-size: 10.5px; color: var(--dim); letter-spacing: .3px; line-height: 1.1; }
       .tile.working .bar { background: var(--green); }
-      .tile.waiting { background: var(--tint-amber); border-color: var(--amber); }
-      .tile.waiting .bar { background: var(--amber); } .tile.waiting .n { color: var(--amber); }
+      /* Waiting tile is quiet at zero — amber only when something needs a human (alarm discipline). */
+      .tile.waiting.alert { background: var(--tint-amber); border-color: var(--amber); }
+      .tile.waiting.alert .bar { background: var(--amber); }
+      .tile.waiting.alert .n { color: var(--amber); }
       .tile.oldest .bar { background: var(--orange); }
 
       /* ── Body grid ── */
-      main { display: grid; grid-template-columns: 300px 1fr 340px; min-height: 0; }
-      aside {
+      /* minmax(0, …) not 1fr: a bare `1fr` is minmax(AUTO, 1fr), so wide unwrappable centre content
+         (a markdown <pre>, a long token) expands the track past the viewport. Pinning the minimum to
+         0 keeps the column bounded; overflow is then handled inside (pre scrolls, prose wraps). */
+      main { display: grid; grid-template-columns: var(--nav-w) minmax(0, 1fr) var(--rail-w); min-height: 0; position: relative; }
+      /* Empty NEEDS YOU collapses to a thin strip — lane still exists, not always full width. */
+      main.rail-thin { grid-template-columns: var(--nav-w) minmax(0, 1fr) 44px; }
+      /* Drag handles sitting over the nav|centre and centre|rail borders. Absolute so they don't add
+         grid tracks; the centre (minmax(0,1fr)) just absorbs the remainder. A faint line appears on
+         hover/drag; the border stays put. Right handle hides while the rail is collapsed. */
+      .resizer { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; touch-action: none; }
+      .resizer.left { left: calc(var(--nav-w) - 3.5px); }
+      .resizer.right { right: calc(var(--rail-w) - 3.5px); }
+      main.rail-thin .resizer.right { display: none; }
+      .resizer::after {
+        content: ""; position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
+        width: 2px; background: transparent; transition: background .12s;
+      }
+      .resizer:hover::after, .resizer.drag::after { background: var(--blue); }
+      aside.nav {
         background: var(--panel); border-right: 1px solid var(--line);
+        display: flex; flex-direction: column; min-height: 0; min-width: 0;
+        overflow-x: hidden; overflow-y: hidden; /* never sideways; sections scroll internally */
+      }
+      /* Three independent scroll regions so CHANNELS never sinks below a long roster. */
+      .nav-sec {
+        display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
+      }
+      /* Section heights are drag-adjustable (the .v-resizer handles below): roster + channels carry
+         explicit heights, dms takes the remainder. Defaults live in :root. */
+      .roster-sec { flex: 0 0 var(--roster-h); }
+      .channels-sec { flex: 0 0 var(--channels-h); }
+      .dms-sec { flex: 1 1 0; min-height: 90px; }
+      /* Vertical drag handles between the nav sections; the faint line replaces the old borders. */
+      .v-resizer { flex: 0 0 7px; position: relative; cursor: row-resize; touch-action: none; }
+      .v-resizer::after {
+        content: ""; position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+        height: 1px; background: var(--line); transition: background .12s, height .12s;
+      }
+      .v-resizer:hover::after, .v-resizer.drag::after { background: var(--blue); height: 2px; }
+      .nav-body {
+        overflow-x: hidden; overflow-y: auto; min-height: 0; min-width: 0; flex: 1;
+      }
+      /* V1 defence-in-depth: no unbroken token may force horizontal scroll, whatever the id shape. */
+      .nav-body * { min-width: 0; }
+      .peer, .chan, .dm { max-width: 100%; overflow: hidden; }
+      aside.rail {
+        background: var(--panel); border-right: 0; border-left: 1px solid var(--line);
         overflow-y: auto; min-height: 0;
       }
-      aside.rail { border-right: 0; border-left: 1px solid var(--line); }
+      aside.rail.collapsed {
+        padding: 10px 0; overflow: hidden;
+        display: flex; align-items: flex-start; justify-content: center;
+      }
+      .rail-collapsed {
+        writing-mode: vertical-rl; transform: rotate(180deg);
+        font-size: 10.5px; font-weight: 700; letter-spacing: .9px;
+        color: var(--faint); white-space: nowrap; user-select: none;
+      }
 
       .ghead {
-        display: flex; align-items: center; gap: 6px; padding: 12px 16px;
+        display: flex; align-items: center; gap: 6px; padding: 12px 16px; flex: none;
         font-size: 11px; font-weight: 600; letter-spacing: .8px; color: var(--dim);
+        background: var(--panel); position: sticky; top: 0; z-index: 1;
       }
       .ghead .c { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--faint); }
-      .divider { height: 1px; background: var(--line); }
 
       /* ── Roster ── */
       .peer {
@@ -91,7 +147,10 @@
       .dot.idle, .dot.offline { color: var(--faint); }
       .peer .c { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
       .peer .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
-      .peer .name { font-size: 13.5px; font-weight: 600; color: var(--fg); white-space: nowrap; }
+      .peer .name {
+        font-size: 13.5px; font-weight: 600; color: var(--fg); white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 100%;
+      }
       .peer .role { font-size: 11px; color: var(--faint); white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
       .peer .act { font-size: 11.5px; color: var(--dim); white-space: nowrap;
@@ -101,6 +160,25 @@
         font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
         white-space: nowrap; background: var(--tag-amber); color: var(--amber);
       }
+      /* Attention (dnd/focus only; open/absent are silent). Shape glyph + label — never colour alone. */
+      .att {
+        font-size: 10px; line-height: 1; flex: none;
+      }
+      .att.dnd { color: var(--orange); }
+      .att.focus { color: var(--blue); }
+      .att-badge {
+        display: inline-flex; align-items: center; gap: 4px;
+        font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 5px;
+        background: var(--tile); border: 1px solid var(--line); color: var(--dim);
+      }
+      .att-badge.dnd { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent);
+        background: color-mix(in srgb, var(--orange) 12%, transparent); }
+      .att-badge.focus { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, transparent);
+        background: color-mix(in srgb, var(--blue) 12%, transparent); }
+      .d-badge.model .var { color: var(--dim); font-weight: 500; }
+      .d-badge.model.muted { color: var(--faint); font-style: italic; font-family: inherit; }
+      .d-chip.mode-quiet { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+      .d-chip.mode-muted { color: var(--faint); }
       /* A peer row is a click-through into its Agent Detail card. */
       .peer.nav { cursor: pointer; }
       .peer.nav:hover { background: #ffffff06; }
@@ -120,7 +198,6 @@
       .chan .name { font-size: 13px; color: var(--blue); overflow: hidden;
         text-overflow: ellipsis; white-space: nowrap; }
       .chan.sel .name { font-weight: 600; color: var(--fg); }
-      .chan.muted .hash, .chan.muted .name { color: var(--faint); }
       .chan .count { font-size: 11px; color: var(--faint); flex: none; }
       .chan.sel .count { color: var(--dim); }
       .mention {
@@ -129,7 +206,7 @@
       }
 
       /* ── Feed ── */
-      section { display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+      section { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
       .feed-head {
         display: flex; align-items: center; gap: 10px; padding: 14px 20px;
         border-bottom: 1px solid var(--line); flex: none;
@@ -144,6 +221,11 @@
       .chip.mode.on { background: var(--tile); border-color: var(--line); color: var(--fg); }
       .chip.pause.on { color: var(--amber); }
       .chip.static { cursor: default; }
+      /* Policy chips (delivery/replay): must pass WCAG AA on dark bg at 11px (≥4.5:1). --dim fails; --fg passes. */
+      .chip.policy {
+        cursor: default; font-weight: 600; color: var(--fg);
+        background: var(--tile); border-color: var(--line);
+      }
       .chip.danger { color: var(--red); }
       .chip.danger:hover { background: #2a1717; border-color: var(--red); }
 
@@ -164,6 +246,50 @@
       .msg .role { font-size: 10.5px; color: var(--faint); }
       .msg .tgt { font-size: 11px; color: var(--dim); }
       .msg .body { font-size: 12.5px; color: var(--fg); word-break: break-word; }
+      /* Progressive disclosure: long bodies clamp to a fixed HEIGHT (rendered markdown is block
+         content, not one text box, so line-clamp won't do). A soft mask fades the cut edge; the
+         button reveals the rest. Never silent truncate. */
+      .body.clamp .body-text { max-height: 5.4em; overflow: hidden; }
+      .body.clamp:not(.open) .body-text {
+        -webkit-mask-image: linear-gradient(#000 62%, transparent); mask-image: linear-gradient(#000 62%, transparent);
+      }
+      .body.clamp.open .body-text { max-height: none; -webkit-mask-image: none; mask-image: none; }
+      .body-more {
+        appearance: none; background: none; border: 0; padding: 2px 0 0; margin-top: 2px;
+        font: inherit; font-size: 11px; font-weight: 600; color: var(--blue); cursor: pointer;
+      }
+      .body-more:hover { text-decoration: underline; }
+      .chip.toggle-all { color: var(--dim); }
+      .chip.toggle-all:hover { color: var(--fg); background: var(--tile); border-color: var(--line); }
+
+      /* Rendered markdown in a message body — compact, feed-friendly spacing. Only the tags md.js
+         (marked + DOMPurify) can emit reach here. */
+      .body.md > :first-child { margin-top: 0; }
+      .body.md > :last-child { margin-bottom: 0; }
+      .md p { margin: 0 0 6px; }
+      .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+        margin: 9px 0 4px; font-size: 13px; font-weight: 700; color: var(--fg); line-height: 1.3;
+      }
+      .md h1 { font-size: 15px; } .md h2 { font-size: 14px; }
+      .md ul, .md ol { margin: 4px 0 6px; padding-left: 20px; }
+      .md li { margin: 1px 0; }
+      .md li > p { margin: 0; }
+      .md code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+        background: var(--tile); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px;
+      }
+      .md pre {
+        margin: 5px 0 7px; padding: 9px 11px; border-radius: 7px; overflow-x: auto;
+        background: var(--tile); border: 1px solid var(--line);
+      }
+      .md pre code { background: none; border: 0; padding: 0; font-size: 11.5px; display: block; white-space: pre; }
+      .md blockquote { margin: 5px 0; padding: 2px 0 2px 11px; border-left: 2px solid var(--line); color: var(--dim); }
+      .md a { color: var(--blue); text-decoration: none; }
+      .md a:hover { text-decoration: underline; }
+      .md strong { font-weight: 700; color: var(--fg); }
+      .md em { font-style: italic; }
+      .md del { color: var(--faint); }
+      .md hr { border: 0; border-top: 1px solid var(--line); margin: 9px 0; }
       .msg.intent { background: var(--intent); border-left: 2px solid var(--blue); padding-left: 10px; }
       .msg.intent .tgt { color: var(--blue); }
       .subpill {
@@ -178,7 +304,7 @@
       .rollup .t { font-size: 11.5px; color: var(--dim); }
 
       /* ── NEEDS YOU rail ── */
-      aside.rail { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+      aside.rail:not(.collapsed) { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
       .rail-head { display: flex; align-items: center; justify-content: space-between; }
       .rail-head .t { font-size: 12px; font-weight: 700; color: var(--fg); letter-spacing: .8px; }
       .rail-head .n {
@@ -234,6 +360,16 @@
       .cmsg .who { font-size: 13px; font-weight: 600; color: var(--fg); }
       .cmsg .role { font-size: 10.5px; color: var(--faint); }
       .cmsg .body { font-size: 12.5px; color: var(--fg); word-break: break-word; }
+      .chan .dclass {
+        font-size: 9px; font-weight: 700; padding: 0 4px; border-radius: 3px; flex: none;
+        border: 1px solid var(--line); color: var(--faint); letter-spacing: .3px;
+      }
+      .chan .dclass.live { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+      .chan .dclass.durable { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 40%, transparent); }
+      /* Replay at a glance: ↻ present = on, struck = off (shape, not colour alone). */
+      .chan .replay { font-size: 12px; line-height: 1; flex: none; }
+      .chan .replay.on { color: var(--dim); }
+      .chan .replay.off { color: var(--faint); text-decoration: line-through; }
       .thread {
         align-self: flex-start; margin-top: 2px; font-size: 10.5px; color: var(--blue);
         background: var(--line); padding: 3px 8px; border-radius: 6px;
@@ -254,7 +390,10 @@
       .dm .caret, .dm .ln { width: 10px; flex: none; text-align: center; font-size: 9px; color: var(--faint); }
       .dm .l { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
       .dm .dot { width: 12px; flex: none; text-align: center; font-size: 11px; }
-      .dm .nm { font-size: 13.5px; font-weight: 600; color: var(--fg); white-space: nowrap; }
+      .dm .nm {
+        font-size: 13.5px; font-weight: 600; color: var(--fg); white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
       .dm .role { font-size: 11px; color: var(--faint); white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
       .dm .threads { font-size: 11px; color: var(--faint); flex: none; }
@@ -332,19 +471,31 @@
       <div class="tiles" id="tiles"></div>
     </header>
     <main id="main">
-      <aside>
-        <div class="ghead">ONLINE <span class="c" id="online-c"></span></div>
-        <div id="roster"></div>
-        <div class="divider"></div>
-        <div class="ghead">CHANNELS</div>
-        <div id="channels"></div>
-        <div class="divider"></div>
-        <div class="ghead">DIRECT MESSAGES</div>
-        <div id="dms"></div>
+      <aside class="nav">
+        <div class="nav-sec roster-sec" id="sec-roster">
+          <div class="ghead">ONLINE <span class="c" id="online-c"></span></div>
+          <div class="nav-body" id="roster"></div>
+        </div>
+        <div class="v-resizer" id="rz-roster" title="Drag to resize · double-click to reset"></div>
+        <div class="nav-sec channels-sec" id="sec-channels">
+          <div class="ghead">CHANNELS</div>
+          <div class="nav-body" id="channels"></div>
+        </div>
+        <div class="v-resizer" id="rz-channels" title="Drag to resize · double-click to reset"></div>
+        <div class="nav-sec dms-sec" id="sec-dms">
+          <div class="ghead">DIRECT MESSAGES</div>
+          <div class="nav-body" id="dms"></div>
+        </div>
       </aside>
       <section id="center"></section>
       <aside class="rail" id="rail"></aside>
+      <div class="resizer left" id="rz-left" title="Drag to resize · double-click to reset"></div>
+      <div class="resizer right" id="rz-right" title="Drag to resize · double-click to reset"></div>
     </main>
+    <script src="/vendor/marked.umd.js"></script>
+    <script src="/vendor/purify.min.js"></script>
+    <script src="/harness.js"></script>
+    <script src="/md.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

@@ -17,8 +17,9 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import { SignJWT, generateKeyPair } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, chatSubject, type CotalMessage,
-} from "@cotal-ai/core";
+  setupSpaceStreams, principalKey, chatSubject, type CotalMessage, mintLifecycleUid } from "@cotal-ai/core";
+// One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
+const smokeUid = mintLifecycleUid();
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -50,7 +51,10 @@ const ISS = "https://auth.cotal.test";
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");
 async function bearer(actor: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ sub: OWNER, ver: USER_TOKEN_VER, act: { owner: OWNER, actor, scope: [] } })
+  // Every v0.4 bearer names its incarnation's lifecycle uid (SPEC 13.1); the callout refuses a
+  // claimless bearer of ANY shape at the mint (the fresh-row re-check), so the fixture carries
+  // the same uid its resolver serves.
+  return new SignJWT({ sub: OWNER, ver: USER_TOKEN_VER, act: { owner: OWNER, actor, scope: [], lifecycleUid: smokeUid } })
     .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(OWNER)
     .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 300)
     .sign(privateKey as CryptoKey);
@@ -76,7 +80,7 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => {},
-    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"] })),
+    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: [] })),
     log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
   });
 

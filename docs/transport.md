@@ -15,7 +15,7 @@ separation lives in the spec.
 - **The Cotal protocol** (transport-agnostic) is the wire contract. It includes the message
   shapes ([`types.ts`](../packages/core/src/types.ts), with the generated
   [`cotal.schema.json`](../spec/cotal.schema.json)), the addressing model (`space / service /
-  instance`, three delivery modes, and `ctl` request/reply), and the coordination semantics:
+  instance` and the three delivery modes), and the coordination semantics:
   spaces, channels, presence, history/replay, discovery, version/change rules, and
   authenticated directedness. Sender and message class come from the delivering subject, not
   from the payload. **This is the standard** ([SPEC §3–§7](../SPEC.md#3-subject-layout)).
@@ -49,7 +49,7 @@ NATS/JetStream satisfies all five capabilities:
 
 | Capability | NATS realization |
 |---|---|
-| Routing | Subjects `cotal.<space>.{chat\|inst\|svc\|ctl}.<sender|route>.…`; sender encoded in the subject (`parseSubject` is the sole authority); `*`/`>` wildcards; queue groups for anycast; `ctl` request/reply for control. ([SPEC §3](../SPEC.md#3-subject-layout)) |
+| Routing | Subjects `cotal.<space>.{chat\|inst\|svc}.<sender|route>.…`; sender encoded in the subject (`parseSubject` is the sole authority); `*`/`>` wildcards; queue groups for anycast; typed commands ride the endpoint control surface ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)). ([SPEC §3](../SPEC.md#3-subject-layout)) |
 | Durability and history | JetStream streams `CHAT_/DM_/TASK_<space>`. Channel **live** reads are native core subscriptions bounded by `sub.allow`; **durable** channels add a per-member backstop via the [delivery daemon](delivery-daemon.md); DM/task ride per-instance/per-role durables (`dm_`/`svc_`), history rides pinned single-filter consumer creates; at-least-once ack-on-surface, `Nats-Msg-Id` publish dedup, Direct-Get chat backfill for late join. ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)) |
 | Presence and registry | KV buckets `cotal_presence_<space>` (TTL/stale/delete-derived liveness), `cotal_channels_<space>` (durable channel config), and the derived membership feed. ([SPEC §6–§8](../SPEC.md#6-presence-and-discovery)) |
 | Identity | The instance's **principal** (`owner.actor`) = `card.id` = the subject sender tokens = the presence key = the token pair in per-instance durable names; the connection's nkey is the transport credential, scoping only the per-connection reply inbox ([`identity.ts`](../packages/core/src/identity.ts), [SPEC §2](../SPEC.md#2-identity)). |
@@ -58,6 +58,10 @@ NATS/JetStream satisfies all five capabilities:
 Capabilities 2 and 3 are offloaded to JetStream and KV. Cotal does not implement history,
 presence, ack/redelivery, or publish dedup itself; it uses the native NATS mechanisms. Handlers
 still need to be idempotent: this is durable delivery, not exactly-once processing.
+
+The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
+native message schedules (durable timers) and per-message TTLs, with no degraded fallback
+([SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding)).
 
 ## Binding to another transport
 

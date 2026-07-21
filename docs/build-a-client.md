@@ -46,13 +46,18 @@ local mesh. The [SPEC §12](../SPEC.md#12-conformance) conformance list is the c
 map to.
 
 1. **Identity + connection**: [SPEC §2](../SPEC.md#2-identity),
-   [§10](../SPEC.md#10-connection-and-onboarding). Connect with the minted creds and adopt the
-   principal bound to the credential; set the inbox prefix to your connection's reply inbox
-   (`_INBOX_<connId>`) before any request, pull, or KV watch. *See it:* a wrong or missing cred is refused at connect, so a clean connect
+   [§10](../SPEC.md#10-connection-and-onboarding),
+   [§13.12](../SPEC.md#1312-nats--jetstream-binding). Read the server version from the
+   **pre-auth INFO** and **fail loud below nats-server 2.12** (the v0.4 control surface relies
+   on 2.12 schedule/CAS semantics); treat a repeated pre-auth drop as a possible
+   oversized-CONNECT diagnostic, not an infinite retry loop. Then connect with the minted creds
+   and adopt the principal bound to the credential; set the inbox prefix to your connection's
+   reply inbox (`_INBOX_<connId>`) before any request, pull, or KV watch. *See it:* a wrong or missing cred is refused at connect, so a clean connect
    confirms identity and creds are wired correctly.
 
-2. **Subject construction + parsing**: [SPEC §3](../SPEC.md#3-subject-layout). Build the four
-   delivery/control subject shapes and a parser that locates the sender principal (its two
+2. **Subject construction + parsing**: [SPEC §3](../SPEC.md#3-subject-layout). Build the three
+   messaging subject shapes plus the v0.4 endpoint control rails
+   ([§13.2](../SPEC.md#132-grammar)), and a parser that locates the sender principal (its two
    adjacent owner + actor tokens) by kind (the sender-position asymmetry). *See it:* run the five subject-parsing vectors in
    [SPEC §12](../SPEC.md#12-conformance) and match every result, including the malformed row.
 
@@ -63,7 +68,12 @@ map to.
 
 4. **Presence heartbeat**: [SPEC §6](../SPEC.md#6-presence-and-discovery). Write your own
    presence key on the heartbeat interval and derive peers' `offline` from stale timestamps and
-   KV deletes. *See it:* run [`cotal console`](watch-a-mesh.md) and watch your endpoint appear
+   KV deletes. From v0.4 your AgentCard MUST advertise `protocolVersion: "0.4"`, and in auth mode
+   your presence record MUST carry your `lifecycleUid` (§6; advisory for display, since authority
+   checks use the trusted lifecycle mapping, not presence); a peer that omits `protocolVersion`
+   reads as pre-0.4 and is not addressed on the control-surface rails
+   ([SPEC §6](../SPEC.md#6-presence-and-discovery),
+   [§13.11](../SPEC.md#1311-the-hard-cut)). *See it:* run [`cotal console`](watch-a-mesh.md) and watch your endpoint appear
    in the roster and go stale when you stop heartbeating.
 
 5. **Multicast + channel join/replay**: [SPEC §7](../SPEC.md#7-channels). Publish to a concrete
@@ -73,7 +83,7 @@ map to.
    `historical=true` and no live/backfill duplicates.
 
 6. **DM + anycast**: [SPEC §8](../SPEC.md#8-nats--jetstream-binding). Bind (do not create) your
-   `dm_<owner>-<actor>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
+   `dm_<owner>-<actor>-<lifecycleUid>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
    a reference peer unicasts to you and anycasts to your role; exactly one anycast consumer wins.
 
 7. **Receive-side checks**: [SPEC §4](../SPEC.md#4-delivery-modes),
