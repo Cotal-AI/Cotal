@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 /**
  * Filesystem layout + version identity for the connector seeding engine. Everything the reconcile
@@ -15,8 +15,9 @@ import { OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
  * path, keyed by the binary's version so a `cotal-ai` upgrade lands a fresh generation.
  */
 
-/** The four first-party connectors, in a stable seed order. Keys of {@link OFFICIAL_CONNECTORS}. */
-export const SEED_BUILTINS: readonly string[] = Object.keys(OFFICIAL_CONNECTORS);
+/** The first-party seeded extensions, in a stable seed order: the connectors plus the web dashboard.
+ *  Keys of {@link SEEDED_EXTENSIONS}. */
+export const SEED_BUILTINS: readonly string[] = Object.keys(SEEDED_EXTENSIONS);
 
 /** `<config>/cotal/seed` — the seed engine's own state root (NOT inside the npm prefix). */
 export function seedDir(): string {
@@ -139,14 +140,14 @@ function repoRootFromHere(): string {
  * connectors.
  */
 export function shippedSourceDir(name: string): string {
-  const pkg = OFFICIAL_CONNECTORS[name];
-  if (!pkg) throw new Error(`"${name}" is not a first-party connector; only ${SEED_BUILTINS.join(", ")} are seeded`);
-  const devDir = join(repoRootFromHere(), "extensions", pkg.split("/")[1]);
+  const ext = SEEDED_EXTENSIONS[name];
+  if (!ext) throw new Error(`"${name}" is not a first-party seeded extension; only ${SEED_BUILTINS.join(", ")} are seeded`);
+  const devDir = join(repoRootFromHere(), ext.srcDir);
   if (existsSync(join(devDir, "package.json"))) return devDir;
   const pubDir = join(dirname(entryScript()), "..", "seeded-connectors", name);
   if (existsSync(join(pubDir, "package.json"))) return pubDir;
   throw new Error(
-    `no shipped payload for connector "${name}" (looked in ${devDir} and ${pubDir}) - this cotal-ai build is missing its seeded connectors`,
+    `no shipped payload for extension "${name}" (looked in ${devDir} and ${pubDir}) - this cotal-ai build is missing its seeded extensions`,
   );
 }
 

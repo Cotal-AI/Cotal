@@ -3,7 +3,7 @@
  * `XDG_CONFIG_HOME` dirs so the reconcile, its crash-safety spine, and the publish-path resolution are
  * retained as CI evidence (not just an ad-hoc script). Covers, per the review panel's blockers:
  *
- *  - first-run auto-seed of the four built-ins + idempotent no-op + removability (removed stays removed)
+ *  - first-run auto-seed of the five first-party exts (four connectors + the web dashboard) + idempotent no-op + removability (removed stays removed)
  *  - crash cursor → auto fails loud → `--repair` re-installs the interrupted connector
  *  - corrupt manifest → `--reset` quarantines + rebuilds; connectors still on disk → `--repair` rebuilds
  *  - truncated authority never resurrects a removed connector (backup union)
@@ -86,11 +86,12 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   const first = cotal(cfg, ["ext", "list"]); // the auto-seed boot; surface its output if it fails
   const names = ["claude", "opencode", "hermes", "pi"].filter((n) => first.stdout.includes(`connector:${n}`));
   if (names.length !== 4) console.log(`[diag] auto-seed status=${first.status}\n--stdout--\n${first.stdout}\n--stderr--\n${first.stderr}`);
-  check("auto-seed: all four built-ins seeded on first command", names.length === 4, names);
+  check("auto-seed: all four connectors seeded on first command", names.length === 4, names);
+  check("auto-seed: the web dashboard seeded on first command (command:web)", first.stdout.includes("command:web"), first.stdout);
   const sd = seedDir(cfg);
   check("auto-seed: authority/witness/stamp written", ["authority.json", "witness.json", "stamp.json"].every((f) => existsSync(join(sd, f))));
   const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();
-  check("auto-seed: authority records all four", ever.join(",") === "claude,hermes,opencode,pi", ever);
+  check("auto-seed: authority records all five first-party exts", ever.join(",") === "claude,hermes,opencode,pi,web", ever);
 
   // 2. idempotent no-op: stamp untouched on a second boot.
   const m1 = statSync(join(sd, "stamp.json")).mtimeMs;

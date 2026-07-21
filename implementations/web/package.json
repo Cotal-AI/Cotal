@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/web",
-  "description": "Cotal browser observability dashboard — adds the `web` command to the cotal CLI (install: cotal ext add @cotal-ai/web).",
+  "description": "Cotal browser observability dashboard: adds the `web` command to the cotal CLI.",
   "version": "0.13.1",
   "license": "Apache-2.0",
   "repository": {
@@ -20,7 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx smoke/detach.smoke.ts",
-    "build": "tsc -p tsconfig.json && rm -rf dist/web && cp -R src/web dist/web",
+    "build": "tsc -p tsconfig.json && rm -rf dist/web && cp -R src/web dist/web && node scripts/copy-vendor.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
@@ -29,16 +29,14 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
-    "@cotal-ai/workspace": "workspace:*"
+    "@cotal-ai/workspace": "workspace:*",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.6"
   },
   "files": [
     "dist"
   ],
   "publishConfig": {
     "access": "public"
-  },
-  "dependencies": {
-    "dompurify": "^3.4.12",
-    "marked": "^18.0.6"
   }
 }
