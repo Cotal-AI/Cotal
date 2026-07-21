@@ -75,7 +75,7 @@ import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCa
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket } from "./endpoint-binding.js";
 import { recordsBucket } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX } from "./lifecycle-state.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
@@ -95,6 +95,7 @@ export type Profile =
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "lifecycle-executor" // ephemeral, LIFECYCLE-PINNED §13.1 state writes for the STATIC manager (Unit B): exactly ONE incarnation's head/uid/gate/cred-row/slot keys
+  | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes (P2 item 1, 1a-serve): exactly ONE (endpoint, instanceId)'s epgate + epcred family
   | "operator"
   | "purger"
   | "backup"
@@ -165,6 +166,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   "lifecycle-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one static lifecycle operation's 13.1 state-write window (activation / terminal / renewal ledger append)" },
+  "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke for one (endpoint, instanceId))" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
@@ -434,6 +436,16 @@ export interface MintOpts {
    *  coherent by construction and a leaked executor cred can move exactly one incarnation's state
    *  machine and nothing else. Ignored by every other profile. */
   lifecycleExecutor?: { owner: string; actor: string; lifecycleUid: string; alias: string };
+  /** `endpoint-serve-executor` profile only (P2 item 1, 1a-serve): the ONE endpoint instance whose
+   *  endpoint-serve state this credential may write — the endpoint gate `epgate.<endpoint>.
+   *  <instanceId>` (the registration barrier's freeze/reopen CAS + the provisioner create) and the
+   *  serving ledger family `epcred.<endpoint>.<instanceId>.>` (the mint fence's stage + the barrier's
+   *  revoke). REQUIRED for that profile. Every key is DERIVED inside the profile from
+   *  (endpoint, instanceId) — none is a caller literal — so the manager drives the gate CAS + serve
+   *  mint through THIS scoped executor and nothing else (critic #1: the manager-specific "no seed
+   *  shortcut"; the standing seed connection never writes the epgate or the epcred family). Ignored
+   *  by every other profile. */
+  endpointServeExecutor?: { endpoint: string; instanceId: string };
   /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
    *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
    *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
@@ -726,6 +738,11 @@ export function permissionsFor(
     if (!opts.lifecycleExecutor)
       throw new Error("permissionsFor: lifecycle-executor requires opts.lifecycleExecutor ({owner, actor, lifecycleUid, alias} of the ONE incarnation it may move)");
     return lifecycleExecutorPermissions(space, pr, opts.lifecycleExecutor);
+  }
+  if (profile === "endpoint-serve-executor") {
+    if (!opts.endpointServeExecutor)
+      throw new Error("permissionsFor: endpoint-serve-executor requires opts.endpointServeExecutor ({endpoint, instanceId} of the ONE endpoint instance it may register/serve-mint)");
+    return endpointServeExecutorPermissions(space, pr, opts.endpointServeExecutor);
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
   if (profile === "backup") {
@@ -1486,6 +1503,48 @@ function lifecycleExecutorPermissions(
         ...recordKeys.map((k) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${k}`),
         `$JS.API.STREAM.MSG.GET.KV_${REC}`,
         `$JS.API.STREAM.MSG.GET.KV_${AUTH}`,
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The ephemeral, ENDPOINT-INSTANCE-PINNED endpoint-serve executor permission set (P2 item 1,
+ *  1a-serve): the manager mints this per registration/serve-mint op and drives the endpoint
+ *  registration barrier's `epgate` CAS + the mint fence's `epcred` stage/revoke THROUGH it — never
+ *  its standing seed/supervisor connection (critic #1's manager-specific "no seed shortcut"). Every
+ *  WRITE is key-pinned to exactly ONE (endpoint, instanceId): the gate `epgate.<ep>.<iid>` and its
+ *  serving ledger family `epcred.<ep>.<iid>.>`. A leaked/mis-constructed executor can move exactly
+ *  one endpoint instance's serve state and nothing else. The auth store is `allow_direct=false`, so
+ *  reads are leader-served `STREAM.MSG.GET` (stream-scoped, NOT key-scoped — the key rides the
+ *  payload); enumeration of the epcred family rides an ordered `keys()` consumer. NAMED RESIDUAL:
+ *  for its one-shot lifetime the executor can READ (never write) other auth rows — endpoint/
+ *  credential metadata, no bearer bytes; every WRITE stays key-pinned. */
+function endpointServeExecutorPermissions(
+  space: string,
+  pr: MintPrincipal,
+  pin: { endpoint: string; instanceId: string },
+): Record<string, unknown> {
+  const AUTH = epAuthBucket(space);
+  // DERIVED from (endpoint, instanceId) via the core builders — never a caller literal.
+  const gateKey = epgateKey(pin.endpoint, pin.instanceId);
+  const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        // The two key-pinned WRITE grants: the gate (provision create + barrier freeze/reopen CAS)
+        // and the serving ledger family (mint-fence stage + barrier revoke). The value-publish
+        // carries the key on the subject, so each grant names exactly this instance's keys.
+        `$KV.${AUTH}.${gateKey}`,
+        `$KV.${AUTH}.${credPrefix}.>`,
+        // Leader-served reads (the auth store is allow_direct=false): stream-scoped MSG.GET (the
+        // barrier/fence read the gate + each epcred row), plus the ordered consumer the epcred
+        // `keys()` enumeration binds. NAMED RESIDUAL: reads any auth row for its one-shot lifetime.
+        `$JS.API.STREAM.MSG.GET.KV_${AUTH}`,
+        `$JS.API.CONSUMER.CREATE.KV_${AUTH}.>`,
+        `$JS.API.CONSUMER.INFO.KV_${AUTH}.>`,
+        `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
       ],
     },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },

@@ -239,6 +239,13 @@ export function epcredRowKey(endpoint: string, instanceId: string, credentialId:
   return `epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.${assertCredentialIdTail(credentialId, "credentialId")}`;
 }
 
+/** The endpoint-family ledger KEY PREFIX `epcred.<endpoint>.<instanceId>` (no credentialId tail) —
+ *  the exact family a barrier enumerates and a key-pinned executor grant scopes to (`…​.>`). Built
+ *  from the core tokenizers so a grant never spells the prefix by hand (guard-the-core). */
+export function epcredFamilyPrefix(endpoint: string, instanceId: string): string {
+  return `epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
+}
+
 // ---- the endpoint-instance issuance gate (auth store, endpoint family `epgate.<endpoint>.<instanceId>`) ----
 
 /** The ENDPOINT-instance issuance gate row (§13.1: a DISJOINT family from the agent
