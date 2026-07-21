@@ -11,7 +11,7 @@ import {
   type ParsedArgs,
   type Profile,
 } from "@cotal-ai/core";
-import { agentCredsKey, agentSecretFilePaths, authDir, loadSoleSpaceAuth, loadSpaceAuth, materializeSecretToFile, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentCredsKey, agentSecretFilePaths, authDir, hasUserAuthState, loadSoleSpaceAuth, loadSpaceAuth, materializeSecretToFile, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 
@@ -67,7 +67,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   // alone (refusing is the safe direction; the manager's stricter marker×registry check guards the
   // PERMISSIVE branch, not this one). `--signer` stays available above: infrastructure creds
   // (supervisor/delivery/…) are pre-flip trust material, not agent identities.
-  if (existsSync(userAuthStateDir(cotalRoot(), auth.space))) {
+  if (hasUserAuthState(cotalRoot(), auth.space)) {
     console.error(
       c.red(
         `✗ space "${auth.space}" is a per-user-auth mesh - static ${profile} creds are retired here. Use user-mode commands (\`cotal login\`; agents: \`cotal spawn\`); static dashboard/audit creds are not supported on user-auth meshes. Static minting remains available on static-auth meshes.`,

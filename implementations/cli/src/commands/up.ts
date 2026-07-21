@@ -39,7 +39,7 @@ import {
   type CompletionResult,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { acquireMaintenanceLock, assertSingleSpaceBroker, assertStoreIdentity, assertUserAuthInfo, assessRestoreClaim, authDir, beginOrdinaryResume, bindOrdinaryResumeListener, clearCurrent, consumeRetiredMaintenance, findMesh, getCurrent, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessOwnerStatus, markOrdinaryResumeActive, markOrdinaryResumeDegraded, readMaintenanceJournal, readMaintenanceResumeDocument, readStoreIdentity, recordMesh, recordOrdinaryResumeManagerCommit, releaseMaintenanceLock, removeMesh, replaceDeadOrdinaryResumeListener, retireOrdinaryResume, sameStoreIdentity, saveSpaceAuth, setCurrent, type JsonValue, type ManagerCommitEvidence, type ManagerFinalizeEvidence, type MeshEntry, type ProcessOwner, type RestoreListenerProof, type UserAuthInfo, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, assertSingleSpaceBroker, assertStoreIdentity, assertUserAuthInfo, assessRestoreClaim, authDir, beginOrdinaryResume, bindOrdinaryResumeListener, clearCurrent, consumeRetiredMaintenance, findMesh, getCurrent, hasUserAuthState, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessOwnerStatus, markOrdinaryResumeActive, markOrdinaryResumeDegraded, readMaintenanceJournal, readMaintenanceResumeDocument, readStoreIdentity, recordMesh, recordOrdinaryResumeManagerCommit, releaseMaintenanceLock, removeMesh, replaceDeadOrdinaryResumeListener, retireOrdinaryResume, sameStoreIdentity, saveSpaceAuth, setCurrent, type JsonValue, type ManagerCommitEvidence, type ManagerFinalizeEvidence, type MeshEntry, type ProcessOwner, type RestoreListenerProof, type UserAuthInfo, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -1618,8 +1618,8 @@ export async function startMeshDetached(
  *  enforces for static re-ups, applied to the one boot path that skips authSetup entirely. */
 function refuseOpenOverUserState(open: boolean, space: string): void {
   if (!open) return;
+  if (!hasUserAuthState(cotalRoot(), space)) return;
   const stateDir = userAuthStateDir(cotalRoot(), space);
-  if (!existsSync(stateDir)) return;
   throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
 }
 
@@ -1796,7 +1796,7 @@ async function authSetup(
     await provisionMembershipCreds(auth); // … so the observer can still be minted here (fresh-space only)
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
-  if (!user && existsSync(stateDir)) {
+  if (!user && hasUserAuthState(cotalRoot(), space)) {
     throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
   }
   let prepared: AuthPrepared | undefined;

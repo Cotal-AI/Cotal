@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, findCotalRoot, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthStateDir } from "./auth-paths.js";
+import { authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
 import {
   findMesh,
   getCurrent,
@@ -180,8 +180,15 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
 
 function localTarget(root: string, server: string, source: MeshTarget["source"]): MeshTarget {
   // No registry entry and no explicit space, so the root itself must name exactly one space;
-  // `soleSpaceOf` fails loud rather than picking one when it holds several.
-  const space = soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+  // `soleSpaceOf` fails loud rather than picking one when it holds several (or the tenant list is
+  // unreadable). Surface that as a catchable target error so a caller like `status` reports it as an
+  // ambiguous target instead of crashing on an uncaught throw.
+  let space: string;
+  try {
+    space = soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+  } catch (e) {
+    throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
+  }
   const auth = loadSpaceAuth(authDir(root), space);
   // U10 guard: a user-auth space resolved WITHOUT its registry entry (pruned/never recorded) must
   // not silently static-mint — static creds DO work on a user-auth broker, which would connect the
@@ -191,7 +198,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
   // proves user auth was enabled here, and the alternative would classify the root "open" and
   // connect credlessly toward a user-auth broker. Fail closed on the marker, whichever half died.
   const userSpace = auth
-    ? existsSync(userAuthStateDir(root, space))
+    ? hasUserAuthState(root, space)
       ? space
       : undefined
     : userAuthSpacesOnDisk(authDir(root))[0];
@@ -202,24 +209,6 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
       { space: userSpace, root },
     );
   return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaRoot(root), source };
-}
-
-/** Space names with user-auth state under a root's auth dir, detectable WITHOUT `auth.json`: each
- *  enabled space is a subdirectory (encodeURIComponent(space)) holding the provider's pinned
- *  material — `idp.json` is written first at enable, `callout.json` right after, so either one
- *  marks the dir as user-auth state (never confusable with a stray empty folder). */
-function userAuthSpacesOnDisk(dir: string): string[] {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter(
-        (e) =>
-          e.isDirectory() &&
-          (existsSync(join(dir, e.name, "idp.json")) || existsSync(join(dir, e.name, "callout.json"))),
-      )
-      .map((e) => decodeURIComponent(e.name));
-  } catch {
-    return []; // no auth dir at all — nothing user-auth here
-  }
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on
@@ -271,7 +260,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // mode, not DEFAULT_SERVER: a project started with `--server …:4333` must spawn against :4333,
     // and a recorded OPEN mesh must not mint creds off stale `.cotal/auth` left on disk. Fall back
     // to the local default only when nothing is recorded for this root.
-    const recorded = meshes.find((m) => resolve(m.root) === resolve(root));
+    const rootMatches = meshes.filter((m) => resolve(m.root) === resolve(root));
+    // A broker that runs several spaces records one entry per space, all under this same root. With no
+    // `--space` to pick one, `.find()` would silently resolve whichever sorted first; name the tenants
+    // and refuse instead (the same posture as `soleSpaceOf` for an unrecorded multi-space root).
+    if (rootMatches.length > 1)
+      throw new MeshTargetError(
+        "ambiguous-target",
+        `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
+        { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
+      );
+    const recorded = rootMatches[0];
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded");
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

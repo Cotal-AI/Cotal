@@ -8,7 +8,7 @@ import {
   type FlagValues,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, remintDaemonCreds, userAuthStateDir, writeRenewalRecord } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, hasUserAuthState, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, remintDaemonCreds, writeRenewalRecord } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 
@@ -52,7 +52,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     console.log(c.green("\nauth: healthy - open mesh (no credential material in this folder)"));
     return;
   }
-  const userMode = existsSync(userAuthStateDir(root, auth.space));
+  const userMode = hasUserAuthState(root, auth.space);
   console.log(`  space ${auth.space}${userMode ? " · user-auth" : ""} · signer ${c.green("present")} (${join(authDir(root), "auth.json")})`);
 
   let reports = inventory(root);

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   composeSpaceAuth,
@@ -50,6 +50,47 @@ export function spaceSegment(space: string): string {
  *  BEFORE any caller can mutate at an aliased path. */
 export function userAuthStateDir(root: string, space: string): string {
   return join(authDir(root), spaceSegment(space));
+}
+
+/** The provider's first-written user-auth pins. Workspace owns the LOCATION of a space's user-auth
+ *  state ({@link userAuthStateDir}) and the fact that one of these files inside it marks the space
+ *  user-auth-enabled; the auth provider owns their contents. `idp.json` is written first at enable and
+ *  `callout.json` right after, so EITHER marks a real state dir. The pin check is what makes the marker
+ *  sound where a bare `existsSync` is not: neither file can appear inside a sibling like `creds/`, nor
+ *  can a plain file (`broker.json`, `account.<hex>.json`) that aliases the state-dir PATH ever satisfy
+ *  it (a file has no children). */
+const USER_AUTH_MARKER_FILES = ["idp.json", "callout.json"] as const;
+
+function pathHasUserAuthMarker(dir: string): boolean {
+  let st;
+  try {
+    st = statSync(dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
+  return st.isDirectory() && USER_AUTH_MARKER_FILES.some((f) => existsSync(join(dir, f)));
+}
+
+/** Whether `space` is user-auth-enabled ON DISK under `root` — the authoritative marker, NOT a bare
+ *  `existsSync` on {@link userAuthStateDir}. Two space names make that path collide with a sibling in
+ *  the same auth dir: `broker.json`/`account.<hex>.json` are FILES, and `creds` is the agent-creds
+ *  DIRECTORY, so a bare existence test would flip a plain static space named any of those to user-mode
+ *  (a manager then refuses to start on the mode mismatch). Requiring a real provider pin inside a real
+ *  directory excludes all three. */
+export function hasUserAuthState(root: string, space: string): boolean {
+  return pathHasUserAuthMarker(userAuthStateDir(root, space));
+}
+
+/** Every space with user-auth state under this auth dir, detectable WITHOUT `broker.json`/accounts:
+ *  each enabled space is a subdirectory (`spaceSegment(space)`) carrying a provider pin. The
+ *  enumerating companion to {@link hasUserAuthState}; both share {@link pathHasUserAuthMarker} so a
+ *  single space and the whole-dir sweep can never disagree on what "user-auth on disk" means. */
+export function userAuthSpacesOnDisk(dir: string): string[] {
+  if (!existsSync(dir)) return []; // no auth dir at all — nothing user-auth here
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && pathHasUserAuthMarker(join(dir, e.name)))
+    .map((e) => decodeURIComponent(e.name));
 }
 
 // ---- per-agent standing secrets (static creds / actor token / sentinel creds) ----
@@ -163,9 +204,10 @@ export function findCotalRoot(start: string = process.cwd()): string {
 //
 // A nats-server trusts exactly one operator and one system account, so broker trust is per-BROKER
 // and has exactly one owner on disk (`auth/broker.json`). Each space owns only its own data account
-// (`auth/<space>/account.json`) and REFERENCES broker trust rather than embedding it. Embedding it
-// per space is the bug this split exists to prevent: a rotation done through space A would update
-// A's embedded copy while space B kept loading a stale one and resurrected dead broker trust.
+// (`auth/account.<key>.json`, a flat file beside `broker.json`, keyed by {@link accountFileKey})
+// and REFERENCES broker trust rather than embedding it. Embedding it per space is the bug this split
+// exists to prevent: a rotation done through space A would update A's embedded copy while space B
+// kept loading a stale one and resurrected dead broker trust.
 //
 // The composed {@link SpaceAuth} is a READ view only (see core's `composeSpaceAuth`); there is no
 // persisted document with that shape any more. The pre-W4 monolith is migration INPUT only.
@@ -179,17 +221,36 @@ export function brokerAuthPath(dir: string): string {
   return join(dir, BROKER_FILE);
 }
 
-/** Where one space's own account record lives (guarded segment, same encoder as everything else).
- *
- *  Deliberately a FLAT FILE beside `broker.json`, NOT `<space>/account.json`: `<authDir>/<space>/`
- *  is already {@link userAuthStateDir}, and its bare EXISTENCE is how six call sites decide a space
- *  is user-mode. Writing an account into that directory creates it for every space and turns every
- *  static-mode space into a false user-mode read (the manager's registry-vs-disk reconcile then
- *  refuses to start at all). A sibling namespace (`spaces/<space>/`) only moves the hazard onto a
- *  space actually NAMED "spaces"; the flat form has no reachable collision short of a space named
- *  `account.<other>.json`, and even that clashes file-vs-directory and fails loud on write. */
+/** The account file's stable, case-SAFE, injective key: lowercase hex of the space's UTF-8 bytes.
+ *  `encodeURIComponent(space)` preserved ASCII letter case, so on a case-insensitive filesystem
+ *  (the macOS/Windows default) spaces `alpha` and `Alpha` addressed ONE file - the second write
+ *  overwrote the first, the tenant list collapsed to one, and the broker-wide refusal was defeated
+ *  on a genuine two-tenant broker (with one tenant's signing authority already lost). Hex over
+ *  `[0-9a-f]` cannot case-fold-collide and is injective, so distinct names always address distinct
+ *  files. The space's real name rides in the document, never inferred from the key alone. */
+function accountFileKey(space: string): string {
+  spaceSegment(space); // reuse the ONE degenerate-name guard (`.`/`..`/empty) before we key on it
+  return Buffer.from(space, "utf8").toString("hex");
+}
+
+/** The space a canonical account filename encodes, or undefined when the name is not one THIS module
+ *  wrote (wrong prefix/suffix, non-hex body, or a body that does not round-trip back to the same
+ *  filename). Enumeration treats an undefined result as a corrupt/foreign record, never as a tenant. */
+function spaceFromAccountFile(name: string): string | undefined {
+  if (!name.startsWith(SPACE_ACCOUNT_PREFIX) || !name.endsWith(SPACE_ACCOUNT_SUFFIX)) return undefined;
+  const key = name.slice(SPACE_ACCOUNT_PREFIX.length, name.length - SPACE_ACCOUNT_SUFFIX.length);
+  if (key.length === 0 || key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
+  const space = Buffer.from(key, "hex").toString("utf8");
+  return space.length > 0 && accountFileKey(space) === key ? space : undefined;
+}
+
+/** Where one space's own account record lives: a FLAT file beside `broker.json`, keyed by
+ *  {@link accountFileKey}. Flat (not `<space>/account.json`) because `<authDir>/<space>/` is
+ *  {@link userAuthStateDir}; hex-keyed because a raw space name in the filename both aliased that
+ *  user-auth marker and case-folded on macOS/Windows. The name of a space is authoritative in the
+ *  document, so enumeration never has to trust the filename beyond finding the record. */
 export function spaceAccountPath(dir: string, space: string): string {
-  return join(dir, `${SPACE_ACCOUNT_PREFIX}${spaceSegment(space)}${SPACE_ACCOUNT_SUFFIX}`);
+  return join(dir, `${SPACE_ACCOUNT_PREFIX}${accountFileKey(space)}${SPACE_ACCOUNT_SUFFIX}`);
 }
 
 /** Persist BROKER trust. `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting
@@ -199,9 +260,23 @@ export function spaceAccountPath(dir: string, space: string): string {
 export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
   if (!broker.operator.seed || !broker.operator.jwt || !broker.sys.pub)
     throw new Error("saveBrokerAuth: refusing to persist blank broker trust - a stripped auth value cannot own the broker record");
+  const f = brokerAuthPath(dir);
+  if (existsSync(f)) {
+    // Overwriting the broker record is only safe for the SAME operator (a system-account rotation
+    // keeps the operator SEED and only re-issues its JWT + `sys`). A DIFFERENT operator seed means a
+    // fresh broker root - every space account here is signed by the current operator, so replacing it
+    // orphans them ALL. That is exactly what a naive `createSpaceAuth` for a second space on this root
+    // would do; refuse it loud rather than silently break the existing tenants. A new space must be
+    // signed by the existing broker, never mint its own.
+    const existing = JSON.parse(readFileSync(f, "utf8")) as BrokerAuth;
+    if (existing.operator?.seed !== broker.operator.seed)
+      throw new Error(
+        `${f} already holds a different broker operator - refusing to overwrite it: every space account on this broker is signed by the current operator, so replacing it would orphan them all. Sign the new space under the existing broker instead of minting a fresh operator.`,
+      );
+  }
   mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
   const onDisk: BrokerAuth = { operator: broker.operator, sys: { pub: broker.sys.pub, jwt: broker.sys.jwt } };
-  writeSecretFile(brokerAuthPath(dir), JSON.stringify(onDisk, null, 2));
+  writeSecretFile(f, JSON.stringify(onDisk, null, 2));
 }
 
 /** Load BROKER trust, or undefined if auth was never set up here. Reads the pre-W4 monolith as
@@ -213,9 +288,17 @@ export function loadBrokerAuth(dir: string): BrokerAuth | undefined {
   return legacy ? { operator: legacy.operator, sys: legacy.sys } : undefined;
 }
 
-/** Persist ONE space's account record. Never carries broker material. */
+/** Persist ONE space's account record. Never carries broker material. Refuses to overwrite a record
+ *  that already holds a DIFFERENT space: with an injective hex key that only happens on a corrupted
+ *  or hand-swapped file, and silently replacing one tenant's signing authority with another's must
+ *  fail loud. */
 export function saveSpaceAccountAuth(dir: string, spaceAccount: SpaceAccountAuth): void {
   const target = spaceAccountPath(dir, spaceAccount.space);
+  if (existsSync(target)) {
+    const existing = JSON.parse(readFileSync(target, "utf8")) as SpaceAccountAuth;
+    if (existing.space !== spaceAccount.space)
+      throw new Error(`${target} holds space "${existing.space}"; refusing to overwrite it with "${spaceAccount.space}"`);
+  }
   mkSecretDir(dirname(target));
   const onDisk: SpaceAccountAuth = { space: spaceAccount.space, account: spaceAccount.account };
   writeSecretFile(target, JSON.stringify(onDisk, null, 2));
@@ -226,7 +309,12 @@ export function saveSpaceAccountAuth(dir: string, spaceAccount: SpaceAccountAuth
  *  a DIFFERENT space must never satisfy a load for this one. */
 export function loadSpaceAccountAuth(dir: string, space: string): SpaceAccountAuth | undefined {
   const f = spaceAccountPath(dir, space);
-  if (existsSync(f)) return JSON.parse(readFileSync(f, "utf8")) as SpaceAccountAuth;
+  if (existsSync(f)) {
+    const doc = JSON.parse(readFileSync(f, "utf8")) as SpaceAccountAuth;
+    if (doc.space !== space)
+      throw new Error(`${f} holds space "${doc.space}", not "${space}" - the account record was renamed or corrupted`);
+    return doc;
+  }
   const legacy = loadLegacySpaceAuth(dir);
   if (!legacy || legacy.space !== space) return undefined;
   return { space: legacy.space, account: legacy.account };
@@ -280,7 +368,11 @@ export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
  *  this; this exists so the remaining space-blind paths become a loud error rather than a wrong
  *  answer the day a root holds two. */
 export function soleSpaceOf(dir: string): string | undefined {
-  const spaces = listSpaceAccounts(dir);
+  const { spaces, corrupt } = accountInventory(dir);
+  if (corrupt.length > 0)
+    throw new Error(
+      `${dir} holds ${corrupt.length} unreadable account record(s) (${corrupt.join(", ")}) - refusing to name a sole space while the tenant count is uncertain; repair or remove them`,
+    );
   if (spaces.length === 0) return undefined;
   if (spaces.length > 1)
     throw new Error(
@@ -289,32 +381,72 @@ export function soleSpaceOf(dir: string): string | undefined {
   return spaces[0];
 }
 
-/** Refuse a BROKER-WIDE operation on a root that hosts several spaces.
+/** Refuse a BROKER-WIDE operation on a root that hosts several spaces - or whose tenant list cannot
+ *  be read with certainty.
  *
  *  Distinct from {@link soleSpaceOf}'s ambiguity, and the distinction is the whole point: the
  *  broker process, its JetStream store and the single `.cotal/auth` broker record are shared by
  *  every space on the root, so naming a space cannot scope `down`, `clean store|all`, `backup` or a
  *  restore - they would apply to all of them regardless. Sending the operator after a `--space` they
  *  cannot use (two of these commands do not even take one) is a dead end dressed as advice, so this
- *  refusal names the blast radius and stops, and stays a refusal until per-space teardown exists. */
+ *  refusal names the blast radius and stops, and stays a refusal until per-space teardown exists.
+ *
+ *  A corrupt/foreign account record is refused too, NOT skipped: an under-count is the fail-open
+ *  this guard exists to prevent - a file that occupies the account namespace but will not validate
+ *  might be a real tenant, so the blast radius is unknown and a broker-wide delete must not proceed. */
 export function assertSingleSpaceBroker(dir: string, operation: string): void {
-  const spaces = listSpaceAccounts(dir);
+  const { spaces, corrupt } = accountInventory(dir);
+  if (corrupt.length > 0)
+    throw new Error(
+      `${operation} is broker-wide and this broker's tenant list is not fully readable (${corrupt.join(", ")}) - refusing to act while the blast radius is uncertain; repair or remove those account records first`,
+    );
   if (spaces.length > 1)
     throw new Error(
       `${operation} is broker-wide, and this broker hosts ${spaces.length} spaces (${spaces.join(", ")}) - it would apply to every one of them, and naming a single space cannot scope it; a per-space form does not exist yet`,
     );
 }
 
-/** Every space that has an account record under this auth dir. The broker's tenant list on disk. */
-export function listSpaceAccounts(dir: string): string[] {
-  if (!existsSync(dir)) return [];
+/** The VALIDATED tenant inventory of an auth dir: the spaces whose account records parse, carry a
+ *  `space` equal to their own injective filename key, and round-trip - PLUS the names of files that
+ *  occupy the account namespace (`account.*.json`) yet fail any of those. The authoritative name is
+ *  the record's own `space`, never inferred from the filename. `corrupt` is what turns the guards
+ *  above fail-CLOSED: an unreadable record is uncertainty about how many tenants exist, and a
+ *  broker-wide guard must not proceed on an under-count. */
+function accountInventory(dir: string): { spaces: string[]; corrupt: string[] } {
   const spaces: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
-    spaces.push(decodeURIComponent(entry.name.slice(SPACE_ACCOUNT_PREFIX.length, -SPACE_ACCOUNT_SUFFIX.length)));
+  const corrupt: string[] = [];
+  if (existsSync(dir)) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
+      // From here the file CLAIMS the account namespace; anything wrong is corruption, never a skip.
+      const fromName = spaceFromAccountFile(entry.name);
+      if (fromName === undefined) {
+        corrupt.push(entry.name);
+        continue;
+      }
+      let doc: { space?: unknown };
+      try {
+        doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown };
+      } catch {
+        corrupt.push(entry.name);
+        continue;
+      }
+      if (typeof doc.space !== "string" || doc.space !== fromName) {
+        corrupt.push(entry.name);
+        continue;
+      }
+      spaces.push(doc.space);
+    }
   }
   const legacy = loadLegacySpaceAuth(dir);
-  if (legacy && !spaces.includes(legacy.space)) spaces.push(legacy.space);
-  return spaces.sort();
+  if (legacy && typeof legacy.space === "string" && legacy.space && !spaces.includes(legacy.space)) spaces.push(legacy.space);
+  return { spaces: spaces.sort(), corrupt: corrupt.sort() };
+}
+
+/** Every space that has a VALID account record under this auth dir. The broker's tenant list on disk;
+ *  names come from each record's authoritative `space`. Callers that must act on the blast radius use
+ *  {@link assertSingleSpaceBroker} / {@link soleSpaceOf}, which also refuse on an unreadable record. */
+export function listSpaceAccounts(dir: string): string[] {
+  return accountInventory(dir).spaces;
 }

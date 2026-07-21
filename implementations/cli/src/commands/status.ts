@@ -10,7 +10,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, authDir, findCotalRoot, getCurrent, isWorkspaceTargetError, listSpaceAccounts, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, authDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, listSpaceAccounts, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
@@ -76,7 +76,7 @@ function printProject(root: string, cmd: string): void {
     return;
   }
   const auth = loadSoleSpaceAuth(authDir(root));
-  const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
+  const userDisk = auth && hasUserAuthState(root, auth.space);
   const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
