@@ -481,7 +481,7 @@ function parseSemver(v: string): Semver {
   return { rel: [release[0] ?? 0, release[1] ?? 0, release[2] ?? 0], pre };
 }
 
-function compareSemver(a: string, b: string): number {
+export function compareSemver(a: string, b: string): number {
   const pa = parseSemver(a);
   const pb = parseSemver(b);
   for (let i = 0; i < 3; i++) {
