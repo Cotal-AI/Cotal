@@ -159,10 +159,13 @@ export async function provisionEndpointGateOpen(
  *  exercised — but they are REAL code (a later takeover/re-registration of a LIVE instance MUST
  *  revoke the prior serve family and verify-evict its holders; a stub would silently skip that).
  *  `evict` is INJECTED: cluster-verified eviction is the $SYS CONNZ+KICK machinery (D5 slice 4),
- *  not this module's job; a caller that has it supplies it, else the trivial fresh-registration
- *  evictor (`() => true`) is a NAMED RESIDUAL — sound ONLY when there is no live predecessor
- *  principal (the 1a-gate case), NEVER for a takeover of a live instance. The freeze/reopen CAS is
- *  the real fence: a barrier that moved the gate makes a racing mint LOSE. */
+ *  not this module's job. The DEFAULT is FAIL-CLOSED `() => false` — "no evictor ⇒ eviction cannot
+ *  be VERIFIED ⇒ report not-verified" — so the saga's own guard (`if (!evict) throw`) leaves the
+ *  gate FROZEN for reconciliation on a takeover with no real evictor, never silently reopening into
+ *  split-brain. It is ONLY consulted on a NON-EMPTY family (a takeover); a fresh registration's
+ *  empty family never invokes it, so this default never touches the 1a-gate path — it enforces the
+ *  guard the moment a live predecessor exists. A caller with the real $SYS evictor injects it. The
+ *  freeze/reopen CAS is the real fence: a barrier that moved the gate makes a racing mint LOSE. */
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
@@ -172,7 +175,7 @@ export function endpointRegistrationBarrier(
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const opId = assertLifecycleToken(args.opId, "opId");
   const key = epgateKey(endpoint, instanceId);
-  const evict = args.evict ?? (() => true); // NAMED RESIDUAL: fresh-registration trivial evictor
+  const evict = args.evict ?? (() => false); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
   const observed = async (): Promise<{ row: import("./lifecycle-state.js").EndpointGateRow; revision: number } | null> => {
     const entry = await kv.get(key);
     if (!entry) return null;

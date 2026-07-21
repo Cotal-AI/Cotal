@@ -99,8 +99,10 @@ try {
   c("observe reads the open gate at its revision", obs1 !== null && obs1.state === "open" && obs1.space === SPACE && obs1.endpoint === ENDPOINT && obs1.lifecycleUid === IID, obs1);
   const token1 = await bar1.freeze(obs1!.revision);
   c("freeze returns a fencing TOKEN and leaves the gate FROZEN under the registration op", token1 !== null && (await gateState(kv)).state === "frozen" && (await gateState(kv)).op?.opId === op1 && (await gateState(kv)).op?.kind === "registration", { token1 });
-  c("a mint FENCE cannot commit while the gate is frozen (observe sees frozen, commit refuses open-only)",
+  c("a mint FENCE observes the gate FROZEN while a barrier holds it",
     (await serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId: IID }).observe())!.state === "frozen");
+  c("a mint commit while the gate is FROZEN LOSES (commit is open-only — no mint under a held barrier)",
+    (await serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId: IID }).commit(token1!)) === false);
   const reopened1 = await bar1.reopen(token1!, { generation: obs1!.generation + 1, processEpoch: obs1!.processEpoch, registrationRevision: 1, nameAuthorityRevision: obs1!.nameAuthorityRevision });
   const g1 = await gateState(kv);
   c("reopen advances the gate to OPEN at generation 1, op cleared, registrationRevision stamped", reopened1 === true && g1.state === "open" && g1.generation === 1 && g1.registrationRevision === 1 && g1.op === undefined, g1);
@@ -116,9 +118,16 @@ try {
   c("commit at the OBSERVED revision WINS (the mint released its credential)", (await gate.commit(obsMint!.revision)) === true);
   c("commit at a STALE revision LOSES (a barrier moved the gate since observation)", (await gate.commit(obsMint!.revision - 1)) === false);
 
-  console.log("D. the REAL revoke path: a takeover barrier enumerates + revokes the prior serve family");
+  console.log("D. the REAL revoke path + FAIL-CLOSED default eviction on a takeover");
+  // The DEFAULT (no injected evictor) must report NOT-verified on a non-empty family, so the saga's
+  // `if (!evict) throw` leaves the gate frozen for reconciliation rather than reopening into
+  // split-brain. It is ONLY ever consulted on a takeover (a fresh registration's family is empty).
+  const barNoEvict = endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId: IID, opId: mintLifecycleUid() });
+  c("the DEFAULT evictor is FAIL-CLOSED: no evictor ⇒ eviction NOT verified (a takeover fails closed, no silent split-brain)", (await barNoEvict.evict(PRINCIPAL)) === false);
+  // The happy takeover injects a REAL (here, test) evictor that verifies the predecessor GONE.
+  let evicted: string | undefined;
   const op2 = mintLifecycleUid();
-  const bar2 = endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId: IID, opId: op2 });
+  const bar2 = endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId: IID, opId: op2, evict: (p) => { evicted = p; return true; } });
   const obs2 = await bar2.observe();
   const token2 = await bar2.freeze(obs2!.revision);
   c("the takeover freeze wins the now-open gate", token2 !== null);
@@ -127,7 +136,7 @@ try {
   for (const row of family) if (row.state === "active") await bar2.revoke(row);
   const revoked = parseLedgerRow((await kv.get(epcredRowKey(ENDPOINT, IID, CRED_A)))!.value, epcredRowKey(ENDPOINT, IID, CRED_A));
   c("revoke CASes the prior serve credential's ledger row active -> REVOKED", revoked.state === "revoked", revoked);
-  c("evict verifies GONE (fresh-registration trivial evictor — NAMED RESIDUAL: no live predecessor)", (await bar2.evict(PRINCIPAL)) === true);
+  c("the INJECTED evictor verifies the predecessor principal GONE (real eviction is caller-supplied)", (await bar2.evict(PRINCIPAL)) === true && evicted === PRINCIPAL);
   const reopened2 = await bar2.reopen(token2!, { generation: obs2!.generation + 1, processEpoch: obs2!.processEpoch, registrationRevision: 2, nameAuthorityRevision: obs2!.nameAuthorityRevision });
   c("the takeover reopens at generation 2 (the successor advanced past the revoked family)", reopened2 === true && (await gateState(kv)).generation === 2);
   c("re-enumerate now sees the row as REVOKED (non-reissuable under the old generation)", (await bar2.enumerate())[0].state === "revoked");
