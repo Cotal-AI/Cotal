@@ -71,16 +71,18 @@ const agentFile = {
   sentinelCreds: (base: string) => `${base}.sentinel.creds`,
 };
 
-/** The per-INCARNATION filename base `<name>-<lifecycleUid>` (SPEC 13.1 naming discipline brought
- *  to the FS): a manager-provisioned incarnation's secret family embeds its lifecycle UID, so a
+/** The per-INCARNATION filename base `<name>.<lifecycleUid>` (SPEC 13.1 naming discipline brought
+ *  to the FS): an endpoint-provisioned incarnation's secret family embeds its lifecycle UID, so a
  *  stale or replayed teardown for a retired incarnation addresses names a same-alias successor
- *  never uses — name-disjoint by construction, mirroring the broker-side `dm_<owner>-<actor>-<uid>`
- *  discipline. Both halves are independently guarded (name alphabet, uid token); the uid's fixed
- *  `[a-z0-9]{26,32}` entropy makes a cross-alias collision (`a-<uid>` vs name `a-...`) require the
- *  same 26+-char random token, i.e. it does not occur. Standing OPERATOR secrets (`cotal mint`,
- *  setup-seeded creds) stay on the name-keyed builders below — they have no lifecycle. */
+ *  never uses. The separator is a `.` — a character {@link agentSecretSegment} REFUSES in a
+ *  standing name — so the two families are STRUCTURALLY disjoint: no legal standing alias can
+ *  spell an incarnation base (`worker-<uid>` the standing name maps to `worker-<uid>.creds`;
+ *  `worker` at that uid maps to `worker.<uid>.creds`). Disjointness is grammar, not uid entropy —
+ *  a standing alias is chosen, not sampled, so entropy alone guarantees nothing. Standing
+ *  OPERATOR secrets (`cotal mint`, setup-seeded creds) stay on the name-keyed builders below —
+ *  they have no lifecycle. */
 function agentIncarnationBase(name: string, lifecycleUid: string): string {
-  return `${agentSecretSegment(name)}-${assertLifecycleToken(lifecycleUid)}`;
+  return `${agentSecretSegment(name)}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
 /** Canonical {@link SecretStore} keys of the per-agent standing secrets, mirroring today's
@@ -92,9 +94,10 @@ export const agentCredsKey = (name: string): string => `auth/creds/${agentFile.c
 export const agentActorTokenKey = (name: string): string => `auth/creds/${agentFile.actorToken(agentSecretSegment(name))}`;
 export const agentSentinelCredsKey = (name: string): string => `auth/creds/${agentFile.sentinelCreds(agentSecretSegment(name))}`;
 
-/** Lifecycle-keyed {@link SecretStore} keys of one INCARNATION's secret family — the manager-spawn
- *  counterparts of the standing name-keyed keys above (see {@link agentIncarnationBase} for why the
- *  uid is embedded). */
+/** Lifecycle-keyed {@link SecretStore} keys of one INCARNATION's secret family — the
+ *  per-incarnation counterparts of the standing name-keyed keys above, for any endpoint that
+ *  provisions managed lifecycles (the manager is the first client; delivery and future endpoints
+ *  ride the same seam). See {@link agentIncarnationBase} for why the uid is embedded. */
 export const agentLifecycleCredsKey = (name: string, lifecycleUid: string): string =>
   `auth/creds/${agentFile.creds(agentIncarnationBase(name, lifecycleUid))}`;
 export const agentLifecycleActorTokenKey = (name: string, lifecycleUid: string): string =>
@@ -142,13 +145,18 @@ export function agentLifecycleSecretFilePaths(root: string, name: string, lifecy
  *  the truth, and its key must be derived from the SAME filename, never re-derived from the name
  *  alone (which would silently address a different generation's row). Refuses a filename that no
  *  valid provisioning could have written. */
+/** The exact filename-base grammar the two builder families can produce — a standing name
+ *  ({@link agentSecretSegment}'s alphabet, no `.`) or an incarnation base `<name>.<uid>`
+ *  ({@link agentIncarnationBase}). Anything else is a stray no valid provisioning wrote. */
+const PROVISIONABLE_BASE = /^[A-Za-z0-9_-]+(\.[a-z0-9]{26,32})?$/;
+
 export function agentSecretKeyForFile(path: string): string {
   const file = basename(path);
   for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
     if (!file.endsWith(suffix)) continue;
     const base = file.slice(0, -suffix.length);
-    if (!/^[A-Za-z0-9_-]+$/.test(base))
-      throw new Error(`"${file}" is not a provisionable agent-secret filename (base alphabet: letters, digits, _ -)`);
+    if (!PROVISIONABLE_BASE.test(base))
+      throw new Error(`"${file}" is not a provisionable agent-secret filename (a standing name, or <name>.<lifecycleUid>)`);
     return `auth/creds/${file}`;
   }
   throw new Error(`"${file}" is not an agent-secret filename (expected a .creds / .actor-token / .sentinel.creds suffix)`);
@@ -173,7 +181,7 @@ export function agentSecretKeysUnder(root: string): string[] {
     for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
       if (!file.endsWith(suffix)) continue;
       const base = file.slice(0, -suffix.length);
-      if (/^[A-Za-z0-9_-]+$/.test(base)) keys.push(`auth/creds/${file}`);
+      if (PROVISIONABLE_BASE.test(base)) keys.push(`auth/creds/${file}`);
       break; // longest match decides; a rejected base is a stray either way
     }
   }

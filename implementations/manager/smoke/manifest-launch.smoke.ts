@@ -88,6 +88,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent joined.
   on: () => {},
   off: () => {},
+  waitForPresenceSnapshot: async () => {},
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 let seenVariant: string | undefined;
@@ -118,7 +119,9 @@ registry.register(recCon);
   check("variant is forwarded to the connector", seenVariant === "high", seenVariant);
   check("launchOptions forwarded to the connector (via resolved)", JSON.stringify(seenLaunchOptions) === JSON.stringify({ temperature: "0.2" }), seenLaunchOptions);
 
-  const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
+  // Lifecycle-keyed cred file (`<name>.<uid>.creds`) — the reply's uid names this incarnation's file.
+  const scoutUid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+  const acl = credAcl(join(root, ".cotal", "auth", "creds", `scout.${scoutUid}.creds`));
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);
   check("post ACL = resolved allowPublish (general only)", acl.pub.some((s) => s.endsWith(".general")) && !acl.pub.some((s) => s.endsWith(".ops")), acl.pub);
 }
@@ -209,11 +212,14 @@ function writeSpec(name: string, body: unknown): string {
   check("reply carries the manifest requested name", reply.ok && reply.data?.requested === "scout");
   check("reply carries runId + resolved hash for the ledger", reply.ok && reply.data?.runId === runId2 && reply.data?.hash === "abc123");
   check("reply carries the spawned nkey id", reply.ok && typeof reply.data?.id === "string" && (reply.data.id as string).length > 0);
-  check("creds are filed under the SPAWNED name (ledger-keying invariant)", existsSync(join(root, ".cotal", "auth", "creds", "scout-2.creds")));
+  // Lifecycle-keyed under the SPAWNED (collision-numbered) name: `scout-2.<uid>.creds`.
+  const scout2Uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+  const scout2Creds = join(root, ".cotal", "auth", "creds", `scout-2.${scout2Uid}.creds`);
+  check("creds are filed under the SPAWNED name (ledger-keying invariant)", existsSync(scout2Creds));
   // The cred file's OWN nkey subject equals the reply id — the invariant `down -f` relies on to
   // verify a cred belongs to the recorded agent before deleting it (name+id ownership).
   {
-    const credText = readFileSync(join(root, ".cotal", "auth", "creds", "scout-2.creds"), "utf8");
+    const credText = readFileSync(scout2Creds, "utf8");
     const jwt = credText.split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
     const sub = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8")).sub;
     check("minted cred's JWT subject == the reply id (down -f cred-ownership check)", reply.ok && sub === reply.data?.id, { sub, id: reply.ok && reply.data?.id });

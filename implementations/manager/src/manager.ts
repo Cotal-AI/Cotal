@@ -335,8 +335,9 @@ interface ManagedAgent {
    *  THESE, never a re-derivation by name alone, so a stale/replayed teardown can only ever address
    *  this incarnation's own files — the manager-local half of the SPEC 13.1 name-disjoint
    *  discipline (the broker half is the uid-pinned deprovisioner). Present per mode: static =
-   *  `creds`; user = `actorToken`/`sentinelCreds`/`health`; open = none. */
-  secretPaths: { creds?: string; actorToken?: string; sentinelCreds?: string; health?: string };
+   *  `creds`; user = `actorToken`/`sentinelCreds`/`health`; open = absent. Absent (never `{}`)
+   *  when nothing was recorded, so teardown's uid-keyed derivation fallback stays reachable. */
+  secretPaths?: { creds?: string; actorToken?: string; sentinelCreds?: string; health?: string };
   /** Authenticated id of the peer that requested this spawn (the control-plane `req.from.id`),
    *  or the manager's own id for roster/pre-spawn. Non-forgeable — set by `handle()`. The spawner
    *  ledger (P4b) keys own-children despawn + reap-on-parent-exit off this. */
@@ -928,7 +929,7 @@ export class Manager {
     const files = a.secretPaths;
     const identity: ManagerResumeIdentity = a.userOwner
       ? (() => {
-          if (!files.actorToken || !files.sentinelCreds || !files.health)
+          if (!files?.actorToken || !files.sentinelCreds || !files.health)
             throw new Error(`managed agent ${a.name} is user-mode but its secret-family paths were not recorded`);
           return {
             mode: "user" as const,
@@ -942,7 +943,7 @@ export class Manager {
         })()
       : this.auth
         ? (() => {
-            if (!files.creds)
+            if (!files?.creds)
               throw new Error(`managed agent ${a.name} is static-auth but its credential path was not recorded`);
             return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) } };
           })()
@@ -2217,9 +2218,10 @@ export class Manager {
     // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
     // very collision black-hole this closes. Await the snapshot (bounded internally, fail-safe on an
-    // empty mesh) before allocating; the broker/auth remain the authority downstream. Optional on the
-    // endpoint seam so the fake-runtime unit smokes (no live presence) are unaffected.
-    await this.ep.waitForPresenceSnapshot?.();
+    // empty mesh) before allocating; the broker/auth remain the authority downstream. Deliberately
+    // unconditional: a half-wired endpoint without the seam must fail loud here, not silently
+    // allocate off a pre-snapshot roster.
+    await this.ep.waitForPresenceSnapshot();
     const name = this.uniqueName(identityName);
     this.reserved.add(name);
     // Transcript mirroring (opt-in: `--transcript` / COTAL_TRANSCRIPT_DEFAULT=1) → grant the agent pub
@@ -2367,9 +2369,9 @@ export class Manager {
         agent,
         id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
         lifecycleUid,
-        // The lifecycle-keyed family this spawn just materialized (empty on an open mesh) — the
+        // The lifecycle-keyed family this spawn just materialized (absent on an open mesh) — the
         // recorded truth teardown/preservation/health consume, never re-derived by name.
-        secretPaths: provisioned?.secretPaths ?? {},
+        secretPaths: provisioned?.secretPaths,
         ...(userLaunch ? { userOwner } : { seed: identity.seed }),
         spawner: spawner ?? this.ep.ref().id,
         authorityParent: userLaunch && spawner && parsePrincipalKey(spawner) ? spawner : undefined,
@@ -2782,7 +2784,7 @@ export class Manager {
           ? { actorToken: entry.identity.actorToken.path, sentinelCreds: entry.identity.sentinelCredential.path, health: entry.identity.health.path }
           : entry.identity.mode === "static"
             ? { creds: entry.identity.credential.path }
-            : {},
+            : undefined,
         userOwner: entry.identity.mode === "user" ? entry.identity.owner : undefined,
         spawner: entry.spawner,
         authorityParent: entry.authorityParent,
@@ -3112,7 +3114,7 @@ export class Manager {
       // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
       // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
       const health = a.userOwner
-        ? agentAuthState(a.secretPaths.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid).health)
+        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid).health)
         : undefined;
       return {
         name: a.name,

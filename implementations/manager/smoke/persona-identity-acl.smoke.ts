@@ -74,6 +74,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
+  waitForPresenceSnapshot: async () => {},
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 
@@ -89,7 +90,9 @@ try {
     check("spawn by filename succeeds", reply.ok === true, reply);
     check("identity is the file's name: (socrates), not the filename", reply.ok && reply.data?.name === "socrates", reply.ok && reply.data?.name);
 
-    const acl = credAcl(join(workspaceRoot, ".cotal", "auth", "creds", "socrates.creds"));
+    // Lifecycle-keyed cred file (`<name>.<uid>.creds`) — the reply's uid names this incarnation's file.
+    const socratesUid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+    const acl = credAcl(join(workspaceRoot, ".cotal", "auth", "creds", `socrates.${socratesUid}.creds`));
     check("read ACL is the persona's review scope", acl.sub.some((s) => s.endsWith(".review")) && acl.sub.some((s) => s.endsWith(".review.>")), acl.sub);
     check("post ACL is the persona's review.> (not default-deny)", acl.pub.some((s) => s.includes(".review.>")), acl.pub);
     check("NOT the silent default (general-only read)", !(acl.sub.length === 1 && acl.sub[0].endsWith(".general")), acl.sub);
