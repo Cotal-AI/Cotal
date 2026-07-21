@@ -75,7 +75,7 @@ import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCa
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket } from "./endpoint-binding.js";
 import { recordsBucket } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, STATIC_SLOT_PREFIX } from "./lifecycle-state.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
@@ -428,11 +428,12 @@ export interface MintOpts {
   /** `lifecycle-executor` profile only (Unit B, the static §13.1 executor): the ONE incarnation
    *  whose lifecycle-state keys this credential may write — the head `lifecycle.<owner>.<actor>`,
    *  the reservation `uid.<lifecycleUid>`, the gate `gate.<lifecycleUid>`, the ledger family
-   *  `cred.<lifecycleUid>.>`, and the manager's durable slot row `slotKey`. REQUIRED for that
-   *  profile (it throws without one); every grant is key-pinned so a leaked executor cred can
-   *  move exactly one incarnation's state machine and nothing else. Ignored by every other
-   *  profile. */
-  lifecycleExecutor?: { owner: string; actor: string; lifecycleUid: string; slotKey: string };
+   *  `cred.<lifecycleUid>.>`, and the manager's durable slot row `mgrslot.<owner>.<alias>`.
+   *  REQUIRED for that profile (it throws without one). EVERY key is DERIVED inside the profile
+   *  from (owner, actor, lifecycleUid, alias) — none is a caller-supplied literal — so the pin is
+   *  coherent by construction and a leaked executor cred can move exactly one incarnation's state
+   *  machine and nothing else. Ignored by every other profile. */
+  lifecycleExecutor?: { owner: string; actor: string; lifecycleUid: string; alias: string };
   /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
    *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
    *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
@@ -723,7 +724,7 @@ export function permissionsFor(
   }
   if (profile === "lifecycle-executor") {
     if (!opts.lifecycleExecutor)
-      throw new Error("permissionsFor: lifecycle-executor requires opts.lifecycleExecutor ({owner, actor, lifecycleUid, slotKey} of the ONE incarnation it may move)");
+      throw new Error("permissionsFor: lifecycle-executor requires opts.lifecycleExecutor ({owner, actor, lifecycleUid, alias} of the ONE incarnation it may move)");
     return lifecycleExecutorPermissions(space, pr, opts.lifecycleExecutor);
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
@@ -1421,9 +1422,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         `$JS.API.DIRECT.GET.KV_${channelBucket(space)}.>`, // keyed get: `.>` (the key rides the subject)
         // The Unit B static-manager start path: `ensureAuthorityStores` UPDATEs the records store's
         // deny-flags exactly once at fresh creation (create → update → verify), and the boot
-        // reconciliation sweep lists the manager's slot rows via a headers-only ordered consumer
-        // (`keys()`) on the records stream — value bodies are never delivered, consistent with the
-        // provisioner's no-body-reads discipline.
+        // reconciliation sweep enumerates the manager's slot rows (`keys()` → an ordered consumer)
+        // then reads each slot BODY (phase/uid/actor) to plan resume — the reads ride the
+        // stream-scoped MSG.GET residual named below (records lifecycle metadata, no secrets).
         `$JS.API.STREAM.UPDATE.KV_${recordsBucket(space)}`,
         `$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.>`,
         `$JS.API.CONSUMER.INFO.KV_${recordsBucket(space)}.>`,
@@ -1457,12 +1458,14 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
 function lifecycleExecutorPermissions(
   space: string,
   pr: MintPrincipal,
-  pin: { owner: string; actor: string; lifecycleUid: string; slotKey: string },
+  pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
 ): Record<string, unknown> {
   const REC = recordsBucket(space), AUTH = epAuthBucket(space);
-  if (typeof pin.slotKey !== "string" || !/^[A-Za-z0-9_.-]+$/.test(pin.slotKey))
-    throw new Error(`permissionsFor: lifecycle-executor slotKey ${JSON.stringify(pin.slotKey)} is not a literal KV key (no wildcards, no empty)`);
-  const recordKeys = [lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), pin.slotKey];
+  // ALL keys DERIVED here from the pin coordinates — the slot key is `staticSlotKey(owner, alias)`,
+  // NOT a caller-supplied literal, so a mis-constructed pin can only ever name ONE coherent
+  // incarnation's rows (guard the core: the profile enforces the "one incarnation" promise, it
+  // does not merely assert it). The builders throw on any non-KV-safe segment.
+  const recordKeys = [lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), staticSlotKey(pin.owner, pin.alias)];
   return {
     pub: {
       allow: [

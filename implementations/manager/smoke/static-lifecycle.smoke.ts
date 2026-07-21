@@ -46,7 +46,6 @@ import {
   mintLifecycleUid,
   recordsBucket,
   epAuthBucket,
-  staticSlotKey,
   credRowKey,
   parseLedgerRow,
   headCandidate,
@@ -152,7 +151,7 @@ async function readState(alias: string, actor: string, uid: string): Promise<{
   credRows: CredentialLedgerRow[];
 }> {
   const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
-    lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, slotKey: staticSlotKey(DEV_OWNER, alias) },
+    lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias },
   });
   const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
   try {
@@ -276,7 +275,7 @@ try {
   const orphanUid = mintLifecycleUid();
   {
     const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
-      lifecycleExecutor: { owner: DEV_OWNER, actor: orphanId.id, lifecycleUid: orphanUid, slotKey: staticSlotKey(DEV_OWNER, "orphan") },
+      lifecycleExecutor: { owner: DEV_OWNER, actor: orphanId.id, lifecycleUid: orphanUid, alias: "orphan" },
     });
     const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
     try {
@@ -303,7 +302,7 @@ try {
   const resOrphanUid = mintLifecycleUid();
   {
     const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
-      lifecycleExecutor: { owner: DEV_OWNER, actor: resOrphanId.id, lifecycleUid: resOrphanUid, slotKey: staticSlotKey(DEV_OWNER, "resorphan") },
+      lifecycleExecutor: { owner: DEV_OWNER, actor: resOrphanId.id, lifecycleUid: resOrphanUid, alias: "resorphan" },
     });
     const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
     try {

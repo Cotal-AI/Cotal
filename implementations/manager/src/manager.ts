@@ -59,7 +59,6 @@ import {
   epAuthBucket,
   ensureAuthorityStores,
   standaloneConnectOpts,
-  staticSlotKey,
   STATIC_SLOT_PREFIX,
   rawDigest,
   inspectCredHealth,
@@ -3175,7 +3174,7 @@ export class Manager {
     if (!this.auth) throw new Error("withLifecycleExecutor: no space auth (an open mesh has no lifecycle registry)");
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
-      lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, slotKey: staticSlotKey(pin.owner, pin.alias) },
+      lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
     const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
     try {
@@ -3264,12 +3263,15 @@ export class Manager {
     console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
   }
 
-  /** The Unit B boot reconciliation (F3 "no active orphan"): ensure the authority stores, then
-   *  sweep every durable slot row and act by the TOTAL resume table — `provisioning`/
-   *  `terminalizing` re-drive the exact-op terminal; `active` rows survive ONLY when a resume
-   *  inventory may adopt them (this manager was started with a resume attempt), else their
-   *  process is gone and they terminalize; `retired` rows seed the F5 refusal index. Runs under
-   *  the lease, before control serving. */
+  /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep
+   *  every durable slot row and act by the TOTAL resume table — `provisioning`/`terminalizing`
+   *  re-drive the exact-op terminal; an `active` row survives ONLY when a LIVE managed agent this
+   *  process owns backs it at the same uid (`adopted`), else its process is gone and it
+   *  terminalizes; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
+   *  (`postAdoption=false`, under the lease before control serving) DEFERS active-non-adopted
+   *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
+   *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary
+   *  spawns) terminalizes any active slot the resume did not claim. */
   private async reconcileStaticLifecycles(postAdoption = false): Promise<void> {
     if (!this.auth) return;
     const identity = newIdentity();
