@@ -128,3 +128,124 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
     },
   };
 }
+
+/** Provision the endpoint's issuance gate OPEN (create-only), the §13.1 pre-registration a
+ *  `registerServiceInstance` writes behind — "a registration writes only behind the
+ *  provisioner-created gate". Born `open` at generation 0 / epoch 0 / registrationRevision 0 /
+ *  nameAuthorityRevision 0, bound to the serving connection principal (the eviction target every
+ *  `epcred` row copies). Create-only + idempotent-if-identical: a second provision of the SAME
+ *  (endpoint, instanceId, principal) is a retry, a DIFFERENT principal is a conflict (an instance
+ *  token is never re-bound). */
+export async function provisionEndpointGateOpen(
+  kv: KV,
+  args: { endpoint: string; instanceId: string; principal: string },
+): Promise<void> {
+  const endpoint = endpointToken(args.endpoint);
+  const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
+  const key = epgateKey(endpoint, instanceId);
+  const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: args.principal };
+  // Round-trip through the boundary parser BEFORE the create (a gate this path would refuse to read
+  // never lands durably — e.g. a non-owner-grammar principal).
+  parseEndpointGate(enc.encode(JSON.stringify(row)), key);
+  await createRowByteIdempotent(kv, key, row);
+}
+
+/** The §13.1 endpoint-registration ISSUANCE BARRIER over a bound KV — the production barrier a
+ *  `registerServiceInstance` drives (observe -> freeze -> enumerate -> revoke -> [evict] -> reopen),
+ *  freezing this instance's `epgate.<endpoint>.<instanceId>` so no serve mint can win against the
+ *  surface the registration is about to supersede.
+ *
+ *  For a FRESH first registration the enumerated `epcred` family is EMPTY, so revoke/evict are not
+ *  exercised — but they are REAL code (a later takeover/re-registration of a LIVE instance MUST
+ *  revoke the prior serve family and verify-evict its holders; a stub would silently skip that).
+ *  `evict` is INJECTED: cluster-verified eviction is the $SYS CONNZ+KICK machinery (D5 slice 4),
+ *  not this module's job; a caller that has it supplies it, else the trivial fresh-registration
+ *  evictor (`() => true`) is a NAMED RESIDUAL — sound ONLY when there is no live predecessor
+ *  principal (the 1a-gate case), NEVER for a takeover of a live instance. The freeze/reopen CAS is
+ *  the real fence: a barrier that moved the gate makes a racing mint LOSE. */
+export function endpointRegistrationBarrier(
+  kv: KV,
+  space: string,
+  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipal: string) => Promise<boolean> | boolean },
+): import("./endpoint-service.js").EpIssuanceBarrier {
+  const endpoint = endpointToken(args.endpoint);
+  const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
+  const opId = assertLifecycleToken(args.opId, "opId");
+  const key = epgateKey(endpoint, instanceId);
+  const evict = args.evict ?? (() => true); // NAMED RESIDUAL: fresh-registration trivial evictor
+  const observed = async (): Promise<{ row: import("./lifecycle-state.js").EndpointGateRow; revision: number } | null> => {
+    const entry = await kv.get(key);
+    if (!entry) return null;
+    if (entry.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
+    return { row: parseEndpointGate(entry.value, key), revision: entry.revision };
+  };
+  return {
+    observe: async () => {
+      const cur = await observed();
+      if (cur === null) return null;
+      return {
+        space, endpoint, lifecycleUid: instanceId, principal: cur.row.principal,
+        state: cur.row.state, generation: cur.row.generation, processEpoch: cur.row.processEpoch,
+        registrationRevision: cur.row.registrationRevision, nameAuthorityRevision: cur.row.nameAuthorityRevision,
+        revision: cur.revision,
+      };
+    },
+    freeze: async (expectedRevision: number) => {
+      const cur = await observed();
+      if (cur === null || cur.revision !== expectedRevision || cur.row.state !== "open") return null;
+      const frozen: import("./lifecycle-state.js").EndpointGateRow = { ...cur.row, state: "frozen", op: { opId, kind: "registration" } };
+      try {
+        return await kv.update(key, enc.encode(JSON.stringify(frozen)), expectedRevision); // the fencing TOKEN
+      } catch (e) {
+        if (isRawCasLoss(e)) return null; // a concurrent barrier froze first
+        throw new EpEnvelopeError("unavailable", `the endpoint gate freeze CAS for ${key} is ambiguous; the registration fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+      }
+    },
+    enumerate: async () => {
+      const rows: import("./endpoint-service.js").EpServeLedgerRow[] = [];
+      const prefix = `epcred.${endpoint}.${instanceId}.`;
+      for await (const rowKey of await kv.keys(`epcred.${endpoint}.${instanceId}.>`)) {
+        if (!rowKey.startsWith(prefix)) continue;
+        const entry = await kv.get(rowKey);
+        if (!entry || entry.operation !== "PUT") continue; // a DEL marker is corruption elsewhere; enumeration skips
+        const led = parseLedgerRow(entry.value, rowKey);
+        // Reconstruct the EpServeLedgerRow the barrier consumers need: revoke keys by credentialId,
+        // evict by holderPrincipal, the revoke loop reads state. The gate-coordinate fields and the
+        // holder nkey (`credentialKey`) are NOT persisted on the ledger row (fact H3) — the
+        // coordinates are pinned by the gate key, and revoke/evict never need the nkey; carried as
+        // the observed gate's coordinates + empty credentialKey, documented, not consumed here.
+        rows.push({
+          credentialId: led.credentialId, credentialKey: "", holderPrincipal: led.holderPrincipal,
+          endpoint, lifecycleUid: instanceId, sourceChain: led.sourceChain, state: led.state, exp: led.exp,
+          generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0,
+        });
+      }
+      return rows;
+    },
+    revoke: async (row) => {
+      await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
+    },
+    evict: async (holderPrincipal: string) => evict(holderPrincipal),
+    reopen: async (token: number, successor) => {
+      const cur = await observed();
+      // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler
+      // or newer barrier that advanced the revision wins and this stale reopen loses.
+      if (cur === null || cur.revision !== token || cur.row.state !== "frozen" || cur.row.op?.opId !== opId) return false;
+      const { op: _op, ...rest } = cur.row;
+      void _op;
+      const reopened: import("./lifecycle-state.js").EndpointGateRow = {
+        ...rest, state: "open",
+        generation: successor.generation, processEpoch: successor.processEpoch,
+        registrationRevision: successor.registrationRevision, nameAuthorityRevision: successor.nameAuthorityRevision,
+      };
+      try {
+        await kv.update(key, enc.encode(JSON.stringify(reopened)), token);
+        return true;
+      } catch (e) {
+        if (isRawCasLoss(e)) return false;
+        throw new EpEnvelopeError("unavailable", `the endpoint gate reopen CAS for ${key} is ambiguous; leave frozen for reconciliation (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+      }
+    },
+  };
+}
