@@ -18,8 +18,10 @@ Two versions matter and they move independently: the **wire** version (`protocol
   marker as the v0.x line). So the shape you build against is v0.3 while nothing on the wire announces
   it, and old and new channel clients do not interoperate (core CHANGELOG). The wire is pre-1.0 and
   may still change.
-- **Packages: 0.12.x.** core, workspace, auth, delivery, manager, web, and the connectors publish at
-  0.12.x. These are the surfaces [Embedding Cotal](embedding.md) documents.
+- **Packages: pre-1.0 (the 0.x line).** core, workspace, auth, delivery, manager, web, and the
+  connectors publish in lockstep; the current line is 0.13.x. The exact version is whatever the
+  packages' `package.json` (and `cotal_docs`) report, so any number on this page is illustrative.
+  These are the surfaces [Embedding Cotal](embedding.md) documents.
 
 Buildable on today: the owner+actor identity grammar, the lateral chat/DM/task envelopes and
 subjects, presence and discovery, channels, the three delivery modes, and the Plane-3 durable
@@ -29,10 +31,10 @@ standalone and merged.
 ## The npm semver caveat
 
 The packages are **pre-1.0**. Under semver, a pre-1.0 line makes no compatibility promise across
-minor bumps: a `0.12.x` to `0.13.0` change may break an API. So a product that embeds these packages
+minor bumps: a `0.13.x` to `0.14.0` change may break an API. So a product that embeds these packages
 must **pin exact versions** and upgrade deliberately, reading the changelog and the diff, not float a
-caret range. The repo does not yet publish a formal long-term support or deprecation policy for the
-embedding surface (see [the open policy question](#the-open-policy-question)).
+caret range. The support and deprecation policy for the embedding surface is
+[below](#support-and-versioning-policy).
 
 ## The wire compatibility signal
 
@@ -82,17 +84,37 @@ grammar. What breaks alongside the control grammar is the presence/membership an
 
 ## Building around the cut
 
-- **Pin an exact patch** (for example `0.12.0`, not a `0.12.x` range) and treat the embedding surface as pre-1.0.
+- **Pin an exact patch** (for example `0.13.1`, not a `0.13.x` range) and treat the embedding surface as pre-1.0.
 - **Shim every control-plane, lifecycle, durable-delivery, and presence/membership call** behind an
   internal client, so the v0.4 swap is one contained change rather than a rewrite. This is broader
   than "control subjects."
 - **Do not ship a public API on v0.3 shapes that v0.4 deletes** until the control surface reaches its
   consolidation phase and the final v0.4 inventory exists.
 
-## The open policy question
+## Support and versioning policy
 
-At what package version does the embedding surface become "stable to build a paid product on," and
-does the project publish a support and semver policy (a supported-version window, a deprecation
-notice period, a 1.0 line for the substrate packages) that a product can plan against? This is an
-open project decision; until it is set, the guidance above (pin exact, shim the breaking families)
-is the safe posture.
+The substrate packages stay **pre-1.0 (0.x)** for now. The project does **not** declare a 1.0 line
+for them yet, because a known breaking change is still ahead (the [v0.4 cut](#the-coming-v04-cut)),
+and a 1.0 promise made right before a deliberate break would be hollow. A 1.0 line is revisited once
+v0.4 has landed and the hosted-composition gaps [Embedding Cotal](embedding.md) documents (the secret
+seam, multi-space) have closed.
+
+What a product embedding the packages can rely on in the meantime:
+
+- **Pin an exact patch.** A caret or tilde range can pull in a breaking minor. Pin `0.N.P`, not
+  `^0.N.P` or `~0.N`.
+- **Patch is bug-fix only.** A `0.N.x` patch bump carries no intended breaking change. A **minor**
+  bump (`0.N` to `0.N+1`) may break an API; read the changeset and the diff before taking one.
+- **Every break is written down.** A breaking change ships with a changeset entry and a changelog
+  note that names what changed, so an upgrade is never a silent surprise.
+- **One minor of deprecation notice, where practical.** A symbol slated for removal is marked
+  deprecated for one minor line before it is removed (soft-deprecate in `0.N`, remove in `0.N+1`).
+  The v0.4 hard cut is the explicit exception: it is a coordinated break with no dual-serving,
+  signalled in advance rather than soft-deprecated.
+- **Supported line.** The latest minor is supported; the previous minor gets patch-level fixes until
+  the next minor ships (a one-minor overlap). This is deliberately light-touch while the only
+  consumer is the project's own hosted repo; it tightens (a longer window, a firmer deprecation
+  period) when there are external embedders.
+
+Until the 1.0 line exists, the [build-around guidance](#building-around-the-cut) above (pin exact,
+shim the breaking families) is the safe posture.
