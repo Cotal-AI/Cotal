@@ -1,5 +1,6 @@
 import { isAbsolute, join, normalize } from "node:path";
 import type { Extension } from "@cotal-ai/core";
+import { spaceKey } from "./auth-paths.js";
 
 /** Context supplied to local process providers by workstation commands such as `down` and `status`. */
 export interface LocalProcessContext {
@@ -19,7 +20,8 @@ export interface LocalProcess extends Extension {
   readonly label: string;
   /** Lower orders stop first; the broker should remain last so dependants can shut down cleanly. */
   readonly order?: number;
-  /** Path relative to `<root>/.cotal`; `{space}` expands to the URL-encoded space name. */
+  /** Path relative to `<root>/.cotal`; `{space}` expands to the injective hex space key
+   *  (`spaceKey` — case-safe, so two case-differing spaces can never share a pid/log file). */
   readonly pidFile: string;
   /** Files removed only after the process is confirmed gone. Same template rules as `pidFile`. */
   readonly artifacts?: readonly string[];
@@ -34,7 +36,7 @@ export interface LocalProcess extends Extension {
 /** Resolve a declarative local-process path, rejecting absolute/traversal templates. */
 export function localProcessPath(template: string, context: LocalProcessContext): string {
   if (!template.trim()) throw new Error("local-process path must not be empty");
-  const expanded = template.replaceAll("{space}", encodeURIComponent(context.space));
+  const expanded = template.replaceAll("{space}", spaceKey(context.space));
   const normalized = normalize(expanded);
   if (normalized === "." || isAbsolute(expanded) || normalized === ".." || normalized.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`))
     throw new Error(`local-process path must stay under .cotal: ${JSON.stringify(template)}`);

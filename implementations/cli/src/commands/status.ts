@@ -10,7 +10,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, authDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, listSpaceAccounts, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, accountInventory, authDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
@@ -62,13 +62,21 @@ async function printMachine(): Promise<void> {
 }
 
 function printProject(root: string, cmd: string): void {
-  const spaces = listSpaceAccounts(authDir(root));
+  const { spaces, corrupt } = accountInventory(authDir(root));
   section("This Folder");
   row("root", root);
+  // Status is the command the broker-wide refusals send the operator to, so it must DESCRIBE every
+  // state those refusals can name - crashing on one is a dead end in the exact recovery flow. An
+  // unreadable record means the tenant list is uncertain: report it (the space-blind sole-load
+  // below would throw on it).
+  if (corrupt.length > 0) {
+    row("auth", c.red(`${corrupt.length} unreadable account record(s) · ${corrupt.join(", ")}`));
+    row("hint", `repair or remove ${corrupt.map((f) => join(authDir(root), f)).join(", ")} - broker-wide commands refuse while the tenant list is uncertain`);
+    row("personas", personaSummary(root));
+    return;
+  }
   // A root holding several accounts has no single "this folder's space", and the process rows below
-  // are keyed by one. Report the tenant list instead of letting the space-blind read throw: a status
-  // that cannot describe a multi-space broker is worse than a refusal, because the broker-wide
-  // lifecycle refusals send the operator here to see what the root actually holds.
+  // are keyed by one. Report the tenant list instead of letting the space-blind read throw.
   if (spaces.length > 1) {
     row("auth", c.green(`${spaces.length} spaces · ${spaces.join(", ")}`));
     row("personas", personaSummary(root));

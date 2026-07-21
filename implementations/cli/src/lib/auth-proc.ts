@@ -10,11 +10,12 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { type AuthPrepared } from "@cotal-ai/core";
+import { spaceKey } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
-const PID_PATH = (space: string) => cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
-const LOG_PATH = (space: string) => cotalPath(`auth-service.${encodeURIComponent(space)}.log`);
+const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
+const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
 
 function alive(pid: number): boolean {
   try {

@@ -24,9 +24,22 @@
  *
  *  4. BROKER TRUST HAS ONE OWNER. Overwriting `broker.json` with a different operator would orphan
  *     every account signed by the current one, so it is refused; a same-operator sys rotation is not.
+ *
+ *  5. EVERY TENANT-KEYED NAMESPACE SHARES THE ONE INJECTIVE KEY (`space.<hex>` / `account.<hex>`):
+ *     the account file, the user-auth state dir, and the machine mesh registry. A namespace with its
+ *     own case-preserving encoding is how `alpha`/`Alpha` collapse on a case-insensitive FS and a
+ *     tenant silently absorbs its case-sibling. Pre-hex layouts migrate (state dir) or sweep
+ *     (registry) — byte-exact, never case-folded.
+ *
+ *  6. EVERY READER OF TRUST STATE FAILS CLOSED, not just the guard: a non-regular entry in the
+ *     account namespace is CORRUPT (an lstat skip is an under-count); the user-auth marker throws on
+ *     any errno but ENOENT (an `existsSync` false is a static-mode flip); the broker record refuses
+ *     a stale same-operator system account (iat generation) and refuses a fresh operator while
+ *     tenant accounts exist (orphaning); the resolver refuses `--server`/local auto-picks whenever
+ *     the disk says several tenants (or an unreadable one) exist.
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
@@ -37,9 +50,10 @@ const originalCwd = process.cwd();
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
 const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceAuth, rotateSystemAccount } = await import("@cotal-ai/core");
 const {
-  assertSingleSpaceBroker, authDir, agentCredsDir, brokerAuthPath, hasUserAuthState, isWorkspaceTargetError,
-  listSpaceAccounts, loadSpaceAuth, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf,
-  spaceAccountPath, userAuthStateDir,
+  accountInventory, assertSingleSpaceBroker, authDir, agentCredsDir, brokerAuthPath, hasUserAuthState,
+  isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, recordMesh,
+  removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
+  userAuthSpacesOnDisk, userAuthStateDir,
 } = await import("@cotal-ai/workspace");
 const { down } = await import("../src/commands/down.js");
 const { clean } = await import("../src/commands/clean.js");
@@ -168,6 +182,107 @@ try {
   check("assertSingleSpaceBroker permits on a single-space root", ["cotal down", "cotal backup"].every((op) => {
     try { assertSingleSpaceBroker(authDir(solo), op); return true; } catch { return false; }
   }));
+
+  console.log("\n9) a NON-REGULAR entry in the account namespace is corrupt, never an under-count");
+  const sym = await makeRoot("sym", ["alpha", "beta"]);
+  roots.push(sym);
+  const betaPath = spaceAccountPath(authDir(sym), "beta");
+  renameSync(betaPath, `${betaPath}.aside`);
+  try {
+    symlinkSync(`${betaPath}.aside`, betaPath);
+  } catch (e) {
+    // Windows runners without the symlink privilege cannot build this fixture; a directory in the
+    // account namespace exercises the same non-regular ⇒ corrupt path.
+    if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
+    mkdirSync(betaPath);
+  }
+  const symInv = accountInventory(authDir(sym));
+  check("a non-regular account entry is CORRUPT in the inventory, not skipped", symInv.corrupt.length === 1 && symInv.spaces.join(",") === "alpha", symInv);
+  check("the broker-wide guard REFUSES on it (the entry may hide a real tenant)", (await refusal(() => assertSingleSpaceBroker(authDir(sym), "cotal clean all"))).includes("not fully readable"));
+  check("loadSpaceAccountAuth refuses to go THROUGH it (readers agree with the inventory)", (await refusal(() => loadSpaceAccountAuth(authDir(sym), "beta"))).includes("not a regular file"));
+
+  console.log("\n10) every tenant-keyed namespace is case-safe, and pre-hex layouts migrate");
+  const cs = await makeRoot("cs", ["solo2"]);
+  roots.push(cs);
+  check("state dirs for alpha vs Alpha are DISTINCT paths", userAuthStateDir(cs, "alpha") !== userAuthStateDir(cs, "Alpha"));
+  mkdirSync(userAuthStateDir(cs, "alpha"), { recursive: true });
+  writeFileSync(join(userAuthStateDir(cs, "alpha"), "idp.json"), "{}");
+  check('enabling "alpha" does not flip "Alpha" (no case-fold alias)', hasUserAuthState(cs, "alpha") === true && hasUserAuthState(cs, "Alpha") === false);
+  const legacyDir = join(authDir(cs), encodeURIComponent("legacyspace"));
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(join(legacyDir, "idp.json"), "{}");
+  check("a pre-hex state dir still reads user-auth AND migrates to the canonical segment", hasUserAuthState(cs, "legacyspace") === true && existsSync(userAuthStateDir(cs, "legacyspace")) && !existsSync(legacyDir));
+  check("enumeration sees canonical + migrated spaces alike", userAuthSpacesOnDisk(authDir(cs)).sort().join(",") === "alpha,legacyspace", userAuthSpacesOnDisk(authDir(cs)));
+  const meshEntry = (space: string) => ({ space, server: "nats://127.0.0.1:9999", root: cs, mode: "open" as const, ts: new Date().toISOString() });
+  recordMesh(meshEntry("gamma"));
+  recordMesh(meshEntry("Gamma"));
+  check("case-differing meshes keep DISTINCT registry records", loadMeshes().map((m) => m.space).sort().join(",") === "Gamma,gamma", loadMeshes().map((m) => m.space));
+  writeFileSync(join(home, "meshes", "legacyname.json"), JSON.stringify(meshEntry("legacyname")));
+  check("a pre-hex registry record still loads", loadMeshes().some((m) => m.space === "legacyname"));
+  recordMesh(meshEntry("legacyname"));
+  check("recordMesh sweeps the pre-hex file (one record per space)", loadMeshes().filter((m) => m.space === "legacyname").length === 1 && !existsSync(join(home, "meshes", "legacyname.json")));
+  writeFileSync(join(home, "meshes", "legacyname.json"), JSON.stringify(meshEntry("legacyname")));
+  removeMesh("legacyname");
+  check("removeMesh removes canonical AND pre-hex forms (no resurrection)", !loadMeshes().some((m) => m.space === "legacyname"));
+  for (const s of ["gamma", "Gamma"]) removeMesh(s);
+
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    console.log("\n11) the user-auth marker fails CLOSED on an unreadable state dir");
+    const ea = await makeRoot("eaccess", ["solo3"]);
+    roots.push(ea);
+    const eaDir = userAuthStateDir(ea, "solo3");
+    mkdirSync(eaDir, { recursive: true });
+    writeFileSync(join(eaDir, "idp.json"), "{}");
+    chmodSync(eaDir, 0o000);
+    const eaMsg = await refusal(() => hasUserAuthState(ea, "solo3"));
+    chmodSync(eaDir, 0o700);
+    check("an EACCES on the pin THROWS (never reads as static mode)", eaMsg.includes("EACCES"), eaMsg);
+    check("…and reads user-auth again once readable", hasUserAuthState(ea, "solo3") === true);
+  } else {
+    console.log("\n11) (skipped: chmod-000 semantics need a non-root POSIX runner)");
+  }
+
+  console.log("\n12) the broker record is generation-safe: a STALE same-operator value cannot roll $SYS back");
+  const gen = await makeRoot("gen", ["only2"]);
+  roots.push(gen);
+  const genV0 = await reloadBroker(gen);
+  check("an idempotent re-save of the current value is allowed", (await refusal(() => saveBrokerAuth(authDir(gen), genV0))) === "");
+  await new Promise((r) => setTimeout(r, 1100)); // split the iat second so the rotation is provably newer
+  const genV1 = await rotateSystemAccount(composeSpaceAuth(genV0, await createSpaceAccountAuth(genV0, "only2")));
+  saveBrokerAuth(authDir(gen), genV1);
+  const staleMsg = await refusal(() => saveBrokerAuth(authDir(gen), genV0));
+  check("a stale pre-rotation same-seed write is REFUSED as a rollback", staleMsg.includes("rollback"), staleMsg);
+  check("on-disk sys.pub stays at the rotated value", (await reloadBroker(gen)).sys.pub === genV1.sys.pub);
+
+  console.log("\n13) a missing broker.json does not license a fresh operator while tenants exist");
+  const orphan = await makeRoot("orphan", ["alpha", "beta"]);
+  roots.push(orphan);
+  const orphanOwner = await reloadBroker(orphan);
+  rmSync(brokerAuthPath(authDir(orphan)));
+  const freshOp = await createBrokerAuth("intruder2");
+  const orphanMsg = await refusal(() => saveBrokerAuth(authDir(orphan), freshOp));
+  check("a FRESH operator is refused while account records exist", orphanMsg.includes("orphaned"), orphanMsg);
+  check("the refusal left every tenant record intact", listSpaceAccounts(authDir(orphan)).join(",") === "alpha,beta");
+  check("re-writing the ORIGINAL operator is allowed (a broker.json repair, verified per account)", (await refusal(() => saveBrokerAuth(authDir(orphan), orphanOwner))) === "");
+  rmSync(brokerAuthPath(authDir(orphan)));
+  writeFileSync(join(authDir(orphan), "account.zznothex.json"), "{}");
+  check("the repair is refused while ANY record is unreadable (validated inventory, not the parseable subset)", (await refusal(() => saveBrokerAuth(authDir(orphan), orphanOwner))).includes("unreadable"));
+  rmSync(join(authDir(orphan), "account.zznothex.json"));
+  saveBrokerAuth(authDir(orphan), orphanOwner);
+
+  console.log("\n14) the resolver refuses to auto-pick whenever the disk names several tenants");
+  recordMesh({ space: "r-one", server: "nats://127.0.0.1:7777", root: cs, mode: "open", ts: new Date().toISOString() });
+  recordMesh({ space: "r-two", server: "nats://127.0.0.1:7777", root: cs, mode: "open", ts: new Date().toISOString() });
+  let srvErr: unknown;
+  try { resolveMeshTarget(home, { server: "nats://127.0.0.1:7777" }); } catch (e) { srvErr = e; }
+  check("--server with TWO spaces on that server throws ambiguous-target", isWorkspaceTargetError(srvErr) && (srvErr as { code: string }).code === "ambiguous-target", (srvErr as Error)?.message);
+  for (const s of ["r-one", "r-two"]) removeMesh(s);
+  recordMesh({ space: "alpha", server: "nats://127.0.0.1:8888", root: multi, mode: "auth", ts: new Date().toISOString() });
+  let partialErr: unknown;
+  try { resolveMeshTarget(multi, {}); } catch (e) { partialErr = e; }
+  check("a partially-registered 2-tenant root throws ambiguous-target (the DISK is the tenant authority)", isWorkspaceTargetError(partialErr) && (partialErr as { code: string }).code === "ambiguous-target", (partialErr as Error)?.message);
+  check("…naming both tenants, not just the recorded one", String((partialErr as Error)?.message).includes("alpha") && String((partialErr as Error)?.message).includes("beta"));
+  removeMesh("alpha");
 
   console.log(`\nMULTI-SPACE SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

@@ -134,9 +134,10 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | Path | What it is |
 |---|---|
 | `auth/broker.json` | Broker trust material: the operator seed and the system account (secret; the system-account signing seed is stripped before writing). One per broker, shared by every space on it |
-| `auth/account.<key>.json` | One space's own NATS data account and signing seed (secret). One file per space, all signed by the broker above; `<key>` is a stable, case-safe encoding of the space name (never the raw name, so two case-differing spaces can't collide) |
+| `auth/account.<key>.json` | One space's own NATS data account and signing seed (secret). One file per space, all signed by the broker above; `<key>` is a stable, case-safe hex encoding of the space name (never the raw name, so two case-differing spaces can't collide) |
+| `auth/space.<key>/` | One space's user-auth state (IdP pin, issuer keys, owner secret, callout account), present only when that space enables per-user auth. Keyed by the same case-safe hex encoding; pre-hex layouts (`auth/<space>/`) are renamed here on first touch |
 | `auth/creds/<name>.creds` | Per-agent minted NATS credentials |
-| `auth/server.conf` | Generated nats-server config for the broker (renders every space's accounts on it) |
+| `auth/server.conf` | Generated nats-server config for the broker. The core renderer accepts every space on the broker; `cotal up` currently orchestrates one space per root, so it renders that one space's account |
 | `agents/<name>.md` | Persona / agent files ([Agent files](agent-files.md)) |
 | `manifests/<hash>.json` | Manifest-deploy ledger (records of `up -f` / `spawn -f` runs) |
 | `config.json` | Space-local connector config (the override layer above) |

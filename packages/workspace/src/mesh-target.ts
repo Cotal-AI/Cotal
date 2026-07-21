@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
 import {
   findMesh,
   getCurrent,
@@ -244,8 +244,18 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   }
 
   if (flags.server) {
-    const m = loadMeshes().find((e) => e.server === flags.server);
-    if (m) return targetFromEntry(m, flags.server, "flag-server");
+    // One broker can host several spaces, and each records its own registry entry under the SAME
+    // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
+    // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
+    // name them instead (`--space` picks one explicitly, handled above).
+    const onServer = loadMeshes().filter((e) => e.server === flags.server);
+    if (onServer.length > 1)
+      throw new MeshTargetError(
+        "ambiguous-target",
+        `${onServer.length} spaces are recorded at ${flags.server} (${onServer.map((e) => e.space).join(", ")}) - name one with --space`,
+        { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`) },
+      );
+    if (onServer[0]) return targetFromEntry(onServer[0], flags.server, "flag-server");
     return localTarget(findCotalRoot(cwd), flags.server, "flag-server");
   }
 
@@ -256,6 +266,25 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const root = findCotalRoot(cwd);
   if (isGenuineSpace(root)) {
+    // The DISK is the tenant authority for this root, before any registry record: a broker whose
+    // auth dir holds several accounts stays several tenants even when only one of them happens to
+    // be registered (a pruned entry, a partial registration). Trusting the single surviving record
+    // here would silently resolve a multi-tenant root to whichever tenant kept its record - the
+    // same auto-pick `soleSpaceOf` refuses on the unrecorded path. And an UNREADABLE record means
+    // the tenant count itself is uncertain, which cannot resolve to a single mesh either.
+    const inv = accountInventory(authDir(root));
+    if (inv.corrupt.length > 0)
+      throw new MeshTargetError(
+        "ambiguous-target",
+        `this folder's auth dir holds ${inv.corrupt.length} unreadable account record(s) (${inv.corrupt.join(", ")}) - the tenant list is uncertain; repair or remove them`,
+        { root },
+      );
+    if (inv.spaces.length > 1)
+      throw new MeshTargetError(
+        "ambiguous-target",
+        `this folder's broker holds accounts for ${inv.spaces.length} spaces (${inv.spaces.join(", ")}) - name one with --space`,
+        { root, available: inv.spaces },
+      );
     // For a local project, if its mesh is in the registry, use the RECORDED server +
     // mode, not DEFAULT_SERVER: a project started with `--server …:4333` must spawn against :4333,
     // and a recorded OPEN mesh must not mint creds off stale `.cotal/auth` left on disk. Fall back

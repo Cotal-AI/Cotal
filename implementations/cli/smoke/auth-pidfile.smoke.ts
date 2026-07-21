@@ -25,7 +25,7 @@ mkdirSync(join(tmp, ".cotal"), { recursive: true });
 const prevCwd = process.cwd();
 process.chdir(tmp);
 const SPACE = "pidbelt";
-const PID_FILE = join(tmp, ".cotal", `auth-service.${SPACE}.pid`);
+const PID_FILE = join(tmp, ".cotal", `auth-service.${Buffer.from(SPACE, "utf8").toString("hex")}.pid`); // the injective hex space key (see workspace spaceKey)
 
 /** A pid that provably belonged to a real, now-dead process. */
 async function deadPid(): Promise<number> {

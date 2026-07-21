@@ -52,10 +52,12 @@ are marked; import them with `import type`.
 
 | symbol | purpose |
 |---|---|
-| `createSpaceAuth(space)` | mint a space's trust bundle (operator + system + data accounts). One space, one operator. |
+| `createBrokerAuth(label)` | mint BROKER trust: the operator and system account one nats-server trusts. One per broker, shared by every space on it. |
+| `createSpaceAccountAuth(broker, space)` | mint one space's own data account, signed by that broker's operator — the add-a-tenant primitive. |
+| `createSpaceAuth(space)` | the one-space convenience: broker trust + one account in a single composed bundle. |
 | `setupSpaceStreams({ servers, space, creds })` | create the space's JetStream streams. |
 | `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). |
-| `serverConfig(auth, { storeDir, extraAccounts?, port?, host? })` | render the broker config for one operator; `storeDir` is required and `extraAccounts` preloads the auth-callout account. |
+| `serverConfig(broker, spaces, { storeDir, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required and `extraAccounts` preloads the auth-callout account. |
 | `mintCreds(auth, identity, profile, opts?)` | mint a scoped cred for any `Profile`. |
 | `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | mint the membership/eviction scoped creds. |
 | `provisionAgent`, `provisionAgentDurables` | create a principal's bind-only durables. |
@@ -190,14 +192,18 @@ const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
 // put deliveryCreds into your SecretStore under DELIVERY_CREDS_KEY before booting delivery.
 ```
 
-Rendering the broker config for a user-auth space is `serverConfig(auth, { storeDir, extraAccounts })`,
-where `extraAccounts` must include the callout account from `createCalloutAuth` so the auth-service has
-a broker account to answer on. That account never shares the data account.
+Rendering the broker config for a user-auth space is `serverConfig(broker, spaces, { storeDir,
+extraAccounts })`, where `extraAccounts` must include the callout account from `createCalloutAuth` so
+the auth-service has a broker account to answer on. That account never shares the data account.
 
-`createSpaceAuth` mints one operator + system + data account **per call**, and `serverConfig`
-renders **one** operator. That is the single-space reference shape. Running many spaces (tenants)
-under one shared broker operator is a different provisioning shape that the current exports do not
-yet cover; see [Known gaps](#known-gaps-not-hosted-composable-yet).
+Broker trust and space accounts are separate authorities: `createBrokerAuth` mints the one
+operator + system account a broker trusts, `createSpaceAccountAuth(broker, space)` signs each
+tenant's data account under it, and `serverConfig(broker, spaces, opts)` renders them all into one
+config. A host composition can therefore provision several spaces on one broker today. The `cotal`
+CLI itself still orchestrates one space per root (its `up`/`down` lifecycle refuses broker-wide
+operations on a multi-space root rather than scoping them); the per-space lifecycle is the
+remaining multi-space operator layer — see
+[Known gaps](#known-gaps-not-hosted-composable-yet).
 
 ## Hazardous provisioning primitives
 
@@ -234,8 +240,11 @@ scopes the capability out. None is a wire concern.
 2. **Supervisor secret threading.** As above, `Manager` has no `SecretStore`/minter injection; a
    hosted supervisor runs on a filesystem-resident signer bundle plus mesh-registry record. The
    store-threading seam is in flight.
-3. **Many spaces per broker.** No published "add a tenant account under one shared operator" API;
-   the exports compose the one-space reference shape. This is the multi-space operator layer.
+3. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
+   (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
+   `broker.json` + `account.<key>.json`), but there is no per-space teardown/backup/restore:
+   the CLI's broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   This is the remaining multi-space operator layer.
 4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
    the stock provider and login client are Better-Auth-endpoint-shaped, `cotalAuthProvider`
    self-registers on import (colliding with a host-owned provider under `resolveAuthProvider`), and

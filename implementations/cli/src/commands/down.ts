@@ -23,6 +23,7 @@ import {
   sameStoreIdentity,
   writePreservationCommitIntent,
   writePreservationPrepareIntent,
+  spaceKey,
   type LocalProcess,
   type LocalProcessContext,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
@@ -621,7 +622,7 @@ export function pidfileTargets(space: string): Array<[file: string, label: strin
   return [
     ["manager.pid", "manager"],
     ["delivery.pid", "delivery daemon"],
-    [`auth-service.${encodeURIComponent(space)}.pid`, "user-auth service"],
+    [`auth-service.${spaceKey(space)}.pid`, "user-auth service"],
     ["web.pid", "web dashboard"],
     ["nats.pid", "nats-server"],
   ];

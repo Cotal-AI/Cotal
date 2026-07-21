@@ -93,7 +93,7 @@ try {
   }
   const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
   ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
-  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", `${encodeURIComponent("auto")}.json`), "utf8")) as { server: string };
+  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
   ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
   ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
   cliIn(autoRoot, "down");
